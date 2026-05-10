@@ -29,6 +29,7 @@ void VkShaderCache::LoadShader(const char *name, const std::vector<char> &spirvC
     }
 
     std::string typeStr(type);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (typeStr == "vert" || typeStr == "vertex") {
         m_vertModules[name] = module;
         m_vertCodes[name] = spirvCode;
@@ -44,6 +45,7 @@ void VkShaderCache::LoadShader(const char *name, const std::vector<char> &spirvC
 void VkShaderCache::UnloadShader(const char *name, VkDevice device)
 {
     std::string nameStr(name);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_renderMetas.erase(nameStr);
 
     auto vertIt = m_vertModules.find(nameStr);
@@ -63,6 +65,7 @@ void VkShaderCache::UnloadShader(const char *name, VkDevice device)
 
 bool VkShaderCache::HasShader(const std::string &name, const std::string &type) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (type == "vert" || type == "vertex") {
         return m_vertModules.find(name) != m_vertModules.end();
     }
@@ -74,6 +77,7 @@ bool VkShaderCache::HasShader(const std::string &name, const std::string &type) 
 
 VkShaderModule VkShaderCache::GetModule(const std::string &name, const std::string &type) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     const auto &map = (type == "vertex") ? m_vertModules : m_fragModules;
     auto it = map.find(name);
     if (it != map.end())
@@ -99,11 +103,13 @@ void VkShaderCache::StoreRenderMeta(const std::string &shaderId, const std::stri
     meta.passTag = passTag;
     meta.stencil = stencil;
     meta.alphaClip = alphaClip;
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_renderMetas[shaderId] = meta;
 }
 
 const ShaderRenderMeta *VkShaderCache::GetRenderMeta(const std::string &shaderId) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_renderMetas.find(shaderId);
     return (it != m_renderMetas.end()) ? &it->second : nullptr;
 }
@@ -143,11 +149,13 @@ const std::vector<char> *VkShaderCache::FindCodeInMap(const std::unordered_map<s
 
 const std::vector<char> *VkShaderCache::FindVertCode(const std::string &id) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     return FindCodeInMap(m_vertCodes, id);
 }
 
 const std::vector<char> *VkShaderCache::FindFragCode(const std::string &id) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     return FindCodeInMap(m_fragCodes, id);
 }
 
@@ -157,6 +165,7 @@ const std::vector<char> *VkShaderCache::FindFragCode(const std::string &id) cons
 
 void VkShaderCache::DestroyModules(vk::VkPipelineManager &pm)
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     for (auto &[name, shader] : m_vertModules)
         pm.DestroyShaderModule(shader);
     for (auto &[name, shader] : m_fragModules)
@@ -165,6 +174,7 @@ void VkShaderCache::DestroyModules(vk::VkPipelineManager &pm)
 
 void VkShaderCache::Clear()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_programCache.Clear();
     m_vertCodes.clear();
     m_fragCodes.clear();
@@ -179,6 +189,7 @@ void VkShaderCache::Clear()
 
 void VkShaderCache::DumpAvailableKeys(std::string &outVert, std::string &outFrag) const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     outVert.clear();
     outFrag.clear();
     for (const auto &kv : m_vertCodes)

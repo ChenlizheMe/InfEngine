@@ -82,6 +82,7 @@ size_t VkTextureCache::EvictByPrefix(const std::string &prefix)
 
 void VkTextureCache::Clear()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_textures.clear();
 }
 

@@ -60,7 +60,7 @@ class VkTextureCache
     /// Returns the number of entries removed.
     size_t EvictByPrefix(const std::string &prefix);
 
-    /// Clear all entries (not thread-safe — call only when renderer is idle).
+    /// Clear all entries.
     void Clear();
 
     /// Acquire the internal mutex for multi-step atomic operations.

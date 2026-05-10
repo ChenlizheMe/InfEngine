@@ -11,6 +11,7 @@
 
 #include <function/renderer/shader/ShaderProgram.h>
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -123,6 +124,7 @@ class VkShaderCache
     std::unordered_map<std::string, std::vector<char>> m_fragCodes;
     std::unordered_map<std::string, ShaderRenderMeta> m_renderMetas;
     ShaderProgramCache m_programCache;
+    mutable std::mutex m_mutex;
 };
 
 } // namespace infernux
