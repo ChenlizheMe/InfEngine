@@ -980,6 +980,7 @@ void InxRenderer::DrawFrame()
                     double n = static_cast<double>(drawN);
                     const auto rgProfile = infernux::vk::RenderGraph::GetExecuteProfileSnapshot();
                     const auto topPassProfiles = infernux::vk::RenderGraph::GetTopCallbackProfiles(6);
+                    const auto &gpuTimestamps = m_vkCore->GetLatestGpuTimestampFrame();
                     uint64_t filteredCalls = 0, filteredEligible = 0, filteredIssued = 0, filteredActualDraws = 0;
                     uint64_t shadowCalls = 0, shadowEligible = 0, shadowIssued = 0, shadowActualDraws = 0;
                     m_vkCore->GetDrawSubCounters(filteredCalls, filteredEligible, filteredIssued, filteredActualDraws,
@@ -1029,6 +1030,14 @@ void InxRenderer::DrawFrame()
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.barrierCallCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0);
+
+                    if (gpuTimestamps.available) {
+                        oss << "\n    GPU#" << gpuTimestamps.serial << ':';
+                        for (uint32_t i = 0; i < gpuTimestamps.sampleCount; ++i) {
+                            const auto &sample = gpuTimestamps.samples[i];
+                            oss << ' ' << sample.Name() << '=' << sample.milliseconds << "ms";
+                        }
+                    }
 
                     if (!topPassProfiles.empty()) {
                         oss << "\n    CallbackTop:";

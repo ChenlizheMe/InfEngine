@@ -157,6 +157,9 @@ InxVkCoreModular::~InxVkCoreModular()
     m_commandBuffers.clear();
     m_depthImage.reset();
 
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.Destroy();
+#endif
     m_renderGraph.Destroy();
     m_resourceManager.Destroy();
     m_asyncReadbackContext.Destroy();
@@ -264,6 +267,11 @@ bool InxVkCoreModular::PrepareSurface()
 
     // Initialize render graph
     m_renderGraph.Initialize(&m_deviceContext, &m_pipelineManager);
+#if INFERNUX_FRAME_PROFILE
+    if (!m_gpuTimestampQueries.Initialize(m_deviceContext, m_maxFramesInFlight)) {
+        INXLOG_WARN("GPU timestamp queries are unavailable on this device");
+    }
+#endif
 
     // Get extent from surface capabilities
     auto swapchainSupport = m_deviceContext.QuerySwapchainSupport();
@@ -619,6 +627,11 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
         return;
     }
 
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.BeginFrame(cmdBuf, m_currentFrame);
+    const auto gpuFrameRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
+
     // ========================================================================
     // Inline UBO Updates (Fix 1: replaces CPU-side memcpy)
     // ========================================================================
@@ -638,9 +651,16 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
     // ========================================================================
     // Execute scene render graph (offscreen scene rendering)
     // ========================================================================
+#if INFERNUX_FRAME_PROFILE
+    const auto gpuSceneRegion =
+        m_gpuTimestampQueries.BeginRegion(cmdBuf, "SceneRenderGraph", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
     if (m_renderGraphExecutor) {
         m_renderGraphExecutor(cmdBuf);
     }
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.EndRegion(cmdBuf, gpuSceneRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+#endif
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[5] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
@@ -650,9 +670,16 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
     // ========================================================================
     // Post-Scene-Render Callback (OutlineRenderer injection point)
     // ========================================================================
+#if INFERNUX_FRAME_PROFILE
+    const auto gpuPostSceneRegion =
+        m_gpuTimestampQueries.BeginRegion(cmdBuf, "PostScene", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
     if (m_postSceneRenderCallback) {
         m_postSceneRenderCallback(cmdBuf, drawCalls());
     }
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.EndRegion(cmdBuf, gpuPostSceneRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+#endif
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[6] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
@@ -707,16 +734,30 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
 
     if (!m_renderGraph.Compile()) {
         INXLOG_ERROR("Failed to compile swapchain render graph");
+#if INFERNUX_FRAME_PROFILE
+        m_gpuTimestampQueries.EndRegion(cmdBuf, gpuFrameRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        m_gpuTimestampQueries.FinishFrame(m_currentFrame);
+#endif
         vkEndCommandBuffer(cmdBuf);
         return;
     }
 
+#if INFERNUX_FRAME_PROFILE
+    const auto gpuGuiRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "GUI", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+#endif
     m_renderGraph.Execute(cmdBuf);
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.EndRegion(cmdBuf, gpuGuiRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+#endif
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[7] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
 #endif
 
+#if INFERNUX_FRAME_PROFILE
+    m_gpuTimestampQueries.EndRegion(cmdBuf, gpuFrameRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    m_gpuTimestampQueries.FinishFrame(m_currentFrame);
+#endif
     if (vkEndCommandBuffer(cmdBuf) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to record command buffer");
     }
@@ -771,6 +812,9 @@ void InxVkCoreModular::WaitForCurrentFrame()
 
 void InxVkCoreModular::TickDeletionQueue()
 {
+#if INFERNUX_FRAME_PROFILE
+    (void)m_gpuTimestampQueries.CollectCompletedFrame(m_currentFrame);
+#endif
     m_resourceManager.PollGpuUploads();
     m_resourceManager.PollAsyncGraphicsSubmissions();
     m_resourceManager.PollImageReadbacks();

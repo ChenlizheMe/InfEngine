@@ -44,6 +44,9 @@
 #include "VkShaderCache.h"
 #include "VkTextureCache.h"
 #include "vk/VkCore.h"
+#if INFERNUX_FRAME_PROFILE
+#include "vk/GpuTimestampQueries.h"
+#endif
 #include <core/types/InxApplication.h>
 #include <function/scene/LightingData.h>
 
@@ -862,6 +865,18 @@ class InxVkCoreModular
         return m_deletionQueue;
     }
 
+#if INFERNUX_FRAME_PROFILE
+    [[nodiscard]] const rhi::GpuTimestampFrame &GetLatestGpuTimestampFrame() const noexcept
+    {
+        return m_gpuTimestampQueries.LatestFrame();
+    }
+
+    [[nodiscard]] const rhi::TimestampQueryCapabilities &GetTimestampQueryCapabilities() const noexcept
+    {
+        return m_gpuTimestampQueries.Capabilities();
+    }
+#endif
+
     /// @brief Get the async upload context. Always valid after Initialize();
     /// will alias to the graphics queue if the GPU has no dedicated transfer
     /// family, so callers don't need to branch.
@@ -946,6 +961,9 @@ class InxVkCoreModular
     vk::AsyncTransferContext m_asyncTransferContext;
     vk::AsyncTransferContext m_asyncReadbackContext;
     vk::RenderGraph m_renderGraph;
+#if INFERNUX_FRAME_PROFILE
+    vk::GpuTimestampQueries m_gpuTimestampQueries;
+#endif
 
     // ========================================================================
     // Configuration

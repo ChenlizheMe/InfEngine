@@ -136,6 +136,11 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         INXLOG_ERROR("Failed to submit draw command buffer: ", vk::VkResultToString(submitResult));
     }
 #if INFERNUX_FRAME_PROFILE
+    if (submitResult == VK_SUCCESS) {
+        m_gpuTimestampQueries.MarkSubmitted(m_currentFrame);
+    }
+#endif
+#if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[2] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
     _tPrev = _tNow;
