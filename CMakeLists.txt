@@ -298,6 +298,17 @@ if(INFERNUX_BUILD_TESTS)
     add_test(NAME infernux.job_system COMMAND infernux_job_system_tests)
     set_tests_properties(infernux.job_system PROPERTIES TIMEOUT 30)
 
+    add_executable(infernux_frame_deletion_queue_tests
+        cpp/tests/FrameDeletionQueueTests.cpp
+    )
+    target_include_directories(infernux_frame_deletion_queue_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_frame_deletion_queue_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.frame_deletion_queue COMMAND infernux_frame_deletion_queue_tests)
+
     add_executable(infernux_atomic_file_tests
         cpp/tests/AtomicFileTests.cpp
         cpp/infernux/platform/filesystem/AtomicFile.cpp

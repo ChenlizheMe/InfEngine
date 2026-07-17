@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -34,6 +35,15 @@ namespace infernux
 class FrameDeletionQueue
 {
   public:
+    struct Stats
+    {
+        uint64_t completedFenceTicks = 0;
+        uint64_t pushed = 0;
+        uint64_t retired = 0;
+        size_t pending = 0;
+        size_t highWatermark = 0;
+    };
+
     FrameDeletionQueue() = default;
     ~FrameDeletionQueue()
     {
@@ -43,13 +53,33 @@ class FrameDeletionQueue
     // Non-copyable, movable
     FrameDeletionQueue(const FrameDeletionQueue &) = delete;
     FrameDeletionQueue &operator=(const FrameDeletionQueue &) = delete;
-    FrameDeletionQueue(FrameDeletionQueue &&) = default;
-    FrameDeletionQueue &operator=(FrameDeletionQueue &&) = default;
+    FrameDeletionQueue(FrameDeletionQueue &&other) noexcept
+        : m_entries(std::move(other.m_entries)), m_ready(std::move(other.m_ready)),
+          m_frameCounter(std::exchange(other.m_frameCounter, 0)),
+          m_maxFramesInFlight(std::exchange(other.m_maxFramesInFlight, 2)), m_pushed(std::exchange(other.m_pushed, 0)),
+          m_retired(std::exchange(other.m_retired, 0)), m_highWatermark(std::exchange(other.m_highWatermark, 0))
+    {
+    }
+
+    FrameDeletionQueue &operator=(FrameDeletionQueue &&other) noexcept
+    {
+        if (this != &other) {
+            FlushAll();
+            m_entries = std::move(other.m_entries);
+            m_ready = std::move(other.m_ready);
+            m_frameCounter = std::exchange(other.m_frameCounter, 0);
+            m_maxFramesInFlight = std::exchange(other.m_maxFramesInFlight, 2);
+            m_pushed = std::exchange(other.m_pushed, 0);
+            m_retired = std::exchange(other.m_retired, 0);
+            m_highWatermark = std::exchange(other.m_highWatermark, 0);
+        }
+        return *this;
+    }
 
     /// @brief Initialize with the number of frames that may be in-flight
     void Initialize(uint32_t maxFramesInFlight)
     {
-        m_maxFramesInFlight = maxFramesInFlight;
+        m_maxFramesInFlight = maxFramesInFlight > 0 ? maxFramesInFlight : 1;
     }
 
     /// @brief Queue a cleanup lambda for deferred execution.
@@ -59,7 +89,14 @@ class FrameDeletionQueue
     /// referencing the resource have completed.
     void Push(std::function<void()> deleter)
     {
+        if (!deleter) {
+            return;
+        }
         m_entries.push_back({m_frameCounter, std::move(deleter)});
+        ++m_pushed;
+        if (m_entries.size() > m_highWatermark) {
+            m_highWatermark = m_entries.size();
+        }
     }
 
     /// @brief Call exactly once per frame, AFTER the per-frame fence wait.
@@ -68,15 +105,12 @@ class FrameDeletionQueue
     /// increments the internal frame counter.
     void Tick()
     {
-        // Partition: move deletable entries to the front, then erase.
-        // Use a simple scan to avoid allocation from std::partition.
+        m_ready.clear();
         size_t writeIdx = 0;
         for (size_t i = 0; i < m_entries.size(); ++i) {
             if (m_frameCounter - m_entries[i].frameNumber >= m_maxFramesInFlight) {
-                // Safe to destroy now — all in-flight frames have cycled.
-                m_entries[i].deleter();
+                m_ready.push_back(std::move(m_entries[i].deleter));
             } else {
-                // Keep this entry — still potentially in-flight.
                 if (writeIdx != i) {
                     m_entries[writeIdx] = std::move(m_entries[i]);
                 }
@@ -84,22 +118,44 @@ class FrameDeletionQueue
             }
         }
         m_entries.resize(writeIdx);
+
+        // Invoke after compacting m_entries so a deleter may safely enqueue
+        // another retirement without invalidating the scan above.
+        for (auto &deleter : m_ready) {
+            deleter();
+            ++m_retired;
+        }
+        m_ready.clear();
         ++m_frameCounter;
     }
 
     /// @brief Immediately flush ALL remaining entries (use at shutdown).
     void FlushAll()
     {
-        for (auto &entry : m_entries) {
-            entry.deleter();
+        while (!m_entries.empty()) {
+            m_ready.clear();
+            m_ready.reserve(m_entries.size());
+            for (auto &entry : m_entries) {
+                m_ready.push_back(std::move(entry.deleter));
+            }
+            m_entries.clear();
+            for (auto &deleter : m_ready) {
+                deleter();
+                ++m_retired;
+            }
         }
-        m_entries.clear();
+        m_ready.clear();
     }
 
     /// @brief Get the number of pending entries
     [[nodiscard]] size_t PendingCount() const
     {
         return m_entries.size();
+    }
+
+    [[nodiscard]] Stats GetStats() const noexcept
+    {
+        return {m_frameCounter, m_pushed, m_retired, m_entries.size(), m_highWatermark};
     }
 
   private:
@@ -110,8 +166,12 @@ class FrameDeletionQueue
     };
 
     std::vector<Entry> m_entries;
+    std::vector<std::function<void()>> m_ready;
     uint64_t m_frameCounter = 0;
     uint32_t m_maxFramesInFlight = 2;
+    uint64_t m_pushed = 0;
+    uint64_t m_retired = 0;
+    size_t m_highWatermark = 0;
 };
 
 } // namespace infernux

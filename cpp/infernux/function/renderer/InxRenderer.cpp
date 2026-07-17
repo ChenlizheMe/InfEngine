@@ -921,6 +921,8 @@ void InxRenderer::DrawFrame()
             {
                 const auto &bridgeProfile = SceneRenderBridge::Instance().GetSceneRenderer().GetProfileSnapshot();
                 const auto srcProfile = ScriptableRenderContext::GetProfileSnapshot();
+                const auto deletionStats =
+                    m_vkCore ? m_vkCore->GetDeletionQueue().GetStats() : FrameDeletionQueue::Stats{};
 
                 oss << "\n  FrameCache: begin=" << (_detailAccum.frameCacheBeginMs / kWindow)
                     << "ms updateCall=" << (_detailAccum.sceneUpdateCallMs / kWindow)
@@ -962,6 +964,8 @@ void InxRenderer::DrawFrame()
                     << "\n  CleanupDetail: collectIds=" << (_detailAccum.cleanupCollectIdsMs / kWindow)
                     << "ms release=" << (_detailAccum.cleanupReleaseMs / kWindow)
                     << "ms activeIds/frame=" << (_detailAccum.cleanupActiveIds / kWindow)
+                    << " retirePending=" << deletionStats.pending << " retireHighWater=" << deletionStats.highWatermark
+                    << " retired=" << deletionStats.retired << " retirePushed=" << deletionStats.pushed
                     << "\n  LightingDetail: collect=" << (_detailAccum.lightingCollectMs / kWindow)
                     << "ms shadowEditor=" << (_detailAccum.lightingShadowEditorMs / kWindow)
                     << "ms shadowGame=" << (_detailAccum.lightingShadowGameMs / kWindow)
