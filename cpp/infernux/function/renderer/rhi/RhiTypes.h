@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace infernux::rhi
@@ -21,7 +22,10 @@ enum class PixelFormat : uint8_t
     RGB10A2UNorm,
     D32SFloat,
     D24UNormS8UInt,
+    Count,
 };
+
+constexpr size_t kPixelFormatCount = static_cast<size_t>(PixelFormat::Count);
 
 enum class SampleCount : uint8_t
 {
@@ -38,7 +42,7 @@ enum class SampleCount : uint8_t
 
 [[nodiscard]] constexpr bool IsValidPixelFormat(PixelFormat format) noexcept
 {
-    return format > PixelFormat::Undefined && format <= PixelFormat::D24UNormS8UInt;
+    return format > PixelFormat::Undefined && format < PixelFormat::Count;
 }
 
 } // namespace infernux::rhi

@@ -23,6 +23,7 @@
 
 #include "VkTypes.h"
 #include <array>
+#include <function/renderer/rhi/RhiCapabilities.h>
 #include <functional>
 #include <optional>
 #include <string>
@@ -209,6 +210,11 @@ class VkDeviceContext
         return m_deviceFeatures;
     }
 
+    [[nodiscard]] const rhi::DeviceCapabilities &GetCapabilities() const noexcept
+    {
+        return m_capabilities;
+    }
+
     /// @brief Whether descriptor-indexing UPDATE_AFTER_BIND was enabled at
     /// device creation time. Callers should branch on this before opting in
     /// to non-stalling descriptor updates so headless/legacy GPUs continue
@@ -291,6 +297,10 @@ class VkDeviceContext
     /// @brief Create logical device and retrieve queues
     bool CreateLogicalDevice(const DeviceConfig &config);
 
+    /// Build the backend-neutral capability snapshot after device features
+    /// and queue selection have been finalized.
+    void BuildCapabilities();
+
     /// @brief Find queue families for a physical device
     QueueFamilyIndices FindQueueFamilies(VkPhysicalDevice device) const;
 
@@ -336,6 +346,7 @@ class VkDeviceContext
     QueueFamilyIndices m_queueIndices{};
     VkPhysicalDeviceProperties m_deviceProperties{};
     VkPhysicalDeviceFeatures m_deviceFeatures{};
+    rhi::DeviceCapabilities m_capabilities{};
 
     // Vulkan 1.2 capability flags resolved at device creation. Callers gate
     // optional fast paths on these so the engine still runs correctly on

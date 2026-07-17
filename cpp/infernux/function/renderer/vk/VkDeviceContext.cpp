@@ -5,6 +5,7 @@
 
 #include "VkDeviceContext.h"
 #include "DescriptorBindTrace.h"
+#include "RhiVulkanTypes.h"
 #include "VmaContext.h"
 #include <core/error/InxError.h>
 
@@ -24,6 +25,63 @@ namespace vk
 
 namespace
 {
+infernux::rhi::AdapterType ToRhiAdapterType(VkPhysicalDeviceType type)
+{
+    using infernux::rhi::AdapterType;
+    switch (type) {
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+        return AdapterType::Integrated;
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+        return AdapterType::Discrete;
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+        return AdapterType::Virtual;
+    case VK_PHYSICAL_DEVICE_TYPE_CPU:
+        return AdapterType::Cpu;
+    default:
+        return AdapterType::Unknown;
+    }
+}
+
+infernux::rhi::SampleCountMask ToRhiSampleCountMask(VkSampleCountFlags samples)
+{
+    using namespace infernux::rhi;
+    SampleCountMask result = 0;
+    if ((samples & VK_SAMPLE_COUNT_1_BIT) != 0)
+        result |= SampleCountBit(SampleCount::One);
+    if ((samples & VK_SAMPLE_COUNT_2_BIT) != 0)
+        result |= SampleCountBit(SampleCount::Two);
+    if ((samples & VK_SAMPLE_COUNT_4_BIT) != 0)
+        result |= SampleCountBit(SampleCount::Four);
+    if ((samples & VK_SAMPLE_COUNT_8_BIT) != 0)
+        result |= SampleCountBit(SampleCount::Eight);
+    return result;
+}
+
+infernux::rhi::FormatFeature ToRhiFormatFeatures(VkFormatFeatureFlags features)
+{
+    using infernux::rhi::FormatFeature;
+    FormatFeature result = FormatFeature::None;
+    if ((features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0)
+        result |= FormatFeature::Sampled;
+    if ((features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0)
+        result |= FormatFeature::FilterLinear;
+    if ((features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0)
+        result |= FormatFeature::Storage;
+    if ((features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0)
+        result |= FormatFeature::ColorAttachment;
+    if ((features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0)
+        result |= FormatFeature::DepthStencilAttachment;
+    if ((features & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) != 0)
+        result |= FormatFeature::TransferSource;
+    if ((features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0)
+        result |= FormatFeature::TransferDestination;
+    if ((features & VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0)
+        result |= FormatFeature::BlitSource;
+    if ((features & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0)
+        result |= FormatFeature::BlitDestination;
+    return result;
+}
+
 bool ExtractDescriptorRawFromValidationMessage(const char *message, uint64_t &outRaw)
 {
     outRaw = 0ull;
@@ -148,7 +206,8 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
       m_graphicsQueue(other.m_graphicsQueue), m_presentQueue(other.m_presentQueue),
       m_transferQueue(other.m_transferQueue), m_hasDedicatedTransferQueue(other.m_hasDedicatedTransferQueue),
       m_queueIndices(other.m_queueIndices), m_deviceProperties(other.m_deviceProperties),
-      m_deviceFeatures(other.m_deviceFeatures), m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
+      m_deviceFeatures(other.m_deviceFeatures), m_capabilities(other.m_capabilities),
+      m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
       m_timelineSemaphoreEnabled(other.m_timelineSemaphoreEnabled), m_validationEnabled(other.m_validationEnabled),
       m_shuttingDown(other.m_shuttingDown), m_waitIdleCount(other.m_waitIdleCount)
 {
@@ -162,6 +221,7 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
     other.m_presentQueue = VK_NULL_HANDLE;
     other.m_transferQueue = VK_NULL_HANDLE;
     other.m_hasDedicatedTransferQueue = false;
+    other.m_capabilities = {};
     other.m_descriptorIndexingEnabled = false;
     other.m_timelineSemaphoreEnabled = false;
     other.m_shuttingDown = false;
@@ -186,6 +246,7 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         m_queueIndices = other.m_queueIndices;
         m_deviceProperties = other.m_deviceProperties;
         m_deviceFeatures = other.m_deviceFeatures;
+        m_capabilities = other.m_capabilities;
         m_descriptorIndexingEnabled = other.m_descriptorIndexingEnabled;
         m_timelineSemaphoreEnabled = other.m_timelineSemaphoreEnabled;
         m_validationEnabled = other.m_validationEnabled;
@@ -202,6 +263,7 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         other.m_presentQueue = VK_NULL_HANDLE;
         other.m_transferQueue = VK_NULL_HANDLE;
         other.m_hasDedicatedTransferQueue = false;
+        other.m_capabilities = {};
         other.m_descriptorIndexingEnabled = false;
         other.m_timelineSemaphoreEnabled = false;
         other.m_shuttingDown = false;
@@ -247,6 +309,7 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
         INXLOG_ERROR("Failed to create logical device");
         return false;
     }
+    BuildCapabilities();
 
     // Step 6: Create VMA allocator
     m_vmaAllocator = CreateVmaAllocator(m_instance, m_physicalDevice, m_device);
@@ -311,6 +374,7 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
         INXLOG_ERROR("Failed to create logical device");
         return false;
     }
+    BuildCapabilities();
 
     // Step 3: Create VMA allocator
     m_vmaAllocator = CreateVmaAllocator(m_instance, m_physicalDevice, m_device);
@@ -357,6 +421,7 @@ void VkDeviceContext::Destroy() noexcept
     }
 
     m_physicalDevice = VK_NULL_HANDLE;
+    m_capabilities = {};
 
     if (m_surface != VK_NULL_HANDLE && m_instance != VK_NULL_HANDLE) {
         vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
@@ -705,6 +770,86 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     }
 
     return true;
+}
+
+void VkDeviceContext::BuildCapabilities()
+{
+    using namespace rhi;
+
+    m_capabilities = {};
+    if (m_physicalDevice == VK_NULL_HANDLE) {
+        return;
+    }
+
+    auto &capabilities = m_capabilities;
+    capabilities.backend = BackendType::Vulkan;
+    capabilities.adapterType = ToRhiAdapterType(m_deviceProperties.deviceType);
+    capabilities.SetAdapterName(m_deviceProperties.deviceName);
+    capabilities.vendorId = m_deviceProperties.vendorID;
+    capabilities.deviceId = m_deviceProperties.deviceID;
+    capabilities.driverVersion = m_deviceProperties.driverVersion;
+    capabilities.apiVersionMajor = VK_VERSION_MAJOR(m_deviceProperties.apiVersion);
+    capabilities.apiVersionMinor = VK_VERSION_MINOR(m_deviceProperties.apiVersion);
+    capabilities.apiVersionPatch = VK_VERSION_PATCH(m_deviceProperties.apiVersion);
+
+    const auto &limits = m_deviceProperties.limits;
+    capabilities.limits.maxTextureDimension2D = limits.maxImageDimension2D;
+    capabilities.limits.maxTextureArrayLayers = limits.maxImageArrayLayers;
+    capabilities.limits.maxColorAttachments = limits.maxColorAttachments;
+    capabilities.limits.maxPushConstantBytes = limits.maxPushConstantsSize;
+    capabilities.limits.maxSampledTexturesPerStage = limits.maxPerStageDescriptorSampledImages;
+    capabilities.limits.maxStorageBuffersPerStage = limits.maxPerStageDescriptorStorageBuffers;
+    std::copy_n(limits.maxComputeWorkGroupCount, 3, capabilities.limits.maxComputeWorkgroupCount);
+    std::copy_n(limits.maxComputeWorkGroupSize, 3, capabilities.limits.maxComputeWorkgroupSize);
+    capabilities.limits.maxComputeWorkgroupInvocations = limits.maxComputeWorkGroupInvocations;
+
+    capabilities.features.samplerAnisotropy = m_deviceFeatures.samplerAnisotropy == VK_TRUE;
+    capabilities.features.fillModeNonSolid = m_deviceFeatures.fillModeNonSolid == VK_TRUE;
+    capabilities.features.wideLines = m_deviceFeatures.wideLines == VK_TRUE;
+    capabilities.features.descriptorIndexing = m_descriptorIndexingEnabled;
+    capabilities.features.timelineSemaphore = m_timelineSemaphoreEnabled;
+    capabilities.features.dedicatedTransferQueue = m_hasDedicatedTransferQueue;
+
+    uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &queueFamilyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queueProperties(queueFamilyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &queueFamilyCount, queueProperties.data());
+    if (m_queueIndices.graphicsFamily.has_value() && m_queueIndices.graphicsFamily.value() < queueProperties.size()) {
+        const uint32_t validBits = queueProperties[m_queueIndices.graphicsFamily.value()].timestampValidBits;
+        capabilities.timestampQueries.supported = validBits > 0;
+        capabilities.timestampQueries.graphicsAndCompute = limits.timestampComputeAndGraphics == VK_TRUE;
+        capabilities.timestampQueries.validBits = validBits;
+        capabilities.timestampQueries.nanosecondsPerTick = limits.timestampPeriod;
+    }
+
+    for (size_t i = 1; i < kPixelFormatCount; ++i) {
+        const auto format = static_cast<PixelFormat>(i);
+        auto &formatCapabilities = capabilities.formats[i];
+        formatCapabilities.format = format;
+
+        VkFormatProperties properties{};
+        const VkFormat vkFormat = ToVkFormat(format);
+        vkGetPhysicalDeviceFormatProperties(m_physicalDevice, vkFormat, &properties);
+        formatCapabilities.optimalTiling = ToRhiFormatFeatures(properties.optimalTilingFeatures);
+
+        VkImageUsageFlags attachmentUsage = 0;
+        if (HasAllFormatFeatures(formatCapabilities.optimalTiling, FormatFeature::ColorAttachment)) {
+            attachmentUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        } else if (HasAllFormatFeatures(formatCapabilities.optimalTiling, FormatFeature::DepthStencilAttachment)) {
+            attachmentUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        }
+
+        if (attachmentUsage != 0) {
+            VkImageFormatProperties imageProperties{};
+            if (vkGetPhysicalDeviceImageFormatProperties(m_physicalDevice, vkFormat, VK_IMAGE_TYPE_2D,
+                                                         VK_IMAGE_TILING_OPTIMAL, attachmentUsage, 0,
+                                                         &imageProperties) == VK_SUCCESS) {
+                formatCapabilities.sampleCounts = ToRhiSampleCountMask(imageProperties.sampleCounts);
+            }
+        } else {
+            formatCapabilities.sampleCounts = SampleCountBit(SampleCount::One);
+        }
+    }
 }
 
 QueueFamilyIndices VkDeviceContext::FindQueueFamilies(VkPhysicalDevice device) const

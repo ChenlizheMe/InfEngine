@@ -27,20 +27,8 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
         return false;
     }
 
-    const auto &properties = context.GetDeviceProperties();
-    const auto &queueIndices = context.GetQueueIndices();
-    if (!queueIndices.graphicsFamily.has_value()) {
-        m_device = VK_NULL_HANDLE;
-        return false;
-    }
-
-    uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(context.GetPhysicalDevice(), &queueFamilyCount, nullptr);
-    std::vector<VkQueueFamilyProperties> queueProperties(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(context.GetPhysicalDevice(), &queueFamilyCount, queueProperties.data());
-
-    const uint32_t graphicsFamily = queueIndices.graphicsFamily.value();
-    if (graphicsFamily >= queueProperties.size() || queueProperties[graphicsFamily].timestampValidBits == 0) {
+    const auto &deviceCapabilities = context.GetCapabilities();
+    if (!deviceCapabilities.timestampQueries.supported) {
         m_device = VK_NULL_HANDLE;
         return false;
     }
@@ -63,10 +51,7 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
         }
     }
 
-    m_capabilities.supported = true;
-    m_capabilities.graphicsAndCompute = properties.limits.timestampComputeAndGraphics == VK_TRUE;
-    m_capabilities.validBits = queueProperties[graphicsFamily].timestampValidBits;
-    m_capabilities.nanosecondsPerTick = properties.limits.timestampPeriod;
+    m_capabilities = deviceCapabilities.timestampQueries;
     m_capabilities.maxRegionsPerFrame = regionCapacity;
     return true;
 }

@@ -553,6 +553,11 @@ class InxVkCoreModular
         return m_deviceContext;
     }
 
+    [[nodiscard]] const rhi::DeviceCapabilities &GetRhiCapabilities() const noexcept
+    {
+        return m_deviceContext.GetCapabilities();
+    }
+
     /**
      * @brief Get the swapchain manager
      */

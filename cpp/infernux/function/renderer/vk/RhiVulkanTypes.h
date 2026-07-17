@@ -37,6 +37,7 @@ namespace infernux::rhi
         return VK_FORMAT_D32_SFLOAT;
     case PixelFormat::D24UNormS8UInt:
         return VK_FORMAT_D24_UNORM_S8_UINT;
+    case PixelFormat::Count:
     case PixelFormat::Undefined:
         return VK_FORMAT_UNDEFINED;
     }
