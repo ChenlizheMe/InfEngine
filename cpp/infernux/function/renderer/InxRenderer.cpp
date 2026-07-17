@@ -956,6 +956,9 @@ void InxRenderer::DrawFrame()
                     << "ms cache=" << (srcProfile.submitCalls ? srcProfile.cacheGraphMs / srcProfile.submitCalls : 0.0)
                     << "ms finalDraws/submit="
                     << (srcProfile.submitCalls ? srcProfile.finalDrawCalls / srcProfile.submitCalls : 0.0)
+                    << " listBorrowed=" << srcProfile.borrowedRendererListSubmits
+                    << " listOwned=" << srcProfile.ownedRendererListSubmits << " materialized/frame="
+                    << (srcProfile.submitCalls ? srcProfile.materializedDrawCalls / srcProfile.submitCalls : 0.0)
                     << "\n  CleanupDetail: collectIds=" << (_detailAccum.cleanupCollectIdsMs / kWindow)
                     << "ms release=" << (_detailAccum.cleanupReleaseMs / kWindow)
                     << "ms activeIds/frame=" << (_detailAccum.cleanupActiveIds / kWindow)

@@ -524,6 +524,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.worldMatrix = baseTransform * xRotation;
         dc.material = material;
         dc.objectId = X_AXIS_ID;
+        dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_arrowXVerts;
         dc.meshIndices = &m_arrowXInds;
         dc.forceBufferUpdate = dirty;
@@ -538,6 +539,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.worldMatrix = baseTransform * yRotation;
         dc.material = material;
         dc.objectId = Y_AXIS_ID;
+        dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_arrowYVerts;
         dc.meshIndices = &m_arrowYInds;
         dc.forceBufferUpdate = dirty;
@@ -552,6 +554,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         dc.worldMatrix = baseTransform * zRotation;
         dc.material = material;
         dc.objectId = Z_AXIS_ID;
+        dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_arrowZVerts;
         dc.meshIndices = &m_arrowZInds;
         dc.forceBufferUpdate = dirty;
@@ -565,6 +568,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         xyDc.worldMatrix = baseTransform;
         xyDc.material = material;
         xyDc.objectId = XY_PLANE_ID;
+        xyDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, xyDc.objectId).MakeDrawIdentity();
         xyDc.meshVertices = &m_planeXYVerts;
         xyDc.meshIndices = &m_planeXYInds;
         xyDc.forceBufferUpdate = dirty;
@@ -576,6 +580,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         xzDc.worldMatrix = baseTransform;
         xzDc.material = material;
         xzDc.objectId = XZ_PLANE_ID;
+        xzDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, xzDc.objectId).MakeDrawIdentity();
         xzDc.meshVertices = &m_planeXZVerts;
         xzDc.meshIndices = &m_planeXZInds;
         xzDc.forceBufferUpdate = dirty;
@@ -587,6 +592,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         yzDc.worldMatrix = baseTransform;
         yzDc.material = material;
         yzDc.objectId = YZ_PLANE_ID;
+        yzDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, yzDc.objectId).MakeDrawIdentity();
         yzDc.meshVertices = &m_planeYZVerts;
         yzDc.meshIndices = &m_planeYZInds;
         yzDc.forceBufferUpdate = dirty;

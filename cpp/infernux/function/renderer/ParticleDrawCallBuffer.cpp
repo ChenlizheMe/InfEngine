@@ -86,6 +86,8 @@ DrawCallResult ParticleDrawCallBuffer::GetDrawCalls(const glm::vec3 &cameraRight
             drawCall.worldMatrix = packed;
             drawCall.material = batch.material;
             drawCall.objectId = 0x5041525400000000ULL | batchId;
+            drawCall.identity =
+                RenderProxyHandle::Synthetic(RenderDomain::Particle, drawCall.objectId).MakeDrawIdentity();
             drawCall.meshVertices = &QuadVertices();
             drawCall.meshIndices = &QuadIndices();
             drawCall.allowTransparentInstancing = true;

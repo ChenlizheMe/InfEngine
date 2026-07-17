@@ -3,6 +3,7 @@
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
 #include "RenderGraphDescription.h"
+#include "RendererList.h"
 #include <function/scene/Camera.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/SceneSystem.h>
@@ -42,17 +43,13 @@ enum class RenderCommandType : uint8_t;
  */
 struct CullingResults
 {
-    std::vector<DrawCall> drawCalls;                          ///< All visible draw calls (unfiltered)
-    std::vector<DrawCall> shadowDrawCalls;                    ///< Layer-filtered shadow candidates for game camera path
-    const std::vector<DrawCall> *sceneDrawCallsRef = nullptr; ///< Non-owning ref (editor camera fast path)
-    const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Non-owning ref to shadow candidates
-    uint32_t lightCount = 0;                                   ///< Number of visible lights (populated by Cull)
+    RendererList visibleRenderers;
+    RendererList shadowCasters;
+    uint32_t lightCount = 0; ///< Number of visible lights (populated by Cull)
 
     [[nodiscard]] size_t visibleObjectCount() const
     {
-        if (sceneDrawCallsRef)
-            return sceneDrawCallsRef->size();
-        return drawCalls.size();
+        return visibleRenderers.Size();
     }
     [[nodiscard]] size_t visibleLightCount() const
     {
@@ -126,6 +123,9 @@ class ScriptableRenderContext
         double submitCalls = 0.0;
         double baseDrawCalls = 0.0;
         double finalDrawCalls = 0.0;
+        double borrowedRendererListSubmits = 0.0;
+        double ownedRendererListSubmits = 0.0;
+        double materializedDrawCalls = 0.0;
     };
 
     [[nodiscard]] static ProfileSnapshot GetProfileSnapshot();

@@ -19,6 +19,7 @@
 #include "FullscreenRenderer.h"
 #include "InxRenderStruct.h"
 #include "RenderGraphDescription.h"
+#include "RendererList.h"
 #include "vk/RenderGraph.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -303,41 +304,36 @@ class SceneRenderGraph
     // Per-Graph Draw Call Cache (for multi-camera rendering)
     // ========================================================================
 
-    /// @brief Cache draw calls for this render graph (called by SubmitCulling)
-    void SetCachedDrawCalls(std::vector<DrawCall> &&drawCalls)
+    /// @brief Cache the submitted renderer list for this graph.
+    void SetCachedRendererList(RendererList rendererList)
     {
-        m_cachedDrawCalls = std::move(drawCalls);
+        m_cachedRenderers = std::move(rendererList);
         m_hasCachedDrawCalls = true;
     }
 
-    /// @brief Cache shadow-caster candidates for this graph.
-    void SetCachedShadowDrawCalls(std::vector<DrawCall> &&drawCalls)
+    /// @brief Cache owned or borrowed shadow-caster candidates for this graph.
+    void SetCachedShadowRendererList(RendererList rendererList)
     {
-        m_cachedShadowDrawCalls = std::move(drawCalls);
-        m_cachedShadowDrawCallsRef = nullptr;
-        m_hasCachedShadowDrawCalls = true;
-    }
-
-    /// @brief Reference external shadow-caster candidates (zero-copy).
-    /// The referenced vector must outlive the graph's usage (e.g. SceneRenderer cache).
-    void SetCachedShadowDrawCallsRef(const std::vector<DrawCall> *ref)
-    {
-        m_cachedShadowDrawCallsRef = ref;
-        m_hasCachedShadowDrawCalls = (ref != nullptr && !ref->empty());
+        m_hasCachedShadowDrawCalls = !rendererList.Empty();
+        m_cachedShadowRenderers = std::move(rendererList);
     }
 
     /// @brief Clear cached shadow-caster candidates.
     void ClearCachedShadowDrawCalls()
     {
-        m_cachedShadowDrawCalls.clear();
-        m_cachedShadowDrawCallsRef = nullptr;
+        m_cachedShadowRenderers.Clear();
         m_hasCachedShadowDrawCalls = false;
     }
 
     /// @brief Get cached draw calls
     [[nodiscard]] const std::vector<DrawCall> &GetCachedDrawCalls() const
     {
-        return m_cachedDrawCalls;
+        return m_cachedRenderers.DrawCalls();
+    }
+
+    [[nodiscard]] const RendererList &GetCachedRendererList() const
+    {
+        return m_cachedRenderers;
     }
 
     /// @brief Check if this graph has cached draw calls
@@ -346,12 +342,15 @@ class SceneRenderGraph
         return m_hasCachedDrawCalls;
     }
 
-    /// @brief Get cached shadow draw calls (prefers external ref if set).
+    /// @brief Get cached shadow draw calls.
     [[nodiscard]] const std::vector<DrawCall> &GetCachedShadowDrawCalls() const
     {
-        if (m_cachedShadowDrawCallsRef)
-            return *m_cachedShadowDrawCallsRef;
-        return m_cachedShadowDrawCalls;
+        return m_cachedShadowRenderers.DrawCalls();
+    }
+
+    [[nodiscard]] const RendererList &GetCachedShadowRendererList() const
+    {
+        return m_cachedShadowRenderers;
     }
 
     /// @brief Check if this graph has cached shadow draw calls.
@@ -393,10 +392,9 @@ class SceneRenderGraph
     /// VkImage handles are not used in barrier insertion.
     void ClearCachedFrameState()
     {
-        m_cachedDrawCalls.clear();
+        m_cachedRenderers.Clear();
         m_hasCachedDrawCalls = false;
-        m_cachedShadowDrawCalls.clear();
-        m_cachedShadowDrawCallsRef = nullptr;
+        m_cachedShadowRenderers.Clear();
         m_hasCachedShadowDrawCalls = false;
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
@@ -526,10 +524,9 @@ class SceneRenderGraph
     uint32_t m_height = 0;
 
     // Per-graph draw call cache for multi-camera rendering
-    std::vector<DrawCall> m_cachedDrawCalls;
+    RendererList m_cachedRenderers;
     bool m_hasCachedDrawCalls = false;
-    std::vector<DrawCall> m_cachedShadowDrawCalls;
-    const std::vector<DrawCall> *m_cachedShadowDrawCallsRef = nullptr;
+    RendererList m_cachedShadowRenderers;
     bool m_hasCachedShadowDrawCalls = false;
     bool m_hasShadowCasterPass = false;
 

@@ -20,6 +20,13 @@ enum class RenderDomain : uint8_t
     Skybox,
 };
 
+using RenderDomainMask = uint32_t;
+
+[[nodiscard]] constexpr RenderDomainMask RenderDomainBit(RenderDomain domain) noexcept
+{
+    return domain == RenderDomain::Unknown ? 0u : (1u << static_cast<uint8_t>(domain));
+}
+
 /// Compact identity copied through draw-call sorting and filtering hot paths.
 /// The proxy lifetime is process-local and changes whenever its source
 /// component is replaced, even if serialized component IDs are reused.

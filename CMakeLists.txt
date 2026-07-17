@@ -365,6 +365,19 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.render_identity COMMAND infernux_render_identity_tests)
 
+    add_executable(infernux_renderer_list_tests
+        cpp/tests/RendererListTests.cpp
+    )
+    target_include_directories(infernux_renderer_list_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_renderer_list_tests PRIVATE Vulkan::Vulkan glm::glm)
+    if(MSVC)
+        target_compile_options(infernux_renderer_list_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.renderer_list COMMAND infernux_renderer_list_tests)
+
     add_executable(infernux_asset_index_tests
         cpp/tests/AssetIndexTests.cpp
         cpp/infernux/core/log/InxLog.cpp

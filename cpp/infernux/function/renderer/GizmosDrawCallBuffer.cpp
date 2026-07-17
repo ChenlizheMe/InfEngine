@@ -137,6 +137,7 @@ DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> g
         dc.worldMatrix = world;
         dc.material = gizmoMaterial;
         dc.objectId = OBJECT_ID_PREFIX | static_cast<uint64_t>(i);
+        dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_slicedVertices[i];
         dc.meshIndices = &m_slicedIndices[i];
         dc.forceBufferUpdate = true; // Immediate-mode: data changes every frame
@@ -269,6 +270,7 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMateria
         dc.worldMatrix = glm::mat4(1.0f); // identity — vertices are in world space
         dc.material = iconMaterial;
         dc.objectId = ICON_ID_PREFIX | icon.objectId; // prefixed to avoid buffer collision
+        dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_iconSlicedVertices[i];
         dc.meshIndices = &m_iconSlicedIndices[i];
         dc.forceBufferUpdate = true;

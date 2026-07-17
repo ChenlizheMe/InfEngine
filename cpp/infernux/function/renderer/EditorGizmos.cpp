@@ -59,6 +59,7 @@ DrawCallResult EditorGizmos::GetDrawCalls(std::shared_ptr<InxMaterial> gizmoMate
                 dc.worldMatrix = glm::mat4(1.0f); // Grid shader consumes clip-space quad positions directly
                 dc.material = gridMaterial ? gridMaterial : gizmoMaterial;
                 dc.objectId = 0; // Gizmo objectId = 0
+                dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorGizmo, 1).MakeDrawIdentity();
                 dc.meshVertices = &gridVerts;
                 dc.meshIndices = &gridInds;
                 result.drawCalls.push_back(dc);
