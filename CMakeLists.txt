@@ -378,6 +378,20 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.renderer_list COMMAND infernux_renderer_list_tests)
 
+    add_executable(infernux_render_world_tests
+        cpp/tests/RenderWorldTests.cpp
+    )
+    target_include_directories(infernux_render_world_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+        ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator/include
+    )
+    target_link_libraries(infernux_render_world_tests PRIVATE Vulkan::Vulkan glm::glm)
+    if(MSVC)
+        target_compile_options(infernux_render_world_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.render_world COMMAND infernux_render_world_tests)
+
     add_executable(infernux_asset_index_tests
         cpp/tests/AssetIndexTests.cpp
         cpp/infernux/core/log/InxLog.cpp

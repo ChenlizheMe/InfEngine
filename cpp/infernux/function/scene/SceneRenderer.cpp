@@ -25,7 +25,10 @@ void SceneRenderer::PrepareFrame(bool useActiveCameraCulling)
     m_activeCamera = sm.GetEditorCameraController().GetCamera();
 
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
-    const bool fastPath = (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty());
+    Scene *activeScene = sm.GetActiveScene();
+    const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
+    const bool fastPath = m_renderWorld.MatchesSource(currentWorldId, currentVersion) && !Renderables().empty();
+    m_renderWorld.BeginFrame(currentWorldId, currentVersion);
     if (fastPath) {
         // Fast path: renderer set unchanged — fuse transform/bounds/culling/draw-call patch.
 #if INFERNUX_FRAME_PROFILE
@@ -42,8 +45,7 @@ void SceneRenderer::PrepareFrame(bool useActiveCameraCulling)
         const auto t0 = Clock::now();
 #endif
         CollectRenderables(0xFFFFFFFF);
-        m_cachedMeshRendererVersion = currentVersion;
-        m_drawCallsCacheValid = m_renderables.empty();
+        m_drawCallsCacheValid = Renderables().empty();
         if (m_drawCallsCacheValid)
             m_cachedDrawCalls.drawCalls.clear();
 #if INFERNUX_FRAME_PROFILE
@@ -76,15 +78,16 @@ void SceneRenderer::PrepareFrame(bool useActiveCameraCulling)
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
     m_profileSnapshot.prepareCalls += 1.0;
-    m_profileSnapshot.renderables += static_cast<double>(m_renderables.size());
+    m_profileSnapshot.renderables += static_cast<double>(Renderables().size());
     m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
 #endif
+    m_renderWorld.Publish();
 }
 
 void SceneRenderer::PrepareFrame(Camera *camera)
 {
     if (!camera) {
-        m_renderables.clear();
+        m_renderWorld.Clear();
         m_cachedDrawCalls.drawCalls.clear();
         m_drawCallsCacheValid = true;
         m_visibleCount = 0;
@@ -99,7 +102,10 @@ void SceneRenderer::PrepareFrame(Camera *camera)
 
     SceneManager &sm = SceneManager::Instance();
     const uint64_t currentVersion = sm.GetMeshRendererVersion();
-    const bool fastPath = (currentVersion == m_cachedMeshRendererVersion && !m_renderables.empty());
+    Scene *activeScene = sm.GetActiveScene();
+    const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
+    const bool fastPath = m_renderWorld.MatchesSource(currentWorldId, currentVersion) && !Renderables().empty();
+    m_renderWorld.BeginFrame(currentWorldId, currentVersion);
     if (fastPath) {
 #if INFERNUX_FRAME_PROFILE
         const auto t0 = Clock::now();
@@ -114,8 +120,7 @@ void SceneRenderer::PrepareFrame(Camera *camera)
         const auto t0 = Clock::now();
 #endif
         CollectRenderables(camera->GetCullingMask());
-        m_cachedMeshRendererVersion = currentVersion;
-        m_drawCallsCacheValid = m_renderables.empty();
+        m_drawCallsCacheValid = Renderables().empty();
         if (m_drawCallsCacheValid)
             m_cachedDrawCalls.drawCalls.clear();
 #if INFERNUX_FRAME_PROFILE
@@ -147,9 +152,10 @@ void SceneRenderer::PrepareFrame(Camera *camera)
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
     m_profileSnapshot.prepareCalls += 1.0;
-    m_profileSnapshot.renderables += static_cast<double>(m_renderables.size());
+    m_profileSnapshot.renderables += static_cast<double>(Renderables().size());
     m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
 #endif
+    m_renderWorld.Publish();
 }
 
 glm::mat4 SceneRenderer::GetViewMatrix() const
@@ -201,7 +207,7 @@ void SceneRenderer::SetAspectRatio(float aspect)
 
 void SceneRenderer::CollectRenderables(uint32_t cullingMask)
 {
-    m_renderables.clear();
+    Renderables().clear();
 
     Scene *activeScene = SceneManager::Instance().GetActiveScene();
     if (!activeScene)
@@ -211,7 +217,7 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
     // no GetAllObjects() tree walk, no dynamic_cast, no vector allocation.
     const auto &meshRenderers = SceneManager::Instance().GetActiveMeshRenderers();
 
-    m_renderables.reserve(meshRenderers.size());
+    Renderables().reserve(meshRenderers.size());
 
     for (MeshRenderer *renderer : meshRenderers) {
         if (!renderer || !renderer->IsEnabled())
@@ -230,9 +236,9 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
         if (!renderer->HasMeshAsset() && !renderer->HasInlineMesh() && !renderer->GetMesh().IsValid())
             continue;
 
-        RenderableObject renderable;
+        RenderProxy renderable;
         renderable.objectId = obj->GetID();
-        renderable.renderProxy = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
+        renderable.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
         renderable.worldMatrix = obj->GetTransform()->GetWorldMatrix();
         renderable.mesh = renderer->GetMesh();
         renderable.renderMaterial = renderer->GetEffectiveMaterial(); // Get actual InxMaterial
@@ -249,10 +255,10 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
         renderable.worldBounds = AABB(boundsMin, boundsMax);
         renderable.visible = true; // Will be set by culling
 
-        m_renderables.push_back(std::move(renderable));
+        Renderables().push_back(std::move(renderable));
     }
 
-    m_visibleCount = m_renderables.size();
+    m_visibleCount = Renderables().size();
 }
 
 void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling)
@@ -277,7 +283,7 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
 
     m_visibleCount = 0;
 
-    for (auto &renderable : m_renderables) {
+    for (auto &renderable : Renderables()) {
         MeshRenderer *mr = renderable.meshRenderer;
         if (!mr)
             continue;
@@ -374,7 +380,7 @@ void SceneRenderer::PerformCulling()
 {
     if (!m_activeCamera) {
         // No camera, mark all as visible
-        m_visibleCount = m_renderables.size();
+        m_visibleCount = Renderables().size();
         return;
     }
 
@@ -385,7 +391,7 @@ void SceneRenderer::PerformCulling()
 
     // Test each object against frustum
     m_visibleCount = 0;
-    for (auto &renderable : m_renderables) {
+    for (auto &renderable : Renderables()) {
         // Use AABB-frustum intersection test
         renderable.visible = frustum.IntersectsAABB(renderable.worldBounds);
         if (renderable.visible) {
@@ -400,7 +406,7 @@ void SceneRenderer::SortRenderables()
     // - Lower queue = render first (opaque before transparent)
     // - Within same queue, sort by material pointer (minimize state changes)
 
-    std::sort(m_renderables.begin(), m_renderables.end(), [](const RenderableObject &a, const RenderableObject &b) {
+    std::sort(Renderables().begin(), Renderables().end(), [](const RenderProxy &a, const RenderProxy &b) {
         // Get render queues (default 2000 for opaque)
         int32_t queueA = a.renderMaterialRaw ? a.renderMaterialRaw->GetRenderQueue() : 2000;
         int32_t queueB = b.renderMaterialRaw ? b.renderMaterialRaw->GetRenderQueue() : 2000;
@@ -417,7 +423,7 @@ void SceneRenderer::SortRenderables()
 // ============================================================================
 // Shared draw-call emission (eliminates duplication between the two Build paths)
 // ============================================================================
-void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const RenderableObject &renderable, bool visible,
+void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const RenderProxy &renderable, bool visible,
                                                bool bufferDirty) const
 {
     MeshRenderer *renderer = renderable.meshRenderer;
@@ -469,7 +475,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldMatrix = worldMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
             dc.objectId = renderable.objectId;
-            dc.identity = renderable.renderProxy.MakeDrawIdentity();
+            dc.identity = renderable.identity.MakeDrawIdentity();
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
             dc.worldBounds = renderable.worldBounds;
@@ -495,7 +501,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldMatrix = effectiveMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
             dc.objectId = renderable.objectId;
-            dc.identity = renderable.renderProxy.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
+            dc.identity = renderable.identity.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
             dc.worldBounds = renderable.worldBounds;
@@ -537,7 +543,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
                     matSlot = slotRemap[matSlot];
                 dc.material = renderer->GetEffectiveMaterial(matSlot);
                 dc.objectId = renderable.objectId;
-                dc.identity = renderable.renderProxy.MakeDrawIdentity(si);
+                dc.identity = renderable.identity.MakeDrawIdentity(si);
                 dc.frustumVisible = visible;
                 dc.castsShadows = renderer->CastsShadows();
                 dc.worldBounds = renderable.worldBounds;
@@ -565,7 +571,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         dc.worldMatrix = worldMatrix;
         dc.material = renderer->GetEffectiveMaterial(0);
         dc.objectId = renderable.objectId;
-        dc.identity = renderable.renderProxy.MakeDrawIdentity();
+        dc.identity = renderable.identity.MakeDrawIdentity();
         dc.frustumVisible = visible;
         dc.castsShadows = renderer->CastsShadows();
         dc.worldBounds = renderable.worldBounds;
@@ -593,10 +599,10 @@ const DrawCallResult &SceneRenderer::BuildDrawCalls()
 
     // Slow path: full rebuild.
     DrawCallResult result;
-    result.drawCalls.reserve(m_cachedDrawCalls.drawCalls.empty() ? m_renderables.size()
+    result.drawCalls.reserve(m_cachedDrawCalls.drawCalls.empty() ? Renderables().size()
                                                                  : m_cachedDrawCalls.drawCalls.size());
 
-    for (auto &renderable : m_renderables) {
+    for (auto &renderable : Renderables()) {
         MeshRenderer *renderer = renderable.meshRenderer;
         if (!renderer)
             continue;
@@ -633,7 +639,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
     const auto buildStart = Clock::now();
 #endif
     CameraDrawCallResult result;
-    if (!camera || m_renderables.empty())
+    if (!camera || Renderables().empty())
         return result;
 
     const DrawCallResult &cachedResult = BuildDrawCalls();
@@ -659,7 +665,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
                                     kRenderContextAppendSlack);
 
     m_visibleCount = 0;
-    for (auto &renderable : m_renderables) {
+    for (const auto &renderable : Renderables()) {
         MeshRenderer *renderer = renderable.meshRenderer;
         if (!renderer)
             continue;
@@ -675,8 +681,6 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
         }
 
         const bool visible = m_frustumCulling ? frustum.IntersectsAABB(renderable.worldBounds) : true;
-        renderable.visible = visible;
-
         if (!visible) {
             // Shadow uses reference (or full copy below for non-all-layers).
             // Forward list only needs visible objects — skip early.

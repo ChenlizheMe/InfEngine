@@ -4,6 +4,7 @@
 #include <function/renderer/Frustum.h>
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/ProfileConfig.h>
+#include <function/renderer/RenderWorld.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <functional>
 #include <memory>
@@ -12,32 +13,6 @@
 
 namespace infernux
 {
-
-class SkinnedMeshRenderer;
-class Transform;
-
-/**
- * @brief RenderableObject - data needed to render one object.
- *
- * This is a lightweight struct extracted from GameObject+MeshRenderer
- * for efficient rendering without traversing the scene graph during draw calls.
- */
-struct RenderableObject
-{
-    uint64_t objectId;
-    RenderProxyHandle renderProxy;
-    glm::mat4 worldMatrix;
-    MeshRef mesh;
-    std::shared_ptr<InxMaterial> renderMaterial;    // Actual material for rendering (kept alive by MeshRenderer)
-    InxMaterial *renderMaterialRaw = nullptr;       // Raw pointer for fast sort/access
-    MeshRenderer *meshRenderer = nullptr;           // Direct pointer to avoid re-lookup
-    Transform *transform = nullptr;                 // Stable while the renderer registry version is unchanged
-    SkinnedMeshRenderer *skinnedRenderer = nullptr; // Resolved once instead of RTTI checks every frame
-    AABB worldBounds;                               // World-space bounding box for culling
-    size_t drawCallStart = 0;                       // Cached span in m_cachedDrawCalls
-    size_t drawCallCount = 0;                       // Number of draw calls emitted for this renderable
-    bool visible;
-};
 
 struct CameraDrawCallResult
 {
@@ -93,9 +68,14 @@ class SceneRenderer
     // ========================================================================
 
     /// @brief Get all renderable objects for this frame
-    [[nodiscard]] const std::vector<RenderableObject> &GetRenderables() const
+    [[nodiscard]] const std::vector<RenderProxy> &GetRenderables() const
     {
-        return m_renderables;
+        return m_renderWorld.Proxies();
+    }
+
+    [[nodiscard]] const RenderWorldSnapshot &GetRenderWorld() const
+    {
+        return m_renderWorld;
     }
 
     /// @brief Get number of visible objects after culling
@@ -176,10 +156,20 @@ class SceneRenderer
     void UpdateCachedRenderableTransforms(bool useActiveCameraCulling);
 
     /// @brief Shared draw-call emission logic used by both BuildDrawCalls() and BuildDrawCallsForCamera().
-    void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderableObject &renderable, bool visible,
+    void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderProxy &renderable, bool visible,
                                     bool bufferDirty) const;
 
-    std::vector<RenderableObject> m_renderables;
+    [[nodiscard]] std::vector<RenderProxy> &Renderables()
+    {
+        return m_renderWorld.MutableProxies();
+    }
+
+    [[nodiscard]] const std::vector<RenderProxy> &Renderables() const
+    {
+        return m_renderWorld.Proxies();
+    }
+
+    RenderWorldSnapshot m_renderWorld;
     size_t m_visibleCount = 0;
 
     bool m_frustumCulling = true;
@@ -191,8 +181,6 @@ class SceneRenderer
     // When the renderer set hasn't changed (same MeshRenderers, same
     // enable/disable state), we skip full CollectRenderables/Sort and
     // only update world matrices + bounds in-place.
-    uint64_t m_cachedMeshRendererVersion = 0;
-
     // Draw call cache: reused when renderables are cached.
     DrawCallResult m_cachedDrawCalls;
     bool m_drawCallsCacheValid = false;
