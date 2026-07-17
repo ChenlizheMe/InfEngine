@@ -2,10 +2,21 @@
 
 #include <cassert>
 
+using infernux::RenderProxy;
 using infernux::RenderWorldSnapshot;
 
 int main()
 {
+    RenderProxy proxy;
+    proxy.structural.objectId = 42;
+    proxy.frame.visible = false;
+    proxy.cache.drawCallStart = 3;
+    proxy.cache.drawCallCount = 2;
+    assert(proxy.structural.objectId == 42);
+    assert(!proxy.frame.visible);
+    assert(proxy.cache.drawCallStart == 3);
+    assert(proxy.cache.drawCallCount == 2);
+
     RenderWorldSnapshot world;
     assert(world.FrameRevision() == 0);
     assert(!world.IsPublished());

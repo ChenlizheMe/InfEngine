@@ -17,22 +17,40 @@ class SkinnedMeshRenderer;
 class Transform;
 class SceneRenderer;
 
-/// Extracted rendering state for one scene renderer.
-struct RenderProxy
+/// Long-lived bindings rebuilt when the scene renderer registry changes.
+struct RenderProxyStructuralData
 {
     uint64_t objectId = 0;
     RenderProxyHandle identity;
-    glm::mat4 worldMatrix{1.0f};
     MeshRef mesh;
     std::shared_ptr<InxMaterial> renderMaterial;
     InxMaterial *renderMaterialRaw = nullptr;
     MeshRenderer *meshRenderer = nullptr;
     Transform *transform = nullptr;
     SkinnedMeshRenderer *skinnedRenderer = nullptr;
+};
+
+/// Frame-local extraction state, including primary-camera visibility.
+struct RenderProxyFrameData
+{
+    glm::mat4 worldMatrix{1.0f};
     AABB worldBounds;
+    bool visible = true;
+};
+
+/// Derived spans into SceneRenderer's draw-call cache.
+struct RenderProxyCacheData
+{
     size_t drawCallStart = 0;
     size_t drawCallCount = 0;
-    bool visible = true;
+};
+
+/// Extracted rendering state for one scene renderer.
+struct RenderProxy
+{
+    RenderProxyStructuralData structural;
+    RenderProxyFrameData frame;
+    RenderProxyCacheData cache;
 };
 
 /// Scene extraction state shared by all camera culling operations in a frame.

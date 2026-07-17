@@ -237,23 +237,21 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
             continue;
 
         RenderProxy renderable;
-        renderable.objectId = obj->GetID();
-        renderable.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
-        renderable.worldMatrix = obj->GetTransform()->GetWorldMatrix();
-        renderable.mesh = renderer->GetMesh();
-        renderable.renderMaterial = renderer->GetEffectiveMaterial(); // Get actual InxMaterial
-        renderable.renderMaterialRaw = renderable.renderMaterial.get();
-        renderable.meshRenderer = renderer; // Store direct pointer
-        renderable.transform = obj->GetTransform();
-        renderable.skinnedRenderer = dynamic_cast<SkinnedMeshRenderer *>(renderer);
-        renderable.drawCallStart = 0;
-        renderable.drawCallCount = 0;
+        renderable.structural.objectId = obj->GetID();
+        renderable.structural.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
+        renderable.frame.worldMatrix = obj->GetTransform()->GetWorldMatrix();
+        renderable.structural.mesh = renderer->GetMesh();
+        renderable.structural.renderMaterial = renderer->GetEffectiveMaterial();
+        renderable.structural.renderMaterialRaw = renderable.structural.renderMaterial.get();
+        renderable.structural.meshRenderer = renderer;
+        renderable.structural.transform = obj->GetTransform();
+        renderable.structural.skinnedRenderer = dynamic_cast<SkinnedMeshRenderer *>(renderer);
 
         // Get world-space bounding box for frustum culling — reuse the world matrix
         glm::vec3 boundsMin, boundsMax;
-        renderer->ComputeWorldBounds(renderable.worldMatrix, boundsMin, boundsMax);
-        renderable.worldBounds = AABB(boundsMin, boundsMax);
-        renderable.visible = true; // Will be set by culling
+        renderer->ComputeWorldBounds(renderable.frame.worldMatrix, boundsMin, boundsMax);
+        renderable.frame.worldBounds = AABB(boundsMin, boundsMax);
+        renderable.frame.visible = true; // Will be set by culling
 
         Renderables().push_back(std::move(renderable));
     }
@@ -284,48 +282,51 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
     m_visibleCount = 0;
 
     for (auto &renderable : Renderables()) {
-        MeshRenderer *mr = renderable.meshRenderer;
+        auto &structural = renderable.structural;
+        auto &frame = renderable.frame;
+        auto &cache = renderable.cache;
+        MeshRenderer *mr = structural.meshRenderer;
         if (!mr)
             continue;
-        Transform *transform = renderable.transform;
+        Transform *transform = structural.transform;
         if (!transform)
             continue;
 
         const glm::mat4 &worldMatrix = transform->GetWorldMatrix();
 
         // Detect transform change: skip bounds + draw-call patch for static objects.
-        const bool transformChanged = std::memcmp(&worldMatrix, &renderable.worldMatrix, sizeof(glm::mat4)) != 0;
+        const bool transformChanged = std::memcmp(&worldMatrix, &frame.worldMatrix, sizeof(glm::mat4)) != 0;
         const bool bufferDirty = mr->ConsumeMeshBufferDirty();
 
         if (transformChanged) {
             const bool translationOnly =
-                std::memcmp(&worldMatrix[0], &renderable.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
-            const glm::vec3 translationDelta = glm::vec3(worldMatrix[3] - renderable.worldMatrix[3]);
-            renderable.worldMatrix = worldMatrix;
+                std::memcmp(&worldMatrix[0], &frame.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
+            const glm::vec3 translationDelta = glm::vec3(worldMatrix[3] - frame.worldMatrix[3]);
+            frame.worldMatrix = worldMatrix;
 
             if (translationOnly) {
-                renderable.worldBounds.min += translationDelta;
-                renderable.worldBounds.max += translationDelta;
+                frame.worldBounds.min += translationDelta;
+                frame.worldBounds.max += translationDelta;
             } else {
                 glm::vec3 bmin, bmax;
                 mr->ComputeWorldBounds(worldMatrix, bmin, bmax);
-                renderable.worldBounds = AABB(bmin, bmax);
+                frame.worldBounds = AABB(bmin, bmax);
             }
         }
 
         if (useFrustum) {
-            renderable.visible = frustum.IntersectsAABB(renderable.worldBounds);
+            frame.visible = frustum.IntersectsAABB(frame.worldBounds);
         } else {
-            renderable.visible = true;
+            frame.visible = true;
         }
 
-        if (m_drawCallsCacheValid && renderable.drawCallCount > 0) {
+        if (m_drawCallsCacheValid && cache.drawCallCount > 0) {
             const size_t drawCallEnd =
-                std::min(renderable.drawCallStart + renderable.drawCallCount, m_cachedDrawCalls.drawCalls.size());
+                std::min(cache.drawCallStart + cache.drawCallCount, m_cachedDrawCalls.drawCalls.size());
             std::shared_ptr<const std::vector<glm::mat4>> skinBoneMatricesOwner;
             const std::vector<glm::mat4> *skinBoneMatricesPtr = nullptr;
-            const bool isSkinnedRenderer = renderable.skinnedRenderer != nullptr;
-            if (auto *skinned = renderable.skinnedRenderer; skinned && skinned->HasRuntimeSkinnedMesh()) {
+            const bool isSkinnedRenderer = structural.skinnedRenderer != nullptr;
+            if (auto *skinned = structural.skinnedRenderer; skinned && skinned->HasRuntimeSkinnedMesh()) {
                 skinBoneMatricesOwner = skinned->GetRuntimeSkinBonePalette();
                 skinBoneMatricesPtr = skinBoneMatricesOwner.get();
             }
@@ -346,31 +347,31 @@ void SceneRenderer::UpdateCachedRenderableTransforms(bool useActiveCameraCulling
                 }
 
                 bool firstDirty = true;
-                for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+                for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     DrawCall &dc = m_cachedDrawCalls.drawCalls[drawCallIndex];
                     dc.worldMatrix = drawWorldMatrix;
-                    dc.worldBounds = renderable.worldBounds;
-                    dc.frustumVisible = renderable.visible;
+                    dc.worldBounds = frame.worldBounds;
+                    dc.frustumVisible = frame.visible;
                     dc.forceBufferUpdate = firstDirty ? bufferDirty : false;
                     patchSkinPalette(dc);
                     firstDirty = false;
                 }
             } else if (useFrustum) {
                 // Light patch: only update frustumVisible (camera may have moved).
-                for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+                for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     DrawCall &dc = m_cachedDrawCalls.drawCalls[drawCallIndex];
-                    dc.frustumVisible = renderable.visible;
+                    dc.frustumVisible = frame.visible;
                     patchSkinPalette(dc);
                 }
             } else if (isSkinnedRenderer) {
-                for (size_t drawCallIndex = renderable.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
+                for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     patchSkinPalette(m_cachedDrawCalls.drawCalls[drawCallIndex]);
                 }
             }
             // else: !transformChanged && !useFrustum → draw calls already correct, skip.
         }
 
-        if (renderable.visible) {
+        if (frame.visible) {
             ++m_visibleCount;
         }
     }
@@ -393,8 +394,8 @@ void SceneRenderer::PerformCulling()
     m_visibleCount = 0;
     for (auto &renderable : Renderables()) {
         // Use AABB-frustum intersection test
-        renderable.visible = frustum.IntersectsAABB(renderable.worldBounds);
-        if (renderable.visible) {
+        renderable.frame.visible = frustum.IntersectsAABB(renderable.frame.worldBounds);
+        if (renderable.frame.visible) {
             ++m_visibleCount;
         }
     }
@@ -408,15 +409,15 @@ void SceneRenderer::SortRenderables()
 
     std::sort(Renderables().begin(), Renderables().end(), [](const RenderProxy &a, const RenderProxy &b) {
         // Get render queues (default 2000 for opaque)
-        int32_t queueA = a.renderMaterialRaw ? a.renderMaterialRaw->GetRenderQueue() : 2000;
-        int32_t queueB = b.renderMaterialRaw ? b.renderMaterialRaw->GetRenderQueue() : 2000;
+        int32_t queueA = a.structural.renderMaterialRaw ? a.structural.renderMaterialRaw->GetRenderQueue() : 2000;
+        int32_t queueB = b.structural.renderMaterialRaw ? b.structural.renderMaterialRaw->GetRenderQueue() : 2000;
 
         if (queueA != queueB) {
             return queueA < queueB; // Lower queue first
         }
 
         // Same queue: sort by material pointer to minimize state changes
-        return a.renderMaterialRaw < b.renderMaterialRaw;
+        return a.structural.renderMaterialRaw < b.structural.renderMaterialRaw;
     });
 }
 
@@ -426,7 +427,9 @@ void SceneRenderer::SortRenderables()
 void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const RenderProxy &renderable, bool visible,
                                                bool bufferDirty) const
 {
-    MeshRenderer *renderer = renderable.meshRenderer;
+    const auto &structural = renderable.structural;
+    const auto &frame = renderable.frame;
+    MeshRenderer *renderer = structural.meshRenderer;
     if (!renderer)
         return;
 
@@ -461,7 +464,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         if (objVertices.empty() || objIndices.empty())
             return;
 
-        const glm::mat4 &worldMatrix = renderable.worldMatrix;
+        const glm::mat4 &worldMatrix = frame.worldMatrix;
 
         uint32_t subMeshCount = static_cast<uint32_t>(subMeshesPtr ? subMeshesPtr->size() : 0);
         int32_t submeshFilter = renderer->GetSubmeshIndex();
@@ -474,11 +477,11 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.vertexStart = 0;
             dc.worldMatrix = worldMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
-            dc.objectId = renderable.objectId;
-            dc.identity = renderable.identity.MakeDrawIdentity();
+            dc.objectId = structural.objectId;
+            dc.identity = structural.identity.MakeDrawIdentity();
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
-            dc.worldBounds = renderable.worldBounds;
+            dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
             stampAssetIdentity(dc);
@@ -500,11 +503,11 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.vertexStart = 0;
             dc.worldMatrix = effectiveMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
-            dc.objectId = renderable.objectId;
-            dc.identity = renderable.identity.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
+            dc.objectId = structural.objectId;
+            dc.identity = structural.identity.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
-            dc.worldBounds = renderable.worldBounds;
+            dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
             stampAssetIdentity(dc);
@@ -542,11 +545,11 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
                 if (nodeGroup >= 0 && matSlot < SLOT_REMAP_CAP && slotRemap[matSlot] != 0xFFFFFFFF)
                     matSlot = slotRemap[matSlot];
                 dc.material = renderer->GetEffectiveMaterial(matSlot);
-                dc.objectId = renderable.objectId;
-                dc.identity = renderable.identity.MakeDrawIdentity(si);
+                dc.objectId = structural.objectId;
+                dc.identity = structural.identity.MakeDrawIdentity(si);
                 dc.frustumVisible = visible;
                 dc.castsShadows = renderer->CastsShadows();
-                dc.worldBounds = renderable.worldBounds;
+                dc.worldBounds = frame.worldBounds;
                 dc.meshVertices = &objVertices;
                 dc.meshIndices = &objIndices;
                 stampAssetIdentity(dc);
@@ -563,18 +566,18 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         if (objVertices.empty() || objIndices.empty())
             return;
 
-        const glm::mat4 &worldMatrix = renderable.worldMatrix;
+        const glm::mat4 &worldMatrix = frame.worldMatrix;
         DrawCall dc;
         dc.indexStart = 0;
         dc.indexCount = static_cast<uint32_t>(objIndices.size());
         dc.vertexStart = 0;
         dc.worldMatrix = worldMatrix;
         dc.material = renderer->GetEffectiveMaterial(0);
-        dc.objectId = renderable.objectId;
-        dc.identity = renderable.identity.MakeDrawIdentity();
+        dc.objectId = structural.objectId;
+        dc.identity = structural.identity.MakeDrawIdentity();
         dc.frustumVisible = visible;
         dc.castsShadows = renderer->CastsShadows();
-        dc.worldBounds = renderable.worldBounds;
+        dc.worldBounds = frame.worldBounds;
         dc.meshVertices = &objVertices;
         dc.meshIndices = &objIndices;
         dc.forceBufferUpdate = bufferDirty;
@@ -603,14 +606,14 @@ const DrawCallResult &SceneRenderer::BuildDrawCalls()
                                                                  : m_cachedDrawCalls.drawCalls.size());
 
     for (auto &renderable : Renderables()) {
-        MeshRenderer *renderer = renderable.meshRenderer;
+        MeshRenderer *renderer = renderable.structural.meshRenderer;
         if (!renderer)
             continue;
 
         bool bufferDirty = renderer->ConsumeMeshBufferDirty();
-        renderable.drawCallStart = result.drawCalls.size();
-        EmitDrawCallsForRenderable(result, renderable, renderable.visible, bufferDirty);
-        renderable.drawCallCount = result.drawCalls.size() - renderable.drawCallStart;
+        renderable.cache.drawCallStart = result.drawCalls.size();
+        EmitDrawCallsForRenderable(result, renderable, renderable.frame.visible, bufferDirty);
+        renderable.cache.drawCallCount = result.drawCalls.size() - renderable.cache.drawCallStart;
     }
 
     m_cachedDrawCalls = std::move(result);
@@ -666,7 +669,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
 
     m_visibleCount = 0;
     for (const auto &renderable : Renderables()) {
-        MeshRenderer *renderer = renderable.meshRenderer;
+        const auto &cache = renderable.cache;
+        MeshRenderer *renderer = renderable.structural.meshRenderer;
         if (!renderer)
             continue;
 
@@ -680,7 +684,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
                 continue;
         }
 
-        const bool visible = m_frustumCulling ? frustum.IntersectsAABB(renderable.worldBounds) : true;
+        const bool visible = m_frustumCulling ? frustum.IntersectsAABB(renderable.frame.worldBounds) : true;
         if (!visible) {
             // Shadow uses reference (or full copy below for non-all-layers).
             // Forward list only needs visible objects — skip early.
@@ -689,9 +693,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
 
             // Non-all-layers: still need to push shadow draw calls for invisible-but-layer-included objects.
             if (includeShadowDrawCalls) {
-                const size_t drawCallStart = renderable.drawCallStart;
-                const size_t drawCallEnd =
-                    std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
+                const size_t drawCallStart = cache.drawCallStart;
+                const size_t drawCallEnd = std::min(drawCallStart + cache.drawCallCount, cachedResult.drawCalls.size());
                 for (size_t drawCallIndex = drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                     DrawCall dc = cachedResult.drawCalls[drawCallIndex];
                     dc.frustumVisible = false;
@@ -702,8 +705,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(Camera *camera, bool
         }
 
         ++m_visibleCount;
-        const size_t drawCallStart = renderable.drawCallStart;
-        const size_t drawCallEnd = std::min(drawCallStart + renderable.drawCallCount, cachedResult.drawCalls.size());
+        const size_t drawCallStart = cache.drawCallStart;
+        const size_t drawCallEnd = std::min(drawCallStart + cache.drawCallCount, cachedResult.drawCalls.size());
         if (drawCallStart >= drawCallEnd)
             continue;
 
