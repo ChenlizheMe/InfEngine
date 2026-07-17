@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <utility>
 
 namespace infernux
 {
@@ -118,7 +119,7 @@ ResourceHandle PassBuilder::CreateTexture(const std::string &name, uint32_t widt
                                           VkSampleCountFlagBits samples)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Texture2D);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -137,7 +138,7 @@ ResourceHandle PassBuilder::CreateDepthStencil(const std::string &name, uint32_t
                                                VkFormat format, VkSampleCountFlagBits samples)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::DepthStencil);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -155,7 +156,7 @@ ResourceHandle PassBuilder::CreateDepthStencil(const std::string &name, uint32_t
 ResourceHandle PassBuilder::CreateBuffer(const std::string &name, VkDeviceSize size, VkBufferUsageFlags usage)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Buffer);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -172,7 +173,7 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
                                           uint32_t width, uint32_t height)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Texture2D);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -192,7 +193,7 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
 ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size)
 {
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Buffer);
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -208,7 +209,7 @@ ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffe
 
 ResourceHandle PassBuilder::Read(ResourceHandle handle, VkPipelineStageFlags stages)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -228,7 +229,7 @@ ResourceHandle PassBuilder::Read(ResourceHandle handle, VkPipelineStageFlags sta
 
 ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineStageFlags stages)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -250,7 +251,7 @@ ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineSt
 
 ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmentIndex)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -280,7 +281,7 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
 
 ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -304,7 +305,7 @@ ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
 
 ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -328,7 +329,7 @@ ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
 
 ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, VkPipelineStageFlags stages)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -352,7 +353,7 @@ ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, VkPipelineStageFlag
 
 ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -372,7 +373,7 @@ ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
 
 ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -395,7 +396,7 @@ ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
 
 ResourceHandle PassBuilder::WriteResolve(ResourceHandle handle)
 {
-    if (!handle.IsValid()) {
+    if (!m_graph->Owns(handle)) {
         return handle;
     }
 
@@ -447,13 +448,22 @@ RenderGraph::~RenderGraph()
 }
 
 RenderGraph::RenderGraph(RenderGraph &&other) noexcept
-    : m_context(other.m_context), m_pipelineManager(other.m_pipelineManager), m_passes(std::move(other.m_passes)),
+    : m_identity(std::move(other.m_identity)), m_context(std::exchange(other.m_context, nullptr)),
+      m_pipelineManager(std::exchange(other.m_pipelineManager, nullptr)), m_passes(std::move(other.m_passes)),
       m_resources(std::move(other.m_resources)), m_executionOrder(std::move(other.m_executionOrder)),
-      m_backbuffer(other.m_backbuffer), m_output(other.m_output), m_compiled(other.m_compiled)
+      m_backbuffer(other.m_backbuffer), m_output(other.m_output),
+      m_backbufferFinalLayout(other.m_backbufferFinalLayout), m_compiled(std::exchange(other.m_compiled, false)),
+      m_resourceStates(std::move(other.m_resourceStates)),
+      m_initialResourceStates(std::move(other.m_initialResourceStates)),
+      m_barrierScratch(std::move(other.m_barrierScratch)), m_clearValueScratch(std::move(other.m_clearValueScratch)),
+      m_renderPassCache(std::move(other.m_renderPassCache)), m_framebufferCache(std::move(other.m_framebufferCache)),
+      m_usedRenderPassKeys(std::move(other.m_usedRenderPassKeys)),
+      m_usedFramebufferKeys(std::move(other.m_usedFramebufferKeys)),
+      m_aliasedMemoryHeaps(std::move(other.m_aliasedMemoryHeaps))
 {
-    other.m_context = nullptr;
-    other.m_pipelineManager = nullptr;
-    other.m_compiled = false;
+    other.m_backbuffer = {};
+    other.m_output = {};
+    other.m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 }
 
 RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
@@ -461,18 +471,29 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
     if (this != &other) {
         Destroy();
 
-        m_context = other.m_context;
-        m_pipelineManager = other.m_pipelineManager;
+        m_identity = std::move(other.m_identity);
+        m_context = std::exchange(other.m_context, nullptr);
+        m_pipelineManager = std::exchange(other.m_pipelineManager, nullptr);
         m_passes = std::move(other.m_passes);
         m_resources = std::move(other.m_resources);
         m_executionOrder = std::move(other.m_executionOrder);
         m_backbuffer = other.m_backbuffer;
         m_output = other.m_output;
-        m_compiled = other.m_compiled;
+        m_backbufferFinalLayout = other.m_backbufferFinalLayout;
+        m_compiled = std::exchange(other.m_compiled, false);
+        m_resourceStates = std::move(other.m_resourceStates);
+        m_initialResourceStates = std::move(other.m_initialResourceStates);
+        m_barrierScratch = std::move(other.m_barrierScratch);
+        m_clearValueScratch = std::move(other.m_clearValueScratch);
+        m_renderPassCache = std::move(other.m_renderPassCache);
+        m_framebufferCache = std::move(other.m_framebufferCache);
+        m_usedRenderPassKeys = std::move(other.m_usedRenderPassKeys);
+        m_usedFramebufferKeys = std::move(other.m_usedFramebufferKeys);
+        m_aliasedMemoryHeaps = std::move(other.m_aliasedMemoryHeaps);
 
-        other.m_context = nullptr;
-        other.m_pipelineManager = nullptr;
-        other.m_compiled = false;
+        other.m_backbuffer = {};
+        other.m_output = {};
+        other.m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
     return *this;
 }
@@ -500,6 +521,7 @@ void RenderGraph::Reset()
     m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     m_output = {};
     m_compiled = false;
+    m_identity.AdvanceEpoch();
 
     // GC: flush unused cache entries periodically
     FlushUnusedCaches();
@@ -533,11 +555,13 @@ void RenderGraph::Destroy()
     m_initialResourceStates.clear();
     m_context = nullptr;
     m_pipelineManager = nullptr;
+    m_identity.AdvanceEpoch();
 }
 
 PassHandle RenderGraph::AddPass(const std::string &name, PassSetupCallback setup)
 {
     PassHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_passes.size());
 
     RenderPassData passData;
@@ -558,6 +582,7 @@ PassHandle RenderGraph::AddPass(const std::string &name, PassSetupCallback setup
 PassHandle RenderGraph::AddTransferPass(const std::string &name, PassSetupCallback setup)
 {
     PassHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_passes.size());
 
     RenderPassData passData;
@@ -578,6 +603,7 @@ ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFor
                                           uint32_t height, VkSampleCountFlagBits samples, VkImageLayout initialLayout)
 {
     ResourceHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_resources.size());
     handle.version = 0;
 
@@ -624,6 +650,7 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
                                                 uint32_t height)
 {
     ResourceHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_resources.size());
     handle.version = 0;
 
@@ -657,7 +684,7 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
 void RenderGraph::SetResourceInitialState(ResourceHandle handle, VkImageLayout layout, VkAccessFlags accessMask,
                                           VkPipelineStageFlags stages)
 {
-    if (!handle.IsValid()) {
+    if (!Owns(handle)) {
         return;
     }
 
@@ -677,14 +704,14 @@ void RenderGraph::SetResourceInitialState(ResourceHandle handle, VkImageLayout l
 
 void RenderGraph::SetOutput(ResourceHandle handle)
 {
-    m_output = handle;
+    m_output = Owns(handle) ? handle : ResourceHandle{};
 }
 
 ResourceHandle RenderGraph::RegisterTransientTexture(const std::string &name, uint32_t width, uint32_t height,
                                                      VkFormat format, VkSampleCountFlagBits samples, bool isTransient)
 {
     ResourceHandle handle = CreateResource(name, ResourceType::Texture2D);
-    if (handle.IsValid()) {
+    if (Owns(handle)) {
         auto &res = m_resources[handle.id];
         res.textureDesc.name = name;
         res.textureDesc.width = width;
@@ -731,6 +758,7 @@ bool RenderGraph::UpdatePassClearDepth(const std::string &passName, float depth,
 ResourceHandle RenderGraph::CreateResource(const std::string &name, ResourceType type)
 {
     ResourceHandle handle;
+    handle.scope = m_identity.Current();
     handle.id = static_cast<uint32_t>(m_resources.size());
     handle.version = 0;
 
@@ -972,7 +1000,7 @@ std::string RenderGraph::GetDebugString() const
 
 VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
 {
-    if (!handle.IsValid() || handle.id >= m_resources.size()) {
+    if (!Owns(handle) || handle.id >= m_resources.size()) {
         return VK_NULL_HANDLE;
     }
 
@@ -985,7 +1013,7 @@ VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
 
 VkBuffer RenderGraph::ResolveBuffer(ResourceHandle handle) const
 {
-    if (!handle.IsValid() || handle.id >= m_resources.size()) {
+    if (!Owns(handle) || handle.id >= m_resources.size()) {
         return VK_NULL_HANDLE;
     }
 
@@ -1004,6 +1032,14 @@ VkRenderPass RenderGraph::GetPassRenderPass(const std::string &passName) const
         }
     }
     return VK_NULL_HANDLE;
+}
+
+VkRenderPass RenderGraph::GetPassRenderPass(PassHandle pass) const
+{
+    if (!Owns(pass) || pass.id >= m_passes.size()) {
+        return VK_NULL_HANDLE;
+    }
+    return m_passes[pass.id].vulkanRenderPass;
 }
 
 VkRenderPass RenderGraph::GetCompatibleRenderPass() const

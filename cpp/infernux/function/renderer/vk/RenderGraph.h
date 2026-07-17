@@ -46,6 +46,7 @@
 
 #include "VkTypes.h"
 #include <function/renderer/ProfileConfig.h>
+#include <function/renderer/RenderGraphIdentity.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -107,38 +108,8 @@ inline ResourceUsage operator&(ResourceUsage a, ResourceUsage b)
     return static_cast<ResourceUsage>(static_cast<int>(a) & static_cast<int>(b));
 }
 
-/**
- * @brief Handle to a virtual resource in the render graph
- */
-struct ResourceHandle
-{
-    uint32_t id = UINT32_MAX;
-    uint32_t version = 0; // Version for tracking resource writes
-
-    bool IsValid() const
-    {
-        return id != UINT32_MAX;
-    }
-    bool operator==(const ResourceHandle &other) const
-    {
-        return id == other.id && version == other.version;
-    }
-    bool operator!=(const ResourceHandle &other) const
-    {
-        return !(*this == other);
-    }
-};
-
-/**
- * @brief Hash function for ResourceHandle
- */
-struct ResourceHandleHash
-{
-    size_t operator()(const ResourceHandle &handle) const
-    {
-        return std::hash<uint64_t>()(static_cast<uint64_t>(handle.id) << 32 | handle.version);
-    }
-};
+using ResourceHandle = GraphResourceHandle;
+using ResourceHandleHash = GraphResourceHandleHash;
 
 /**
  * @brief Description of a virtual texture resource
@@ -171,17 +142,8 @@ struct BufferDesc
 // Pass Definitions
 // ============================================================================
 
-/**
- * @brief Pass handle for identifying render passes
- */
-struct PassHandle
-{
-    uint32_t id = UINT32_MAX;
-    bool IsValid() const
-    {
-        return id != UINT32_MAX;
-    }
-};
+using PassHandle = GraphPassHandle;
+using PassHandleHash = GraphPassHandleHash;
 
 /**
  * @brief Pass type enumeration
@@ -708,12 +670,29 @@ class RenderGraph
         return m_resources.size();
     }
 
+    [[nodiscard]] RenderGraphScopeId GetIdentityScope() const noexcept
+    {
+        return m_identity.Current();
+    }
+
+    [[nodiscard]] bool Owns(ResourceHandle handle) const noexcept
+    {
+        return handle.IsValid() && handle.scope == m_identity.Current();
+    }
+
+    [[nodiscard]] bool Owns(PassHandle handle) const noexcept
+    {
+        return handle.IsValid() && handle.scope == m_identity.Current();
+    }
+
     /**
      * @brief Get the Vulkan render pass for a specific pass
      * @param passName Name of the pass
      * @return VkRenderPass or VK_NULL_HANDLE if not found
      */
     [[nodiscard]] VkRenderPass GetPassRenderPass(const std::string &passName) const;
+
+    [[nodiscard]] VkRenderPass GetPassRenderPass(PassHandle pass) const;
 
     /**
      * @brief Get the first graphics pass render pass
@@ -806,6 +785,7 @@ class RenderGraph
     void FlushUnusedCaches();
 
   private:
+    RenderGraphIdentitySource m_identity;
     VkDeviceContext *m_context = nullptr;
     VkPipelineManager *m_pipelineManager = nullptr;
 
