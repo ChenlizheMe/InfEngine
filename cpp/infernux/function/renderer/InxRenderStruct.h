@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <function/renderer/Frustum.h>
+#include <function/renderer/RenderIdentity.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -165,7 +166,8 @@ struct DrawCall
     int32_t vertexStart = 0;               // Base vertex offset (for submesh rendering)
     glm::mat4 worldMatrix{1.0f};           // Object's world transform matrix
     std::shared_ptr<InxMaterial> material; // Owns the material for the lifetime of cached/render-thread draw calls
-    uint64_t objectId = 0;                 // GameObject ID for buffer lookup
+    uint64_t objectId = 0;                 // Compatibility key for buffer lookup and picking
+    RenderDrawIdentity identity;           // Stable source identity across scene/component lifetimes
     bool frustumVisible = true;            // Whether object passed main-camera frustum culling
     bool castsShadows = true;              // Whether the source renderer participates in shadow passes
     AABB worldBounds;                      // World-space bounding box for shadow cascade culling

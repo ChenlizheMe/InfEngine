@@ -232,6 +232,7 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
 
         RenderableObject renderable;
         renderable.objectId = obj->GetID();
+        renderable.renderProxy = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
         renderable.worldMatrix = obj->GetTransform()->GetWorldMatrix();
         renderable.mesh = renderer->GetMesh();
         renderable.renderMaterial = renderer->GetEffectiveMaterial(); // Get actual InxMaterial
@@ -468,6 +469,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldMatrix = worldMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
             dc.objectId = renderable.objectId;
+            dc.identity = renderable.renderProxy.MakeDrawIdentity();
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
             dc.worldBounds = renderable.worldBounds;
@@ -493,6 +495,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldMatrix = effectiveMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
             dc.objectId = renderable.objectId;
+            dc.identity = renderable.renderProxy.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
             dc.worldBounds = renderable.worldBounds;
@@ -534,6 +537,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
                     matSlot = slotRemap[matSlot];
                 dc.material = renderer->GetEffectiveMaterial(matSlot);
                 dc.objectId = renderable.objectId;
+                dc.identity = renderable.renderProxy.MakeDrawIdentity(si);
                 dc.frustumVisible = visible;
                 dc.castsShadows = renderer->CastsShadows();
                 dc.worldBounds = renderable.worldBounds;
@@ -561,6 +565,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         dc.worldMatrix = worldMatrix;
         dc.material = renderer->GetEffectiveMaterial(0);
         dc.objectId = renderable.objectId;
+        dc.identity = renderable.renderProxy.MakeDrawIdentity();
         dc.frustumVisible = visible;
         dc.castsShadows = renderer->CastsShadows();
         dc.worldBounds = renderable.worldBounds;

@@ -354,6 +354,17 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.component_data_store COMMAND infernux_component_data_store_tests)
 
+    add_executable(infernux_render_identity_tests
+        cpp/tests/RenderIdentityTests.cpp
+    )
+    target_include_directories(infernux_render_identity_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_render_identity_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.render_identity COMMAND infernux_render_identity_tests)
+
     add_executable(infernux_asset_index_tests
         cpp/tests/AssetIndexTests.cpp
         cpp/infernux/core/log/InxLog.cpp

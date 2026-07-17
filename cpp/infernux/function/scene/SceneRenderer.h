@@ -25,6 +25,7 @@ class Transform;
 struct RenderableObject
 {
     uint64_t objectId;
+    RenderProxyHandle renderProxy;
     glm::mat4 worldMatrix;
     MeshRef mesh;
     std::shared_ptr<InxMaterial> renderMaterial;    // Actual material for rendering (kept alive by MeshRenderer)
