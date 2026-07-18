@@ -18,6 +18,7 @@
 
 #include "FullscreenRenderer.h"
 #include "InxRenderStruct.h"
+#include "MaterialPassPipeline.h"
 #include "RenderGraphDescription.h"
 #include "RendererList.h"
 #include "vk/RenderGraph.h"
@@ -37,6 +38,10 @@ class InxVkCoreModular;
 class InxMaterial;
 class InxScreenUIRenderer;
 class SceneRenderTarget;
+namespace particle
+{
+class ParticleGpuDrawRegistry;
+}
 
 // Forward-declare from Camera.h
 enum class CameraClearFlags;
@@ -162,6 +167,15 @@ class SceneRenderGraph
     void SetScreenUIRenderer(InxScreenUIRenderer *renderer)
     {
         m_screenUIRenderer = renderer;
+    }
+
+    void SetParticleGpuDrawRegistry(particle::ParticleGpuDrawRegistry *registry)
+    {
+        if (m_particleDrawRegistry == registry)
+            return;
+        m_particleDrawRegistry = registry;
+        m_particleDrawRegistryRevision = 0;
+        m_needsRebuild = true;
     }
 
     /**
@@ -434,6 +448,7 @@ class SceneRenderGraph
         m_hasPythonGraph = false;
         m_hasShadowCasterPass = false;
         m_parameterBlocks.clear();
+        m_pythonMaterialPasses.clear();
         m_pythonGraphDesc = {};
     }
 
@@ -541,6 +556,10 @@ class SceneRenderGraph
     // Populated by ApplyPythonGraph(). BuildRenderGraph() reads this map directly,
     // bypassing the intermediate ScenePassConfig conversion.
     std::unordered_map<std::string, ScenePassRenderCallback> m_pythonCallbacks;
+    std::unordered_map<std::string, MaterialPassPipelineDescriptor> m_pythonMaterialPasses;
+
+    particle::ParticleGpuDrawRegistry *m_particleDrawRegistry = nullptr;
+    uint64_t m_particleDrawRegistryRevision = 0;
 
     // The underlying render graph (now fully utilized)
     std::unique_ptr<vk::RenderGraph> m_renderGraph;

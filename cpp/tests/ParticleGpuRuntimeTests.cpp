@@ -1,4 +1,5 @@
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
+#include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 
 #include <array>
@@ -265,10 +266,22 @@ int main()
     billboard.Destroy();
     assert(!billboard.IsValid() && device.graphicsPipelineReleases == 1);
 
+    auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
+    assert(registeredBillboard->Create(device, billboardDesc));
+    particle::ParticleGpuDrawRegistry registry;
+    const uint64_t initialRevision = registry.Revision();
+    assert(registry.Set({77, runtime.Capacity(), instanceBuffer, indirectBuffer, registeredBillboard}));
+    assert(registry.Revision() == initialRevision + 1 && registry.Size() == 1);
+    const auto visibleEntries = registry.Snapshot(3000, 3200);
+    assert(visibleEntries.size() == 1 && visibleEntries[0].id == 77);
+    assert(registry.Snapshot(0, 2999).empty());
+    assert(registry.Remove(77) && !registry.Remove(77) && registry.Size() == 0);
+    registeredBillboard.reset();
+
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
-    assert(device.pipelineReleases == 5 && device.groupReleases == 2 && device.layoutReleases == 2);
-    assert(device.shaderReleases == 7);
+    assert(device.pipelineReleases == 5 && device.groupReleases == 3 && device.layoutReleases == 3);
+    assert(device.shaderReleases == 9);
     assert(device.bufferReleases == 6);
     return 0;
 }

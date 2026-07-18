@@ -489,6 +489,7 @@ if(INFERNUX_BUILD_TESTS)
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp
     )
     target_include_directories(infernux_particle_gpu_runtime_tests PRIVATE

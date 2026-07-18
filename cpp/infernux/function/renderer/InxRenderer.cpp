@@ -19,6 +19,7 @@
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUISemantics.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "particle/ParticleGpuDrawRegistry.h"
 #include "vk/RenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VmaContext.h"
@@ -94,6 +95,7 @@ InxRenderer::~InxRenderer()
     m_editorTools.reset();
     m_componentGizmos.reset();
     m_particleDrawCalls.reset();
+    m_particleGpuDrawRegistry.reset();
 
     if (m_vkCore)
         m_vkCore->ReleaseGpuPreviews();
@@ -242,6 +244,7 @@ void InxRenderer::PreparePipeline()
         }
         if (m_sceneRenderGraph) {
             m_sceneRenderGraph->Initialize(m_vkCore.get(), m_sceneRenderTarget.get());
+            m_sceneRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
         }
 
         // Hook RenderGraph execution into the pre-render callback
@@ -1994,6 +1997,7 @@ void InxRenderer::InitializeDefaultScene()
     // Initialize component gizmos buffer used by the scripting layer
     m_componentGizmos = std::make_unique<GizmosDrawCallBuffer>();
     m_particleDrawCalls = std::make_unique<ParticleDrawCallBuffer>();
+    m_particleGpuDrawRegistry = std::make_unique<particle::ParticleGpuDrawRegistry>();
 
     // Pass gizmos reference to VkCore for rendering
     if (m_vkCore) {
@@ -2426,6 +2430,11 @@ ParticleDrawCallBuffer *InxRenderer::GetParticleDrawCallBuffer()
     return m_particleDrawCalls.get();
 }
 
+particle::ParticleGpuDrawRegistry *InxRenderer::GetParticleGpuDrawRegistry()
+{
+    return m_particleGpuDrawRegistry.get();
+}
+
 bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
 {
     INXLOG_DEBUG("RefreshMaterialPipeline called");
@@ -2709,6 +2718,7 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
         // Create a dedicated SceneRenderGraph for game camera
         m_gameRenderGraph = std::make_unique<SceneRenderGraph>();
         m_gameRenderGraph->Initialize(m_vkCore.get(), m_gameRenderTarget.get());
+        m_gameRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
         m_gameRenderGraph->SetEffectiveMsaaSamples(GetMsaaSamples());
 
         // Create the screen UI renderer for GPU-based 2D UI in the game render graph

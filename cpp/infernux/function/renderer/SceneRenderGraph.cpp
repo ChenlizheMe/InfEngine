@@ -11,6 +11,7 @@
 #include "InxVkCoreModular.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "particle/ParticleGpuDrawRegistry.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -19,6 +20,7 @@
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/error/InxError.h>
+#include <cstring>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Camera.h>
 #include <memory>
@@ -691,6 +693,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     }
 
     m_pythonCallbacks.clear();
+    m_pythonMaterialPasses.clear();
     m_hasShadowCasterPass = false;
 
     InxVkCoreModular *vkCore = m_vkCore;
@@ -780,6 +783,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             materialPass.samples = writesSingleSampleTarget && !writesBackbuffer
                                        ? rhi::SampleCount::One
                                        : rhi::FromVkSampleCount(callbackSamples);
+            m_pythonMaterialPasses[passDesc.name] = materialPass;
         }
 
         m_pythonCallbacks[passDesc.name] = [this, vkCore, commandType, queueMin, queueMax, screenUIListIndex,
@@ -920,6 +924,12 @@ void SceneRenderGraph::EnsureGraphBuilt()
 {
     if (!m_sceneTarget || !m_sceneTarget->IsReady() || !m_renderGraph) {
         return;
+    }
+
+    if (m_particleDrawRegistry) {
+        const uint64_t revision = m_particleDrawRegistry->Revision();
+        if (revision != m_particleDrawRegistryRevision)
+            m_needsRebuild = true;
     }
 
     // ========================================================================
@@ -1403,6 +1413,17 @@ void SceneRenderGraph::BuildRenderGraph()
                 continue;
             }
             auto callback = callbackIt->second;
+            std::vector<particle::GpuParticleDrawEntry> particleEntries;
+            MaterialPassPipelineDescriptor particlePass;
+            if (m_particleDrawRegistry && command && command->type == GraphCommandType::DrawRenderers &&
+                command->shaderTarget == ShaderCompileTarget::Forward) {
+                particleEntries = m_particleDrawRegistry->Snapshot(command->queueMin, command->queueMax);
+                const auto particlePassIt = m_pythonMaterialPasses.find(passDesc.name);
+                if (particlePassIt != m_pythonMaterialPasses.end())
+                    particlePass = particlePassIt->second;
+                else
+                    particleEntries.clear();
+            }
 
             auto resolveTextureHandle = [&](const std::string &name) -> vk::ResourceHandle {
                 const auto texture = texDescMap.find(name);
@@ -1968,9 +1989,31 @@ void SceneRenderGraph::BuildRenderGraph()
                 // Local alias to make vkCore capturable by nested lambdas (MSVC C3481)
                 InxVkCoreModular *localVkCore = vkCore;
 
+                struct ParticlePacket
+                {
+                    std::shared_ptr<particle::ParticleGpuBillboardRenderer> renderer;
+                    vk::ResourceHandle instances;
+                    vk::ResourceHandle indirectArguments;
+                };
+                std::vector<ParticlePacket> particlePackets;
+                particlePackets.reserve(particleEntries.size());
+                for (const auto &entry : particleEntries) {
+                    const std::string prefix = "GpuParticle/" + std::to_string(entry.id);
+                    const auto instances = builder.ImportBuffer(prefix + "/Instances", entry.instances,
+                                                                static_cast<uint64_t>(entry.capacity) *
+                                                                    particle::ParticleGpuRuntime::RenderInstanceStride);
+                    const auto indirectArguments =
+                        builder.ImportBuffer(prefix + "/Indirect", entry.indirectArguments, 16);
+                    if (!instances.IsValid() || !indirectArguments.IsValid())
+                        continue;
+                    builder.ReadStorageBuffer(instances, rhi::PipelineStage::VertexShader);
+                    builder.ReadIndirectBuffer(indirectArguments);
+                    particlePackets.push_back({entry.renderer, instances, indirectArguments});
+                }
+
                 if (rendererListHandle.IsValid()) {
                     builder.ReadRendererList(rendererListHandle);
-                    builder.SkipCallbackWhenRendererListsEmpty();
+                    builder.SkipCallbackWhenRendererListsEmpty(particlePackets.empty());
                 }
 
                 // ----- Determine pass dimensions -----
@@ -2100,8 +2143,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
-                return [callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
-                        usesShadowRendererList, localVkCore](vk::RenderContext &ctx) {
+                return [this, callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
+                        usesShadowRendererList, localVkCore, particlePackets, particlePass,
+                        passName = passDesc.name](vk::RenderContext &ctx) {
                     if (rendererListHandle.IsValid()) {
                         const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
                         if (usesShadowRendererList) {
@@ -2114,6 +2158,21 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                     if (callback)
                         callback(ctx, passWidth, passHeight);
+                    if (!particlePackets.empty()) {
+                        particle::GpuBillboardViewConstants view;
+                        const glm::mat4 viewProjection = m_cachedProj * m_cachedView;
+                        const glm::mat4 inverseView = glm::inverse(m_cachedView);
+                        std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
+                        std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
+                        std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
+                        const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
+                        auto &encoder = ctx.GetGraphicsCommandEncoder();
+                        for (const auto &packet : particlePackets) {
+                            [[maybe_unused]] const bool recorded =
+                                packet.renderer->RecordDraw(encoder, renderTargetLayout, particlePass,
+                                                            ctx.GetBufferHandle(packet.indirectArguments), view);
+                        }
+                    }
                 };
             });
 
@@ -2160,6 +2219,7 @@ void SceneRenderGraph::BuildRenderGraph()
                  m_pythonGraphDesc.outputTexture.empty() ? "(backbuffer)" : m_pythonGraphDesc.outputTexture);
 
     ++m_graphBuildRevision;
+    m_particleDrawRegistryRevision = m_particleDrawRegistry ? m_particleDrawRegistry->Revision() : 0;
     m_graphBuilt = true;
 }
 
