@@ -674,7 +674,6 @@ class TestSceneSerialization:
             ("Light", "light_type"),
             ("AudioSource", "audio_tracks"),
             ("MeshRenderer", "mesh_material"),
-            ("SkinnedMeshRenderer", "skinned_legacy"),
             ("SpriteRenderer", "sprite_color"),
         ],
     )
@@ -699,8 +698,6 @@ class TestSceneSerialization:
             component_document["track_count"] = 2
         elif corruption == "mesh_material":
             component_document["materials"] = [{"material": "not-a-document"}]
-        elif corruption == "skinned_legacy":
-            component_document["sourceModelGuid"] = "removed"
         else:
             component_document["spriteColor"] = [1.0, 1.0, 1.0]
 
@@ -716,6 +713,22 @@ class TestSceneSerialization:
         assert scene.serialize_document() == original_document
         assert scene.find("WorkerRenderAudioExisting") is existing
         assert existing.get_component(component_type) is component
+
+    def test_worker_type_validator_ignores_removed_ordinary_field(self, scene, tmp_path):
+        existing = scene.create_game_object("WorkerRemovedField")
+        existing.add_component("SkinnedMeshRenderer")
+        candidate = json.loads(json.dumps(scene.serialize_document()))
+        component_document = candidate["objects"][0]["components"][0]["data"]
+        component_document["sourceModelGuid"] = "removed"
+        path = tmp_path / "removed-skinned-field.scene"
+        path.write_text(json.dumps(candidate), encoding="utf-8")
+        transaction = SceneDocumentTransaction(scene, path=path)
+
+        assert transaction.run_to_completion(raise_on_failure=False) is True
+        assert transaction.ran_on_worker is True
+        assert transaction.state is SceneDocumentTransactionState.COMPLETED
+        loaded = scene.find("WorkerRemovedField").get_component("SkinnedMeshRenderer")
+        assert "sourceModelGuid" not in loaded.serialize_document()
 
     @pytest.mark.parametrize("failure", ["missing_guid", "wrong_type", "embedded_material"])
     def test_resource_preflight_failure_preserves_live_scene(self, scene, tmp_path, failure):

@@ -1108,13 +1108,13 @@ class TestColliders:
         assert collider.deserialize_document(invalid) is False
         assert collider.serialize_document() == original
 
-    def test_collider_document_rejects_unknown_field(self, scene):
+    def test_collider_document_ignores_removed_ordinary_field(self, scene):
         collider = scene.create_game_object("UnknownColliderField").add_component("BoxCollider")
         original = collider.serialize_document()
         invalid = dict(original)
         invalid["legacy_material"] = 1
 
-        assert collider.deserialize_document(invalid) is False
+        assert collider.deserialize_document(invalid) is True
         assert collider.serialize_document() == original
 
     @pytest.mark.parametrize(
@@ -1510,7 +1510,7 @@ class TestComponentSerialization:
             "SpriteRenderer",
         ],
     )
-    def test_registered_component_rejects_unknown_field_without_mutation(self, scene, component_type):
+    def test_registered_component_ignores_removed_ordinary_field(self, scene, component_type):
         owner = scene.create_game_object(f"Strict{component_type}")
         if component_type == "Transform":
             component = owner.transform
@@ -1520,7 +1520,7 @@ class TestComponentSerialization:
         invalid = dict(original)
         invalid["legacy"] = True
 
-        assert component.deserialize_document(invalid) is False
+        assert component.deserialize_document(invalid) is True
         assert component.serialize_document() == original
 
     def test_schema_version_is_strict_per_component_type(self, scene):
