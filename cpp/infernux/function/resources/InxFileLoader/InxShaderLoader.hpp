@@ -1,10 +1,10 @@
 #pragma once
 
 #include <SPIRV/GlslangToSpv.h>
-#include <array>
 #include <core/types/ShaderTypes.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
-#include <function/resources/ShaderAsset/ShaderInfoSchema.h>
+#include <function/resources/ShaderAsset/ShaderDescriptor.h>
+#include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
 #include <optional>
@@ -15,129 +15,19 @@
 namespace infernux
 {
 
-// ============================================================================
-// ShaderDescriptor IR — structured intermediate representation for parsed shaders
-// ============================================================================
-
-/// A single material property declared by the imported shader schema.
-struct ShaderProperty
+struct LinkedShaderProgramCompilation
 {
-    std::string name;
-    std::string type;     // "Float", "Float2", "Float3", "Float4", "Color", "Int", "Mat4", "Texture2D"
-    std::string glslType; // "float", "vec2", "vec3", "vec4", "int", "mat4", "" (Texture2D)
-    std::string defaultValue;
-    bool isTexture = false;
-    std::string textureDefault; // "white", "black", "normal" (Texture2D only)
-    bool hdr = false;
-    std::optional<std::array<double, 2>> range;
-    ShaderSourceRange source;
-};
-
-struct ShaderVarying
-{
-    std::string interpolation;
-    std::string type;
-    std::string name;
-    std::string semantic;
-    std::string space;
-    ShaderSourceRange source;
-};
-
-/// Surface rendering options declared via annotations.
-struct SurfaceOptions
-{
-    std::string surfaceType = "opaque"; // "opaque" | "transparent"
-    std::string alphaClip = "off";      // "off" | threshold string e.g. "0.5"
-    std::string cullMode = "back";      // "back" | "front" | "none"
-    std::string blendMode = "off";      // "off" | "alpha" | "additive" | "premultiply"
-    bool receiveShadows = true;
-    bool castShadows = true;
-};
-
-/// Complete structured representation of a parsed shader source file.
-struct ShaderDescriptor
-{
-    uint32_t schemaVersion = 0;
-    bool usesStructuredInfo = false;
-
-    // Identity
-    std::string shaderId;
-    std::string filePath;
-    std::string fileExtension; // ".vert", ".frag", ".glsl", ".shadingmodel"
-
-    // Shader stage
-    bool isVertexShader = false;
-    bool isFragmentShader = false;
-    bool isLibrary = false;      // .glsl
-    bool isShadingModel = false; // .shadingmodel
-
-    // Shading model (from @shading_model)
-    std::string shadingModel;     // "pbr", "unlit", "custom", etc.
-    bool hasExplicitType = false; // true when @shading_model is present
-    bool hasSurfaceFunc = false;  // source contains void surface(
-    bool hasMainFunc = false;     // source contains void main(
-    bool hasVertexFunc = false;   // source contains void vertex(
-
-    // Surface Options
-    SurfaceOptions surfaceOptions;
-
-    // Render state (from annotations)
-    int renderQueue = -1; // -1 = auto (opaque=2000, transparent=3000)
-    std::string passTag;
-    std::string depthWrite;
-    std::string depthTest;
-    std::string stencil;
-    bool hidden = false;
-
-    // Properties
-    std::vector<ShaderProperty> properties;
-    std::vector<ShaderProperty> textureProperties;
-    std::vector<ShaderVarying> inputs;
-    std::vector<ShaderVarying> outputs;
-    std::vector<std::string> capabilities;
-    std::vector<ShaderInfoEntry> entries;
-
-    // @import list
-    std::vector<std::string> imports;
-
-    // #version directive (empty if not present, defaults to "#version 450")
-    std::string versionDirective;
-
-    // .shadingmodel target blocks (only populated for .shadingmodel files)
-    struct TargetBlock
-    {
-        std::string name; // "forward", "gbuffer", "shadow"
-        std::string code; // GLSL code for this target
-    };
-    std::vector<TargetBlock> targets;
-
-    /// Helper: find a target block by name, or nullptr.
-    const TargetBlock *FindTarget(const std::string &name) const
-    {
-        for (const auto &t : targets)
-            if (t.name == name)
-                return &t;
-        return nullptr;
-    }
-
-    /// Helper: does this shading model need LightingUBO?
-    bool NeedsLightingUBO() const
-    {
-        for (const auto &imp : imports)
-            if (imp == "lighting")
-                return true;
-        return false;
-    }
-
-    /// Helper: does this shading model need GBuffer outputs?
-    bool HasGBufferTarget() const
-    {
-        return FindTarget("gbuffer") != nullptr;
-    }
-
-    // Errors and warnings
+    ShaderProgramInterfaceArtifact interfaceArtifact;
+    std::string generatedVertexSource;
+    std::string generatedFragmentSource;
+    std::vector<char> vertexSpirv;
+    std::vector<char> fragmentSpirv;
     std::vector<std::string> errors;
-    std::vector<std::string> warnings;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return interfaceArtifact.IsValid() && errors.empty() && !vertexSpirv.empty() && !fragmentSpirv.empty();
+    }
 };
 
 // ============================================================================
@@ -181,6 +71,14 @@ class InxShaderLoader
     /// Compile shader source to SPIR-V and populate variant caches.
     /// Returns compiled data as shared_ptr<vector<char>> (forward SPIR-V), or nullptr on failure.
     std::shared_ptr<std::vector<char>> Compile(const char *content, size_t contentSize, InxResourceMeta &metaData);
+
+    /// Link and compile a structured vertex/fragment pair as one Forward program.
+    /// This is the S2 program path; legacy per-stage Compile remains available
+    /// while runtime material registration migrates to program artifacts.
+    [[nodiscard]] LinkedShaderProgramCompilation CompileLinkedForward(const std::string &vertexSource,
+                                                                      const std::string &vertexPath,
+                                                                      const std::string &fragmentSource,
+                                                                      const std::string &fragmentPath);
 
     /// Parse a single "@key: value" or "// @key: value" annotation line.
     /// Returns {key, value} or nullopt if the line is not an annotation.
@@ -228,12 +126,14 @@ class InxShaderLoader
 
     /// Full preprocessing pipeline: parse → resolve imports → generate GLSL.
     std::string PreprocessShaderSource(const std::string &source, const std::string &filePath = "",
-                                       ShaderCompileTarget target = ShaderCompileTarget::Forward);
+                                       ShaderCompileTarget target = ShaderCompileTarget::Forward,
+                                       const ShaderProgramInterfaceArtifact *linkedInterface = nullptr);
 
     /// Generate final GLSL text from a descriptor, import-resolved source, and optional shading model.
     std::string GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
                              const ShaderDescriptor *shadingModel = nullptr,
-                             ShaderCompileTarget target = ShaderCompileTarget::Forward) const;
+                             ShaderCompileTarget target = ShaderCompileTarget::Forward,
+                             const ShaderProgramInterfaceArtifact *linkedInterface = nullptr) const;
 
     /// Build a mapping of shader_id → file_path by recursively scanning shader directories.
     std::unordered_map<std::string, std::string> BuildShaderIdMap(const std::string &dir);

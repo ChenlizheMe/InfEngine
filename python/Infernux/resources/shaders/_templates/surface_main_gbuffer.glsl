@@ -7,7 +7,7 @@
 void main() {
     SurfaceData s = InitSurfaceData();
     s.normalWS = normalize(v_Normal);
-    surface(s);
+${SURFACE_CALL}
     // Unity-style double-sided normal fix (see surface_main.glsl for details)
     if (!gl_FrontFacing)
         s.normalWS = -s.normalWS;

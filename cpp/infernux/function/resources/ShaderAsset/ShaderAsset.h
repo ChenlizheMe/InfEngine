@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/types/ShaderTypes.h>
+#include <function/resources/ShaderAsset/ShaderDescriptor.h>
 
 #include <string>
 #include <vector>
@@ -37,6 +38,9 @@ struct ShaderAsset
     /// Source file path (for hot-reload cache key)
     std::string filePath;
 
+    /// Parsed authoring contract retained for stage linking and diagnostics.
+    ShaderDescriptor descriptor;
+
     /// Forward-pass SPIR-V bytecode (always present on success)
     std::vector<char> spirvForward;
 
@@ -55,10 +59,11 @@ struct ShaderAsset
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept
     {
         return sizeof(*this) + shaderId.capacity() + shaderType.capacity() + filePath.capacity() +
-               spirvForward.capacity() + spirvShadow.capacity() + spirvShadowVertex.capacity() +
-               spirvGBuffer.capacity() + renderMeta.cullMode.capacity() + renderMeta.depthWrite.capacity() +
-               renderMeta.depthTest.capacity() + renderMeta.blend.capacity() + renderMeta.passTag.capacity() +
-               renderMeta.stencil.capacity() + renderMeta.alphaClip.capacity();
+               descriptor.GetRuntimeMemoryBytes() - sizeof(descriptor) + spirvForward.capacity() +
+               spirvShadow.capacity() + spirvShadowVertex.capacity() + spirvGBuffer.capacity() +
+               renderMeta.cullMode.capacity() + renderMeta.depthWrite.capacity() + renderMeta.depthTest.capacity() +
+               renderMeta.blend.capacity() + renderMeta.passTag.capacity() + renderMeta.stencil.capacity() +
+               renderMeta.alphaClip.capacity();
     }
 };
 

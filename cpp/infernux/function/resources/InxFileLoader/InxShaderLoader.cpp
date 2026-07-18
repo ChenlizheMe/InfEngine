@@ -7,6 +7,8 @@
 #include <core/log/InxLog.h>
 #include <filesystem>
 #include <fstream>
+#include <function/renderer/shader/ShaderReflection.h>
+#include <function/resources/ShaderAsset/GlslStageInterfaceEmitter.h>
 #include <nlohmann/json.hpp>
 #include <platform/filesystem/InxPath.h>
 #include <set>
@@ -24,6 +26,107 @@ std::unordered_map<std::string, std::vector<char>> InxShaderLoader::s_shadowVert
 std::unordered_map<std::string, std::vector<char>> InxShaderLoader::s_gbufferVariantCache;
 std::string InxShaderLoader::s_lastCompileError;
 std::unordered_map<std::string, std::unordered_map<std::string, std::string>> InxShaderLoader::s_shaderIdMapCache;
+
+namespace
+{
+VkFormat ExpectedVaryingFormat(const std::string &glslType)
+{
+    if (glslType == "float")
+        return VK_FORMAT_R32_SFLOAT;
+    if (glslType == "vec2")
+        return VK_FORMAT_R32G32_SFLOAT;
+    if (glslType == "vec3")
+        return VK_FORMAT_R32G32B32_SFLOAT;
+    if (glslType == "vec4" || glslType == "mat4")
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    if (glslType == "int")
+        return VK_FORMAT_R32_SINT;
+    return VK_FORMAT_UNDEFINED;
+}
+
+void ValidateReflectedVaryings(const std::vector<ShaderIOVariable> &reflected,
+                               const ShaderProgramInterfaceArtifact &artifact, const std::string &stage,
+                               std::vector<std::string> &errors)
+{
+    for (const auto &expected : artifact.varyings) {
+        const auto actual = std::find_if(reflected.begin(), reflected.end(), [&](const ShaderIOVariable &candidate) {
+            return candidate.location == expected.location;
+        });
+        if (actual == reflected.end()) {
+            errors.push_back(stage + " SPIR-V reflection is missing linked varying '" + expected.name +
+                             "' at location " + std::to_string(expected.location));
+            continue;
+        }
+        const std::string expectedName = "_inx_v_" + expected.name;
+        if (actual->name != expectedName) {
+            errors.push_back(stage + " SPIR-V varying at location " + std::to_string(expected.location) +
+                             " has name '" + actual->name + "', expected '" + expectedName + "'");
+        }
+        const VkFormat expectedFormat = ExpectedVaryingFormat(expected.glslType);
+        if (actual->format != expectedFormat) {
+            errors.push_back(stage + " SPIR-V varying '" + expected.name +
+                             "' has a reflected format that does not "
+                             "match the linked interface");
+        }
+    }
+}
+
+void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderProgramInterfaceArtifact &artifact,
+                               ShaderStageVisibility stage, const std::string &stageName,
+                               std::vector<std::string> &errors)
+{
+    if (artifact.materialBufferSize > 0) {
+        const auto uniformBuffer =
+            std::find_if(reflection.GetUniformBuffers().begin(), reflection.GetUniformBuffers().end(),
+                         [](const UniformBufferInfo &buffer) { return buffer.name == "MaterialProperties"; });
+        if (uniformBuffer == reflection.GetUniformBuffers().end()) {
+            errors.push_back(stageName + " SPIR-V reflection is missing the linked MaterialProperties block");
+        } else {
+            if (uniformBuffer->set != GlslStageInterfaceEmitter::MaterialDescriptorSet ||
+                uniformBuffer->binding != GlslStageInterfaceEmitter::MaterialBufferBinding) {
+                errors.push_back(stageName + " MaterialProperties reflected at an unexpected descriptor binding");
+            }
+            if (uniformBuffer->size != artifact.materialBufferSize) {
+                errors.push_back(stageName + " MaterialProperties size does not match the linked material layout");
+            }
+            auto validateMember = [&](const std::string &name, uint32_t expectedOffset) {
+                const auto member =
+                    std::find_if(uniformBuffer->members.begin(), uniformBuffer->members.end(),
+                                 [&](const UniformMember &candidate) { return candidate.name == name; });
+                if (member == uniformBuffer->members.end()) {
+                    errors.push_back(stageName + " MaterialProperties is missing member '" + name + "'");
+                } else if (member->offset != expectedOffset) {
+                    errors.push_back(stageName + " MaterialProperties member '" + name +
+                                     "' has an offset that differs from the linked artifact");
+                }
+            };
+            for (const auto &property : artifact.properties) {
+                if (property.bufferOffset)
+                    validateMember(property.schema.name, *property.bufferOffset);
+            }
+            if (artifact.alphaClipThresholdOffset)
+                validateMember("_AlphaClipThreshold", *artifact.alphaClipThresholdOffset);
+        }
+    }
+
+    for (const auto &property : artifact.properties) {
+        if (!property.textureSlot || !HasVisibility(property.visibility, stage))
+            continue;
+        const auto image =
+            std::find_if(reflection.GetSampledImages().begin(), reflection.GetSampledImages().end(),
+                         [&](const SampledImageInfo &candidate) { return candidate.name == property.schema.name; });
+        if (image == reflection.GetSampledImages().end()) {
+            errors.push_back(stageName + " SPIR-V reflection is missing texture '" + property.schema.name + "'");
+            continue;
+        }
+        const uint32_t expectedBinding = GlslStageInterfaceEmitter::FirstTextureBinding + *property.textureSlot;
+        if (image->set != GlslStageInterfaceEmitter::MaterialDescriptorSet || image->binding != expectedBinding) {
+            errors.push_back(stageName + " texture '" + property.schema.name +
+                             "' reflected at an unexpected descriptor binding");
+        }
+    }
+}
+} // namespace
 
 void InxShaderLoader::InvalidateDirectoryCache(const std::string &dir)
 {
@@ -615,7 +718,8 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
 // ============================================================================
 
 std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
-                                          const ShaderDescriptor *shadingModel, ShaderCompileTarget target) const
+                                          const ShaderDescriptor *shadingModel, ShaderCompileTarget target,
+                                          const ShaderProgramInterfaceArtifact *linkedInterface) const
 {
     // Separate resolved source into: version line, annotation lines, code lines
     std::istringstream stream(resolvedSource);
@@ -729,6 +833,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 // Unified vertex builtins for all shading models
                 result << "\n// Auto-generated vertex builtins (unified)\n";
                 result << LoadTemplate("vertex_builtins.glsl") << "\n";
+                if (linkedInterface && !desc.outputs.empty())
+                    result << GlslStageInterfaceEmitter::EmitVertexDeclarations(*linkedInterface, desc);
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
                 // LightingUBO — only when the shading model requires it
@@ -740,6 +846,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 // Unified fragment varying inputs
                 result << "\n// Auto-generated fragment varyings (unified)\n";
                 result << LoadTemplate("fragment_varyings.glsl") << "\n";
+                if (linkedInterface && !desc.inputs.empty())
+                    result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
 
                 // Fragment output declarations
                 if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
@@ -764,7 +872,14 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         (target == ShaderCompileTarget::Shadow && shadowNeedsAlphaClip && desc.isFragmentShader);
     int shadowTexBaseBinding = 0; // textures start at binding 0 in set 2
     if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
-        if (!desc.textureProperties.empty() && desc.isFragmentShader) {
+        if (linkedInterface && target == ShaderCompileTarget::Forward) {
+            const ShaderStageVisibility stage =
+                desc.isVertexShader ? ShaderStageVisibility::Vertex : ShaderStageVisibility::Fragment;
+            const std::string declarations =
+                GlslStageInterfaceEmitter::EmitTextureDeclarations(*linkedInterface, stage);
+            if (!declarations.empty())
+                result << "\n// Linked material texture bindings\n" << declarations << "\n";
+        } else if (!desc.textureProperties.empty() && desc.isFragmentShader) {
             result << "\n// Auto-generated texture samplers from @property annotations\n";
             for (size_t i = 0; i < desc.textureProperties.size(); ++i) {
                 int binding = shadowAlphaFragment ? (shadowTexBaseBinding + static_cast<int>(i))
@@ -787,7 +902,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // Surface fragment shaders always get _AlphaClipThreshold injected
     // so that alpha clip can be toggled at runtime via material properties.
     bool isSurfaceFragment = desc.isFragmentShader && hasSurfaceFunc;
-    bool needsMaterialUBO = !desc.properties.empty() || isSurfaceFragment;
+    bool needsMaterialUBO =
+        linkedInterface ? linkedInterface->materialBufferSize > 0 : (!desc.properties.empty() || isSurfaceFragment);
     // Vertex shaders with vertex() may need material properties in shadow (as constants)
     bool shadowVertexNeedsMaterial = (target == ShaderCompileTarget::Shadow && desc.isVertexShader &&
                                       desc.hasVertexFunc && !desc.properties.empty());
@@ -796,7 +912,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             // Vertex shader MaterialProperties gets a dedicated high binding (14) to
             // avoid collision with fragment-side bindings (lighting UBO, textures, etc.)
             int materialBinding;
-            if (desc.isVertexShader) {
+            if (linkedInterface && target == ShaderCompileTarget::Forward) {
+                materialBinding = GlslStageInterfaceEmitter::MaterialBufferBinding;
+            } else if (desc.isVertexShader) {
                 materialBinding = 14; // Reserved for vertex-stage material properties
             } else if (shadowAlphaFragment) {
                 // Shadow alpha-clip fragment: place MaterialProperties at a fixed binding
@@ -808,29 +926,36 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 materialBinding = texBaseBinding + static_cast<int>(desc.textureProperties.size());
             }
             result << "\n// Auto-generated MaterialProperties UBO from @property annotations\n";
-            if (target == ShaderCompileTarget::Shadow && (desc.isVertexShader || shadowAlphaFragment)) {
+            if (linkedInterface && target == ShaderCompileTarget::Forward) {
+                result << "layout(std140, set = " << GlslStageInterfaceEmitter::MaterialDescriptorSet
+                       << ", binding = " << materialBinding << ") uniform MaterialProperties {\n";
+            } else if (target == ShaderCompileTarget::Shadow && (desc.isVertexShader || shadowAlphaFragment)) {
                 result << "layout(std140, set = 2, binding = " << materialBinding << ") uniform MaterialProperties {\n";
             } else {
                 result << "layout(std140, binding = " << materialBinding << ") uniform MaterialProperties {\n";
             }
 
-            auto writeByType = [&](const std::string &glslType) {
-                for (const auto &prop : desc.properties) {
-                    if (prop.glslType == glslType) {
-                        result << "    " << prop.glslType << " " << prop.name << ";\n";
+            if (linkedInterface) {
+                result << GlslStageInterfaceEmitter::EmitMaterialBlockMembers(*linkedInterface);
+            } else {
+                auto writeByType = [&](const std::string &glslType) {
+                    for (const auto &prop : desc.properties) {
+                        if (prop.glslType == glslType) {
+                            result << "    " << prop.glslType << " " << prop.name << ";\n";
+                        }
                     }
+                };
+                writeByType("vec4");
+                writeByType("vec3");
+                writeByType("vec2");
+                // Inject _AlphaClipThreshold for surface fragment shaders (before user floats)
+                if (isSurfaceFragment) {
+                    result << "    float _AlphaClipThreshold;\n";
                 }
-            };
-            writeByType("vec4");
-            writeByType("vec3");
-            writeByType("vec2");
-            // Inject _AlphaClipThreshold for surface fragment shaders (before user floats)
-            if (isSurfaceFragment) {
-                result << "    float _AlphaClipThreshold;\n";
+                writeByType("float");
+                writeByType("int");
+                writeByType("mat4");
             }
-            writeByType("float");
-            writeByType("int");
-            writeByType("mat4");
 
             result << "} material;\n\n";
         }
@@ -962,9 +1087,15 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             // baked into the surface_main templates — no placeholder needed.
             if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
                 std::string mainTpl = LoadTemplate("surface_main_gbuffer.glsl");
+                ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
+                                   linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
+                                                   : "    surface(s);");
                 result << "\n" << mainTpl << "\n";
             } else {
                 std::string mainTpl = LoadTemplate("surface_main.glsl");
+                ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
+                                   linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
+                                                   : "    surface(s);");
                 result << "\n" << mainTpl << "\n";
             }
         }
@@ -974,7 +1105,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // Auto-generated main() for vertex shaders
     // ================================================================
     if (desc.isVertexShader && !hasMainFunc && !userHasLayoutDecls) {
-        std::string vertexCall = desc.hasVertexFunc ? "    vertex(v);\n" : "";
+        std::string vertexCall;
+        if (desc.hasVertexFunc) {
+            vertexCall = linkedInterface ? GlslStageInterfaceEmitter::EmitVertexCall(*linkedInterface, desc)
+                                         : "    vertex(v);\n";
+        }
         std::string templateName =
             (target == ShaderCompileTarget::Shadow) ? "shadow_vertex_main.glsl" : "vertex_main.glsl";
         std::string mainTpl = LoadTemplate(templateName);
@@ -990,7 +1125,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
 // ============================================================================
 
 std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, const std::string &filePath,
-                                                    ShaderCompileTarget target)
+                                                    ShaderCompileTarget target,
+                                                    const ShaderProgramInterfaceArtifact *linkedInterface)
 {
     // Stage 1: Parse source into structured descriptor
     ShaderDescriptor desc = ParseShaderSource(source, filePath);
@@ -1056,7 +1192,7 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
     }
 
     // Stage 3: Generate GLSL from descriptor + resolved source + shading model
-    return GenerateGLSL(desc, resolvedSource, shadingModelPtr, target);
+    return GenerateGLSL(desc, resolvedSource, shadingModelPtr, target, linkedInterface);
 }
 
 std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content, size_t contentSize,
@@ -1121,6 +1257,59 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
     }
 
     return compiledData;
+}
+
+LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedForward(const std::string &vertexSource,
+                                                                     const std::string &vertexPath,
+                                                                     const std::string &fragmentSource,
+                                                                     const std::string &fragmentPath)
+{
+    LinkedShaderProgramCompilation compilation;
+    const ShaderDescriptor vertex = ParseShaderSource(vertexSource, vertexPath);
+    const ShaderDescriptor fragment = ParseShaderSource(fragmentSource, fragmentPath);
+    compilation.interfaceArtifact = ShaderStageLinker::Link(vertex, fragment);
+    compilation.errors.insert(compilation.errors.end(), vertex.errors.begin(), vertex.errors.end());
+    compilation.errors.insert(compilation.errors.end(), fragment.errors.begin(), fragment.errors.end());
+    if (!compilation.interfaceArtifact.IsValid() || !compilation.errors.empty())
+        return compilation;
+
+    compilation.generatedVertexSource =
+        PreprocessShaderSource(vertexSource, vertexPath, ShaderCompileTarget::Forward, &compilation.interfaceArtifact);
+    compilation.generatedFragmentSource = PreprocessShaderSource(
+        fragmentSource, fragmentPath, ShaderCompileTarget::Forward, &compilation.interfaceArtifact);
+
+    s_lastCompileError.clear();
+    if (!CompileGLSL(compilation.generatedVertexSource, EShLangVertex, vertexPath, compilation.vertexSpirv)) {
+        compilation.errors.push_back(s_lastCompileError.empty() ? "linked vertex compilation failed"
+                                                                : s_lastCompileError);
+        return compilation;
+    }
+    s_lastCompileError.clear();
+    if (!CompileGLSL(compilation.generatedFragmentSource, EShLangFragment, fragmentPath, compilation.fragmentSpirv)) {
+        compilation.errors.push_back(s_lastCompileError.empty() ? "linked fragment compilation failed"
+                                                                : s_lastCompileError);
+        return compilation;
+    }
+
+    ShaderReflection vertexReflection;
+    ShaderReflection fragmentReflection;
+    if (!vertexReflection.Reflect(compilation.vertexSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
+        compilation.errors.push_back("failed to reflect linked vertex SPIR-V");
+    } else {
+        ValidateReflectedVaryings(vertexReflection.GetOutputs(), compilation.interfaceArtifact, "vertex",
+                                  compilation.errors);
+        ValidateReflectedMaterial(vertexReflection, compilation.interfaceArtifact, ShaderStageVisibility::Vertex,
+                                  "vertex", compilation.errors);
+    }
+    if (!fragmentReflection.Reflect(compilation.fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
+        compilation.errors.push_back("failed to reflect linked fragment SPIR-V");
+    } else {
+        ValidateReflectedVaryings(fragmentReflection.GetInputs(), compilation.interfaceArtifact, "fragment",
+                                  compilation.errors);
+        ValidateReflectedMaterial(fragmentReflection, compilation.interfaceArtifact, ShaderStageVisibility::Fragment,
+                                  "fragment", compilation.errors);
+    }
+    return compilation;
 }
 
 std::string InxShaderLoader::TrimShaderSource(const std::string &source)

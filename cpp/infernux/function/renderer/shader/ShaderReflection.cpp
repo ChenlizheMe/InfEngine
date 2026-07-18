@@ -9,6 +9,58 @@
 
 namespace infernux
 {
+namespace
+{
+VkFormat StageIoFormat(const spirv_cross::SPIRType &type)
+{
+    if (type.width != 32)
+        return VK_FORMAT_UNDEFINED;
+
+    if (type.basetype == spirv_cross::SPIRType::Float) {
+        switch (type.vecsize) {
+        case 1:
+            return VK_FORMAT_R32_SFLOAT;
+        case 2:
+            return VK_FORMAT_R32G32_SFLOAT;
+        case 3:
+            return VK_FORMAT_R32G32B32_SFLOAT;
+        case 4:
+            return VK_FORMAT_R32G32B32A32_SFLOAT;
+        default:
+            return VK_FORMAT_UNDEFINED;
+        }
+    }
+    if (type.basetype == spirv_cross::SPIRType::Int) {
+        switch (type.vecsize) {
+        case 1:
+            return VK_FORMAT_R32_SINT;
+        case 2:
+            return VK_FORMAT_R32G32_SINT;
+        case 3:
+            return VK_FORMAT_R32G32B32_SINT;
+        case 4:
+            return VK_FORMAT_R32G32B32A32_SINT;
+        default:
+            return VK_FORMAT_UNDEFINED;
+        }
+    }
+    if (type.basetype == spirv_cross::SPIRType::UInt) {
+        switch (type.vecsize) {
+        case 1:
+            return VK_FORMAT_R32_UINT;
+        case 2:
+            return VK_FORMAT_R32G32_UINT;
+        case 3:
+            return VK_FORMAT_R32G32B32_UINT;
+        case 4:
+            return VK_FORMAT_R32G32B32A32_UINT;
+        default:
+            return VK_FORMAT_UNDEFINED;
+        }
+    }
+    return VK_FORMAT_UNDEFINED;
+}
+} // namespace
 
 bool ShaderReflection::Reflect(const std::vector<char> &spirvCode, VkShaderStageFlagBits stage)
 {
@@ -187,22 +239,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             var.location = compiler.get_decoration(input.id, spv::DecorationLocation);
 
             const auto &type = compiler.get_type(input.base_type_id);
-            if (type.basetype == spirv_cross::SPIRType::Float) {
-                switch (type.vecsize) {
-                case 1:
-                    var.format = VK_FORMAT_R32_SFLOAT;
-                    break;
-                case 2:
-                    var.format = VK_FORMAT_R32G32_SFLOAT;
-                    break;
-                case 3:
-                    var.format = VK_FORMAT_R32G32B32_SFLOAT;
-                    break;
-                case 4:
-                    var.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-                    break;
-                }
-            }
+            var.format = StageIoFormat(type);
 
             m_inputs.push_back(var);
         }
@@ -214,22 +251,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             var.location = compiler.get_decoration(output.id, spv::DecorationLocation);
 
             const auto &type = compiler.get_type(output.base_type_id);
-            if (type.basetype == spirv_cross::SPIRType::Float) {
-                switch (type.vecsize) {
-                case 1:
-                    var.format = VK_FORMAT_R32_SFLOAT;
-                    break;
-                case 2:
-                    var.format = VK_FORMAT_R32G32_SFLOAT;
-                    break;
-                case 3:
-                    var.format = VK_FORMAT_R32G32B32_SFLOAT;
-                    break;
-                case 4:
-                    var.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-                    break;
-                }
-            }
+            var.format = StageIoFormat(type);
 
             m_outputs.push_back(var);
         }

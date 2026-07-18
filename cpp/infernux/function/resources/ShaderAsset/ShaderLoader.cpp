@@ -85,6 +85,7 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     asset->shaderId = shaderId;
     asset->shaderType = (ext == ".vert") ? "vertex" : "fragment";
     asset->filePath = filePath;
+    asset->descriptor = compiler.ParseShaderSource(std::string(content.data(), content.size() - 1), filePath);
     asset->spirvForward = std::move(*compiledPtr);
 
     // Extract variant SPIR-V from InxShaderLoader's static caches

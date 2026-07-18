@@ -79,7 +79,7 @@ struct ShaderIOVariable
 {
     std::string name;
     uint32_t location;
-    VkFormat format;
+    VkFormat format = VK_FORMAT_UNDEFINED;
 };
 
 /**
