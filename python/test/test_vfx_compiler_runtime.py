@@ -7,6 +7,7 @@ from Infernux.core.vfx_system import VfxEmitter
 from Infernux.core.vfx_system import VfxSystem
 from Infernux.components.particle_system import ParticleSystem
 from Infernux.core.asset_ref import ParticleGraphRef
+from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.particle import (
     EmitterSettings,
     ExecutionTarget,
@@ -16,6 +17,33 @@ from Infernux.particle import (
 )
 from Infernux.lib import SceneManager
 from Infernux.vfx import CpuParticleRuntime, VfxCompileError, VfxGraphCompiler
+
+
+def _two_output_rendering_graph() -> GraphDocument:
+    rendering = ParticleEmitterAsset().rendering
+    return GraphDocument(
+        rendering.domain,
+        (
+            *rendering.nodes,
+            GraphNodeRecord(
+                "output.secondary",
+                "particle.output.sprite",
+                (280.0, 140.0),
+            ),
+        ),
+        (
+            *rendering.links,
+            GraphLinkRecord(
+                "root-to-secondary",
+                "root.rendering",
+                "out",
+                "output.secondary",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+        rendering.metadata,
+    )
 
 
 def _compiled_emitter(*, rate: float = 4.0, capacity: int = 32):
@@ -269,6 +297,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 4),),
                 ),
+                rendering=_two_output_rendering_graph(),
             ),
         ),
     )
@@ -287,6 +316,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     assert len(component._gpu_controllers) == 1
     emitter_id = component._gpu_emitter_ids[0]
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
+    assert engine._gpu_particle_output_count(emitter_id) == 2
 
     component.update(0.0)
     assert component._gpu_controllers[0].simulation_step == 1
@@ -306,6 +336,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 8),),
                 ),
+                rendering=_two_output_rendering_graph(),
             ),
         ),
     )
@@ -314,11 +345,13 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     assert component._artifact_revision > previous_revision
     assert component._gpu_controllers[0].is_playing is False
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
+    assert engine._gpu_particle_output_count(emitter_id) == 2
     assert component.terminate_emitter(0) is True
     assert component.restart(0) is True
 
     component._remove_native_batch()
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
+    assert engine._gpu_particle_output_count(emitter_id) == 0
 
 
 def test_particle_system_simulation_does_not_depend_on_a_graphical_renderer(

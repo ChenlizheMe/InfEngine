@@ -158,8 +158,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         kernel = particleComputeCode;
     managedProgram.billboardVertexShader = particleVertexCode;
     managedProgram.billboardFragmentShader = particleFragmentCode;
-    managedProgram.material.renderQueue = 3050;
-    managedProgram.material.blendEnabled = false;
+    infernux::particle::GpuParticleOutputProgram primaryOutput;
+    primaryOutput.id = 911;
+    primaryOutput.stableId = "managed-primary";
+    primaryOutput.material.renderQueue = 3050;
+    primaryOutput.material.blendEnabled = false;
+    managedProgram.outputs.push_back(primaryOutput);
     std::string managedError;
     if (!Require(particleSystems.CreateOrReplace(managedProgram, &managedError), managedError.c_str()) ||
         !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
@@ -176,6 +180,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     managedProgram.artifactRevision = 2;
+    auto secondaryOutput = primaryOutput;
+    secondaryOutput.id = 912;
+    secondaryOutput.stableId = "managed-secondary";
+    secondaryOutput.material.renderQueue = 3075;
+    managedProgram.outputs.push_back(secondaryOutput);
     const bool managedReplacement = particleSystems.CreateOrReplace(managedProgram, &managedError);
     if (!managedReplacement || particleSystems.ActiveArtifactRevision(managedProgram.id) != 2 ||
         particleDeletionQueue.PendingCount() != 1) {
@@ -184,17 +193,32 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                   << " pending=" << particleDeletionQueue.PendingCount() << " error=" << managedError << '\n';
     }
     if (!Require(managedReplacement && particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
+                     particleSystems.ActiveOutputCount(managedProgram.id) == 2 && particleDrawRegistry.Size() == 2 &&
                      particleDeletionQueue.PendingCount() == 1,
                  "Valid GPU particle hot replacement was not published with deferred retirement"))
+        return false;
+
+    auto duplicateOutputProgram = managedProgram;
+    duplicateOutputProgram.artifactRevision = 3;
+    duplicateOutputProgram.outputs[1].stableId = duplicateOutputProgram.outputs[0].stableId;
+    if (!Require(!particleSystems.CreateOrReplace(duplicateOutputProgram, &managedError) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
+                     particleSystems.ActiveOutputCount(managedProgram.id) == 2 && particleDrawRegistry.Size() == 2 &&
+                     particleDeletionQueue.PendingCount() == 1,
+                 "Duplicate GPU particle output identity disturbed the active revision"))
         return false;
 
     auto companionProgram = managedProgram;
     companionProgram.id = 92;
     companionProgram.stableId = "managed-companion";
-    companionProgram.material.renderQueue = 3200;
+    companionProgram.outputs.resize(1);
+    companionProgram.outputs[0].id = 921;
+    companionProgram.outputs[0].stableId = "companion-primary";
+    companionProgram.outputs[0].material.renderQueue = 3200;
     if (!Require(particleSystems.CreateOrReplaceBatch({companionProgram}, &managedError) &&
                      particleSystems.Size() == 2 && particleSystems.Contains(companionProgram.id) &&
-                     particleDrawRegistry.Size() == 2 && particleDeletionQueue.PendingCount() == 2,
+                     particleSystems.ActiveOutputCount(companionProgram.id) == 1 && particleDrawRegistry.Size() == 3 &&
+                     particleDeletionQueue.PendingCount() == 2,
                  "GPU particle batch did not publish a valid companion emitter"))
         return false;
 
@@ -206,7 +230,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(!particleSystems.CreateOrReplaceBatch({candidateManagedProgram, invalidCompanion}, &managedError) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
                      particleSystems.ActiveArtifactRevision(companionProgram.id) == 2 &&
-                     particleDrawRegistry.Size() == 2 && particleDeletionQueue.PendingCount() == 2,
+                     particleDrawRegistry.Size() == 3 && particleDeletionQueue.PendingCount() == 2,
                  "Failed GPU particle batch disturbed its last-known-good emitters"))
         return false;
 
@@ -214,7 +238,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(particleSystems.ApplyBatch({managedProgram}, {companionProgram.id}, &managedError) &&
                      particleSystems.Size() == 1 && !particleSystems.Contains(companionProgram.id) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 3 &&
-                     particleDrawRegistry.Size() == 1 && particleDeletionQueue.PendingCount() == 3,
+                     particleSystems.ActiveOutputCount(managedProgram.id) == 2 && particleDrawRegistry.Size() == 2 &&
+                     particleDeletionQueue.PendingCount() == 3,
                  "GPU particle replacement and removal were not published atomically"))
         return false;
 
@@ -241,7 +266,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle reset did not cancel and replace a pending frame request"))
         return false;
     const auto managedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(managedEntries.size() == 1, "GPU particle draw registry queue filtering failed"))
+    if (!Require(managedEntries.size() == 2 && managedEntries[0].renderer->RenderQueue() == 3050 &&
+                     managedEntries[1].renderer->RenderQueue() == 3075 &&
+                     managedEntries[0].instances == managedEntries[1].instances &&
+                     managedEntries[0].indirectArguments == managedEntries[1].indirectArguments,
+                 "GPU particle outputs did not share one simulated stream across ordered draw queues"))
         return false;
     const auto managedEntry = managedEntries.front();
 

@@ -355,10 +355,8 @@ class ParticleSystem(InxComponent):
         for index, (emitter, glsl_emitter) in enumerate(
             zip(metadata.emitters, glsl_emitters)
         ):
-            if len(emitter.outputs) != 1:
-                raise RuntimeError(
-                    "the current GPU particle vertical slice requires exactly one renderer output"
-                )
+            if any(output.output_type != "sprite" for output in emitter.outputs):
+                raise RuntimeError("the current GPU particle renderer supports Sprite Output only")
             if (
                 type(glsl_emitter) is not dict
                 or glsl_emitter.get("stable_id") != emitter.stable_id
@@ -376,7 +374,14 @@ class ParticleSystem(InxComponent):
                     "state_stride": glsl_emitter["state_stride"],
                     "stages": decoded["stages"],
                     "billboard": decoded["billboard"],
-                    "material": self._gpu_material_state(emitter.outputs[0]),
+                    "outputs": [
+                        {
+                            "id": self._gpu_output_id(emitter.stable_id, output.output_id),
+                            "stable_id": output.output_id,
+                            "material": self._gpu_material_state(output),
+                        }
+                        for output in emitter.outputs
+                    ],
                 }
             )
             controllers.append(
@@ -553,6 +558,17 @@ class ParticleSystem(InxComponent):
 
     def _gpu_emitter_id(self, stable_id: str) -> int:
         identity = f"{int(self._batch_id) & 0xFFFFFFFFFFFFFFFF}:{stable_id}"
+        value = int.from_bytes(
+            hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest(),
+            "little",
+        )
+        return value or 1
+
+    def _gpu_output_id(self, emitter_stable_id: str, output_stable_id: str) -> int:
+        identity = (
+            f"{int(self._batch_id) & 0xFFFFFFFFFFFFFFFF}:"
+            f"{emitter_stable_id}:{output_stable_id}"
+        )
         value = int.from_bytes(
             hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest(),
             "little",

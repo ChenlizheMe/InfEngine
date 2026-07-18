@@ -49,7 +49,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
     for (const char *field :
-         {"id", "artifact_revision", "stable_id", "capacity", "state_stride", "stages", "billboard", "material"}) {
+         {"id", "artifact_revision", "stable_id", "capacity", "state_stride", "stages", "billboard", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -75,15 +75,30 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     program.billboardVertexShader = DecodeParticleSpirv(billboard["vertex"], "particle billboard vertex shader");
     program.billboardFragmentShader = DecodeParticleSpirv(billboard["fragment"], "particle billboard fragment shader");
 
-    const py::dict material = py::cast<py::dict>(value["material"]);
-    for (const char *field : {"render_queue", "blend_enabled", "depth_test_enabled", "depth_write_enabled"}) {
-        if (!material.contains(field))
-            throw std::invalid_argument(std::string("GPU particle material is missing ") + field);
+    const py::sequence outputs = py::cast<py::sequence>(value["outputs"]);
+    program.outputs.reserve(outputs.size());
+    for (const py::handle item : outputs) {
+        if (!py::isinstance<py::dict>(item))
+            throw std::invalid_argument("GPU particle outputs must contain dictionaries");
+        const py::dict output = py::reinterpret_borrow<py::dict>(item);
+        for (const char *field : {"id", "stable_id", "material"}) {
+            if (!output.contains(field))
+                throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
+        }
+        particle::GpuParticleOutputProgram decoded;
+        decoded.id = py::cast<uint64_t>(output["id"]);
+        decoded.stableId = py::cast<std::string>(output["stable_id"]);
+        const py::dict material = py::cast<py::dict>(output["material"]);
+        for (const char *field : {"render_queue", "blend_enabled", "depth_test_enabled", "depth_write_enabled"}) {
+            if (!material.contains(field))
+                throw std::invalid_argument(std::string("GPU particle material is missing ") + field);
+        }
+        decoded.material.renderQueue = py::cast<int32_t>(material["render_queue"]);
+        decoded.material.blendEnabled = py::cast<bool>(material["blend_enabled"]);
+        decoded.material.depthTestEnabled = py::cast<bool>(material["depth_test_enabled"]);
+        decoded.material.depthWriteEnabled = py::cast<bool>(material["depth_write_enabled"]);
+        program.outputs.push_back(std::move(decoded));
     }
-    program.material.renderQueue = py::cast<int32_t>(material["render_queue"]);
-    program.material.blendEnabled = py::cast<bool>(material["blend_enabled"]);
-    program.material.depthTestEnabled = py::cast<bool>(material["depth_test_enabled"]);
-    program.material.depthWriteEnabled = py::cast<bool>(material["depth_write_enabled"]);
     return program;
 }
 
@@ -1853,6 +1868,14 @@ PYBIND11_MODULE(_Infernux, m)
                 return manager ? manager->ActiveArtifactRevision(emitterId) : uint64_t{0};
             },
             py::arg("emitter_id"), "Return the active GPU particle artifact revision")
+        .def(
+            "_gpu_particle_output_count",
+            [](Infernux &self, uint64_t emitterId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->ActiveOutputCount(emitterId) : size_t{0};
+            },
+            py::arg("emitter_id"), "Return the active GPU particle rendering output count")
         // ========================================================================
         // Material Pipeline API - for refreshing material shaders at runtime
         // ========================================================================

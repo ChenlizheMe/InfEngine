@@ -27,6 +27,13 @@ namespace particle
 
 class ParticleGpuDrawRegistry;
 
+struct GpuParticleOutputProgram
+{
+    uint64_t id = 0;
+    std::string stableId;
+    GpuBillboardMaterialState material;
+};
+
 struct GpuParticleEmitterProgram
 {
     uint64_t id = 0;
@@ -37,7 +44,7 @@ struct GpuParticleEmitterProgram
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
-    GpuBillboardMaterialState material;
+    std::vector<GpuParticleOutputProgram> outputs;
 };
 
 /// Owns all GPU particle emitters and their once-per-engine-frame simulation
@@ -79,6 +86,7 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool Contains(uint64_t id) const;
     [[nodiscard]] size_t Size() const;
     [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
+    [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;
 
   private:
     struct Impl;

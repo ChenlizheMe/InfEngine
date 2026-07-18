@@ -37,11 +37,18 @@ struct ParticleGpuSystemManager::Impl
 {
     struct Emitter
     {
+        struct Output
+        {
+            uint64_t id = 0;
+            std::string stableId;
+            std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
+        };
+
         uint64_t id = 0;
         uint64_t artifactRevision = 0;
         std::string stableId;
         std::unique_ptr<ParticleGpuRuntime> runtime;
-        std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
+        std::vector<Output> outputs;
     };
 
     struct GraphState
@@ -78,6 +85,10 @@ struct ParticleGpuSystemManager::Impl
             SetError(error, "GPU particle program contains invalid billboard SPIR-V");
             return {};
         }
+        if (program.outputs.empty()) {
+            SetError(error, "GPU particle program requires at least one rendering output");
+            return {};
+        }
 
         auto emitter = std::make_shared<Emitter>();
         emitter->id = program.id;
@@ -96,15 +107,30 @@ struct ParticleGpuSystemManager::Impl
             return {};
         }
 
-        emitter->renderer = std::make_shared<ParticleGpuBillboardRenderer>();
-        GpuBillboardRendererDesc rendererDesc;
-        rendererDesc.vertexShader = {program.billboardVertexShader.data(), program.billboardVertexShader.size()};
-        rendererDesc.fragmentShader = {program.billboardFragmentShader.data(), program.billboardFragmentShader.size()};
-        rendererDesc.instances = emitter->runtime->InstanceBuffer();
-        rendererDesc.material = program.material;
-        if (!emitter->renderer->Create(device, rendererDesc)) {
-            SetError(error, "failed to create GPU particle billboard renderer");
-            return {};
+        std::unordered_set<uint64_t> outputIds;
+        std::unordered_set<std::string> outputStableIds;
+        outputIds.reserve(program.outputs.size());
+        outputStableIds.reserve(program.outputs.size());
+        emitter->outputs.reserve(program.outputs.size());
+        for (const auto &output : program.outputs) {
+            if (output.id == 0 || output.stableId.empty() || !outputIds.insert(output.id).second ||
+                !outputStableIds.insert(output.stableId).second) {
+                SetError(error, "GPU particle output identity must be valid and unique per emitter");
+                return {};
+            }
+            auto renderer = std::make_shared<ParticleGpuBillboardRenderer>();
+            GpuBillboardRendererDesc rendererDesc;
+            rendererDesc.vertexShader = {program.billboardVertexShader.data(), program.billboardVertexShader.size()};
+            rendererDesc.fragmentShader = {program.billboardFragmentShader.data(),
+                                           program.billboardFragmentShader.size()};
+            rendererDesc.instances = emitter->runtime->InstanceBuffer();
+            rendererDesc.material = output.material;
+            if (!renderer->Create(device, rendererDesc)) {
+                SetError(error,
+                         "failed to create GPU particle billboard renderer for output '" + output.stableId + "'");
+                return {};
+            }
+            emitter->outputs.push_back({output.id, output.stableId, std::move(renderer)});
         }
         return emitter;
     }
@@ -136,10 +162,18 @@ struct ParticleGpuSystemManager::Impl
     [[nodiscard]] static std::vector<GpuParticleDrawEntry> BuildDrawEntries(const EmitterMap &candidateEmitters)
     {
         std::vector<GpuParticleDrawEntry> entries;
-        entries.reserve(candidateEmitters.size());
+        size_t outputCount = 0;
         for (const auto &[id, emitter] : candidateEmitters) {
-            entries.push_back({id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
-                               emitter->runtime->IndirectBuffer(), emitter->renderer});
+            (void)id;
+            outputCount += emitter->outputs.size();
+        }
+        entries.reserve(outputCount);
+        for (const auto &[id, emitter] : candidateEmitters) {
+            (void)id;
+            for (const auto &output : emitter->outputs) {
+                entries.push_back({output.id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
+                                   emitter->runtime->IndirectBuffer(), output.renderer});
+            }
         }
         return entries;
     }
@@ -344,6 +378,14 @@ uint64_t ParticleGpuSystemManager::ActiveArtifactRevision(uint64_t id) const
         return 0;
     const auto found = m_impl->emitters.find(id);
     return found != m_impl->emitters.end() ? found->second->artifactRevision : 0;
+}
+
+size_t ParticleGpuSystemManager::ActiveOutputCount(uint64_t id) const
+{
+    if (!m_impl)
+        return 0;
+    const auto found = m_impl->emitters.find(id);
+    return found != m_impl->emitters.end() ? found->second->outputs.size() : 0;
 }
 
 } // namespace infernux::particle
