@@ -438,6 +438,25 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             return None
         return slots[index].effect
 
+    def remap_orphan_effect_stage(self, old_stage_id: str, new_stage_id: str) -> int:
+        """Move preserved orphan slots onto one currently declared stage."""
+        from Infernux.renderstack.effect_stage import validate_effect_stage_id
+
+        old_id = validate_effect_stage_id(old_stage_id)
+        if any(stage.accepts_id(old_id) for stage in self.effect_stages):
+            raise ValueError(f"EffectStage {old_id!r} is declared and is not orphaned")
+        target = self._resolve_effect_stage(new_stage_id)
+        remapped = 0
+        for slot in self.effect_slots or ():
+            if slot.stage_id == old_id:
+                slot.stage_id = target.stable_id
+                remapped += 1
+        if remapped:
+            self._normalize_effect_slots()
+            self._effect_binding_error = ""
+            self.invalidate_graph()
+        return remapped
+
     def _migrate_legacy_effect_bindings(self) -> None:
         from Infernux.core.asset_ref import RenderEffectRef
         from Infernux.renderstack.effect_binding import parse_effect_binding_document

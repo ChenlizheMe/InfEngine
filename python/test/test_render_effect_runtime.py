@@ -211,3 +211,38 @@ def test_render_stack_canonicalizes_declared_stage_aliases():
     assert slot.stage_id == "final"
     assert stack.get_effect_stage_slots("old_final") == (slot,)
     assert stack.orphan_effect_slots == ()
+
+
+def test_render_stack_can_explicitly_remap_preserved_orphan_slots():
+    stack = RenderStack()
+    first = EffectSlot(stage_id="removed_stage")
+    second = EffectSlot(stage_id="removed_stage")
+    stack.effect_slots = [first, second]
+
+    assert stack.remap_orphan_effect_stage("removed_stage", "final") == 2
+    assert stack.get_effect_stage_slots("final") == (first, second)
+    assert stack.orphan_effect_slots == ()
+
+
+def test_effect_stage_inspector_adapter_routes_list_edits_to_render_stack():
+    from Infernux.engine.ui.inspector_renderstack import _EffectStageSlotsAdapter
+
+    stack = RenderStack()
+    adapter = _EffectStageSlotsAdapter(stack, "final")
+    first = EffectSlot(stage_id="")
+    second = EffectSlot(stage_id="")
+
+    adapter.slots = [first, second]
+    assert first.stage_id == "final"
+    assert second.stage_id == "final"
+    assert adapter.slots == [first, second]
+
+    adapter.slots = [second]
+    assert stack.get_effect_stage_slots("final") == (second,)
+
+
+def test_render_effect_picker_accepts_effect_groups():
+    from Infernux.core.asset_ref import get_asset_type_config
+
+    config = get_asset_type_config("RenderEffect")
+    assert config["extensions"] == ("*.effect", "*.effectgroup", "*.effectstack")

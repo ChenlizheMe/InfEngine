@@ -433,7 +433,18 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
     return changed
 
 
-def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, current_value, lw: float):
+def _render_list_field(
+    ctx: InxGUIContext,
+    comp,
+    field_name: str,
+    metadata,
+    current_value,
+    lw: float,
+    *,
+    display_name: str | None = None,
+    header_drop_type: str | None = None,
+    header_drop_factory=None,
+):
     from Infernux.components.serialized_field import FieldType
     from .igui import IGUI
 
@@ -464,20 +475,27 @@ def _render_list_field(ctx: InxGUIContext, comp, field_name: str, metadata, curr
             changed = True
 
     # Header drop callback (for reference types)
-    _hdr_drag_type = _list_drag_drop_type(element_type, metadata) if element_type in reference_types else None
+    _hdr_drag_type = header_drop_type
+    if _hdr_drag_type is None and element_type in reference_types:
+        _hdr_drag_type = _list_drag_drop_type(element_type, metadata)
     _hdr_req = (metadata.component_type if element_type == FieldType.COMPONENT
                 else metadata.required_component) if element_type in reference_types else None
 
     def _header_drop(payload):
         nonlocal changed
-        value = _create_reference_value_from_payload(element_type, payload, _hdr_req, metadata=metadata)
+        if header_drop_factory is not None:
+            value = header_drop_factory(payload)
+        else:
+            value = _create_reference_value_from_payload(
+                element_type, payload, _hdr_req, metadata=metadata,
+            )
         if value is not None:
             items.append(value)
             changed = True
 
     # ── Unified list header: [label [N] ........... [-][+]] ──
     header_open = IGUI.list_header(
-        ctx, pretty_field_name(field_name), len(items),
+        ctx, display_name or pretty_field_name(field_name), len(items),
         on_add=_on_add,
         on_remove=_on_remove_last if items else None,
         accept_drop=_hdr_drag_type,

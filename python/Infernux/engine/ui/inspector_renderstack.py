@@ -28,6 +28,34 @@ if TYPE_CHECKING:
     from Infernux.renderstack.render_stack import RenderStack, PassEntry
 
 
+class _EffectStageSlotsAdapter:
+    """Expose one stage list as an undoable property for the shared list UI."""
+
+    def __init__(self, stack: "RenderStack", stage_id: str):
+        self._stack = stack
+        self._stage_id = stage_id
+
+    @property
+    def slots(self):
+        return list(self._stack.get_effect_stage_slots(self._stage_id))
+
+    @slots.setter
+    def slots(self, value) -> None:
+        self._stack.set_effect_stage_slots(self._stage_id, value)
+
+
+def _effect_stage_adapter(stack: "RenderStack", stage_id: str) -> _EffectStageSlotsAdapter:
+    adapters = getattr(stack, "_inspector_effect_stage_adapters", None)
+    if not isinstance(adapters, dict):
+        adapters = {}
+        stack._inspector_effect_stage_adapters = adapters
+    adapter = adapters.get(stage_id)
+    if adapter is None:
+        adapter = _EffectStageSlotsAdapter(stack, stage_id)
+        adapters[stage_id] = adapter
+    return adapter
+
+
 def _undo_manager():
     from Infernux.engine.undo import UndoManager
     return UndoManager.instance()
@@ -453,6 +481,7 @@ def _render_topology_with_effects(ctx: InxGUIContext, stack: "RenderStack", insp
     display_to_name = inspector_state["display_to_name"] if inspector_state is not None else {
         ip.display_name: ip.name for ip in g.injection_points
     }
+    effect_stage_by_id = {stage.stable_id: stage for stage in g.effect_stages}
 
     # Reduce vertical spacing between bars
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_SUBITEM_SPC)
@@ -465,11 +494,88 @@ def _render_topology_with_effects(ctx: InxGUIContext, stack: "RenderStack", insp
         if kind == "ip":
             ip_name = display_to_name.get(label, label)
             _render_injection_point_row(ctx, stack, ip_name, label, _uid_counter, ip_entries.get(ip_name, []), inspector_state)
+        elif kind == "effect_stage":
+            stage = effect_stage_by_id.get(label)
+            if stage is not None:
+                _render_effect_stage_row(ctx, stack, stage, _uid_counter)
         else:
             # Regular pipeline pass — thin bar
             _render_pass_bar(ctx, label, _uid_counter)
 
+    _render_orphan_effect_slots(ctx, stack)
+
     ctx.pop_style_var(1)
+
+
+def _render_effect_stage_row(ctx: InxGUIContext, stack: "RenderStack", stage, uid: int) -> None:
+    """Render one pipeline-declared stage as an ordered EffectSlot list."""
+    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.renderstack.effect_slot import EffectSlot
+    from ._inspector_list_field import _render_list_field
+    from ._inspector_references import _create_asset_ref_from_payload
+
+    slots = list(stack.get_effect_stage_slots(stage.stable_id))
+    list_metadata = get_serialized_fields(type(stack))["effect_slots"]
+    effect_metadata = get_serialized_fields(EffectSlot)["effect"]
+    adapter = _effect_stage_adapter(stack, stage.stable_id)
+
+    def _slot_from_drop(payload):
+        reference = _create_asset_ref_from_payload(effect_metadata, str(payload))
+        return EffectSlot(stage_id=stage.stable_id, effect=reference)
+
+    ctx.push_id_str(f"effect_stage_{uid}_{stage.stable_id}")
+    try:
+        _render_list_field(
+            ctx,
+            adapter,
+            "slots",
+            list_metadata,
+            slots,
+            0.0,
+            display_name=stage.display_name,
+            header_drop_type="RENDER_EFFECT_FILE",
+            header_drop_factory=_slot_from_drop,
+        )
+        if semantic_capture_enabled(ctx):
+            ctx.record_semantic_item(
+                "renderstack_effect_stage",
+                stage.display_name,
+                True,
+                _renderstack_semantic_id(stack, f"effect_stage.{stage.stable_id}"),
+                None,
+                float(len(slots)),
+            )
+    finally:
+        ctx.pop_id()
+
+
+def _render_orphan_effect_slots(ctx: InxGUIContext, stack: "RenderStack") -> None:
+    """Expose preserved bindings whose pipeline stage no longer exists."""
+    orphans = stack.orphan_effect_slots
+    if not orphans:
+        return
+    ctx.dummy(0, 4)
+    if not render_compact_section_header(
+        ctx,
+        f"Missing Effect Stages [{len(orphans)}]##orphan_effect_stages",
+        text_color=Theme.WARNING_TEXT,
+        level="secondary",
+    ):
+        return
+    for slot in orphans:
+        reference = slot.effect_ref
+        asset_name = reference.path_hint or reference.guid or "None"
+        ctx.label(f"{slot.stage_id}: {asset_name}")
+        if semantic_capture_enabled(ctx):
+            ctx.record_semantic_item(
+                "missing_effect_stage",
+                slot.stage_id,
+                False,
+                _renderstack_semantic_id(stack, f"orphan_effect_slot.{slot.slot_id}"),
+                bool(slot.enabled),
+                None,
+                asset_name,
+            )
 
 
 def _render_injection_point_row(

@@ -213,7 +213,7 @@ class VfxSystemRef(AssetRefBase):
 
 
 class RenderEffectRef(AssetRefBase):
-    """Reference to a mutable ``.effect`` asset runtime object."""
+    """Reference to a ``.effect`` asset or reusable effect group source."""
 
     def __init__(self, effect=None, *, guid: str = "", path_hint: str = ""):
         if effect is None:
@@ -393,8 +393,8 @@ def _ensure_registry():
         "RenderEffect": {
             "ref_class":  RenderEffectRef,
             "drag_type":  "RENDER_EFFECT_FILE",
-            "extensions": ("*.effect",),
-            "display":    "Render Effect",
+            "extensions": ("*.effect", "*.effectgroup", "*.effectstack"),
+            "display":    "Render Effect / Group",
             "prefix":     "effect",
         },
         "AnimationClip": {
