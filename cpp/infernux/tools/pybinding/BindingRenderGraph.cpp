@@ -46,6 +46,14 @@ void RegisterRenderGraphBindings(py::module_ &m)
                "Draw a fullscreen triangle with a named shader (post-process)")
         .export_values();
 
+    py::enum_<ShaderCompileTarget>(m, "MaterialPassType", "Material shader program selected by a render pass")
+        .value("FORWARD", ShaderCompileTarget::Forward)
+        .value("GBUFFER", ShaderCompileTarget::GBuffer)
+        .value("SHADOW", ShaderCompileTarget::Shadow)
+        .value("DEPTH", ShaderCompileTarget::Depth)
+        .value("PICKING", ShaderCompileTarget::Picking)
+        .value("MOTION", ShaderCompileTarget::Motion);
+
     // GraphTextureDesc struct
     py::class_<GraphTextureDesc>(m, "GraphTextureDesc", "Description of a texture resource in the Python-defined graph")
         .def(py::init<>())
@@ -75,6 +83,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("clear_color_a", &GraphPassDesc::clearColorA, "Clear color alpha")
         .def_readwrite("clear_depth_value", &GraphPassDesc::clearDepthValue, "Depth clear value")
         .def_readwrite("action", &GraphPassDesc::action, "Render action type")
+        .def_readwrite("material_pass", &GraphPassDesc::shaderTarget, "Material shader program for DrawRenderers")
         .def_readwrite("queue_min", &GraphPassDesc::queueMin, "Minimum render queue (inclusive)")
         .def_readwrite("queue_max", &GraphPassDesc::queueMax, "Maximum render queue (inclusive)")
         .def_readwrite("sort_mode", &GraphPassDesc::sortMode, "Sort mode: 'front_to_back', 'back_to_front', 'none'")

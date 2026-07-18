@@ -41,10 +41,10 @@ bool PassDescEquals(const GraphPassDesc &a, const GraphPassDesc &b)
            a.writeDepth == b.writeDepth && a.clearColor == b.clearColor && a.clearDepth == b.clearDepth &&
            a.clearColorR == b.clearColorR && a.clearColorG == b.clearColorG && a.clearColorB == b.clearColorB &&
            a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue && a.action == b.action &&
-           a.queueMin == b.queueMin && a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
-           a.overrideMaterial == b.overrideMaterial && a.lightIndex == b.lightIndex &&
-           a.screenUIList == b.screenUIList && a.shaderName == b.shaderName && a.pushConstants == b.pushConstants &&
-           a.inputBindings == b.inputBindings;
+           a.shaderTarget == b.shaderTarget && a.queueMin == b.queueMin && a.queueMax == b.queueMax &&
+           a.sortMode == b.sortMode && a.passTag == b.passTag && a.overrideMaterial == b.overrideMaterial &&
+           a.lightIndex == b.lightIndex && a.screenUIList == b.screenUIList && a.shaderName == b.shaderName &&
+           a.pushConstants == b.pushConstants && a.inputBindings == b.inputBindings;
 }
 
 bool GraphDescEquals(const RenderGraphDescription &a, const RenderGraphDescription &b)
@@ -358,18 +358,56 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         const std::string sortMode = passDesc.sortMode;
         const std::string overrideMaterial = passDesc.overrideMaterial;
         const std::string passTag = passDesc.passTag;
+        MaterialPassPipelineDescriptor materialPass =
+            vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(passDesc.shaderTarget);
+        if (graphPassAction == GraphPassActionType::DrawRenderers) {
+            materialPass.colorFormats.clear();
+            auto colorOutputs = passDesc.writeColors;
+            std::sort(colorOutputs.begin(), colorOutputs.end(),
+                      [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+            for (const auto &[slot, textureName] : colorOutputs) {
+                (void)slot;
+                const auto texture = std::find_if(
+                    desc.textures.begin(), desc.textures.end(),
+                    [&textureName](const GraphTextureDesc &textureDesc) { return textureDesc.name == textureName; });
+                if (texture != desc.textures.end()) {
+                    materialPass.colorFormats.push_back(
+                        texture->isBackbuffer ? rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat())
+                                              : texture->format);
+                }
+            }
+            if (!passDesc.writeDepth.empty()) {
+                const auto depth =
+                    std::find_if(desc.textures.begin(), desc.textures.end(), [&passDesc](const GraphTextureDesc &desc) {
+                        return desc.name == passDesc.writeDepth;
+                    });
+                materialPass.depthFormat = depth != desc.textures.end() ? depth->format : rhi::PixelFormat::Undefined;
+            } else {
+                materialPass.depthFormat = rhi::PixelFormat::Undefined;
+                for (const std::string &textureName : passDesc.readTextures) {
+                    const auto depth = std::find_if(desc.textures.begin(), desc.textures.end(),
+                                                    [&textureName](const GraphTextureDesc &desc) {
+                                                        return desc.name == textureName && desc.isDepth;
+                                                    });
+                    if (depth != desc.textures.end()) {
+                        materialPass.depthFormat = depth->format;
+                        break;
+                    }
+                }
+            }
+        }
 
         // Capture input bindings for passes that need graph texture access
         // (e.g. reading shadow map as a sampled texture).
         const auto inputBindings = passDesc.inputBindings;
 
         m_pythonCallbacks[passDesc.name] = [this, vkCore, graphPassAction, queueMin, queueMax, screenUIListIndex,
-                                            inputBindings, lightIndex, sortMode, overrideMaterial,
-                                            passTag](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
+                                            inputBindings, lightIndex, sortMode, overrideMaterial, passTag,
+                                            materialPass](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
             switch (graphPassAction) {
             case GraphPassActionType::DrawRenderers:
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, sortMode, overrideMaterial,
-                                          passTag);
+                                          passTag, &materialPass);
                 break;
             case GraphPassActionType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
@@ -1385,20 +1423,6 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.SetClearDepth(clearDepthVal, 0);
                 }
 
-                // Return execute callback.
-
-                // Collect MRT format info for MaterialPipelineManager
-                uint32_t mrtColorCount = static_cast<uint32_t>(colorTargets.size());
-                std::vector<VkFormat> mrtColorFormats;
-                if (mrtColorCount > 1) {
-                    for (const auto &[slot, texName] : passDesc.writeColors) {
-                        auto texIt = texDescMap.find(texName);
-                        if (texIt != texDescMap.end()) {
-                            mrtColorFormats.push_back(rhi::ToVkFormat(texIt->second->format));
-                        }
-                    }
-                }
-
                 for (const auto &binding : inputBindingHandles) {
                     if (binding.samplerName == "shadowMap" && !m_shadowMapInputHandle.IsValid()) {
                         m_shadowMapInputHandle = binding.handle;
@@ -1406,19 +1430,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
-                return [callback, passWidth, passHeight, inputBindingHandles, localVkCore, isShadowPass, mrtColorCount,
-                        mrtColorFormats](vk::RenderContext &ctx) {
-                    if (callback) {
-                        // Set MRT config so material pipelines are created with
-                        // the correct number of color attachments and blend states.
-                        if (mrtColorCount > 1) {
-                            localVkCore->GetMaterialPipelineManager().SetMRTConfig(mrtColorCount, mrtColorFormats);
-                        }
+                return [callback, passWidth, passHeight, inputBindingHandles, isShadowPass](vk::RenderContext &ctx) {
+                    if (callback)
                         callback(ctx, passWidth, passHeight);
-                        if (mrtColorCount > 1) {
-                            localVkCore->GetMaterialPipelineManager().ResetMRTConfig();
-                        }
-                    }
                 };
             });
 

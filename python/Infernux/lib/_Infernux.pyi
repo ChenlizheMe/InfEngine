@@ -128,6 +128,15 @@ class GraphPassActionType(IntEnum):
     FULLSCREEN_QUAD: int
 
 
+class MaterialPassType(IntEnum):
+    FORWARD: int
+    GBUFFER: int
+    SHADOW: int
+    DEPTH: int
+    PICKING: int
+    MOTION: int
+
+
 class ResourceType(IntEnum):
     Meta: int
     Shader: int
@@ -1790,6 +1799,7 @@ class GraphPassDesc:
     clear_color_a: float
     clear_depth_value: float
     action: GraphPassActionType
+    material_pass: MaterialPassType
     queue_min: int
     queue_max: int
     sort_mode: str

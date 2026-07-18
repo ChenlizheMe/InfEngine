@@ -151,7 +151,11 @@ class DefaultDeferredPipeline(RenderPipeline):
                 color=DEFERRED_GBUFFER_CLEAR_COLOR,
                 depth=1.0,
             )
-            p.draw_renderers(queue_range=opaque_queue_range(), sort_mode="front_to_back")
+            p.draw_renderers(
+                queue_range=opaque_queue_range(),
+                sort_mode="front_to_back",
+                material_pass="gbuffer",
+            )
 
         graph.injection_point("after_gbuffer", resources=GBUFFER_RESOURCES)
 

@@ -254,7 +254,8 @@ class InxVkCoreModular
      */
     void DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin, int queueMax,
                            const std::string &sortMode = "", const std::string &overrideMaterial = "",
-                           const std::string &passTag = "");
+                           const std::string &passTag = "",
+                           const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr);
 
     /**
      * @brief Draw shadow casters into a depth-only shadow map.

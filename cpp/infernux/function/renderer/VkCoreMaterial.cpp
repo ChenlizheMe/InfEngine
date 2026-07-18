@@ -268,11 +268,15 @@ void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
         return;
     }
 
-    if (m_materialPipelineManagerInitialized && material.GetPassShaderProgram(ShaderCompileTarget::Forward) &&
-        material.GetPassDescriptorSet(ShaderCompileTarget::Forward) != VK_NULL_HANDLE) {
-        m_materialPipelineManager.UpdateMaterialProperties(material.GetMaterialKey(), material);
-        material.ClearPropertiesDirty();
-        return;
+    if (m_materialPipelineManagerInitialized) {
+        MaterialRenderData *renderData = m_materialPipelineManager.GetRenderData(material.GetMaterialKey());
+        if (renderData && renderData->isValid && renderData->shaderProgram &&
+            renderData->descriptorSet != VK_NULL_HANDLE &&
+            m_materialPipelineManager.IsDescriptorSetLive(renderData->descriptorSet)) {
+            m_materialPipelineManager.UpdateMaterialProperties(material.GetMaterialKey(), material);
+            material.ClearPropertiesDirty();
+            return;
+        }
     }
 
     ShaderProgram *shaderProgram = material.GetPassShaderProgram(ShaderCompileTarget::Forward);

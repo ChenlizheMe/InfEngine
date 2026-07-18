@@ -32,6 +32,7 @@ from Infernux.lib import (
     GraphPassDesc,
     GraphTextureDesc,
     GraphPassActionType,
+    MaterialPassType,
     PixelFormat,
 )
 _HAS_NATIVE = True
@@ -108,6 +109,7 @@ class RenderPassBuilder:
         self._clear_color: Optional[Tuple[float, float, float, float]] = None
         self._clear_depth: Optional[float] = None
         self._action = "none"
+        self._material_pass = "forward"
         self._queue_min = 0
         self._queue_max = 5000
         self._sort_mode = "none"
@@ -235,6 +237,7 @@ class RenderPassBuilder:
         sort_mode: str = "none",
         pass_tag: str = "",
         override_material: str = "",
+        material_pass: str = "forward",
     ) -> "RenderPassBuilder":
         """Configure this pass to draw scene renderers.
 
@@ -246,8 +249,15 @@ class RenderPassBuilder:
             pass_tag: Filter draw calls by shader pass tag (empty = no filter).
             override_material: Force all objects to use this material name
                                (empty = per-object material).
+            material_pass: Linked material program used by this pass. Supported
+                           values are ``forward``, ``gbuffer``, ``depth``,
+                           ``picking``, and ``motion``.
         """
+        normalized_pass = str(material_pass).strip().lower()
+        if normalized_pass not in {"forward", "gbuffer", "depth", "picking", "motion"}:
+            raise ValueError(f"Unknown material pass '{material_pass}'")
         self._action = "draw_renderers"
+        self._material_pass = normalized_pass
         self._queue_min, self._queue_max = queue_range
         self._sort_mode = sort_mode
         self._pass_tag = pass_tag
@@ -726,22 +736,31 @@ class RenderGraph:
                 f"Pass '{p._name}' clears depth but has no depth output"
             )
 
-        # draw_renderers must write to a camera_target (backbuffer) texture.
-        # Material VkPipelines are compiled against backbuffer VkRenderPass;
-        # writing to a non-backbuffer texture causes format incompatibility.
         if p._action == "draw_renderers":
-            for slot, tex_name in p._write_colors.items():
-                tex = texture_map.get(tex_name)
-                if tex is not None and not tex.is_camera_target:
-                    warnings.warn(
-                        f"[RenderGraph] Pass '{p._name}' uses draw_renderers "
-                        f"but writes to non-backbuffer texture '{tex_name}'. "
-                        f"Material VkPipelines are compiled against the "
-                        f"backbuffer RenderPass — this will likely cause "
-                        f"VK_ERROR_DEVICE_LOST. Use a camera_target texture "
-                        f"or blit to the target via fullscreen_quad.",
-                        stacklevel=4,
+            slots = sorted(p._write_colors)
+            if slots != list(range(len(slots))):
+                raise ValueError(
+                    f"Pass '{p._name}' color slots must be contiguous from zero"
+                )
+            if p._material_pass == "depth":
+                if p._write_colors or p._write_depth is None:
+                    raise ValueError(
+                        f"Depth pass '{p._name}' requires one depth output and no color outputs"
                     )
+            elif p._material_pass == "picking":
+                colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
+                if (
+                    len(colors) != 1
+                    or colors[0].format != Format.RG32_UINT
+                    or p._write_depth is None
+                ):
+                    raise ValueError(
+                        f"Picking pass '{p._name}' requires RG32_UINT color[0] and a depth output"
+                    )
+            elif not p._write_colors:
+                raise ValueError(
+                    f"Material pass '{p._name}' requires at least one color output"
+                )
 
         # Warn about unknown action strings (would silently map to NONE).
         _known_actions = {
@@ -877,6 +896,13 @@ class RenderGraph:
             "draw_screen_ui": GraphPassActionType.DRAW_SCREEN_UI,
             "fullscreen_quad": GraphPassActionType.FULLSCREEN_QUAD,
         }
+        _material_pass_map = {
+            "forward": MaterialPassType.FORWARD,
+            "gbuffer": MaterialPassType.GBUFFER,
+            "depth": MaterialPassType.DEPTH,
+            "picking": MaterialPassType.PICKING,
+            "motion": MaterialPassType.MOTION,
+        }
 
         pass_list = []
         for p in self._passes:
@@ -903,6 +929,7 @@ class RenderGraph:
                 pd.clear_depth = False
 
             pd.action = _action_map.get(p._action, GraphPassActionType.NONE)
+            pd.material_pass = _material_pass_map[p._material_pass]
             pd.queue_min = p._queue_min
             pd.queue_max = p._queue_max
             pd.sort_mode = p._sort_mode
@@ -953,6 +980,7 @@ class RenderGraph:
                     "clear_color": p._clear_color,
                     "clear_depth": p._clear_depth,
                     "action": p._action,
+                    "material_pass": p._material_pass,
                     "queue_min": p._queue_min,
                     "queue_max": p._queue_max,
                     "sort_mode": p._sort_mode,

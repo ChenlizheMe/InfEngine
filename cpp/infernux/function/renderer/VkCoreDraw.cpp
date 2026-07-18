@@ -281,8 +281,16 @@ void InxVkCoreModular::CmdUpdateShadowUBO(VkCommandBuffer cmdBuf)
 
 void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
                                          int queueMax, const std::string &sortMode, const std::string &overrideMaterial,
-                                         const std::string &passTag)
+                                         const std::string &passTag,
+                                         const MaterialPassPipelineDescriptor *pipelineDescriptor)
 {
+    const MaterialPassPipelineDescriptor activePass =
+        pipelineDescriptor ? *pipelineDescriptor : m_materialPipelineManager.GetDefaultPassPipelineDescriptor();
+    if (!activePass.IsValid()) {
+        INXLOG_ERROR("DrawSceneFiltered received an invalid ", ShaderCompileTargetName(activePass.target),
+                     " pass pipeline descriptor");
+        return;
+    }
     // One-shot diagnostic: log queue-range filtering for first N frames
     static int s_filterDiagFrames = 0;
 
@@ -502,6 +510,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
     const size_t totalEligible = m_eligibleScratch.size();
     const uint32_t writeBase = m_instanceWriteOffset;
+    const bool needsInstanceAuxiliary =
+        activePass.target == ShaderCompileTarget::Picking || activePass.target == ShaderCompileTarget::Motion;
+    if (needsInstanceAuxiliary)
+        PrepareInstanceAuxiliary(m_ensureFrameCounter, writeBase + totalEligible);
 
     if (totalEligible > 0 && frameIndex < m_instanceBuffers.size()) {
         size_t requiredBoneMatrices = m_skinPaletteWriteOffset;
@@ -552,6 +564,14 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             }
         }
 
+        if (needsInstanceAuxiliary) {
+            for (size_t i = 0; i < totalEligible; ++i) {
+                const DrawCall &draw = *m_eligibleScratch[i].dc;
+                (void)WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
+                                             draw.worldMatrix, draw.objectId);
+            }
+        }
+
         if (skinInstFrame.buffer && skinPaletteFrame.buffer) {
             auto *skinInstances = static_cast<GPUSkinInstanceData *>(skinInstFrame.mapped);
             if (!skinInstances) {
@@ -598,6 +618,64 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     InxMaterial *currentMaterialRaw = nullptr;
     VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
     uint64_t issuedDraws = 0;
+
+    struct ResolvedMaterialPass
+    {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        ShaderProgram *program = nullptr;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return pipeline != VK_NULL_HANDLE && layout != VK_NULL_HANDLE && descriptorSet != VK_NULL_HANDLE &&
+                   program != nullptr;
+        }
+    };
+
+    auto resolveMaterialPass = [&](const std::shared_ptr<InxMaterial> &owner) -> ResolvedMaterialPass {
+        if (!owner)
+            return {};
+
+        const std::string materialKey = owner->GetMaterialKey();
+        MaterialRenderData *forward = m_materialPipelineManager.GetRenderData(materialKey);
+        if (forward && forward->descriptorSet != VK_NULL_HANDLE &&
+            !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet)) {
+            m_materialPipelineManager.RemoveRenderData(materialKey);
+            forward = nullptr;
+        }
+        if (!forward || owner->IsPipelineDirty()) {
+            const std::string &vertName = owner->GetVertShaderName();
+            const std::string &fragName = owner->GetFragShaderName();
+            if (fragName.empty() || !RefreshMaterialPipeline(owner, vertName, fragName))
+                return {};
+            forward = m_materialPipelineManager.GetRenderData(materialKey);
+        }
+        if (!forward || !forward->isValid || forward->descriptorSet == VK_NULL_HANDLE ||
+            !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet))
+            return {};
+
+        const MaterialPassPipelineDescriptor defaultForward =
+            m_materialPipelineManager.GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
+        if (activePass == defaultForward) {
+            return {forward->pipeline, forward->pipelineLayout, forward->descriptorSet, forward->shaderProgram};
+        }
+
+        ShaderProgram *program = forward->shaderProgram;
+        if (activePass.target != ShaderCompileTarget::Forward) {
+            const ShaderStagePair stages{owner->GetVertShaderName(), owner->GetFragShaderName()};
+            const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
+            if (!artifact || !artifact->FindVariant(activePass.target))
+                return {};
+            program = m_shaderCache.MaterializeProgramVariant(stages, activePass.target);
+            if (!program)
+                return {};
+        }
+        MaterialPassRenderData *pass = m_materialPipelineManager.GetOrCreatePassRenderData(owner, *program, activePass);
+        if (!pass || !pass->isValid)
+            return {};
+        return {pass->pipeline, pass->pipelineLayout, pass->descriptorSet, pass->shaderProgram};
+    };
 
     // Batch accumulation: consecutive entries sharing (pipeline, descriptorSet, VB, submesh) are
     // emitted as a single vkCmdDrawIndexed with instanceCount > 1.
@@ -656,101 +734,29 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // incrementing a shared_ptr reference count for every instance.
         const std::shared_ptr<InxMaterial> *matOwner = entry.materialOwner;
         InxMaterial *matRaw = matOwner->get();
-
-        VkPipeline pipeline = matRaw->GetPassPipeline(ShaderCompileTarget::Forward);
-        VkPipelineLayout pipelineLayout = matRaw->GetPassPipelineLayout(ShaderCompileTarget::Forward);
-
-        // Force re-evaluation when material's shader config changed
-        if (pipeline != VK_NULL_HANDLE && matRaw->IsPipelineDirty()) {
-            pipeline = VK_NULL_HANDLE;
-            pipelineLayout = VK_NULL_HANDLE;
+        ResolvedMaterialPass resolved = resolveMaterialPass(*matOwner);
+        if (!resolved.IsValid() && errorMaterial) {
+            resolved = resolveMaterialPass(errorMaterial);
+            if (resolved.IsValid()) {
+                matOwner = &errorMaterial;
+                matRaw = errorMaterial.get();
+            }
         }
-
-        if (pipeline == VK_NULL_HANDLE) {
-            const std::string &vertName = matRaw->GetVertShaderName();
-            const std::string &fragName = matRaw->GetFragShaderName();
-            if (!fragName.empty()) {
-                RefreshMaterialPipeline(*matOwner, vertName, fragName);
-                pipeline = matRaw->GetPassPipeline(ShaderCompileTarget::Forward);
-                pipelineLayout = matRaw->GetPassPipelineLayout(ShaderCompileTarget::Forward);
-            }
-            if (pipeline == VK_NULL_HANDLE && errorMaterial) {
-                if (errorMaterial->GetPassPipeline(ShaderCompileTarget::Forward) == VK_NULL_HANDLE) {
-                    const std::string &errVert = errorMaterial->GetVertShaderName();
-                    const std::string &errFrag = errorMaterial->GetFragShaderName();
-                    if (!errFrag.empty()) {
-                        RefreshMaterialPipeline(errorMaterial, errVert, errFrag);
-                    }
-                }
-                if (errorMaterial->GetPassPipeline(ShaderCompileTarget::Forward) != VK_NULL_HANDLE) {
-                    pipeline = errorMaterial->GetPassPipeline(ShaderCompileTarget::Forward);
-                    pipelineLayout = errorMaterial->GetPassPipelineLayout(ShaderCompileTarget::Forward);
-                    matOwner = &errorMaterial;
-                    matRaw = errorMaterial.get();
-                }
-            }
-            if (pipeline == VK_NULL_HANDLE && defaultMaterial) {
-                pipeline = defaultMaterial->GetPassPipeline(ShaderCompileTarget::Forward);
-                pipelineLayout = defaultMaterial->GetPassPipelineLayout(ShaderCompileTarget::Forward);
+        if (!resolved.IsValid() && defaultMaterial) {
+            resolved = resolveMaterialPass(defaultMaterial);
+            if (resolved.IsValid()) {
                 matOwner = &defaultMaterial;
                 matRaw = defaultMaterial.get();
             }
-            if (pipeline == VK_NULL_HANDLE) {
-                emitBatch();
-                continue;
-            }
+        }
+        if (!resolved.IsValid()) {
+            emitBatch();
+            continue;
         }
 
-        // Authoritative descriptor ownership lives in MaterialPipelineManager render data.
-        // During material/texture invalidation, scene-facing material instances can keep
-        // stale Forward pass handles for one frame. If render data is missing/invalid,
-        // force a rebuild before binding; otherwise clear pass handles and skip draw.
-        {
-            const std::string materialKey = matRaw->GetMaterialKey();
-            MaterialRenderData *rd = m_materialPipelineManager.GetRenderData(materialKey);
-
-            // Check if descriptor handle was invalidated by any code path
-            // (pool reset, free, or reinit) without render data knowing.
-            if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE &&
-                !m_materialPipelineManager.IsDescriptorSetLive(rd->descriptorSet)) {
-                static int deadDescWarnCount = 0;
-                if (deadDescWarnCount++ < 16) {
-                    const uint64_t rawHandle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(rd->descriptorSet));
-                    INXLOG_WARN("[DrawSceneFiltered] DEAD descriptor 0x", rawHandle, " for mat '", matRaw->GetName(),
-                                "' (key='", matRaw->GetMaterialKey(),
-                                "') — handle not in live tracking set. Pool was reset or set freed by"
-                                " an unknown code path. Forcing re-pipeline.");
-                }
-                rd->isValid = false;
-            }
-            if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
-                const std::string &vertName = matRaw->GetVertShaderName();
-                const std::string &fragName = matRaw->GetFragShaderName();
-                if (!fragName.empty()) {
-                    if (RefreshMaterialPipeline(*matOwner, vertName, fragName)) {
-                        rd = m_materialPipelineManager.GetRenderData(materialKey);
-                    }
-                }
-            }
-
-            if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE) {
-                if (rd->pipeline != VK_NULL_HANDLE)
-                    pipeline = rd->pipeline;
-                if (rd->pipelineLayout != VK_NULL_HANDLE)
-                    pipelineLayout = rd->pipelineLayout;
-                matRaw->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
-                matRaw->SetPassPipelineLayout(ShaderCompileTarget::Forward, rd->pipelineLayout);
-                matRaw->SetPassDescriptorSet(ShaderCompileTarget::Forward, rd->descriptorSet);
-                matRaw->SetPassShaderProgram(ShaderCompileTarget::Forward, rd->shaderProgram);
-            } else {
-                matRaw->SetPassPipeline(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-                matRaw->SetPassPipelineLayout(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-                matRaw->SetPassDescriptorSet(ShaderCompileTarget::Forward, VK_NULL_HANDLE);
-                matRaw->SetPassShaderProgram(ShaderCompileTarget::Forward, nullptr);
-            }
-        }
-
-        VkDescriptorSet descriptorSet = matRaw->GetPassDescriptorSet(ShaderCompileTarget::Forward);
+        VkPipeline pipeline = resolved.pipeline;
+        VkPipelineLayout pipelineLayout = resolved.layout;
+        VkDescriptorSet descriptorSet = resolved.descriptorSet;
 
         if (descriptorSet == VK_NULL_HANDLE) {
             static int warnCount = 0;
@@ -822,23 +828,14 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                                 "' -- forcing pipeline refresh");
                 }
 
-                const std::string &vertName = matRaw->GetVertShaderName();
-                const std::string &fragName = matRaw->GetFragShaderName();
-                if (!fragName.empty()) {
-                    if (RefreshMaterialPipeline(*matOwner, vertName, fragName)) {
-                        MaterialRenderData *rd = m_materialPipelineManager.GetRenderData(matRaw->GetMaterialKey());
-                        if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE &&
-                            m_materialPipelineManager.IsDescriptorSetLive(rd->descriptorSet)) {
-                            if (rd->pipeline != VK_NULL_HANDLE)
-                                pipeline = rd->pipeline;
-                            if (rd->pipelineLayout != VK_NULL_HANDLE)
-                                pipelineLayout = rd->pipelineLayout;
-                            descriptorSet = rd->descriptorSet;
-                            matRaw->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
-                            matRaw->SetPassPipelineLayout(ShaderCompileTarget::Forward, rd->pipelineLayout);
-                            matRaw->SetPassDescriptorSet(ShaderCompileTarget::Forward, rd->descriptorSet);
-                            matRaw->SetPassShaderProgram(ShaderCompileTarget::Forward, rd->shaderProgram);
-                        }
+                resolved = resolveMaterialPass(*matOwner);
+                if (resolved.IsValid()) {
+                    pipeline = resolved.pipeline;
+                    pipelineLayout = resolved.layout;
+                    descriptorSet = resolved.descriptorSet;
+                    if (pipeline != currentPipeline) {
+                        vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                        currentPipeline = pipeline;
                     }
                 }
 
@@ -854,7 +851,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             currentDescriptorSet = descriptorSet;
             currentLayout = pipelineLayout;
 
-            ShaderProgram *program = matRaw->GetPassShaderProgram(ShaderCompileTarget::Forward);
+            ShaderProgram *program = resolved.program;
 
             if (m_activeShadowDescSet != VK_NULL_HANDLE) {
                 if (program && program->HasDeclaredDescriptorSet(1)) {

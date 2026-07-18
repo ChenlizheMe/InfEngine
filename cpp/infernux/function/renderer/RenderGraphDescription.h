@@ -16,6 +16,7 @@
 #pragma once
 
 #include "rhi/RhiTypes.h"
+#include <core/types/ShaderTypes.h>
 
 #include <string>
 #include <utility>
@@ -89,6 +90,7 @@ struct GraphPassDesc
 
     // === Render action ===
     GraphPassActionType action = GraphPassActionType::None;
+    ShaderCompileTarget shaderTarget = ShaderCompileTarget::Forward; ///< Material program used by DrawRenderers
 
     // DrawRenderers parameters
     int queueMin = 0;             ///< Minimum render queue (inclusive)

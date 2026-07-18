@@ -7,6 +7,7 @@ from Infernux.lib import (
     GraphPassDesc,
     GraphTextureDesc,
     GraphPassActionType,
+    MaterialPassType,
     PixelFormat,
 )
 
@@ -75,6 +76,7 @@ class RenderPassBuilder:
         sort_mode: str = ...,
         pass_tag: str = ...,
         override_material: str = ...,
+        material_pass: str = ...,
     ) -> RenderPassBuilder:
         """Draw visible renderers filtered by queue range."""
         ...

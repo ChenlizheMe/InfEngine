@@ -8,7 +8,7 @@ import Infernux.lib as native
 from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
-    GraphPassActionType, PixelFormat, SampleCount,
+    GraphPassActionType, MaterialPassType, PixelFormat, SampleCount,
 )
 from Infernux.rendergraph.graph import RenderGraph, Format, TextureHandle
 
@@ -103,6 +103,24 @@ class TestRenderPassBuilder:
             p.write_color("color")
             p.draw_renderers()
         assert p._action == "draw_renderers"
+
+    def test_draw_renderers_selects_linked_material_pass(self):
+        graph = _make_graph()
+        graph.create_texture("g0", format=Format.RGBA8_UNORM)
+        with graph.add_pass("GBuffer") as p:
+            p.write_color("g0")
+            p.write_depth("depth")
+            p.draw_renderers(material_pass="gbuffer")
+        graph.set_output("g0")
+        description = graph.build()
+        assert description.passes[0].material_pass == MaterialPassType.GBUFFER
+
+    def test_draw_renderers_rejects_unknown_material_pass(self):
+        graph = _make_graph()
+        with graph.add_pass("Bad") as p:
+            p.write_color("color")
+            with pytest.raises(ValueError, match="Unknown material pass"):
+                p.draw_renderers(material_pass="magic")
 
     def test_draw_skybox(self):
         graph = _make_graph()
