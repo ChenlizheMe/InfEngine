@@ -536,6 +536,9 @@ class InxMaterial
     /// @brief Create the default alpha-blended billboard particle material.
     static std::shared_ptr<InxMaterial> CreateParticleBillboardMaterial();
 
+    /// @brief Create the default GPU ParticleGraph sprite material.
+    static std::shared_ptr<InxMaterial> CreateParticleSpriteMaterial();
+
     /// @brief Create a gizmo material (uses gizmo shader, unlit, no depth write)
     static std::shared_ptr<InxMaterial> CreateGizmoMaterial();
 

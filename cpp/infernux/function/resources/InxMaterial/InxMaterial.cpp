@@ -1059,6 +1059,32 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleBillboardMaterial()
     return material;
 }
 
+std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
+{
+    auto material = std::make_shared<InxMaterial>("ParticleSpriteMaterial");
+    material->SetVertShader("particle_sprite");
+    material->SetFragShader("unlit");
+
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false;
+    state.blendEnable = true;
+    state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    state.colorBlendOp = VK_BLEND_OP_ADD;
+    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.renderQueue = 3000;
+    material->SetRenderState(state);
+    material->SetColor("baseColor", glm::vec4(1.0f));
+    material->SetTextureGuid("texSampler", "white");
+    material->SetBuiltin(true);
+    return material;
+}
+
 std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
 {
     auto material = std::make_shared<InxMaterial>("GizmoMaterial");

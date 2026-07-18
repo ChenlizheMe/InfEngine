@@ -600,7 +600,7 @@ class ParticleSystem(InxComponent):
             try:
                 from Infernux.core.material import Material
 
-                material = Material.get("ParticleBillboardMaterial")
+                material = Material.get("ParticleSpriteMaterial")
             except (AttributeError, RuntimeError):
                 pass
         if path and not os.path.isabs(path):

@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cassert>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace
@@ -36,6 +38,15 @@ bool HasDiagnostic(const infernux::ShaderProgramInterfaceArtifact &artifact, inf
 {
     return std::any_of(artifact.diagnostics.begin(), artifact.diagnostics.end(),
                        [&](const auto &diagnostic) { return diagnostic.code == code; });
+}
+
+std::string ReadText(const std::string &path)
+{
+    std::ifstream input(path, std::ios::binary);
+    assert(input.good());
+    std::ostringstream text;
+    text << input.rdbuf();
+    return text.str();
 }
 } // namespace
 
@@ -441,6 +452,22 @@ void surface(out SurfaceData surface)
     assert(particleArtifact.IsValid());
     assert(particleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
     assert(particleArtifact.variants.size() == 1);
+
+    const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;
+    const auto builtinParticleCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
+        ReadText(shaderRoot + "/unlit.frag"), shaderRoot + "/unlit.frag");
+    if (!builtinParticleCompilation.IsValid()) {
+        for (const auto &error : builtinParticleCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(builtinParticleCompilation.IsValid());
+    const auto builtinParticleArtifact = builtinParticleCompilation.CreateRuntimeArtifact();
+    assert(builtinParticleArtifact.IsValid());
+    assert(builtinParticleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
+    assert(builtinParticleArtifact.key.stages.vertexShaderId == "particle_sprite");
+    assert(builtinParticleArtifact.key.stages.fragmentShaderId == "unlit");
+    assert(builtinParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo
