@@ -409,6 +409,31 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.rhi_capabilities COMMAND infernux_rhi_capabilities_tests)
 
+    add_executable(infernux_rhi_contracts_tests
+        cpp/tests/RhiContractsTests.cpp
+    )
+    target_include_directories(infernux_rhi_contracts_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_rhi_contracts_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.rhi_contracts COMMAND infernux_rhi_contracts_tests)
+
+    add_executable(infernux_vulkan_rhi_device_tests
+        cpp/tests/VulkanRhiDeviceTests.cpp
+        cpp/infernux/core/log/InxLog.cpp
+        cpp/infernux/function/renderer/vk/VulkanRhiDevice.cpp
+    )
+    target_include_directories(infernux_vulkan_rhi_device_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_vulkan_rhi_device_tests PRIVATE Vulkan::Vulkan)
+    if(MSVC)
+        target_compile_options(infernux_vulkan_rhi_device_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.vulkan_rhi_device COMMAND infernux_vulkan_rhi_device_tests)
+
     add_executable(infernux_renderer_list_tests
         cpp/tests/RendererListTests.cpp
     )

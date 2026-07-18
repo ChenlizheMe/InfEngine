@@ -1161,17 +1161,17 @@ void SceneRenderGraph::BuildRenderGraph()
                 // Determine MSAA sample count and output format.
                 // When writing to the MSAA backbuffer the pipeline sample
                 // count must match the render pass attachment.
-                VkSampleCountFlagBits fsSamples = VK_SAMPLE_COUNT_1_BIT;
-                VkFormat fsColorFormat = m_sceneTarget->GetColorFormat();
+                rhi::SampleCount fsSamples = rhi::SampleCount::One;
+                rhi::PixelFormat fsColorFormat = rhi::FromVkFormat(m_sceneTarget->GetColorFormat());
                 for (const auto &[slot, texName] : passDesc.writeColors) {
                     if (slot == 0 && !texName.empty()) {
                         auto texIt = texDescMap.find(texName);
                         if (texIt != texDescMap.end()) {
                             if (texIt->second->isBackbuffer && msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-                                fsSamples = msaaSamples;
+                                fsSamples = rhi::FromVkSampleCount(msaaSamples);
                             }
                             if (!texIt->second->isBackbuffer && texIt->second->format != rhi::PixelFormat::Undefined) {
-                                fsColorFormat = rhi::ToVkFormat(texIt->second->format);
+                                fsColorFormat = texIt->second->format;
                             }
                         }
                     }
@@ -1203,21 +1203,18 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.WriteColor(fsOutputTarget, 0);
                     builder.SetRenderArea(fsPassWidth, fsPassHeight);
 
-                    return [=, cachedRenderPass =
-                                   static_cast<VkRenderPass>(VK_NULL_HANDLE)](vk::RenderContext &ctx) mutable {
-                        // Get the VkRenderPass for pipeline creation (available post-Compile)
-                        if (cachedRenderPass == VK_NULL_HANDLE) {
-                            cachedRenderPass = renderGraphPtr->GetPassRenderPass(passDesc.name);
+                    return [=, cachedRenderTarget = rhi::RenderTargetLayoutHandle{}](vk::RenderContext &ctx) mutable {
+                        if (!cachedRenderTarget.IsValid()) {
+                            cachedRenderTarget = renderGraphPtr->GetPassRenderTargetLayout(passDesc.name);
                         }
-                        VkRenderPass rp = cachedRenderPass;
-                        if (rp == VK_NULL_HANDLE)
+                        if (!cachedRenderTarget.IsValid())
                             return;
 
                         // Resolve input texture views using a stack path for the common case.
-                        VkImageView inputViewsStack[8] = {};
+                        rhi::TextureViewHandle inputViewsStack[8] = {};
                         bool depthInputsStack[8] = {};
-                        std::vector<VkImageView> inputViewsHeap;
-                        VkImageView *inputViews = inputViewsStack;
+                        std::vector<rhi::TextureViewHandle> inputViewsHeap;
+                        rhi::TextureViewHandle *inputViews = inputViewsStack;
                         bool *depthInputs = depthInputsStack;
                         if (fsReadHandles.size() > 8) {
                             inputViewsHeap.resize(fsReadHandles.size());
@@ -1226,24 +1223,26 @@ void SceneRenderGraph::BuildRenderGraph()
                         for (size_t i = 0; i < std::min<size_t>(fsIsDepthInputs.size(), 8); ++i) {
                             depthInputsStack[i] = fsIsDepthInputs[i];
                         }
-                        uint32_t inputViewCount = 0;
-                        for (const auto &readHandle : fsReadHandles) {
-                            VkImageView view = ctx.GetTexture(readHandle);
-                            if (view != VK_NULL_HANDLE) {
-                                inputViews[inputViewCount++] = view;
+                        const uint32_t inputViewCount = static_cast<uint32_t>(fsReadHandles.size());
+                        for (uint32_t i = 0; i < inputViewCount; ++i) {
+                            inputViews[i] = ctx.GetTextureView(fsReadHandles[i]);
+                            if (!inputViews[i].IsValid()) {
+                                INXLOG_ERROR("FullscreenQuad '", shaderName,
+                                             "': input texture view is unavailable at binding ", i);
+                                return;
                             }
                         }
 
                         // Build pipeline key and ensure pipeline exists
                         FullscreenPipelineKey key;
                         key.shaderName = shaderName;
-                        key.renderPass = rp;
+                        key.renderTargetLayout = cachedRenderTarget;
                         key.samples = fsSamples;
                         key.colorFormat = fsColorFormat;
                         key.inputTextureCount = inputViewCount;
 
                         const auto &entry = fsRenderer->EnsurePipeline(key);
-                        if (entry.pipeline == VK_NULL_HANDLE)
+                        if (!entry.pipeline.IsValid())
                             return;
 
                         // Allocate descriptor set for input textures
@@ -1256,16 +1255,16 @@ void SceneRenderGraph::BuildRenderGraph()
                             }
                         }
 
-                        VkDescriptorSet descSet = fsRenderer->AllocateDescriptorSet(
-                            entry.descSetLayout, inputViews, inputViewCount,
+                        const auto bindGroup = fsRenderer->AllocateBindGroup(
+                            entry.inputLayout, inputViews, inputViewCount,
                             fsIsDepthInputs.empty() ? nullptr : depthInputs, fsRenderer->GetLinearSampler());
-                        if (descSet == VK_NULL_HANDLE) {
+                        if (!bindGroup.IsValid()) {
                             INXLOG_ERROR("FullscreenQuad '", shaderName, "': descriptor pool exhausted, skipping pass");
                             return;
                         }
 
                         // Draw fullscreen triangle
-                        fsRenderer->Draw(ctx.GetCommandBuffer(), entry, descSet, packedPushConstants,
+                        fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, packedPushConstants,
                                          packedPushConstantSize);
                     };
                 });

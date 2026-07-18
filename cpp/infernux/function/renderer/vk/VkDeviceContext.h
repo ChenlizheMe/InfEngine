@@ -25,6 +25,7 @@
 #include <array>
 #include <function/renderer/rhi/RhiCapabilities.h>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,6 +37,8 @@ namespace infernux
 {
 namespace vk
 {
+
+class VulkanRhiDevice;
 
 /**
  * @brief Manages Vulkan instance, physical device, logical device, and queues
@@ -215,6 +218,16 @@ class VkDeviceContext
         return m_capabilities;
     }
 
+    [[nodiscard]] VulkanRhiDevice &GetRhiDevice() noexcept
+    {
+        return *m_rhiDevice;
+    }
+
+    [[nodiscard]] const VulkanRhiDevice &GetRhiDevice() const noexcept
+    {
+        return *m_rhiDevice;
+    }
+
     /// @brief Whether descriptor-indexing UPDATE_AFTER_BIND was enabled at
     /// device creation time. Callers should branch on this before opting in
     /// to non-stalling descriptor updates so headless/legacy GPUs continue
@@ -347,6 +360,7 @@ class VkDeviceContext
     VkPhysicalDeviceProperties m_deviceProperties{};
     VkPhysicalDeviceFeatures m_deviceFeatures{};
     rhi::DeviceCapabilities m_capabilities{};
+    std::unique_ptr<VulkanRhiDevice> m_rhiDevice;
 
     // Vulkan 1.2 capability flags resolved at device creation. Callers gate
     // optional fast paths on these so the engine still runs correctly on

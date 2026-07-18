@@ -726,6 +726,8 @@ bool RenderGraph::AllocateResources()
             INXLOG_ERROR("Failed to create image view for resource: ", resource.name);
             return false;
         }
+        resource.rhiView =
+            m_rhiDevice ? m_rhiDevice->RegisterTextureView(resource.allocatedView) : rhi::TextureViewHandle{};
     }
 
     // Track aliased memory heaps for cleanup
@@ -855,6 +857,9 @@ bool RenderGraph::CreateVulkanRenderPasses()
         auto cacheIt = m_renderPassCache.find(cacheKey);
         if (cacheIt != m_renderPassCache.end()) {
             pass.vulkanRenderPass = cacheIt->second;
+            const auto layoutIt = m_renderTargetLayoutCache.find(cacheKey);
+            if (layoutIt != m_renderTargetLayoutCache.end())
+                pass.renderTargetLayout = layoutIt->second;
         } else {
             pass.vulkanRenderPass = m_pipelineManager->CreateRenderPass(config);
             if (pass.vulkanRenderPass == VK_NULL_HANDLE) {
@@ -862,6 +867,9 @@ bool RenderGraph::CreateVulkanRenderPasses()
                 return false;
             }
             m_renderPassCache[cacheKey] = pass.vulkanRenderPass;
+            pass.renderTargetLayout = m_rhiDevice ? m_rhiDevice->RegisterRenderTargetLayout(pass.vulkanRenderPass)
+                                                  : rhi::RenderTargetLayoutHandle{};
+            m_renderTargetLayoutCache[cacheKey] = pass.renderTargetLayout;
         }
         m_usedRenderPassKeys.push_back(cacheKey);
     }
@@ -1185,6 +1193,16 @@ void RenderGraph::FreeResources()
     }
 
     VkDevice device = m_context->GetDevice();
+
+    // RHI view registrations are graph-resource lifetime aliases, including
+    // external views. Release them before the no-transient early-out and
+    // before any owned VkImageView is destroyed.
+    if (m_rhiDevice) {
+        for (auto &resource : m_resources) {
+            m_rhiDevice->Release(resource.rhiView);
+            resource.rhiView = {};
+        }
+    }
 
     // ========================================================================
     // Fix 6: Early-out when there are no transient resources to free.

@@ -7,6 +7,7 @@
 #include "DescriptorBindTrace.h"
 #include "RhiVulkanTypes.h"
 #include "VmaContext.h"
+#include "VulkanRhiDevice.h"
 #include <core/error/InxError.h>
 
 #include <SDL3/SDL.h>
@@ -207,7 +208,7 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
       m_transferQueue(other.m_transferQueue), m_hasDedicatedTransferQueue(other.m_hasDedicatedTransferQueue),
       m_queueIndices(other.m_queueIndices), m_deviceProperties(other.m_deviceProperties),
       m_deviceFeatures(other.m_deviceFeatures), m_capabilities(other.m_capabilities),
-      m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
+      m_rhiDevice(std::move(other.m_rhiDevice)), m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
       m_timelineSemaphoreEnabled(other.m_timelineSemaphoreEnabled), m_validationEnabled(other.m_validationEnabled),
       m_shuttingDown(other.m_shuttingDown), m_waitIdleCount(other.m_waitIdleCount)
 {
@@ -247,6 +248,7 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         m_deviceProperties = other.m_deviceProperties;
         m_deviceFeatures = other.m_deviceFeatures;
         m_capabilities = other.m_capabilities;
+        m_rhiDevice = std::move(other.m_rhiDevice);
         m_descriptorIndexingEnabled = other.m_descriptorIndexingEnabled;
         m_timelineSemaphoreEnabled = other.m_timelineSemaphoreEnabled;
         m_validationEnabled = other.m_validationEnabled;
@@ -310,6 +312,7 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
         return false;
     }
     BuildCapabilities();
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device);
 
     // Step 6: Create VMA allocator
     m_vmaAllocator = CreateVmaAllocator(m_instance, m_physicalDevice, m_device);
@@ -375,6 +378,7 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
         return false;
     }
     BuildCapabilities();
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device);
 
     // Step 3: Create VMA allocator
     m_vmaAllocator = CreateVmaAllocator(m_instance, m_physicalDevice, m_device);
@@ -401,6 +405,7 @@ void VkDeviceContext::WaitIdle() const
 
 void VkDeviceContext::Destroy() noexcept
 {
+    m_rhiDevice.reset();
     // Wait for device to be idle before cleanup (skip if already drained)
     if (!m_shuttingDown) {
         WaitIdle();

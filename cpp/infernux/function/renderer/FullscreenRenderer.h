@@ -1,173 +1,72 @@
-/**
- * @file FullscreenRenderer.h
- * @brief Utility for drawing fullscreen triangles with named shaders
- *
- * Provides a lazy-initialised pipeline cache + descriptor management for
- * the FullscreenQuad graph pass action.  The OutlineRenderer already
- * establishes the "procedural fullscreen triangle" pattern; this class
- * generalises it for arbitrary shader pairs from the Python graph.
- *
- * Pipeline key: (shaderName, VkRenderPass, sampleCount, colorFormat,
- *                inputTextureCount).
- * Pipelines are created lazily on first use and cached for the lifetime
- * of the FullscreenRenderer.
- */
-
 #pragma once
 
+#include <function/renderer/rhi/RhiCommand.h>
+
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <unordered_map>
-#include <vector>
-#include <vulkan/vulkan.h>
 
 namespace infernux
 {
 
 class InxVkCoreModular;
 
-namespace vk
-{
-class VkPipelineManager;
-class VkDeviceContext;
-} // namespace vk
-
-// ============================================================================
-// Push-constant layout for fullscreen effects (max 128 bytes / 32 floats)
-// ============================================================================
-
-/// Fixed-size push constant block shared by all fullscreen effect shaders.
-/// Shaders define their own push_constant layout using a subset of these slots.
-/// Up to 32 floats = 128 bytes (Vulkan guaranteed minimum).
 struct FullscreenPushConstants
 {
     float values[32] = {};
 };
 
-// ============================================================================
-// Pipeline cache key
-// ============================================================================
-
 struct FullscreenPipelineKey
 {
     std::string shaderName;
-    VkRenderPass renderPass = VK_NULL_HANDLE;
-    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
-    VkFormat colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+    rhi::RenderTargetLayoutHandle renderTargetLayout;
+    rhi::SampleCount samples = rhi::SampleCount::One;
+    rhi::PixelFormat colorFormat = rhi::PixelFormat::RGBA8UNorm;
     uint32_t inputTextureCount = 0;
 
-    bool operator==(const FullscreenPipelineKey &other) const
-    {
-        return shaderName == other.shaderName && renderPass == other.renderPass && samples == other.samples &&
-               colorFormat == other.colorFormat && inputTextureCount == other.inputTextureCount;
-    }
+    bool operator==(const FullscreenPipelineKey &other) const noexcept;
 };
 
 struct FullscreenPipelineKeyHash
 {
-    size_t operator()(const FullscreenPipelineKey &k) const
-    {
-        size_t h = std::hash<std::string>{}(k.shaderName);
-        h ^= std::hash<uint64_t>{}(reinterpret_cast<uint64_t>(k.renderPass)) << 1;
-        h ^= std::hash<int>{}(static_cast<int>(k.samples)) << 2;
-        h ^= std::hash<int>{}(static_cast<int>(k.colorFormat)) << 3;
-        h ^= std::hash<uint32_t>{}(k.inputTextureCount) << 4;
-        return h;
-    }
+    size_t operator()(const FullscreenPipelineKey &key) const noexcept;
 };
-
-// ============================================================================
-// Cached pipeline entry
-// ============================================================================
 
 struct FullscreenPipelineEntry
 {
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout descSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout emptyGapLayout = VK_NULL_HANDLE; ///< Set 1 gap layout (if globals enabled)
-    bool layoutOwned = false;
+    rhi::GraphicsPipelineHandle pipeline;
+    rhi::BindingLayoutHandle inputLayout;
+    bool hasGlobals = false;
 };
 
-// ============================================================================
-// FullscreenRenderer
-// ============================================================================
-
-/**
- * @brief Manages fullscreen-triangle pipeline creation and drawing
- *
- * Lifecycle:
- *   1. Initialize() with vkCore reference
- *   2. For each FullscreenQuad pass during BuildRenderGraph, call
- *      EnsurePipeline() to lazily create/cache the pipeline.
- *   3. During Execute, call Draw() with the appropriate parameters.
- *   4. Destroy() on shutdown.
- */
 class FullscreenRenderer
 {
   public:
-    FullscreenRenderer() = default;
+    FullscreenRenderer();
     ~FullscreenRenderer();
 
-    /// Initialise with engine core references
-    void Initialize(InxVkCoreModular *vkCore);
+    FullscreenRenderer(const FullscreenRenderer &) = delete;
+    FullscreenRenderer &operator=(const FullscreenRenderer &) = delete;
 
-    /// Destroy all cached pipelines and resources
+    void Initialize(InxVkCoreModular *vkCore);
     void Destroy();
 
-    /// Ensure a pipeline exists for the given key, creating it lazily if needed.
-    /// Returns the cached entry (pipeline + layout + desc set layout).
     const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
 
-    /// Allocate (or reuse) a descriptor set for the given layout + input textures.
-    /// The returned set is valid for the current frame only.
-    VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout layout, const VkImageView *inputViews,
-                                          uint32_t inputViewCount, const bool *depthInputs, VkSampler colorSampler);
+    rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const rhi::TextureViewHandle *inputViews,
+                                           uint32_t inputViewCount, const bool *depthInputs,
+                                           rhi::SamplerHandle colorSampler);
 
-    /// Draw a fullscreen triangle.
-    ///   - Binds the pipeline
-    ///   - Binds descriptor set for input textures
-    ///   - Pushes constants
-    ///   - Draws 3 vertices
-    void Draw(VkCommandBuffer cmdBuf, const FullscreenPipelineEntry &entry, VkDescriptorSet descSet,
-              const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize);
+    void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
+              rhi::BindGroupHandle inputGroup, const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize);
 
-    /// Reset descriptor pool for a new frame (frees all previously allocated sets)
     void ResetPool();
 
-    /// Get a linear sampler suitable for fullscreen texture sampling
-    [[nodiscard]] VkSampler GetLinearSampler() const
-    {
-        return m_linearSampler;
-    }
+    [[nodiscard]] rhi::SamplerHandle GetLinearSampler() const noexcept;
 
   private:
-    InxVkCoreModular *m_vkCore = nullptr;
-    VkDevice m_device = VK_NULL_HANDLE;
-    VkSampler m_linearSampler = VK_NULL_HANDLE;
-    VkSampler m_nearestSampler = VK_NULL_HANDLE;
-
-    /// Pipeline cache
-    std::unordered_map<FullscreenPipelineKey, FullscreenPipelineEntry, FullscreenPipelineKeyHash> m_pipelineCache;
-
-    /// Per-frame descriptor pools for fullscreen effect sampling.
-    /// Each frame-in-flight resets only its own pool after the corresponding fence completes.
-    std::vector<VkDescriptorPool> m_descriptorPools;
-
-    uint32_t GetCurrentFrameIndex() const;
-    VkDescriptorPool GetCurrentDescriptorPool() const;
-
-    /// Create a new pipeline for the given key
-    FullscreenPipelineEntry CreatePipeline(const FullscreenPipelineKey &key);
-
-    /// Create per-frame descriptor pools.
-    void CreateDescriptorPools();
-
-    /// Create linear sampler
-    void CreateLinearSampler();
-
-    /// Create nearest sampler for depth inputs
-    void CreateNearestSampler();
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 } // namespace infernux

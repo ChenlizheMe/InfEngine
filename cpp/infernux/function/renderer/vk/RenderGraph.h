@@ -45,6 +45,7 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "VulkanRhiDevice.h"
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderGraphIdentity.h>
 #include <functional>
@@ -250,12 +251,22 @@ class RenderContext
     /// @brief Get resolved texture for a resource handle
     [[nodiscard]] VkImageView GetTexture(ResourceHandle handle) const;
 
+    /// Backend-neutral texture view used by RHI draw paths.
+    [[nodiscard]] rhi::TextureViewHandle GetTextureView(ResourceHandle handle) const;
+
+    [[nodiscard]] rhi::GraphicsCommandEncoder &GetGraphicsCommandEncoder()
+    {
+        return m_graphicsEncoder;
+    }
+
     /// @brief Get resolved buffer for a resource handle
     [[nodiscard]] VkBuffer GetBuffer(ResourceHandle handle) const;
 
   private:
     VkCommandBuffer m_cmdBuffer;
     RenderGraph *m_graph;
+    VulkanGraphicsCommandContext m_graphicsCommandContext;
+    rhi::GraphicsCommandEncoder m_graphicsEncoder;
     VkViewport m_viewport{};
     VkRect2D m_scissor{};
 };
@@ -377,6 +388,7 @@ struct RenderPassData
 
     // Vulkan objects (resolved during compile)
     VkRenderPass vulkanRenderPass = VK_NULL_HANDLE;
+    rhi::RenderTargetLayoutHandle renderTargetLayout;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
 
     // Execute callback
@@ -415,6 +427,7 @@ struct ResourceData
     bool isExternal = false;
     VkImage externalImage = VK_NULL_HANDLE;
     VkImageView externalView = VK_NULL_HANDLE;
+    rhi::TextureViewHandle rhiView;
     VkBuffer externalBuffer = VK_NULL_HANDLE;
 
     // Allocated resources (for transient)
@@ -694,6 +707,10 @@ class RenderGraph
 
     [[nodiscard]] VkRenderPass GetPassRenderPass(PassHandle pass) const;
 
+    [[nodiscard]] rhi::RenderTargetLayoutHandle GetPassRenderTargetLayout(const std::string &passName) const;
+
+    [[nodiscard]] rhi::RenderTargetLayoutHandle GetPassRenderTargetLayout(PassHandle pass) const;
+
     /**
      * @brief Get the first graphics pass render pass
      * @return VkRenderPass suitable for pipeline creation, or VK_NULL_HANDLE
@@ -705,6 +722,7 @@ class RenderGraph
     // ========================================================================
 
     [[nodiscard]] VkImageView ResolveTextureView(ResourceHandle handle) const;
+    [[nodiscard]] rhi::TextureViewHandle ResolveRhiTextureView(ResourceHandle handle) const;
     [[nodiscard]] VkBuffer ResolveBuffer(ResourceHandle handle) const;
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
 
@@ -715,6 +733,7 @@ class RenderGraph
 
     // PassBuilder needs access to internal methods and data
     friend class PassBuilder;
+    friend class RenderContext;
 
     /// @brief Create a new resource entry
     ResourceHandle CreateResource(const std::string &name, ResourceType type);
@@ -787,6 +806,7 @@ class RenderGraph
   private:
     RenderGraphIdentitySource m_identity;
     VkDeviceContext *m_context = nullptr;
+    VulkanRhiDevice *m_rhiDevice = nullptr;
     VkPipelineManager *m_pipelineManager = nullptr;
 
     // Graph data
@@ -816,6 +836,7 @@ class RenderGraph
 
     // RenderPass cache (long-lived across frames)
     std::unordered_map<size_t, VkRenderPass> m_renderPassCache;
+    std::unordered_map<size_t, rhi::RenderTargetLayoutHandle> m_renderTargetLayoutCache;
 
     // Framebuffer cache (long-lived across frames)
     struct FramebufferCacheEntry

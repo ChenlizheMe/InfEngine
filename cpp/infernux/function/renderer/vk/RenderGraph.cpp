@@ -62,6 +62,9 @@ void RenderGraph::ResetExecuteProfileSnapshot()
 
 RenderContext::RenderContext(VkCommandBuffer cmdBuffer, RenderGraph *graph) : m_cmdBuffer(cmdBuffer), m_graph(graph)
 {
+    if (m_graph && m_graph->m_rhiDevice) {
+        m_graphicsEncoder = m_graph->m_rhiDevice->MakeGraphicsCommandEncoder(m_graphicsCommandContext, cmdBuffer);
+    }
 }
 
 void RenderContext::SetViewport(const VkViewport &viewport)
@@ -100,6 +103,11 @@ void RenderContext::NextSubpass()
 VkImageView RenderContext::GetTexture(ResourceHandle handle) const
 {
     return m_graph ? m_graph->ResolveTextureView(handle) : VK_NULL_HANDLE;
+}
+
+rhi::TextureViewHandle RenderContext::GetTextureView(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveRhiTextureView(handle) : rhi::TextureViewHandle{};
 }
 
 VkBuffer RenderContext::GetBuffer(ResourceHandle handle) const
@@ -186,6 +194,8 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
     resource.isExternal = true;
     resource.externalImage = image;
     resource.externalView = view;
+    resource.rhiView =
+        m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
 
     return handle;
 }
@@ -449,6 +459,7 @@ RenderGraph::~RenderGraph()
 
 RenderGraph::RenderGraph(RenderGraph &&other) noexcept
     : m_identity(std::move(other.m_identity)), m_context(std::exchange(other.m_context, nullptr)),
+      m_rhiDevice(std::exchange(other.m_rhiDevice, nullptr)),
       m_pipelineManager(std::exchange(other.m_pipelineManager, nullptr)), m_passes(std::move(other.m_passes)),
       m_resources(std::move(other.m_resources)), m_executionOrder(std::move(other.m_executionOrder)),
       m_backbuffer(other.m_backbuffer), m_output(other.m_output),
@@ -456,7 +467,9 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_resourceStates(std::move(other.m_resourceStates)),
       m_initialResourceStates(std::move(other.m_initialResourceStates)),
       m_barrierScratch(std::move(other.m_barrierScratch)), m_clearValueScratch(std::move(other.m_clearValueScratch)),
-      m_renderPassCache(std::move(other.m_renderPassCache)), m_framebufferCache(std::move(other.m_framebufferCache)),
+      m_renderPassCache(std::move(other.m_renderPassCache)),
+      m_renderTargetLayoutCache(std::move(other.m_renderTargetLayoutCache)),
+      m_framebufferCache(std::move(other.m_framebufferCache)),
       m_usedRenderPassKeys(std::move(other.m_usedRenderPassKeys)),
       m_usedFramebufferKeys(std::move(other.m_usedFramebufferKeys)),
       m_aliasedMemoryHeaps(std::move(other.m_aliasedMemoryHeaps))
@@ -473,6 +486,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
 
         m_identity = std::move(other.m_identity);
         m_context = std::exchange(other.m_context, nullptr);
+        m_rhiDevice = std::exchange(other.m_rhiDevice, nullptr);
         m_pipelineManager = std::exchange(other.m_pipelineManager, nullptr);
         m_passes = std::move(other.m_passes);
         m_resources = std::move(other.m_resources);
@@ -486,6 +500,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_barrierScratch = std::move(other.m_barrierScratch);
         m_clearValueScratch = std::move(other.m_clearValueScratch);
         m_renderPassCache = std::move(other.m_renderPassCache);
+        m_renderTargetLayoutCache = std::move(other.m_renderTargetLayoutCache);
         m_framebufferCache = std::move(other.m_framebufferCache);
         m_usedRenderPassKeys = std::move(other.m_usedRenderPassKeys);
         m_usedFramebufferKeys = std::move(other.m_usedFramebufferKeys);
@@ -501,6 +516,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
 void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager)
 {
     m_context = context;
+    m_rhiDevice = context ? &context->GetRhiDevice() : nullptr;
     m_pipelineManager = pipelineManager;
 }
 
@@ -535,6 +551,11 @@ void RenderGraph::Destroy()
     if (m_context) {
         VkDevice device = m_context->GetDevice();
         for (auto &[key, rp] : m_renderPassCache) {
+            if (m_rhiDevice) {
+                const auto layoutIt = m_renderTargetLayoutCache.find(key);
+                if (layoutIt != m_renderTargetLayoutCache.end())
+                    m_rhiDevice->Release(layoutIt->second);
+            }
             if (rp != VK_NULL_HANDLE) {
                 vkDestroyRenderPass(device, rp, nullptr);
             }
@@ -546,6 +567,7 @@ void RenderGraph::Destroy()
         }
     }
     m_renderPassCache.clear();
+    m_renderTargetLayoutCache.clear();
     m_framebufferCache.clear();
 
     m_passes.clear();
@@ -554,6 +576,7 @@ void RenderGraph::Destroy()
     m_resourceStates.clear();
     m_initialResourceStates.clear();
     m_context = nullptr;
+    m_rhiDevice = nullptr;
     m_pipelineManager = nullptr;
     m_identity.AdvanceEpoch();
 }
@@ -619,6 +642,7 @@ ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFor
     resource.isExternal = true;
     resource.externalImage = image;
     resource.externalView = view;
+    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
 
     m_resources.push_back(std::move(resource));
     m_resourceStates.resize(m_resources.size());
@@ -666,6 +690,7 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
     resource.isExternal = true;
     resource.externalImage = image;
     resource.externalView = view;
+    resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
 
     m_resources.push_back(std::move(resource));
     m_resourceStates.resize(m_resources.size());
@@ -1011,6 +1036,14 @@ VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
     return resource.allocatedView;
 }
 
+rhi::TextureViewHandle RenderGraph::ResolveRhiTextureView(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size()) {
+        return {};
+    }
+    return m_resources[handle.id].rhiView;
+}
+
 VkBuffer RenderGraph::ResolveBuffer(ResourceHandle handle) const
 {
     if (!Owns(handle) || handle.id >= m_resources.size()) {
@@ -1040,6 +1073,22 @@ VkRenderPass RenderGraph::GetPassRenderPass(PassHandle pass) const
         return VK_NULL_HANDLE;
     }
     return m_passes[pass.id].vulkanRenderPass;
+}
+
+rhi::RenderTargetLayoutHandle RenderGraph::GetPassRenderTargetLayout(const std::string &passName) const
+{
+    for (const auto &pass : m_passes) {
+        if (pass.name == passName)
+            return pass.renderTargetLayout;
+    }
+    return {};
+}
+
+rhi::RenderTargetLayoutHandle RenderGraph::GetPassRenderTargetLayout(PassHandle pass) const
+{
+    if (!Owns(pass) || pass.id >= m_passes.size())
+        return {};
+    return m_passes[pass.id].renderTargetLayout;
 }
 
 VkRenderPass RenderGraph::GetCompatibleRenderPass() const
