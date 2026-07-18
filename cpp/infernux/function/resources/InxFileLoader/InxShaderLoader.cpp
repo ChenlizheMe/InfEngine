@@ -1655,6 +1655,22 @@ std::vector<char> InxShaderLoader::CompileComputeGlsl(const std::string &source,
     return spirv;
 }
 
+std::vector<char> InxShaderLoader::CompileVertexGlsl(const std::string &source, const std::string &virtualPath)
+{
+    std::vector<char> spirv;
+    if (!CompileGLSL(source, EShLangVertex, virtualPath, spirv))
+        return {};
+    return spirv;
+}
+
+std::vector<char> InxShaderLoader::CompileFragmentGlsl(const std::string &source, const std::string &virtualPath)
+{
+    std::vector<char> spirv;
+    if (!CompileGLSL(source, EShLangFragment, virtualPath, spirv))
+        return {};
+    return spirv;
+}
+
 void InxShaderLoader::CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
                                      const std::string &variantName, EShLanguage shaderType)
 {

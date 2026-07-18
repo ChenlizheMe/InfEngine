@@ -27,6 +27,54 @@ class GpuParticleCompileError(ValueError):
 
 _SPIRV_DESCRIPTOR_CACHE: dict[str, dict[str, Any]] = {}
 
+_BILLBOARD_VERTEX_GLSL = """#version 450
+
+struct ParticleInstance {
+    vec4 position_size;
+    vec4 color;
+    vec4 rotation_custom;
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer Instances {
+    ParticleInstance instances[];
+};
+
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+} view;
+
+layout(location = 0) out vec4 out_color;
+
+const vec2 corners[6] = vec2[](
+    vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0),
+    vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(1.0, -1.0)
+);
+
+void main() {
+    ParticleInstance instance = instances[gl_InstanceIndex];
+    vec2 corner = corners[gl_VertexIndex % 6];
+    float cosine = cos(instance.rotation_custom.x);
+    float sine = sin(instance.rotation_custom.x);
+    corner = mat2(cosine, -sine, sine, cosine) * corner;
+    vec3 world_position = instance.position_size.xyz +
+        (view.camera_right.xyz * corner.x + view.camera_up.xyz * corner.y) * instance.position_size.w;
+    gl_Position = view.view_projection * vec4(world_position, 1.0);
+    out_color = instance.color;
+}
+"""
+
+_BILLBOARD_FRAGMENT_GLSL = """#version 450
+
+layout(location = 0) in vec4 in_color;
+layout(location = 0) out vec4 out_color;
+
+void main() {
+    out_color = in_color;
+}
+"""
+
 
 @dataclass(frozen=True)
 class GpuParticleEmitterSource:
@@ -164,12 +212,61 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
                 _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
             stages[stage] = dict(descriptor)
         emitters.append({"stable_id": emitter.stable_id, "stages": stages})
+    graphics_sources = {
+        "vertex": _BILLBOARD_VERTEX_GLSL,
+        "fragment": _BILLBOARD_FRAGMENT_GLSL,
+    }
+    graphics_keys = {
+        stage: hashlib.sha256(
+            (f"vulkan1.2-spirv1.5\0{stage}\0" + source).encode("utf-8")
+        ).hexdigest()
+        for stage, source in graphics_sources.items()
+    }
+    missing_graphics = {
+        stage: graphics_sources[stage]
+        for stage, key in graphics_keys.items()
+        if key not in _SPIRV_DESCRIPTOR_CACHE
+    }
+    compiled_graphics = (
+        native._compile_graphics_glsl_batch(
+            missing_graphics, "particle:builtin-billboard"
+        )
+        if missing_graphics
+        else {}
+    )
+    if set(compiled_graphics) != set(missing_graphics):
+        raise GpuParticleCompileError(
+            "engine graphics compiler returned incomplete billboard stages"
+        )
+    billboard = {}
+    for stage, key in sorted(graphics_keys.items()):
+        descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
+        if descriptor is None:
+            binary = bytes(compiled_graphics[stage])
+            if (
+                len(binary) < 20
+                or int.from_bytes(binary[:4], "little") != 0x07230203
+            ):
+                raise GpuParticleCompileError(
+                    f"engine graphics compiler returned invalid SPIR-V for {stage}"
+                )
+            descriptor = {
+                "byte_size": len(binary),
+                "sha256": hashlib.sha256(binary).hexdigest(),
+                "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode(
+                    "ascii"
+                ),
+            }
+            _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
+        billboard[stage] = dict(descriptor)
+
     return {
         "$schema": "infernux.particle_gpu_spirv",
-        "$version": 1,
+        "$version": 2,
         "target": "vulkan1.2-spirv1.5",
         "kernel_hash": program.kernel_hash,
         "emitters": emitters,
+        "billboard": billboard,
     }
 
 
@@ -177,18 +274,28 @@ def validate_gpu_particle_spirv(
     value: Any, program: GpuParticleProgramSource
 ) -> dict[str, Any]:
     """Strictly validate a persisted GPU binary payload without recompiling it."""
-    expected_top = {"$schema", "$version", "target", "kernel_hash", "emitters"}
+    expected_top = {
+        "$schema",
+        "$version",
+        "target",
+        "kernel_hash",
+        "emitters",
+        "billboard",
+    }
     if type(value) is not dict or set(value) != expected_top:
         raise GpuParticleCompileError("particle GPU SPIR-V payload is invalid")
     if (
         value["$schema"] != "infernux.particle_gpu_spirv"
-        or value["$version"] != 1
+        or value["$version"] != 2
         or value["target"] != "vulkan1.2-spirv1.5"
         or value["kernel_hash"] != program.kernel_hash
         or type(value["emitters"]) is not list
         or len(value["emitters"]) != len(program.emitters)
     ):
         raise GpuParticleCompileError("particle GPU SPIR-V header is incompatible")
+    billboard = value["billboard"]
+    if type(billboard) is not dict or set(billboard) != {"vertex", "fragment"}:
+        raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):
         if type(encoded) is not dict or set(encoded) != {"stable_id", "stages"}:
             raise GpuParticleCompileError("particle GPU emitter binary entry is invalid")
@@ -198,34 +305,75 @@ def validate_gpu_particle_spirv(
         if set(stages) != set(source.stages()):
             raise GpuParticleCompileError("particle GPU emitter binary stages are incomplete")
         for stage, descriptor in stages.items():
-            if type(descriptor) is not dict or set(descriptor) != {
-                "byte_size",
-                "sha256",
-                "zlib_base64",
-            }:
-                raise GpuParticleCompileError(
-                    f"particle GPU binary descriptor {stage!r} is invalid"
-                )
-            try:
-                binary = zlib.decompress(
-                    base64.b64decode(descriptor["zlib_base64"], validate=True)
-                )
-            except (TypeError, ValueError, zlib.error) as exc:
-                raise GpuParticleCompileError(
-                    f"particle GPU binary {stage!r} is corrupt"
-                ) from exc
-            if (
-                type(descriptor["byte_size"]) is not int
-                or descriptor["byte_size"] != len(binary)
-                or type(descriptor["sha256"]) is not str
-                or descriptor["sha256"] != hashlib.sha256(binary).hexdigest()
-                or len(binary) < 20
-                or int.from_bytes(binary[:4], "little") != 0x07230203
-            ):
-                raise GpuParticleCompileError(
-                    f"particle GPU binary {stage!r} failed integrity validation"
-                )
+            _validate_spirv_descriptor(descriptor, stage)
+    for stage, descriptor in billboard.items():
+        _validate_spirv_descriptor(descriptor, f"billboard.{stage}")
     return value
+
+
+def _validate_spirv_descriptor(descriptor: Any, stage: str) -> None:
+    if type(descriptor) is not dict or set(descriptor) != {
+        "byte_size",
+        "sha256",
+        "zlib_base64",
+    }:
+        raise GpuParticleCompileError(
+            f"particle GPU binary descriptor {stage!r} is invalid"
+        )
+    try:
+        binary = zlib.decompress(
+            base64.b64decode(descriptor["zlib_base64"], validate=True)
+        )
+    except (TypeError, ValueError, zlib.error) as exc:
+        raise GpuParticleCompileError(
+            f"particle GPU binary {stage!r} is corrupt"
+        ) from exc
+    if (
+        type(descriptor["byte_size"]) is not int
+        or descriptor["byte_size"] != len(binary)
+        or type(descriptor["sha256"]) is not str
+        or descriptor["sha256"] != hashlib.sha256(binary).hexdigest()
+        or len(binary) < 20
+        or int.from_bytes(binary[:4], "little") != 0x07230203
+    ):
+        raise GpuParticleCompileError(
+            f"particle GPU binary {stage!r} failed integrity validation"
+        )
+
+
+def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
+    """Decode one validated emitter payload into native-ready SPIR-V bytes."""
+    if type(emitter_index) is not int or emitter_index < 0:
+        raise GpuParticleCompileError("particle GPU emitter index is invalid")
+    emitters = value.get("emitters") if type(value) is dict else None
+    billboard = value.get("billboard") if type(value) is dict else None
+    if (
+        type(emitters) is not list
+        or emitter_index >= len(emitters)
+        or type(emitters[emitter_index]) is not dict
+        or type(emitters[emitter_index].get("stages")) is not dict
+        or type(billboard) is not dict
+    ):
+        raise GpuParticleCompileError("particle GPU emitter payload is invalid")
+
+    def decode(descriptor: Any, stage: str) -> bytes:
+        _validate_spirv_descriptor(descriptor, stage)
+        return zlib.decompress(
+            base64.b64decode(descriptor["zlib_base64"], validate=True)
+        )
+
+    emitter = emitters[emitter_index]
+    return {
+        "stable_id": emitter.get("stable_id", ""),
+        "stages": {
+            stage: decode(descriptor, stage)
+            for stage, descriptor in emitter["stages"].items()
+        },
+        "billboard": {
+            stage: decode(descriptor, f"billboard.{stage}")
+            for stage, descriptor in billboard.items()
+        },
+    }
 
 
 class _StageCompiler:
@@ -769,5 +917,6 @@ __all__ = [
     "GpuParticleGlslLowerer",
     "GpuParticleProgramSource",
     "compile_gpu_particle_spirv",
+    "decode_gpu_particle_spirv",
     "validate_gpu_particle_spirv",
 ]

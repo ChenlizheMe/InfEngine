@@ -117,6 +117,13 @@ class InxShaderLoader
     [[nodiscard]] std::vector<char> CompileComputeGlsl(const std::string &source,
                                                        const std::string &virtualPath = "<generated-compute>");
 
+    /// Compile generated graphics GLSL directly to SPIR-V without invoking
+    /// the authored material/shading-model preprocessor.
+    [[nodiscard]] std::vector<char> CompileVertexGlsl(const std::string &source,
+                                                      const std::string &virtualPath = "<generated-vertex>");
+    [[nodiscard]] std::vector<char> CompileFragmentGlsl(const std::string &source,
+                                                        const std::string &virtualPath = "<generated-fragment>");
+
     /// Parse a single "@key: value" or "// @key: value" annotation line.
     /// Returns {key, value} or nullopt if the line is not an annotation.
     static std::optional<std::pair<std::string, std::string>> ParseAnnotation(const std::string &line);
