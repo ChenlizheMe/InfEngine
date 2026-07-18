@@ -59,7 +59,36 @@ enum class GraphCommandType
     DrawSkybox,
     DrawShadowCasters,
     DrawScreenUI,
-    FullscreenQuad
+    FullscreenQuad,
+    CopyTexture,
+    CopyBuffer,
+    Present
+};
+
+enum class GraphPassType
+{
+    Raster,
+    Compute,
+    Copy,
+    Present
+};
+
+enum class GraphBufferUsage : uint32_t
+{
+    None = 0,
+    Storage = 1 << 0,
+    Indirect = 1 << 1,
+    TransferSource = 1 << 2,
+    TransferDestination = 1 << 3
+};
+
+enum class GraphBufferAccessType
+{
+    StorageRead,
+    StorageWrite,
+    IndirectRead,
+    TransferRead,
+    TransferWrite
 };
 
 struct GraphCommandDesc
@@ -79,6 +108,10 @@ struct GraphCommandDesc
     std::string shaderName;
     std::vector<std::pair<std::string, float>> pushConstants;
     std::vector<std::pair<std::string, std::string>> inputBindings;
+
+    std::string sourceResource;
+    std::string destinationResource;
+    uint64_t copyBytes = 0;
 };
 
 // ============================================================================
@@ -99,6 +132,19 @@ struct GraphTextureDesc
     uint32_t sizeDivisor = 0;                               ///< >0: actual = scene_size / divisor
 };
 
+struct GraphBufferDesc
+{
+    std::string name;
+    uint64_t byteSize = 0;
+    uint32_t usage = static_cast<uint32_t>(GraphBufferUsage::None);
+};
+
+struct GraphBufferAccessDesc
+{
+    std::string resource;
+    GraphBufferAccessType type = GraphBufferAccessType::StorageRead;
+};
+
 // ============================================================================
 // Pass Description
 // ============================================================================
@@ -109,6 +155,7 @@ struct GraphTextureDesc
 struct GraphPassDesc
 {
     std::string name; ///< Pass name (must be unique within the graph)
+    GraphPassType type = GraphPassType::Raster;
 
     // === Resource connections ===
     std::vector<std::string> readTextures; ///< Names of textures this pass reads
@@ -116,6 +163,8 @@ struct GraphPassDesc
     /// Slot 0 is the primary color output; higher slots enable deferred / GBuffer.
     std::vector<std::pair<int, std::string>> writeColors;
     std::string writeDepth; ///< Name of depth output texture
+    std::vector<GraphBufferAccessDesc> bufferAccesses;
+    bool sideEffect = false;
 
     // === Clear settings ===
     bool clearColor = false;
@@ -182,6 +231,7 @@ struct RenderGraphDescription
     uint64_t sourceRevision = 0;
 
     std::vector<GraphTextureDesc> textures; ///< All texture resources
+    std::vector<GraphBufferDesc> buffers;   ///< All buffer resources
     std::vector<GraphPassDesc> passes;      ///< All passes in declaration order
     std::string outputTexture;              ///< Name of the final output texture
 

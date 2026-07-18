@@ -106,6 +106,11 @@ VkImageView RenderContext::GetTexture(ResourceHandle handle) const
     return m_graph ? m_graph->ResolveTextureView(handle) : VK_NULL_HANDLE;
 }
 
+VkImage RenderContext::GetImage(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveImage(handle) : VK_NULL_HANDLE;
+}
+
 rhi::TextureViewHandle RenderContext::GetTextureView(ResourceHandle handle) const
 {
     return m_graph ? m_graph->ResolveRhiTextureView(handle) : rhi::TextureViewHandle{};
@@ -1234,6 +1239,14 @@ VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
         return resource.externalView;
     }
     return resource.allocatedView;
+}
+
+VkImage RenderGraph::ResolveImage(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size())
+        return VK_NULL_HANDLE;
+    const auto &resource = m_resources[handle.id];
+    return resource.isExternal ? resource.externalImage : resource.allocatedImage;
 }
 
 rhi::TextureViewHandle RenderGraph::ResolveRhiTextureView(ResourceHandle handle) const

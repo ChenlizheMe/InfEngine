@@ -8,10 +8,11 @@ import Infernux.lib as native
 from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
-    GraphCommandType, GraphPassActionType,
+    GraphBufferAccessType, GraphBufferUsage, GraphCommandType,
+    GraphPassActionType, GraphPassType,
     MaterialPassType, PixelFormat, SampleCount,
 )
-from Infernux.rendergraph.graph import RenderGraph, Format, TextureHandle
+from Infernux.rendergraph.graph import BufferHandle, RenderGraph, Format, TextureHandle
 
 
 # ── Helpers ──
@@ -91,6 +92,142 @@ class TestTextureHandle:
         r = repr(h)
         assert "color" in r
         assert "camera_target" in r
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Buffer and typed non-raster IR
+# ══════════════════════════════════════════════════════════════════════
+
+class TestTypedResourcePasses:
+    @staticmethod
+    def _add_camera_output(graph):
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.set_output("color")
+
+    def test_buffer_handle_and_usage(self):
+        graph = _make_graph()
+        handle = graph.create_buffer(
+            "particles",
+            4096,
+            indirect=True,
+            transfer_source=True,
+        )
+        assert isinstance(handle, BufferHandle)
+        assert graph.buffer_count == 1
+        assert handle.usage & int(GraphBufferUsage.STORAGE)
+        assert handle.usage & int(GraphBufferUsage.INDIRECT)
+        assert handle.usage & int(GraphBufferUsage.TRANSFER_SOURCE)
+
+    def test_compute_pass_serializes_typed_buffer_accesses(self):
+        graph = _make_graph()
+        graph.create_buffer("particles", 4096)
+        self._add_camera_output(graph)
+        with graph.add_compute_pass("Simulate") as p:
+            p.read_buffer("particles")
+            p.write_buffer("particles")
+            p.set_side_effect()
+
+        description = graph.build()
+        compute = next(p for p in description.passes if p.name == "Simulate")
+        assert compute.type == GraphPassType.COMPUTE
+        assert compute.commands == []
+        assert compute.side_effect
+        assert [a.type for a in compute.buffer_accesses] == [
+            GraphBufferAccessType.STORAGE_READ,
+            GraphBufferAccessType.STORAGE_WRITE,
+        ]
+
+    def test_buffer_copy_serializes_and_adds_transfer_usage(self):
+        graph = _make_graph()
+        graph.create_buffer("source", 1024)
+        graph.create_buffer("destination", 2048)
+        self._add_camera_output(graph)
+        with graph.add_copy_pass("CopyParticles") as p:
+            p.copy_buffer("source", "destination", byte_count=512)
+            p.set_side_effect()
+
+        description = graph.build()
+        copy_pass = next(p for p in description.passes if p.name == "CopyParticles")
+        command = copy_pass.commands[0]
+        buffers = {buffer.name: buffer for buffer in description.buffers}
+        assert copy_pass.type == GraphPassType.COPY
+        assert command.type == GraphCommandType.COPY_BUFFER
+        assert command.source_resource == "source"
+        assert command.destination_resource == "destination"
+        assert command.copy_bytes == 512
+        assert buffers["source"].usage & int(GraphBufferUsage.TRANSFER_SOURCE)
+        assert buffers["destination"].usage & int(GraphBufferUsage.TRANSFER_DESTINATION)
+
+    def test_texture_copy_serializes(self):
+        graph = _make_graph()
+        graph.create_texture("source", format=Format.RGBA16_SFLOAT)
+        graph.create_texture("destination", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("Produce") as p:
+            p.write_color("source")
+            p.draw_renderers()
+        with graph.add_copy_pass("CopyColor") as p:
+            p.copy_texture("source", "destination")
+        graph.set_output("destination")
+
+        description = graph.build()
+        copy_pass = next(p for p in description.passes if p.name == "CopyColor")
+        command = copy_pass.commands[0]
+        assert copy_pass.type == GraphPassType.COPY
+        assert command.type == GraphCommandType.COPY_TEXTURE
+        assert command.source_resource == "source"
+        assert command.destination_resource == "destination"
+
+    def test_present_pass_sets_graph_output(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        with graph.add_present_pass("Present") as p:
+            p.present("color")
+
+        description = graph.build()
+        present = description.passes[-1]
+        assert description.output_texture == "color"
+        assert present.type == GraphPassType.PRESENT
+        assert present.commands[0].type == GraphCommandType.PRESENT
+        assert present.commands[0].source_resource == "color"
+
+    def test_compute_access_requires_declared_usage(self):
+        graph = _make_graph()
+        graph.create_buffer("particles", 1024, indirect=False)
+        self._add_camera_output(graph)
+        with graph.add_compute_pass("BadIndirectRead") as p:
+            p.read_buffer("particles", usage="indirect")
+        with pytest.raises(ValueError, match="does not declare"):
+            graph.build()
+
+    def test_copy_rejects_same_resource(self):
+        graph = _make_graph()
+        graph.create_buffer("particles", 1024)
+        self._add_camera_output(graph)
+        with graph.add_copy_pass("BadCopy") as p:
+            p.copy_buffer("particles", "particles")
+        with pytest.raises(ValueError, match="distinct buffers"):
+            graph.build()
+
+    def test_texture_copy_rejects_camera_target(self):
+        graph = _make_graph()
+        graph.create_texture("destination", format=Format.RGBA8_UNORM)
+        with graph.add_copy_pass("BadCameraCopy") as p:
+            p.copy_texture("color", "destination")
+        graph.set_output("destination")
+        with pytest.raises(ValueError, match="requires transient textures"):
+            graph.build()
+
+    def test_present_rejects_depth_texture(self):
+        graph = RenderGraph("BadPresent")
+        graph.create_texture("depth", format=Format.D32_SFLOAT)
+        with graph.add_present_pass("PresentDepth") as p:
+            p.present("depth")
+        with pytest.raises(ValueError, match="cannot export a depth"):
+            graph.build()
 
 
 # ══════════════════════════════════════════════════════════════════════

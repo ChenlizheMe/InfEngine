@@ -271,6 +271,7 @@ class RenderContext
 
     /// @brief Get resolved texture for a resource handle
     [[nodiscard]] VkImageView GetTexture(ResourceHandle handle) const;
+    [[nodiscard]] VkImage GetImage(ResourceHandle handle) const;
 
     /// Backend-neutral texture view used by RHI draw paths.
     [[nodiscard]] rhi::TextureViewHandle GetTextureView(ResourceHandle handle) const;
@@ -784,6 +785,7 @@ class RenderGraph
     // ========================================================================
 
     [[nodiscard]] VkImageView ResolveTextureView(ResourceHandle handle) const;
+    [[nodiscard]] VkImage ResolveImage(ResourceHandle handle) const;
     [[nodiscard]] rhi::TextureViewHandle ResolveRhiTextureView(ResourceHandle handle) const;
     [[nodiscard]] VkBuffer ResolveBuffer(ResourceHandle handle) const;
     [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;

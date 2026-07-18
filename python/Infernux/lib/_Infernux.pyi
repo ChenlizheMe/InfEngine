@@ -134,6 +134,32 @@ class GraphCommandType(IntEnum):
     DRAW_SHADOW_CASTERS: int
     DRAW_SCREEN_UI: int
     FULLSCREEN_QUAD: int
+    COPY_TEXTURE: int
+    COPY_BUFFER: int
+    PRESENT: int
+
+
+class GraphPassType(IntEnum):
+    RASTER: int
+    COMPUTE: int
+    COPY: int
+    PRESENT: int
+
+
+class GraphBufferUsage(IntEnum):
+    NONE: int
+    STORAGE: int
+    INDIRECT: int
+    TRANSFER_SOURCE: int
+    TRANSFER_DESTINATION: int
+
+
+class GraphBufferAccessType(IntEnum):
+    STORAGE_READ: int
+    STORAGE_WRITE: int
+    INDIRECT_READ: int
+    TRANSFER_READ: int
+    TRANSFER_WRITE: int
 
 
 class MaterialPassType(IntEnum):
@@ -1809,6 +1835,28 @@ class GraphCommandDesc:
     screen_ui_list: int
     shader_name: str
     push_constants: List[Tuple[str, float]]
+    source_resource: str
+    destination_resource: str
+    copy_bytes: int
+
+    def __init__(self) -> None: ...
+
+
+class GraphBufferDesc:
+    """Description of a transient buffer in the Python-defined graph."""
+
+    name: str
+    byte_size: int
+    usage: int
+
+    def __init__(self) -> None: ...
+
+
+class GraphBufferAccessDesc:
+    """Typed buffer access declared by a graph pass."""
+
+    resource: str
+    type: GraphBufferAccessType
 
     def __init__(self) -> None: ...
 
@@ -1817,9 +1865,12 @@ class GraphPassDesc:
     """Description of a single render pass in the Python-defined graph."""
 
     name: str
+    type: GraphPassType
     read_textures: List[str]
     write_colors: List[Tuple[int, str]]
     write_depth: str
+    buffer_accesses: List[GraphBufferAccessDesc]
+    side_effect: bool
     clear_color: bool
     clear_depth: bool
     clear_color_r: float
@@ -1850,6 +1901,7 @@ class RenderGraphDescription:
     name: str
     source_revision: int
     textures: List[GraphTextureDesc]
+    buffers: List[GraphBufferDesc]
     passes: List[GraphPassDesc]
     output_texture: str
     msaa_samples: int

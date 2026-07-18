@@ -39,6 +39,19 @@ class TextureHandle:
     def __hash__(self) -> int: ...
 
 
+class BufferHandle:
+    """A handle to a transient buffer resource in the render graph."""
+
+    name: str
+    byte_size: int
+    usage: int
+
+    def __init__(self, name: str, byte_size: int, usage: int) -> None: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+
 class RenderPassBuilder:
     """Fluent builder for constructing a render pass."""
 
@@ -55,6 +68,19 @@ class RenderPassBuilder:
         ...
     def write_depth(self, texture: str | TextureHandle) -> RenderPassBuilder:
         """Declare a depth attachment output for this pass."""
+        ...
+    def read_buffer(
+        self, buffer: str | BufferHandle, usage: str = ...
+    ) -> RenderPassBuilder:
+        """Declare a storage, indirect, or transfer buffer read."""
+        ...
+    def write_buffer(
+        self, buffer: str | BufferHandle, usage: str = ...
+    ) -> RenderPassBuilder:
+        """Declare a storage or transfer buffer write."""
+        ...
+    def set_side_effect(self, enabled: bool = ...) -> RenderPassBuilder:
+        """Retain this pass for externally observable work."""
         ...
     def set_texture(self, sampler_name: str, texture: str | TextureHandle) -> RenderPassBuilder:
         """Bind a texture to a sampler input for this pass."""
@@ -103,6 +129,22 @@ class RenderPassBuilder:
     ) -> RenderPassBuilder:
         """Draw a fullscreen quad with the specified shader."""
         ...
+    def copy_texture(
+        self, source: str | TextureHandle, destination: str | TextureHandle
+    ) -> RenderPassBuilder:
+        """Copy one graph texture into another in a copy pass."""
+        ...
+    def copy_buffer(
+        self,
+        source: str | BufferHandle,
+        destination: str | BufferHandle,
+        byte_count: int = ...,
+    ) -> RenderPassBuilder:
+        """Copy bytes between graph buffers in a copy pass."""
+        ...
+    def present(self, source: str | TextureHandle) -> RenderPassBuilder:
+        """Export a graph texture from a present pass."""
+        ...
     def set_param(self, name: str, value: float) -> RenderPassBuilder:
         """Set a push-constant parameter for this pass."""
         ...
@@ -126,6 +168,10 @@ class RenderGraph:
     @property
     def texture_count(self) -> int:
         """Number of texture resources in the graph."""
+        ...
+    @property
+    def buffer_count(self) -> int:
+        """Number of buffer resources in the graph."""
         ...
     @property
     def topology_sequence(self) -> List[Tuple[str, str]]:
@@ -152,6 +198,21 @@ class RenderGraph:
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Get a texture handle by name, or None if not found."""
         ...
+    def create_buffer(
+        self,
+        name: str,
+        byte_size: int,
+        *,
+        storage: bool = ...,
+        indirect: bool = ...,
+        transfer_source: bool = ...,
+        transfer_destination: bool = ...,
+    ) -> BufferHandle:
+        """Declare a transient buffer resource in the render graph."""
+        ...
+    def get_buffer(self, name: str) -> Optional[BufferHandle]:
+        """Get a buffer handle by name, or None if not found."""
+        ...
     def has_pass(self, name: str) -> bool:
         """Check if a render pass with the given name exists."""
         ...
@@ -172,6 +233,15 @@ class RenderGraph:
         ...
     def add_pass(self, name: str) -> RenderPassBuilder:
         """Add a new render pass to the graph."""
+        ...
+    def add_compute_pass(self, name: str) -> RenderPassBuilder:
+        """Add a compute-domain pass with typed resource accesses."""
+        ...
+    def add_copy_pass(self, name: str) -> RenderPassBuilder:
+        """Add a transfer-domain texture or buffer copy pass."""
+        ...
+    def add_present_pass(self, name: str) -> RenderPassBuilder:
+        """Add a final graph export pass."""
         ...
     def remove_pass(self, name: str) -> RenderPassBuilder | None:
         """Remove a render pass by name. Returns the removed builder, or None."""

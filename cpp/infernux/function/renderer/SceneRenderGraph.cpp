@@ -35,13 +35,24 @@ bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
            a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor;
 }
 
+bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
+{
+    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage;
+}
+
+bool BufferAccessEquals(const GraphBufferAccessDesc &a, const GraphBufferAccessDesc &b)
+{
+    return a.resource == b.resource && a.type == b.type;
+}
+
 bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
 {
     return a.type == b.type && a.shaderTarget == b.shaderTarget && a.queueMin == b.queueMin &&
            a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
            a.overrideMaterial == b.overrideMaterial && a.lightIndex == b.lightIndex &&
            a.screenUIList == b.screenUIList && a.shaderName == b.shaderName && a.pushConstants == b.pushConstants &&
-           a.inputBindings == b.inputBindings;
+           a.inputBindings == b.inputBindings && a.sourceResource == b.sourceResource &&
+           a.destinationResource == b.destinationResource && a.copyBytes == b.copyBytes;
 }
 
 bool CommandListEquals(const std::vector<GraphCommandDesc> &a, const std::vector<GraphCommandDesc> &b)
@@ -105,20 +116,43 @@ const GraphCommandDesc *PrimaryCommand(const GraphPassDesc &pass)
     return pass.commands.empty() ? nullptr : &pass.commands.front();
 }
 
+VkBufferUsageFlags ToVkBufferUsage(uint32_t usage)
+{
+    VkBufferUsageFlags result = 0;
+    if ((usage & static_cast<uint32_t>(GraphBufferUsage::Storage)) != 0)
+        result |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if ((usage & static_cast<uint32_t>(GraphBufferUsage::Indirect)) != 0)
+        result |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    if ((usage & static_cast<uint32_t>(GraphBufferUsage::TransferSource)) != 0)
+        result |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if ((usage & static_cast<uint32_t>(GraphBufferUsage::TransferDestination)) != 0)
+        result |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    return result;
+}
+
 bool PassDescEquals(const GraphPassDesc &a, const GraphPassDesc &b)
 {
-    return a.name == b.name && a.readTextures == b.readTextures && a.writeColors == b.writeColors &&
+    return a.name == b.name && a.type == b.type && a.readTextures == b.readTextures && a.writeColors == b.writeColors &&
            a.writeDepth == b.writeDepth && a.clearColor == b.clearColor && a.clearDepth == b.clearDepth &&
            a.clearColorR == b.clearColorR && a.clearColorG == b.clearColorG && a.clearColorB == b.clearColorB &&
-           a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue &&
+           a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue && a.sideEffect == b.sideEffect &&
+           a.bufferAccesses.size() == b.bufferAccesses.size() &&
+           std::equal(a.bufferAccesses.begin(), a.bufferAccesses.end(), b.bufferAccesses.begin(), BufferAccessEquals) &&
            CommandListEquals(a.commands, b.commands);
 }
 
 bool GraphDescEquals(const RenderGraphDescription &a, const RenderGraphDescription &b)
 {
     if (a.name != b.name || a.outputTexture != b.outputTexture || a.msaaSamples != b.msaaSamples ||
-        a.textures.size() != b.textures.size() || a.passes.size() != b.passes.size()) {
+        a.textures.size() != b.textures.size() || a.buffers.size() != b.buffers.size() ||
+        a.passes.size() != b.passes.size()) {
         return false;
+    }
+
+    for (size_t i = 0; i < a.buffers.size(); ++i) {
+        if (!BufferDescEquals(a.buffers[i], b.buffers[i])) {
+            return false;
+        }
     }
 
     for (size_t i = 0; i < a.textures.size(); ++i) {
@@ -181,6 +215,24 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
         }
     }
 
+    constexpr uint32_t kKnownBufferUsages = static_cast<uint32_t>(GraphBufferUsage::Storage) |
+                                            static_cast<uint32_t>(GraphBufferUsage::Indirect) |
+                                            static_cast<uint32_t>(GraphBufferUsage::TransferSource) |
+                                            static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
+    std::unordered_map<std::string, const GraphBufferDesc *> buffers;
+    buffers.reserve(desc.buffers.size());
+    for (const auto &buffer : desc.buffers) {
+        if (buffer.name.empty() || textures.find(buffer.name) != textures.end()) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid or duplicate buffer name '", buffer.name, "'");
+            return false;
+        }
+        if (!buffers.emplace(buffer.name, &buffer).second || buffer.byteSize == 0 || buffer.usage == 0 ||
+            (buffer.usage & ~kKnownBufferUsages) != 0) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid buffer description for '", buffer.name, "'");
+            return false;
+        }
+    }
+
     std::unordered_set<std::string> passNames;
     passNames.reserve(desc.passes.size());
     for (const auto &pass : desc.passes) {
@@ -198,6 +250,94 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             return false;
         }
         const GraphCommandDesc *command = PrimaryCommand(pass);
+        const bool rasterCommand =
+            command &&
+            (command->type == GraphCommandType::DrawRenderers || command->type == GraphCommandType::DrawSkybox ||
+             command->type == GraphCommandType::DrawShadowCasters || command->type == GraphCommandType::DrawScreenUI ||
+             command->type == GraphCommandType::FullscreenQuad);
+        const bool copyCommand = command && (command->type == GraphCommandType::CopyTexture ||
+                                             command->type == GraphCommandType::CopyBuffer);
+        if ((pass.type == GraphPassType::Raster && command && !rasterCommand) ||
+            (pass.type == GraphPassType::Compute && command) || (pass.type == GraphPassType::Copy && !copyCommand) ||
+            (pass.type == GraphPassType::Present && (!command || command->type != GraphCommandType::Present))) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                         "' command does not match its execution domain");
+            return false;
+        }
+        if (pass.type != GraphPassType::Raster &&
+            (!pass.writeColors.empty() || !pass.writeDepth.empty() || pass.clearColor || pass.clearDepth)) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: non-raster pass '", pass.name,
+                         "' declares raster attachments");
+            return false;
+        }
+        for (const auto &access : pass.bufferAccesses) {
+            const auto buffer = buffers.find(access.resource);
+            if (buffer == buffers.end()) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' references unknown buffer '",
+                             access.resource, "'");
+                return false;
+            }
+            uint32_t requiredUsage = 0;
+            switch (access.type) {
+            case GraphBufferAccessType::StorageRead:
+            case GraphBufferAccessType::StorageWrite:
+                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::Storage);
+                break;
+            case GraphBufferAccessType::IndirectRead:
+                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::Indirect);
+                break;
+            case GraphBufferAccessType::TransferRead:
+                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::TransferSource);
+                break;
+            case GraphBufferAccessType::TransferWrite:
+                requiredUsage = static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
+                break;
+            }
+            if ((buffer->second->usage & requiredUsage) == 0) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' buffer '", access.resource,
+                             "' does not declare the required usage");
+                return false;
+            }
+        }
+        if (command && command->type == GraphCommandType::CopyTexture) {
+            const auto source = textures.find(command->sourceResource);
+            const auto destination = textures.find(command->destinationResource);
+            if (source == textures.end() || destination == textures.end() || source == destination ||
+                source->second->isBackbuffer || destination->second->isBackbuffer ||
+                source->second->format != destination->second->format) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture copy pass '", pass.name,
+                             "' has incompatible resources");
+                return false;
+            }
+        } else if (command && command->type == GraphCommandType::CopyBuffer) {
+            const auto source = buffers.find(command->sourceResource);
+            const auto destination = buffers.find(command->destinationResource);
+            if (source == buffers.end() || destination == buffers.end() ||
+                command->sourceResource == command->destinationResource ||
+                command->copyBytes > std::min(source->second->byteSize, destination->second->byteSize)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: buffer copy pass '", pass.name,
+                             "' has incompatible resources");
+                return false;
+            }
+            const uint32_t transferSource = static_cast<uint32_t>(GraphBufferUsage::TransferSource);
+            const uint32_t transferDestination = static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
+            if ((source->second->usage & transferSource) == 0 ||
+                (destination->second->usage & transferDestination) == 0) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: buffer copy pass '", pass.name,
+                             "' resources do not declare transfer usage");
+                return false;
+            }
+        } else if (command && command->type == GraphCommandType::Present &&
+                   textures.find(command->sourceResource) == textures.end()) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: present pass '", pass.name,
+                         "' references an unknown texture");
+            return false;
+        } else if (command && command->type == GraphCommandType::Present &&
+                   textures.at(command->sourceResource)->isDepth) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: present pass '", pass.name,
+                         "' cannot export a depth texture");
+            return false;
+        }
         if (command && command->type == GraphCommandType::DrawShadowCasters) {
             if (!pass.writeColors.empty()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: shadow pass '", pass.name,
@@ -486,6 +626,10 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     for (const auto &passDesc : normalizedDesc.passes) {
         const GraphCommandDesc *command = PrimaryCommand(passDesc);
         if (!command) {
+            m_pythonCallbacks[passDesc.name] = [](vk::RenderContext &, uint32_t, uint32_t) {};
+            continue;
+        }
+        if (passDesc.type != GraphPassType::Raster) {
             m_pythonCallbacks[passDesc.name] = [](vk::RenderContext &, uint32_t, uint32_t) {};
             continue;
         }
@@ -1062,6 +1206,7 @@ void SceneRenderGraph::BuildRenderGraph()
     ImportSceneTargetResources();
 
     std::unordered_map<std::string, vk::ResourceHandle> customRTHandles;
+    std::unordered_map<std::string, vk::ResourceHandle> bufferHandles;
     if (!m_pythonGraphDesc.passes.empty()) {
         std::unordered_map<std::string, const GraphTextureDesc *> texDescMap;
         for (const auto &tex : m_pythonGraphDesc.textures) {
@@ -1091,6 +1236,10 @@ void SceneRenderGraph::BuildRenderGraph()
         // Pre-register transient textures so their ResourceHandles are
         // available before passes reference them.
         RegisterTransientTextures(width, height, customRTHandles);
+        for (const auto &buffer : m_pythonGraphDesc.buffers) {
+            bufferHandles[buffer.name] =
+                m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+        }
 
         auto publishResourceVersion = [&](vk::ResourceHandle handle) {
             if (!handle.IsValid())
@@ -1104,6 +1253,12 @@ void SceneRenderGraph::BuildRenderGraph()
                 return;
             }
             for (auto &[name, current] : customRTHandles) {
+                if (current.id == handle.id) {
+                    current = handle;
+                    return;
+                }
+            }
+            for (auto &[name, current] : bufferHandles) {
                 if (current.id == handle.id) {
                     current = handle;
                     return;
@@ -1130,6 +1285,146 @@ void SceneRenderGraph::BuildRenderGraph()
                 continue;
             }
             auto callback = callbackIt->second;
+
+            auto resolveTextureHandle = [&](const std::string &name) -> vk::ResourceHandle {
+                const auto texture = texDescMap.find(name);
+                if (texture == texDescMap.end())
+                    return {};
+                if (texture->second->isBackbuffer)
+                    return m_importedColorTarget;
+                const auto custom = customRTHandles.find(name);
+                if (custom != customRTHandles.end())
+                    return custom->second;
+                return texture->second->isDepth ? sharedDepth : vk::ResourceHandle{};
+            };
+            auto textureExtent = [&](const std::string &name) -> VkExtent3D {
+                const auto texture = texDescMap.find(name);
+                if (texture == texDescMap.end())
+                    return {0, 0, 1};
+                uint32_t resourceWidth = texture->second->width > 0 ? texture->second->width : width;
+                uint32_t resourceHeight = texture->second->height > 0 ? texture->second->height : height;
+                if (texture->second->sizeDivisor > 1) {
+                    resourceWidth = std::max(1u, width / texture->second->sizeDivisor);
+                    resourceHeight = std::max(1u, height / texture->second->sizeDivisor);
+                }
+                return {resourceWidth, resourceHeight, 1};
+            };
+
+            if (passDesc.type == GraphPassType::Compute) {
+                m_renderGraph->AddComputePass(passDesc.name, [&](vk::PassBuilder &builder) {
+                    for (const auto &textureName : passDesc.readTextures) {
+                        const auto handle = resolveTextureHandle(textureName);
+                        if (!handle.IsValid())
+                            continue;
+                        const auto texture = texDescMap.find(textureName);
+                        if (texture != texDescMap.end() && texture->second->isDepth)
+                            builder.ReadSampledDepth(handle, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                        else
+                            builder.Read(handle, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                    }
+                    for (const auto &access : passDesc.bufferAccesses) {
+                        auto buffer = bufferHandles.find(access.resource);
+                        if (buffer == bufferHandles.end())
+                            continue;
+                        switch (access.type) {
+                        case GraphBufferAccessType::StorageRead:
+                            builder.ReadStorageBuffer(buffer->second);
+                            break;
+                        case GraphBufferAccessType::StorageWrite:
+                            buffer->second = builder.WriteStorageBuffer(buffer->second);
+                            break;
+                        case GraphBufferAccessType::IndirectRead:
+                            builder.ReadIndirectBuffer(buffer->second);
+                            break;
+                        case GraphBufferAccessType::TransferRead:
+                            builder.TransferRead(buffer->second);
+                            break;
+                        case GraphBufferAccessType::TransferWrite:
+                            buffer->second = builder.TransferWrite(buffer->second);
+                            break;
+                        }
+                    }
+                    builder.SetSideEffect(passDesc.sideEffect);
+                    return [](vk::RenderContext &) {};
+                });
+                continue;
+            }
+
+            if (passDesc.type == GraphPassType::Copy && command) {
+                if (command->type == GraphCommandType::CopyBuffer) {
+                    auto source = bufferHandles.find(command->sourceResource);
+                    auto destination = bufferHandles.find(command->destinationResource);
+                    if (source == bufferHandles.end() || destination == bufferHandles.end())
+                        continue;
+                    const auto sourceDesc = std::find_if(
+                        m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                        [&](const GraphBufferDesc &buffer) { return buffer.name == command->sourceResource; });
+                    const auto destinationDesc = std::find_if(
+                        m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                        [&](const GraphBufferDesc &buffer) { return buffer.name == command->destinationResource; });
+                    const VkDeviceSize copyBytes = command->copyBytes > 0
+                                                       ? command->copyBytes
+                                                       : std::min(sourceDesc->byteSize, destinationDesc->byteSize);
+                    vk::ResourceHandle written;
+                    const auto sourceHandle = source->second;
+                    const auto destinationHandle = destination->second;
+                    m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                        builder.TransferRead(sourceHandle);
+                        written = builder.TransferWrite(destinationHandle);
+                        builder.SetSideEffect(passDesc.sideEffect);
+                        return [sourceHandle, written, copyBytes](vk::RenderContext &ctx) {
+                            VkBufferCopy region{0, 0, copyBytes};
+                            vkCmdCopyBuffer(ctx.GetCommandBuffer(), ctx.GetBuffer(sourceHandle), ctx.GetBuffer(written),
+                                            1, &region);
+                        };
+                    });
+                    publishResourceVersion(written);
+                    continue;
+                }
+
+                if (command->type == GraphCommandType::CopyTexture) {
+                    const auto sourceHandle = resolveTextureHandle(command->sourceResource);
+                    const auto destinationHandle = resolveTextureHandle(command->destinationResource);
+                    if (!sourceHandle.IsValid() || !destinationHandle.IsValid())
+                        continue;
+                    const auto sourceDesc = texDescMap.at(command->sourceResource);
+                    const VkExtent3D sourceExtent = textureExtent(command->sourceResource);
+                    const VkExtent3D destinationExtent = textureExtent(command->destinationResource);
+                    const VkExtent3D copyExtent{std::min(sourceExtent.width, destinationExtent.width),
+                                                std::min(sourceExtent.height, destinationExtent.height), 1};
+                    const VkImageAspectFlags aspect =
+                        sourceDesc->isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+                    vk::ResourceHandle written;
+                    m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                        builder.TransferRead(sourceHandle);
+                        written = builder.TransferWrite(destinationHandle);
+                        builder.SetSideEffect(passDesc.sideEffect);
+                        return [sourceHandle, written, copyExtent, aspect](vk::RenderContext &ctx) {
+                            VkImageCopy region{};
+                            region.srcSubresource = {aspect, 0, 0, 1};
+                            region.dstSubresource = {aspect, 0, 0, 1};
+                            region.extent = copyExtent;
+                            vkCmdCopyImage(ctx.GetCommandBuffer(), ctx.GetImage(sourceHandle),
+                                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ctx.GetImage(written),
+                                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                        };
+                    });
+                    publishResourceVersion(written);
+                    continue;
+                }
+            }
+
+            if (passDesc.type == GraphPassType::Present && command) {
+                const auto source = resolveTextureHandle(command->sourceResource);
+                if (!source.IsValid())
+                    continue;
+                m_renderGraph->AddPresentPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                    builder.Read(source, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                    builder.SetSideEffect();
+                    return [](vk::RenderContext &) {};
+                });
+                continue;
+            }
 
             // Determine color targets (MRT support).
             // Build a map of slot → ResourceHandle for all declared color outputs.

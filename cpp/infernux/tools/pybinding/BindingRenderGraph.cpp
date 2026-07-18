@@ -59,7 +59,30 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("DRAW_SKYBOX", GraphCommandType::DrawSkybox)
         .value("DRAW_SHADOW_CASTERS", GraphCommandType::DrawShadowCasters)
         .value("DRAW_SCREEN_UI", GraphCommandType::DrawScreenUI)
-        .value("FULLSCREEN_QUAD", GraphCommandType::FullscreenQuad);
+        .value("FULLSCREEN_QUAD", GraphCommandType::FullscreenQuad)
+        .value("COPY_TEXTURE", GraphCommandType::CopyTexture)
+        .value("COPY_BUFFER", GraphCommandType::CopyBuffer)
+        .value("PRESENT", GraphCommandType::Present);
+
+    py::enum_<GraphPassType>(m, "GraphPassType", "Execution domain of a graph pass")
+        .value("RASTER", GraphPassType::Raster)
+        .value("COMPUTE", GraphPassType::Compute)
+        .value("COPY", GraphPassType::Copy)
+        .value("PRESENT", GraphPassType::Present);
+
+    py::enum_<GraphBufferUsage>(m, "GraphBufferUsage", py::arithmetic(), "Allowed uses of a graph buffer")
+        .value("NONE", GraphBufferUsage::None)
+        .value("STORAGE", GraphBufferUsage::Storage)
+        .value("INDIRECT", GraphBufferUsage::Indirect)
+        .value("TRANSFER_SOURCE", GraphBufferUsage::TransferSource)
+        .value("TRANSFER_DESTINATION", GraphBufferUsage::TransferDestination);
+
+    py::enum_<GraphBufferAccessType>(m, "GraphBufferAccessType", "Per-pass graph buffer access")
+        .value("STORAGE_READ", GraphBufferAccessType::StorageRead)
+        .value("STORAGE_WRITE", GraphBufferAccessType::StorageWrite)
+        .value("INDIRECT_READ", GraphBufferAccessType::IndirectRead)
+        .value("TRANSFER_READ", GraphBufferAccessType::TransferRead)
+        .value("TRANSFER_WRITE", GraphBufferAccessType::TransferWrite);
 
     py::class_<GraphCommandDesc>(m, "GraphCommandDesc", "Typed command in the Python-defined graph IR")
         .def(py::init<>())
@@ -74,7 +97,10 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("screen_ui_list", &GraphCommandDesc::screenUIList)
         .def_readwrite("shader_name", &GraphCommandDesc::shaderName)
         .def_readwrite("push_constants", &GraphCommandDesc::pushConstants)
-        .def_readwrite("input_bindings", &GraphCommandDesc::inputBindings);
+        .def_readwrite("input_bindings", &GraphCommandDesc::inputBindings)
+        .def_readwrite("source_resource", &GraphCommandDesc::sourceResource)
+        .def_readwrite("destination_resource", &GraphCommandDesc::destinationResource)
+        .def_readwrite("copy_bytes", &GraphCommandDesc::copyBytes);
 
     // GraphTextureDesc struct
     py::class_<GraphTextureDesc>(m, "GraphTextureDesc", "Description of a texture resource in the Python-defined graph")
@@ -89,14 +115,28 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("size_divisor", &GraphTextureDesc::sizeDivisor,
                        "Size divisor relative to scene target (>0: actual = scene / divisor)");
 
+    py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
+        .def(py::init<>())
+        .def_readwrite("name", &GraphBufferDesc::name)
+        .def_readwrite("byte_size", &GraphBufferDesc::byteSize)
+        .def_readwrite("usage", &GraphBufferDesc::usage);
+
+    py::class_<GraphBufferAccessDesc>(m, "GraphBufferAccessDesc", "Typed buffer access declared by a graph pass")
+        .def(py::init<>())
+        .def_readwrite("resource", &GraphBufferAccessDesc::resource)
+        .def_readwrite("type", &GraphBufferAccessDesc::type);
+
     // GraphPassDesc struct
     py::class_<GraphPassDesc>(m, "GraphPassDesc", "Description of a single render pass in the Python-defined graph")
         .def(py::init<>())
         .def_readwrite("name", &GraphPassDesc::name, "Pass name (must be unique)")
+        .def_readwrite("type", &GraphPassDesc::type, "Pass execution domain")
         .def_readwrite("read_textures", &GraphPassDesc::readTextures, "Names of textures this pass reads")
         .def_readwrite("write_colors", &GraphPassDesc::writeColors,
                        "MRT color outputs: list of (slot, texture_name) pairs")
         .def_readwrite("write_depth", &GraphPassDesc::writeDepth, "Name of depth output texture")
+        .def_readwrite("buffer_accesses", &GraphPassDesc::bufferAccesses, "Typed buffer accesses")
+        .def_readwrite("side_effect", &GraphPassDesc::sideEffect, "Retain the pass for externally observable work")
         .def_readwrite("clear_color", &GraphPassDesc::clearColor, "Whether to clear color buffer")
         .def_readwrite("clear_depth", &GraphPassDesc::clearDepth, "Whether to clear depth buffer")
         .def_readwrite("clear_color_r", &GraphPassDesc::clearColorR, "Clear color red")
@@ -129,6 +169,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("source_revision", &RenderGraphDescription::sourceRevision,
                        "Monotonic Python graph artifact revision")
         .def_readwrite("textures", &RenderGraphDescription::textures, "All texture resources")
+        .def_readwrite("buffers", &RenderGraphDescription::buffers, "All buffer resources")
         .def_readwrite("passes", &RenderGraphDescription::passes, "All passes in declaration order")
         .def_readwrite("output_texture", &RenderGraphDescription::outputTexture, "Name of the final output texture")
         .def_readwrite("msaa_samples", &RenderGraphDescription::msaaSamples,
