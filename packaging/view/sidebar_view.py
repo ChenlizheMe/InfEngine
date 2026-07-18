@@ -159,7 +159,7 @@ class SidebarView(QWidget):
             (tr("Projects"), 0),
             (tr("Installs"), 1),
             (tr("Settings"), 2),
-            (tr("Discussion"), 3),
+            (tr("Community"), 3),
         ]:
             btn = QPushButton(label)
             btn.setObjectName("navItem")

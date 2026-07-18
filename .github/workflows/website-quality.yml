@@ -122,11 +122,8 @@ jobs:
       - name: Verify website contracts
         run: node docs/tools/verify-site.mjs
 
-      - name: Test community client
-        run: node docs/tools/test-community-client.mjs
-
-      - name: Test community readiness rules
-        run: node docs/tools/test-community-readiness.mjs
+      - name: Test community redirect
+        run: node docs/tools/test-community-link.mjs
 
       - name: Test documentation printing
         run: node docs/tools/test-doc-print.mjs

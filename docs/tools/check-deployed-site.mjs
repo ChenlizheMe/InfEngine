@@ -12,15 +12,16 @@ const failures = [];
 const healthResults = [];
 const startedAt = new Date();
 let deployedManifest = null;
+const requestAttempts = 3;
+const requestTimeoutMs = 20_000;
 
 const checks = [
-    { route: "/", tokens: ["<h1", "start.html", "community.html"] },
+    { route: "/", tokens: ["<h1", "start.html", "https://infernux-engine.discourse.group/"] },
     { route: "/start.html", tokens: ["data-page-language=\"en\"", "data-page-language=\"zh\"", "id=\"first-script\""], forbid: ["始于", "验证于", "nav.manual"] },
     { route: "/learn.html", tokens: ["data-learn-search", "data-learn-tag", "learn/placeholder.html"] },
     { route: "/learn/placeholder.html", tokens: ["API reference is generated automatically", "placeholder.md"] },
     { route: "/download.html", tokens: ["InfernuxHub", "advanced-download", "data-version-select", ".whl", "0.2.9", "0.2.1"], forbid: ["SHA-256", "checksum", "校验码", "pwa-install.js", "advanced-download\" open"] },
-    { route: "/community.html", tokens: ["community-state", "forum-compose", "community-api-v5.js"] },
-    { route: "/community-topic.html?topic=11", tokens: ["community-topic", "topic-replies", "community-topic.js"] },
+    { route: "/community.html", tokens: ["https://infernux-engine.discourse.group/", "http-equiv=\"refresh\""] },
     { route: "/roadmap.html", tokens: ["<h1", "start.html"] },
     { route: "/wiki/site/en/api/index.html", tokens: ["API", "/start.html", "/learn.html"], forbid: [">Manual</a>", "/manual/"] },
     { route: "/wiki/site/zh/api/index.html", tokens: ["API", "/start.html", "/learn.html"], forbid: [">手册</a>", "/manual/"] },
@@ -42,16 +43,48 @@ function record(id, target, status, started, detail = null) {
     });
 }
 
+function isRetryableStatus(status) {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function wait(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function fetchText(target) {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= requestAttempts; attempt += 1) {
+        try {
+            const response = await fetch(target, {
+                headers: { "user-agent": "Infernux-website-health/1.0" },
+                signal: AbortSignal.timeout(requestTimeoutMs),
+            });
+            if (!response.ok) {
+                const error = new Error(`HTTP ${response.status}`);
+                error.retryable = isRetryableStatus(response.status);
+                throw error;
+            }
+
+            return { response, body: await response.text(), attempt };
+        } catch (error) {
+            lastError = error;
+            const retryable = error.retryable !== false;
+            if (!retryable || attempt === requestAttempts) break;
+
+            console.warn(`RETRY ${target.pathname}: ${error.message} (attempt ${attempt}/${requestAttempts})`);
+            await wait(attempt * 1_000);
+        }
+    }
+
+    throw lastError;
+}
+
 for (const check of checks) {
     const target = new URL(check.route, base);
     const started = performance.now();
     try {
-        const response = await fetch(target, {
-            headers: { "user-agent": "Infernux-website-health/1.0" },
-            signal: AbortSignal.timeout(15_000),
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const body = await response.text();
+        const { response, body, attempt } = await fetchText(target);
         for (const token of check.tokens || []) {
             if (!body.includes(token)) throw new Error(`missing '${token}'`);
         }
@@ -63,8 +96,9 @@ for (const check of checks) {
             if (!(check.jsonKey in data)) throw new Error(`JSON is missing '${check.jsonKey}'`);
             if (check.route === "/docs-manifest.json") deployedManifest = data;
         }
-        console.log(`PASS ${check.route}`);
-        record(check.route, target.toString(), "passed", started, `HTTP ${response.status}`);
+        const attemptDetail = attempt > 1 ? ` after ${attempt} attempts` : "";
+        console.log(`PASS ${check.route}${attemptDetail}`);
+        record(check.route, target.toString(), "passed", started, `HTTP ${response.status}${attemptDetail}`);
     } catch (error) {
         failures.push(`${check.route}: ${error.message}`);
         console.error(`FAIL ${check.route}: ${error.message}`);

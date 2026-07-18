@@ -72,11 +72,12 @@ def test_kernel_random_slots_are_unique_and_source_uid_independent():
         emitters=(replace(emitter, settings=settings),),
     )
     kernel = _lower(first)
-    slots = [
-        instruction.immediate_dict()["random_slot"]
-        for instruction in kernel.emitters[0].init.instructions
-        if "random_slot" in instruction.immediate_dict()
-    ]
+    slots = []
+    for instruction in kernel.emitters[0].init.instructions:
+        immediates = instruction.immediate_dict()
+        if "random_slot" in immediates:
+            slots.append(immediates["random_slot"])
+        slots.extend(immediates.get("random_slots", ()))
 
     assert slots == list(range(len(slots)))
 
@@ -191,13 +192,13 @@ def test_shape_settings_and_authored_space_are_explicit_in_kernel_ir():
         assert instruction.result_type == TypeRef(
             ValueType.VEC3, CoordinateSpace.EMITTER_LOCAL
         )
-        assert instruction.immediate_dict() | {"random_slot": 0} == {
+        assert instruction.immediate_dict() | {"random_slots": [0, 1, 2]} == {
             "shape": "cone",
             "shape_space": "emitter_local",
             "radius": 2.5,
             "angle_degrees": 35.0,
             "dimensions": [3.0, 4.0, 5.0],
-            "random_slot": 0,
+            "random_slots": [0, 1, 2],
         }
     assert sum(
         instruction.opcode == "convert_space"

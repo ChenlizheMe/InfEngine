@@ -7,5 +7,6 @@ from .script import *
 from .artifact import *
 from .kernel_ir import *
 from .kernel_semantics import *
+from .numpy_backend import *
 
 __all__ = [name for name in globals() if not name.startswith("_")]

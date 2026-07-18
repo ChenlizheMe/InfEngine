@@ -486,7 +486,7 @@ class ParticleKernelLowerer:
                     "radius": parameters["shape_radius"],
                     "angle_degrees": parameters["shape_angle_degrees"],
                     "dimensions": parameters["shape_dimensions"],
-                    "random_slot": builder.next_random_slot(),
+                    "random_slots": list(builder.next_random_slots(3)),
                 }
                 shape_space = CoordinateSpace(parameters["shape_space"])
                 shape_type = TypeRef(ValueType.VEC3, shape_space)
@@ -505,11 +505,12 @@ class ParticleKernelLowerer:
                         {
                             "from": shape_type.space.value,
                             "to": attribute_types["builtin.position"].space.value,
+                            "semantic": "position",
                         },
                         source,
                     )
                 builder.store("builtin.position", position, source)
-                shape_parameters["random_slot"] = builder.next_random_slot()
+                shape_parameters["random_slots"] = list(builder.next_random_slots(3))
                 direction = builder.emit(
                     "sample_shape_direction",
                     shape_type,
@@ -525,6 +526,7 @@ class ParticleKernelLowerer:
                         {
                             "from": shape_type.space.value,
                             "to": attribute_types["builtin.velocity"].space.value,
+                            "semantic": "direction",
                         },
                         source,
                     )
@@ -748,6 +750,9 @@ class _KernelBuilder:
         self._random_slot += 1
         return result
 
+    def next_random_slots(self, count: int) -> tuple[int, ...]:
+        return tuple(self.next_random_slot() for _index in range(count))
+
     def lower_expressions(self, stage: ParticleStageHIR) -> dict[str, str]:
         lowered: dict[str, str] = {}
         for instruction in stage.expressions.instructions:
@@ -808,7 +813,11 @@ class _KernelBuilder:
                     "convert_space",
                     expected_type,
                     (value,),
-                    {"from": actual.space.value, "to": expected_type.space.value},
+                    {
+                        "from": actual.space.value,
+                        "to": expected_type.space.value,
+                        "semantic": "direction",
+                    },
                     source,
                 )
             raise KernelCompileError(

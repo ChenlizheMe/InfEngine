@@ -3,6 +3,6 @@ contact_links:
   - name: Infernux documentation hub
     url: https://infernux-engine.com/start.html
     about: Start here for setup instructions, API reference, and architecture notes.
-  - name: GitHub Discussions
-    url: https://github.com/ChenlizheMe/Infernux/discussions
-    about: Use Discussions for broader design questions and open-ended conversations.
+  - name: Infernux Community
+    url: https://infernux-engine.discourse.group/
+    about: Ask for help, discuss ideas, and share projects in the official Infernux community.

@@ -23,7 +23,7 @@
     "release": "/release.json",
     "release_notes": "/release-notes.json",
     "sitemap": "/sitemap.xml",
-    "community": "/community.html"
+    "community": "https://infernux-engine.discourse.group/"
   },
   "documentation_layers": {
     "start": "A short guide maintained directly in docs/start.html",

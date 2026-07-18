@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        For general design discussion, prefer GitHub Discussions when possible.
+        For general design discussion and usage help, visit the Infernux community: https://infernux-engine.discourse.group/
   - type: textarea
     id: question
     attributes:

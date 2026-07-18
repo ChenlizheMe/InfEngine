@@ -40,7 +40,7 @@ _INIT_ONLY = frozenset({KernelStage.INIT})
 _UPDATE_ONLY = frozenset({KernelStage.UPDATE})
 _RENDER_ONLY = frozenset({KernelStage.RENDERING})
 _SHAPE_IMMEDIATES = frozenset(
-    {"shape", "shape_space", "radius", "angle_degrees", "dimensions", "random_slot"}
+    {"shape", "shape_space", "radius", "angle_degrees", "dimensions", "random_slots"}
 )
 
 KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
@@ -60,7 +60,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         False, 1, frozenset({"attribute"}), _RENDER_ONLY
     ),
     "convert_space": KernelOpcodeSpec(
-        True, 1, frozenset({"from", "to"}), _ALL_STAGES
+        True, 1, frozenset({"from", "to", "semantic"}), _ALL_STAGES
     ),
 }
 
@@ -282,7 +282,13 @@ def _validate_opcode_types(
             raise KernelSemanticError("kernel shape dimensions require three values")
         for value in dimensions:
             _validate_non_negative(value, "shape dimension")
-        _validate_u32(immediates["random_slot"], "random_slot")
+        random_slots = immediates["random_slots"]
+        if not isinstance(random_slots, (list, tuple)) or len(random_slots) != 3:
+            raise KernelSemanticError("kernel shape sampling requires three random slots")
+        for random_slot in random_slots:
+            _validate_u32(random_slot, "random_slot")
+        if len(set(random_slots)) != len(random_slots):
+            raise KernelSemanticError("kernel shape sampling random slots must be unique")
     elif opcode == "less_than":
         if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
             ValueType.I32,
@@ -300,6 +306,8 @@ def _validate_opcode_types(
             raise KernelSemanticError("kernel space conversion metadata does not match its types")
         if operands[0].space is result_type.space:
             raise KernelSemanticError("kernel space conversion must change coordinate space")
+        if immediates["semantic"] not in {"position", "direction", "vector"}:
+            raise KernelSemanticError("kernel space conversion semantic is invalid")
 
 
 def _validate_literal(value_type: TypeRef | None, value: Any) -> None:

@@ -13,7 +13,7 @@ Start with these resources:
 
 - Bug report: open a GitHub Issue with reproduction details.
 - Feature proposal: open a GitHub Issue describing the workflow gap and proposed direction.
-- Open-ended question or design discussion: use GitHub Discussions.
+- Open-ended question or design discussion: use the [Infernux community](https://infernux-engine.discourse.group/).
 - Security concern: follow `SECURITY.md` and report it privately.
 
 ## What helps when asking for support

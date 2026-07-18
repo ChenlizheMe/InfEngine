@@ -12,7 +12,7 @@ async function exists(relative) {
     return stat(path.join(docsRoot, relative)).then(() => true).catch(() => false);
 }
 
-const rootPages = ["index.html", "start.html", "learn.html", "learn/placeholder.html", "roadmap.html", "community.html", "community-topic.html", "download.html", "404.html"];
+const rootPages = ["index.html", "start.html", "learn.html", "learn/placeholder.html", "roadmap.html", "community.html", "download.html", "404.html"];
 for (const page of rootPages) {
     const html = await readFile(path.join(docsRoot, page), "utf8");
     if (!html.includes("start.html")) fail(`${page}: missing the hand-maintained Start route`);
