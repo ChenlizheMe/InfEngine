@@ -236,35 +236,53 @@ class InxMaterial
     /// @brief Set both vertex and fragment shader to the same name (convenience).
     void SetShader(const std::string &shaderName)
     {
-        m_vertexShader = ShaderAssetReference{"", shaderName, ""};
-        m_fragmentShader = ShaderAssetReference{"", shaderName, ""};
+        const ShaderAssetReference reference{"", shaderName, ""};
+        if (m_vertexShader == reference && m_fragmentShader == reference)
+            return;
+        m_vertexShader = reference;
+        m_fragmentShader = reference;
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     /// @brief Set vertex shader name independently.
     void SetVertShader(const std::string &name)
     {
-        m_vertexShader = ShaderAssetReference{"", name, ""};
+        const ShaderAssetReference reference{"", name, ""};
+        if (m_vertexShader == reference)
+            return;
+        m_vertexShader = reference;
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     /// @brief Set fragment shader name independently.
     void SetFragShader(const std::string &name)
     {
-        m_fragmentShader = ShaderAssetReference{"", name, ""};
+        const ShaderAssetReference reference{"", name, ""};
+        if (m_fragmentShader == reference)
+            return;
+        m_fragmentShader = reference;
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     void SetVertShaderReference(ShaderAssetReference reference)
     {
+        if (m_vertexShader == reference)
+            return;
         m_vertexShader = std::move(reference);
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     void SetFragShaderReference(ShaderAssetReference reference)
     {
+        if (m_fragmentShader == reference)
+            return;
         m_fragmentShader = std::move(reference);
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     /// @brief Get the fragment shader name (primary identity for render meta).

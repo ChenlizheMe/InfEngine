@@ -41,6 +41,9 @@ struct ParticleGpuSystemManager::Impl
         {
             uint64_t id = 0;
             std::string stableId;
+            std::shared_ptr<InxMaterial> material;
+            std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
+            GpuBillboardMaterialState fallbackMaterial;
             std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
         };
 
@@ -48,6 +51,8 @@ struct ParticleGpuSystemManager::Impl
         uint64_t artifactRevision = 0;
         std::string stableId;
         std::unique_ptr<ParticleGpuRuntime> runtime;
+        std::vector<uint32_t> billboardVertexShader;
+        std::vector<uint32_t> billboardFragmentShader;
         std::vector<Output> outputs;
     };
 
@@ -68,6 +73,25 @@ struct ParticleGpuSystemManager::Impl
     GpuBillboardTextureVersionResolver textureVersionResolver;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
+
+    [[nodiscard]] std::shared_ptr<ParticleGpuBillboardRenderer>
+    CreateOutputRenderer(const Emitter &emitter, const std::shared_ptr<InxMaterial> &material,
+                         const GpuBillboardMaterialState &fallbackMaterial,
+                         const std::shared_ptr<const ShaderProgramArtifact> &shaderProgram) const
+    {
+        auto renderer = std::make_shared<ParticleGpuBillboardRenderer>();
+        GpuBillboardRendererDesc rendererDesc;
+        rendererDesc.vertexShader = {emitter.billboardVertexShader.data(), emitter.billboardVertexShader.size()};
+        rendererDesc.fragmentShader = {emitter.billboardFragmentShader.data(), emitter.billboardFragmentShader.size()};
+        rendererDesc.shaderProgram = shaderProgram;
+        rendererDesc.instances = emitter.runtime->InstanceBuffer();
+        rendererDesc.material = material;
+        rendererDesc.fallbackMaterial = fallbackMaterial;
+        rendererDesc.textureResolver = textureResolver;
+        rendererDesc.textureVersionResolver = textureVersionResolver;
+        rendererDesc.deletionQueue = deletionQueue;
+        return renderer->Create(context->GetRhiDevice(), rendererDesc) ? renderer : nullptr;
+    }
 
     [[nodiscard]] std::shared_ptr<Emitter> CreateEmitter(const GpuParticleEmitterProgram &program,
                                                          std::string *error) const
@@ -100,6 +124,8 @@ struct ParticleGpuSystemManager::Impl
         emitter->id = program.id;
         emitter->artifactRevision = program.artifactRevision;
         emitter->stableId = program.stableId;
+        emitter->billboardVertexShader = program.billboardVertexShader;
+        emitter->billboardFragmentShader = program.billboardFragmentShader;
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
@@ -124,24 +150,15 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle output identity must be valid and unique per emitter");
                 return {};
             }
-            auto renderer = std::make_shared<ParticleGpuBillboardRenderer>();
-            GpuBillboardRendererDesc rendererDesc;
-            rendererDesc.vertexShader = {program.billboardVertexShader.data(), program.billboardVertexShader.size()};
-            rendererDesc.fragmentShader = {program.billboardFragmentShader.data(),
-                                           program.billboardFragmentShader.size()};
-            rendererDesc.shaderProgram = output.shaderProgram;
-            rendererDesc.instances = emitter->runtime->InstanceBuffer();
-            rendererDesc.material = output.material;
-            rendererDesc.fallbackMaterial = output.fallbackMaterial;
-            rendererDesc.textureResolver = textureResolver;
-            rendererDesc.textureVersionResolver = textureVersionResolver;
-            rendererDesc.deletionQueue = deletionQueue;
-            if (!renderer->Create(device, rendererDesc)) {
+            auto renderer =
+                CreateOutputRenderer(*emitter, output.material, output.fallbackMaterial, output.shaderProgram);
+            if (!renderer) {
                 SetError(error,
                          "failed to create GPU particle billboard renderer for output '" + output.stableId + "'");
                 return {};
             }
-            emitter->outputs.push_back({output.id, output.stableId, std::move(renderer)});
+            emitter->outputs.push_back({output.id, output.stableId, output.material, output.shaderProgram,
+                                        output.fallbackMaterial, std::move(renderer)});
         }
         return emitter;
     }
@@ -306,6 +323,83 @@ bool ParticleGpuSystemManager::ApplyBatch(const std::vector<GpuParticleEmitterPr
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters = std::move(candidates);
     m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
+    return true;
+}
+
+bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
+                                                      std::shared_ptr<const ShaderProgramArtifact> shaderProgram,
+                                                      std::string *error)
+{
+    if (error)
+        error->clear();
+    if (!m_impl || !m_impl->context || !m_impl->drawRegistry) {
+        SetError(error, "GPU particle manager is not initialized");
+        return false;
+    }
+    if (!material) {
+        SetError(error, "GPU particle material refresh requires a live material");
+        return false;
+    }
+    const bool referenced = std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(), [&](const auto &entry) {
+        return std::any_of(entry.second->outputs.begin(), entry.second->outputs.end(),
+                           [&](const auto &output) { return output.material.get() == material.get(); });
+    });
+    if (!referenced)
+        return true;
+    if (shaderProgram && (!shaderProgram->IsValid() || shaderProgram->domain != ShaderProgramDomain::ParticleSprite)) {
+        SetError(error, "GPU particle material must resolve to a valid ParticleSprite shader program");
+        return false;
+    }
+
+    struct Replacement
+    {
+        Impl::Emitter::Output *output = nullptr;
+        std::shared_ptr<const ShaderProgramArtifact> previousProgram;
+        std::shared_ptr<ParticleGpuBillboardRenderer> previousRenderer;
+        std::shared_ptr<ParticleGpuBillboardRenderer> nextRenderer;
+    };
+    std::vector<Replacement> replacements;
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)id;
+        for (auto &output : emitter->outputs) {
+            if (output.material.get() != material.get())
+                continue;
+            const bool sameProgram =
+                (!output.shaderProgram && !shaderProgram) ||
+                (output.shaderProgram && shaderProgram && output.shaderProgram->key == shaderProgram->key);
+            if (sameProgram)
+                continue;
+            auto renderer = m_impl->CreateOutputRenderer(*emitter, material, output.fallbackMaterial, shaderProgram);
+            if (!renderer) {
+                SetError(error, "failed to refresh GPU particle material for output '" + output.stableId + "'");
+                return false;
+            }
+            replacements.push_back({&output, output.shaderProgram, output.renderer, std::move(renderer)});
+        }
+    }
+    if (replacements.empty())
+        return true;
+
+    for (auto &replacement : replacements) {
+        replacement.output->shaderProgram = shaderProgram;
+        replacement.output->renderer = replacement.nextRenderer;
+    }
+    if (!m_impl->drawRegistry->Replace(Impl::BuildDrawEntries(m_impl->emitters))) {
+        for (auto &replacement : replacements) {
+            replacement.output->shaderProgram = std::move(replacement.previousProgram);
+            replacement.output->renderer = std::move(replacement.previousRenderer);
+        }
+        SetError(error, "failed to publish refreshed GPU particle material draw entries");
+        return false;
+    }
+
+    std::vector<std::shared_ptr<ParticleGpuBillboardRenderer>> retired;
+    retired.reserve(replacements.size());
+    for (auto &replacement : replacements)
+        retired.push_back(std::move(replacement.previousRenderer));
+    if (m_impl->deletionQueue) {
+        m_impl->deletionQueue->Push([retired = std::move(retired)]() mutable { retired.clear(); });
+    }
     return true;
 }
 

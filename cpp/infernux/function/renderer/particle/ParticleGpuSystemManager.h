@@ -81,6 +81,11 @@ class ParticleGpuSystemManager
     /// used when a saved ParticleGraph adds or removes emitters during reload.
     [[nodiscard]] bool ApplyBatch(const std::vector<GpuParticleEmitterProgram> &programs,
                                   const std::vector<uint64_t> &removeIds, std::string *error = nullptr);
+    /// Replace only render resources that reference this live material. The
+    /// simulation runtime and all surviving particles remain untouched.
+    [[nodiscard]] bool RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
+                                              std::shared_ptr<const ShaderProgramArtifact> shaderProgram,
+                                              std::string *error = nullptr);
     [[nodiscard]] bool Remove(uint64_t id);
     void Clear();
 

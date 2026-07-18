@@ -88,6 +88,27 @@ void VerifyRenderStateVersioning()
     assert(material.GetVersion() == initialVersion + 2);
 }
 
+void VerifyShaderReferenceVersioning()
+{
+    InxMaterial material("LiveShader", "unlit");
+    const uint64_t initialVersion = material.GetVersion();
+    material.SetVertShader("standard");
+    assert(material.GetVersion() == initialVersion + 1);
+    material.SetVertShader("standard");
+    assert(material.GetVersion() == initialVersion + 1);
+
+    const ShaderAssetReference reference{"vertex-guid", "standard", "Assets/Shaders/Standard.vert"};
+    material.SetVertShaderReference(reference);
+    assert(material.GetVersion() == initialVersion + 2);
+    material.SetVertShaderReference(reference);
+    assert(material.GetVersion() == initialVersion + 2);
+
+    material.SetShader("unlit");
+    assert(material.GetVersion() == initialVersion + 3);
+    assert((material.GetVertShaderReference() == ShaderAssetReference{"", "unlit", ""}));
+    assert((material.GetFragShaderReference() == ShaderAssetReference{"", "unlit", ""}));
+}
+
 } // namespace
 
 int main()
@@ -96,6 +117,7 @@ int main()
     VerifyStableReferencesAndClone();
     VerifyTransactionalFailure();
     VerifyRenderStateVersioning();
+    VerifyShaderReferenceVersioning();
     std::cout << "Material document tests passed\n";
     return 0;
 }

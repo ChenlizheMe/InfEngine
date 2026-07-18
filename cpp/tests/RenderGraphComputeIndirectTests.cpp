@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -106,6 +107,14 @@ std::vector<uint32_t> ReadSpirv(const std::filesystem::path &path)
     return stream ? code : std::vector<uint32_t>{};
 }
 
+std::vector<char> SpirvBytes(const std::vector<uint32_t> &words)
+{
+    std::vector<char> bytes(words.size() * sizeof(uint32_t));
+    if (!bytes.empty())
+        std::memcpy(bytes.data(), words.data(), bytes.size());
+    return bytes;
+}
+
 bool Require(bool condition, const char *message)
 {
     if (!condition)
@@ -187,6 +196,44 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "GPU particle system was not published atomically"))
+        return false;
+
+    auto linkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
+    linkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 11};
+    linkedParticleProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
+    linkedParticleProgram->compatibilitySignature = 41;
+    infernux::ShaderProgramArtifact::PassVariant linkedParticleForward;
+    linkedParticleForward.compatibilitySignature = linkedParticleProgram->compatibilitySignature;
+    linkedParticleForward.vertexSpirv = SpirvBytes(particleVertexCode);
+    linkedParticleForward.fragmentSpirv = SpirvBytes(particleFragmentCode);
+    linkedParticleProgram->variants.push_back(std::move(linkedParticleForward));
+    if (!Require(linkedParticleProgram->IsValid(), "Linked particle test artifact is invalid"))
+        return false;
+    const uint64_t drawRevisionBeforeMaterialRefresh = particleDrawRegistry.Revision();
+    if (!Require(particleSystems.RefreshMaterialProgram(primaryOutput.material, linkedParticleProgram, &managedError),
+                 managedError.c_str()) ||
+        !Require(particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 &&
+                     particleDrawRegistry.Revision() == drawRevisionBeforeMaterialRefresh + 1 &&
+                     particleDeletionQueue.PendingCount() == 1,
+                 "GPU particle material hot refresh reset simulation or failed to republish draws")) {
+        return false;
+    }
+    auto invalidParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>(*linkedParticleProgram);
+    invalidParticleProgram->key.revision = 12;
+    invalidParticleProgram->domain = infernux::ShaderProgramDomain::Mesh;
+    const uint64_t drawRevisionBeforeRejectedMaterial = particleDrawRegistry.Revision();
+    if (!Require(
+            !particleSystems.RefreshMaterialProgram(primaryOutput.material, invalidParticleProgram, &managedError) &&
+                particleDrawRegistry.Revision() == drawRevisionBeforeRejectedMaterial &&
+                particleSystems.ActiveArtifactRevision(managedProgram.id) == 1,
+            "Invalid GPU particle material disturbed the last-known-good renderer")) {
+        return false;
+    }
+    particleDeletionQueue.Tick();
+    particleDeletionQueue.Tick();
+    particleDeletionQueue.Tick();
+    if (!Require(particleDeletionQueue.PendingCount() == 0,
+                 "GPU particle material retirement did not complete after deferred frames"))
         return false;
 
     auto invalidManagedProgram = managedProgram;

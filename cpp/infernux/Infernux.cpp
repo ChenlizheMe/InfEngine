@@ -3156,6 +3156,40 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
 
     InxShaderLoader sourceParser(true, false, false, false, false, true, false, false, false, false);
     const ShaderDescriptor changedDescriptor = sourceParser.ParseShaderSource(source, shaderPath);
+    if (!changedDescriptor.usesStructuredInfo && !changedDescriptor.shaderId.empty()) {
+        std::vector<ShaderStagePair> affectedLinkedPairs;
+        for (auto &[stages, cacheEntry] : m_linkedShaderProgramCache) {
+            if (!stages.UsesShader(changedDescriptor.shaderId))
+                continue;
+            affectedLinkedPairs.push_back(stages);
+            cacheEntry.sourceStamp = 0;
+            cacheEntry.failedSourceStamp = 0;
+            cacheEntry.lastError.clear();
+        }
+
+        if (!affectedLinkedPairs.empty()) {
+            std::unordered_set<ShaderStagePair, ShaderStagePairHash> preparedPairs;
+            std::string firstLinkedError;
+            for (const auto &stages : affectedLinkedPairs) {
+                const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(stages);
+                preparedPairs.insert(stages);
+                if (!prepared.success && firstLinkedError.empty())
+                    firstLinkedError = prepared.error;
+            }
+            for (auto &material : registry.GetAllMaterials()) {
+                if (!material)
+                    continue;
+                const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+                if (preparedPairs.find(stages) != preparedPairs.end())
+                    m_renderer->RefreshMaterialPipeline(material);
+            }
+            if (!firstLinkedError.empty()) {
+                INXLOG_ERROR("Infernux::ReloadShaderRuntime: dependent linked program compile failed; keeping "
+                             "last-known-good: ",
+                             firstLinkedError);
+            }
+        }
+    }
     if (changedDescriptor.usesStructuredInfo) {
         const std::string changedShaderId = changedDescriptor.shaderId;
         if (changedShaderId.empty())

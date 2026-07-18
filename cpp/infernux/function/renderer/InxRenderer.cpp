@@ -2527,8 +2527,7 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
-    if (m_shaderProgramArtifactResolver)
-        m_shaderProgramArtifactResolver(material);
+    const auto shaderProgram = ResolveShaderProgramArtifact(material);
 
     // Get shader names from material
     const std::string &vertName = material->GetVertShaderName();
@@ -2541,8 +2540,18 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
-    // Load and compile shaders, then update pipeline
-    return m_vkCore->RefreshMaterialPipeline(material, vertName, fragName);
+    bool refreshed = true;
+    if (!shaderProgram || shaderProgram->domain != ShaderProgramDomain::ParticleSprite)
+        refreshed = m_vkCore->RefreshMaterialPipeline(material, vertName, fragName);
+
+    if (m_particleGpuSystemManager) {
+        std::string particleError;
+        if (!m_particleGpuSystemManager->RefreshMaterialProgram(material, shaderProgram, &particleError)) {
+            INXLOG_ERROR("RefreshMaterialPipeline: ", particleError);
+            refreshed = false;
+        }
+    }
+    return refreshed;
 }
 
 std::shared_ptr<vk::ImageReadbackTicket>
