@@ -2303,6 +2303,8 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         registry.RegisterLoader(ResourceType::Shader, std::make_unique<ShaderLoader>());
         registry.RegisterLoader(ResourceType::Script, std::make_unique<InxPythonScriptLoader>());
         registry.RegisterLoader(ResourceType::DefaultText, std::make_unique<InxDefaultTextLoader>());
+        registry.RegisterLoader(ResourceType::RenderEffect,
+                                std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
         registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
 
         // Populate AssetDatabase's meta-loader table from registered loaders
@@ -2511,6 +2513,8 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
     registry.RegisterLoader(ResourceType::Shader, std::make_unique<ShaderLoader>());
     registry.RegisterLoader(ResourceType::Script, std::make_unique<InxPythonScriptLoader>());
     registry.RegisterLoader(ResourceType::DefaultText, std::make_unique<InxDefaultTextLoader>());
+    registry.RegisterLoader(ResourceType::RenderEffect,
+                            std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
     registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
     registry.PopulateAssetDatabaseLoaders();
     if (!builtinResourcePath.empty()) {

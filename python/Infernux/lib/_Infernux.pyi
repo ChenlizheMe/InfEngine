@@ -182,6 +182,7 @@ class ResourceType(IntEnum):
     DefaultText: int
     DefaultBinary: int
     PhysicMaterial: int
+    RenderEffect: int
 
 
 class PixelFormat(IntEnum):

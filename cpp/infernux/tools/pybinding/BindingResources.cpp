@@ -97,6 +97,7 @@ void RegisterResourceBindings(py::module_ &m)
         .value("DefaultText", ResourceType::DefaultText)
         .value("DefaultBinary", ResourceType::DefaultBinary)
         .value("PhysicMaterial", ResourceType::PhysicMaterial)
+        .value("RenderEffect", ResourceType::RenderEffect)
         .export_values();
 
     // InxResourceMeta - resource metadata

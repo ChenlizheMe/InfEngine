@@ -1,6 +1,16 @@
 from __future__ import annotations
 
 from Infernux.renderstack.injection_point import InjectionPoint as InjectionPoint
+from Infernux.renderstack.effect_stage import EffectResourceContract as EffectResourceContract
+from Infernux.renderstack.effect_stage import EffectScope as EffectScope
+from Infernux.renderstack.effect_stage import EffectStage as EffectStage
+from Infernux.renderstack.render_effect_asset import EffectAssetReference as EffectAssetReference
+from Infernux.renderstack.render_effect_asset import RenderEffectAsset as RenderEffectAsset
+from Infernux.renderstack.render_effect_asset import RenderEffectGroupAsset as RenderEffectGroupAsset
+from Infernux.renderstack.render_effect_asset import RenderEffectGroupEntry as RenderEffectGroupEntry
+from Infernux.renderstack.render_effect_asset import direct_effect_dependencies as direct_effect_dependencies
+from Infernux.renderstack.render_effect_asset import dump_render_effect_document as dump_render_effect_document
+from Infernux.renderstack.render_effect_asset import parse_render_effect_document as parse_render_effect_document
 from Infernux.renderstack.resource_bus import ResourceBus as ResourceBus
 from Infernux.renderstack.render_pass import RenderPass as RenderPass
 from Infernux.renderstack.render_pipeline import RenderPipeline as RenderPipeline
@@ -28,6 +38,16 @@ __all__ = [
     "DefaultForwardPipeline",
     "DefaultDeferredPipeline",
     "InjectionPoint",
+    "EffectStage",
+    "EffectScope",
+    "EffectResourceContract",
+    "EffectAssetReference",
+    "RenderEffectAsset",
+    "RenderEffectGroupAsset",
+    "RenderEffectGroupEntry",
+    "parse_render_effect_document",
+    "dump_render_effect_document",
+    "direct_effect_dependencies",
     "ResourceBus",
     "RenderPass",
     "RenderPipeline",

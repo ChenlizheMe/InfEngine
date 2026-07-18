@@ -34,6 +34,16 @@ See Also:
 """
 
 from Infernux.renderstack.injection_point import InjectionPoint
+from Infernux.renderstack.effect_stage import EffectResourceContract, EffectScope, EffectStage
+from Infernux.renderstack.render_effect_asset import (
+    EffectAssetReference,
+    RenderEffectAsset,
+    RenderEffectGroupAsset,
+    RenderEffectGroupEntry,
+    direct_effect_dependencies,
+    dump_render_effect_document,
+    parse_render_effect_document,
+)
 from Infernux.renderstack.resource_bus import ResourceBus
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack.render_pipeline import RenderPipeline, RenderPipelineAsset
@@ -64,6 +74,16 @@ __all__ = [
     "DefaultDeferredPipeline",
     # Injection points
     "InjectionPoint",
+    "EffectStage",
+    "EffectScope",
+    "EffectResourceContract",
+    "EffectAssetReference",
+    "RenderEffectAsset",
+    "RenderEffectGroupAsset",
+    "RenderEffectGroupEntry",
+    "parse_render_effect_document",
+    "dump_render_effect_document",
+    "direct_effect_dependencies",
     # Resource bus
     "ResourceBus",
     # Pass base classes

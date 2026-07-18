@@ -119,6 +119,29 @@ class PhysicMaterialImporter final : public AssetImporter
 };
 
 // ==========================================================================
+// RenderEffectImporter — validates effect sources and tracks asset edges
+// ==========================================================================
+
+class RenderEffectImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::RenderEffect;
+    }
+
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".effect", ".effectgroup", ".effectstack"};
+    }
+
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+
+  private:
+    [[nodiscard]] std::vector<std::string> ScanDependencies(const ImportRequest &request) const;
+};
+
+// ==========================================================================
 // ScriptImporter
 // ==========================================================================
 

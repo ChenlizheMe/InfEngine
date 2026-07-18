@@ -45,6 +45,96 @@ def test_audio_import_repairs_legacy_default_text_metadata(engine, tmp_path: Pat
             asset_db.delete_asset(str(source))
 
 
+def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    graph = AssetDependencyGraph.instance()
+    bloom = tmp_path / "Bloom.effect"
+    tone = tmp_path / "Tonemapping.effect"
+    group = tmp_path / "Basic Post Processing.effectgroup"
+
+    def effect_document(feature_type: str) -> dict:
+        return {
+            "$schema": "infernux.render_effect",
+            "$version": 1,
+            "feature_type": feature_type,
+            "parameters": {},
+            "dependencies": [],
+        }
+
+    bloom.write_text(json.dumps(effect_document("infernux.post.bloom")), encoding="utf-8")
+    tone.write_text(json.dumps(effect_document("infernux.post.tonemapping")), encoding="utf-8")
+
+    imported_paths = []
+    try:
+        bloom_result = asset_db.import_asset(str(bloom))
+        tone_result = asset_db.import_asset(str(tone))
+        imported_paths.extend((bloom, tone))
+        assert bloom_result and tone_result
+        assert bloom_result.resource_type == ResourceType.RenderEffect
+        assert tone_result.resource_type == ResourceType.RenderEffect
+
+        group.write_text(
+            json.dumps(
+                {
+                    "$schema": "infernux.render_effect_group",
+                    "$version": 1,
+                    "entries": [
+                        {
+                            "entry_id": "bloom",
+                            "asset": {"guid": bloom_result.guid, "path_hint": str(bloom)},
+                            "enabled": True,
+                            "overrides": {"intensity": 0.8},
+                        },
+                        {
+                            "entry_id": "tonemapping",
+                            "asset": {"guid": "", "path_hint": str(tone)},
+                            "enabled": True,
+                            "overrides": {},
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        group_result = asset_db.import_asset(str(group))
+        imported_paths.append(group)
+
+        assert group_result
+        assert group_result.resource_type == ResourceType.RenderEffect
+        assert set(graph.get_dependencies(group_result.guid)) == {
+            bloom_result.guid,
+            tone_result.guid,
+        }
+    finally:
+        for path in reversed(imported_paths):
+            if asset_db.contains_path(str(path)):
+                asset_db.delete_asset(str(path))
+
+
+def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "InvalidScope.effect"
+    source.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.render_effect",
+                "$version": 1,
+                "feature_type": "infernux.post.grayscale",
+                "parameters": {},
+                "dependencies": [],
+                "scope": "final",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = asset_db.import_asset(str(source))
+
+    assert not result
+    assert not asset_db.contains_path(str(source))
+    assert asset_db.get_guid_from_path(str(source)) == ""
+
+
 def test_asset_database_never_indexes_python_bytecode_or_cache_paths(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "python-bytecode-ignore-fixture"

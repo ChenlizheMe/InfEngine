@@ -258,6 +258,9 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
         {".animclip3d", "animclip3d"},
         {".animfsm", "animfsm"},
         {".vfxsystem", "file"},
+        {".effect", "file"},
+        {".effectgroup", "file"},
+        {".effectstack", "file"},
     };
     return map;
 }
@@ -296,6 +299,9 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
         {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
         {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
         {".vfxsystem", {"VFXSYSTEM_FILE", "VFX System"}},
+        {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
+        {".effectgroup", {"RENDER_EFFECT_GROUP_FILE", "Render Effect Group"}},
+        {".effectstack", {"RENDER_EFFECT_GROUP_FILE", "Render Effect Group"}},
         {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
         {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
     };
@@ -355,6 +361,10 @@ const char *ProjectPanel::GetFileTypeTag(const std::string &filename)
         return "[MAT]";
     if (ext == ".physicmaterial")
         return "[PMAT]";
+    if (ext == ".effect")
+        return "[FX]";
+    if (ext == ".effectgroup" || ext == ".effectstack")
+        return "[FXG]";
     if (ext == ".vert" || ext == ".frag" || ext == ".glsl" || ext == ".hlsl")
         return "[SHDR]";
     if (IsImageExt(ext))

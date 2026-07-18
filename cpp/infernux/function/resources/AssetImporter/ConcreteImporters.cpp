@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <regex>
 #include <unordered_set>
 #include <vector>
 
@@ -113,6 +114,107 @@ std::vector<std::string> MaterialImporter::ScanDependencies(const ImportRequest 
     }
 
     std::vector<std::string> ordered(deps.begin(), deps.end());
+    std::sort(ordered.begin(), ordered.end());
+    return ordered;
+}
+
+ImportArtifact RenderEffectImporter::Import(const ImportRequest &request) const
+{
+    ImportArtifact artifact(request.metadata);
+    artifact.dependencies = ScanDependencies(request);
+    artifact.dependenciesAuthoritative = true;
+    return artifact;
+}
+
+std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequest &request) const
+{
+    if (!request.resolveAssetGuid)
+        throw std::logic_error("RenderEffectImporter request has no dependency resolver");
+
+    nlohmann::json root;
+    try {
+        std::ifstream file(ToFsPath(request.sourcePath));
+        if (!file.is_open())
+            throw std::runtime_error("failed to open render effect document");
+        file >> root;
+    } catch (const std::exception &e) {
+        throw std::runtime_error("RenderEffectImporter failed to parse '" + request.sourcePath + "': " + e.what());
+    }
+
+    const auto requireExactKeys = [](const nlohmann::json &value, std::initializer_list<const char *> expected,
+                                     const std::string &location) {
+        if (!value.is_object())
+            throw std::runtime_error(location + " must be an object");
+        std::unordered_set<std::string> keys;
+        for (const char *key : expected)
+            keys.emplace(key);
+        if (value.size() != keys.size())
+            throw std::runtime_error(location + " contains missing or unknown fields");
+        for (const auto &[key, ignored] : value.items()) {
+            (void)ignored;
+            if (keys.find(key) == keys.end())
+                throw std::runtime_error(location + " contains unknown field '" + key + "'");
+        }
+    };
+
+    if (!root.is_object())
+        throw std::runtime_error("render effect document root must be an object");
+    if (!root.contains("$schema") || !root["$schema"].is_string())
+        throw std::runtime_error("render effect $schema must be a string");
+    if (!root.contains("$version") || !root["$version"].is_number_integer() || root["$version"].get<int>() != 1)
+        throw std::runtime_error("render effect $version must be 1");
+
+    std::unordered_set<std::string> dependencies;
+    const auto readReference = [&](const nlohmann::json &reference, const std::string &location) {
+        requireExactKeys(reference, {"guid", "path_hint"}, location);
+        if (!reference["guid"].is_string() || !reference["path_hint"].is_string())
+            throw std::runtime_error(location + " guid and path_hint must be strings");
+        std::string guid = reference["guid"].get<std::string>();
+        const std::string pathHint = reference["path_hint"].get<std::string>();
+        if (guid.empty() && !pathHint.empty())
+            guid = request.resolveAssetGuid(pathHint);
+        if (guid.empty())
+            throw std::runtime_error(location + " could not resolve an asset GUID");
+        dependencies.insert(std::move(guid));
+    };
+
+    const std::string schema = root["$schema"].get<std::string>();
+    if (schema == "infernux.render_effect") {
+        requireExactKeys(root, {"$schema", "$version", "feature_type", "parameters", "dependencies"}, "render effect");
+        static const std::regex featureTypePattern("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$");
+        if (!root["feature_type"].is_string() ||
+            !std::regex_match(root["feature_type"].get_ref<const std::string &>(), featureTypePattern))
+            throw std::runtime_error("render effect feature_type must be a lowercase namespaced identifier");
+        if (!root["parameters"].is_object())
+            throw std::runtime_error("render effect parameters must be an object");
+        if (!root["dependencies"].is_array())
+            throw std::runtime_error("render effect dependencies must be an array");
+        for (size_t index = 0; index < root["dependencies"].size(); ++index)
+            readReference(root["dependencies"][index], "dependencies[" + std::to_string(index) + "]");
+    } else if (schema == "infernux.render_effect_group") {
+        requireExactKeys(root, {"$schema", "$version", "entries"}, "render effect group");
+        if (!root["entries"].is_array())
+            throw std::runtime_error("render effect group entries must be an array");
+        std::unordered_set<std::string> entryIds;
+        for (size_t index = 0; index < root["entries"].size(); ++index) {
+            const auto &entry = root["entries"][index];
+            const std::string location = "entries[" + std::to_string(index) + "]";
+            requireExactKeys(entry, {"entry_id", "asset", "enabled", "overrides"}, location);
+            if (!entry["entry_id"].is_string() || entry["entry_id"].get_ref<const std::string &>().empty())
+                throw std::runtime_error(location + ".entry_id must be a non-empty string");
+            if (!entryIds.insert(entry["entry_id"].get<std::string>()).second)
+                throw std::runtime_error("render effect group entry_id values must be unique");
+            if (!entry["enabled"].is_boolean())
+                throw std::runtime_error(location + ".enabled must be a boolean");
+            if (!entry["overrides"].is_object())
+                throw std::runtime_error(location + ".overrides must be an object");
+            readReference(entry["asset"], location + ".asset");
+        }
+    } else {
+        throw std::runtime_error("unsupported render effect schema '" + schema + "'");
+    }
+
+    std::vector<std::string> ordered(dependencies.begin(), dependencies.end());
     std::sort(ordered.begin(), ordered.end());
     return ordered;
 }
