@@ -101,21 +101,16 @@ class InxShaderLoader
     /// Set by Load() when glslang parse/link fails; read by Infernux::ReloadShaderRuntime.
     static std::string s_lastCompileError;
 
-    /// Shadow fragment variant SPIR-V cache.
-    /// Populated by Load() when a surface .frag is compiled; keyed by file path.
-    /// Consumed by Infernux::ReloadShaderRuntime to register the shadow variant.
-    static std::unordered_map<std::string, std::vector<char>> s_shadowVariantCache;
+    using CompiledVariantSet = std::unordered_map<ShaderCompileTarget, std::vector<char>>;
 
-    /// Shadow vertex variant SPIR-V cache.
-    /// Populated by Load() when a surface .vert is compiled; keyed by file path.
-    static std::unordered_map<std::string, std::vector<char>> s_shadowVertexVariantCache;
-
-    /// GBuffer variant SPIR-V cache.
-    /// Populated by Compile() when a surface .frag with a gbuffer-capable shading model is compiled.
-    /// Consumed by ShaderLoader to populate ShaderAsset::spirvGBuffer.
-    static std::unordered_map<std::string, std::vector<char>> s_gbufferVariantCache;
+    /// Consume optional pass variants produced alongside the Forward return
+    /// value. The returned entry is removed from the calling thread's transient
+    /// compiler cache, so parallel imports cannot exchange variant payloads.
+    [[nodiscard]] static CompiledVariantSet TakeCompiledVariants(const std::string &filePath);
 
   private:
+    static thread_local std::unordered_map<std::string, CompiledVariantSet> s_compiledVariantCache;
+
     glslang::SpvOptions m_options{};
     TBuiltInResource m_builtInResources{};
 
@@ -129,10 +124,9 @@ class InxShaderLoader
     bool CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
                      std::vector<char> &outSpirv);
 
-    /// Preprocess and compile a shader variant (shadow/gbuffer), storing the result in cache.
+    /// Preprocess and compile a shader variant, storing it in the transient target cache.
     void CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
-                        const std::string &variantName, std::unordered_map<std::string, std::vector<char>> &cache,
-                        EShLanguage shaderType = EShLangFragment);
+                        const std::string &variantName, EShLanguage shaderType = EShLangFragment);
 
     /// Full preprocessing pipeline: parse → resolve imports → generate GLSL.
     std::string PreprocessShaderSource(const std::string &source, const std::string &filePath = "",

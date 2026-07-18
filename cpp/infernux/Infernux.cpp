@@ -2728,31 +2728,39 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
 
 void Infernux::RegisterShaderToRenderer(const ShaderAsset &asset)
 {
-    if (!m_renderer || asset.spirvForward.empty())
+    if (!m_renderer || !asset.HasVariant(ShaderCompileTarget::Forward))
         return;
 
-    m_renderer->LoadShader(asset.shaderId.c_str(), asset.spirvForward,
-                           asset.shaderType == "vertex" ? "vertex" : "fragment");
+    const char *stage = asset.shaderType == "vertex" ? "vertex" : "fragment";
+    auto runtimeId = [&](ShaderCompileTarget target) {
+        switch (target) {
+        case ShaderCompileTarget::Forward:
+            return asset.shaderId;
+        case ShaderCompileTarget::GBuffer:
+            return asset.shaderId + "/gbuffer";
+        case ShaderCompileTarget::Shadow:
+            return asset.shaderId + "/shadow";
+        case ShaderCompileTarget::Depth:
+            return asset.shaderId + "/depth";
+        case ShaderCompileTarget::Picking:
+            return asset.shaderId + "/picking";
+        case ShaderCompileTarget::Motion:
+            return asset.shaderId + "/motion";
+        case ShaderCompileTarget::Count:
+            break;
+        }
+        return std::string();
+    };
 
-    // Shadow vertex variant
-    if (asset.shaderType == "vertex" && !asset.spirvShadowVertex.empty()) {
-        std::string shadowId = asset.shaderId + "/shadow";
-        m_renderer->LoadShader(shadowId.c_str(), asset.spirvShadowVertex, "vertex");
-        INXLOG_INFO("Registered shadow vertex variant '", shadowId, "'");
-    }
-
-    // Shadow fragment variant
-    if (asset.shaderType == "fragment" && !asset.spirvShadow.empty()) {
-        std::string shadowId = asset.shaderId + "/shadow";
-        m_renderer->LoadShader(shadowId.c_str(), asset.spirvShadow, "fragment");
-        INXLOG_INFO("Registered shadow fragment variant '", shadowId, "'");
-    }
-
-    // GBuffer fragment variant
-    if (asset.shaderType == "fragment" && !asset.spirvGBuffer.empty()) {
-        std::string gbufferId = asset.shaderId + "/gbuffer";
-        m_renderer->LoadShader(gbufferId.c_str(), asset.spirvGBuffer, "fragment");
-        INXLOG_INFO("Registered GBuffer variant '", gbufferId, "'");
+    for (const auto &variant : asset.variants) {
+        if (!variant.IsValid())
+            continue;
+        const std::string id = runtimeId(variant.target);
+        if (id.empty())
+            continue;
+        m_renderer->LoadShader(id.c_str(), variant.spirv, stage);
+        if (variant.target != ShaderCompileTarget::Forward)
+            INXLOG_INFO("Registered ", ShaderCompileTargetName(variant.target), " ", stage, " variant '", id, "'");
     }
 
     // Render-state metadata (fragment shaders only)
@@ -2829,7 +2837,7 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
 
         // Load via AssetRegistry (compiles the shader)
         auto shaderAsset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-        if (!shaderAsset || shaderAsset->spirvForward.empty())
+        if (!shaderAsset || !shaderAsset->HasVariant(ShaderCompileTarget::Forward))
             return;
 
         // Register all variants with the renderer
@@ -2839,10 +2847,11 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
 
         // Track built-in fallback shaders used for the renderer's default program.
         if (!recursive) {
+            const auto *forward = shaderAsset->FindVariant(ShaderCompileTarget::Forward);
             if (shaderId == "standard" && ext == ".vert")
-                defaultVertCode = shaderAsset->spirvForward;
+                defaultVertCode = forward->spirv;
             else if (shaderId == "unlit" && ext == ".frag")
-                defaultFragCode = shaderAsset->spirvForward;
+                defaultFragCode = forward->spirv;
         }
     };
 
@@ -3191,7 +3200,7 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
 
     // Reload via AssetRegistry → ShaderLoader
     auto shaderAsset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-    if (!shaderAsset || shaderAsset->spirvForward.empty()) {
+    if (!shaderAsset || !shaderAsset->HasVariant(ShaderCompileTarget::Forward)) {
         INXLOG_ERROR("Infernux::ReloadShaderRuntime: compilation failed for: ", shaderPath);
         std::string compileErr = InxShaderLoader::s_lastCompileError;
         if (!compileErr.empty())

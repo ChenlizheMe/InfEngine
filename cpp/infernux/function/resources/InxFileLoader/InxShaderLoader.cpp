@@ -35,11 +35,20 @@ ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact() co
 std::vector<std::string> InxShaderLoader::s_additionalSearchPaths;
 std::unordered_map<std::string, std::string> InxShaderLoader::s_templateCache;
 std::unordered_map<std::string, ShaderDescriptor> InxShaderLoader::s_shadingModelCache;
-std::unordered_map<std::string, std::vector<char>> InxShaderLoader::s_shadowVariantCache;
-std::unordered_map<std::string, std::vector<char>> InxShaderLoader::s_shadowVertexVariantCache;
-std::unordered_map<std::string, std::vector<char>> InxShaderLoader::s_gbufferVariantCache;
+thread_local std::unordered_map<std::string, InxShaderLoader::CompiledVariantSet>
+    InxShaderLoader::s_compiledVariantCache;
 std::string InxShaderLoader::s_lastCompileError;
 std::unordered_map<std::string, std::unordered_map<std::string, std::string>> InxShaderLoader::s_shaderIdMapCache;
+
+InxShaderLoader::CompiledVariantSet InxShaderLoader::TakeCompiledVariants(const std::string &filePath)
+{
+    const auto found = s_compiledVariantCache.find(filePath);
+    if (found == s_compiledVariantCache.end())
+        return {};
+    CompiledVariantSet variants = std::move(found->second);
+    s_compiledVariantCache.erase(found);
+    return variants;
+}
 
 namespace
 {
@@ -1257,6 +1266,7 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
     std::string filePath = metaData.GetDataAs<std::string>("file_path");
     std::string type = metaData.GetDataAs<std::string>("type");
     INXLOG_DEBUG("InxShaderLoader::Compile - Compiling shader: ", filePath);
+    s_compiledVariantCache.erase(filePath);
 
     EShLanguage shaderType = GetShaderType(type);
     if (shaderType == EShLangCount) {
@@ -1288,10 +1298,10 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
     // ---- Shadow + GBuffer variant compilation for surface fragment shaders ----
     if (type == "fragment") {
         if (sourceDescriptor.hasSurfaceFunc && !sourceDescriptor.hasMainFunc) {
-            CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "Shadow", s_shadowVariantCache);
+            CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "Shadow");
 
             if (!sourceDescriptor.shadingModel.empty() && sourceDescriptor.shadingModel != "custom") {
-                CompileVariant(content, filePath, ShaderCompileTarget::GBuffer, "GBuffer", s_gbufferVariantCache);
+                CompileVariant(content, filePath, ShaderCompileTarget::GBuffer, "GBuffer");
             }
         }
     }
@@ -1299,8 +1309,7 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
     // ---- Shadow vertex variant compilation for surface vertex shaders ----
     if (type == "vertex") {
         if (!sourceDescriptor.hasMainFunc && !sourceDescriptor.isLibrary) {
-            CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "ShadowVertex", s_shadowVertexVariantCache,
-                           EShLangVertex);
+            CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "ShadowVertex", EShLangVertex);
         }
     }
 
@@ -1435,8 +1444,7 @@ bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage sha
 }
 
 void InxShaderLoader::CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
-                                     const std::string &variantName,
-                                     std::unordered_map<std::string, std::vector<char>> &cache, EShLanguage shaderType)
+                                     const std::string &variantName, EShLanguage shaderType)
 {
     std::string variantSource = PreprocessShaderSource(std::string(content), filePath, target);
 
@@ -1450,7 +1458,7 @@ void InxShaderLoader::CompileVariant(const char *content, const std::string &fil
     }
 
     size_t variantSize = spirv.size();
-    cache[filePath] = std::move(spirv);
+    s_compiledVariantCache[filePath][target] = std::move(spirv);
     INXLOG_INFO(variantName, " variant compiled for: ", filePath, " (", variantSize, " bytes)");
 }
 
