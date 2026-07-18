@@ -5,10 +5,20 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <stdexcept>
+#include <type_traits>
 
 namespace infernux
 {
+
+static_assert(std::is_standard_layout_v<ParticleInstance>);
+static_assert(sizeof(ParticleInstance) == 9 * sizeof(float));
+static_assert(offsetof(ParticleInstance, position) == 0);
+static_assert(offsetof(ParticleInstance, size) == 3 * sizeof(float));
+static_assert(offsetof(ParticleInstance, color) == 4 * sizeof(float));
+static_assert(offsetof(ParticleInstance, rotation) == 8 * sizeof(float));
 
 void ParticleDrawCallBuffer::SetBatch(uint64_t batchId, std::vector<ParticleInstance> instances,
                                       const std::string &materialGuid)
@@ -39,6 +49,69 @@ void ParticleDrawCallBuffer::SetBatch(uint64_t batchId, std::vector<ParticleInst
 
     std::lock_guard<std::mutex> lock(m_mutex);
     m_batches[batchId] = Batch{std::move(instances), std::move(material), materialGuid};
+}
+
+void ParticleDrawCallBuffer::SetBatchInterleaved(uint64_t batchId, const float *instances, size_t instanceCount,
+                                                 const std::string &materialGuid, const glm::vec3 &origin,
+                                                 bool validate)
+{
+    if (batchId == 0)
+        throw std::invalid_argument("particle batch id must be non-zero");
+    if (instanceCount > 0 && instances == nullptr)
+        throw std::invalid_argument("particle instance data cannot be null");
+
+    constexpr size_t kStride = 9;
+    if (validate) {
+        for (size_t index = 0; index < instanceCount; ++index) {
+            const float *row = instances + index * kStride;
+            for (size_t component = 0; component < kStride; ++component) {
+                if (!std::isfinite(row[component]))
+                    throw std::invalid_argument("particle instances must contain only finite values");
+            }
+            if (row[3] < 0.0f)
+                throw std::invalid_argument("particle instance size must be non-negative");
+        }
+    }
+
+    std::shared_ptr<InxMaterial> material;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto existing = m_batches.find(batchId);
+        if (existing != m_batches.end() && existing->second.materialGuid == materialGuid)
+            material = existing->second.material;
+    }
+    if (!material && !materialGuid.empty()) {
+        material = AssetRegistry::Instance().GetAsset<InxMaterial>(materialGuid);
+        if (!material)
+            material = AssetRegistry::Instance().LoadAsset<InxMaterial>(materialGuid, ResourceType::Material);
+        if (!material)
+            throw std::invalid_argument("particle material GUID could not be resolved");
+        if (material->GetVertShaderName() != "particle_billboard")
+            throw std::invalid_argument("particle material must use the particle_billboard vertex shader");
+    }
+    if (!material)
+        material = AssetRegistry::Instance().GetBuiltinMaterial("ParticleBillboardMaterial");
+    if (!material)
+        throw std::runtime_error("built-in particle billboard material is unavailable");
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    Batch &batch = m_batches[batchId];
+    batch.instances.resize(instanceCount);
+    batch.material = std::move(material);
+    batch.materialGuid = materialGuid;
+    if (origin == glm::vec3(0.0f)) {
+        if (instanceCount > 0)
+            std::memcpy(batch.instances.data(), instances, instanceCount * sizeof(ParticleInstance));
+        return;
+    }
+    for (size_t index = 0; index < instanceCount; ++index) {
+        const float *row = instances + index * kStride;
+        ParticleInstance &instance = batch.instances[index];
+        instance.position = glm::vec3(row[0], row[1], row[2]) + origin;
+        instance.size = row[3];
+        instance.color = glm::vec4(row[4], row[5], row[6], row[7]);
+        instance.rotation = row[8];
+    }
 }
 
 void ParticleDrawCallBuffer::RemoveBatch(uint64_t batchId)

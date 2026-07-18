@@ -28,6 +28,9 @@ class ParticleDrawCallBuffer
 {
   public:
     void SetBatch(uint64_t batchId, std::vector<ParticleInstance> instances, const std::string &materialGuid);
+    void SetBatchInterleaved(uint64_t batchId, const float *instances, size_t instanceCount,
+                             const std::string &materialGuid, const glm::vec3 &origin = glm::vec3(0.0f),
+                             bool validate = true);
     void RemoveBatch(uint64_t batchId);
     void Clear();
 

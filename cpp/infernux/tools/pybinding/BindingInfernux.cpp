@@ -1676,7 +1676,7 @@ PYBIND11_MODULE(_Infernux, m)
         .def(
             "submit_particle_instances",
             [](Infernux &self, uint64_t batchId, py::buffer instanceBuffer, const std::string &materialGuid,
-               float originX, float originY, float originZ) {
+               float originX, float originY, float originZ, bool validate) {
                 auto *renderer = self.GetRenderer();
                 if (!renderer || !renderer->GetParticleDrawCallBuffer())
                     throw std::logic_error("particle submission requires graphical renderer initialization");
@@ -1690,28 +1690,12 @@ PYBIND11_MODULE(_Infernux, m)
                     throw std::invalid_argument("particle instances must be C-contiguous");
                 }
 
-                const float *source = static_cast<const float *>(info.ptr);
-                std::vector<ParticleInstance> instances;
-                instances.reserve(static_cast<size_t>(info.shape[0]));
-                for (py::ssize_t index = 0; index < info.shape[0]; ++index) {
-                    const float *row = source + index * 9;
-                    for (size_t component = 0; component < 9; ++component) {
-                        if (!std::isfinite(row[component]))
-                            throw std::invalid_argument("particle instances must contain only finite values");
-                    }
-                    if (row[3] < 0.0f)
-                        throw std::invalid_argument("particle instance size must be non-negative");
-                    ParticleInstance instance;
-                    instance.position = glm::vec3(row[0] + originX, row[1] + originY, row[2] + originZ);
-                    instance.size = row[3];
-                    instance.color = glm::vec4(row[4], row[5], row[6], row[7]);
-                    instance.rotation = row[8];
-                    instances.push_back(instance);
-                }
-                renderer->GetParticleDrawCallBuffer()->SetBatch(batchId, std::move(instances), materialGuid);
+                renderer->GetParticleDrawCallBuffer()->SetBatchInterleaved(
+                    batchId, static_cast<const float *>(info.ptr), static_cast<size_t>(info.shape[0]), materialGuid,
+                    glm::vec3(originX, originY, originZ), validate);
             },
             py::arg("batch_id"), py::arg("instances"), py::arg("material_guid") = "", py::arg("origin_x") = 0.0f,
-            py::arg("origin_y") = 0.0f, py::arg("origin_z") = 0.0f,
+            py::arg("origin_y") = 0.0f, py::arg("origin_z") = 0.0f, py::arg("validate") = true,
             "Submit one contiguous particle instance batch (position3, size, color4, rotation)")
         .def(
             "remove_particle_batch",

@@ -212,6 +212,32 @@ class VfxSystemRef(AssetRefBase):
             return None
 
 
+class ParticleGraphRef(AssetRefBase):
+    """Reference to a compiled ParticleGraph or ParticleScript asset."""
+
+    def _do_resolve(self):
+        path = self._path_hint
+        db = _get_asset_database()
+        if self._guid:
+            path = (db.get_path_from_guid(self._guid) if db else "") or path
+        if not path:
+            return None
+        try:
+            if path.lower().endswith(".particle.py"):
+                from pathlib import Path
+                from Infernux.particle.script import ParticleScriptCompiler
+
+                return ParticleScriptCompiler().parse(
+                    Path(path).read_text(encoding="utf-8"),
+                    source_name=path,
+                )
+            from Infernux.particle.asset import ParticleGraphAsset
+
+            return ParticleGraphAsset.load(path)
+        except (OSError, TypeError, ValueError):
+            return None
+
+
 class RenderEffectRef(AssetRefBase):
     """Reference to a ``.effect`` asset or reusable effect group source."""
 
@@ -389,6 +415,13 @@ def _ensure_registry():
             "extensions": ("*.vfxsystem",),
             "display":    "VFX System",
             "prefix":     "vfx",
+        },
+        "ParticleGraph": {
+            "ref_class":  ParticleGraphRef,
+            "drag_type":  "PARTICLE_GRAPH_FILE",
+            "extensions": ("*.particlegraph", "*.particle.py"),
+            "display":    "Particle Graph",
+            "prefix":     "particle",
         },
         "RenderEffect": {
             "ref_class":  RenderEffectRef,

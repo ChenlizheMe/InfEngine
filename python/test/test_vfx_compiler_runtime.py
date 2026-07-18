@@ -6,6 +6,13 @@ import pytest
 from Infernux.core.vfx_system import VfxEmitter
 from Infernux.core.vfx_system import VfxSystem
 from Infernux.components.particle_system import ParticleSystem
+from Infernux.core.asset_ref import ParticleGraphRef
+from Infernux.particle import (
+    EmitterSettings,
+    ParticleBurst,
+    ParticleEmitterAsset,
+    ParticleGraphAsset,
+)
 from Infernux.lib import SceneManager
 from Infernux.vfx import CpuParticleRuntime, VfxCompileError, VfxGraphCompiler
 
@@ -140,6 +147,138 @@ def test_particle_system_component_runs_in_scene_play_mode(scene, engine, monkey
             manager.stop()
         component._remove_native_batch()
     assert engine.gpu_residency_snapshot["particle_bytes"] == 0
+
+
+def test_particle_system_runs_multi_emitter_graph_and_controls_each_emitter(
+    scene, engine, monkeypatch
+):
+    graph = ParticleGraphAsset(
+        stable_id="multi-emitter-component",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    capacity=8,
+                    spawn_rate=1.0,
+                    bursts=(ParticleBurst(0.0, 1),),
+                ),
+            ),
+            ParticleEmitterAsset(
+                stable_id="sparks",
+                settings=EmitterSettings(
+                    capacity=8,
+                    spawn_rate=2.0,
+                    bursts=(ParticleBurst(0.0, 2),),
+                ),
+            ),
+        ),
+    )
+    component = ParticleSystem()
+    component.graph = graph
+    game_object = scene.create_game_object("ParticleGraphProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+
+    assert [runtime.particle_count for runtime in component._runtimes] == [1, 2]
+    first_step = component._runtimes[0].simulation_step
+    second_step = component._runtimes[1].simulation_step
+
+    component.pause(0)
+    component.play(999)
+    component.update(0.5)
+
+    assert component._runtimes[0].simulation_step == first_step
+    assert component._runtimes[1].simulation_step == second_step + 1
+
+    component.stop(1)
+    component.stop(-1)
+
+    assert component._runtimes[1].particle_count == 0
+    component._remove_native_batch()
+
+
+def test_particle_system_hot_switches_to_new_published_artifact_revision(
+    scene, engine, monkeypatch, tmp_path
+):
+    source = tmp_path / "HotSmoke.particlegraph"
+    first = ParticleGraphAsset(
+        stable_id="hot-smoke",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    capacity=8,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 1),),
+                ),
+            ),
+        ),
+    )
+    first.save(str(source))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("HotParticleGraphProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+    first_revision = component._artifact_revision
+    assert component._runtimes[0].particle_count == 1
+
+    second = ParticleGraphAsset(
+        stable_id="hot-smoke",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    capacity=8,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 4),),
+                ),
+            ),
+        ),
+    )
+    second.save(str(source))
+    component.update(0.0)
+
+    assert component._artifact_revision > first_revision
+    assert component._runtimes[0].particle_count == 4
+    component._remove_native_batch()
+
+
+def test_particle_system_simulation_does_not_depend_on_a_graphical_renderer(
+    scene, monkeypatch
+):
+    graph = ParticleGraphAsset(
+        stable_id="logic-only-particles",
+        emitters=(
+            ParticleEmitterAsset(
+                settings=EmitterSettings(
+                    capacity=4,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 2),),
+                ),
+            ),
+        ),
+    )
+    component = ParticleSystem()
+    component.graph = graph
+    game_object = scene.create_game_object("LogicOnlyParticleGraphProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: None))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+
+    assert component._runtimes[0].particle_count == 2
+    assert component._runtimes[0].simulation_step == 1
 
 
 @pytest.mark.parametrize("delta_time", [-0.1, float("nan"), float("inf")])

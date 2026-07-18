@@ -18,6 +18,7 @@
 #include <functional>
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
+#include <string_view>
 #include <unordered_set>
 
 #ifdef INX_PLATFORM_WINDOWS
@@ -299,6 +300,7 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
         {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
         {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
         {".vfxsystem", {"VFXSYSTEM_FILE", "VFX System"}},
+        {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
         {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
         {".effectgroup", {"RENDER_EFFECT_GROUP_FILE", "Render Effect Group"}},
         {".effectstack", {"RENDER_EFFECT_GROUP_FILE", "Render Effect Group"}},
@@ -3023,7 +3025,15 @@ void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item
         const char *pType = ddIt->second.payloadType;
         const char *labelPfx = ddIt->second.label;
 
-        if (item.ext == ".py" && validateScriptComponent) {
+        constexpr std::string_view kParticleScriptSuffix = ".particle.py";
+        const bool isParticleScript =
+            item.name.size() >= kParticleScriptSuffix.size() &&
+            item.name.compare(item.name.size() - kParticleScriptSuffix.size(), kParticleScriptSuffix.size(),
+                              kParticleScriptSuffix.data(), kParticleScriptSuffix.size()) == 0;
+        if (item.ext == ".py" && isParticleScript) {
+            pType = "PARTICLE_GRAPH_FILE";
+            labelPfx = "Particle Script";
+        } else if (item.ext == ".py" && validateScriptComponent) {
             if (!validateScriptComponent(item.path)) {
                 pType = DRAG_TYPE_PROJECT_ITEM;
                 labelPfx = "Item (script file not attachable)";

@@ -11,13 +11,16 @@ from Infernux.graph.types import CoordinateSpace
 from Infernux.particle import (
     EmitterSettings,
     EmitterShape,
+    ExecutionTarget,
     NumpyParticleBackendError,
     NumpyParticleCompiler,
+    ParticleArtifactRegistry,
     ParticleBurst,
     ParticleEmitterAsset,
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleKernelLowerer,
+    ParticleKernelProgram,
     ScalarRange,
     particle_random_f32,
 )
@@ -227,3 +230,51 @@ def test_numpy_compiler_rejects_mismatched_hir_and_kernel_programs():
 
     with pytest.raises(NumpyParticleBackendError, match="behavior hashes"):
         NumpyParticleCompiler().compile(first, ParticleKernelLowerer().lower(second))
+
+
+def test_numpy_compiler_loads_save_time_particle_artifact_without_source_graph_compile(tmp_path):
+    asset = ParticleGraphAsset(
+        stable_id="artifact-runtime",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    capacity=12,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 3),),
+                ),
+            ),
+        ),
+    )
+    source = tmp_path / "Smoke.particlegraph"
+    source.write_text(asset.canonical_json(), encoding="utf-8")
+    ParticleArtifactRegistry.clear()
+    artifact = ParticleArtifactRegistry.compile_path(str(source), guid="smoke-guid")
+
+    program = NumpyParticleCompiler().compile(
+        artifact.hir,
+        ParticleKernelProgram.from_dict(artifact.kernel_ir),
+    )
+    runtime = program.create_runtime()
+
+    instances = runtime.tick(0.0)
+
+    assert instances.shape == (3, 9)
+    assert program.emitters[0].settings.capacity == 12
+    assert len(program.emitters[0].outputs) == 1
+    assert program.emitters[0].outputs[0].output_type == "sprite"
+
+
+def test_numpy_compiler_does_not_silently_run_an_explicit_gpu_emitter():
+    asset = ParticleGraphAsset(
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="gpu-only",
+                settings=EmitterSettings(target=ExecutionTarget.GPU),
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+
+    with pytest.raises(NumpyParticleBackendError, match="requires the GPU backend"):
+        NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
