@@ -120,21 +120,19 @@ void RenderGraph::ComputeResourceLifetimes()
         resource.refCount = 0;
     }
 
-    for (uint32_t i = 0; i < m_passes.size(); i++) {
-        if (m_passes[i].culled)
-            continue;
-
-        for (const auto &read : m_passes[i].reads) {
+    for (uint32_t executionIndex = 0; executionIndex < m_executionOrder.size(); ++executionIndex) {
+        const auto &pass = m_passes[m_executionOrder[executionIndex]];
+        for (const auto &read : pass.reads) {
             auto &resource = m_resources[read.handle.id];
-            resource.firstPass = std::min(resource.firstPass, i);
-            resource.lastPass = std::max(resource.lastPass, i);
+            resource.firstPass = std::min(resource.firstPass, executionIndex);
+            resource.lastPass = std::max(resource.lastPass, executionIndex);
             resource.refCount++;
         }
 
-        for (const auto &write : m_passes[i].writes) {
+        for (const auto &write : pass.writes) {
             auto &resource = m_resources[write.handle.id];
-            resource.firstPass = std::min(resource.firstPass, i);
-            resource.lastPass = std::max(resource.lastPass, i);
+            resource.firstPass = std::min(resource.firstPass, executionIndex);
+            resource.lastPass = std::max(resource.lastPass, executionIndex);
             resource.refCount++;
         }
     }
@@ -257,6 +255,142 @@ bool RenderGraph::TopologicalSort()
         return false;
     }
     return true;
+}
+
+std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
+{
+    std::vector<uint64_t> signature;
+    signature.reserve(16 + m_resources.size() * 16 + m_passes.size() * 24);
+
+    auto appendString = [&](const std::string &value) {
+        signature.push_back(value.size());
+        uint64_t chunk = 0;
+        uint32_t shift = 0;
+        for (const unsigned char byte : value) {
+            chunk |= static_cast<uint64_t>(byte) << shift;
+            shift += 8;
+            if (shift == 64) {
+                signature.push_back(chunk);
+                chunk = 0;
+                shift = 0;
+            }
+        }
+        if (shift != 0)
+            signature.push_back(chunk);
+    };
+    auto appendHandle = [&](ResourceHandle handle) {
+        signature.push_back(handle.IsValid() ? handle.id : UINT32_MAX);
+        signature.push_back(handle.IsValid() ? handle.version : UINT32_MAX);
+    };
+    auto appendAccess = [&](const ResourceAccess &resourceAccess) {
+        appendHandle(resourceAccess.handle);
+        signature.push_back(static_cast<uint64_t>(resourceAccess.usage));
+        signature.push_back(resourceAccess.stages);
+        signature.push_back(resourceAccess.access);
+        signature.push_back(static_cast<uint64_t>(resourceAccess.layout));
+    };
+
+    signature.push_back(0x494e585247535452ull); // "INXRGSTR"
+    signature.push_back(m_resources.size());
+    signature.push_back(m_passes.size());
+    appendHandle(m_backbuffer);
+    appendHandle(m_output);
+    signature.push_back(static_cast<uint64_t>(m_backbufferFinalLayout));
+
+    for (size_t index = 0; index < m_resources.size(); ++index) {
+        const auto &resource = m_resources[index];
+        signature.push_back(0x52534f5552434500ull); // "RSOURCE"
+        appendString(resource.name);
+        signature.push_back(static_cast<uint64_t>(resource.type));
+        signature.push_back(resource.isExternal);
+        signature.push_back(index < m_resourceVersions.size() ? m_resourceVersions[index] : 0);
+
+        appendString(resource.textureDesc.name);
+        signature.push_back(resource.textureDesc.width);
+        signature.push_back(resource.textureDesc.height);
+        signature.push_back(resource.textureDesc.depth);
+        signature.push_back(resource.textureDesc.mipLevels);
+        signature.push_back(resource.textureDesc.arrayLayers);
+        signature.push_back(static_cast<uint64_t>(resource.textureDesc.format));
+        signature.push_back(static_cast<uint64_t>(resource.textureDesc.samples));
+        signature.push_back(resource.textureDesc.isTransient);
+
+        appendString(resource.bufferDesc.name);
+        signature.push_back(resource.bufferDesc.size);
+        signature.push_back(resource.bufferDesc.usage);
+        signature.push_back(resource.bufferDesc.isTransient);
+    }
+
+    for (const auto &pass : m_passes) {
+        signature.push_back(0x5041535300000000ull); // "PASS"
+        appendString(pass.name);
+        signature.push_back(pass.id);
+        signature.push_back(static_cast<uint64_t>(pass.type));
+        signature.push_back(pass.hasSideEffect);
+        signature.push_back(pass.renderArea.width);
+        signature.push_back(pass.renderArea.height);
+        signature.push_back(pass.clearColorEnabled);
+        signature.push_back(pass.clearDepthEnabled);
+        signature.push_back(pass.hasResolveAttachment);
+
+        signature.push_back(pass.reads.size());
+        for (const auto &read : pass.reads)
+            appendAccess(read);
+        signature.push_back(pass.writes.size());
+        for (const auto &write : pass.writes)
+            appendAccess(write);
+
+        signature.push_back(pass.colorOutputs.size());
+        for (const auto output : pass.colorOutputs)
+            appendHandle(output);
+        appendHandle(pass.depthOutput);
+        appendHandle(pass.depthInput);
+        appendHandle(pass.resolveOutput);
+    }
+
+    return signature;
+}
+
+bool RenderGraph::RestoreStructuralCompilation(const std::vector<uint64_t> &signature)
+{
+    const auto found = std::find_if(m_structuralCompileCache.begin(), m_structuralCompileCache.end(),
+                                    [&](const auto &entry) { return entry.signature == signature; });
+    if (found == m_structuralCompileCache.end() || found->passes.size() != m_passes.size() ||
+        found->resources.size() != m_resources.size()) {
+        ++m_structuralCacheMisses;
+        return false;
+    }
+
+    for (size_t index = 0; index < m_passes.size(); ++index) {
+        m_passes[index].refCount = found->passes[index].refCount;
+        m_passes[index].culled = found->passes[index].culled;
+        m_passes[index].cullReason = found->passes[index].cullReason;
+    }
+    for (size_t index = 0; index < m_resources.size(); ++index) {
+        m_resources[index].firstPass = found->resources[index].firstPass;
+        m_resources[index].lastPass = found->resources[index].lastPass;
+        m_resources[index].refCount = found->resources[index].refCount;
+    }
+    m_executionOrder = found->executionOrder;
+    ++m_structuralCacheHits;
+    return true;
+}
+
+void RenderGraph::StoreStructuralCompilation(std::vector<uint64_t> signature)
+{
+    StructuralCompileCacheEntry entry;
+    entry.signature = std::move(signature);
+    entry.executionOrder = m_executionOrder;
+    entry.passes.reserve(m_passes.size());
+    for (const auto &pass : m_passes)
+        entry.passes.push_back({pass.refCount, pass.culled, pass.cullReason});
+    entry.resources.reserve(m_resources.size());
+    for (const auto &resource : m_resources)
+        entry.resources.push_back({resource.firstPass, resource.lastPass, resource.refCount});
+
+    if (m_structuralCompileCache.size() == kStructuralCacheCapacity)
+        m_structuralCompileCache.erase(m_structuralCompileCache.begin());
+    m_structuralCompileCache.push_back(std::move(entry));
 }
 
 // ============================================================================

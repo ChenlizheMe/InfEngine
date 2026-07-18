@@ -562,6 +562,8 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_resources(std::move(other.m_resources)), m_resourceVersions(std::move(other.m_resourceVersions)),
       m_executionOrder(std::move(other.m_executionOrder)), m_backbuffer(other.m_backbuffer), m_output(other.m_output),
       m_backbufferFinalLayout(other.m_backbufferFinalLayout), m_compiled(std::exchange(other.m_compiled, false)),
+      m_structuralCompileCache(std::move(other.m_structuralCompileCache)),
+      m_structuralCacheHits(other.m_structuralCacheHits), m_structuralCacheMisses(other.m_structuralCacheMisses),
       m_resourceStates(std::move(other.m_resourceStates)),
       m_initialResourceStates(std::move(other.m_initialResourceStates)),
       m_barrierScratch(std::move(other.m_barrierScratch)),
@@ -606,6 +608,9 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_usedRenderPassKeys = std::move(other.m_usedRenderPassKeys);
         m_usedFramebufferKeys = std::move(other.m_usedFramebufferKeys);
         m_aliasedMemoryHeaps = std::move(other.m_aliasedMemoryHeaps);
+        m_structuralCompileCache = std::move(other.m_structuralCompileCache);
+        m_structuralCacheHits = other.m_structuralCacheHits;
+        m_structuralCacheMisses = other.m_structuralCacheMisses;
 
         other.m_backbuffer = {};
         other.m_output = {};
@@ -671,6 +676,9 @@ void RenderGraph::Destroy()
     m_renderPassCache.clear();
     m_renderTargetLayoutCache.clear();
     m_framebufferCache.clear();
+    m_structuralCompileCache.clear();
+    m_structuralCacheHits = 0;
+    m_structuralCacheMisses = 0;
 
     m_passes.clear();
     m_resources.clear();
@@ -984,15 +992,20 @@ bool RenderGraph::Compile()
         return true;
     }
 
-    // Step 1: Cull unused passes
-    CullPasses();
+    const auto structuralSignature = BuildStructuralSignature();
+    if (!RestoreStructuralCompilation(structuralSignature)) {
+        // Step 1: Cull unused passes
+        CullPasses();
 
-    // Step 2: Compute resource lifetimes
-    ComputeResourceLifetimes();
+        // Step 2: Topological sort via Kahn's algorithm
+        if (!TopologicalSort()) {
+            return false;
+        }
 
-    // Step 3: Topological sort via Kahn's algorithm
-    if (!TopologicalSort()) {
-        return false;
+        // Step 3: Compute lifetimes in final execution order so transient
+        // aliasing does not depend on declaration order.
+        ComputeResourceLifetimes();
+        StoreStructuralCompilation(structuralSignature);
     }
 
     // Step 4: Allocate transient resources
@@ -1178,6 +1191,8 @@ std::string RenderGraph::GetDebugString() const
 {
     std::ostringstream oss;
     oss << "RenderGraph (" << m_passes.size() << " passes, " << m_resources.size() << " resources)\n";
+    oss << "Structural cache: " << m_structuralCacheHits << " hits, " << m_structuralCacheMisses << " misses, "
+        << m_structuralCompileCache.size() << " entries\n";
 
     oss << "\nPasses:\n";
     for (const auto &pass : m_passes) {

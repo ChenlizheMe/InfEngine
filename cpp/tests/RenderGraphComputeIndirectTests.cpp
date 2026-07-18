@@ -351,17 +351,23 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     RenderGraph rootGraph;
     rootGraph.Initialize(&resources.context, &resources.pipelines);
-    rootGraph.AddComputePass("Unreachable", [](PassBuilder &) { return [](RenderContext &) {}; });
-    rootGraph.AddComputePass("ExplicitSideEffect", [](PassBuilder &builder) {
-        builder.SetSideEffect();
-        return [](RenderContext &) {};
-    });
-    rootGraph.AddComputePass("ExternalWrite", [](PassBuilder &builder) {
-        auto external = builder.ImportBuffer("ExternalBuffer", VK_NULL_HANDLE, 16);
-        builder.WriteStorageBuffer(external);
-        return [](RenderContext &) {};
-    });
+    auto recordRootGraph = [&] {
+        rootGraph.AddComputePass("Unreachable", [](PassBuilder &) { return [](RenderContext &) {}; });
+        rootGraph.AddComputePass("ExplicitSideEffect", [](PassBuilder &builder) {
+            builder.SetSideEffect();
+            return [](RenderContext &) {};
+        });
+        rootGraph.AddComputePass("ExternalWrite", [](PassBuilder &builder) {
+            auto external = builder.ImportBuffer("ExternalBuffer", VK_NULL_HANDLE, 16);
+            builder.WriteStorageBuffer(external);
+            return [](RenderContext &) {};
+        });
+    };
+    recordRootGraph();
     if (!Require(rootGraph.Compile(), "Side-effect root graph failed to compile"))
+        return false;
+    if (!Require(rootGraph.GetStructuralCacheHitCount() == 0 && rootGraph.GetStructuralCacheMissCount() == 1,
+                 "First structural compilation did not populate the cache"))
         return false;
     const auto rootExecution = rootGraph.GetExecutionPassNames();
     if (!Require(rootExecution == std::vector<std::string>{"ExplicitSideEffect", "ExternalWrite"},
@@ -372,6 +378,29 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      !rootInfos[1].culled && rootInfos[1].reason == PassCullReason::SideEffect &&
                      !rootInfos[2].culled && rootInfos[2].reason == PassCullReason::ExternalWrite,
                  "Pass compile report did not preserve culling reasons"))
+        return false;
+
+    rootGraph.Reset();
+    recordRootGraph();
+    if (!Require(rootGraph.Compile(), "Repeated side-effect root graph failed to compile"))
+        return false;
+    if (!Require(rootGraph.GetStructuralCacheHitCount() == 1 && rootGraph.GetStructuralCacheMissCount() == 1 &&
+                     rootGraph.GetExecutionPassNames() == rootExecution,
+                 "Identical graph rebuild did not reuse structural dependency analysis"))
+        return false;
+
+    rootGraph.Reset();
+    recordRootGraph();
+    rootGraph.AddTransferPass("NewSideEffect", [](PassBuilder &builder) {
+        builder.SetSideEffect();
+        return [](RenderContext &) {};
+    });
+    if (!Require(rootGraph.Compile(), "Changed root graph failed to compile"))
+        return false;
+    const auto changedRootExecution = rootGraph.GetExecutionPassNames();
+    if (!Require(rootGraph.GetStructuralCacheHitCount() == 1 && rootGraph.GetStructuralCacheMissCount() == 2 &&
+                     changedRootExecution.size() == 3 && changedRootExecution.back() == "NewSideEffect",
+                 "Changed graph structure incorrectly reused a cached dependency analysis"))
         return false;
 
     RenderGraph typedResourceGraph;

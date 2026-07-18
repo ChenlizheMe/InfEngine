@@ -798,6 +798,19 @@ class RenderGraph
     [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
 
+    /// Number of rebuilds that reused dependency analysis from an identical
+    /// graph structure. Native resource handles and frame bindings are never
+    /// part of this cache.
+    [[nodiscard]] uint64_t GetStructuralCacheHitCount() const noexcept
+    {
+        return m_structuralCacheHits;
+    }
+
+    [[nodiscard]] uint64_t GetStructuralCacheMissCount() const noexcept
+    {
+        return m_structuralCacheMisses;
+    }
+
   private:
     // ========================================================================
     // Internal Methods
@@ -822,6 +835,12 @@ class RenderGraph
 
     /// @brief Topological sort via Kahn's algorithm. Returns false for cycles.
     bool TopologicalSort();
+
+    /// Reuse or retain the backend-neutral dependency analysis for a graph
+    /// structure. Per-frame values, callbacks, and native handles are excluded.
+    [[nodiscard]] std::vector<uint64_t> BuildStructuralSignature() const;
+    bool RestoreStructuralCompilation(const std::vector<uint64_t> &signature);
+    void StoreStructuralCompilation(std::vector<uint64_t> signature);
 
     /// @brief Allocate transient resources
     bool AllocateResources();
@@ -898,6 +917,33 @@ class RenderGraph
 
     // State
     bool m_compiled = false;
+
+    struct CachedPassAnalysis
+    {
+        uint32_t refCount = 0;
+        bool culled = true;
+        PassCullReason cullReason = PassCullReason::Unreachable;
+    };
+
+    struct CachedResourceLifetime
+    {
+        uint32_t firstPass = UINT32_MAX;
+        uint32_t lastPass = 0;
+        uint32_t refCount = 0;
+    };
+
+    struct StructuralCompileCacheEntry
+    {
+        std::vector<uint64_t> signature;
+        std::vector<CachedPassAnalysis> passes;
+        std::vector<CachedResourceLifetime> resources;
+        std::vector<uint32_t> executionOrder;
+    };
+
+    static constexpr size_t kStructuralCacheCapacity = 8;
+    std::vector<StructuralCompileCacheEntry> m_structuralCompileCache;
+    uint64_t m_structuralCacheHits = 0;
+    uint64_t m_structuralCacheMisses = 0;
 
     // Per-resource layout state (reset each Execute())
     // Flat vector indexed by resource id — O(1) lookup, memcpy reset.
