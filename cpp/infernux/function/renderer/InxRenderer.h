@@ -196,6 +196,8 @@ class InxRenderer
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
+    [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
+    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
     void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver);
     bool HasShader(const std::string &name, const std::string &type) const;
 

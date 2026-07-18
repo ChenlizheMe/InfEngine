@@ -3,6 +3,8 @@
 #include "ParticleGpuBillboardRenderer.h"
 #include "ParticleRenderGraph.h"
 
+#include <core/types/ShaderProgramArtifact.h>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -32,6 +34,7 @@ struct GpuParticleOutputProgram
     uint64_t id = 0;
     std::string stableId;
     std::shared_ptr<InxMaterial> material;
+    std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     GpuBillboardMaterialState fallbackMaterial;
 };
 

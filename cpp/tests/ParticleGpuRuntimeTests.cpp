@@ -19,6 +19,8 @@ struct FakeDevice final : rhi::Device
 {
     std::vector<rhi::BufferDesc> buffers;
     uint32_t shaderCreates = 0;
+    std::vector<rhi::BindingLayoutDesc> layouts;
+    std::vector<rhi::BindGroupDesc> bindGroups;
     std::vector<uint32_t> layoutEntryCounts;
     std::vector<uint32_t> groupBufferCounts;
     std::vector<uint32_t> groupTextureCounts;
@@ -36,6 +38,7 @@ struct FakeDevice final : rhi::Device
     uint32_t graphicsPipelineReleases = 0;
     uint32_t pipelineReleases = 0;
     uint32_t writes = 0;
+    std::vector<std::vector<uint8_t>> writtenBytes;
     uint32_t nextIndex = 1;
 
     rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override
@@ -53,6 +56,7 @@ struct FakeDevice final : rhi::Device
 
     rhi::BindingLayoutHandle CreateBindingLayout(const rhi::BindingLayoutDesc &desc) override
     {
+        layouts.push_back(desc);
         layoutEntryCounts.push_back(desc.entryCount);
         ++layoutCreates;
         return {nextIndex++, 1};
@@ -61,6 +65,7 @@ struct FakeDevice final : rhi::Device
     rhi::BindGroupHandle CreateBindGroup(const rhi::BindGroupDesc &desc) override
     {
         assert(desc.layout.IsValid());
+        bindGroups.push_back(desc);
         groupBufferCounts.push_back(desc.bufferCount);
         groupTextureCounts.push_back(desc.textureCount);
         ++groupCreates;
@@ -83,7 +88,9 @@ struct FakeDevice final : rhi::Device
 
     bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override
     {
-        assert(handle.IsValid() && offset == 0 && data && byteSize == sizeof(particle::GpuParticleTransforms));
+        assert(handle.IsValid() && offset == 0 && data && byteSize > 0);
+        const auto *begin = static_cast<const uint8_t *>(data);
+        writtenBytes.emplace_back(begin, begin + byteSize);
         ++writes;
         return true;
     }
@@ -346,6 +353,102 @@ int main()
     assert(!billboard.RecordDraw(graphicsEncoder, firstTarget, unsupportedPass, indirectBuffer, view));
     billboard.Destroy();
     assert(!billboard.IsValid() && device.graphicsPipelineReleases == 2);
+
+    auto linkedArtifact = std::make_shared<ShaderProgramArtifact>();
+    linkedArtifact->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 7};
+    linkedArtifact->domain = ShaderProgramDomain::ParticleSprite;
+    linkedArtifact->materialBufferSize = 32;
+    linkedArtifact->compatibilitySignature = 99;
+    linkedArtifact->properties = {
+        {"baseColor", "Color", "[1.0, 1.0, 1.0, 1.0]", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 0,
+         std::nullopt, 16, 16},
+        {"intensity", "Float", "2.0", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 16, std::nullopt, 4,
+         4},
+        {"albedo", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false, std::nullopt, std::nullopt, 0, 0,
+         0},
+        {"detail", "Texture2D", "", "white", ShaderProgramStageMask::Vertex | ShaderProgramStageMask::Fragment, false,
+         std::nullopt, std::nullopt, 1, 0, 0},
+    };
+    ShaderProgramArtifact::PassVariant linkedForward;
+    linkedForward.compatibilitySignature = linkedArtifact->compatibilitySignature;
+    linkedForward.vertexSpirv.resize(5 * sizeof(uint32_t));
+    linkedForward.fragmentSpirv.resize(5 * sizeof(uint32_t));
+    const uint32_t spirvMagic = 0x07230203u;
+    std::memcpy(linkedForward.vertexSpirv.data(), &spirvMagic, sizeof(spirvMagic));
+    std::memcpy(linkedForward.fragmentSpirv.data(), &spirvMagic, sizeof(spirvMagic));
+    linkedArtifact->variants.push_back(std::move(linkedForward));
+    assert(linkedArtifact->IsValid());
+
+    FakeDevice linkedDevice;
+    FrameDeletionQueue linkedDeletionQueue;
+    linkedDeletionQueue.Initialize(2);
+    particle::GpuBillboardRendererDesc linkedDesc;
+    linkedDesc.shaderProgram = linkedArtifact;
+    linkedDesc.instances = instanceBuffer;
+    linkedDesc.material = std::make_shared<InxMaterial>("linked-particle-material");
+    linkedDesc.material->SetColor("baseColor", glm::vec4(0.2f, 0.4f, 0.6f, 0.8f));
+    linkedDesc.material->SetFloat("intensity", 3.5f);
+    linkedDesc.material->SetTextureGuid("albedo", "white");
+    linkedDesc.material->SetTextureGuid("detail", "normal");
+    uint32_t linkedTextureResolves = 0;
+    linkedDesc.textureResolver = [&linkedTextureResolves](const std::string &guid, const std::string &name) {
+        ++linkedTextureResolves;
+        const uint32_t identity = name == "albedo" ? 1u : 2u;
+        assert((name == "albedo" && (guid == "white" || guid == "black")) || (name == "detail" && guid == "normal"));
+        return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Ready,
+                                                  {600u + identity, 1},
+                                                  {700u + identity, 1},
+                                                  std::make_shared<uint32_t>(identity)};
+    };
+    linkedDesc.textureVersionResolver = [](const std::string &guid) {
+        return guid == "black" ? uint64_t{2} : uint64_t{1};
+    };
+    linkedDesc.deletionQueue = &linkedDeletionQueue;
+
+    particle::ParticleGpuBillboardRenderer linkedBillboard;
+    assert(linkedBillboard.Create(linkedDevice, linkedDesc));
+    assert(linkedDevice.shaderCreates == 2 && linkedDevice.buffers.size() == 1);
+    assert(linkedDevice.buffers[0].byteSize == 32 && linkedDevice.buffers[0].usage == rhi::BufferUsageFlags::Uniform &&
+           linkedDevice.buffers[0].memory == rhi::BufferMemory::Upload);
+    assert(linkedDevice.layouts.size() == 1 && linkedDevice.layouts[0].entryCount == 4);
+    assert(linkedDevice.layouts[0].entries[0].binding == 0 && linkedDevice.layouts[0].entries[1].binding == 2 &&
+           linkedDevice.layouts[0].entries[2].binding == 3 && linkedDevice.layouts[0].entries[3].binding == 14);
+    assert(linkedDevice.bindGroups.size() == 1 && linkedDevice.bindGroups[0].bufferCount == 2 &&
+           linkedDevice.bindGroups[0].textureCount == 2);
+    assert(linkedDevice.bindGroups[0].textures[0].binding == 2 && linkedDevice.bindGroups[0].textures[1].binding == 3);
+    assert(linkedTextureResolves == 2 && linkedDevice.writes == 1 && linkedDevice.writtenBytes[0].size() == 32);
+    glm::vec4 packedColor{};
+    float packedIntensity = 0.0f;
+    std::memcpy(&packedColor, linkedDevice.writtenBytes[0].data(), sizeof(packedColor));
+    std::memcpy(&packedIntensity, linkedDevice.writtenBytes[0].data() + 16, sizeof(packedIntensity));
+    assert(packedColor == glm::vec4(0.2f, 0.4f, 0.6f, 0.8f) && packedIntensity == 3.5f);
+
+    GraphicsTrace linkedGraphicsTrace;
+    const rhi::GraphicsCommandEncoder linkedGraphicsEncoder(&linkedGraphicsTrace, &graphicsDispatch);
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(linkedDevice.writes == 1 && linkedDevice.groupCreates == 1 && linkedDevice.graphicsPipelineCreates == 1 &&
+           linkedTextureResolves == 2);
+    assert(linkedGraphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
+
+    linkedDesc.material->SetFloat("intensity", 8.0f);
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(linkedDevice.writes == 2 && linkedDevice.groupCreates == 1 && linkedDevice.graphicsPipelineCreates == 1 &&
+           linkedTextureResolves == 2);
+    std::memcpy(&packedIntensity, linkedDevice.writtenBytes.back().data() + 16, sizeof(packedIntensity));
+    assert(packedIntensity == 8.0f);
+
+    linkedDesc.material->SetTextureGuid("albedo", "black");
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(linkedDevice.writes == 3 && linkedDevice.groupCreates == 2 && linkedDevice.graphicsPipelineCreates == 1 &&
+           linkedTextureResolves == 3);
+    linkedDeletionQueue.Tick();
+    linkedDeletionQueue.Tick();
+    linkedDeletionQueue.Tick();
+    assert(linkedDevice.groupReleases == 1 && linkedDevice.textureReleases == 1 && linkedDevice.samplerReleases == 1);
+    linkedBillboard.Destroy();
+    assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 2 && linkedDevice.textureReleases == 3 &&
+           linkedDevice.samplerReleases == 3);
 
     auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
     assert(registeredBillboard->Create(device, billboardDesc));

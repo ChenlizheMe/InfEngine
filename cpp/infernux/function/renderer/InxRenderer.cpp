@@ -1745,6 +1745,16 @@ bool InxRenderer::HasShaderProgramArtifact(const ShaderProgramKey &programKey) c
     return m_vkCore && m_vkCore->HasShaderProgramArtifact(programKey);
 }
 
+std::shared_ptr<const ShaderProgramArtifact>
+InxRenderer::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!m_vkCore || !material)
+        return nullptr;
+    if (m_shaderProgramArtifactResolver)
+        m_shaderProgramArtifactResolver(material);
+    return m_vkCore->CopyShaderProgramArtifact({material->GetVertShaderName(), material->GetFragShaderName()});
+}
+
 void InxRenderer::SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
 {
     m_shaderProgramArtifactResolver = std::move(resolver);

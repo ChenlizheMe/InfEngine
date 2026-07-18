@@ -1815,6 +1815,18 @@ PYBIND11_MODULE(_Infernux, m)
                         throw std::invalid_argument("GPU particle program batch must contain dictionaries");
                     programs.push_back(DecodeGpuParticleProgram(py::reinterpret_borrow<py::dict>(item)));
                 }
+                for (auto &program : programs) {
+                    for (auto &output : program.outputs) {
+                        if (!output.material)
+                            continue;
+                        output.shaderProgram = renderer->ResolveShaderProgramArtifact(output.material);
+                        if (output.shaderProgram &&
+                            output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
+                            return "particle output '" + output.stableId +
+                                   "' material must use a ParticleSprite vertex shader";
+                        }
+                    }
+                }
                 std::string error;
                 if (!manager->ApplyBatch(programs, removeIds, &error))
                     return error.empty() ? std::string("failed to publish GPU particle program batch") : error;

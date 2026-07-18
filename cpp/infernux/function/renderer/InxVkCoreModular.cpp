@@ -413,6 +413,13 @@ bool InxVkCoreModular::HasShaderProgramArtifact(const ShaderProgramKey &programK
     return artifact && artifact->key == programKey;
 }
 
+std::shared_ptr<const ShaderProgramArtifact>
+InxVkCoreModular::CopyShaderProgramArtifact(const ShaderStagePair &stages) const
+{
+    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
+    return artifact ? std::make_shared<const ShaderProgramArtifact>(*artifact) : nullptr;
+}
+
 void InxVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
                                              const std::string &depthWrite, const std::string &depthTest,
                                              const std::string &blend, int queue, const std::string &passTag,

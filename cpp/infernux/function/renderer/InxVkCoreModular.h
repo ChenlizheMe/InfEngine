@@ -189,6 +189,8 @@ class InxVkCoreModular
     void LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
+    [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
+    CopyShaderProgramArtifact(const ShaderStagePair &stages) const;
     void UnloadShader(const char *name);
     bool HasShader(const std::string &name, const std::string &type) const;
 

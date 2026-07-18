@@ -83,7 +83,11 @@ struct ParticleGpuSystemManager::Impl
                 return {};
             }
         }
-        if (!IsSpirv(program.billboardVertexShader) || !IsSpirv(program.billboardFragmentShader)) {
+        const bool needsLegacyBillboard =
+            std::any_of(program.outputs.begin(), program.outputs.end(),
+                        [](const GpuParticleOutputProgram &output) { return !output.shaderProgram; });
+        if (needsLegacyBillboard &&
+            (!IsSpirv(program.billboardVertexShader) || !IsSpirv(program.billboardFragmentShader))) {
             SetError(error, "GPU particle program contains invalid billboard SPIR-V");
             return {};
         }
@@ -125,6 +129,7 @@ struct ParticleGpuSystemManager::Impl
             rendererDesc.vertexShader = {program.billboardVertexShader.data(), program.billboardVertexShader.size()};
             rendererDesc.fragmentShader = {program.billboardFragmentShader.data(),
                                            program.billboardFragmentShader.size()};
+            rendererDesc.shaderProgram = output.shaderProgram;
             rendererDesc.instances = emitter->runtime->InstanceBuffer();
             rendererDesc.material = output.material;
             rendererDesc.fallbackMaterial = output.fallbackMaterial;

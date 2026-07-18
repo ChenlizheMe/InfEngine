@@ -2,6 +2,7 @@
 
 #include "ParticleGpuRuntime.h"
 
+#include <core/types/ShaderProgramArtifact.h>
 #include <function/renderer/MaterialPassPipeline.h>
 
 #include <array>
@@ -51,6 +52,7 @@ struct GpuBillboardRendererDesc
 {
     ShaderBytecode vertexShader;
     ShaderBytecode fragmentShader;
+    std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     rhi::BufferHandle instances;
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
@@ -104,15 +106,35 @@ class ParticleGpuBillboardRenderer
 
     [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                                   const MaterialPassPipelineDescriptor &pass);
+    struct TextureBindingState
+    {
+        uint32_t binding = 0;
+        rhi::ShaderStage visibility = rhi::ShaderStage::None;
+        std::string name;
+        std::string defaultGuid;
+        std::string requestedGuid;
+        uint64_t requestedVersion = 0;
+        rhi::TextureViewHandle texture;
+        rhi::SamplerHandle sampler;
+        std::shared_ptr<void> keepAlive;
+        bool pending = false;
+        bool fallback = false;
+    };
+
+    [[nodiscard]] bool UsesLinkedProgram() const noexcept;
     [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
     [[nodiscard]] std::array<float, 4> ResolveMaterialTint() const noexcept;
-    [[nodiscard]] std::string ResolveMaterialTextureGuid() const;
-    [[nodiscard]] bool RefreshTextureBinding(bool force);
-    void RetireTextureBinding(rhi::BindGroupHandle group, rhi::TextureViewHandle texture, rhi::SamplerHandle sampler,
-                              std::shared_ptr<void> keepAlive);
+    [[nodiscard]] std::string ResolveMaterialTextureGuid(const TextureBindingState &binding) const;
+    [[nodiscard]] bool RefreshMaterialBuffer(bool force);
+    [[nodiscard]] bool RefreshTextureBindings(bool force);
+    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures) const;
+    [[nodiscard]] bool RebuildBindGroup();
+    void RetireBindGroup(rhi::BindGroupHandle group);
+    void RetireTexture(rhi::TextureViewHandle texture, rhi::SamplerHandle sampler, std::shared_ptr<void> keepAlive);
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<InxMaterial> m_material;
+    std::shared_ptr<const ShaderProgramArtifact> m_shaderProgram;
     GpuBillboardMaterialState m_fallbackMaterial{};
     GpuBillboardTextureResolver m_textureResolver;
     GpuBillboardTextureVersionResolver m_textureVersionResolver;
@@ -122,13 +144,10 @@ class ParticleGpuBillboardRenderer
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
-    rhi::TextureViewHandle m_texture;
-    rhi::SamplerHandle m_sampler;
-    std::shared_ptr<void> m_textureKeepAlive;
-    std::string m_textureGuid;
-    uint64_t m_textureVersion = 0;
-    bool m_texturePending = false;
-    bool m_textureFallback = false;
+    rhi::BufferHandle m_materialBuffer;
+    std::vector<TextureBindingState> m_textures;
+    uint64_t m_materialVersion = 0;
+    bool m_materialVersionInitialized = false;
     bool m_usesTexture = false;
     std::vector<PipelineEntry> m_pipelines;
 };
