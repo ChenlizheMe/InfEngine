@@ -1,11 +1,13 @@
 #pragma once
 
+#include <array>
 #include <core/types/InxFwdType.h>
 #include <core/types/ShaderTypes.h>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -135,6 +137,7 @@ struct MaterialProperty
     MaterialPropertyType type;
     MaterialPropertyValue value;
     bool hdr = false;
+    std::optional<std::array<double, 2>> range;
 };
 
 /**

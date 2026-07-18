@@ -409,7 +409,8 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
 {
     const auto existing = m_properties.find(name);
     const bool hdr = existing != m_properties.end() && existing->second.hdr;
-    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr};
+    const auto range = existing != m_properties.end() ? existing->second.range : std::nullopt;
+    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range};
     m_propertiesDirty = true;
     ++m_version;
 }
@@ -473,8 +474,10 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     auto it = m_properties.find(name);
     std::string previousGuid;
     bool hdr = false;
+    std::optional<std::array<double, 2>> range;
     if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
         hdr = it->second.hdr;
+        range = it->second.range;
         const auto *existing = std::get_if<std::string>(&it->second.value);
         if (existing) {
             if (*existing == validatedGuid)
@@ -486,7 +489,7 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     if (!m_guid.empty() && !previousGuid.empty() && !IsBuiltinTextureToken(previousGuid))
         AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, previousGuid);
 
-    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr};
+    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr, range};
     m_propertiesDirty = true;
     ++m_version;
 
@@ -701,6 +704,8 @@ nlohmann::json InxMaterial::SerializeDocument() const
         propJson["type"] = static_cast<int>(prop.type);
         if (prop.hdr)
             propJson["hdr"] = true;
+        if (prop.range)
+            propJson["range"] = {(*prop.range)[0], (*prop.range)[1]};
 
         switch (prop.type) {
         case MaterialPropertyType::Float:
@@ -893,6 +898,10 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &j)
             prop.name = propName;
             prop.type = static_cast<MaterialPropertyType>(typeValue);
             prop.hdr = propJson.value("hdr", false);
+            if (propJson.contains("range")) {
+                const auto &range = propJson["range"];
+                prop.range = std::array<double, 2>{range[0].get<double>(), range[1].get<double>()};
+            }
 
             switch (prop.type) {
             case MaterialPropertyType::Float:

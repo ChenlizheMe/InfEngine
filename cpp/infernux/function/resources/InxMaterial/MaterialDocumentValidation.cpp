@@ -164,7 +164,7 @@ void ValidateProperty(const std::string &name, const json &document, std::string
 {
     static const std::unordered_set<std::string> textureFields = {"type", "guid"};
     static const std::unordered_set<std::string> valueFields = {"type", "value"};
-    static const std::unordered_set<std::string> metadataFields = {"hdr"};
+    static const std::unordered_set<std::string> metadataFields = {"hdr", "range"};
     if (name.empty())
         Fail(path, "property name must not be empty");
     if (!document.is_object() || !document.contains("type") || !document["type"].is_number_integer())
@@ -177,6 +177,20 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     const auto propertyType = static_cast<MaterialPropertyType>(type);
     if (document.contains("hdr") && !document["hdr"].is_boolean())
         Fail(path, "hdr must be a boolean");
+    if (document.contains("range")) {
+        const auto &range = document["range"];
+        if (propertyType != MaterialPropertyType::Float && propertyType != MaterialPropertyType::Int)
+            Fail(path, "range is only valid for Float and Int properties");
+        if (!range.is_array() || range.size() != 2 || !range[0].is_number() || !range[1].is_number())
+            Fail(path, "range must contain exactly two numbers");
+        const double minimum = range[0].get<double>();
+        const double maximum = range[1].get<double>();
+        if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum >= maximum)
+            Fail(path, "range bounds must be finite and strictly increasing");
+        if (propertyType == MaterialPropertyType::Int &&
+            (!range[0].is_number_integer() || !range[1].is_number_integer()))
+            Fail(path, "Int property range bounds must be integers");
+    }
     if (propertyType == MaterialPropertyType::Texture2D) {
         RequireExactFields(document, textureFields, metadataFields, path);
         if (!document["guid"].is_string())

@@ -265,7 +265,12 @@ def render_material_property(
 
     if ptype == 0:  # Float
         field_label(ctx, prop_name, plw)
-        nv = float(ctx.drag_float(wid, float(value), 0.1, 0.0, 100.0))
+        authored_range = prop.get("range")
+        if isinstance(authored_range, list) and len(authored_range) == 2:
+            nv = float(ctx.float_slider(
+                wid, float(value), float(authored_range[0]), float(authored_range[1])))
+        else:
+            nv = float(ctx.drag_float(wid, float(value), 0.1, 0.0, 100.0))
         if nv != float(value):
             prop["value"] = nv
             changed = True
@@ -297,7 +302,12 @@ def render_material_property(
 
     elif ptype == 4:  # Int
         field_label(ctx, prop_name, plw)
-        nv = int(ctx.drag_int(wid, int(value), 1.0, 0, 0))
+        authored_range = prop.get("range")
+        if isinstance(authored_range, list) and len(authored_range) == 2:
+            nv = int(ctx.int_slider(
+                wid, int(value), int(authored_range[0]), int(authored_range[1])))
+        else:
+            nv = int(ctx.drag_int(wid, int(value), 1.0, 0, 0))
         if nv != int(value):
             prop["value"] = nv
             changed = True

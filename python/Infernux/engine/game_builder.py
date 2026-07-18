@@ -113,6 +113,12 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     _EXCLUDE_PATTERNS = {"__pycache__", ".git", ".gitignore", ".infernux-engine-lock.json"}
     _ICON_EXTS = {".png", ".jpg", ".jpeg", ".ico"}
     _GAME_BUILD_EXCLUDED_PACKAGES = frozenset({"mcp", "fastmcp"})
+    _PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS = frozenset(
+        {
+            "ProjectSettings/agent_tools.json",
+            "ProjectSettings/mcp_capabilities.json",
+        }
+    )
     _CONTENT_ARCHIVE_FILENAME = "Content.inxpkg"
     _CONTENT_MANIFEST_FILENAME = "Content.json"
     _CONTENT_SCHEMA_VERSION = 1
@@ -1228,6 +1234,7 @@ finally:
         project_bytecode_count = 0
         project_metadata_count = 0
         plaintext_project_scripts: list[str] = []
+        excluded_files: list[str] = []
         uncompressed_bytes = 0
 
         for root, dirs, filenames in os.walk(data_root):
@@ -1236,6 +1243,9 @@ finally:
                 path = os.path.join(root, filename)
                 relative = os.path.relpath(path, data_root).replace("\\", "/")
                 if "/" not in relative and relative in retained:
+                    continue
+                if relative in self._PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS:
+                    excluded_files.append(path)
                     continue
                 suffix = os.path.splitext(filename)[1].lower()
                 if relative.startswith("Assets/") and suffix == ".py":
@@ -1290,6 +1300,8 @@ finally:
 
         for source_path, _relative in files:
             os.remove(source_path)
+        for excluded_path in excluded_files:
+            os.remove(excluded_path)
         for root, dirs, _files in os.walk(data_root, topdown=False):
             for directory in dirs:
                 path = os.path.join(root, directory)

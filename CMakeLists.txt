@@ -581,6 +581,22 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.texture_artifact COMMAND infernux_texture_artifact_tests)
 
+    add_executable(infernux_shader_info_schema_tests
+        cpp/tests/ShaderInfoSchemaTests.cpp
+    )
+    target_include_directories(infernux_shader_info_schema_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_shader_info_schema_tests PRIVATE InfernuxRuntime)
+    target_compile_definitions(infernux_shader_info_schema_tests PRIVATE
+        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/Infernux/resources/shaders"
+    )
+    if(MSVC)
+        target_compile_options(infernux_shader_info_schema_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.shader_info_schema COMMAND infernux_shader_info_schema_tests)
+
     add_test(
         NAME infernux.headless
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/headless_smoke_test.py

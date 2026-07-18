@@ -71,6 +71,43 @@ def register_material_tools(mcp, project_path: str) -> None:
 
         return main_thread("material_set_property", _set, arguments={"path": path, "name": name, "value_type": value_type, "knowledge_token": knowledge_token})
 
+    @mcp.tool(name="material_set_shader")
+    def material_set_shader(
+        path: str,
+        vertex: str = "",
+        fragment: str = "",
+        knowledge_token: str = "",
+    ) -> dict:
+        """Select validated vertex and/or fragment shader IDs for a material."""
+
+        def _set():
+            require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
+            file_path = resolve_project_path(project_path, path)
+            mat = _load_material(project_path, path)
+            if vertex:
+                _require_shader_stage(vertex, "vertex")
+                mat.vert_shader_name = str(vertex).strip()
+            if fragment:
+                _require_shader_stage(fragment, "fragment")
+                mat.frag_shader_name = str(fragment).strip()
+            if not vertex and not fragment:
+                raise ValueError("At least one of vertex or fragment must be provided.")
+            mat.flush()
+            mat.save(file_path)
+            notify_asset_changed(file_path, "modified")
+            return {"path": path, **_material_info(mat)}
+
+        return main_thread(
+            "material_set_shader",
+            _set,
+            arguments={
+                "path": path,
+                "vertex": vertex,
+                "fragment": fragment,
+                "knowledge_token": knowledge_token,
+            },
+        )
+
 
 def _load_material(project_path: str, path: str):
     from Infernux.core.material import Material
@@ -104,6 +141,25 @@ def _set_one(mat, name: str, value: Any, value_type: str) -> None:
         mat.set_param(name, value)
 
 
+def _require_shader_stage(shader_id: str, expected_kind: str) -> None:
+    from Infernux.mcp.tools.api import _scan_shaders
+
+    normalized = str(shader_id or "").strip().lower()
+    matches = [
+        item
+        for item in _scan_shaders()
+        if str(item.get("shader_id") or "").lower() == normalized
+    ]
+    if any(item.get("kind") == expected_kind for item in matches):
+        return
+    actual = sorted({str(item.get("kind") or "") for item in matches if item.get("kind")})
+    if actual:
+        raise ValueError(
+            f"Shader '{shader_id}' is not a {expected_kind} shader; available kind(s): {', '.join(actual)}."
+        )
+    raise FileNotFoundError(f"Shader '{shader_id}' was not found in the imported shader catalog.")
+
+
 def _properties(mat) -> dict[str, Any]:
     try:
         return serialize_value(mat.get_all_properties())
@@ -129,6 +185,7 @@ def _register_metadata() -> None:
         "material_create": "Create a material asset.",
         "material_get_properties": "Read material shader selection and properties.",
         "material_set_property": "Set a material shader property.",
+        "material_set_shader": "Select validated vertex and fragment shader IDs for a material.",
     }.items():
         register_tool_metadata(
             name,

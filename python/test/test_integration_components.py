@@ -1317,17 +1317,26 @@ class TestMaterial:
         shader_metadata = json.loads(json.dumps(document))
         shader_metadata["_shader_property_order"] = ["baseColor", "testValue"]
         shader_metadata["properties"]["baseColor"]["hdr"] = True
+        shader_metadata["properties"]["testValue"]["range"] = [0.0, 1.0]
         assert mat.deserialize(json.dumps(shader_metadata)) is True
         metadata_round_trip = json.loads(mat.serialize())
         assert metadata_round_trip["_shader_property_order"] == ["baseColor", "testValue"]
         assert metadata_round_trip["properties"]["baseColor"]["hdr"] is True
+        assert metadata_round_trip["properties"]["testValue"]["range"] == [0.0, 1.0]
         mat.set_color("baseColor", (2.0, 1.0, 0.5, 1.0))
         assert json.loads(mat.serialize())["properties"]["baseColor"]["hdr"] is True
+        mat.set_float("testValue", 0.75)
+        assert json.loads(mat.serialize())["properties"]["testValue"]["range"] == [0.0, 1.0]
 
         invalid_shader_order = json.loads(json.dumps(shader_metadata))
         invalid_shader_order["_shader_property_order"].append("missingProperty")
         assert mat.deserialize(json.dumps(invalid_shader_order)) is False
         assert json.loads(mat.serialize())["_shader_property_order"] == ["baseColor", "testValue"]
+
+        invalid_range = json.loads(json.dumps(shader_metadata))
+        invalid_range["properties"]["testValue"]["range"] = [2.0, 1.0]
+        assert mat.deserialize(json.dumps(invalid_range)) is False
+        assert json.loads(mat.serialize())["properties"]["testValue"]["range"] == [0.0, 1.0]
 
         extended_state = json.loads(json.dumps(document))
         extended_state["renderState"].update(

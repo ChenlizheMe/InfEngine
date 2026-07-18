@@ -30,7 +30,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "Do not guess unfamiliar Infernux APIs from Unity or other engines.",
             "For Python-layer APIs, call api_search(query), then api_get(symbol_or_module). The index is generated from .pyi stubs first, then .py source.",
             "For components, call component_list_types and component_describe_type before setting fields.",
-            "For shader authoring, call shader_guide, shader_catalog, and shader_describe because shader behavior is C++/compiler-backed and annotation-driven.",
+            "For shader authoring, call shader_guide, shader_catalog, and shader_describe because shader behavior is C++/compiler-backed and schema-driven.",
             "For MCP tools, call mcp_catalog_search or mcp_catalog_recommend before choosing tools.",
         ],
         "workflow": [
@@ -82,11 +82,12 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         "summary": "Three-layer shader authoring model: surface fragment/vertex shaders, shading models, and GLSL libraries/templates.",
         "concepts": [
             "Shader authoring is NOT a normal Python-reflection API. It is parsed and compiled by the C++ shader/material pipeline, so this guide is manually curated.",
-            "Fragment surface shaders are .frag files with @shader_id, @shading_model, optional @queue, and @property annotations.",
-            "Vertex shaders are .vert files with @shader_id. Materials may set vert_shader_name and frag_shader_name separately.",
-            "Shading models are .shadingmodel files with @shader_id and @target blocks such as forward or gbuffer.",
-            "Library files are .glsl files imported with @import; do not assign them directly as Material shaders.",
-            "Material properties are declared in the first 50 lines using @property: name, Type, default[, HDR].",
+            "New .frag and .vert assets use one versioned ShaderInfo block for Name, properties, render state, imports, interfaces, and capabilities.",
+            "Vertex and fragment stages remain separate assets. Materials may set vert_shader_name and frag_shader_name independently.",
+            "Users do not write Vulkan layout, descriptor set, binding, or location declarations for the normal ShaderInfo path.",
+            "The native importer emits the canonical property/interface schema consumed by the Inspector and MCP catalog; do not parse ShaderInfo again in Python scripts.",
+            "Legacy @shader_id/@property files remain readable during migration but are not the preferred authoring format.",
+            "ShadingModelInfo and automatic stage-interface lowering are being migrated; existing .shadingmodel and custom varying behavior keeps its current compatibility rules until that phase lands.",
             "Surface shaders implement void surface(out SurfaceData s). Start with s = InitSurfaceData().",
             "Common built-in varyings include v_TexCoord, v_Color, v_WorldPos, and normal/tangent data supplied by the standard vertex path.",
             "RenderGraph fullscreen effects use fullscreen_triangle.vert automatically and bind fragment shader IDs through p.fullscreen_quad(shader_id).",
@@ -94,12 +95,13 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         "workflow": [
             "Call shader_catalog to discover built-in shader IDs and examples.",
             "Call shader_describe(shader_id, kind='fragment') before binding a material to a custom fragment shader.",
-            "Create .frag/.vert through asset_create_builtin_resource(kind='shader') or asset.write_text.",
+            "Create .frag/.vert through asset_write_text using the ShaderInfo example returned by this guide.",
             "After editing shader files, call asset_refresh and use Shader.reload(shader_id) from scripts if runtime reload is needed.",
-            "For materials, use Material.create_lit/create_unlit, then set vert_shader_name/frag_shader_name or set_shader for matching IDs.",
+            "For material assets, call material_create and material_set_shader with IDs verified by shader_describe. Runtime scripts may use Material.vert_shader_name/frag_shader_name.",
         ],
         "common_mistakes": [
-            "Do not put @shader_id only in comments; the parser expects lines that start with @shader_id: near the top.",
+            "Do not mix two competing ShaderInfo blocks in one asset. Name is the stable shader ID and Version must currently be 1.",
+            "Do not write layout(set=...), layout(binding=...), or layout(location=...) in normal ShaderInfo shaders.",
             "Do not assign a .shadingmodel or .glsl library as Material.frag_shader_name.",
             "Do not invent property names in Material unless the shader declares them or intentionally uses dynamic properties.",
             "Texture2D defaults are symbolic names such as white; material values must be texture GUIDs or wrappers, not paths or vec4 values.",
@@ -107,27 +109,26 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         ],
         "rules": {
             "file_kinds": {
-                ".frag": "Surface fragment shader. Requires @shader_id and usually @shading_model. Declares material @property annotations.",
-                ".vert": "Vertex shader. Requires @shader_id. Use for custom vertex deformation or varyings.",
-                ".shadingmodel": "Lighting/evaluation model. Referenced by @shading_model; not assigned directly to Material.",
-                ".glsl": "Shared library code. Imported with @import; not assigned directly to Material.",
+                ".frag": "Surface fragment shader. Uses ShaderInfo Name, optional ShadingModel/render state, and a typed Properties block.",
+                ".vert": "Vertex shader. Uses ShaderInfo Name and optional Properties/Outputs. Use for custom vertex deformation or varyings.",
+                ".shadingmodel": "Lighting/evaluation model. Existing assets still use the legacy format until ShadingModelInfo lowering lands; do not assign one directly to Material.",
+                ".glsl": "Shared GLSL library code. New ShaderInfo assets name libraries through Imports; do not assign one directly to Material.",
             },
-            "annotations": {
-                "@shader_id": "Unique shader id used by materials/render graph. Keep it near the top; Inspector/Python catalog scans only early lines.",
-                "@shading_model": "Fragment surface shader only; names a .shadingmodel shader id such as pbr or unlit. It resolves through the C++ shader id map.",
-                "@queue": "Render queue integer, e.g. 2000 opaque, 3000 transparent.",
-                "@property": "Material property declaration: @property: name, Type, default[, HDR].",
-                "@import": "Import a .glsl or shading helper id. Imports use shader_id, not filenames; .shadingmodel ids are internally namespaced.",
-                "@target": "Shading model target block such as forward or gbuffer. Used inside .shadingmodel files.",
-                "@hidden": "Hide internal shader from normal shader selection catalogs.",
-                "@surface_type": "opaque or transparent. transparent defaults queue/blend/depth/pass_tag when unset.",
-                "@blend/@blend_mode": "off, alpha, additive, or premultiply.",
-                "@alpha_test/@alpha_clip": "Enables cutout behavior and affects shadow variants.",
+            "shader_info": {
+                "Name": "Stable shader ID used by materials and RenderGraph.",
+                "Version": "Schema version. Use 1.",
+                "ShadingModel": "Fragment lighting model such as pbr or unlit.",
+                "Properties": "Typed declarations such as Float amount = 0.5 Range(0.0, 1.0), Color tint = [...] HDR, or Texture2D albedo = white.",
+                "Imports": "List of GLSL library IDs, for example Imports [\"lib/common\", \"lib/color\"].",
+                "Inputs/Outputs": "Typed stage interfaces reserved for the stage-linker migration; built-in varyings continue to work now.",
+                "Surface/Queue/Cull/DepthWrite": "Material render-state defaults compiled into importer metadata.",
+                "Capabilities": "Declared pass/backend capabilities consumed by the upcoming variant planner.",
+                "legacy_adapter": "@shader_id, @property, @import, and related annotations remain accepted only for existing assets during migration.",
             },
             "entry_points": {
                 "surface": "Preferred fragment workflow: void surface(out SurfaceData s). If no main() exists, engine injects templates, varyings, outputs, and shading-model evaluate().",
                 "vertex": "Optional vertex deformation hook: void vertex(inout VertexInput v).",
-                "main": "Advanced path. If author supplies main() or explicit layout(location=...), auto interface/template injection may be skipped; the author owns bindings and IO.",
+                "main": "Reserved for later stage-linker and engine-internal paths. User-authored ShaderInfo assets must not declare Vulkan layout; prefer surface() or vertex() in the current public path.",
             },
             "builtins": {
                 "surface_data": "Use s = InitSurfaceData(); then set fields such as albedo, alpha, emission, normalWS, metallic, smoothness, occlusion.",
@@ -187,7 +188,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         "concepts": [
             "Material.create_lit uses default_lit; Material.create_unlit uses default_unlit.",
             "Use vert_shader_name and frag_shader_name when vertex/fragment shader IDs differ.",
-            "Use set_color/set_float/set_int/set_vector*/set_texture based on shader @property declarations.",
+            "Use set_color/set_float/set_int/set_vector*/set_texture based on the imported ShaderInfo property schema.",
         ],
         "symbols": ["Material", "shader_describe", "material_create", "material_set_property"],
     },
@@ -792,6 +793,47 @@ def _scan_shaders() -> list[dict[str, Any]]:
 
 
 def _parse_shader_annotations(path: str) -> dict[str, Any]:
+    try:
+        from Infernux.core.asset_types import read_meta_file
+
+        metadata = read_meta_file(path)
+    except (ImportError, OSError, TypeError, ValueError):
+        metadata = None
+
+    if isinstance(metadata, dict) and str(metadata.get("shader_id") or "").strip():
+        def _json_value(key: str, fallback):
+            encoded = metadata.get(key)
+            if not isinstance(encoded, str):
+                return fallback
+            try:
+                import json
+
+                value = json.loads(encoded)
+            except (TypeError, ValueError):
+                return fallback
+            return value
+
+        imports = _json_value("shader_imports", [])
+        capabilities = _json_value("shader_capabilities", [])
+        inputs = _json_value("shader_inputs", [])
+        outputs = _json_value("shader_outputs", [])
+        entries = _json_value("shader_entries", {})
+        return {
+            "shader_id": str(metadata["shader_id"]).strip(),
+            "hidden": bool(metadata.get("shader_hidden", False)),
+            "imports": imports if isinstance(imports, list) else [],
+            "targets": list(entries) if isinstance(entries, dict) else [],
+            "entries": entries if isinstance(entries, dict) else {},
+            "capabilities": capabilities if isinstance(capabilities, list) else [],
+            "inputs": inputs if isinstance(inputs, list) else [],
+            "outputs": outputs if isinstance(outputs, list) else [],
+            "shading_model": str(metadata.get("shader_lighting_type") or ""),
+            "queue": metadata.get("shader_queue", ""),
+            "schema_format": str(metadata.get("shader_schema_format") or ""),
+            "schema_version": metadata.get("shader_schema_version", 0),
+        }
+
+    # Migration fallback for source files that have not been imported yet.
     annotations: dict[str, Any] = {"imports": [], "targets": []}
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -821,16 +863,16 @@ def _shader_usage(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     usage = {
         "material_binding": [],
         "notes": [],
-        "next_tools": ["shader_catalog", "asset_create_builtin_resource", "asset_write_text", "asset_refresh", "material_create"],
+        "next_tools": ["shader_catalog", "asset_create_builtin_resource", "asset_write_text", "asset_refresh", "material_create", "material_set_shader"],
     }
     if "vertex" in kinds:
         usage["material_binding"].append("material.vert_shader_name = '<shader_id>'")
     if "fragment" in kinds:
         usage["material_binding"].append("material.frag_shader_name = '<shader_id>'")
     if "shading_model" in kinds:
-        usage["notes"].append("Reference this from a .frag surface shader with @shading_model: <shader_id>; do not bind it directly as a material fragment shader.")
+        usage["notes"].append("Reference this from a .frag ShaderInfo block with ShadingModel \"<shader_id>\"; do not bind it directly as a material fragment shader.")
     if "library" in kinds:
-        usage["notes"].append("Import this from .frag/.vert/.shadingmodel code with @import; do not bind it directly to Material.")
+        usage["notes"].append("Name this library in a ShaderInfo Imports list; do not bind it directly to Material.")
     return usage
 
 
@@ -838,11 +880,17 @@ def _shader_examples() -> dict[str, str]:
     return {
         "surface_fragment": (
             "#version 450\n\n"
-            "@shader_id: my_unlit\n"
-            "@shading_model: unlit\n"
-            "@queue: 2000\n"
-            "@property: baseColor, Color, [1.0, 0.8, 0.4, 1.0]\n"
-            "@property: texSampler, Texture2D, white\n\n"
+            "ShaderInfo {\n"
+            "    Version 1\n"
+            "    Name \"my_unlit\"\n"
+            "    ShadingModel \"unlit\"\n"
+            "    Surface Opaque\n"
+            "    Queue 2000\n"
+            "    Properties {\n"
+            "        Color baseColor = [1.0, 0.8, 0.4, 1.0]\n"
+            "        Texture2D texSampler = white\n"
+            "    }\n"
+            "}\n\n"
             "void surface(out SurfaceData s) {\n"
             "    s = InitSurfaceData();\n"
             "    vec4 texColor = texture(texSampler, v_TexCoord);\n"
@@ -857,19 +905,13 @@ def _shader_examples() -> dict[str, str]:
             "mat.frag_shader_name = 'my_unlit'\n"
             "mat.set_color('baseColor', 1.0, 0.8, 0.4, 1.0)\n"
         ),
-        "shading_model": (
+        "legacy_shading_model_until_migration": (
             "@shader_id: my_lighting\n"
             "@import: lighting\n\n"
             "@target: forward\n"
             "void evaluate(in SurfaceData s, out vec4 color) {\n"
             "    color = vec4(s.albedo + s.emission, s.alpha);\n"
             "}\n"
-        ),
-        "fullscreen_effect_fragment": (
-            "#version 450\n\n"
-            "@shader_id: my_post_fx\n"
-            "@property: intensity, Float, 0.5\n\n"
-            "// Use with RenderGraph pass builder: p.fullscreen_quad('my_post_fx')\n"
         ),
     }
 
@@ -911,7 +953,7 @@ def _agent_api_guidance() -> list[str]:
         "For an ordinary behavior script, start with api_get('scripting') and api_get('input') for stable imports and input conventions.",
         "Use api_search(query) for Python/stub-backed APIs, then api_get(symbol_or_module) for signatures and docstrings.",
         "Use component_describe_type(component_type) before component_set_field/component_set_fields.",
-        "Use shader_guide, shader_catalog, and shader_describe for shader authoring because shader behavior is C++/annotation/compiler-backed.",
+        "Use shader_guide, shader_catalog, and shader_describe for shader authoring because shader behavior is C++/schema/compiler-backed.",
         "When a guide returns data.knowledge_lock.token, pass that token as knowledge_token to gated write tools for that subsystem.",
         "Use mcp_catalog_search or mcp_catalog_recommend before selecting MCP tools for unfamiliar tasks.",
     ]

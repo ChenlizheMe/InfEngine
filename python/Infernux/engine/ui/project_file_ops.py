@@ -33,15 +33,25 @@ class {class_name}(InxComponent):
 
 VERTEX_SHADER_TEMPLATE = '''#version 450
 
-@shader_id: {shader_id}
+ShaderInfo {{
+    Version 1
+    Name "{shader_id}"
+}}
 '''
 
 FRAGMENT_SHADER_TEMPLATE = '''#version 450
 
-@shader_id: {shader_id}
-@shading_model: unlit
-@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-@property: texSampler, Texture2D, white
+ShaderInfo {{
+    Version 1
+    Name "{shader_id}"
+    ShadingModel "unlit"
+    Surface Opaque
+    Queue 2000
+    Properties {{
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D texSampler = white
+    }}
+}}
 
 void surface(out SurfaceData s) {{
     s = InitSurfaceData();

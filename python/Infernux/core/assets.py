@@ -327,6 +327,7 @@ class AssetManager:
             return result
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("created", path)
+        cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._prime_material_preview(path)
         cls._emit_editor_asset_changed(path, "created")
@@ -372,11 +373,6 @@ class AssetManager:
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
                 result.error = error
                 return result
-            try:
-                from Infernux.engine.ui import inspector_shader_utils
-                inspector_shader_utils.bump_shader_property_generation()
-            except ImportError:
-                pass
         else:
             registry = cls._get_registry()
             if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
@@ -386,6 +382,7 @@ class AssetManager:
                 result.error = "loaded asset registry rejected reload"
                 return result
 
+        cls._invalidate_shader_authoring_cache(path)
         cls.invalidate(guid)
         if ext in IMAGE_EXTENSIONS:
             cls._invalidate_texture_ui_cache(path)
@@ -409,6 +406,18 @@ class AssetManager:
             bus.emit(EditorEvent.ASSET_CHANGED, path, event_type)
         except Exception as exc:
             Debug.log_suppressed("AssetManager._emit_editor_asset_changed", exc)
+
+    @staticmethod
+    def _invalidate_shader_authoring_cache(path: str) -> None:
+        """Publish shader catalog changes independently of runtime renderer state."""
+        if os.path.splitext(path)[1].lower() not in SHADER_EXTENSIONS:
+            return
+        try:
+            from Infernux.engine.ui import inspector_shader_utils
+
+            inspector_shader_utils.bump_shader_property_generation()
+        except ImportError:
+            pass
 
     @classmethod
     def move_asset(
@@ -435,6 +444,9 @@ class AssetManager:
             cls._invalidate_texture_ui_cache(old_path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("moved", old_path, new_path)
+        cls._invalidate_shader_authoring_cache(old_path)
+        if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
+            cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
         cls._emit_editor_asset_changed(new_path, "moved")
         return result
@@ -469,6 +481,7 @@ class AssetManager:
         cls._clear_deleted_live_references(guid, path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("deleted", path)
+        cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._emit_editor_asset_changed(path, "deleted")
         return result

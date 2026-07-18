@@ -1,8 +1,10 @@
 #pragma once
 
 #include <SPIRV/GlslangToSpv.h>
+#include <array>
 #include <core/types/ShaderTypes.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
+#include <function/resources/ShaderAsset/ShaderInfoSchema.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
 #include <optional>
@@ -17,7 +19,7 @@ namespace infernux
 // ShaderDescriptor IR — structured intermediate representation for parsed shaders
 // ============================================================================
 
-/// A single material property declared via @property annotation.
+/// A single material property declared by the imported shader schema.
 struct ShaderProperty
 {
     std::string name;
@@ -26,6 +28,19 @@ struct ShaderProperty
     std::string defaultValue;
     bool isTexture = false;
     std::string textureDefault; // "white", "black", "normal" (Texture2D only)
+    bool hdr = false;
+    std::optional<std::array<double, 2>> range;
+    ShaderSourceRange source;
+};
+
+struct ShaderVarying
+{
+    std::string interpolation;
+    std::string type;
+    std::string name;
+    std::string semantic;
+    std::string space;
+    ShaderSourceRange source;
 };
 
 /// Surface rendering options declared via annotations.
@@ -42,6 +57,9 @@ struct SurfaceOptions
 /// Complete structured representation of a parsed shader source file.
 struct ShaderDescriptor
 {
+    uint32_t schemaVersion = 0;
+    bool usesStructuredInfo = false;
+
     // Identity
     std::string shaderId;
     std::string filePath;
@@ -74,6 +92,10 @@ struct ShaderDescriptor
     // Properties
     std::vector<ShaderProperty> properties;
     std::vector<ShaderProperty> textureProperties;
+    std::vector<ShaderVarying> inputs;
+    std::vector<ShaderVarying> outputs;
+    std::vector<std::string> capabilities;
+    std::vector<ShaderInfoEntry> entries;
 
     // @import list
     std::vector<std::string> imports;

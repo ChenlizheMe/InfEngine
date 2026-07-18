@@ -512,6 +512,8 @@ def test_content_archive_replaces_loose_project_files(tmp_path):
     build_manifest = data / "BuildManifest.json"
     build_manifest.write_text('{"game_name": "TestGame"}', encoding="utf-8")
     (settings / "BuildSettings.json").write_text('{"scenes": ["Assets/Main.scene"]}', encoding="utf-8")
+    (settings / "mcp_capabilities.json").write_text('{"enabled": true}', encoding="utf-8")
+    (settings / "agent_tools.json").write_text('{"tools": []}', encoding="utf-8")
 
     builder._pack_content_archive(str(final_dir))
 

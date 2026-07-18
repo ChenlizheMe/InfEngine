@@ -7,10 +7,22 @@ that callers can provide for per-session caching.
 
 import os
 
+
+def _read_compiled_shader_metadata(filepath: str) -> dict | None:
+    """Read the schema emitted by the native shader importer."""
+    try:
+        from Infernux.core.asset_types import read_meta_file
+        metadata = read_meta_file(filepath)
+    except (ImportError, OSError, TypeError, ValueError):
+        return None
+    if not metadata or not isinstance(metadata.get("shader_id"), str):
+        return None
+    return metadata
+
 # Global generation counter, bumped on every successful shader hot-reload.
 # Inspector sync keys include this so that property lists refresh automatically.
 _shader_property_generation: int = 0
-_shader_catalog_cache: dict[str, dict[str, object]] = {}
+_shader_catalog_cache: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
 _shader_properties_cache: dict[tuple[str, str], list] = {}
 
 
@@ -42,13 +54,13 @@ def _get_shader_search_roots() -> list[str]:
     return search_roots
 
 
-def _scan_shader_catalog(ext: str) -> dict[str, object]:
+def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dict[str, object]:
     """Scan shader roots once and cache both candidates and id->path mapping."""
     items = []
     seen_shader_ids = set()
     shader_paths = {}
 
-    for root in _get_shader_search_roots():
+    for root in search_roots if search_roots is not None else _get_shader_search_roots():
         if not root or not os.path.isdir(root):
             continue
         for dirpath, _, filenames in os.walk(root):
@@ -82,10 +94,13 @@ def _scan_shader_catalog(ext: str) -> dict[str, object]:
 
 def _get_shader_catalog(ext: str) -> dict[str, object]:
     """Return cached shader catalog for the requested extension."""
-    catalog = _shader_catalog_cache.get(ext)
+    search_roots = _get_shader_search_roots()
+    root_signature = tuple(os.path.normcase(os.path.abspath(root)) for root in search_roots if root)
+    cache_key = (ext, root_signature)
+    catalog = _shader_catalog_cache.get(cache_key)
     if catalog is None:
-        catalog = _scan_shader_catalog(ext)
-        _shader_catalog_cache[ext] = catalog
+        catalog = _scan_shader_catalog(ext, search_roots)
+        _shader_catalog_cache[cache_key] = catalog
     return catalog
 
 
@@ -109,7 +124,12 @@ def _get_shader_properties_cached(shader_id: str, ext: str) -> list:
 
 
 def parse_shader_id(filepath: str) -> str:
-    """Parse @shader_id annotation from shader file (new @ format only)."""
+    """Return the canonical imported shader id, with legacy source fallback."""
+    metadata = _read_compiled_shader_metadata(filepath)
+    if metadata is not None:
+        shader_id = metadata.get("shader_id", "").strip()
+        if shader_id:
+            return shader_id
     with open(filepath, 'r', encoding='utf-8') as f:
         for i, line in enumerate(f):
             if i > 20:
@@ -121,12 +141,24 @@ def parse_shader_id(filepath: str) -> str:
 
 
 def parse_shader_properties(filepath: str) -> list:
-    """Parse @property annotations from shader file.
+    """Read the native importer property schema, with legacy source fallback.
+
     Returns list of dicts: [{'name': str, 'type': str, 'default': any, 'hdr': bool}, ...]
 
     Format: ``@property: name, Type, default[, HDR]``
     """
     import json
+    metadata = _read_compiled_shader_metadata(filepath)
+    if metadata is not None:
+        encoded = metadata.get("properties")
+        if isinstance(encoded, str):
+            try:
+                properties = json.loads(encoded)
+                if isinstance(properties, list):
+                    return [item for item in properties if isinstance(item, dict)]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     properties = []
     with open(filepath, 'r', encoding='utf-8') as f:
         for i, line in enumerate(f):
@@ -174,7 +206,10 @@ def parse_shader_properties(filepath: str) -> list:
 
 
 def is_shader_hidden(filepath: str) -> bool:
-    """Check if shader file has @hidden annotation (internal shader)."""
+    """Check imported visibility, with legacy annotation fallback."""
+    metadata = _read_compiled_shader_metadata(filepath)
+    if metadata is not None and isinstance(metadata.get("shader_hidden"), bool):
+        return metadata["shader_hidden"]
     with open(filepath, 'r', encoding='utf-8') as f:
         for i, line in enumerate(f):
             if i > 20:
@@ -232,7 +267,7 @@ _SHADER_TYPE_MAP = {
 
 def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
                                 remove_unknown: bool = False):
-    """Apply a merged list of shader @property dicts to mat_data.
+    """Apply a merged list of imported shader property dicts to mat_data.
 
     Shared implementation for `sync_properties_from_shader` and
     `sync_all_shader_properties`.
@@ -257,6 +292,7 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
         ptype_str = sp.get('type', 'Float')
         default = sp.get('default')
         hdr = sp.get('hdr', False)
+        authored_range = sp.get('range')
 
         if not name:
             continue
@@ -272,6 +308,18 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
                 props[name] = {'type': ptype, 'guid': "", 'hdr': hdr}
             else:
                 props[name] = {'type': ptype, 'value': default, 'hdr': hdr}
+
+        if (
+            ptype in (0, 4)
+            and isinstance(authored_range, (list, tuple))
+            and len(authored_range) == 2
+        ):
+            if ptype == 4:
+                props[name]['range'] = [int(authored_range[0]), int(authored_range[1])]
+            else:
+                props[name]['range'] = [float(authored_range[0]), float(authored_range[1])]
+        else:
+            props[name].pop('range', None)
 
     if remove_unknown:
         for k in [k for k in props if k not in shader_prop_names]:
