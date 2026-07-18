@@ -98,6 +98,9 @@ class VkShaderCache
 
     [[nodiscard]] ShaderProgramArtifactPublishResult PublishProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] const ShaderProgramArtifact *FindProgramArtifact(const ShaderStagePair &stages) const;
+    /// Materialize one semantic pass on first use. Publishing an artifact only
+    /// creates its mandatory Forward program.
+    [[nodiscard]] ShaderProgram *MaterializeProgramVariant(const ShaderStagePair &stages, ShaderCompileTarget target);
 
     // ── ShaderProgramCache Access ──────────────────────────────────────────
 

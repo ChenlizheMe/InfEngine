@@ -619,14 +619,11 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         bool forwardOk = renderData && renderData->isValid;
 
         if (forwardOk && artifact) {
-            for (const auto target : {ShaderCompileTarget::GBuffer, ShaderCompileTarget::Shadow}) {
-                ShaderProgram *variantProgram = nullptr;
-                if (artifact->FindVariant(target)) {
-                    variantProgram =
-                        m_shaderCache.GetProgramCache().GetProgram(ShaderProgramVariantKey{artifact->key, target});
-                }
-                material->SetPassShaderProgram(target, variantProgram);
-            }
+            // Optional programs are materialized by their first real pass.
+            for (const auto target :
+                 {ShaderCompileTarget::GBuffer, ShaderCompileTarget::Shadow, ShaderCompileTarget::Depth,
+                  ShaderCompileTarget::Picking, ShaderCompileTarget::Motion})
+                material->SetPassShaderProgram(target, nullptr);
         }
 
         if (forwardOk && m_shadowPipelineReady) {
@@ -1257,8 +1254,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
     ShaderProgram *linkedShadowProgram = nullptr;
     if (linkedArtifact && linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
-        linkedShadowProgram = m_shaderCache.GetProgramCache().GetProgram(
-            ShaderProgramVariantKey{linkedArtifact->key, ShaderCompileTarget::Shadow});
+        linkedShadowProgram = m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
     }
     material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
 
