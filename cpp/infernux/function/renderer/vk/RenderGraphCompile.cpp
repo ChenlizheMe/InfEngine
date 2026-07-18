@@ -22,6 +22,109 @@ namespace infernux
 namespace vk
 {
 
+namespace
+{
+
+VkPipelineStageFlags ToVkPipelineStages(rhi::PipelineStage stages)
+{
+    VkPipelineStageFlags result = 0;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Top))
+        result |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::DrawIndirect))
+        result |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::VertexInput))
+        result |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::VertexShader))
+        result |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::FragmentShader))
+        result |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::EarlyDepth))
+        result |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::LateDepth))
+        result |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::ColorOutput))
+        result |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::ComputeShader))
+        result |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Transfer))
+        result |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Bottom))
+        result |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::Host))
+        result |= VK_PIPELINE_STAGE_HOST_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::AllGraphics))
+        result |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    if (rhi::HasAny(stages, rhi::PipelineStage::AllCommands))
+        result |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    return result;
+}
+
+VkAccessFlags ToVkAccessFlags(rhi::Access access)
+{
+    VkAccessFlags result = 0;
+    if (rhi::HasAny(access, rhi::Access::IndirectRead))
+        result |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::IndexRead))
+        result |= VK_ACCESS_INDEX_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::VertexRead))
+        result |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::UniformRead))
+        result |= VK_ACCESS_UNIFORM_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::ShaderRead))
+        result |= VK_ACCESS_SHADER_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::ShaderWrite))
+        result |= VK_ACCESS_SHADER_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::ColorRead))
+        result |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::ColorWrite))
+        result |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::DepthRead))
+        result |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::DepthWrite))
+        result |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::TransferRead))
+        result |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::TransferWrite))
+        result |= VK_ACCESS_TRANSFER_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::HostRead))
+        result |= VK_ACCESS_HOST_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::HostWrite))
+        result |= VK_ACCESS_HOST_WRITE_BIT;
+    if (rhi::HasAny(access, rhi::Access::MemoryRead))
+        result |= VK_ACCESS_MEMORY_READ_BIT;
+    if (rhi::HasAny(access, rhi::Access::MemoryWrite))
+        result |= VK_ACCESS_MEMORY_WRITE_BIT;
+    return result;
+}
+
+VkImageLayout ToVkImageLayout(rhi::TextureLayout layout)
+{
+    switch (layout) {
+    case rhi::TextureLayout::General:
+        return VK_IMAGE_LAYOUT_GENERAL;
+    case rhi::TextureLayout::ColorAttachment:
+        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    case rhi::TextureLayout::DepthStencilAttachment:
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    case rhi::TextureLayout::DepthStencilReadOnly:
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    case rhi::TextureLayout::ShaderReadOnly:
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    case rhi::TextureLayout::TransferSource:
+        return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    case rhi::TextureLayout::TransferDestination:
+        return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    case rhi::TextureLayout::Present:
+        return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    case rhi::TextureLayout::Automatic:
+    case rhi::TextureLayout::Undefined:
+    default:
+        return VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+}
+
+} // namespace
+
 // ============================================================================
 // Pass Culling & Resource Lifetimes
 // ============================================================================
@@ -285,8 +388,8 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
     auto appendAccess = [&](const ResourceAccess &resourceAccess) {
         appendHandle(resourceAccess.handle);
         signature.push_back(static_cast<uint64_t>(resourceAccess.usage));
-        signature.push_back(resourceAccess.stages);
-        signature.push_back(resourceAccess.access);
+        signature.push_back(static_cast<uint64_t>(resourceAccess.stages));
+        signature.push_back(static_cast<uint64_t>(resourceAccess.access));
         signature.push_back(static_cast<uint64_t>(resourceAccess.layout));
     };
 
@@ -397,63 +500,63 @@ void RenderGraph::StoreStructuralCompilation(std::vector<uint64_t> signature)
 // Helper Functions
 // ============================================================================
 
-VkImageLayout RenderGraph::UsageToLayout(ResourceUsage usage, ResourceType type)
+rhi::TextureLayout RenderGraph::UsageToLayout(ResourceUsage usage, ResourceType type)
 {
     if (static_cast<int>(usage & ResourceUsage::ColorOutput) != 0)
-        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        return rhi::TextureLayout::ColorAttachment;
     if (static_cast<int>(usage & ResourceUsage::DepthOutput) != 0)
-        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        return rhi::TextureLayout::DepthStencilAttachment;
     if (static_cast<int>(usage & ResourceUsage::DepthRead) != 0)
-        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        return rhi::TextureLayout::DepthStencilAttachment;
     if (static_cast<int>(usage & ResourceUsage::ShaderRead) != 0)
-        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        return rhi::TextureLayout::ShaderReadOnly;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
-        return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        return rhi::TextureLayout::TransferSource;
     if (static_cast<int>(usage & ResourceUsage::ReadWrite) != 0)
-        return VK_IMAGE_LAYOUT_GENERAL;
-    return VK_IMAGE_LAYOUT_UNDEFINED;
+        return rhi::TextureLayout::General;
+    return rhi::TextureLayout::Undefined;
 }
 
-VkAccessFlags RenderGraph::UsageToAccessMask(ResourceUsage usage)
+rhi::Access RenderGraph::UsageToAccessMask(ResourceUsage usage)
 {
-    VkAccessFlags flags = 0;
+    rhi::Access flags = rhi::Access::None;
     if (static_cast<int>(usage & ResourceUsage::ColorOutput) != 0)
-        flags |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        flags = flags | rhi::Access::ColorWrite;
     if (static_cast<int>(usage & ResourceUsage::DepthOutput) != 0)
-        flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        flags = flags | rhi::Access::DepthWrite;
     if (static_cast<int>(usage & ResourceUsage::DepthRead) != 0)
-        flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        flags = flags | rhi::Access::DepthRead;
     if (static_cast<int>(usage & ResourceUsage::ShaderRead) != 0)
-        flags |= VK_ACCESS_SHADER_READ_BIT;
+        flags = flags | rhi::Access::ShaderRead;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
-        flags |= VK_ACCESS_TRANSFER_READ_BIT;
+        flags = flags | rhi::Access::TransferRead;
     if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
-        flags |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        flags = flags | rhi::Access::IndirectRead;
     if (static_cast<int>(usage & (ResourceUsage::ReadWrite)) != 0)
-        flags |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        flags = flags | rhi::Access::ShaderRead | rhi::Access::ShaderWrite;
     if (static_cast<int>(usage & ResourceUsage::Read) != 0 && static_cast<int>(usage & ResourceUsage::Write) == 0 &&
-        flags == 0)
-        flags = VK_ACCESS_SHADER_READ_BIT;
+        flags == rhi::Access::None)
+        flags = rhi::Access::ShaderRead;
     return flags;
 }
 
-VkPipelineStageFlags RenderGraph::UsageToStageFlags(ResourceUsage usage)
+rhi::PipelineStage RenderGraph::UsageToStageFlags(ResourceUsage usage)
 {
-    VkPipelineStageFlags flags = 0;
+    rhi::PipelineStage flags = rhi::PipelineStage::None;
     if (static_cast<int>(usage & ResourceUsage::ColorOutput) != 0)
-        flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        flags = flags | rhi::PipelineStage::ColorOutput;
     if (static_cast<int>(usage & ResourceUsage::DepthOutput) != 0)
-        flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        flags = flags | rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
     if (static_cast<int>(usage & ResourceUsage::DepthRead) != 0)
-        flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        flags = flags | rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
     if (static_cast<int>(usage & ResourceUsage::ShaderRead) != 0)
-        flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        flags = flags | rhi::PipelineStage::FragmentShader;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
-        flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+        flags = flags | rhi::PipelineStage::Transfer;
     if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
-        flags |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-    if (flags == 0)
-        flags = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+        flags = flags | rhi::PipelineStage::DrawIndirect;
+    if (flags == rhi::PipelineStage::None)
+        flags = rhi::PipelineStage::AllGraphics;
     return flags;
 }
 
@@ -979,7 +1082,7 @@ bool RenderGraph::CreateVulkanRenderPasses()
 
         // Color final layout — COLOR_ATTACHMENT_OPTIMAL for offscreen scene targets,
         // PRESENT_SRC_KHR for swapchain targets (set via SetBackbufferFinalLayout)
-        config.colorFinalLayout = m_backbufferFinalLayout;
+        config.colorFinalLayout = ToVkImageLayout(m_backbufferFinalLayout);
 
         // Use RenderPass cache
         // Include MRT attachment count + formats in cache key
@@ -1178,8 +1281,8 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
 
         // Look up previous state (direct index — vectors kept in sync with m_resources)
         const auto &prevState = m_resourceStates[access.handle.id];
-        VkAccessFlags srcAccessMask = prevState.accessMask;
-        VkPipelineStageFlags srcStages = prevState.stages;
+        const VkAccessFlags srcAccessMask = ToVkAccessFlags(prevState.accessMask);
+        VkPipelineStageFlags srcStages = ToVkPipelineStages(prevState.stages);
         if (srcStages == 0)
             srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
@@ -1189,7 +1292,8 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
                 return;
 
             const bool previousWrite =
-                (srcAccessMask & (VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)) != 0;
+                rhi::HasAny(prevState.accessMask, rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
+                                                      rhi::Access::MemoryWrite | rhi::Access::HostWrite);
             const bool currentWrite = (static_cast<int>(access.usage & ResourceUsage::Write) != 0);
             if (!previousWrite && !currentWrite)
                 return;
@@ -1197,7 +1301,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             VkBufferMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
             barrier.srcAccessMask = srcAccessMask;
-            barrier.dstAccessMask = access.access;
+            barrier.dstAccessMask = ToVkAccessFlags(access.access);
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.buffer = buffer;
@@ -1205,7 +1309,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             barrier.size = resource.bufferDesc.size;
             m_bufferBarrierScratch.push_back(barrier);
             srcStageMask |= srcStages;
-            dstStageMask |= access.stages;
+            dstStageMask |= ToVkPipelineStages(access.stages);
             return;
         }
 
@@ -1213,14 +1317,14 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         if (image == VK_NULL_HANDLE)
             return;
 
-        VkImageLayout oldLayout = prevState.layout;
-
-        VkImageLayout newLayout = access.layout;
+        const VkImageLayout oldLayout = ToVkImageLayout(prevState.layout);
+        const VkImageLayout newLayout = ToVkImageLayout(access.layout);
 
         // Skip barrier if layout is already correct and no write hazard
         if (oldLayout == newLayout && (static_cast<int>(access.usage & ResourceUsage::Write) == 0) &&
-            (srcAccessMask & (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                              VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)) == 0) {
+            !rhi::HasAny(prevState.accessMask, rhi::Access::ColorWrite | rhi::Access::DepthWrite |
+                                                   rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
+                                                   rhi::Access::MemoryWrite | rhi::Access::HostWrite)) {
             return;
         }
 
@@ -1253,11 +1357,11 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
         barrier.srcAccessMask = srcAccessMask;
-        barrier.dstAccessMask = access.access;
+        barrier.dstAccessMask = ToVkAccessFlags(access.access);
 
         m_barrierScratch.push_back(barrier);
         srcStageMask |= srcStages;
-        dstStageMask |= access.stages;
+        dstStageMask |= ToVkPipelineStages(access.stages);
     };
 
     // Process read accesses
@@ -1325,7 +1429,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     // a resource leaves it in the write layout).
     for (const auto &write : pass.writes) {
         if (write.handle.id < m_resources.size()) {
-            VkImageLayout postPassLayout = write.layout;
+            rhi::TextureLayout postPassLayout = write.layout;
 
             // For graphics passes, vkCmdEndRenderPass performs an implicit
             // layout transition from the subpass layout to the attachment's
@@ -1339,7 +1443,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
                     // storeDepth=false → finalLayout = DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                     bool usedLater = IsResourceUsedAfter(write.handle.id, pass.id);
                     if (usedLater) {
-                        postPassLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                        postPassLayout = rhi::TextureLayout::DepthStencilReadOnly;
                     }
                 }
             }
@@ -1352,9 +1456,9 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     // uses DEPTH_STENCIL_READ_ONLY_OPTIMAL throughout (initial & final layout
     // are both READ_ONLY_OPTIMAL when readOnlyDepth=true in CreateRenderPass).
     if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid()) {
-        m_resourceStates[pass.depthInput.id] = {
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, passIndex};
+        m_resourceStates[pass.depthInput.id] = {rhi::TextureLayout::DepthStencilReadOnly, rhi::Access::DepthRead,
+                                                rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth,
+                                                passIndex};
     }
 }
 

@@ -108,6 +108,16 @@ void CopyTexture(void *context, TextureHandle source, TextureHandle destination,
 
 int main()
 {
+    constexpr auto shaderStages = PipelineStage::VertexShader | PipelineStage::FragmentShader;
+    static_assert(HasAny(shaderStages, PipelineStage::VertexShader));
+    static_assert(HasAny(shaderStages, PipelineStage::FragmentShader));
+    static_assert(!HasAny(shaderStages, PipelineStage::ComputeShader));
+
+    constexpr auto storageAccess = Access::ShaderRead | Access::ShaderWrite;
+    static_assert(HasAny(storageAccess, Access::ShaderRead));
+    static_assert(HasAny(storageAccess, Access::ShaderWrite));
+    static_assert(!HasAny(storageAccess, Access::TransferWrite));
+
     const GraphicsPipelineHandle pipeline{4, 2};
     const ComputePipelineHandle computePipeline{5, 2};
     const BindGroupHandle group{7, 3};

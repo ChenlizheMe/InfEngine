@@ -184,7 +184,7 @@ struct PassConfig
 {
     std::string name;
     PassType type = PassType::Graphics;
-    VkPipelineStageFlags stageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+    rhi::PipelineStage stageMask = rhi::PipelineStage::AllGraphics;
 };
 
 /**
@@ -194,9 +194,9 @@ struct ResourceAccess
 {
     ResourceHandle handle;
     ResourceUsage usage = ResourceUsage::None;
-    VkPipelineStageFlags stages = 0;
-    VkAccessFlags access = 0;
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    rhi::PipelineStage stages = rhi::PipelineStage::None;
+    rhi::Access access = rhi::Access::None;
+    rhi::TextureLayout layout = rhi::TextureLayout::Undefined;
 };
 
 // ============================================================================
@@ -204,17 +204,16 @@ struct ResourceAccess
 // ============================================================================
 
 /**
- * @brief Tracks the current Vulkan state of a resource after each pass
+ * @brief Tracks the backend-neutral state of a resource after each pass
  *
  * Used for precise barrier insertion: knowing the old layout, access mask,
- * and pipeline stages allows generating exact VkImageMemoryBarrier instead
- * of pessimistic TOP_OF_PIPE → ALL_GRAPHICS barriers.
+ * and pipeline stages allow the active RHI backend to generate precise barriers.
  */
 struct ResourceState
 {
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkAccessFlags accessMask = 0;
-    VkPipelineStageFlags stages = 0;
+    rhi::TextureLayout layout = rhi::TextureLayout::Undefined;
+    rhi::Access accessMask = rhi::Access::None;
+    rhi::PipelineStage stages = rhi::PipelineStage::None;
     uint32_t writerPassId = UINT32_MAX; ///< Pass that last wrote/used this resource
 };
 
@@ -341,11 +340,11 @@ class PassBuilder
     [[nodiscard]] ResourceHandle ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size);
 
     /// @brief Read a texture in shader
-    ResourceHandle Read(ResourceHandle handle, VkPipelineStageFlags stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    ResourceHandle Read(ResourceHandle handle, rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
 
     /// @brief Read a depth texture in shader as sampler2D
     ResourceHandle ReadSampledDepth(ResourceHandle handle,
-                                    VkPipelineStageFlags stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                                    rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
 
     /// @brief Write to a color attachment
     ResourceHandle WriteColor(ResourceHandle handle, uint32_t attachmentIndex = 0);
@@ -360,7 +359,7 @@ class PassBuilder
     ResourceHandle WriteResolve(ResourceHandle handle);
 
     /// @brief Read/Write a resource (UAV access)
-    ResourceHandle ReadWrite(ResourceHandle handle, VkPipelineStageFlags stages);
+    ResourceHandle ReadWrite(ResourceHandle handle, rhi::PipelineStage stages);
 
     /// Read a storage buffer from a compute shader.
     ResourceHandle ReadStorageBuffer(ResourceHandle handle);
@@ -608,15 +607,16 @@ class RenderGraph
      */
     ResourceHandle SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width, uint32_t height,
                                  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
-                                 VkImageLayout initialLayout = VK_IMAGE_LAYOUT_MAX_ENUM);
+                                 rhi::TextureLayout initialLayout = rhi::TextureLayout::Automatic);
 
     /**
      * @brief Set the desired final image layout for the backbuffer after all passes.
      *
-     * For swapchain targets, use VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
-     * Default is VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL (offscreen scene targets).
+     * For swapchain targets, use TextureLayout::Present.
+     * Default is TextureLayout::ColorAttachment (offscreen
+     * scene targets).
      */
-    void SetBackbufferFinalLayout(VkImageLayout layout)
+    void SetBackbufferFinalLayout(rhi::TextureLayout layout)
     {
         m_backbufferFinalLayout = layout;
     }
@@ -635,8 +635,8 @@ class RenderGraph
      * Call this before Execute() to keep the tracked oldLayout aligned with
      * the real Vulkan image layout at frame start.
      */
-    void SetResourceInitialState(ResourceHandle handle, VkImageLayout layout, VkAccessFlags accessMask,
-                                 VkPipelineStageFlags stages);
+    void SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout, rhi::Access accessMask,
+                                 rhi::PipelineStage stages);
 
     /**
      * @brief Mark a resource as the final output
@@ -865,14 +865,14 @@ class RenderGraph
     // Layout / barrier helpers
     // ========================================================================
 
-    /// @brief Convert ResourceUsage to appropriate VkImageLayout
-    static VkImageLayout UsageToLayout(ResourceUsage usage, ResourceType type);
+    /// @brief Convert ResourceUsage to an RHI texture layout intent
+    static rhi::TextureLayout UsageToLayout(ResourceUsage usage, ResourceType type);
 
-    /// @brief Convert ResourceUsage to VkAccessFlags
-    static VkAccessFlags UsageToAccessMask(ResourceUsage usage);
+    /// @brief Convert ResourceUsage to an RHI access intent
+    static rhi::Access UsageToAccessMask(ResourceUsage usage);
 
-    /// @brief Convert ResourceUsage to VkPipelineStageFlags
-    static VkPipelineStageFlags UsageToStageFlags(ResourceUsage usage);
+    /// @brief Convert ResourceUsage to an RHI pipeline stage intent
+    static rhi::PipelineStage UsageToStageFlags(ResourceUsage usage);
 
     /// @brief Get the effective depth handle for a pass (write takes priority over read)
     static ResourceHandle GetEffectiveDepth(const RenderPassData &pass);
@@ -913,7 +913,7 @@ class RenderGraph
     // Output
     ResourceHandle m_backbuffer;
     ResourceHandle m_output;
-    VkImageLayout m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    rhi::TextureLayout m_backbufferFinalLayout = rhi::TextureLayout::ColorAttachment;
 
     // State
     bool m_compiled = false;

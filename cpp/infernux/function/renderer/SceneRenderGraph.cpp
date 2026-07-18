@@ -869,18 +869,17 @@ void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
 
     if (m_importedColorTarget.IsValid()) {
         if (m_sceneTarget->IsMsaaEnabled()) {
-            m_renderGraph->SetResourceInitialState(m_importedColorTarget, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            m_renderGraph->SetResourceInitialState(m_importedColorTarget, rhi::TextureLayout::ColorAttachment,
+                                                   rhi::Access::ColorWrite, rhi::PipelineStage::ColorOutput);
         } else {
-            m_renderGraph->SetResourceInitialState(m_importedColorTarget, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                                   VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            m_renderGraph->SetResourceInitialState(m_importedColorTarget, rhi::TextureLayout::ShaderReadOnly,
+                                                   rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
         }
     }
 
     if (m_importedResolveTarget.IsValid()) {
-        m_renderGraph->SetResourceInitialState(m_importedResolveTarget, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                               VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        m_renderGraph->SetResourceInitialState(m_importedResolveTarget, rhi::TextureLayout::ShaderReadOnly,
+                                               rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
     }
 
     if (m_graphBuilt) {
@@ -1012,7 +1011,7 @@ void SceneRenderGraph::ImportSceneTargetResources()
 
     m_importedColorTarget = m_renderGraph->SetBackbuffer(
         m_sceneTarget->GetMsaaColorImage(), m_sceneTarget->GetMsaaColorImageView(), m_sceneTarget->GetColorFormat(),
-        m_width, m_height, m_sceneTarget->GetMsaaSampleCount(), VK_IMAGE_LAYOUT_UNDEFINED);
+        m_width, m_height, m_sceneTarget->GetMsaaSampleCount(), rhi::TextureLayout::Undefined);
 
     if (m_sceneTarget->IsMsaaEnabled()) {
         m_importedResolveTarget =
@@ -1318,9 +1317,9 @@ void SceneRenderGraph::BuildRenderGraph()
                             continue;
                         const auto texture = texDescMap.find(textureName);
                         if (texture != texDescMap.end() && texture->second->isDepth)
-                            builder.ReadSampledDepth(handle, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                            builder.ReadSampledDepth(handle, rhi::PipelineStage::ComputeShader);
                         else
-                            builder.Read(handle, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                            builder.Read(handle, rhi::PipelineStage::ComputeShader);
                     }
                     for (const auto &access : passDesc.bufferAccesses) {
                         auto buffer = bufferHandles.find(access.resource);
@@ -1414,7 +1413,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 if (!source.IsValid())
                     continue;
                 m_renderGraph->AddPresentPass(passDesc.name, [&](vk::PassBuilder &builder) {
-                    builder.Read(source, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+                    builder.Read(source, rhi::PipelineStage::FragmentShader);
                     builder.SetSideEffect();
                     return [](vk::RenderContext &) {};
                 });

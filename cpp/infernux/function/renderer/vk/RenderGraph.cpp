@@ -231,7 +231,7 @@ ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffe
     return handle;
 }
 
-ResourceHandle PassBuilder::Read(ResourceHandle handle, VkPipelineStageFlags stages)
+ResourceHandle PassBuilder::Read(ResourceHandle handle, rhi::PipelineStage stages)
 {
     if (!m_graph->Owns(handle)) {
         return handle;
@@ -243,15 +243,15 @@ ResourceHandle PassBuilder::Read(ResourceHandle handle, VkPipelineStageFlags sta
     access.handle = handle;
     access.usage = ResourceUsage::Read | ResourceUsage::ShaderRead;
     access.stages = stages;
-    access.access = VK_ACCESS_SHADER_READ_BIT;
-    access.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    access.access = rhi::Access::ShaderRead;
+    access.layout = rhi::TextureLayout::ShaderReadOnly;
 
     pass.reads.push_back(access);
 
     return handle;
 }
 
-ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineStageFlags stages)
+ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, rhi::PipelineStage stages)
 {
     if (!m_graph->Owns(handle)) {
         return handle;
@@ -265,8 +265,8 @@ ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineSt
     // to DepthStencil images; without it the GPU cannot sample the depth texture.
     access.usage = ResourceUsage::Read | ResourceUsage::DepthRead | ResourceUsage::ShaderRead;
     access.stages = stages;
-    access.access = VK_ACCESS_SHADER_READ_BIT;
-    access.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    access.access = rhi::Access::ShaderRead;
+    access.layout = rhi::TextureLayout::DepthStencilReadOnly;
 
     pass.reads.push_back(access);
 
@@ -287,15 +287,15 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
 
     // Model the previous attachment version as a graph-only input. A later
     // SetClearColor() removes this dependency when the pass fully overwrites it.
-    pass.reads.push_back(
-        {handle, ResourceUsage::Read | ResourceUsage::VersionDependency, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED});
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
 
     ResourceAccess access;
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
-    access.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    access.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    access.stages = rhi::PipelineStage::ColorOutput;
+    access.access = rhi::Access::ColorWrite;
+    access.layout = rhi::TextureLayout::ColorAttachment;
 
     pass.writes.push_back(access);
 
@@ -320,15 +320,15 @@ ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
 
     auto &pass = m_graph->m_passes[m_passId];
 
-    pass.reads.push_back(
-        {handle, ResourceUsage::Read | ResourceUsage::VersionDependency, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED});
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
 
     ResourceAccess access;
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::DepthOutput;
-    access.stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    access.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    access.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+    access.access = rhi::Access::DepthWrite;
+    access.layout = rhi::TextureLayout::DepthStencilAttachment;
 
     pass.writes.push_back(access);
     pass.depthOutput = newHandle;
@@ -347,12 +347,12 @@ ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
     ResourceAccess access;
     access.handle = handle;
     access.usage = ResourceUsage::Read | ResourceUsage::DepthRead;
-    access.stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    access.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    access.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+    access.access = rhi::Access::DepthRead;
     // Read-only depth: the render pass uses DEPTH_STENCIL_READ_ONLY_OPTIMAL
     // for both the subpass attachment and initialLayout/finalLayout.
     // The barrier must transition to this layout (not ATTACHMENT_OPTIMAL).
-    access.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    access.layout = rhi::TextureLayout::DepthStencilReadOnly;
 
     pass.reads.push_back(access);
     pass.depthInput = handle;
@@ -360,7 +360,7 @@ ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
     return handle; // No version bump â€” read-only
 }
 
-ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, VkPipelineStageFlags stages)
+ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, rhi::PipelineStage stages)
 {
     if (!m_graph->Owns(handle)) {
         return {};
@@ -372,9 +372,9 @@ ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, VkPipelineStageFlag
 
     auto &pass = m_graph->m_passes[m_passId];
 
-    pass.reads.push_back({handle, ResourceUsage::Read, stages, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL});
+    pass.reads.push_back({handle, ResourceUsage::Read, stages, rhi::Access::ShaderRead, rhi::TextureLayout::General});
     pass.writes.push_back(
-        {newHandle, ResourceUsage::Write, stages, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL});
+        {newHandle, ResourceUsage::Write, stages, rhi::Access::ShaderWrite, rhi::TextureLayout::General});
 
     return newHandle;
 }
@@ -385,8 +385,8 @@ ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle)
         return handle;
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                          VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_UNDEFINED});
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
+                          rhi::Access::ShaderRead, rhi::TextureLayout::Undefined});
     return handle;
 }
 
@@ -400,8 +400,8 @@ ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)
         return {};
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.writes.push_back({next, ResourceUsage::Write, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                           VK_IMAGE_LAYOUT_UNDEFINED});
+    pass.writes.push_back({next, ResourceUsage::Write, rhi::PipelineStage::ComputeShader, rhi::Access::ShaderWrite,
+                           rhi::TextureLayout::Undefined});
     return next;
 }
 
@@ -412,8 +412,7 @@ ResourceHandle PassBuilder::ReadIndirectBuffer(ResourceHandle handle)
 
     auto &pass = m_graph->m_passes[m_passId];
     pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::IndirectArgument,
-                          VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
-                          VK_IMAGE_LAYOUT_UNDEFINED});
+                          rhi::PipelineStage::DrawIndirect, rhi::Access::IndirectRead, rhi::TextureLayout::Undefined});
     return handle;
 }
 
@@ -428,9 +427,9 @@ ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
     ResourceAccess access;
     access.handle = handle;
     access.usage = ResourceUsage::Read | ResourceUsage::Transfer;
-    access.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    access.access = VK_ACCESS_TRANSFER_READ_BIT;
-    access.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    access.stages = rhi::PipelineStage::Transfer;
+    access.access = rhi::Access::TransferRead;
+    access.layout = rhi::TextureLayout::TransferSource;
 
     pass.reads.push_back(access);
 
@@ -452,9 +451,9 @@ ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
     ResourceAccess access;
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::Transfer;
-    access.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    access.access = VK_ACCESS_TRANSFER_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    access.stages = rhi::PipelineStage::Transfer;
+    access.access = rhi::Access::TransferWrite;
+    access.layout = rhi::TextureLayout::TransferDestination;
 
     pass.writes.push_back(access);
 
@@ -468,8 +467,8 @@ ResourceHandle PassBuilder::PresentRead(ResourceHandle handle)
     }
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::Present, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                          VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR});
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::Present, rhi::PipelineStage::Bottom,
+                          rhi::Access::MemoryRead, rhi::TextureLayout::Present});
     pass.hasSideEffect = true;
     return handle;
 }
@@ -491,9 +490,9 @@ ResourceHandle PassBuilder::WriteResolve(ResourceHandle handle)
     ResourceAccess access;
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
-    access.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    access.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    access.stages = rhi::PipelineStage::ColorOutput;
+    access.access = rhi::Access::ColorWrite;
+    access.layout = rhi::TextureLayout::ColorAttachment;
     pass.writes.push_back(access);
 
     return newHandle;
@@ -577,7 +576,7 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
 {
     other.m_backbuffer = {};
     other.m_output = {};
-    other.m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    other.m_backbufferFinalLayout = rhi::TextureLayout::ColorAttachment;
 }
 
 RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
@@ -614,7 +613,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
 
         other.m_backbuffer = {};
         other.m_output = {};
-        other.m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        other.m_backbufferFinalLayout = rhi::TextureLayout::ColorAttachment;
     }
     return *this;
 }
@@ -641,7 +640,7 @@ void RenderGraph::Reset()
     m_usedRenderPassKeys.clear();
     m_usedFramebufferKeys.clear();
     m_backbuffer = {};
-    m_backbufferFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    m_backbufferFinalLayout = rhi::TextureLayout::ColorAttachment;
     m_output = {};
     m_compiled = false;
     m_identity.AdvanceEpoch();
@@ -768,7 +767,8 @@ PassHandle RenderGraph::AddPresentPass(const std::string &name, PassSetupCallbac
 }
 
 ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width,
-                                          uint32_t height, VkSampleCountFlagBits samples, VkImageLayout initialLayout)
+                                          uint32_t height, VkSampleCountFlagBits samples,
+                                          rhi::TextureLayout initialLayout)
 {
     ResourceHandle handle;
     handle.scope = m_identity.Current();
@@ -797,19 +797,19 @@ ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFor
     m_backbuffer = handle;
 
     ResourceState initialState{};
-    if (initialLayout != VK_IMAGE_LAYOUT_MAX_ENUM) {
+    if (initialLayout != rhi::TextureLayout::Automatic) {
         // Caller-specified initial layout (e.g. UNDEFINED for swapchain images)
         initialState.layout = initialLayout;
-        initialState.accessMask = 0;
-        initialState.stages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        initialState.accessMask = rhi::Access::None;
+        initialState.stages = rhi::PipelineStage::Top;
     } else if (samples == VK_SAMPLE_COUNT_1_BIT) {
-        initialState.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        initialState.accessMask = VK_ACCESS_SHADER_READ_BIT;
-        initialState.stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        initialState.layout = rhi::TextureLayout::ShaderReadOnly;
+        initialState.accessMask = rhi::Access::ShaderRead;
+        initialState.stages = rhi::PipelineStage::FragmentShader;
     } else {
-        initialState.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        initialState.accessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        initialState.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        initialState.layout = rhi::TextureLayout::ColorAttachment;
+        initialState.accessMask = rhi::Access::ColorWrite;
+        initialState.stages = rhi::PipelineStage::ColorOutput;
     }
     m_resourceStates[handle.id] = initialState;
     m_initialResourceStates[handle.id] = initialState;
@@ -846,17 +846,17 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
     m_initialResourceStates.resize(m_resources.size());
 
     ResourceState initialState{};
-    initialState.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    initialState.accessMask = VK_ACCESS_SHADER_READ_BIT;
-    initialState.stages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    initialState.layout = rhi::TextureLayout::ShaderReadOnly;
+    initialState.accessMask = rhi::Access::ShaderRead;
+    initialState.stages = rhi::PipelineStage::FragmentShader;
     m_resourceStates[handle.id] = initialState;
     m_initialResourceStates[handle.id] = initialState;
 
     return handle;
 }
 
-void RenderGraph::SetResourceInitialState(ResourceHandle handle, VkImageLayout layout, VkAccessFlags accessMask,
-                                          VkPipelineStageFlags stages)
+void RenderGraph::SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout, rhi::Access accessMask,
+                                          rhi::PipelineStage stages)
 {
     if (!Owns(handle)) {
         return;

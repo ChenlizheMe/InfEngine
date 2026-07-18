@@ -745,9 +745,9 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
 
     vk::ResourceHandle backbuffer =
         m_renderGraph.SetBackbuffer(swapchainImage, swapchainView, format, extent.width, extent.height,
-                                    VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED);
+                                    VK_SAMPLE_COUNT_1_BIT, rhi::TextureLayout::Undefined);
 
-    m_renderGraph.SetBackbufferFinalLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    m_renderGraph.SetBackbufferFinalLayout(rhi::TextureLayout::Present);
 
     auto guiCallback = m_guiRenderCallback;
 
