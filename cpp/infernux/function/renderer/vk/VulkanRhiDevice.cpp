@@ -19,8 +19,14 @@ const rhi::TransferCommandEncoder::DispatchTable VulkanRhiDevice::s_transferDisp
     &VulkanRhiDevice::CopyTexture,
 };
 
+VulkanRhiDevice::~VulkanRhiDevice()
+{
+    DestroyOwnedComputePipelines();
+}
+
 void VulkanRhiDevice::Reset(VkDevice device) noexcept
 {
+    DestroyOwnedComputePipelines();
     m_device = device;
     ResetSlots(m_buffers, m_freeBuffer);
     ResetSlots(m_textures, m_freeTexture);
@@ -154,6 +160,62 @@ rhi::ComputePipelineHandle VulkanRhiDevice::RegisterComputePipeline(VkPipeline p
                                                       GraphicsPipelinePayload{pipeline, layout});
 }
 
+rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::ComputePipelineDesc &desc)
+{
+    if (m_device == VK_NULL_HANDLE || !desc.computeShader.IsValid() ||
+        desc.bindingLayoutCount > desc.bindingLayouts.size() || (desc.pushConstantBytes % 4u) != 0u)
+        return {};
+
+    const VkShaderModule shader = Resolve(desc.computeShader);
+    if (shader == VK_NULL_HANDLE)
+        return {};
+
+    std::array<VkDescriptorSetLayout, rhi::ComputePipelineDesc::MaxBindingLayouts> layouts{};
+    for (uint32_t index = 0; index < desc.bindingLayoutCount; ++index) {
+        layouts[index] = Resolve(desc.bindingLayouts[index]);
+        if (layouts[index] == VK_NULL_HANDLE)
+            return {};
+    }
+
+    VkPushConstantRange pushConstants{};
+    if (desc.pushConstantBytes > 0) {
+        pushConstants.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushConstants.offset = 0;
+        pushConstants.size = desc.pushConstantBytes;
+    }
+
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = desc.bindingLayoutCount;
+    layoutInfo.pSetLayouts = desc.bindingLayoutCount > 0 ? layouts.data() : nullptr;
+    layoutInfo.pushConstantRangeCount = desc.pushConstantBytes > 0 ? 1u : 0u;
+    layoutInfo.pPushConstantRanges = desc.pushConstantBytes > 0 ? &pushConstants : nullptr;
+
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
+        return {};
+
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = shader;
+    stage.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stage;
+    pipelineInfo.layout = layout;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+        vkDestroyPipelineLayout(m_device, layout, nullptr);
+        return {};
+    }
+
+    return Register<rhi::ComputePipelineHandle>(m_computePipelines, m_freeComputePipeline,
+                                                GraphicsPipelinePayload{pipeline, layout, true, true});
+}
+
 rhi::RenderTargetLayoutHandle VulkanRhiDevice::RegisterRenderTargetLayout(VkRenderPass renderPass)
 {
     return renderPass == VK_NULL_HANDLE
@@ -196,6 +258,13 @@ void VulkanRhiDevice::Release(rhi::GraphicsPipelineHandle handle) noexcept
 }
 void VulkanRhiDevice::Release(rhi::ComputePipelineHandle handle) noexcept
 {
+    const auto *payload = ResolvePipeline(handle);
+    if (payload && m_device != VK_NULL_HANDLE) {
+        if (payload->ownsPipeline && payload->pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(m_device, payload->pipeline, nullptr);
+        if (payload->ownsLayout && payload->layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(m_device, payload->layout, nullptr);
+    }
     Release(m_computePipelines, m_freeComputePipeline, handle);
 }
 void VulkanRhiDevice::Release(rhi::RenderTargetLayoutHandle handle) noexcept
@@ -255,6 +324,22 @@ const VulkanRhiDevice::GraphicsPipelinePayload *
 VulkanRhiDevice::ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept
 {
     return Resolve(m_computePipelines, handle);
+}
+
+void VulkanRhiDevice::DestroyOwnedComputePipelines() noexcept
+{
+    if (m_device == VK_NULL_HANDLE)
+        return;
+    for (auto &slot : m_computePipelines) {
+        if (!slot.occupied)
+            continue;
+        if (slot.payload.ownsPipeline && slot.payload.pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(m_device, slot.payload.pipeline, nullptr);
+        if (slot.payload.ownsLayout && slot.payload.layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(m_device, slot.payload.layout, nullptr);
+        slot.payload.ownsPipeline = false;
+        slot.payload.ownsLayout = false;
+    }
 }
 
 rhi::GraphicsCommandEncoder VulkanRhiDevice::MakeGraphicsCommandEncoder(VulkanGraphicsCommandContext &context,

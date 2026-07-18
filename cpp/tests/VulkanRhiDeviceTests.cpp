@@ -26,6 +26,7 @@ int main()
     static_assert(rhi::FromVkFormat(VK_FORMAT_R32G32_UINT) == rhi::PixelFormat::RG32UInt);
 
     vk::VulkanRhiDevice device;
+    assert(!device.CreateComputePipeline({}).IsValid());
 
     const VkImageView firstNative = FakeHandle<VkImageView>(0x101);
     const auto first = device.RegisterTextureView(firstNative);

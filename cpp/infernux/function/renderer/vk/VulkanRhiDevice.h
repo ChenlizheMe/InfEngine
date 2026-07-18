@@ -41,8 +41,10 @@ class VulkanRhiDevice
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;
-    VulkanRhiDevice(VulkanRhiDevice &&) noexcept = default;
-    VulkanRhiDevice &operator=(VulkanRhiDevice &&) noexcept = default;
+    VulkanRhiDevice(VulkanRhiDevice &&) = delete;
+    VulkanRhiDevice &operator=(VulkanRhiDevice &&) = delete;
+
+    ~VulkanRhiDevice();
 
     void Reset(VkDevice device = VK_NULL_HANDLE) noexcept;
 
@@ -55,6 +57,9 @@ class VulkanRhiDevice
     [[nodiscard]] rhi::BindGroupHandle RegisterBindGroup(VkDescriptorSet set);
     [[nodiscard]] rhi::GraphicsPipelineHandle RegisterGraphicsPipeline(VkPipeline pipeline, VkPipelineLayout layout);
     [[nodiscard]] rhi::ComputePipelineHandle RegisterComputePipeline(VkPipeline pipeline, VkPipelineLayout layout);
+    /// Create a compute pipeline from backend-neutral RHI handles. The
+    /// returned pipeline and its layout are owned by this adapter.
+    [[nodiscard]] rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc);
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
     void Release(rhi::BufferHandle handle) noexcept;
@@ -89,6 +94,8 @@ class VulkanRhiDevice
     {
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
+        bool ownsPipeline = false;
+        bool ownsLayout = false;
     };
 
     template <typename Payload> struct Slot
@@ -110,6 +117,7 @@ class VulkanRhiDevice
 
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::GraphicsPipelineHandle handle) const noexcept;
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept;
+    void DestroyOwnedComputePipelines() noexcept;
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline);
     static void BindGroup(void *context, rhi::GraphicsPipelineHandle pipeline, uint32_t setIndex,

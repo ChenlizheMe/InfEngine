@@ -23,8 +23,10 @@ using infernux::RendererList;
 using infernux::RendererListPurpose;
 using infernux::ShaderReflection;
 using infernux::rhi::BindGroupHandle;
+using infernux::rhi::BindingLayoutHandle;
 using infernux::rhi::ComputePipelineHandle;
 using infernux::rhi::GraphicsPipelineHandle;
+using infernux::rhi::ShaderModuleHandle;
 using infernux::vk::DeviceConfig;
 using infernux::vk::PassBuilder;
 using infernux::vk::PassCullReason;
@@ -46,13 +48,13 @@ struct TestResources
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
-    VkPipelineLayout computeLayout = VK_NULL_HANDLE;
-    VkPipeline computePipeline = VK_NULL_HANDLE;
     VkQueryPool queryPool = VK_NULL_HANDLE;
     PipelineResult graphicsPipeline;
 
     BindGroupHandle computeGroup;
+    BindingLayoutHandle computeBindingLayout;
     ComputePipelineHandle computeHandle;
+    ShaderModuleHandle computeShader;
     GraphicsPipelineHandle graphicsHandle;
 
     ~TestResources()
@@ -63,6 +65,8 @@ struct TestResources
             rhi.Release(graphicsHandle);
             rhi.Release(computeHandle);
             rhi.Release(computeGroup);
+            rhi.Release(computeBindingLayout);
+            rhi.Release(computeShader);
 
             graph.Destroy();
             pipelines.DestroyPipelineResult(graphicsPipeline);
@@ -70,10 +74,6 @@ struct TestResources
             const VkDevice device = context.GetDevice();
             if (queryPool != VK_NULL_HANDLE)
                 vkDestroyQueryPool(device, queryPool, nullptr);
-            if (computePipeline != VK_NULL_HANDLE)
-                vkDestroyPipeline(device, computePipeline, nullptr);
-            if (computeLayout != VK_NULL_HANDLE)
-                pipelines.DestroyPipelineLayout(computeLayout);
             if (descriptorPool != VK_NULL_HANDLE)
                 vkDestroyDescriptorPool(device, descriptorPool, nullptr);
             if (computeSetLayout != VK_NULL_HANDLE)
@@ -315,26 +315,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.computeSetLayout != VK_NULL_HANDLE, "Compute descriptor layout creation failed"))
         return false;
 
-    resources.computeLayout = resources.pipelines.CreatePipelineLayout({resources.computeSetLayout});
-    if (!Require(resources.computeLayout != VK_NULL_HANDLE, "Compute pipeline layout creation failed"))
-        return false;
-
     const VkShaderModule computeModule = resources.pipelines.CreateShaderModule(computeCode);
     if (!Require(computeModule != VK_NULL_HANDLE, "Compute shader module creation failed"))
         return false;
-    VkPipelineShaderStageCreateInfo computeStage{};
-    computeStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    computeStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    computeStage.module = computeModule;
-    computeStage.pName = "main";
-    VkComputePipelineCreateInfo computePipelineInfo{};
-    computePipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    computePipelineInfo.stage = computeStage;
-    computePipelineInfo.layout = resources.computeLayout;
-    const VkResult computeResult =
-        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computePipelineInfo, nullptr, &resources.computePipeline);
-    resources.pipelines.DestroyShaderModule(computeModule);
-    if (!Require(computeResult == VK_SUCCESS, "Compute pipeline creation failed"))
+
+    auto &rhi = resources.context.GetRhiDevice();
+    resources.computeShader = rhi.RegisterShaderModule(computeModule);
+    resources.computeBindingLayout = rhi.RegisterBindingLayout(resources.computeSetLayout);
+    infernux::rhi::ComputePipelineDesc computeDesc;
+    computeDesc.computeShader = resources.computeShader;
+    computeDesc.bindingLayouts[0] = resources.computeBindingLayout;
+    computeDesc.bindingLayoutCount = 1;
+    resources.computeHandle = rhi.CreateComputePipeline(computeDesc);
+    if (!Require(resources.computeHandle.IsValid(), "RHI compute pipeline creation failed"))
         return false;
 
     VkDescriptorPoolSize poolSize{};
@@ -386,15 +379,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.graphicsPipeline.pipeline != VK_NULL_HANDLE, "Graphics pipeline creation failed"))
         return false;
 
-    auto &rhi = resources.context.GetRhiDevice();
     resources.computeGroup = rhi.RegisterBindGroup(descriptorSet);
-    resources.computeHandle = rhi.RegisterComputePipeline(resources.computePipeline, resources.computeLayout);
     resources.graphicsHandle =
         rhi.RegisterGraphicsPipeline(resources.graphicsPipeline.pipeline, resources.graphicsPipeline.layout);
     if (!Require(resources.computeGroup.IsValid() && resources.computeHandle.IsValid() &&
                      resources.graphicsHandle.IsValid(),
                  "Typed RHI registration failed"))
         return false;
+
+    rhi.Release(resources.computeShader);
+    resources.pipelines.DestroyShaderModule(computeModule);
 
     VkQueryPoolCreateInfo queryInfo{};
     queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;

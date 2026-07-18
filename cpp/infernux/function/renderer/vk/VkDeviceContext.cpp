@@ -405,11 +405,11 @@ void VkDeviceContext::WaitIdle() const
 
 void VkDeviceContext::Destroy() noexcept
 {
-    m_rhiDevice.reset();
     // Wait for device to be idle before cleanup (skip if already drained)
     if (!m_shuttingDown) {
         WaitIdle();
     }
+    m_rhiDevice.reset();
 
     // Destroy in reverse order of creation
     // VMA must be destroyed before VkDevice
