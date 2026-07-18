@@ -486,6 +486,18 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.vulkan_rhi_device COMMAND infernux_vulkan_rhi_device_tests)
 
+    add_executable(infernux_particle_gpu_runtime_tests
+        cpp/tests/ParticleGpuRuntimeTests.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp
+    )
+    target_include_directories(infernux_particle_gpu_runtime_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_particle_gpu_runtime_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.particle_gpu_runtime COMMAND infernux_particle_gpu_runtime_tests)
+
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/tests/shaders")
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES
         "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderGraphComputeIndirect.comp"

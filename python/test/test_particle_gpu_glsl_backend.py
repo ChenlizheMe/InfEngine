@@ -49,6 +49,8 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
         "builtin.color",
         "builtin.id",
     }
+    assert emitter.state_stride == 80
+    assert emitter.to_dict()["state_stride"] == 80
 
 
 def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):

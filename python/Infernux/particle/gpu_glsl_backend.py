@@ -33,6 +33,7 @@ class GpuParticleEmitterSource:
     stable_id: str
     kernel_hash: str
     attribute_fields: tuple[tuple[str, str, str], ...]
+    state_stride: int
     bootstrap: str
     init: str
     update: str
@@ -56,6 +57,7 @@ class GpuParticleEmitterSource:
                 {"stable_id": stable_id, "field": field, "glsl_type": glsl_type}
                 for stable_id, field, glsl_type in self.attribute_fields
             ],
+            "state_stride": self.state_stride,
             "stages": self.stages(),
         }
 
@@ -109,6 +111,7 @@ class GpuParticleGlslLowerer:
                 (stable_id, field, _glsl_type(value_type))
                 for stable_id, value_type, field in fields
             ),
+            _std430_state_stride(fields),
             bootstrap,
             prelude + _init_main(init_body, emitter, fields),
             prelude + _update_main(update_body, emitter, fields),
@@ -348,6 +351,39 @@ def _attribute_fields(
     if not required.issubset(stable_id for stable_id, _type, _field in result):
         raise GpuParticleCompileError("GPU particles require the standard builtin attributes")
     return tuple(result)
+
+
+def _std430_state_stride(
+    fields: tuple[tuple[str, TypeRef, str], ...],
+) -> int:
+    offset = 8  # alive + spawn_generation
+    struct_alignment = 4
+    layout = {
+        ValueType.BOOL: (4, 4),
+        ValueType.I32: (4, 4),
+        ValueType.U32: (4, 4),
+        ValueType.F32: (4, 4),
+        ValueType.VEC2: (8, 8),
+        ValueType.VEC3: (16, 12),
+        ValueType.VEC4: (16, 16),
+        ValueType.COLOR: (16, 16),
+        ValueType.MAT3: (16, 48),
+        ValueType.MAT4: (16, 64),
+    }
+    for stable_id, value_type, _field in fields:
+        try:
+            alignment, byte_size = layout[value_type.value_type]
+        except KeyError as exc:
+            raise GpuParticleCompileError(
+                f"attribute {stable_id!r} has no std430 storage layout"
+            ) from exc
+        offset = _align_up(offset, alignment) + byte_size
+        struct_alignment = max(struct_alignment, alignment)
+    return _align_up(offset, struct_alignment)
+
+
+def _align_up(value: int, alignment: int) -> int:
+    return (value + alignment - 1) // alignment * alignment
 
 
 def _shader_prelude(
