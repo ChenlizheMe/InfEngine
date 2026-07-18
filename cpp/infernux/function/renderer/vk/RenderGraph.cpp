@@ -394,14 +394,14 @@ ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, rhi::PipelineStage 
     return newHandle;
 }
 
-ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle)
+ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle, rhi::PipelineStage stages)
 {
     if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
         return handle;
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
-                          rhi::Access::ShaderRead, rhi::TextureLayout::Undefined});
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, stages, rhi::Access::ShaderRead,
+                          rhi::TextureLayout::Undefined});
     return handle;
 }
 

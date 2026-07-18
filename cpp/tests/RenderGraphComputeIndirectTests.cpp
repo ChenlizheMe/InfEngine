@@ -1,4 +1,5 @@
 #include <function/renderer/RendererList.h>
+#include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/renderer/vk/RenderGraph.h>
@@ -27,7 +28,6 @@ using infernux::ShaderReflection;
 using infernux::rhi::BindGroupHandle;
 using infernux::rhi::BindingLayoutHandle;
 using infernux::rhi::ComputePipelineHandle;
-using infernux::rhi::GraphicsPipelineHandle;
 using infernux::rhi::ShaderModuleHandle;
 using infernux::vk::DeviceConfig;
 using infernux::vk::PassBuilder;
@@ -51,23 +51,16 @@ struct TestResources
     BindingLayoutHandle computeBindingLayout;
     ComputePipelineHandle computeHandle;
     ShaderModuleHandle computeShader;
-    ShaderModuleHandle vertexShader;
-    ShaderModuleHandle fragmentShader;
-    GraphicsPipelineHandle graphicsHandle;
 
     ~TestResources()
     {
         if (context.IsValid()) {
             context.WaitIdle();
             auto &rhi = context.GetRhiDevice();
-            rhi.Release(graphicsHandle);
             rhi.Release(computeHandle);
             rhi.Release(computeGroup);
             rhi.Release(computeBindingLayout);
             rhi.Release(computeShader);
-            rhi.Release(vertexShader);
-            rhi.Release(fragmentShader);
-
             graph.Destroy();
 
             const VkDevice device = context.GetDevice();
@@ -109,7 +102,9 @@ bool Require(bool condition, const char *message)
 }
 
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
-         const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath)
+         const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
+         const std::filesystem::path &particleComputePath, const std::filesystem::path &particleVertexPath,
+         const std::filesystem::path &particleFragmentPath)
 {
     TestResources resources;
     if (!Require(SDL_Init(SDL_INIT_VIDEO), SDL_GetError()))
@@ -134,7 +129,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto vertexCode = ReadSpirv(vertexPath);
     const auto fragmentCode = ReadSpirv(fragmentPath);
     const auto reflectionCode = ReadSpirv(reflectionPath);
-    if (!Require(!computeCode.empty() && !vertexCode.empty() && !fragmentCode.empty() && !reflectionCode.empty(),
+    const auto particleComputeCode = ReadSpirv(particleComputePath);
+    const auto particleVertexCode = ReadSpirv(particleVertexPath);
+    const auto particleFragmentCode = ReadSpirv(particleFragmentPath);
+    if (!Require(!computeCode.empty() && !vertexCode.empty() && !fragmentCode.empty() && !reflectionCode.empty() &&
+                     !particleComputeCode.empty() && !particleVertexCode.empty() && !particleFragmentCode.empty(),
                  "Failed to read generated SPIR-V test shaders"))
         return false;
 
@@ -203,10 +202,32 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Storage reflection descriptor set discovery is incomplete"))
         return false;
 
+    auto &rhi = resources.context.GetRhiDevice();
+    infernux::particle::GpuEmitterDesc particleDesc;
+    particleDesc.capacity = 32;
+    particleDesc.stateStride = 16;
+    for (auto &kernel : particleDesc.kernels)
+        kernel = {particleComputeCode.data(), particleComputeCode.size()};
+    infernux::particle::ParticleGpuRuntime particleRuntime;
+    if (!Require(particleRuntime.Create(rhi, particleDesc), "Particle GPU runtime creation failed"))
+        return false;
+    infernux::particle::ParticleRenderGraph particleGraph;
+    infernux::particle::GpuParticleFrameRequest particleFrame;
+    particleFrame.frameIndex = 42;
+    particleFrame.spawnCount = 3;
+    particleFrame.systemSeed = 17;
+    particleFrame.simulationStep = 9;
+    particleFrame.deltaTime = 1.0f / 60.0f;
+
     ResourceHandle indirectArguments;
     ResourceHandle discardedRewrite;
     ResourceHandle copiedIndirectArguments;
     ResourceHandle colorTarget;
+    infernux::particle::ParticleGpuBillboardRenderer billboardRenderer;
+    infernux::particle::GpuBillboardViewConstants billboardView;
+    infernux::MaterialPassPipelineDescriptor billboardPass;
+    infernux::rhi::RenderTargetLayoutHandle billboardTargetLayout;
+    bool billboardRecorded = false;
     RendererList emptyRendererList;
     std::vector<DrawCall> populatedDrawCalls(1);
     RendererList populatedRendererList = RendererList::Borrow(populatedDrawCalls, RendererListPurpose::CameraVisible,
@@ -249,8 +270,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         };
     });
 
+    if (!Require(particleGraph.Attach(resources.graph, particleRuntime, "Particle/TestEmitter"),
+                 "Particle RenderGraph attachment failed"))
+        return false;
+    if (!Require(particleGraph.BeginFrame(particleFrame), "Particle frame request was rejected"))
+        return false;
+    const auto particleOutputs = particleGraph.Outputs();
+
     resources.graph.AddPass("IndirectDraw", [&](PassBuilder &builder) {
         builder.ReadIndirectBuffer(copiedIndirectArguments);
+        builder.ReadStorageBuffer(particleOutputs.instances, infernux::rhi::PipelineStage::VertexShader);
+        builder.ReadIndirectBuffer(particleOutputs.indirectArguments);
         colorTarget = builder.CreateTexture("IndirectColor", 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
         colorTarget = builder.WriteColor(colorTarget);
         builder.SetRenderArea(16, 16);
@@ -258,8 +288,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return [&](RenderContext &context) {
             vkCmdBeginQuery(context.GetCommandBuffer(), resources.queryPool, 0, 0);
             auto &encoder = context.GetGraphicsCommandEncoder();
-            encoder.BindPipeline(resources.graphicsHandle);
-            encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments), 0, 1, sizeof(VkDrawIndirectCommand));
+            billboardRecorded =
+                billboardRenderer.RecordDraw(encoder, billboardTargetLayout, billboardPass,
+                                             context.GetBufferHandle(particleOutputs.indirectArguments), billboardView);
+            encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments));
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
     });
@@ -283,29 +315,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     });
     resources.graph.SetOutput(colorTarget);
 
-    auto &rhi = resources.context.GetRhiDevice();
-    infernux::particle::GpuEmitterDesc particleDesc;
-    particleDesc.capacity = 32;
-    particleDesc.stateStride = 16;
-    for (auto &kernel : particleDesc.kernels)
-        kernel = {computeCode.data(), computeCode.size()};
-    infernux::particle::ParticleGpuRuntime particleRuntime;
-    if (!Require(particleRuntime.Create(rhi, particleDesc), "Particle GPU runtime creation failed"))
-        return false;
-
-    infernux::particle::ParticleRenderGraph particleGraph;
-    if (!Require(particleGraph.Attach(resources.graph, particleRuntime, "Particle/TestEmitter"),
-                 "Particle RenderGraph attachment failed"))
-        return false;
-    infernux::particle::GpuParticleFrameRequest particleFrame;
-    particleFrame.frameIndex = 42;
-    particleFrame.spawnCount = 3;
-    particleFrame.systemSeed = 17;
-    particleFrame.simulationStep = 9;
-    particleFrame.deltaTime = 1.0f / 60.0f;
-    if (!Require(particleGraph.BeginFrame(particleFrame), "Particle frame request was rejected"))
-        return false;
-
     if (!Require(indirectArguments.version == 1 && discardedRewrite.version == 2 &&
                      copiedIndirectArguments.version == 1,
                  "Buffer writes did not publish monotonic resource versions"))
@@ -315,13 +324,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     const auto executionNames = resources.graph.GetExecutionPassNames();
     if (!Require(executionNames.size() == 10 && executionNames[0] == "BuildIndirectArguments" &&
-                     executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "IndirectDraw" &&
-                     executionNames[3] == "SkipEmptyRendererList" && executionNames[4] == "RunPopulatedRendererList" &&
-                     executionNames[5] == "Particle/TestEmitter/Bootstrap" &&
-                     executionNames[6] == "Particle/TestEmitter/Init" &&
-                     executionNames[7] == "Particle/TestEmitter/Update" &&
-                     executionNames[8] == "Particle/TestEmitter/RenderReset" &&
-                     executionNames[9] == "Particle/TestEmitter/Rendering",
+                     executionNames[1] == "CopyIndirectArguments" &&
+                     executionNames[2] == "Particle/TestEmitter/Bootstrap" &&
+                     executionNames[3] == "Particle/TestEmitter/Init" &&
+                     executionNames[4] == "Particle/TestEmitter/Update" &&
+                     executionNames[5] == "Particle/TestEmitter/RenderReset" &&
+                     executionNames[6] == "Particle/TestEmitter/Rendering" && executionNames[7] == "IndirectDraw" &&
+                     executionNames[8] == "SkipEmptyRendererList" && executionNames[9] == "RunPopulatedRendererList",
                  "Versioned culling broke the compute-to-transfer-to-indirect dependency"))
         return false;
     if (!Require(resources.graph.ResolveRendererList(emptyRendererListHandle) == &emptyRendererList &&
@@ -382,28 +391,26 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.computeGroup.IsValid(), "RHI compute bind group creation failed"))
         return false;
 
-    resources.vertexShader = rhi.CreateShaderModule({vertexCode.data(), vertexCode.size()});
-    resources.fragmentShader = rhi.CreateShaderModule({fragmentCode.data(), fragmentCode.size()});
-    infernux::rhi::GraphicsPipelineDesc graphicsDesc;
-    graphicsDesc.vertexShader = resources.vertexShader;
-    graphicsDesc.fragmentShader = resources.fragmentShader;
-    graphicsDesc.renderTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
-    graphicsDesc.raster.cullMode = infernux::rhi::CullMode::None;
-    graphicsDesc.colorTargets[0].format = infernux::rhi::PixelFormat::RGBA8UNorm;
-    graphicsDesc.colorTargetCount = 1;
-    resources.graphicsHandle = rhi.CreateGraphicsPipeline(graphicsDesc);
+    infernux::particle::GpuBillboardRendererDesc billboardDesc;
+    billboardDesc.vertexShader = {particleVertexCode.data(), particleVertexCode.size()};
+    billboardDesc.fragmentShader = {particleFragmentCode.data(), particleFragmentCode.size()};
+    billboardDesc.instances = particleRuntime.InstanceBuffer();
+    billboardDesc.material.blendEnabled = false;
+    billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
+    billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
+    billboardView.viewProjection[0] = 1.0f;
+    billboardView.viewProjection[5] = 1.0f;
+    billboardView.viewProjection[10] = 1.0f;
+    billboardView.viewProjection[15] = 1.0f;
+    billboardView.cameraRight[0] = 1.0f;
+    billboardView.cameraUp[1] = 1.0f;
     if (!Require(resources.computeGroup.IsValid() && resources.computeHandle.IsValid() &&
-                     resources.vertexShader.IsValid() && resources.fragmentShader.IsValid() &&
-                     resources.graphicsHandle.IsValid(),
-                 "Typed RHI pipeline creation failed"))
+                     billboardRenderer.Create(rhi, billboardDesc),
+                 "Typed RHI particle billboard creation failed"))
         return false;
 
     rhi.Release(resources.computeShader);
     resources.computeShader = {};
-    rhi.Release(resources.vertexShader);
-    resources.vertexShader = {};
-    rhi.Release(resources.fragmentShader);
-    resources.fragmentShader = {};
 
     VkQueryPoolCreateInfo queryInfo{};
     queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -441,6 +448,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(emptyRendererCallbackCount == 0 && populatedRendererCallbackCount == 1,
                  "Renderer-list callback culling did not distinguish empty and populated lists"))
         return false;
+    if (!Require(billboardRecorded, "Particle billboard renderer did not record its indirect draw"))
+        return false;
     if (!Require(!particleGraph.HasPendingFrame() && particleGraph.LastConsumedFrame() == 42,
                  "Particle graph did not consume exactly one armed frame"))
         return false;
@@ -474,6 +483,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(passedSamples > 0, "Compute-generated indirect draw produced no visible samples"))
         return false;
 
+    billboardRenderer.Destroy();
     resources.graph.Destroy();
     particleRuntime.Destroy();
 
@@ -664,9 +674,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
 int main(int argc, char **argv)
 {
-    if (argc != 5) {
-        std::cerr << "Expected compute, vertex, fragment, and reflection SPIR-V paths\n";
+    if (argc != 8) {
+        std::cerr << "Expected compute, vertex, fragment, reflection, and particle SPIR-V paths\n";
         return 2;
     }
-    return Run(argv[1], argv[2], argv[3], argv[4]) ? 0 : 1;
+    return Run(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]) ? 0 : 1;
 }

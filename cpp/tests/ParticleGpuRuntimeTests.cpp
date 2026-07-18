@@ -1,3 +1,4 @@
+#include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 
 #include <array>
@@ -15,6 +16,9 @@ struct FakeDevice final : rhi::Device
 {
     std::vector<rhi::BufferDesc> buffers;
     uint32_t shaderCreates = 0;
+    std::vector<uint32_t> layoutEntryCounts;
+    std::vector<uint32_t> groupBufferCounts;
+    std::vector<rhi::GraphicsPipelineDesc> graphicsPipelineDescs;
     uint32_t layoutCreates = 0;
     uint32_t groupCreates = 0;
     uint32_t graphicsPipelineCreates = 0;
@@ -43,14 +47,15 @@ struct FakeDevice final : rhi::Device
 
     rhi::BindingLayoutHandle CreateBindingLayout(const rhi::BindingLayoutDesc &desc) override
     {
-        assert(desc.entryCount == 6);
+        layoutEntryCounts.push_back(desc.entryCount);
         ++layoutCreates;
         return {nextIndex++, 1};
     }
 
     rhi::BindGroupHandle CreateBindGroup(const rhi::BindGroupDesc &desc) override
     {
-        assert(desc.layout.IsValid() && desc.bufferCount == 6);
+        assert(desc.layout.IsValid());
+        groupBufferCounts.push_back(desc.bufferCount);
         ++groupCreates;
         return {nextIndex++, 1};
     }
@@ -62,8 +67,9 @@ struct FakeDevice final : rhi::Device
         return {nextIndex++, 1};
     }
 
-    rhi::GraphicsPipelineHandle CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &) override
+    rhi::GraphicsPipelineHandle CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override
     {
+        graphicsPipelineDescs.push_back(desc);
         ++graphicsPipelineCreates;
         return {nextIndex++, 1};
     }
@@ -134,6 +140,41 @@ struct CommandTrace
     }
 };
 
+struct GraphicsTrace
+{
+    std::vector<rhi::GraphicsPipelineHandle> pipelines;
+    std::vector<rhi::BindGroupHandle> groups;
+    std::vector<particle::GpuBillboardViewConstants> constants;
+    std::vector<rhi::BufferHandle> indirectBuffers;
+
+    static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline)
+    {
+        static_cast<GraphicsTrace *>(context)->pipelines.push_back(pipeline);
+    }
+    static void BindGroup(void *context, rhi::GraphicsPipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0);
+        static_cast<GraphicsTrace *>(context)->groups.push_back(group);
+    }
+    static void PushConstants(void *context, rhi::GraphicsPipelineHandle, rhi::ShaderStage stages, uint32_t byteSize,
+                              const void *data)
+    {
+        assert(stages == rhi::ShaderStage::Vertex && byteSize == sizeof(particle::GpuBillboardViewConstants));
+        particle::GpuBillboardViewConstants value;
+        std::memcpy(&value, data, sizeof(value));
+        static_cast<GraphicsTrace *>(context)->constants.push_back(value);
+    }
+    static void Draw(void *, uint32_t, uint32_t, uint32_t, uint32_t)
+    {
+    }
+    static void DrawIndirect(void *context, rhi::BufferHandle buffer, uint64_t offset, uint32_t drawCount,
+                             uint32_t stride)
+    {
+        assert(offset == 0 && drawCount == 1 && stride == 16);
+        static_cast<GraphicsTrace *>(context)->indirectBuffers.push_back(buffer);
+    }
+};
+
 } // namespace
 
 int main()
@@ -178,9 +219,56 @@ int main()
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[2].simulationStep == 9);
 
+    const auto instanceBuffer = runtime.InstanceBuffer();
+    const auto indirectBuffer = runtime.IndirectBuffer();
+    std::array<uint32_t, 4> billboardVertex = {0x07230203};
+    std::array<uint32_t, 4> billboardFragment = {0x07230203};
+    particle::GpuBillboardRendererDesc billboardDesc;
+    billboardDesc.vertexShader = {billboardVertex.data(), billboardVertex.size()};
+    billboardDesc.fragmentShader = {billboardFragment.data(), billboardFragment.size()};
+    billboardDesc.instances = instanceBuffer;
+    billboardDesc.material.renderQueue = 3100;
+
+    particle::ParticleGpuBillboardRenderer billboard;
+    assert(billboard.Create(device, billboardDesc));
+    assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({6, 1}));
+    assert(device.groupBufferCounts == std::vector<uint32_t>({6, 1}));
+
+    MaterialPassPipelineDescriptor forwardPass;
+    forwardPass.colorFormats = {rhi::PixelFormat::RGBA16SFloat};
+    forwardPass.depthFormat = rhi::PixelFormat::D32SFloat;
+    forwardPass.samples = rhi::SampleCount::Four;
+    GraphicsTrace graphicsTrace;
+    const rhi::GraphicsCommandEncoder::Dispatch graphicsDispatch = {
+        &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants, &GraphicsTrace::Draw,
+        &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder graphicsEncoder(&graphicsTrace, &graphicsDispatch);
+    particle::GpuBillboardViewConstants view;
+    view.cameraRight[0] = 1.0f;
+    view.cameraUp[1] = 1.0f;
+    const rhi::RenderTargetLayoutHandle firstTarget{100, 1};
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineDescs.size() == 1);
+    const auto &graphicsDesc = device.graphicsPipelineDescs.front();
+    assert(graphicsDesc.pushConstantBytes == sizeof(view));
+    assert(graphicsDesc.samples == rhi::SampleCount::Four);
+    assert(graphicsDesc.depth.testEnabled && !graphicsDesc.depth.writeEnabled);
+    assert(graphicsDesc.colorTargetCount == 1 && graphicsDesc.colorTargets[0].blendEnabled);
+    assert(graphicsTrace.pipelines.size() == 2 && graphicsTrace.groups.size() == 2 &&
+           graphicsTrace.constants.size() == 2 && graphicsTrace.indirectBuffers.size() == 2);
+
+    MaterialPassPipelineDescriptor unsupportedPass = forwardPass;
+    unsupportedPass.target = ShaderCompileTarget::GBuffer;
+    assert(!billboard.RecordDraw(graphicsEncoder, firstTarget, unsupportedPass, indirectBuffer, view));
+    billboard.Destroy();
+    assert(!billboard.IsValid() && device.graphicsPipelineReleases == 1);
+
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
-    assert(device.pipelineReleases == 5 && device.groupReleases == 1 && device.layoutReleases == 1);
+    assert(device.pipelineReleases == 5 && device.groupReleases == 2 && device.layoutReleases == 2);
+    assert(device.shaderReleases == 7);
     assert(device.bufferReleases == 6);
     return 0;
 }

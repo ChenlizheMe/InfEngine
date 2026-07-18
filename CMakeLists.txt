@@ -488,6 +488,7 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp
     )
     target_include_directories(infernux_particle_gpu_runtime_tests PRIVATE
@@ -504,6 +505,9 @@ if(INFERNUX_BUILD_TESTS)
         "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderGraphComputeIndirect.vert"
         "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderGraphComputeIndirect.frag"
         "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ShaderReflectionStorage.comp"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuFixture.comp"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuBillboard.vert"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuBillboard.frag"
     )
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS)
     foreach(_shader_source IN LISTS INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES)
@@ -541,6 +545,9 @@ if(INFERNUX_BUILD_TESTS)
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.vert.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.frag.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ShaderReflectionStorage.comp.spv"
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuFixture.comp.spv"
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.vert.spv"
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.frag.spv"
     )
 
     add_executable(infernux_renderer_list_tests

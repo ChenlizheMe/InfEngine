@@ -372,7 +372,8 @@ class PassBuilder
     ResourceHandle ReadWrite(ResourceHandle handle, rhi::PipelineStage stages);
 
     /// Read a storage buffer from a compute shader.
-    ResourceHandle ReadStorageBuffer(ResourceHandle handle);
+    ResourceHandle ReadStorageBuffer(ResourceHandle handle,
+                                     rhi::PipelineStage stages = rhi::PipelineStage::ComputeShader);
 
     /// Read a uniform buffer from a compute shader.
     ResourceHandle ReadUniformBuffer(ResourceHandle handle);
