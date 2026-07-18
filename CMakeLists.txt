@@ -389,6 +389,17 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.render_instance_history COMMAND infernux_render_instance_history_tests)
 
+    add_executable(infernux_material_pass_pipeline_tests
+        cpp/tests/MaterialPassPipelineTests.cpp
+    )
+    target_include_directories(infernux_material_pass_pipeline_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_material_pass_pipeline_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.material_pass_pipeline COMMAND infernux_material_pass_pipeline_tests)
+
     add_executable(infernux_render_graph_identity_tests
         cpp/tests/RenderGraphIdentityTests.cpp
     )
