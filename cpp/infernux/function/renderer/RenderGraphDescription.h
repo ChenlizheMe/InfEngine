@@ -106,12 +106,29 @@ struct GraphCommandDesc
     int screenUIList = 0;
 
     std::string shaderName;
+    /// Stable runtime parameter block. When non-empty, pushConstants define
+    /// the block layout and initial values rather than immutable topology.
+    std::string parameterBlock;
     std::vector<std::pair<std::string, float>> pushConstants;
     std::vector<std::pair<std::string, std::string>> inputBindings;
 
     std::string sourceResource;
     std::string destinationResource;
     uint64_t copyBytes = 0;
+};
+
+/**
+ * @brief Revisioned values for one graph-owned runtime parameter block.
+ *
+ * Parameter updates are intentionally
+ * separate from RenderGraphDescription so
+ * ordinary effect edits do not rebuild or recompile graph topology.
+ */
+struct GraphParameterBlockUpdate
+{
+    std::string id;
+    uint64_t revision = 0;
+    std::vector<std::pair<std::string, float>> values;
 };
 
 // ============================================================================

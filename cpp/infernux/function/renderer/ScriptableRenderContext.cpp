@@ -193,6 +193,12 @@ void ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 #endif
 }
 
+void ScriptableRenderContext::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
+{
+    if (m_graph && !updates.empty())
+        m_graph->UpdateParameterBlocks(updates);
+}
+
 void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 {
 #if INFERNUX_FRAME_PROFILE

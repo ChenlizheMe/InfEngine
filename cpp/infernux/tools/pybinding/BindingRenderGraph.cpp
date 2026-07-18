@@ -96,11 +96,19 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("light_index", &GraphCommandDesc::lightIndex)
         .def_readwrite("screen_ui_list", &GraphCommandDesc::screenUIList)
         .def_readwrite("shader_name", &GraphCommandDesc::shaderName)
+        .def_readwrite("parameter_block", &GraphCommandDesc::parameterBlock)
         .def_readwrite("push_constants", &GraphCommandDesc::pushConstants)
         .def_readwrite("input_bindings", &GraphCommandDesc::inputBindings)
         .def_readwrite("source_resource", &GraphCommandDesc::sourceResource)
         .def_readwrite("destination_resource", &GraphCommandDesc::destinationResource)
         .def_readwrite("copy_bytes", &GraphCommandDesc::copyBytes);
+
+    py::class_<GraphParameterBlockUpdate>(m, "GraphParameterBlockUpdate",
+                                          "Revisioned runtime values for a graph parameter block")
+        .def(py::init<>())
+        .def_readwrite("id", &GraphParameterBlockUpdate::id)
+        .def_readwrite("revision", &GraphParameterBlockUpdate::revision)
+        .def_readwrite("values", &GraphParameterBlockUpdate::values);
 
     // GraphTextureDesc struct
     py::class_<GraphTextureDesc>(m, "GraphTextureDesc", "Description of a texture resource in the Python-defined graph")
@@ -182,6 +190,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         // Render graph topology defined from Python
         .def("apply_python_graph", &SceneRenderGraph::ApplyPythonGraph, py::arg("description"),
              "Apply a render graph topology defined in Python")
+        .def("update_parameter_blocks", &SceneRenderGraph::UpdateParameterBlocks, py::arg("updates"),
+             "Upload changed runtime parameter blocks without rebuilding topology")
         .def("has_python_graph", &SceneRenderGraph::HasPythonGraph, "Check if a Python graph topology has been applied")
         .def("get_pass_count", &SceneRenderGraph::GetPassCount, "Get number of configured passes")
         .def("get_debug_string", &SceneRenderGraph::GetDebugString, "Get debug visualization of the render graph");

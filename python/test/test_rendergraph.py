@@ -292,6 +292,21 @@ class TestRenderPassBuilder:
         assert p._shader_name == "my_shader"
         assert p._push_constants["intensity"] == 0.5
 
+    def test_fullscreen_quad_can_bind_dynamic_parameter_block(self):
+        graph = _make_graph()
+        graph.create_texture("fx", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("FX") as p:
+            p.set_texture("_Src", "color")
+            p.write_color("fx")
+            p.bind_parameter_block(
+                "slot-1/composite",
+                {"intensity": 0.5, "threshold": 1.0},
+            )
+            p.fullscreen_quad("my_shader")
+
+        assert p._parameter_block == "slot-1/composite"
+        assert list(p._push_constants) == ["intensity", "threshold"]
+
     def test_draw_screen_ui_camera(self):
         graph = _make_graph()
         with graph.add_pass("UI") as p:
@@ -617,6 +632,24 @@ class TestBuild:
         pc_dict = dict(fx_pass.commands[0].push_constants)
         assert pc_dict["intensity"] == 0.5
         assert pc_dict["threshold"] == 1.0
+
+    def test_dynamic_parameter_block_is_emitted_in_command_ir(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as p:
+            p.write_color("color")
+            p.draw_renderers()
+        graph.create_texture("_fx_out", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("FX") as p:
+            p.set_texture("_SourceTex", "color")
+            p.write_color("_fx_out")
+            p.bind_parameter_block("slot-1/fx", {"intensity": 0.5})
+            p.fullscreen_quad("my_effect")
+        graph.set_output("_fx_out")
+
+        command = graph.build().passes[1].commands[0]
+
+        assert command.parameter_block == "slot-1/fx"
+        assert command.push_constants == [("intensity", 0.5)]
 
     def test_empty_graph_raises(self):
         g = RenderGraph("Empty")

@@ -16,6 +16,7 @@
 #include "vk/VkPipelineManager.h"
 #include "vk/VkRenderUtils.h"
 #include <algorithm>
+#include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/error/InxError.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -46,11 +47,22 @@ bool BufferAccessEquals(const GraphBufferAccessDesc &a, const GraphBufferAccessD
 
 bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
 {
+    const auto parameterLayoutEquals = [](const GraphCommandDesc &lhs, const GraphCommandDesc &rhs) {
+        if (lhs.parameterBlock.empty())
+            return lhs.pushConstants == rhs.pushConstants;
+        if (lhs.pushConstants.size() != rhs.pushConstants.size())
+            return false;
+        for (size_t i = 0; i < lhs.pushConstants.size(); ++i) {
+            if (lhs.pushConstants[i].first != rhs.pushConstants[i].first)
+                return false;
+        }
+        return true;
+    };
     return a.type == b.type && a.shaderTarget == b.shaderTarget && a.queueMin == b.queueMin &&
            a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
            a.overrideMaterial == b.overrideMaterial && a.lightIndex == b.lightIndex &&
-           a.screenUIList == b.screenUIList && a.shaderName == b.shaderName && a.pushConstants == b.pushConstants &&
-           a.inputBindings == b.inputBindings && a.sourceResource == b.sourceResource &&
+           a.screenUIList == b.screenUIList && a.shaderName == b.shaderName && a.parameterBlock == b.parameterBlock &&
+           parameterLayoutEquals(a, b) && a.inputBindings == b.inputBindings && a.sourceResource == b.sourceResource &&
            a.destinationResource == b.destinationResource && a.copyBytes == b.copyBytes;
 }
 
@@ -92,6 +104,7 @@ GraphCommandDesc LegacyCommand(const GraphPassDesc &pass)
     command.lightIndex = pass.lightIndex;
     command.screenUIList = pass.screenUIList;
     command.shaderName = pass.shaderName;
+    command.parameterBlock.clear();
     command.pushConstants = pass.pushConstants;
     command.inputBindings = pass.inputBindings;
     return command;
@@ -234,6 +247,7 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
 
     std::unordered_set<std::string> passNames;
     passNames.reserve(desc.passes.size());
+    std::unordered_set<std::string> parameterBlockIds;
     for (const auto &pass : desc.passes) {
         if (pass.name.empty()) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass name cannot be empty");
@@ -249,6 +263,30 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             return false;
         }
         const GraphCommandDesc *command = PrimaryCommand(pass);
+        if (command) {
+            if (command->pushConstants.size() > 32) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' exceeds the 32-float push constant limit");
+                return false;
+            }
+            std::unordered_set<std::string> parameterNames;
+            for (const auto &[name, value] : command->pushConstants) {
+                if (name.empty() || !parameterNames.insert(name).second || !std::isfinite(value)) {
+                    INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                                 "' has an invalid push constant layout");
+                    return false;
+                }
+            }
+            if (!command->parameterBlock.empty()) {
+                if (command->type != GraphCommandType::FullscreenQuad ||
+                    !parameterBlockIds.insert(command->parameterBlock).second) {
+                    INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                                 "' has an invalid or duplicate runtime parameter block '", command->parameterBlock,
+                                 "'");
+                    return false;
+                }
+            }
+        }
         const bool rasterCommand =
             command &&
             (command->type == GraphCommandType::DrawRenderers || command->type == GraphCommandType::DrawSkybox ||
@@ -535,6 +573,7 @@ void SceneRenderGraph::Destroy()
 {
     m_fullscreenRenderer.Destroy();
     m_transientResources.clear();
+    m_parameterBlocks.clear();
 
     if (m_renderGraph) {
         m_renderGraph->Destroy();
@@ -606,6 +645,14 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(normalizedDesc, m_pythonGraphDesc);
     const bool callbackContractChanged = m_pythonCallbackSamples != callbackSamples;
     if (!topologyChanged && !callbackContractChanged) {
+        std::vector<GraphParameterBlockUpdate> updates;
+        for (const auto &pass : normalizedDesc.passes) {
+            const GraphCommandDesc *command = PrimaryCommand(pass);
+            if (command && !command->parameterBlock.empty()) {
+                updates.push_back({command->parameterBlock, 0, command->pushConstants});
+            }
+        }
+        UpdateParameterBlocks(updates);
         if (desc.sourceRevision != 0) {
             m_pythonGraphSourceRevision = desc.sourceRevision;
             m_pythonGraphDesc.sourceRevision = desc.sourceRevision;
@@ -615,6 +662,32 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 
     if (topologyChanged && !ValidatePythonGraphDescription(normalizedDesc)) {
         return;
+    }
+
+    if (topologyChanged) {
+        std::unordered_map<std::string, RuntimeParameterBlock> blocks;
+        for (const auto &pass : normalizedDesc.passes) {
+            const GraphCommandDesc *command = PrimaryCommand(pass);
+            if (!command || command->parameterBlock.empty())
+                continue;
+            RuntimeParameterBlock block;
+            block.names.reserve(command->pushConstants.size());
+            for (size_t i = 0; i < command->pushConstants.size(); ++i) {
+                block.names.push_back(command->pushConstants[i].first);
+                block.values.values[i] = command->pushConstants[i].second;
+            }
+            block.byteSize = static_cast<uint32_t>(command->pushConstants.size() * sizeof(float));
+            blocks.emplace(command->parameterBlock, std::move(block));
+        }
+        m_parameterBlocks = std::move(blocks);
+    } else if (desc.sourceRevision != m_pythonGraphSourceRevision) {
+        std::vector<GraphParameterBlockUpdate> updates;
+        for (const auto &pass : normalizedDesc.passes) {
+            const GraphCommandDesc *command = PrimaryCommand(pass);
+            if (command && !command->parameterBlock.empty())
+                updates.push_back({command->parameterBlock, 0, command->pushConstants});
+        }
+        UpdateParameterBlocks(updates);
     }
 
     m_pythonCallbacks.clear();
@@ -793,6 +866,43 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     m_pythonCallbackSamples = callbackSamples;
     if (topologyChanged || callbackContractChanged) {
         m_needsRebuild = true;
+    }
+}
+
+void SceneRenderGraph::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
+{
+    for (const auto &update : updates) {
+        auto blockIt = m_parameterBlocks.find(update.id);
+        if (blockIt == m_parameterBlocks.end())
+            continue;
+
+        RuntimeParameterBlock &block = blockIt->second;
+        if (update.revision != 0 && update.revision == block.revision)
+            continue;
+        if (update.values.size() != block.names.size()) {
+            INXLOG_ERROR("SceneRenderGraph::UpdateParameterBlocks: block '", update.id,
+                         "' value count does not match its compiled layout");
+            continue;
+        }
+
+        bool valid = true;
+        FullscreenPushConstants values{};
+        for (size_t i = 0; i < update.values.size(); ++i) {
+            if (update.values[i].first != block.names[i] || !std::isfinite(update.values[i].second)) {
+                valid = false;
+                break;
+            }
+            values.values[i] = update.values[i].second;
+        }
+        if (!valid) {
+            INXLOG_ERROR("SceneRenderGraph::UpdateParameterBlocks: block '", update.id,
+                         "' does not match its compiled parameter names");
+            continue;
+        }
+
+        block.values = values;
+        block.byteSize = static_cast<uint32_t>(update.values.size() * sizeof(float));
+        block.revision = update.revision;
     }
 }
 
@@ -1643,6 +1753,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 FullscreenRenderer *fsRenderer = &m_fullscreenRenderer;
                 vk::RenderGraph *renderGraphPtr = m_renderGraph.get();
                 std::string shaderName = command->shaderName;
+                std::string parameterBlock = command->parameterBlock;
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
                 for (const auto &[name, value] : command->pushConstants) {
@@ -1819,9 +1930,20 @@ void SceneRenderGraph::BuildRenderGraph()
                             return;
                         }
 
-                        // Draw fullscreen triangle
-                        fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, packedPushConstants,
-                                         packedPushConstantSize);
+                        // Dynamic blocks replace only values. Shader, parameter
+                        // order, and byte size remain part of compiled topology.
+                        FullscreenPushConstants drawPushConstants = packedPushConstants;
+                        uint32_t drawPushConstantSize = packedPushConstantSize;
+                        if (!parameterBlock.empty()) {
+                            const auto blockIt = m_parameterBlocks.find(parameterBlock);
+                            if (blockIt != m_parameterBlocks.end()) {
+                                drawPushConstants = blockIt->second.values;
+                                drawPushConstantSize = blockIt->second.byteSize;
+                            }
+                        }
+
+                        fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, drawPushConstants,
+                                         drawPushConstantSize);
                     };
                 });
                 publishResourceVersion(fsWrittenVersion);

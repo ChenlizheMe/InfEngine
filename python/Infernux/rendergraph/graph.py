@@ -150,6 +150,7 @@ class RenderPassBuilder:
         self._light_index = 0
         self._screen_ui_list = 0
         self._shader_name: str = ""
+        self._parameter_block: str = ""
         self._push_constants: Dict[str, float] = {}
         self._source_resource = ""
         self._destination_resource = ""
@@ -418,6 +419,35 @@ class RenderPassBuilder:
             value: Float value.
         """
         self._push_constants[name] = float(value)
+        return self
+
+    def bind_parameter_block(
+        self,
+        block_id: str,
+        parameters: Mapping[str, float],
+    ) -> "RenderPassBuilder":
+        """Bind revisioned runtime values without making them graph topology.
+
+        Ordered parameter names become part of the compiled command contract.
+        Values may later be updated through the render context without
+        rebuilding the graph.
+        """
+        normalized_id = str(block_id or "").strip()
+        if not normalized_id:
+            raise ValueError("parameter block id cannot be empty")
+        if self._parameter_block and self._parameter_block != normalized_id:
+            raise ValueError("a render command can bind only one parameter block")
+        if not isinstance(parameters, Mapping):
+            raise TypeError("parameter block values must be a mapping")
+        self._parameter_block = normalized_id
+        self._push_constants.clear()
+        for name, value in parameters.items():
+            parameter_name = str(name or "").strip()
+            if not parameter_name:
+                raise ValueError("parameter block names cannot be empty")
+            self._push_constants[parameter_name] = float(value)
+        if len(self._push_constants) > 32:
+            raise ValueError("fullscreen parameter blocks support at most 32 floats")
         return self
 
     def fullscreen_quad(
@@ -1284,6 +1314,7 @@ class RenderGraph:
                 command.light_index = p._light_index
                 command.screen_ui_list = p._screen_ui_list
                 command.shader_name = p._shader_name
+                command.parameter_block = p._parameter_block
                 command.push_constants = list(p._push_constants.items())
                 command.source_resource = p._source_resource
                 command.destination_resource = p._destination_resource
@@ -1335,6 +1366,8 @@ class RenderGraph:
                     "queue_max": p._queue_max,
                     "sort_mode": p._sort_mode,
                     "input_bindings": dict(p._input_bindings),
+                    "parameter_block": p._parameter_block,
+                    "push_constants": list(p._push_constants.items()),
                     "source_resource": p._source_resource,
                     "destination_resource": p._destination_resource,
                     "copy_bytes": p._copy_bytes,

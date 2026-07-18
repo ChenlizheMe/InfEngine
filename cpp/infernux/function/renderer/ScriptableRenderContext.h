@@ -150,6 +150,9 @@ class ScriptableRenderContext
     /// Must be called before Submit() or SubmitCulling().
     void ApplyGraph(const RenderGraphDescription &desc);
 
+    /// Upload only changed graph parameter blocks; does not rebuild topology.
+    void UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
+
     /// @brief Submit all culling results as full draw calls + execute graph.
     /// Replaces the DrawRenderers() + DrawSkybox() + Submit() combo.
     /// DrawCall filtering is done by RenderGraph pass callbacks.

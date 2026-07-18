@@ -148,6 +148,9 @@ class SceneRenderGraph
      */
     void ApplyPythonGraph(const RenderGraphDescription &desc);
 
+    /// Upload changed runtime parameter blocks without rebuilding graph topology.
+    void UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
+
     /// True when this graph already owns the requested Python artifact and its
     /// callback sample contract still matches the active render targets.
     [[nodiscard]] bool IsPythonGraphCurrent(uint64_t sourceRevision) const;
@@ -430,6 +433,7 @@ class SceneRenderGraph
         // mismatch guard firing on an outdated descriptor.
         m_hasPythonGraph = false;
         m_hasShadowCasterPass = false;
+        m_parameterBlocks.clear();
         m_pythonGraphDesc = {};
     }
 
@@ -520,6 +524,18 @@ class SceneRenderGraph
 
     // Python graph description (stored for BuildRenderGraph)
     RenderGraphDescription m_pythonGraphDesc;
+
+    struct RuntimeParameterBlock
+    {
+        uint64_t revision = 0;
+        std::vector<std::string> names;
+        FullscreenPushConstants values{};
+        uint32_t byteSize = 0;
+    };
+
+    // Dynamic values keyed by GraphCommandDesc::parameterBlock. Layout is
+    // compiled with the graph; revisions update independently at runtime.
+    std::unordered_map<std::string, RuntimeParameterBlock> m_parameterBlocks;
 
     // Render callbacks keyed by pass name.
     // Populated by ApplyPythonGraph(). BuildRenderGraph() reads this map directly,
