@@ -108,6 +108,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     pipeline_class_name: str = ""
     mounted_passes_json: str = ""   # Persisted pass configuration.
     pipeline_params_json: str = ""  # Persisted pipeline parameter snapshot.
+    effect_stage_bindings_json: str = ""  # RenderStack v2 ordered stage slots.
 
     # ---- Runtime state (not serialized) ----
     _pipeline = None  # Optional[RenderPipeline]
@@ -119,6 +120,8 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     _pipeline_param_store: Dict[str, Dict[str, object]] = None
     _pipeline_catalog_signature: tuple = ()
     _topology_probe_cache = None
+    _effect_binding_document = None
+    _effect_binding_error: str = ""
 
     # ==================================================================
     # Lifecycle
@@ -137,6 +140,9 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             self._pass_entries = []
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
+        if self._effect_binding_document is None:
+            from Infernux.renderstack.effect_binding import EffectBindingDocument
+            self._effect_binding_document = EffectBindingDocument()
         self._pipeline_catalog_signature = ()
         self._register_pipeline_catalog_reload()
         self._sync_pipeline_catalog()
@@ -240,6 +246,13 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         if entries:
             self.mounted_passes_json = _json.dumps(entries)
         self.pipeline_params_json = _json.dumps(self._pipeline_param_store) if self._pipeline_param_store else ""
+        if self._effect_binding_document is not None and not self._effect_binding_error:
+            from Infernux.renderstack.effect_binding import dump_effect_binding_document
+            self.effect_stage_bindings_json = (
+                dump_effect_binding_document(self._effect_binding_document)
+                if self._effect_binding_document.stages
+                else ""
+            )
 
     def on_after_deserialize(self) -> None:
         """Recreate pass_entries from mounted_passes_json."""
@@ -259,6 +272,17 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             self._pass_entries.clear()
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
+
+        from Infernux.renderstack.effect_binding import EffectBindingDocument, parse_effect_binding_document
+        self._effect_binding_error = ""
+        if self.effect_stage_bindings_json:
+            try:
+                self._effect_binding_document = parse_effect_binding_document(self.effect_stage_bindings_json)
+            except (TypeError, ValueError, _json.JSONDecodeError) as exc:
+                self._effect_binding_document = None
+                self._effect_binding_error = str(exc)
+        else:
+            self._effect_binding_document = EffectBindingDocument()
 
         if self.pipeline_params_json:
             try:
@@ -329,6 +353,28 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
     # ==================================================================
     # Pipeline management
+    # ==================================================================
+
+    @property
+    def effect_binding_error(self) -> str:
+        """Return a persistent parse diagnostic without discarding source data."""
+        return self._effect_binding_error
+
+    def get_effect_stage_slots(self, stage_id: str):
+        """Return an immutable ordered slot list for one stable EffectStage."""
+        if self._effect_binding_document is None:
+            return ()
+        return self._effect_binding_document.slots(stage_id)
+
+    def set_effect_stage_slots(self, stage_id: str, slots) -> None:
+        """Replace one stage list while preserving all other stage bindings."""
+        from Infernux.renderstack.effect_binding import EffectBindingDocument
+
+        base = self._effect_binding_document or EffectBindingDocument()
+        self._effect_binding_document = base.with_stage(stage_id, tuple(slots))
+        self._effect_binding_error = ""
+        self.invalidate_graph()
+
     # ==================================================================
 
     @staticmethod

@@ -20,6 +20,8 @@ from Infernux.core.assets import AssetManager
 from Infernux.core.material import Material
 from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+from Infernux.renderstack.effect_binding import EffectSlotBinding
+from Infernux.renderstack.render_effect_asset import EffectAssetReference
 
 from Infernux.lib import (
     SceneManager,
@@ -934,6 +936,37 @@ class TestComponentLifecycle:
 
         pipeline = RenderStackPipeline()
         assert pipeline._find_render_stack(ctx) is None
+
+    def test_renderstack_effect_slots_survive_component_serialization_hooks(self, scene):
+        stack = scene.create_game_object("EffectBindingRenderStack").add_component(RenderStack)
+        reference = EffectAssetReference(
+            guid="missing-effect-guid",
+            path_hint="Assets/RenderEffects/Missing.effect",
+        )
+        slots = (
+            EffectSlotBinding("empty-slot"),
+            EffectSlotBinding("effect-slot", reference, overrides={"strength": 0.75}),
+        )
+        stack.set_effect_stage_slots("final", slots)
+
+        stack.on_before_serialize()
+        persisted = stack.effect_stage_bindings_json
+        stack._effect_binding_document = None
+        stack.on_after_deserialize()
+
+        assert persisted
+        assert stack.get_effect_stage_slots("final") == slots
+
+    def test_renderstack_preserves_invalid_binding_source_for_recovery(self, scene):
+        stack = scene.create_game_object("InvalidEffectBindingRenderStack").add_component(RenderStack)
+        invalid_source = '{"$schema":"broken"}'
+        stack.effect_stage_bindings_json = invalid_source
+
+        stack.on_after_deserialize()
+        stack.on_before_serialize()
+
+        assert stack.effect_binding_error
+        assert stack.effect_stage_bindings_json == invalid_source
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Collider properties

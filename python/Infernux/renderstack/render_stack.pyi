@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from Infernux.components.component import InxComponent
 from Infernux.renderstack.injection_point import InjectionPoint
 from Infernux.renderstack.resource_bus import ResourceBus
+from Infernux.renderstack.effect_binding import EffectSlotBinding
 
 if TYPE_CHECKING:
     from Infernux.renderstack.render_pass import RenderPass
@@ -31,6 +32,7 @@ class RenderStack(InxComponent):
     pipeline_class_name: str
     mounted_passes_json: str
     pipeline_params_json: str
+    effect_stage_bindings_json: str
 
     @classmethod
     def instance(cls) -> Optional[RenderStack]:
@@ -54,6 +56,10 @@ class RenderStack(InxComponent):
     def set_pipeline(self, pipeline_class_name: str) -> None:
         """Set the active render pipeline by class name."""
         ...
+    @property
+    def effect_binding_error(self) -> str: ...
+    def get_effect_stage_slots(self, stage_id: str) -> tuple[EffectSlotBinding, ...]: ...
+    def set_effect_stage_slots(self, stage_id: str, slots: tuple[EffectSlotBinding, ...]) -> None: ...
 
     @property
     def pipeline(self) -> RenderPipeline:

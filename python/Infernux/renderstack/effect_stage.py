@@ -67,6 +67,11 @@ class EffectStage:
         return value == self.stable_id or value in self.aliases
 
 
+def validate_effect_stage_id(value: str) -> str:
+    """Validate and normalize a serialized EffectStage identifier."""
+    return _validated_stable_id(value, "stable_id")
+
+
 def _validated_stable_id(value: str, field_name: str) -> str:
     normalized = str(value or "").strip()
     if not _STABLE_ID_PATTERN.fullmatch(normalized):
