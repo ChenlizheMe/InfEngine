@@ -290,6 +290,8 @@ VkAccessFlags RenderGraph::UsageToAccessMask(ResourceUsage usage)
         flags |= VK_ACCESS_SHADER_READ_BIT;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
         flags |= VK_ACCESS_TRANSFER_READ_BIT;
+    if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
+        flags |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
     if (static_cast<int>(usage & (ResourceUsage::ReadWrite)) != 0)
         flags |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     if (static_cast<int>(usage & ResourceUsage::Read) != 0 && static_cast<int>(usage & ResourceUsage::Write) == 0 &&
@@ -311,6 +313,8 @@ VkPipelineStageFlags RenderGraph::UsageToStageFlags(ResourceUsage usage)
         flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
         flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
+        flags |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
     if (flags == 0)
         flags = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
     return flags;
@@ -538,30 +542,30 @@ bool RenderGraph::AllocateResources()
             imageAllocRequests.push_back({ri, memReqs, memTypeIndex});
 
         } else if (resource.type == ResourceType::Buffer) {
-            // Buffers are allocated individually (no aliasing benefit for buffers)
+            // Buffers are allocated individually. vmaCreateBuffer keeps the
+            // VkBuffer/VmaAllocation ownership paired and lets AUTO memory
+            // selection inspect the actual usage flags.
             VkBufferCreateInfo bufferInfo{};
             bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             bufferInfo.size = resource.bufferDesc.size;
             bufferInfo.usage = resource.bufferDesc.usage;
             bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-            if (vkCreateBuffer(device, &bufferInfo, nullptr, &resource.allocatedBuffer) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to create buffer for resource: ", resource.name);
-                return false;
-            }
-
             VmaAllocator allocator = m_context->GetVmaAllocator();
             VmaAllocationCreateInfo allocCreateInfo{};
             allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-            VmaAllocationInfo vmaAllocInfo;
-            if (vmaAllocateMemoryForBuffer(allocator, resource.allocatedBuffer, &allocCreateInfo,
-                                           &resource.allocatedMemory, &vmaAllocInfo) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to allocate memory for buffer: ", resource.name);
+            const VkResult bufferResult =
+                vmaCreateBuffer(allocator, &bufferInfo, &allocCreateInfo, &resource.allocatedBuffer,
+                                &resource.allocatedMemory, nullptr);
+            if (bufferResult != VK_SUCCESS) {
+                resource.allocatedBuffer = VK_NULL_HANDLE;
+                resource.allocatedMemory = VK_NULL_HANDLE;
+                INXLOG_ERROR("Failed to create buffer resource '", resource.name,
+                             "' (VkResult=", static_cast<int>(bufferResult), ")");
                 return false;
             }
-
-            vkBindBufferMemory(device, resource.allocatedBuffer, vmaAllocInfo.deviceMemory, vmaAllocInfo.offset);
+            resource.rhiBuffer =
+                m_rhiDevice ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer) : rhi::BufferHandle{};
         }
     }
 
@@ -1020,6 +1024,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     const auto &pass = m_passes[passIndex];
 
     m_barrierScratch.clear();
+    m_bufferBarrierScratch.clear();
     VkPipelineStageFlags srcStageMask = 0;
     VkPipelineStageFlags dstStageMask = 0;
 
@@ -1029,20 +1034,45 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             return;
 
         const auto &resource = m_resources[access.handle.id];
-        if (resource.type == ResourceType::Buffer)
+
+        // Look up previous state (direct index — vectors kept in sync with m_resources)
+        const auto &prevState = m_resourceStates[access.handle.id];
+        VkAccessFlags srcAccessMask = prevState.accessMask;
+        VkPipelineStageFlags srcStages = prevState.stages;
+        if (srcStages == 0)
+            srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+
+        if (resource.type == ResourceType::Buffer) {
+            const VkBuffer buffer = resource.isExternal ? resource.externalBuffer : resource.allocatedBuffer;
+            if (buffer == VK_NULL_HANDLE)
+                return;
+
+            const bool previousWrite =
+                (srcAccessMask & (VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT)) != 0;
+            const bool currentWrite = (static_cast<int>(access.usage & ResourceUsage::Write) != 0);
+            if (!previousWrite && !currentWrite)
+                return;
+
+            VkBufferMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            barrier.srcAccessMask = srcAccessMask;
+            barrier.dstAccessMask = access.access;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = buffer;
+            barrier.offset = 0;
+            barrier.size = resource.bufferDesc.size;
+            m_bufferBarrierScratch.push_back(barrier);
+            srcStageMask |= srcStages;
+            dstStageMask |= access.stages;
             return;
+        }
 
         VkImage image = resource.isExternal ? resource.externalImage : resource.allocatedImage;
         if (image == VK_NULL_HANDLE)
             return;
 
-        // Look up previous state (direct index — vectors kept in sync with m_resources)
-        const auto &prevState = m_resourceStates[access.handle.id];
         VkImageLayout oldLayout = prevState.layout;
-        VkAccessFlags srcAccessMask = prevState.accessMask;
-        VkPipelineStageFlags srcStages = prevState.stages;
-        if (srcStages == 0)
-            srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
         VkImageLayout newLayout = access.layout;
 
@@ -1108,16 +1138,18 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             break;
     }
 
-    if (hasReadWriteOverlap && !m_barrierScratch.empty()) {
+    if (hasReadWriteOverlap && (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty())) {
         if (srcStageMask == 0)
             srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         if (dstStageMask == 0)
-            dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+            dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
-        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr,
+        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr,
+                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
                              static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
 
         m_barrierScratch.clear();
+        m_bufferBarrierScratch.clear();
         srcStageMask = 0;
         dstStageMask = 0;
     }
@@ -1133,13 +1165,14 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         addBarrier(write);
     }
 
-    if (!m_barrierScratch.empty()) {
+    if (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty()) {
         if (srcStageMask == 0)
             srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         if (dstStageMask == 0)
-            dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+            dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
-        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, nullptr,
+        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr,
+                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
                              static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
     }
 
@@ -1194,13 +1227,15 @@ void RenderGraph::FreeResources()
 
     VkDevice device = m_context->GetDevice();
 
-    // RHI view registrations are graph-resource lifetime aliases, including
-    // external views. Release them before the no-transient early-out and
-    // before any owned VkImageView is destroyed.
+    // RHI registrations are graph-resource lifetime aliases, including
+    // external resources. Release them before the no-transient early-out and
+    // before any owned native resource is destroyed.
     if (m_rhiDevice) {
         for (auto &resource : m_resources) {
             m_rhiDevice->Release(resource.rhiView);
             resource.rhiView = {};
+            m_rhiDevice->Release(resource.rhiBuffer);
+            resource.rhiBuffer = {};
         }
     }
 
@@ -1268,8 +1303,9 @@ void RenderGraph::FreeResources()
         }
 
         if (resource.allocatedBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device, resource.allocatedBuffer, nullptr);
+            vmaDestroyBuffer(m_context->GetVmaAllocator(), resource.allocatedBuffer, resource.allocatedMemory);
             resource.allocatedBuffer = VK_NULL_HANDLE;
+            resource.allocatedMemory = VK_NULL_HANDLE;
         }
 
         if (resource.allocatedMemory != VK_NULL_HANDLE) {

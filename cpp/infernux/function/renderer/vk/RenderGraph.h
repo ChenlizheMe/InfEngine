@@ -96,7 +96,8 @@ enum class ResourceUsage
     DepthOutput = 1 << 3,
     ShaderRead = 1 << 4,
     Transfer = 1 << 5,
-    DepthRead = 1 << 6 ///< Read-only depth attachment (depth testing without writing)
+    DepthRead = 1 << 6, ///< Read-only depth attachment (depth testing without writing)
+    IndirectArgument = 1 << 7
 };
 
 inline ResourceUsage operator|(ResourceUsage a, ResourceUsage b)
@@ -152,6 +153,7 @@ using PassHandleHash = GraphPassHandleHash;
 enum class PassType
 {
     Graphics, ///< Regular graphics pass with render targets
+    Compute,  ///< Compute dispatch without a render pass
     Transfer, ///< Resource copy/transfer pass
     Present   ///< Final present pass
 };
@@ -259,14 +261,22 @@ class RenderContext
         return m_graphicsEncoder;
     }
 
+    [[nodiscard]] rhi::ComputeCommandEncoder &GetComputeCommandEncoder()
+    {
+        return m_computeEncoder;
+    }
+
     /// @brief Get resolved buffer for a resource handle
     [[nodiscard]] VkBuffer GetBuffer(ResourceHandle handle) const;
+    [[nodiscard]] rhi::BufferHandle GetBufferHandle(ResourceHandle handle) const;
 
   private:
     VkCommandBuffer m_cmdBuffer;
     RenderGraph *m_graph;
     VulkanGraphicsCommandContext m_graphicsCommandContext;
     rhi::GraphicsCommandEncoder m_graphicsEncoder;
+    VulkanComputeCommandContext m_computeCommandContext;
+    rhi::ComputeCommandEncoder m_computeEncoder;
     VkViewport m_viewport{};
     VkRect2D m_scissor{};
 };
@@ -325,6 +335,15 @@ class PassBuilder
 
     /// @brief Read/Write a resource (UAV access)
     ResourceHandle ReadWrite(ResourceHandle handle, VkPipelineStageFlags stages);
+
+    /// Read a storage buffer from a compute shader.
+    ResourceHandle ReadStorageBuffer(ResourceHandle handle);
+
+    /// Write a storage buffer from a compute shader.
+    ResourceHandle WriteStorageBuffer(ResourceHandle handle);
+
+    /// Consume a buffer as graphics indirect draw arguments.
+    ResourceHandle ReadIndirectBuffer(ResourceHandle handle);
 
     /// @brief Read a resource as transfer source (for blit/copy operations)
     ResourceHandle TransferRead(ResourceHandle handle);
@@ -429,6 +448,7 @@ struct ResourceData
     VkImageView externalView = VK_NULL_HANDLE;
     rhi::TextureViewHandle rhiView;
     VkBuffer externalBuffer = VK_NULL_HANDLE;
+    rhi::BufferHandle rhiBuffer;
 
     // Allocated resources (for transient)
     VkImage allocatedImage = VK_NULL_HANDLE;
@@ -478,6 +498,7 @@ class RenderGraph
         uint64_t executeCalls = 0;
         uint64_t passCount = 0;
         uint64_t graphicsPassCount = 0;
+        uint64_t computePassCount = 0;
         uint64_t barrierCallCount = 0;
     };
 
@@ -534,6 +555,9 @@ class RenderGraph
      * @return Pass handle
      */
     PassHandle AddPass(const std::string &name, PassSetupCallback setup);
+
+    /// Add a compute pass. It records commands outside a Vulkan render pass.
+    PassHandle AddComputePass(const std::string &name, PassSetupCallback setup);
 
     /**
      * @brief Add a transfer pass to the graph (copy/blit operations, no render pass)
@@ -724,6 +748,7 @@ class RenderGraph
     [[nodiscard]] VkImageView ResolveTextureView(ResourceHandle handle) const;
     [[nodiscard]] rhi::TextureViewHandle ResolveRhiTextureView(ResourceHandle handle) const;
     [[nodiscard]] VkBuffer ResolveBuffer(ResourceHandle handle) const;
+    [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
 
   private:
@@ -832,6 +857,7 @@ class RenderGraph
 
     // Pre-allocated scratch buffers reused every Execute() to avoid per-pass heap allocs.
     std::vector<VkImageMemoryBarrier> m_barrierScratch;
+    std::vector<VkBufferMemoryBarrier> m_bufferBarrierScratch;
     std::vector<VkClearValue> m_clearValueScratch;
 
     // RenderPass cache (long-lived across frames)

@@ -49,5 +49,22 @@ int main()
     assert(third.index == second.index);
     assert(third.generation != second.generation);
     assert(device.Resolve(third) == thirdNative);
+
+    const VkBuffer nativeBuffer = FakeHandle<VkBuffer>(0x404);
+    const auto buffer = device.RegisterBuffer(nativeBuffer);
+    assert(buffer.IsValid());
+    assert(device.Resolve(buffer) == nativeBuffer);
+    device.Release(buffer);
+    assert(device.Resolve(buffer) == VK_NULL_HANDLE);
+
+    const VkPipeline nativeCompute = FakeHandle<VkPipeline>(0x505);
+    const VkPipelineLayout nativeLayout = FakeHandle<VkPipelineLayout>(0x606);
+    const auto compute = device.RegisterComputePipeline(nativeCompute, nativeLayout);
+    assert(compute.IsValid());
+    device.Release(compute);
+
+    const auto replacementCompute = device.RegisterComputePipeline(nativeCompute, nativeLayout);
+    assert(replacementCompute.index == compute.index);
+    assert(replacementCompute.generation != compute.generation);
     return 0;
 }

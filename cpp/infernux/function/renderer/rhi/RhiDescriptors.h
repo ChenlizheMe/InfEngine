@@ -112,6 +112,14 @@ struct TextureBinding
     bool depthRead = false;
 };
 
+struct BufferBinding
+{
+    uint32_t binding = 0;
+    BufferHandle buffer;
+    uint64_t offset = 0;
+    uint64_t byteSize = 0;
+};
+
 struct RasterState
 {
     CullMode cullMode = CullMode::Back;
@@ -150,6 +158,16 @@ struct GraphicsPipelineDesc
     std::array<BindingLayoutHandle, MaxBindingLayouts> bindingLayouts{};
     uint32_t bindingLayoutCount = 0;
     ShaderStage pushConstantStages = ShaderStage::None;
+    uint32_t pushConstantBytes = 0;
+};
+
+struct ComputePipelineDesc
+{
+    static constexpr size_t MaxBindingLayouts = 8;
+
+    ShaderModuleHandle computeShader;
+    std::array<BindingLayoutHandle, MaxBindingLayouts> bindingLayouts{};
+    uint32_t bindingLayoutCount = 0;
     uint32_t pushConstantBytes = 0;
 };
 

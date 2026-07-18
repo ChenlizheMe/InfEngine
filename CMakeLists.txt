@@ -434,6 +434,49 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.vulkan_rhi_device COMMAND infernux_vulkan_rhi_device_tests)
 
+    set(INFERNUX_COMPUTE_INDIRECT_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/tests/shaders")
+    set(INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderGraphComputeIndirect.comp"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderGraphComputeIndirect.vert"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderGraphComputeIndirect.frag"
+    )
+    set(INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS)
+    foreach(_shader_source IN LISTS INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES)
+        get_filename_component(_shader_name "${_shader_source}" NAME)
+        set(_shader_output "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/${_shader_name}.spv")
+        add_custom_command(
+            OUTPUT "${_shader_output}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V "${_shader_source}" -o "${_shader_output}"
+            DEPENDS "${_shader_source}"
+            VERBATIM
+        )
+        list(APPEND INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS "${_shader_output}")
+    endforeach()
+    add_custom_target(infernux_render_graph_compute_indirect_shaders
+        DEPENDS ${INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS}
+    )
+
+    add_executable(infernux_render_graph_compute_indirect_tests
+        cpp/tests/RenderGraphComputeIndirectTests.cpp
+    )
+    add_dependencies(infernux_render_graph_compute_indirect_tests infernux_render_graph_compute_indirect_shaders)
+    target_include_directories(infernux_render_graph_compute_indirect_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+        ${CMAKE_SOURCE_DIR}/external/VulkanMemoryAllocator/include
+    )
+    target_link_libraries(infernux_render_graph_compute_indirect_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_render_graph_compute_indirect_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.render_graph_compute_indirect
+        COMMAND infernux_render_graph_compute_indirect_tests
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.comp.spv"
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.vert.spv"
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.frag.spv"
+    )
+
     add_executable(infernux_renderer_list_tests
         cpp/tests/RendererListTests.cpp
     )
