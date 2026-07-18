@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/types/ShaderTypes.h>
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -74,26 +76,36 @@ struct ShaderProgramKeyHash
 
 struct ShaderProgramArtifact
 {
-    static constexpr uint32_t CurrentSchemaVersion = 1;
+    static constexpr uint32_t CurrentSchemaVersion = 2;
 
     uint32_t schemaVersion = CurrentSchemaVersion;
     ShaderProgramKey key;
     uint64_t varyingInterfaceSignature = 0;
     uint64_t materialLayoutSignature = 0;
     uint64_t compatibilitySignature = 0;
-    std::vector<char> vertexSpirv;
-    std::vector<char> fragmentSpirv;
-
-    [[nodiscard]] bool IsValid() const noexcept
+    struct PassVariant
     {
-        return schemaVersion == CurrentSchemaVersion && key.IsValid() && key.revision != 0 &&
-               compatibilitySignature != 0 && !vertexSpirv.empty() && !fragmentSpirv.empty() &&
-               vertexSpirv.size() % sizeof(uint32_t) == 0 && fragmentSpirv.size() % sizeof(uint32_t) == 0;
-    }
+        ShaderCompileTarget target = ShaderCompileTarget::Forward;
+        uint64_t compatibilitySignature = 0;
+        std::vector<char> vertexSpirv;
+        std::vector<char> fragmentSpirv;
+
+        [[nodiscard]] bool IsValid() const noexcept
+        {
+            return compatibilitySignature != 0 && !vertexSpirv.empty() && !fragmentSpirv.empty() &&
+                   vertexSpirv.size() % sizeof(uint32_t) == 0 && fragmentSpirv.size() % sizeof(uint32_t) == 0;
+        }
+    };
+    std::vector<PassVariant> variants;
+
+    [[nodiscard]] const PassVariant *FindVariant(ShaderCompileTarget target) const noexcept;
+
+    [[nodiscard]] bool IsValid() const noexcept;
 };
 
 [[nodiscard]] uint64_t ComputeShaderProgramRevision(std::string_view generatedVertexSource,
                                                     std::string_view generatedFragmentSource,
+                                                    ShaderCompileTarget target,
                                                     uint64_t compatibilitySignature) noexcept;
 
 } // namespace infernux

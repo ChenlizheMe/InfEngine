@@ -22,13 +22,12 @@ ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact() co
     ShaderProgramArtifact artifact;
     artifact.key.stages.vertexShaderId = interfaceArtifact.vertex.shaderId;
     artifact.key.stages.fragmentShaderId = interfaceArtifact.fragment.shaderId;
-    artifact.key.revision = ComputeShaderProgramRevision(generatedVertexSource, generatedFragmentSource,
+    artifact.key.revision = ComputeShaderProgramRevision(generatedVertexSource, generatedFragmentSource, target,
                                                          interfaceArtifact.compatibilitySignature);
     artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
     artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
     artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;
-    artifact.vertexSpirv = vertexSpirv;
-    artifact.fragmentSpirv = fragmentSpirv;
+    artifact.variants.push_back({target, interfaceArtifact.compatibilitySignature, vertexSpirv, fragmentSpirv});
     return artifact;
 }
 
@@ -912,7 +911,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         (target == ShaderCompileTarget::Shadow && shadowNeedsAlphaClip && desc.isFragmentShader);
     int shadowTexBaseBinding = 0; // textures start at binding 0 in set 2
     if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
-        if (linkedInterface && target == ShaderCompileTarget::Forward) {
+        if (linkedInterface && target != ShaderCompileTarget::Shadow) {
             const ShaderStageVisibility stage =
                 desc.isVertexShader ? ShaderStageVisibility::Vertex : ShaderStageVisibility::Fragment;
             const std::string declarations =
@@ -961,7 +960,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             // Vertex shader MaterialProperties gets a dedicated high binding (14) to
             // avoid collision with fragment-side bindings (lighting UBO, textures, etc.)
             int materialBinding;
-            if (linkedInterface && target == ShaderCompileTarget::Forward) {
+            if (linkedInterface && target != ShaderCompileTarget::Shadow) {
                 materialBinding = GlslStageInterfaceEmitter::MaterialBufferBinding;
             } else if (desc.isVertexShader) {
                 materialBinding = 14; // Reserved for vertex-stage material properties
@@ -975,7 +974,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 materialBinding = texBaseBinding + static_cast<int>(desc.textureProperties.size());
             }
             result << "\n// Auto-generated MaterialProperties UBO from @property annotations\n";
-            if (linkedInterface && target == ShaderCompileTarget::Forward) {
+            if (linkedInterface && target != ShaderCompileTarget::Shadow) {
                 result << "layout(std140, set = " << GlslStageInterfaceEmitter::MaterialDescriptorSet
                        << ", binding = " << materialBinding << ") uniform MaterialProperties {\n";
             } else if (target == ShaderCompileTarget::Shadow && (desc.isVertexShader || shadowAlphaFragment)) {
@@ -1313,7 +1312,23 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedForward(const std::
                                                                      const std::string &fragmentSource,
                                                                      const std::string &fragmentPath)
 {
+    return CompileLinkedProgram(vertexSource, vertexPath, fragmentSource, fragmentPath, ShaderCompileTarget::Forward);
+}
+
+LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::string &vertexSource,
+                                                                     const std::string &vertexPath,
+                                                                     const std::string &fragmentSource,
+                                                                     const std::string &fragmentPath,
+                                                                     ShaderCompileTarget target)
+{
     LinkedShaderProgramCompilation compilation;
+    compilation.target = target;
+    if (target != ShaderCompileTarget::Forward && target != ShaderCompileTarget::GBuffer &&
+        target != ShaderCompileTarget::Shadow) {
+        compilation.errors.push_back(std::string(ShaderCompileTargetName(target)) +
+                                     " linked shader variant generation is not implemented");
+        return compilation;
+    }
     const ShaderDescriptor vertex = ParseShaderSource(vertexSource, vertexPath);
     const ShaderDescriptor fragment = ParseShaderSource(fragmentSource, fragmentPath);
     compilation.interfaceArtifact = ShaderStageLinker::Link(vertex, fragment);
@@ -1323,9 +1338,9 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedForward(const std::
         return compilation;
 
     compilation.generatedVertexSource =
-        PreprocessShaderSource(vertexSource, vertexPath, ShaderCompileTarget::Forward, &compilation.interfaceArtifact);
-    compilation.generatedFragmentSource = PreprocessShaderSource(
-        fragmentSource, fragmentPath, ShaderCompileTarget::Forward, &compilation.interfaceArtifact);
+        PreprocessShaderSource(vertexSource, vertexPath, target, &compilation.interfaceArtifact);
+    compilation.generatedFragmentSource =
+        PreprocessShaderSource(fragmentSource, fragmentPath, target, &compilation.interfaceArtifact);
 
     s_lastCompileError.clear();
     if (!CompileGLSL(compilation.generatedVertexSource, EShLangVertex, vertexPath, compilation.vertexSpirv)) {

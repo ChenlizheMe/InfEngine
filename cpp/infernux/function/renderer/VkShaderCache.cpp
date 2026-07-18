@@ -167,8 +167,13 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
 
     // Validate and materialize all Vulkan program-level resources before the
     // current artifact is replaced. A failed publish leaves last-known-good live.
+    const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
+    if (!forward) {
+        INXLOG_ERROR("VkShaderCache: shader program artifact has no Forward variant");
+        return result;
+    }
     ShaderProgram *program =
-        m_programCache.GetOrCreateProgram(artifact.key, artifact.vertexSpirv, artifact.fragmentSpirv);
+        m_programCache.GetOrCreateProgram(artifact.key, forward->vertexSpirv, forward->fragmentSpirv);
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to materialize shader program artifact '", artifact.key.ToString(), "'");
         return result;

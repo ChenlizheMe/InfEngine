@@ -18,6 +18,7 @@ namespace infernux
 
 struct LinkedShaderProgramCompilation
 {
+    ShaderCompileTarget target = ShaderCompileTarget::Forward;
     ShaderProgramInterfaceArtifact interfaceArtifact;
     std::string generatedVertexSource;
     std::string generatedFragmentSource;
@@ -82,6 +83,12 @@ class InxShaderLoader
                                                                       const std::string &vertexPath,
                                                                       const std::string &fragmentSource,
                                                                       const std::string &fragmentPath);
+
+    [[nodiscard]] LinkedShaderProgramCompilation CompileLinkedProgram(const std::string &vertexSource,
+                                                                      const std::string &vertexPath,
+                                                                      const std::string &fragmentSource,
+                                                                      const std::string &fragmentPath,
+                                                                      ShaderCompileTarget target);
 
     /// Parse a single "@key: value" or "// @key: value" annotation line.
     /// Returns {key, value} or nullopt if the line is not an annotation.

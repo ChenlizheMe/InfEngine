@@ -1,4 +1,5 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
+#include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 
 #include <algorithm>
@@ -132,6 +133,18 @@ void surface(out SurfaceData s)
     assert(artifact.materialLayoutSignature != 0);
     assert(artifact.compatibilitySignature != 0);
 
+    const auto passPlan = infernux::ShaderPassVariantPlanner::Plan(vertex, fragment, artifact);
+    assert(passPlan.IsValid());
+    assert(passPlan.requirements.size() == static_cast<size_t>(infernux::ShaderCompileTarget::Count));
+    for (const auto target : {infernux::ShaderCompileTarget::Forward, infernux::ShaderCompileTarget::GBuffer,
+                              infernux::ShaderCompileTarget::Shadow, infernux::ShaderCompileTarget::Depth,
+                              infernux::ShaderCompileTarget::Picking, infernux::ShaderCompileTarget::Motion}) {
+        const auto *requirement = passPlan.Find(target);
+        assert(requirement != nullptr);
+        assert(requirement->enabled);
+        assert(!requirement->reason.empty());
+    }
+
     infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
     const auto compiledProgram =
         compiler.CompileLinkedForward(waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag");
@@ -148,8 +161,13 @@ void surface(out SurfaceData s)
     assert(runtimeArtifact.key.stages.fragmentShaderId == "Tests/OceanSurface");
     assert(runtimeArtifact.key.revision != 0);
     assert(runtimeArtifact.compatibilitySignature == compiledProgram.interfaceArtifact.compatibilitySignature);
-    assert(runtimeArtifact.vertexSpirv == compiledProgram.vertexSpirv);
-    assert(runtimeArtifact.fragmentSpirv == compiledProgram.fragmentSpirv);
+    const auto *forwardVariant = runtimeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward);
+    assert(forwardVariant != nullptr);
+    assert(forwardVariant->vertexSpirv == compiledProgram.vertexSpirv);
+    assert(forwardVariant->fragmentSpirv == compiledProgram.fragmentSpirv);
+    auto duplicateVariantArtifact = runtimeArtifact;
+    duplicateVariantArtifact.variants.push_back(*forwardVariant);
+    assert(!duplicateVariantArtifact.IsValid());
     assert(runtimeArtifact.key.ToString().find("Tests/WaveDeform|Tests/OceanSurface@") == 0);
     assert(compiledProgram.generatedVertexSource.find("layout(location = 6) smooth out vec2 _inx_v_waveUV;") !=
            std::string::npos);
@@ -165,6 +183,61 @@ void surface(out SurfaceData s)
            std::string::npos);
     assert(compiledProgram.generatedFragmentSource.find("binding = 14) uniform MaterialProperties") !=
            std::string::npos);
+
+    const auto gbufferProgram = compiler.CompileLinkedProgram(
+        waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag", infernux::ShaderCompileTarget::GBuffer);
+    if (!gbufferProgram.IsValid()) {
+        for (const auto &error : gbufferProgram.errors)
+            std::cerr << error << '\n';
+    }
+    assert(gbufferProgram.IsValid());
+    const auto gbufferArtifact = gbufferProgram.CreateRuntimeArtifact();
+    assert(gbufferArtifact.IsValid());
+    assert(gbufferArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) == nullptr);
+    const auto *gbufferVariant = gbufferArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer);
+    assert(gbufferVariant != nullptr);
+    assert(gbufferVariant->vertexSpirv == gbufferProgram.vertexSpirv);
+    assert(gbufferVariant->fragmentSpirv == gbufferProgram.fragmentSpirv);
+    assert(gbufferArtifact.key.revision != runtimeArtifact.key.revision);
+    assert(gbufferProgram.generatedFragmentSource.find("layout(location = 0) out vec4 outGBuf0;") != std::string::npos);
+    assert(gbufferProgram.generatedFragmentSource.find("fragmentInput.waveUV = _inx_v_waveUV;") != std::string::npos);
+
+    const auto unsupportedDepthProgram = compiler.CompileLinkedProgram(
+        waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag", infernux::ShaderCompileTarget::Depth);
+    assert(!unsupportedDepthProgram.IsValid());
+    assert(unsupportedDepthProgram.errors.size() == 1);
+    assert(unsupportedDepthProgram.errors.front().find("Depth") != std::string::npos);
+
+    const std::string transparentFragment = R"(
+ShaderInfo
+{
+    Version 1
+    Name "Tests/TransparentForwardOnly"
+    ShadingModel "Unlit"
+    Surface Transparent
+    CastShadows Off
+    Capabilities [ForwardOnly, NoPicking, NoMotionVectors]
+}
+void surface(out SurfaceData surface)
+{
+    surface = InitSurfaceData();
+    surface.alpha = 0.5;
+}
+)";
+    const auto transparentDescriptor = compiler.ParseShaderSource(transparentFragment, "TransparentForwardOnly.frag");
+    const auto transparentInterface = infernux::ShaderStageLinker::Link(vertex, transparentDescriptor);
+    assert(transparentInterface.IsValid());
+    const auto transparentPlan =
+        infernux::ShaderPassVariantPlanner::Plan(vertex, transparentDescriptor, transparentInterface);
+    assert(transparentPlan.IsValid());
+    assert(transparentPlan.Find(infernux::ShaderCompileTarget::Forward)->enabled);
+    assert(!transparentPlan.Find(infernux::ShaderCompileTarget::GBuffer)->enabled);
+    assert(transparentPlan.Find(infernux::ShaderCompileTarget::GBuffer)->fallback ==
+           infernux::ShaderCompileTarget::Forward);
+    assert(!transparentPlan.Find(infernux::ShaderCompileTarget::Shadow)->enabled);
+    assert(!transparentPlan.Find(infernux::ShaderCompileTarget::Depth)->enabled);
+    assert(!transparentPlan.Find(infernux::ShaderCompileTarget::Picking)->enabled);
+    assert(!transparentPlan.Find(infernux::ShaderCompileTarget::Motion)->enabled);
 
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo

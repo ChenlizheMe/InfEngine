@@ -563,8 +563,9 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
 
     const ShaderStagePair stages{vertShaderName, fragShaderName};
     const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
-    const auto *vertCode = artifact ? &artifact->vertexSpirv : m_shaderCache.FindVertCode(vertShaderName);
-    const auto *fragCode = artifact ? &artifact->fragmentSpirv : m_shaderCache.FindFragCode(fragShaderName);
+    const auto *forward = artifact ? artifact->FindVariant(ShaderCompileTarget::Forward) : nullptr;
+    const auto *vertCode = forward ? &forward->vertexSpirv : m_shaderCache.FindVertCode(vertShaderName);
+    const auto *fragCode = forward ? &forward->fragmentSpirv : m_shaderCache.FindFragCode(fragShaderName);
     const ShaderProgramKey programKey = artifact ? artifact->key : ShaderProgramKey{stages, 0};
 
     if (vertCode && fragCode && m_materialPipelineManagerInitialized) {

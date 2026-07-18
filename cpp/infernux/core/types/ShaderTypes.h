@@ -16,8 +16,32 @@ enum class ShaderCompileTarget : int
     Forward = 0, // Standard forward rendering (default)
     GBuffer = 1, // Deferred GBuffer output
     Shadow = 2,  // Depth-only shadow caster
+    Depth = 3,   // Camera depth/depth-prepass output
+    Picking = 4, // Stable object identity output
+    Motion = 5,  // Motion-vector output
 
     Count // Sentinel — number of targets; must be last
 };
+
+[[nodiscard]] constexpr const char *ShaderCompileTargetName(ShaderCompileTarget target) noexcept
+{
+    switch (target) {
+    case ShaderCompileTarget::Forward:
+        return "Forward";
+    case ShaderCompileTarget::GBuffer:
+        return "GBuffer";
+    case ShaderCompileTarget::Shadow:
+        return "Shadow";
+    case ShaderCompileTarget::Depth:
+        return "Depth";
+    case ShaderCompileTarget::Picking:
+        return "Picking";
+    case ShaderCompileTarget::Motion:
+        return "Motion";
+    case ShaderCompileTarget::Count:
+        return "Count";
+    }
+    return "Unknown";
+}
 
 } // namespace infernux

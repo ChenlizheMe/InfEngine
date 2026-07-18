@@ -51,11 +51,45 @@ size_t ShaderProgramKeyHash::operator()(const ShaderProgramKey &key) const noexc
     return static_cast<size_t>(hash);
 }
 
+const ShaderProgramArtifact::PassVariant *ShaderProgramArtifact::FindVariant(ShaderCompileTarget target) const noexcept
+{
+    for (const auto &variant : variants) {
+        if (variant.target == target)
+            return &variant;
+    }
+    return nullptr;
+}
+
+bool ShaderProgramArtifact::IsValid() const noexcept
+{
+    if (schemaVersion != CurrentSchemaVersion || !key.IsValid() || key.revision == 0 || compatibilitySignature == 0 ||
+        variants.empty()) {
+        return false;
+    }
+
+    static_assert(static_cast<int>(ShaderCompileTarget::Count) <= 64);
+    uint64_t targets = 0;
+    for (const auto &variant : variants) {
+        const int targetIndex = static_cast<int>(variant.target);
+        if (targetIndex < 0 || targetIndex >= static_cast<int>(ShaderCompileTarget::Count) || !variant.IsValid() ||
+            variant.compatibilitySignature != compatibilitySignature) {
+            return false;
+        }
+        const uint64_t targetBit = 1ull << static_cast<uint32_t>(targetIndex);
+        if ((targets & targetBit) != 0)
+            return false;
+        targets |= targetBit;
+    }
+    return true;
+}
+
 uint64_t ComputeShaderProgramRevision(std::string_view generatedVertexSource, std::string_view generatedFragmentSource,
-                                      uint64_t compatibilitySignature) noexcept
+                                      ShaderCompileTarget target, uint64_t compatibilitySignature) noexcept
 {
     uint64_t hash = AppendString(FnvOffset, generatedVertexSource);
     hash = AppendString(hash, generatedFragmentSource);
+    const auto targetValue = static_cast<int32_t>(target);
+    hash = AppendBytes(hash, &targetValue, sizeof(targetValue));
     hash = AppendBytes(hash, &compatibilitySignature, sizeof(compatibilitySignature));
     const uint32_t artifactSchema = ShaderProgramArtifact::CurrentSchemaVersion;
     hash = AppendBytes(hash, &artifactSchema, sizeof(artifactSchema));

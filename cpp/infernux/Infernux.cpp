@@ -2948,7 +2948,8 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
     if (!readSource(vertexPath, vertexSource) || !readSource(fragmentPath, fragmentSource))
         return result;
 
-    const uint64_t sourceStamp = ComputeShaderProgramRevision(vertexSource, fragmentSource, 0);
+    const uint64_t sourceStamp =
+        ComputeShaderProgramRevision(vertexSource, fragmentSource, ShaderCompileTarget::Forward, 0);
     auto rememberFailure = [&](const std::string &error) {
         auto &entry = m_linkedShaderProgramCache[stages];
         entry.failedSourceStamp = sourceStamp;
