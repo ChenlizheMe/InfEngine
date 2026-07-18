@@ -64,6 +64,8 @@ struct ParticleGpuSystemManager::Impl
     vk::VkPipelineManager *pipelines = nullptr;
     FrameDeletionQueue *deletionQueue = nullptr;
     ParticleGpuDrawRegistry *drawRegistry = nullptr;
+    GpuBillboardTextureResolver textureResolver;
+    GpuBillboardTextureVersionResolver textureVersionResolver;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
 
@@ -126,6 +128,9 @@ struct ParticleGpuSystemManager::Impl
             rendererDesc.instances = emitter->runtime->InstanceBuffer();
             rendererDesc.material = output.material;
             rendererDesc.fallbackMaterial = output.fallbackMaterial;
+            rendererDesc.textureResolver = textureResolver;
+            rendererDesc.textureVersionResolver = textureVersionResolver;
+            rendererDesc.deletionQueue = deletionQueue;
             if (!renderer->Create(device, rendererDesc)) {
                 SetError(error,
                          "failed to create GPU particle billboard renderer for output '" + output.stableId + "'");
@@ -202,7 +207,9 @@ ParticleGpuSystemManager::~ParticleGpuSystemManager()
 }
 
 bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
-                                          FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry)
+                                          FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+                                          GpuBillboardTextureResolver textureResolver,
+                                          GpuBillboardTextureVersionResolver textureVersionResolver)
 {
     if (!m_impl || m_impl->context || !context.IsValid())
         return false;
@@ -210,6 +217,8 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
     m_impl->pipelines = &pipelines;
     m_impl->deletionQueue = &deletionQueue;
     m_impl->drawRegistry = &drawRegistry;
+    m_impl->textureResolver = std::move(textureResolver);
+    m_impl->textureVersionResolver = std::move(textureVersionResolver);
     m_impl->graphState = m_impl->BuildGraph({}, nullptr);
     if (!m_impl->graphState) {
         Shutdown();
@@ -227,6 +236,8 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->graphState.reset();
     m_impl->emitters.clear();
     m_impl->drawRegistry = nullptr;
+    m_impl->textureResolver = {};
+    m_impl->textureVersionResolver = {};
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;
     m_impl->context = nullptr;

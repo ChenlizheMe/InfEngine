@@ -1,5 +1,6 @@
 #include "ParticleGpuBillboardRenderer.h"
 
+#include <function/renderer/FrameDeletionQueue.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 namespace infernux::particle
@@ -31,6 +32,10 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_device = &device;
     m_material = desc.material;
     m_fallbackMaterial = desc.fallbackMaterial;
+    m_textureResolver = desc.textureResolver;
+    m_textureVersionResolver = desc.textureVersionResolver;
+    m_deletionQueue = desc.deletionQueue;
+    m_usesTexture = static_cast<bool>(m_textureResolver);
     m_instances = desc.instances;
     m_vertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
     m_fragmentShader = device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
@@ -41,19 +46,27 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
 
     rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
-    layoutDesc.entryCount = 1;
+    if (m_usesTexture)
+        layoutDesc.entries[1] = {1, rhi::BindingType::CombinedTextureSampler, rhi::ShaderStage::Fragment, 1};
+    layoutDesc.entryCount = m_usesTexture ? 2 : 1;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
         return false;
     }
 
-    rhi::BindGroupDesc groupDesc;
-    groupDesc.layout = m_layout;
-    groupDesc.buffers[0] = {0, rhi::BindingType::StorageBuffer, m_instances, 0, 0};
-    groupDesc.bufferCount = 1;
-    m_group = device.CreateBindGroup(groupDesc);
-    if (!m_group.IsValid()) {
+    bool bindingReady = false;
+    if (m_usesTexture) {
+        bindingReady = RefreshTextureBinding(true);
+    } else {
+        rhi::BindGroupDesc groupDesc;
+        groupDesc.layout = m_layout;
+        groupDesc.buffers[0] = {0, rhi::BindingType::StorageBuffer, m_instances, 0, 0};
+        groupDesc.bufferCount = 1;
+        m_group = device.CreateBindGroup(groupDesc);
+        bindingReady = m_group.IsValid();
+    }
+    if (!bindingReady) {
         Destroy();
         return false;
     }
@@ -66,6 +79,8 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
         for (const auto &entry : m_pipelines)
             m_device->Release(entry.pipeline);
         m_device->Release(m_group);
+        m_device->Release(m_texture);
+        m_device->Release(m_sampler);
         m_device->Release(m_layout);
         m_device->Release(m_fragmentShader);
         m_device->Release(m_vertexShader);
@@ -73,11 +88,22 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_device = nullptr;
     m_material.reset();
     m_fallbackMaterial = {};
+    m_textureResolver = {};
+    m_textureVersionResolver = {};
+    m_deletionQueue = nullptr;
     m_instances = {};
     m_vertexShader = {};
     m_fragmentShader = {};
     m_layout = {};
     m_group = {};
+    m_texture = {};
+    m_sampler = {};
+    m_textureKeepAlive.reset();
+    m_textureGuid.clear();
+    m_textureVersion = 0;
+    m_texturePending = false;
+    m_textureFallback = false;
+    m_usesTexture = false;
     m_pipelines.clear();
 }
 
@@ -113,13 +139,102 @@ std::array<float, 4> ParticleGpuBillboardRenderer::ResolveMaterialTint() const n
                  : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f};
 }
 
+std::string ParticleGpuBillboardRenderer::ResolveMaterialTextureGuid() const
+{
+    if (!m_material || m_material->IsDeleted())
+        return {};
+    const auto *property = m_material->GetProperty("texSampler");
+    if (!property || property->type != MaterialPropertyType::Texture2D)
+        return {};
+    const auto *value = std::get_if<std::string>(&property->value);
+    return value ? *value : std::string{};
+}
+
+void ParticleGpuBillboardRenderer::RetireTextureBinding(rhi::BindGroupHandle group, rhi::TextureViewHandle texture,
+                                                        rhi::SamplerHandle sampler, std::shared_ptr<void> keepAlive)
+{
+    if (!m_device)
+        return;
+    if (!group.IsValid() && !texture.IsValid() && !sampler.IsValid() && !keepAlive)
+        return;
+    auto release = [device = m_device, group, texture, sampler, keepAlive = std::move(keepAlive)]() mutable {
+        device->Release(group);
+        device->Release(texture);
+        device->Release(sampler);
+        keepAlive.reset();
+    };
+    if (m_deletionQueue)
+        m_deletionQueue->Push(std::move(release));
+    else
+        release();
+}
+
+bool ParticleGpuBillboardRenderer::RefreshTextureBinding(bool force)
+{
+    if (!m_usesTexture)
+        return true;
+    const std::string textureGuid = ResolveMaterialTextureGuid();
+    const uint64_t textureVersion = m_textureVersionResolver ? m_textureVersionResolver(textureGuid) : 0;
+    if (!force && !m_texturePending && textureGuid == m_textureGuid && textureVersion == m_textureVersion)
+        return true;
+
+    auto lease = m_textureResolver(textureGuid, "texSampler");
+    const bool pending = lease.status == GpuBillboardTextureStatus::Pending;
+    bool usingFallback = false;
+    if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() || !lease.sampler.IsValid() ||
+        !lease.keepAlive) {
+        if (lease.texture.IsValid())
+            m_device->Release(lease.texture);
+        if (lease.sampler.IsValid())
+            m_device->Release(lease.sampler);
+        if (pending && m_textureFallback && textureGuid == m_textureGuid && textureVersion == m_textureVersion) {
+            m_texturePending = true;
+            return m_group.IsValid();
+        }
+        lease = m_textureResolver({}, "texSampler");
+        usingFallback = true;
+    }
+    if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() || !lease.sampler.IsValid() ||
+        !lease.keepAlive) {
+        if (lease.texture.IsValid())
+            m_device->Release(lease.texture);
+        if (lease.sampler.IsValid())
+            m_device->Release(lease.sampler);
+        return m_group.IsValid();
+    }
+
+    rhi::BindGroupDesc groupDesc;
+    groupDesc.layout = m_layout;
+    groupDesc.buffers[0] = {0, rhi::BindingType::StorageBuffer, m_instances, 0, 0};
+    groupDesc.bufferCount = 1;
+    groupDesc.textures[0] = {1, rhi::BindingType::CombinedTextureSampler, lease.texture, lease.sampler, false};
+    groupDesc.textureCount = 1;
+    const auto group = m_device->CreateBindGroup(groupDesc);
+    if (!group.IsValid()) {
+        m_device->Release(lease.texture);
+        m_device->Release(lease.sampler);
+        return m_group.IsValid();
+    }
+
+    RetireTextureBinding(m_group, m_texture, m_sampler, std::move(m_textureKeepAlive));
+    m_group = group;
+    m_texture = lease.texture;
+    m_sampler = lease.sampler;
+    m_textureKeepAlive = std::move(lease.keepAlive);
+    m_textureGuid = textureGuid;
+    m_textureVersion = textureVersion;
+    m_texturePending = pending;
+    m_textureFallback = usingFallback;
+    return true;
+}
+
 bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                               rhi::RenderTargetLayoutHandle renderTargetLayout,
                                               const MaterialPassPipelineDescriptor &pass,
                                               rhi::BufferHandle indirectArguments,
                                               const GpuBillboardViewConstants &view)
 {
-    if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid())
+    if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || !RefreshTextureBinding(false))
         return false;
     const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
     if (!pipeline.IsValid())

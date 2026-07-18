@@ -24,6 +24,8 @@ class Device
     virtual bool WriteBuffer(BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) = 0;
 
     virtual void Release(BufferHandle handle) noexcept = 0;
+    virtual void Release(TextureViewHandle handle) noexcept = 0;
+    virtual void Release(SamplerHandle handle) noexcept = 0;
     virtual void Release(ShaderModuleHandle handle) noexcept = 0;
     virtual void Release(BindingLayoutHandle handle) noexcept = 0;
     virtual void Release(BindGroupHandle handle) noexcept = 0;

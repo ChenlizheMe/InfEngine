@@ -73,8 +73,8 @@ class VulkanRhiDevice final : public rhi::Device
 
     void Release(rhi::BufferHandle handle) noexcept override;
     void Release(rhi::TextureHandle handle) noexcept;
-    void Release(rhi::TextureViewHandle handle) noexcept;
-    void Release(rhi::SamplerHandle handle) noexcept;
+    void Release(rhi::TextureViewHandle handle) noexcept override;
+    void Release(rhi::SamplerHandle handle) noexcept override;
     void Release(rhi::ShaderModuleHandle handle) noexcept override;
     void Release(rhi::BindingLayoutHandle handle) noexcept override;
     void Release(rhi::BindGroupHandle handle) noexcept override;

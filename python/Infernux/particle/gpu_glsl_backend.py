@@ -47,10 +47,16 @@ layout(push_constant) uniform ViewConstants {
 } view;
 
 layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec2 out_uv;
 
 const vec2 corners[6] = vec2[](
     vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0),
     vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(1.0, -1.0)
+);
+
+const vec2 uvs[6] = vec2[](
+    vec2(0.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
+    vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0)
 );
 
 void main() {
@@ -63,13 +69,17 @@ void main() {
         (view.camera_right.xyz * corner.x + view.camera_up.xyz * corner.y) * instance.position_size.w;
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     out_color = instance.color;
+    out_uv = uvs[gl_VertexIndex % 6];
 }
 """
 
 _BILLBOARD_FRAGMENT_GLSL = """#version 450
 
 layout(location = 0) in vec4 in_color;
+layout(location = 1) in vec2 in_uv;
 layout(location = 0) out vec4 out_color;
+
+layout(set = 0, binding = 1) uniform sampler2D texSampler;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
@@ -79,7 +89,7 @@ layout(push_constant) uniform ViewConstants {
 } view;
 
 void main() {
-    out_color = in_color * view.material_tint;
+    out_color = texture(texSampler, in_uv) * in_color * view.material_tint;
 }
 """
 

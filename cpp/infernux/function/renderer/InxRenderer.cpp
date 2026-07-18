@@ -23,6 +23,7 @@
 #include "particle/ParticleGpuSystemManager.h"
 #include "vk/RenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
+#include "vk/VkHandle.h"
 #include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -241,8 +242,56 @@ void InxRenderer::PreparePipeline()
         // Initialize default scene with gizmos
         InitializeDefaultScene();
         m_particleGpuSystemManager = std::make_unique<particle::ParticleGpuSystemManager>();
+        auto particleTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
+                                                               const std::string &bindingName) {
+            particle::GpuBillboardTextureLease lease;
+            TextureResolveResult resolved;
+            if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
+                const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
+                                    bindingName.find("Normal") != std::string::npos;
+                auto resident = core->GetTextureCache().Find(normal ? "_default_normal" : "white");
+                if (!resident) {
+                    lease.status = particle::GpuBillboardTextureStatus::Pending;
+                    return lease;
+                }
+                resolved.status = TextureResolveStatus::Ready;
+                resolved.binding = {resident->GetView(), resident->GetSampler(), std::move(resident)};
+            } else {
+                resolved = core->ResolveTextureForMaterial(textureGuid, bindingName);
+            }
+
+            if (resolved.status == TextureResolveStatus::Pending) {
+                lease.status = particle::GpuBillboardTextureStatus::Pending;
+                return lease;
+            }
+            if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.keepAlive) {
+                lease.status = particle::GpuBillboardTextureStatus::Failed;
+                return lease;
+            }
+            auto &rhi = core->GetDeviceContext().GetRhiDevice();
+            lease.texture = rhi.RegisterTextureView(resolved.binding.imageView);
+            lease.sampler = rhi.RegisterSampler(resolved.binding.sampler);
+            if (!lease.texture.IsValid() || !lease.sampler.IsValid()) {
+                rhi.Release(lease.texture);
+                rhi.Release(lease.sampler);
+                lease.texture = {};
+                lease.sampler = {};
+                lease.status = particle::GpuBillboardTextureStatus::Failed;
+                return lease;
+            }
+            lease.keepAlive = std::move(resolved.binding.keepAlive);
+            lease.status = particle::GpuBillboardTextureStatus::Ready;
+            return lease;
+        };
+        auto particleTextureVersionResolver = [](const std::string &textureGuid) -> uint64_t {
+            if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal")
+                return 1;
+            return AssetRegistry::Instance().GetAssetVersion(textureGuid);
+        };
         if (!m_particleGpuSystemManager->Initialize(m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(),
-                                                    m_vkCore->GetDeletionQueue(), *m_particleGpuDrawRegistry)) {
+                                                    m_vkCore->GetDeletionQueue(), *m_particleGpuDrawRegistry,
+                                                    std::move(particleTextureResolver),
+                                                    std::move(particleTextureVersionResolver))) {
             m_particleGpuSystemManager.reset();
             INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         }

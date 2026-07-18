@@ -1,3 +1,4 @@
+#include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
@@ -20,12 +21,15 @@ struct FakeDevice final : rhi::Device
     uint32_t shaderCreates = 0;
     std::vector<uint32_t> layoutEntryCounts;
     std::vector<uint32_t> groupBufferCounts;
+    std::vector<uint32_t> groupTextureCounts;
     std::vector<rhi::GraphicsPipelineDesc> graphicsPipelineDescs;
     uint32_t layoutCreates = 0;
     uint32_t groupCreates = 0;
     uint32_t graphicsPipelineCreates = 0;
     uint32_t pipelineCreates = 0;
     uint32_t bufferReleases = 0;
+    uint32_t textureReleases = 0;
+    uint32_t samplerReleases = 0;
     uint32_t shaderReleases = 0;
     uint32_t layoutReleases = 0;
     uint32_t groupReleases = 0;
@@ -58,6 +62,7 @@ struct FakeDevice final : rhi::Device
     {
         assert(desc.layout.IsValid());
         groupBufferCounts.push_back(desc.bufferCount);
+        groupTextureCounts.push_back(desc.textureCount);
         ++groupCreates;
         return {nextIndex++, 1};
     }
@@ -86,6 +91,14 @@ struct FakeDevice final : rhi::Device
     void Release(rhi::BufferHandle handle) noexcept override
     {
         bufferReleases += handle.IsValid() ? 1u : 0u;
+    }
+    void Release(rhi::TextureViewHandle handle) noexcept override
+    {
+        textureReleases += handle.IsValid() ? 1u : 0u;
+    }
+    void Release(rhi::SamplerHandle handle) noexcept override
+    {
+        samplerReleases += handle.IsValid() ? 1u : 0u;
     }
     void Release(rhi::ShaderModuleHandle handle) noexcept override
     {
@@ -183,6 +196,8 @@ struct GraphicsTrace
 int main()
 {
     FakeDevice device;
+    FrameDeletionQueue deletionQueue;
+    deletionQueue.Initialize(2);
     std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> words{};
     particle::GpuEmitterDesc desc;
     desc.capacity = 1000;
@@ -237,12 +252,33 @@ int main()
     liveMaterialState.blendEnable = true;
     liveMaterialState.depthWriteEnable = false;
     billboardDesc.material->SetRenderState(liveMaterialState);
+    billboardDesc.material->SetTextureGuid("texSampler", "white");
+    uint32_t textureResolveCount = 0;
+    bool normalTextureReady = false;
+    billboardDesc.textureResolver = [&textureResolveCount, &normalTextureReady](const std::string &textureGuid,
+                                                                                const std::string &name) {
+        assert(name == "texSampler");
+        ++textureResolveCount;
+        if (textureGuid == "normal" && !normalTextureReady)
+            return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Pending};
+        const uint32_t identity = textureGuid == "normal" ? 2u : 1u;
+        return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Ready,
+                                                  {400u + identity, 1},
+                                                  {500u + identity, 1},
+                                                  std::make_shared<uint32_t>(identity)};
+    };
+    billboardDesc.textureVersionResolver = [](const std::string &textureGuid) {
+        return textureGuid == "normal" ? uint64_t{2} : uint64_t{1};
+    };
+    billboardDesc.deletionQueue = &deletionQueue;
 
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({6, 1}));
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({6, 2}));
     assert(device.groupBufferCounts == std::vector<uint32_t>({6, 1}));
+    assert(device.groupTextureCounts == std::vector<uint32_t>({0, 1}));
+    assert(textureResolveCount == 1);
 
     MaterialPassPipelineDescriptor forwardPass;
     forwardPass.colorFormats = {rhi::PixelFormat::RGBA16SFloat};
@@ -274,8 +310,23 @@ int main()
     assert(billboard.RenderQueue() == 3150);
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
+    assert(textureResolveCount == 1 && device.groupCreates == 2);
     const std::array<float, 4> expectedTint = {0.25f, 0.5f, 0.75f, 0.8f};
     assert(graphicsTrace.constants.back().materialTint == expectedTint);
+    assert(textureResolveCount == 1 && device.groupCreates == 2);
+    billboardDesc.material->SetTextureGuid("texSampler", "normal");
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(textureResolveCount == 3 && device.groupCreates == 3 && device.groupReleases == 0);
+    assert(device.textureReleases == 0 && device.samplerReleases == 0);
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(textureResolveCount == 4 && device.groupCreates == 3);
+    normalTextureReady = true;
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(textureResolveCount == 5 && device.groupCreates == 4 && device.groupReleases == 0);
+    deletionQueue.Tick();
+    deletionQueue.Tick();
+    deletionQueue.Tick();
+    assert(device.groupReleases == 2 && device.textureReleases == 2 && device.samplerReleases == 2);
     liveMaterialState = billboardDesc.material->GetRenderState();
     liveMaterialState.blendEnable = false;
     liveMaterialState.depthWriteEnable = true;
@@ -310,7 +361,8 @@ int main()
 
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
-    assert(device.pipelineReleases == 5 && device.groupReleases == 3 && device.layoutReleases == 3);
+    assert(device.pipelineReleases == 5 && device.groupReleases == 5 && device.layoutReleases == 3);
+    assert(device.textureReleases == 4 && device.samplerReleases == 4);
     assert(device.shaderReleases == 9);
     assert(device.bufferReleases == 6);
     return 0;

@@ -1054,6 +1054,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleBillboardMaterial()
     state.renderQueue = 3000;
     material->SetRenderState(state);
     material->SetColor("baseColor", glm::vec4(1.0f));
+    material->SetTextureGuid("texSampler", "white");
     material->SetBuiltin(true);
     return material;
 }

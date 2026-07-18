@@ -116,7 +116,8 @@ bool Require(bool condition, const char *message)
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
          const std::filesystem::path &particleComputePath, const std::filesystem::path &particleVertexPath,
-         const std::filesystem::path &particleFragmentPath)
+         const std::filesystem::path &particleFragmentPath, const std::filesystem::path &particleTexturedVertexPath,
+         const std::filesystem::path &particleTexturedFragmentPath)
 {
     TestResources resources;
     if (!Require(SDL_Init(SDL_INIT_VIDEO), SDL_GetError()))
@@ -144,8 +145,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto particleComputeCode = ReadSpirv(particleComputePath);
     const auto particleVertexCode = ReadSpirv(particleVertexPath);
     const auto particleFragmentCode = ReadSpirv(particleFragmentPath);
+    const auto particleTexturedVertexCode = ReadSpirv(particleTexturedVertexPath);
+    const auto particleTexturedFragmentCode = ReadSpirv(particleTexturedFragmentPath);
     if (!Require(!computeCode.empty() && !vertexCode.empty() && !fragmentCode.empty() && !reflectionCode.empty() &&
-                     !particleComputeCode.empty() && !particleVertexCode.empty() && !particleFragmentCode.empty(),
+                     !particleComputeCode.empty() && !particleVertexCode.empty() && !particleFragmentCode.empty() &&
+                     !particleTexturedVertexCode.empty() && !particleTexturedFragmentCode.empty(),
                  "Failed to read generated SPIR-V test shaders"))
         return false;
 
@@ -388,6 +392,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     ResourceHandle copiedIndirectArguments;
     ResourceHandle managedInstances;
     ResourceHandle managedIndirectArguments;
+    ResourceHandle particleTexture;
     ResourceHandle colorTarget;
     infernux::particle::ParticleGpuBillboardRenderer billboardRenderer;
     infernux::particle::GpuBillboardViewConstants billboardView;
@@ -443,7 +448,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     const auto particleOutputs = particleGraph.Outputs();
 
+    resources.graph.AddPass("ParticleTexture", [&](PassBuilder &builder) {
+        particleTexture = builder.CreateTexture("ParticleTexture", 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
+        particleTexture = builder.WriteColor(particleTexture);
+        builder.SetRenderArea(1, 1);
+        builder.SetClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        return [](RenderContext &) {};
+    });
+
     resources.graph.AddPass("IndirectDraw", [&](PassBuilder &builder) {
+        builder.Read(particleTexture);
         builder.ReadIndirectBuffer(copiedIndirectArguments);
         builder.ReadStorageBuffer(particleOutputs.instances, infernux::rhi::PipelineStage::VertexShader);
         builder.ReadIndirectBuffer(particleOutputs.indirectArguments);
@@ -528,7 +542,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::rhi::BindGroupDesc sampledTextureGroupDesc;
     sampledTextureGroupDesc.layout = resources.sampledTextureBindingLayout;
     sampledTextureGroupDesc.textures[0] = {0, infernux::rhi::BindingType::CombinedTextureSampler,
-                                           resources.graph.ResolveRhiTextureView(colorTarget),
+                                           resources.graph.ResolveRhiTextureView(particleTexture),
                                            resources.sampledTextureSamplerHandle, false};
     sampledTextureGroupDesc.textureCount = 1;
     resources.sampledTextureGroup = rhi.CreateBindGroup(sampledTextureGroupDesc);
@@ -536,14 +550,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     const auto executionNames = resources.graph.GetExecutionPassNames();
-    if (!Require(executionNames.size() == 10 && executionNames[0] == "BuildIndirectArguments" &&
+    if (!Require(executionNames.size() == 11 && executionNames[0] == "BuildIndirectArguments" &&
                      executionNames[1] == "CopyIndirectArguments" &&
                      executionNames[2] == "Particle/TestEmitter/Bootstrap" &&
                      executionNames[3] == "Particle/TestEmitter/Init" &&
                      executionNames[4] == "Particle/TestEmitter/Update" &&
                      executionNames[5] == "Particle/TestEmitter/RenderReset" &&
-                     executionNames[6] == "Particle/TestEmitter/Rendering" && executionNames[7] == "IndirectDraw" &&
-                     executionNames[8] == "SkipEmptyRendererList" && executionNames[9] == "RunPopulatedRendererList",
+                     executionNames[6] == "Particle/TestEmitter/Rendering" && executionNames[7] == "ParticleTexture" &&
+                     executionNames[8] == "IndirectDraw" && executionNames[9] == "SkipEmptyRendererList" &&
+                     executionNames[10] == "RunPopulatedRendererList",
                  "Versioned culling broke the compute-to-transfer-to-indirect dependency"))
         return false;
     if (!Require(resources.graph.ResolveRendererList(emptyRendererListHandle) == &emptyRendererList &&
@@ -605,10 +620,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     infernux::particle::GpuBillboardRendererDesc billboardDesc;
-    billboardDesc.vertexShader = {particleVertexCode.data(), particleVertexCode.size()};
-    billboardDesc.fragmentShader = {particleFragmentCode.data(), particleFragmentCode.size()};
+    billboardDesc.vertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
+    billboardDesc.fragmentShader = {particleTexturedFragmentCode.data(), particleTexturedFragmentCode.size()};
     billboardDesc.instances = particleRuntime.InstanceBuffer();
     billboardDesc.fallbackMaterial.blendEnabled = false;
+    billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName) {
+        if (bindingName != "texSampler")
+            return infernux::particle::GpuBillboardTextureLease{};
+        const auto texture = rhi.RegisterTextureView(resources.graph.ResolveTextureView(particleTexture));
+        const auto sampler = rhi.RegisterSampler(resources.sampledTextureSampler);
+        return infernux::particle::GpuBillboardTextureLease{infernux::particle::GpuBillboardTextureStatus::Ready,
+                                                            texture, sampler, std::make_shared<uint32_t>(1)};
+    };
+    billboardDesc.textureVersionResolver = [](const std::string &) { return uint64_t{1}; };
     billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
     billboardView.viewProjection[0] = 1.0f;
@@ -898,9 +922,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
 int main(int argc, char **argv)
 {
-    if (argc != 8) {
+    if (argc != 10) {
         std::cerr << "Expected compute, vertex, fragment, reflection, and particle SPIR-V paths\n";
         return 2;
     }
-    return Run(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]) ? 0 : 1;
+    return Run(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9]) ? 0 : 1;
 }

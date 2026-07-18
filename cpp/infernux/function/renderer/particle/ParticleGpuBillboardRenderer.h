@@ -6,13 +6,16 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace infernux
 {
 class InxMaterial;
-}
+class FrameDeletionQueue;
+} // namespace infernux
 
 namespace infernux::particle
 {
@@ -25,6 +28,25 @@ struct GpuBillboardMaterialState
     bool depthWriteEnabled = false;
 };
 
+enum class GpuBillboardTextureStatus : uint8_t
+{
+    Ready,
+    Pending,
+    Failed,
+};
+
+struct GpuBillboardTextureLease
+{
+    GpuBillboardTextureStatus status = GpuBillboardTextureStatus::Failed;
+    rhi::TextureViewHandle texture;
+    rhi::SamplerHandle sampler;
+    std::shared_ptr<void> keepAlive;
+};
+
+using GpuBillboardTextureResolver =
+    std::function<GpuBillboardTextureLease(const std::string &textureGuid, const std::string &bindingName)>;
+using GpuBillboardTextureVersionResolver = std::function<uint64_t(const std::string &textureGuid)>;
+
 struct GpuBillboardRendererDesc
 {
     ShaderBytecode vertexShader;
@@ -32,6 +54,9 @@ struct GpuBillboardRendererDesc
     rhi::BufferHandle instances;
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
+    GpuBillboardTextureResolver textureResolver;
+    GpuBillboardTextureVersionResolver textureVersionResolver;
+    FrameDeletionQueue *deletionQueue = nullptr;
 };
 
 struct alignas(16) GpuBillboardViewConstants
@@ -81,15 +106,30 @@ class ParticleGpuBillboardRenderer
                                                                   const MaterialPassPipelineDescriptor &pass);
     [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
     [[nodiscard]] std::array<float, 4> ResolveMaterialTint() const noexcept;
+    [[nodiscard]] std::string ResolveMaterialTextureGuid() const;
+    [[nodiscard]] bool RefreshTextureBinding(bool force);
+    void RetireTextureBinding(rhi::BindGroupHandle group, rhi::TextureViewHandle texture, rhi::SamplerHandle sampler,
+                              std::shared_ptr<void> keepAlive);
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<InxMaterial> m_material;
     GpuBillboardMaterialState m_fallbackMaterial{};
+    GpuBillboardTextureResolver m_textureResolver;
+    GpuBillboardTextureVersionResolver m_textureVersionResolver;
+    FrameDeletionQueue *m_deletionQueue = nullptr;
     rhi::BufferHandle m_instances;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
+    rhi::TextureViewHandle m_texture;
+    rhi::SamplerHandle m_sampler;
+    std::shared_ptr<void> m_textureKeepAlive;
+    std::string m_textureGuid;
+    uint64_t m_textureVersion = 0;
+    bool m_texturePending = false;
+    bool m_textureFallback = false;
+    bool m_usesTexture = false;
     std::vector<PipelineEntry> m_pipelines;
 };
 

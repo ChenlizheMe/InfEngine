@@ -62,7 +62,9 @@ class ParticleGpuSystemManager
     ParticleGpuSystemManager &operator=(ParticleGpuSystemManager &&) = delete;
 
     [[nodiscard]] bool Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
-                                  FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry);
+                                  FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+                                  GpuBillboardTextureResolver textureResolver = {},
+                                  GpuBillboardTextureVersionResolver textureVersionResolver = {});
     void Shutdown() noexcept;
 
     /// Compile-then-publish replacement. The active emitter remains untouched

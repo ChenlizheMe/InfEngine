@@ -511,6 +511,8 @@ if(INFERNUX_BUILD_TESTS)
         "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuFixture.comp"
         "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuBillboard.vert"
         "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuBillboard.frag"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuTexturedBillboard.vert"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ParticleGpuTexturedBillboard.frag"
     )
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS)
     foreach(_shader_source IN LISTS INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES)
@@ -551,6 +553,8 @@ if(INFERNUX_BUILD_TESTS)
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuFixture.comp.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.vert.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.frag.spv"
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuTexturedBillboard.vert.spv"
+            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuTexturedBillboard.frag.spv"
     )
 
     add_executable(infernux_renderer_list_tests
