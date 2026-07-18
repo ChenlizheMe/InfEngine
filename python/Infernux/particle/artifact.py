@@ -12,11 +12,12 @@ from typing import Any, Mapping
 from .asset import ParticleGraphAsset
 from .hir import ParticleGraphCompiler, ParticleProgramHIR
 from .kernel_ir import ParticleKernelLowerer, ParticleKernelProgram
+from .gpu_glsl_backend import GpuParticleGlslLowerer
 from .script import ParticleScriptCompiler
 
 
 PARTICLE_ARTIFACT_SCHEMA = "infernux.particle_artifact"
-PARTICLE_ARTIFACT_VERSION = 2
+PARTICLE_ARTIFACT_VERSION = 3
 
 
 class ParticleArtifactError(ValueError):
@@ -34,6 +35,7 @@ class ParticleArtifact:
     artifact_path: str
     hir: Mapping[str, Any]
     kernel_ir: Mapping[str, Any]
+    gpu_glsl: Mapping[str, Any]
 
 
 class ParticleArtifactRegistry:
@@ -98,7 +100,9 @@ class ParticleArtifactRegistry:
             raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
         try:
             hir = _program_to_dict(program)
-            kernel_ir = ParticleKernelLowerer().lower(program).to_dict()
+            kernel_program = ParticleKernelLowerer().lower(program)
+            kernel_ir = kernel_program.to_dict()
+            gpu_glsl = GpuParticleGlslLowerer().lower(kernel_program).to_dict()
         except (TypeError, ValueError) as exc:
             raise ParticleArtifactError(f"particle AOT lowering failed: {exc}") from exc
         revision = cls._revision + 1
@@ -113,6 +117,7 @@ class ParticleArtifactRegistry:
             "behavior_hash": program.behavior_hash,
             "hir": hir,
             "kernel_ir": kernel_ir,
+            "gpu_glsl": gpu_glsl,
         }
         if artifact_path:
             from Infernux.core.document_store import write_document_text
@@ -132,6 +137,7 @@ class ParticleArtifactRegistry:
             artifact_path,
             hir,
             kernel_ir,
+            gpu_glsl,
         )
         cls._revision = revision
         cls._artifacts[key] = artifact
@@ -186,6 +192,7 @@ class ParticleArtifactRegistry:
                 or payload.get("source_kind") != source_kind
                 or type(payload.get("hir")) is not dict
                 or type(payload.get("kernel_ir")) is not dict
+                or type(payload.get("gpu_glsl")) is not dict
             ):
                 return None
             revision = payload.get("revision")
@@ -193,6 +200,9 @@ class ParticleArtifactRegistry:
                 return None
             kernel_program = ParticleKernelProgram.from_dict(payload["kernel_ir"])
             if kernel_program.source_behavior_hash != payload["behavior_hash"]:
+                return None
+            gpu_glsl = GpuParticleGlslLowerer().lower(kernel_program).to_dict()
+            if payload["gpu_glsl"] != gpu_glsl:
                 return None
             return ParticleArtifact(
                 key,
@@ -204,6 +214,7 @@ class ParticleArtifactRegistry:
                 artifact_path,
                 payload["hir"],
                 kernel_program.to_dict(),
+                gpu_glsl,
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
             return None

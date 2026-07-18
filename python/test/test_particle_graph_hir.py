@@ -406,6 +406,15 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert graph_artifact.kernel_ir["$schema"] == "infernux.particle_kernel_ir"
     assert graph_artifact.kernel_ir["source_behavior_hash"] == graph_artifact.behavior_hash
     assert graph_artifact.kernel_ir["kernel_hash"] == script_artifact.kernel_ir["kernel_hash"]
+    assert graph_artifact.gpu_glsl["$schema"] == "infernux.particle_gpu_glsl"
+    assert graph_artifact.gpu_glsl["kernel_hash"] == graph_artifact.kernel_ir["kernel_hash"]
+    assert set(graph_artifact.gpu_glsl["emitters"][0]["stages"]) == {
+        "bootstrap",
+        "init",
+        "update",
+        "render_reset",
+        "rendering",
+    }
     assert script_artifact.hir["emitters"][0]["render_plan"][0][
         "receive_scene_lighting"
     ] is True
