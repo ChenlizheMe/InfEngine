@@ -21,7 +21,7 @@ from .script import ParticleScriptCompiler
 
 
 PARTICLE_ARTIFACT_SCHEMA = "infernux.particle_artifact"
-PARTICLE_ARTIFACT_VERSION = 6
+PARTICLE_ARTIFACT_VERSION = 7
 
 
 class ParticleArtifactError(ValueError):

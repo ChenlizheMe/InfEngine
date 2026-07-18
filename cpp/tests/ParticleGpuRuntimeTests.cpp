@@ -161,7 +161,8 @@ struct GraphicsTrace
     static void PushConstants(void *context, rhi::GraphicsPipelineHandle, rhi::ShaderStage stages, uint32_t byteSize,
                               const void *data)
     {
-        assert(stages == rhi::ShaderStage::Vertex && byteSize == sizeof(particle::GpuBillboardViewConstants));
+        assert(stages == (rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment) &&
+               byteSize == sizeof(particle::GpuBillboardViewConstants));
         particle::GpuBillboardViewConstants value;
         std::memcpy(&value, data, sizeof(value));
         static_cast<GraphicsTrace *>(context)->constants.push_back(value);
@@ -261,6 +262,7 @@ int main()
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineDescs.size() == 1);
     const auto &graphicsDesc = device.graphicsPipelineDescs.front();
     assert(graphicsDesc.pushConstantBytes == sizeof(view));
+    assert(graphicsDesc.pushConstantStages == (rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment));
     assert(graphicsDesc.samples == rhi::SampleCount::Four);
     assert(graphicsDesc.depth.testEnabled && !graphicsDesc.depth.writeEnabled);
     assert(graphicsDesc.colorTargetCount == 1 && graphicsDesc.colorTargets[0].blendEnabled);
@@ -268,9 +270,11 @@ int main()
            graphicsTrace.constants.size() == 2 && graphicsTrace.indirectBuffers.size() == 2);
 
     billboardDesc.material->SetRenderQueue(3150);
+    billboardDesc.material->SetColor("baseColor", glm::vec4(0.25f, 0.5f, 0.75f, 0.8f));
     assert(billboard.RenderQueue() == 3150);
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
+    assert(graphicsTrace.constants.back().materialTint == std::array<float, 4>({0.25f, 0.5f, 0.75f, 0.8f}));
     liveMaterialState = billboardDesc.material->GetRenderState();
     liveMaterialState.blendEnable = false;
     liveMaterialState.depthWriteEnable = true;

@@ -39,6 +39,7 @@ struct alignas(16) GpuBillboardViewConstants
     std::array<float, 16> viewProjection{};
     std::array<float, 4> cameraRight{};
     std::array<float, 4> cameraUp{};
+    std::array<float, 4> materialTint{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
 class ParticleGpuBillboardRenderer
@@ -79,6 +80,7 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                                   const MaterialPassPipelineDescriptor &pass);
     [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
+    [[nodiscard]] std::array<float, 4> ResolveMaterialTint() const noexcept;
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<InxMaterial> m_material;
@@ -91,6 +93,6 @@ class ParticleGpuBillboardRenderer
     std::vector<PipelineEntry> m_pipelines;
 };
 
-static_assert(sizeof(GpuBillboardViewConstants) == 96);
+static_assert(sizeof(GpuBillboardViewConstants) == 112);
 
 } // namespace infernux::particle

@@ -43,6 +43,7 @@ layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
     vec4 camera_right;
     vec4 camera_up;
+    vec4 material_tint;
 } view;
 
 layout(location = 0) out vec4 out_color;
@@ -70,8 +71,15 @@ _BILLBOARD_FRAGMENT_GLSL = """#version 450
 layout(location = 0) in vec4 in_color;
 layout(location = 0) out vec4 out_color;
 
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    vec4 material_tint;
+} view;
+
 void main() {
-    out_color = in_color;
+    out_color = in_color * view.material_tint;
 }
 """
 

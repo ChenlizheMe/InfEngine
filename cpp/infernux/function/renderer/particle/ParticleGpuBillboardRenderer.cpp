@@ -101,6 +101,18 @@ GpuBillboardMaterialState ParticleGpuBillboardRenderer::ResolveMaterialState() c
             renderState.depthWriteEnable};
 }
 
+std::array<float, 4> ParticleGpuBillboardRenderer::ResolveMaterialTint() const noexcept
+{
+    if (!m_material || m_material->IsDeleted())
+        return {1.0f, 1.0f, 1.0f, 1.0f};
+    const auto *property = m_material->GetProperty("baseColor");
+    if (!property || (property->type != MaterialPropertyType::Color && property->type != MaterialPropertyType::Float4))
+        return {1.0f, 1.0f, 1.0f, 1.0f};
+    const auto *value = std::get_if<glm::vec4>(&property->value);
+    return value ? std::array<float, 4>{value->x, value->y, value->z, value->w}
+                 : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f};
+}
+
 bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                               rhi::RenderTargetLayoutHandle renderTargetLayout,
                                               const MaterialPassPipelineDescriptor &pass,
@@ -112,9 +124,12 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
     if (!pipeline.IsValid())
         return false;
+    auto constants = view;
+    constants.materialTint = ResolveMaterialTint();
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, m_group);
-    encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex, sizeof(view), &view);
+    encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
+                          &constants);
     encoder.DrawIndirect(indirectArguments);
     return true;
 }
@@ -148,7 +163,7 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     desc.colorTargetCount = static_cast<uint32_t>(pass.colorFormats.size());
     desc.bindingLayouts[0] = m_layout;
     desc.bindingLayoutCount = 1;
-    desc.pushConstantStages = rhi::ShaderStage::Vertex;
+    desc.pushConstantStages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(GpuBillboardViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
