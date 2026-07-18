@@ -60,6 +60,8 @@ void RegisterRenderPipelineBindings(py::module_ &m)
              "Apply a Python-defined RenderGraph topology to the scene render graph")
         .def("update_parameter_blocks", &ScriptableRenderContext::UpdateParameterBlocks, py::arg("updates"),
              "Upload changed graph parameter blocks without rebuilding topology")
+        .def_property_readonly("graph_instance_id", &ScriptableRenderContext::GetGraphInstanceId,
+                               "Stable native graph identity for revisioned upload caches")
         .def("submit_culling", &ScriptableRenderContext::SubmitCulling, py::arg("culling"),
              "Submit all culling results as full draw calls (filtering done by graph pass callbacks)")
         .def("render_with_graph", &ScriptableRenderContext::RenderWithGraph, py::arg("camera"), py::arg("description"),

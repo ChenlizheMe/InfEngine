@@ -6,7 +6,17 @@ from Infernux.components.serialized_field import FieldType, get_raw_field_value,
 from Infernux.core.asset_ref import RenderEffectRef
 from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.render_effect import RenderEffect
-from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+from Infernux.renderstack.render_effect_asset import (
+    EffectAssetReference,
+    RenderEffectAsset,
+    RenderEffectGroupAsset,
+    RenderEffectGroupEntry,
+    dump_render_effect_document,
+)
+from Infernux.renderstack.render_effect_compiler import (
+    RenderEffectCompileError,
+    expand_render_effect_reference,
+)
 from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_pipeline import RenderPipeline
 
@@ -246,3 +256,186 @@ def test_render_effect_picker_accepts_effect_groups():
 
     config = get_asset_type_config("RenderEffect")
     assert config["extensions"] == ("*.effect", "*.effectgroup", "*.effectstack")
+
+
+def test_render_stack_compiles_effect_stage_to_scoped_dynamic_blocks():
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.tonemapping",
+            parameters={"exposure": 1.25},
+        )
+    )
+    stack = RenderStack()
+    slot = stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+
+    description = stack.build_graph()
+    effect_pass = next(
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name.endswith("ToneMap_Apply")
+    )
+    command = effect_pass.commands[0]
+
+    assert f"final/{slot.slot_id}/0" in effect_pass.name
+    assert command.parameter_block.startswith(f"effect/final/{slot.slot_id}/0/")
+    assert dict(command.push_constants)["exposure"] == pytest.approx(1.25)
+    assert any(render_pass.name.endswith("final/Commit") for render_pass in description.passes)
+    assert stack.effect_compile_errors == ()
+
+
+def test_render_stack_batches_only_changed_effect_parameters_without_rebuild():
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.tonemapping",
+            parameters={"exposure": 1.0},
+        )
+    )
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+    stack._graph_desc = stack.build_graph()
+
+    class Context:
+        graph_instance_id = 17
+
+    requires_rebuild, initial = stack._collect_effect_parameter_updates(Context())
+    assert requires_rebuild is False
+    assert initial
+    assert stack._collect_effect_parameter_updates(Context()) == (False, [])
+
+    effect.set_float("exposure", 2.0)
+    requires_rebuild, updates = stack._collect_effect_parameter_updates(Context())
+
+    assert requires_rebuild is False
+    assert any(dict(update.values).get("exposure") == 2.0 for update in updates)
+
+
+def test_render_stack_rebuilds_when_effect_topology_parameter_changes():
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.bloom",
+            parameters={"max_iterations": 2},
+        )
+    )
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+    stack._graph_desc = stack.build_graph()
+
+    class Context:
+        graph_instance_id = 23
+
+    assert stack._collect_effect_parameter_updates(Context())[0] is False
+    effect.set_int("max_iterations", 3)
+    assert stack._collect_effect_parameter_updates(Context()) == (True, [])
+
+
+def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
+    bloom_path = tmp_path / "Bloom.effect"
+    tone_path = tmp_path / "Tone.effect"
+    bloom_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.bloom",
+                parameters={"intensity": 0.5, "max_iterations": 2},
+            )
+        ),
+        encoding="utf-8",
+    )
+    tone_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.tonemapping",
+                parameters={"exposure": 1.0},
+            )
+        ),
+        encoding="utf-8",
+    )
+    group_path = tmp_path / "Post.effectgroup"
+    group_path.write_text(
+        dump_render_effect_document(
+            RenderEffectGroupAsset(
+                entries=(
+                    RenderEffectGroupEntry(
+                        "bloom",
+                        EffectAssetReference(path_hint=bloom_path.name),
+                        overrides={"intensity": 0.9},
+                    ),
+                    RenderEffectGroupEntry(
+                        "tone",
+                        EffectAssetReference(path_hint=tone_path.name),
+                    ),
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    effects = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
+
+    assert [effect.feature_type for effect in effects] == [
+        "infernux.post.bloom",
+        "infernux.post.tonemapping",
+    ]
+    assert effects[0].get_float("intensity") == pytest.approx(0.9)
+
+
+def test_effect_group_cycle_is_rejected(tmp_path):
+    first = tmp_path / "First.effectgroup"
+    second = tmp_path / "Second.effectgroup"
+    first.write_text(
+        dump_render_effect_document(
+            RenderEffectGroupAsset(
+                entries=(
+                    RenderEffectGroupEntry(
+                        "second",
+                        EffectAssetReference(path_hint=second.name),
+                    ),
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+    second.write_text(
+        dump_render_effect_document(
+            RenderEffectGroupAsset(
+                entries=(
+                    RenderEffectGroupEntry(
+                        "first",
+                        EffectAssetReference(path_hint=first.name),
+                    ),
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RenderEffectCompileError, match="cycle"):
+        expand_render_effect_reference(RenderEffectRef(path_hint=str(first)))
+
+
+def test_failed_effect_compile_rolls_back_partial_graph_mutation():
+    from Infernux.renderstack.fullscreen_effect import FullScreenEffect
+    from Infernux.renderstack.render_effect_compiler import register_render_effect_feature
+
+    class BrokenEffect(FullScreenEffect):
+        name = "Broken Test Effect"
+        injection_point = "after_post_process"
+        default_order = 1
+
+        def setup_passes(self, graph, bus):
+            graph.create_texture("partial")
+            with graph.add_pass("Partial") as render_pass:
+                render_pass.write_color("partial")
+                render_pass.fullscreen_quad("fullscreen_blit")
+            raise ValueError("intentional compile failure")
+
+    register_render_effect_feature("tests.post.broken", BrokenEffect)
+    stack = RenderStack()
+    stack.add_effect_slot(
+        "final",
+        RenderEffectRef(effect=RenderEffect(RenderEffectAsset("tests.post.broken"))),
+    )
+
+    description = stack.build_graph()
+
+    assert not any("Partial" in render_pass.name for render_pass in description.passes)
+    assert any("intentional compile failure" in error for error in stack.effect_compile_errors)

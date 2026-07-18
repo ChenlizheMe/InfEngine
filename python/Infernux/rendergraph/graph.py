@@ -23,6 +23,7 @@ Design: builder pattern with a fluent API for straightforward authoring.
 from __future__ import annotations
 
 import warnings
+from contextlib import contextmanager
 from itertools import count
 from typing import Mapping, Optional, Tuple, List, Dict
 
@@ -563,6 +564,7 @@ class RenderGraph:
         self._injection_callback = None
         # Optional callback invoked at each pipeline-declared EffectStage.
         self._effect_stage_callback = None
+        self._name_scopes: List[str] = []
 
     @property
     def name(self) -> str:
@@ -606,6 +608,33 @@ class RenderGraph:
         return list(self._effect_stages_list)
 
     # ---- Resource creation ----
+
+    @contextmanager
+    def name_scope(self, prefix: str):
+        """Namespace generated pass and transient-resource names.
+
+        Reusable graph fragments may use readable local names while multiple
+        instances coexist in one compiled graph.
+        """
+        normalized = str(prefix or "").strip().strip("/")
+        if not normalized:
+            raise ValueError("render graph name scope cannot be empty")
+        parent = self._name_scopes[-1] if self._name_scopes else ""
+        self._name_scopes.append(f"{parent}/{normalized}" if parent else normalized)
+        try:
+            yield self
+        finally:
+            self._name_scopes.pop()
+
+    def _scoped_name(self, name: str) -> str:
+        raw = str(name)
+        return f"{self._name_scopes[-1]}/{raw}" if self._name_scopes else raw
+
+    def _find_texture_exact(self, name: str) -> Optional[TextureHandle]:
+        return next((texture for texture in self._textures if texture.name == name), None)
+
+    def _find_buffer_exact(self, name: str) -> Optional[BufferHandle]:
+        return next((buffer for buffer in self._buffers if buffer.name == name), None)
 
     def create_texture(
         self,
@@ -657,12 +686,14 @@ class RenderGraph:
                 f"Texture '{name}' cannot be a camera_target depth texture"
             )
 
-        if self.get_texture(name) is not None or self.get_buffer(name) is not None:
+        resource_name = self._scoped_name(name)
+        if (self._find_texture_exact(resource_name) is not None
+                or self._find_buffer_exact(resource_name) is not None):
             raise ValueError(
-                f"Resource '{name}' already exists in graph '{self._name}'"
+                f"Resource '{resource_name}' already exists in graph '{self._name}'"
             )
 
-        handle = TextureHandle(name, format, is_camera_target=camera_target,
+        handle = TextureHandle(resource_name, format, is_camera_target=camera_target,
                                size=size, size_divisor=size_divisor)
         self._textures.append(handle)
         return handle
@@ -673,10 +704,10 @@ class RenderGraph:
         Returns:
             ``TextureHandle`` or ``None`` if not found.
         """
-        for tex in self._textures:
-            if tex.name == name:
-                return tex
-        return None
+        exact = self._find_texture_exact(str(name))
+        if exact is not None or not self._name_scopes:
+            return exact
+        return self._find_texture_exact(self._scoped_name(name))
 
     def create_buffer(
         self,
@@ -691,8 +722,10 @@ class RenderGraph:
         """Create a transient graph buffer with backend-neutral usage flags."""
         if byte_size <= 0:
             raise ValueError(f"Buffer '{name}' byte_size must be positive")
-        if self.get_texture(name) is not None or self.get_buffer(name) is not None:
-            raise ValueError(f"Resource '{name}' already exists in graph '{self._name}'")
+        resource_name = self._scoped_name(name)
+        if (self._find_texture_exact(resource_name) is not None
+                or self._find_buffer_exact(resource_name) is not None):
+            raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
         usage = int(GraphBufferUsage.NONE)
         if storage:
             usage |= int(GraphBufferUsage.STORAGE)
@@ -704,22 +737,24 @@ class RenderGraph:
             usage |= int(GraphBufferUsage.TRANSFER_DESTINATION)
         if usage == int(GraphBufferUsage.NONE):
             raise ValueError(f"Buffer '{name}' must declare at least one usage")
-        handle = BufferHandle(name, int(byte_size), usage)
+        handle = BufferHandle(resource_name, int(byte_size), usage)
         self._buffers.append(handle)
         return handle
 
     def get_buffer(self, name: str) -> Optional[BufferHandle]:
         """Look up a graph buffer by alias."""
-        for buffer in self._buffers:
-            if buffer.name == name:
-                return buffer
-        return None
+        exact = self._find_buffer_exact(str(name))
+        if exact is not None or not self._name_scopes:
+            return exact
+        return self._find_buffer_exact(self._scoped_name(name))
 
     # ---- Query helpers ----
 
     def has_pass(self, name: str) -> bool:
         """Check if a pass with *name* has already been added."""
-        return any(p._name == name for p in self._passes)
+        raw = str(name)
+        scoped = self._scoped_name(raw)
+        return any(p._name == raw or p._name == scoped for p in self._passes)
 
     def has_injection_point(self, name: str) -> bool:
         """Check if an injection point with *name* has been declared."""
@@ -872,15 +907,17 @@ class RenderGraph:
 
         The pass is appended to the topology sequence automatically.
         """
-        builder = RenderPassBuilder(name, graph=self, pass_type="raster")
+        pass_name = self._scoped_name(name)
+        builder = RenderPassBuilder(pass_name, graph=self, pass_type="raster")
         self._passes.append(builder)
-        self._topology.append(("pass", name))
+        self._topology.append(("pass", pass_name))
         return builder
 
     def _add_typed_pass(self, name: str, pass_type: str) -> RenderPassBuilder:
-        builder = RenderPassBuilder(name, graph=self, pass_type=pass_type)
+        pass_name = self._scoped_name(name)
+        builder = RenderPassBuilder(pass_name, graph=self, pass_type=pass_type)
         self._passes.append(builder)
-        self._topology.append(("pass", name))
+        self._topology.append(("pass", pass_name))
         return builder
 
     def add_compute_pass(self, name: str) -> RenderPassBuilder:

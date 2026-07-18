@@ -131,6 +131,9 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     _pipeline_catalog_signature: tuple = ()
     _topology_probe_cache = None
     _effect_binding_error: str = ""
+    _compiled_effect_bindings = None
+    _effect_upload_revisions = None
+    _effect_compile_errors: tuple[str, ...] = ()
 
     # ==================================================================
     # Lifecycle
@@ -151,6 +154,10 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             self._pipeline_param_store = {}
         if self.effect_slots is None:
             self.effect_slots = []
+        if self._compiled_effect_bindings is None:
+            self._compiled_effect_bindings = []
+        if self._effect_upload_revisions is None:
+            self._effect_upload_revisions = {}
         self._pipeline_catalog_signature = ()
         self._register_pipeline_catalog_reload()
         self._sync_pipeline_catalog()
@@ -179,6 +186,8 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         self._pipeline = None
         self._graph_desc = None
         self._resource_bus = None
+        self._compiled_effect_bindings = []
+        self._effect_upload_revisions = {}
         if was_active:
             self._promote_next_stack()
 
@@ -367,6 +376,11 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     def effect_binding_error(self) -> str:
         """Return a persistent parse diagnostic without discarding source data."""
         return self._effect_binding_error
+
+    @property
+    def effect_compile_errors(self) -> tuple[str, ...]:
+        """Current non-destructive diagnostics for mounted Effect assets."""
+        return self._effect_compile_errors
 
     @property
     def effect_stages(self):
@@ -580,6 +594,8 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         self._graph_desc = None
         self._build_failed = False  # allow retry after explicit invalidation
         self._topology_probe_cache = None
+        self._compiled_effect_bindings = []
+        self._effect_upload_revisions = {}
 
     def build_graph(self):  # -> RenderGraphDescription
         """Build the complete RenderGraph.
@@ -605,6 +621,8 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         graph = RenderGraph("Pipeline+Stack")
         bus = ResourceBus()
         self._resource_bus = bus
+        compiled_effects = []
+        effect_errors = []
 
         # Callback: invoked every time pipeline calls graph.injection_point()
         def on_injection_point(point_name: str) -> None:
@@ -616,8 +634,42 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
         graph._injection_callback = on_injection_point
 
+        def on_effect_stage(stage) -> None:
+            from Infernux.renderstack.render_effect_compiler import compile_effect_slots
+
+            for resource_name in stage.contract.inputs:
+                resource = graph.get_texture(resource_name)
+                if resource is not None:
+                    bus.set(resource_name, resource)
+
+            stage_color = bus.get(COLOR_TEXTURE)
+            bindings, errors = compile_effect_slots(
+                stage,
+                self.get_effect_stage_slots(stage.stable_id),
+                graph,
+                bus,
+            )
+            compiled_effects.extend(bindings)
+            effect_errors.extend(errors)
+
+            effect_color = bus.get(COLOR_TEXTURE)
+            if (stage_color is not None
+                    and effect_color is not None
+                    and effect_color is not stage_color):
+                with graph.name_scope(f"effects/{stage.stable_id}"):
+                    with graph.add_pass("Commit") as render_pass:
+                        render_pass.set_texture("_SourceTex", effect_color)
+                        render_pass.write_color(stage_color)
+                        render_pass.fullscreen_quad("fullscreen_blit")
+                bus.set(COLOR_TEXTURE, stage_color)
+
+        graph._effect_stage_callback = on_effect_stage
+
         # Pipeline populates graph with passes + injection points
         self.pipeline.define_topology(graph)
+        self._compiled_effect_bindings = compiled_effects
+        self._effect_compile_errors = tuple(effect_errors)
+        self._effect_upload_revisions = {}
 
         # Ensure before/after_post_process injection points exist WHILE the
         # callback is still active. graph.build() also auto-injects these,
@@ -676,6 +728,13 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         if self._pass_entries is None:
             self._pass_entries = []
 
+        if self._graph_desc is not None:
+            requires_rebuild, updates = self._collect_effect_parameter_updates(context)
+            if requires_rebuild:
+                self.invalidate_graph()
+            elif updates:
+                context.update_parameter_blocks(updates)
+
         # Lazy build graph topology (skip if last build failed)
         if self._graph_desc is None and not self._build_failed:
             context.setup_camera_properties(camera)
@@ -724,6 +783,34 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             # rebuilt native graph falls back to the full description once.
             if not context.render_compiled(camera, self._graph_desc.source_revision):
                 context.render_with_graph(camera, self._graph_desc)
+
+    def _collect_effect_parameter_updates(self, context):
+        bindings = self._compiled_effect_bindings or ()
+        if not bindings:
+            return False, []
+        graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
+        if self._effect_upload_revisions is None:
+            self._effect_upload_revisions = {}
+        updates = []
+        for binding in bindings:
+            revision_key = (graph_id, binding.binding_id)
+            revision = binding.source.revision
+            if self._effect_upload_revisions.get(revision_key) == revision:
+                continue
+            try:
+                requires_rebuild, binding_updates = binding.collect_updates()
+            except (TypeError, ValueError) as exc:
+                diagnostic = f"{binding.binding_id}: {exc}"
+                self._effect_compile_errors = tuple(
+                    dict.fromkeys((*self._effect_compile_errors, diagnostic))
+                )
+                self._effect_upload_revisions[revision_key] = revision
+                continue
+            if requires_rebuild:
+                return True, []
+            updates.extend(binding_updates)
+            self._effect_upload_revisions[revision_key] = revision
+        return False, updates
 
     # ==================================================================
     # Private helpers

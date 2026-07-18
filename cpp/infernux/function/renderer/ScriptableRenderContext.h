@@ -153,6 +153,12 @@ class ScriptableRenderContext
     /// Upload only changed graph parameter blocks; does not rebuild topology.
     void UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
 
+    /// Stable identity used by Python upload caches for this native graph.
+    [[nodiscard]] uintptr_t GetGraphInstanceId() const noexcept
+    {
+        return reinterpret_cast<uintptr_t>(m_graph);
+    }
+
     /// @brief Submit all culling results as full draw calls + execute graph.
     /// Replaces the DrawRenderers() + DrawSkybox() + Submit() combo.
     /// DrawCall filtering is done by RenderGraph pass callbacks.

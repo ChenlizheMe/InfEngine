@@ -503,6 +503,7 @@ def _render_topology_with_effects(ctx: InxGUIContext, stack: "RenderStack", insp
             _render_pass_bar(ctx, label, _uid_counter)
 
     _render_orphan_effect_slots(ctx, stack)
+    _render_effect_compile_errors(ctx, stack)
 
     ctx.pop_style_var(1)
 
@@ -575,6 +576,32 @@ def _render_orphan_effect_slots(ctx: InxGUIContext, stack: "RenderStack") -> Non
                 bool(slot.enabled),
                 None,
                 asset_name,
+            )
+
+
+def _render_effect_compile_errors(ctx: InxGUIContext, stack: "RenderStack") -> None:
+    errors = stack.effect_compile_errors
+    if not errors:
+        return
+    ctx.dummy(0, 4)
+    if not render_compact_section_header(
+        ctx,
+        f"Effect Compile Errors [{len(errors)}]##effect_compile_errors",
+        text_color=Theme.WARNING_TEXT,
+        level="secondary",
+    ):
+        return
+    for index, error in enumerate(errors):
+        ctx.text_wrapped(error)
+        if semantic_capture_enabled(ctx):
+            ctx.record_semantic_item(
+                "render_effect_compile_error",
+                "Effect Compile Error",
+                False,
+                _renderstack_semantic_id(stack, f"effect_compile_error.{index}"),
+                None,
+                None,
+                error,
             )
 
 

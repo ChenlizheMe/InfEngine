@@ -388,6 +388,23 @@ class TestGraphTextures:
         g = RenderGraph("G")
         assert g.get_texture("nope") is None
 
+    def test_name_scope_reuses_readable_local_resource_and_pass_names(self):
+        graph = _make_graph()
+        for scope in ("first", "second"):
+            with graph.name_scope(scope):
+                output = graph.create_texture("result", format=Format.RGBA16_SFLOAT)
+                with graph.add_pass("Apply") as render_pass:
+                    render_pass.set_texture("_SourceTex", "color")
+                    render_pass.write_color(output)
+                    render_pass.fullscreen_quad("effect")
+
+        assert graph.get_texture("first/result") is not None
+        assert graph.get_texture("second/result") is not None
+        assert [render_pass.name for render_pass in graph._passes] == [
+            "first/Apply",
+            "second/Apply",
+        ]
+
     def test_msaa_valid_values(self):
         g = RenderGraph("G")
         for v in (0, 1, 2, 4, 8):

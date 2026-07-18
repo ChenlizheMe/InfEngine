@@ -52,6 +52,12 @@ from Infernux.renderstack.render_effect_asset import (
     dump_render_effect_document,
     parse_render_effect_document,
 )
+from Infernux.renderstack.render_effect_compiler import (
+    RenderEffectCompileError,
+    RenderEffectFeature,
+    get_render_effect_feature,
+    register_render_effect_feature,
+)
 from Infernux.renderstack.resource_bus import ResourceBus
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack.render_pipeline import RenderPipeline, RenderPipelineAsset
@@ -98,6 +104,10 @@ __all__ = [
     "parse_render_effect_document",
     "dump_render_effect_document",
     "direct_effect_dependencies",
+    "RenderEffectCompileError",
+    "RenderEffectFeature",
+    "get_render_effect_feature",
+    "register_render_effect_feature",
     # Resource bus
     "ResourceBus",
     # Pass base classes
