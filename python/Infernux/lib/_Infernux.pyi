@@ -77,6 +77,10 @@ GIZMO_YZ_PLANE_ID: int
 
 CAMERA_TARGET: RenderTargetHandle
 
+def _compile_compute_glsl_batch(
+    sources: Dict[str, str], source_label: str = ...
+) -> Dict[str, bytes]: ...
+
 
 # =============================================================================
 # Enums

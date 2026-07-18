@@ -415,6 +415,11 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
         "render_reset",
         "rendering",
     }
+    assert graph_artifact.gpu_spirv["target"] == "vulkan1.2-spirv1.5"
+    assert graph_artifact.gpu_spirv["kernel_hash"] == graph_artifact.kernel_ir["kernel_hash"]
+    assert set(graph_artifact.gpu_spirv["emitters"][0]["stages"]) == set(
+        graph_artifact.gpu_glsl["emitters"][0]["stages"]
+    )
     assert script_artifact.hir["emitters"][0]["render_plan"][0][
         "receive_scene_lighting"
     ] is True

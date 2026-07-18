@@ -111,6 +111,12 @@ class InxShaderLoader
                                                                                       const std::string &fragmentSource,
                                                                                       const std::string &fragmentPath);
 
+    /// Compile generated compute GLSL directly to SPIR-V. This bypasses the
+    /// authored material/shading-model preprocessor and is intended for AOT
+    /// backends such as Particle Kernel IR.
+    [[nodiscard]] std::vector<char> CompileComputeGlsl(const std::string &source,
+                                                       const std::string &virtualPath = "<generated-compute>");
+
     /// Parse a single "@key: value" or "// @key: value" annotation line.
     /// Returns {key, value} or nullopt if the line is not an annotation.
     static std::optional<std::pair<std::string, std::string>> ParseAnnotation(const std::string &line);
@@ -121,6 +127,7 @@ class InxShaderLoader
     /// Last shader compile error message (empty on success).
     /// Set by Load() when glslang parse/link fails; read by Infernux::ReloadShaderRuntime.
     static std::string s_lastCompileError;
+    [[nodiscard]] static const std::string &GetLastCompileError() noexcept;
 
     using CompiledVariantSet = std::unordered_map<ShaderCompileTarget, std::vector<char>>;
 

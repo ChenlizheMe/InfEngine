@@ -102,6 +102,11 @@ std::unordered_map<std::string, ShaderDescriptor> InxShaderLoader::s_shadingMode
 thread_local std::unordered_map<std::string, InxShaderLoader::CompiledVariantSet>
     InxShaderLoader::s_compiledVariantCache;
 std::string InxShaderLoader::s_lastCompileError;
+
+const std::string &InxShaderLoader::GetLastCompileError() noexcept
+{
+    return s_lastCompileError;
+}
 std::unordered_map<std::string, std::unordered_map<std::string, std::string>> InxShaderLoader::s_shaderIdMapCache;
 
 InxShaderLoader::CompiledVariantSet InxShaderLoader::TakeCompiledVariants(const std::string &filePath)
@@ -1640,6 +1645,14 @@ bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage sha
     outSpirv.resize(spirv.size() * sizeof(unsigned int));
     std::memcpy(outSpirv.data(), reinterpret_cast<const char *>(spirv.data()), outSpirv.size());
     return true;
+}
+
+std::vector<char> InxShaderLoader::CompileComputeGlsl(const std::string &source, const std::string &virtualPath)
+{
+    std::vector<char> spirv;
+    if (!CompileGLSL(source, EShLangCompute, virtualPath, spirv))
+        return {};
+    return spirv;
 }
 
 void InxShaderLoader::CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
