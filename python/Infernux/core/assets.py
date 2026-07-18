@@ -36,6 +36,7 @@ from Infernux.core.asset_types import (
     ANIMCLIP3D_EXTENSIONS,
     ANIMFSM_EXTENSIONS,
     RENDER_EFFECT_EXTENSIONS,
+    PARTICLE_GRAPH_EXTENSIONS,
     asset_category_from_extension,
 )
 from Infernux.core.animation_clip import AnimationClip
@@ -334,6 +335,14 @@ class AssetManager:
             result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
             result.error = effect_error
             return result
+        particle_error = cls._compile_particle_runtime(path, result.guid)
+        if particle_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = particle_error
+            return result
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("created", path)
         cls._invalidate_shader_authoring_cache(path)
@@ -381,6 +390,14 @@ class AssetManager:
             result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
             result.error = effect_error
             return result
+        particle_error = cls._compile_particle_runtime(path, guid)
+        if particle_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = particle_error
+            return result
 
         if has_shader_runtime:
             error = native.reload_shader_runtime(path, previous_shader_id)
@@ -391,7 +408,7 @@ class AssetManager:
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
                 result.error = error
                 return result
-        elif ext not in RENDER_EFFECT_EXTENSIONS:
+        elif not cls._is_compiled_authoring_source(path):
             registry = cls._get_registry()
             if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
                 from Infernux.lib import AssetMutationErrorCode
@@ -401,7 +418,7 @@ class AssetManager:
                 return result
 
         cls._invalidate_shader_authoring_cache(path)
-        if ext not in RENDER_EFFECT_EXTENSIONS:
+        if os.path.splitext(path)[1].lower() not in RENDER_EFFECT_EXTENSIONS:
             cls.invalidate(guid)
         if ext in IMAGE_EXTENSIONS:
             cls._invalidate_texture_ui_cache(path)
@@ -441,6 +458,31 @@ class AssetManager:
             return ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return f"render effect compile failed; keeping last-known-good: {exc}"
+
+    @staticmethod
+    def _is_particle_source(path: str) -> bool:
+        lower = str(path or "").lower()
+        return lower.endswith(".particlegraph") or lower.endswith(".particle.py")
+
+    @classmethod
+    def _is_compiled_authoring_source(cls, path: str) -> bool:
+        return (
+            os.path.splitext(path)[1].lower() in RENDER_EFFECT_EXTENSIONS
+            or cls._is_particle_source(path)
+        )
+
+    @classmethod
+    def _compile_particle_runtime(cls, path: str, guid: str) -> str:
+        """Compile ParticleGraph/ParticleScript before publishing file changes."""
+        if not cls._is_particle_source(path):
+            return ""
+        try:
+            from Infernux.particle.artifact import ParticleArtifactRegistry
+
+            ParticleArtifactRegistry.compile_path(path, guid=guid)
+            return ""
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return f"particle compile failed; keeping last-known-good: {exc}"
 
     @classmethod
     def _emit_editor_asset_changed(cls, path: str, event_type: str = "modified") -> None:
@@ -835,6 +877,9 @@ class AssetManager:
         if ext == ".effect":
             from Infernux.renderstack.render_effect import RenderEffect
             return RenderEffect
+        if ext in PARTICLE_GRAPH_EXTENSIONS:
+            from Infernux.particle.asset import ParticleGraphAsset
+            return ParticleGraphAsset
         return None
 
     @classmethod
@@ -875,6 +920,18 @@ class AssetManager:
                     effect._artifact_revision = artifact.revision
                     return effect
                 return None
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return None
+        from Infernux.particle.asset import ParticleGraphAsset
+        if asset_type is ParticleGraphAsset or (
+            asset_type is None and path.lower().endswith(".particlegraph")
+        ):
+            try:
+                from Infernux.particle.artifact import ParticleArtifactRegistry
+
+                guid = cls._get_guid_from_path(path) or ""
+                ParticleArtifactRegistry.compile_path(path, guid=guid)
+                return ParticleGraphAsset.load(path)
             except (OSError, RuntimeError, TypeError, ValueError):
                 return None
         return None

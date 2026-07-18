@@ -513,6 +513,35 @@ def test_game_data_includes_render_effect_artifacts(tmp_path):
         assert "Library/Artifacts/RenderEffect/bloom.inxeffect" in archive.namelist()
 
 
+def test_game_data_includes_particle_artifacts(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    artifact = (
+        Path(builder.project_path)
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+        / "smoke.inxparticle"
+    )
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text('{"$schema":"infernux.particle_artifact"}', encoding="utf-8")
+    final_dir = tmp_path / "dist"
+
+    builder._copy_game_data(str(final_dir))
+    shipped = (
+        final_dir
+        / "Data"
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+        / artifact.name
+    )
+    assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
+
+    builder._pack_content_archive(str(final_dir))
+    with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
+        assert "Library/Artifacts/Particle/smoke.inxparticle" in archive.namelist()
+
+
 def test_payload_manifest_allows_project_asset_metadata(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"

@@ -437,8 +437,10 @@ def test_initial_script_scan_publishes_artifact_for_main_thread(monkeypatch, tmp
     assets.mkdir()
     valid = assets / "valid.py"
     invalid = assets / "invalid.py"
+    particle = assets / "smoke.particle.py"
     valid.write_text("value = 1\n", encoding="utf-8")
     invalid.write_text("def broken(:\n", encoding="utf-8")
+    particle.write_text("this is checked by the particle compiler\n", encoding="utf-8")
 
     manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
     commits = []

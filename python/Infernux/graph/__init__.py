@@ -1,6 +1,6 @@
 """Common authored-graph schema, type system, registry and expression IR."""
 
-from .types import CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, TypeSystem, ValueType
+from .types import AssetReference, CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, TypeSystem, ValueType
 from .registry import (
     COMMON_NODE_REGISTRY,
     NodeDef,

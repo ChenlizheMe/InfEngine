@@ -183,6 +183,7 @@ class ResourceType(IntEnum):
     DefaultBinary: int
     PhysicMaterial: int
     RenderEffect: int
+    ParticleGraph: int
 
 
 class PixelFormat(IntEnum):

@@ -116,6 +116,8 @@ void InxTypeRegistry::Build()
                 return std::string("PhysicMaterial");
             case ResourceType::RenderEffect:
                 return std::string("RenderEffect");
+            case ResourceType::ParticleGraph:
+                return std::string("ParticleGraph");
             default:
                 return std::string("Unknown");
             }
@@ -143,6 +145,8 @@ void InxTypeRegistry::Build()
                 return std::any{ResourceType::PhysicMaterial};
             if (s == "RenderEffect")
                 return std::any{ResourceType::RenderEffect};
+            if (s == "ParticleGraph")
+                return std::any{ResourceType::ParticleGraph};
             if (s == "Unknown")
                 return std::any{ResourceType::DefaultText};
             return std::any{ResourceType::DefaultText};

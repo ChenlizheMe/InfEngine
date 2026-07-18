@@ -17,6 +17,8 @@ class ValueType(str, Enum):
     COLOR = "color"
     MAT3 = "mat3"
     MAT4 = "mat4"
+    STRING = "string"
+    ASSET_REF = "asset_ref"
 
 
 class CoordinateSpace(str, Enum):
@@ -27,6 +29,27 @@ class CoordinateSpace(str, Enum):
     VIEW = "view"
     BILLBOARD = "billboard"
     BAKE_BASIS = "bake_basis"
+
+
+@dataclass(frozen=True)
+class AssetReference:
+    guid: str = ""
+    path_hint: str = ""
+
+    def __post_init__(self) -> None:
+        if type(self.guid) is not str or type(self.path_hint) is not str:
+            raise TypeError("asset reference guid and path_hint must be strings")
+        object.__setattr__(self, "guid", self.guid.strip())
+        object.__setattr__(self, "path_hint", self.path_hint.strip().replace("\\", "/"))
+
+    def to_dict(self) -> dict[str, str]:
+        return {"guid": self.guid, "path_hint": self.path_hint}
+
+    @classmethod
+    def from_dict(cls, value) -> "AssetReference":
+        if type(value) is not dict or set(value) != {"guid", "path_hint"}:
+            raise ValueError("asset reference requires exactly guid and path_hint")
+        return cls(value["guid"], value["path_hint"])
 
 
 @dataclass(frozen=True, order=True)
@@ -103,6 +126,7 @@ PORTABLE_TYPE_SYSTEM = TypeSystem()
 
 
 __all__ = [
+    "AssetReference",
     "CoordinateSpace",
     "PORTABLE_TYPE_SYSTEM",
     "TypeRef",

@@ -28,6 +28,10 @@ class _AssetImportNotReady(RuntimeError):
     pass
 
 
+def _is_particle_script_path(file_path: str) -> bool:
+    return str(file_path or "").lower().endswith(".particle.py")
+
+
 class ResourceChangeHandler(FileSystemEventHandler):
 
     def __init__(self, engine: Infernux):
@@ -181,7 +185,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             )
         except RuntimeError as exc:
             raise _AssetImportNotReady(str(exc)) from exc
-        if path.lower().endswith(".py"):
+        if path.lower().endswith(".py") and not _is_particle_script_path(path):
             self._check_script(path, catalog_event="created")
 
     def _commit_modified(self, path: str) -> None:
@@ -208,7 +212,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 database=self._asset_database,
                 suppress_watcher_echo=False,
             )
-        if path.lower().endswith(".py"):
+        if path.lower().endswith(".py") and not _is_particle_script_path(path):
             self._check_script(path, catalog_event="modified")
         elif path.lower().endswith((".vert", ".frag")):
             self._notify_shader_reloaded(path)
@@ -227,7 +231,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             suppress_watcher_echo=False,
         ):
             raise RuntimeError(f"asset deletion failed: {path}")
-        if path.lower().endswith(".py"):
+        if path.lower().endswith(".py") and not _is_particle_script_path(path):
             from Infernux.components.script_loader import clear_deleted_script_errors
             clear_deleted_script_errors(path)
             manager = ResourcesManager.instance()
@@ -245,7 +249,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             suppress_watcher_echo=False,
         ):
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
-        if new_path.lower().endswith(".py"):
+        if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
             from Infernux.components.script_loader import clear_deleted_script_errors
             clear_deleted_script_errors(old_path)
             manager = ResourcesManager.instance()
@@ -489,7 +493,7 @@ class ResourcesManager:
                 return
             dirs[:] = [d for d in dirs if d != '__pycache__']
             for fname in files:
-                if not fname.endswith('.py'):
+                if not fname.endswith('.py') or _is_particle_script_path(fname):
                     continue
                 fpath = os.path.join(root, fname)
                 results.append((fpath, tuple(compiler.check_file(fpath))))

@@ -52,7 +52,7 @@ double Milliseconds(Clock::time_point start)
 
 void TestResourceTypeMetadataRoundTrip()
 {
-    const std::array<std::pair<ResourceType, const char *>, 10> cases = {{
+    const std::array<std::pair<ResourceType, const char *>, 12> cases = {{
         {ResourceType::Meta, "Meta"},
         {ResourceType::Shader, "Shader"},
         {ResourceType::Texture, "Texture"},
@@ -63,6 +63,8 @@ void TestResourceTypeMetadataRoundTrip()
         {ResourceType::DefaultText, "DefaultText"},
         {ResourceType::DefaultBinary, "DefaultBinary"},
         {ResourceType::PhysicMaterial, "PhysicMaterial"},
+        {ResourceType::RenderEffect, "RenderEffect"},
+        {ResourceType::ParticleGraph, "ParticleGraph"},
     }};
 
     for (const auto &[type, name] : cases) {

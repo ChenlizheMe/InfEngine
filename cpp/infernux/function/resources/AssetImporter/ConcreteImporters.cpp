@@ -219,6 +219,95 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
     return ordered;
 }
 
+ImportArtifact ParticleGraphImporter::Import(const ImportRequest &request) const
+{
+    ImportArtifact artifact(request.metadata);
+    artifact.dependencies = ScanDependencies(request);
+    artifact.dependenciesAuthoritative = true;
+    return artifact;
+}
+
+std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportRequest &request) const
+{
+    if (!request.resolveAssetGuid)
+        throw std::logic_error("ParticleGraphImporter request has no dependency resolver");
+
+    nlohmann::json root;
+    try {
+        std::ifstream file(ToFsPath(request.sourcePath));
+        if (!file.is_open())
+            throw std::runtime_error("failed to open particle graph document");
+        file >> root;
+    } catch (const std::exception &e) {
+        throw std::runtime_error("ParticleGraphImporter failed to parse '" + request.sourcePath + "': " + e.what());
+    }
+
+    const auto requireExactKeys = [](const nlohmann::json &value, std::initializer_list<const char *> expected,
+                                     const std::string &location) {
+        if (!value.is_object())
+            throw std::runtime_error(location + " must be an object");
+        std::unordered_set<std::string> keys;
+        for (const char *key : expected)
+            keys.emplace(key);
+        if (value.size() != keys.size())
+            throw std::runtime_error(location + " contains missing or unknown fields");
+        for (const auto &[key, ignored] : value.items()) {
+            (void)ignored;
+            if (keys.find(key) == keys.end())
+                throw std::runtime_error(location + " contains unknown field '" + key + "'");
+        }
+    };
+
+    requireExactKeys(root, {"$schema", "$version", "stable_id", "name", "emitters", "parameters"}, "particle graph");
+    if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.particle_graph")
+        throw std::runtime_error("particle graph has an unsupported $schema");
+    if (!root["$version"].is_number_integer() || root["$version"].get<int>() != 1)
+        throw std::runtime_error("particle graph $version must be 1");
+    if (!root["stable_id"].is_string() || root["stable_id"].get_ref<const std::string &>().empty() ||
+        !root["name"].is_string() || root["name"].get_ref<const std::string &>().empty())
+        throw std::runtime_error("particle graph stable_id and name must be non-empty strings");
+    if (!root["emitters"].is_array() || root["emitters"].empty() || !root["parameters"].is_array())
+        throw std::runtime_error("particle graph requires emitters and parameters arrays");
+
+    std::unordered_set<std::string> dependencies;
+    for (size_t emitterIndex = 0; emitterIndex < root["emitters"].size(); ++emitterIndex) {
+        const auto &emitter = root["emitters"][emitterIndex];
+        const std::string emitterLocation = "emitters[" + std::to_string(emitterIndex) + "]";
+        requireExactKeys(emitter, {"stable_id", "name", "settings", "attributes", "stages"}, emitterLocation);
+        if (!emitter["stages"].is_object())
+            throw std::runtime_error(emitterLocation + ".stages must be an object");
+        requireExactKeys(emitter["stages"], {"init", "update", "rendering"}, emitterLocation + ".stages");
+
+        for (const char *stageName : {"init", "update", "rendering"}) {
+            const auto &stage = emitter["stages"][stageName];
+            const std::string stageLocation = emitterLocation + ".stages." + stageName;
+            requireExactKeys(stage, {"$schema", "$version", "domain", "nodes", "links", "metadata"}, stageLocation);
+            if (!stage["nodes"].is_array() || !stage["links"].is_array())
+                throw std::runtime_error(stageLocation + " nodes and links must be arrays");
+            for (const auto &node : stage["nodes"]) {
+                if (!node.is_object() || !node.contains("properties") || !node["properties"].is_object())
+                    throw std::runtime_error(stageLocation + " contains an invalid node");
+                const auto material = node["properties"].find("material");
+                if (material == node["properties"].end())
+                    continue;
+                requireExactKeys(*material, {"guid", "path_hint"}, stageLocation + ".material");
+                if (!(*material)["guid"].is_string() || !(*material)["path_hint"].is_string())
+                    throw std::runtime_error(stageLocation + ".material guid and path_hint must be strings");
+                std::string guid = (*material)["guid"].get<std::string>();
+                const std::string pathHint = (*material)["path_hint"].get<std::string>();
+                if (guid.empty() && !pathHint.empty())
+                    guid = request.resolveAssetGuid(pathHint);
+                if (!guid.empty())
+                    dependencies.insert(guid);
+            }
+        }
+    }
+
+    std::vector<std::string> ordered(dependencies.begin(), dependencies.end());
+    std::sort(ordered.begin(), ordered.end());
+    return ordered;
+}
+
 // ============================================================================
 // ModelImporter — scan model file with Assimp and extract metadata into .meta
 // ============================================================================

@@ -999,15 +999,16 @@ finally:
                     f"  copied {dirname}/ in {time.perf_counter() - _t0:.2f}s"
                 )
 
-        effect_artifacts = os.path.join(
-            self.project_path, "Library", "Artifacts", "RenderEffect"
-        )
-        if os.path.isdir(effect_artifacts):
-            shutil.copytree(
-                effect_artifacts,
-                os.path.join(data_dir, "Library", "Artifacts", "RenderEffect"),
-                dirs_exist_ok=True,
+        for artifact_kind in ("RenderEffect", "Particle"):
+            artifact_source = os.path.join(
+                self.project_path, "Library", "Artifacts", artifact_kind
             )
+            if os.path.isdir(artifact_source):
+                shutil.copytree(
+                    artifact_source,
+                    os.path.join(data_dir, "Library", "Artifacts", artifact_kind),
+                    dirs_exist_ok=True,
+                )
 
         self._filter_shipped_requirements(data_dir)
 

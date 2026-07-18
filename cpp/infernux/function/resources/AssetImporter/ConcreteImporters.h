@@ -142,6 +142,29 @@ class RenderEffectImporter final : public AssetImporter
 };
 
 // ==========================================================================
+// ParticleGraphImporter - validates particle graph sources and asset edges
+// ==========================================================================
+
+class ParticleGraphImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::ParticleGraph;
+    }
+
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".particlegraph"};
+    }
+
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+
+  private:
+    [[nodiscard]] std::vector<std::string> ScanDependencies(const ImportRequest &request) const;
+};
+
+// ==========================================================================
 // ScriptImporter
 // ==========================================================================
 

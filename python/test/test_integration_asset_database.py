@@ -9,6 +9,8 @@ import threading
 import pytest
 
 from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, ResourceType
+from Infernux.core.assets import AssetManager
+from Infernux.particle import AssetReference, ParticleArtifactRegistry, ParticleGraphAsset
 
 
 def test_audio_import_repairs_legacy_default_text_metadata(engine, tmp_path: Path):
@@ -133,6 +135,111 @@ def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Pat
     assert not result
     assert not asset_db.contains_path(str(source))
     assert asset_db.get_guid_from_path(str(source)) == ""
+
+
+def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "Smoke.particlegraph"
+    document = ParticleGraphAsset(stable_id="integration-smoke").to_dict()
+    document["emitters"][0]["stages"]["rendering"]["nodes"][1]["properties"][
+        "material"
+    ] = AssetReference(guid="smoke-material-guid").to_dict()
+    source.write_text(
+        json.dumps(document),
+        encoding="utf-8",
+    )
+    ParticleArtifactRegistry.clear()
+
+    try:
+        result = AssetManager.import_asset(str(source), database=asset_db)
+
+        assert result
+        assert result.resource_type == ResourceType.ParticleGraph
+        assert asset_db.get_meta_by_path(str(source)).get_resource_type() == ResourceType.ParticleGraph
+        artifact = ParticleArtifactRegistry.get(str(source), guid=result.guid)
+        assert artifact is not None
+        assert ParticleArtifactRegistry.get(str(source)) is artifact
+        assert artifact.hir["stable_id"] == "integration-smoke"
+        assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
+            "smoke-material-guid"
+        }
+    finally:
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+        ParticleArtifactRegistry.clear()
+
+
+def test_particle_script_import_uses_script_resource_and_particle_aot(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "Sparks.particle.py"
+    source.write_text(
+        """from Infernux.particle import (
+    AssetReference, EmitterSettings, ParticleEmitter, ParticleScript
+)
+
+class SparksGraph(ParticleScript):
+    stable_id = "integration-sparks"
+
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings(target="gpu")
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.sprite(material=AssetReference())
+""",
+        encoding="utf-8",
+    )
+    ParticleArtifactRegistry.clear()
+
+    try:
+        result = AssetManager.import_asset(str(source), database=asset_db)
+
+        assert result
+        assert result.resource_type == ResourceType.Script
+        artifact = ParticleArtifactRegistry.get(str(source), guid=result.guid)
+        assert artifact is not None
+        assert artifact.source_kind == "script"
+        assert artifact.hir["schedule"] == ["sparks"]
+    finally:
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+        ParticleArtifactRegistry.clear()
+
+
+def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "StableSmoke.particlegraph"
+    valid = ParticleGraphAsset(stable_id="stable-smoke")
+    source.write_text(json.dumps(valid.to_dict()), encoding="utf-8")
+    ParticleArtifactRegistry.clear()
+
+    try:
+        imported = AssetManager.import_asset(str(source), database=asset_db)
+        assert imported
+        published = ParticleArtifactRegistry.get(str(source), guid=imported.guid)
+        assert published is not None
+
+        invalid = valid.to_dict()
+        invalid["emitters"][0]["stages"]["rendering"]["nodes"] = []
+        invalid["emitters"][0]["stages"]["rendering"]["links"] = []
+        source.write_text(json.dumps(invalid), encoding="utf-8")
+        result = AssetManager.reimport_asset(str(source), database=asset_db)
+
+        assert not result
+        assert result.database_committed is True
+        assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+        assert "keeping last-known-good" in result.error
+        assert ParticleArtifactRegistry.get(str(source), guid=imported.guid) == published
+    finally:
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+        ParticleArtifactRegistry.clear()
 
 
 def test_asset_database_never_indexes_python_bytecode_or_cache_paths(engine):

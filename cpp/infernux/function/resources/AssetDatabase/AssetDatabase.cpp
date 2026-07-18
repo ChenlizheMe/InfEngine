@@ -394,6 +394,7 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_importerRegistry.Register(std::make_unique<MaterialImporter>());
     m_importerRegistry.Register(std::make_unique<PhysicMaterialImporter>());
     m_importerRegistry.Register(std::make_unique<RenderEffectImporter>());
+    m_importerRegistry.Register(std::make_unique<ParticleGraphImporter>());
     m_importerRegistry.Register(std::make_unique<ScriptImporter>());
     m_importerRegistry.Register(std::make_unique<AudioImporter>());
     m_importerRegistry.Register(std::make_unique<ModelImporter>());
@@ -2040,6 +2041,9 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     }
     if (ext == ".effect" || ext == ".effectgroup" || ext == ".effectstack") {
         return ResourceType::RenderEffect;
+    }
+    if (ext == ".particlegraph") {
+        return ResourceType::ParticleGraph;
     }
     if (ext == ".meta") {
         return ResourceType::Meta;

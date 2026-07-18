@@ -13,7 +13,8 @@ namespace infernux
 {
 InxDefaultTextLoader::InxDefaultTextLoader(ResourceType resourceType) : m_resourceType(resourceType)
 {
-    if (resourceType != ResourceType::DefaultText && resourceType != ResourceType::RenderEffect)
+    if (resourceType != ResourceType::DefaultText && resourceType != ResourceType::RenderEffect &&
+        resourceType != ResourceType::ParticleGraph)
         throw std::invalid_argument("InxDefaultTextLoader requires a text resource type");
 }
 

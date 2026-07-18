@@ -41,6 +41,8 @@ const char *ResourceTypeName(ResourceType type)
         return "PhysicMaterial";
     case ResourceType::RenderEffect:
         return "RenderEffect";
+    case ResourceType::ParticleGraph:
+        return "ParticleGraph";
     }
     return "Unknown";
 }

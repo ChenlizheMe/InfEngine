@@ -14,7 +14,7 @@ from .registry import (
     PortDirection,
     PortKind,
 )
-from .types import PORTABLE_TYPE_SYSTEM, TypeRef, TypeSystem, ValueType
+from .types import AssetReference, PORTABLE_TYPE_SYSTEM, TypeRef, TypeSystem, ValueType
 
 
 @dataclass(frozen=True)
@@ -226,6 +226,14 @@ class ExpressionCompiler:
     @staticmethod
     def _literal_error(value_type: TypeRef, value: Any) -> str:
         kind = value_type.value_type
+        if kind is ValueType.ASSET_REF:
+            try:
+                AssetReference.from_dict(value)
+                return ""
+            except (TypeError, ValueError):
+                return "must contain string guid and path_hint fields"
+        if kind is ValueType.STRING:
+            return "must be a string" if type(value) is not str else ""
         if kind is ValueType.BOOL:
             return "must be a bool" if type(value) is not bool else ""
         if kind in {ValueType.I32, ValueType.U32}:
