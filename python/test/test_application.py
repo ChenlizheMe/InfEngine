@@ -70,3 +70,28 @@ def test_data_path_uses_active_project_root(monkeypatch, tmp_path):
     )
 
     assert Application.data_path() == str(tmp_path.resolve())
+
+
+def test_persistent_data_path_uses_project_root_in_editor(monkeypatch, tmp_path):
+    engine = _Engine()
+    Application._bind_engine(engine, "editor")
+    monkeypatch.setattr(
+        "Infernux.engine.project_context.get_project_root",
+        lambda: str(tmp_path),
+    )
+    monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(tmp_path / "PlayerData"))
+
+    assert Application.persistent_data_path() == str(tmp_path.resolve())
+
+    Application._unbind_engine(engine)
+
+
+def test_persistent_data_path_uses_packaged_player_data_root(monkeypatch, tmp_path):
+    engine = _Engine()
+    Application._bind_engine(engine, "player")
+    packaged_root = tmp_path / "PlayerData"
+    monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(packaged_root))
+
+    assert Application.persistent_data_path() == str(packaged_root.resolve())
+
+    Application._unbind_engine(engine)

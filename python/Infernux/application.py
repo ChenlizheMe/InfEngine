@@ -51,6 +51,17 @@ class Application:
         return os.path.abspath(root) if root else ""
 
     @staticmethod
+    def persistent_data_path() -> str:
+        """Return the stable writable data root for the current application."""
+        with _lock:
+            is_player = _runtime_kind == "player"
+        if is_player:
+            packaged_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
+            if packaged_root:
+                return os.path.abspath(packaged_root)
+        return Application.data_path()
+
+    @staticmethod
     def renderer_state() -> dict[str, Any]:
         """Return stable renderer telemetry available in Editor and Player."""
         engine = Application._current_engine()
