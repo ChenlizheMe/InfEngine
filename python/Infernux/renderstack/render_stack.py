@@ -134,6 +134,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     _compiled_effect_bindings = None
     _effect_upload_revisions = None
     _effect_compile_errors: tuple[str, ...] = ()
+    _effect_artifact_topology_generation = 0
 
     # ==================================================================
     # Lifecycle
@@ -188,6 +189,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         self._resource_bus = None
         self._compiled_effect_bindings = []
         self._effect_upload_revisions = {}
+        self._effect_artifact_topology_generation = 0
         if was_active:
             self._promote_next_stack()
 
@@ -667,6 +669,13 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
         # Pipeline populates graph with passes + injection points
         self.pipeline.define_topology(graph)
+        from Infernux.renderstack.render_effect_compiler import (
+            RenderEffectArtifactRegistry,
+        )
+
+        self._effect_artifact_topology_generation = (
+            RenderEffectArtifactRegistry.topology_generation()
+        )
         self._compiled_effect_bindings = compiled_effects
         self._effect_compile_errors = tuple(effect_errors)
         self._effect_upload_revisions = {}
@@ -727,6 +736,17 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         # Guard: ensure pass_entries is initialized even if awake() hasn't run yet
         if self._pass_entries is None:
             self._pass_entries = []
+
+        if self._graph_desc is not None:
+            from Infernux.renderstack.render_effect_compiler import (
+                RenderEffectArtifactRegistry,
+            )
+
+            if (
+                RenderEffectArtifactRegistry.topology_generation()
+                != self._effect_artifact_topology_generation
+            ):
+                self.invalidate_graph()
 
         if self._graph_desc is not None:
             requires_rebuild, updates = self._collect_effect_parameter_updates(context)
@@ -810,6 +830,12 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
                 return True, []
             updates.extend(binding_updates)
             self._effect_upload_revisions[revision_key] = revision
+            diagnostic_prefix = f"{binding.binding_id}: "
+            self._effect_compile_errors = tuple(
+                error
+                for error in self._effect_compile_errors
+                if not error.startswith(diagnostic_prefix)
+            )
         return False, updates
 
     # ==================================================================

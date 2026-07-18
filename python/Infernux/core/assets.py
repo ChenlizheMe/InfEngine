@@ -35,6 +35,7 @@ from Infernux.core.asset_types import (
     ANIMCLIP_EXTENSIONS,
     ANIMCLIP3D_EXTENSIONS,
     ANIMFSM_EXTENSIONS,
+    RENDER_EFFECT_EXTENSIONS,
     asset_category_from_extension,
 )
 from Infernux.core.animation_clip import AnimationClip
@@ -325,6 +326,14 @@ class AssetManager:
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
+        effect_error = cls._compile_render_effect_runtime(path, result.guid)
+        if effect_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = effect_error
+            return result
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("created", path)
         cls._invalidate_shader_authoring_cache(path)
@@ -364,6 +373,15 @@ class AssetManager:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        effect_error = cls._compile_render_effect_runtime(path, guid)
+        if effect_error:
+            from Infernux.lib import AssetMutationErrorCode
+
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = effect_error
+            return result
+
         if has_shader_runtime:
             error = native.reload_shader_runtime(path, previous_shader_id)
             if error:
@@ -373,7 +391,7 @@ class AssetManager:
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
                 result.error = error
                 return result
-        else:
+        elif ext not in RENDER_EFFECT_EXTENSIONS:
             registry = cls._get_registry()
             if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
                 from Infernux.lib import AssetMutationErrorCode
@@ -383,7 +401,8 @@ class AssetManager:
                 return result
 
         cls._invalidate_shader_authoring_cache(path)
-        cls.invalidate(guid)
+        if ext not in RENDER_EFFECT_EXTENSIONS:
+            cls.invalidate(guid)
         if ext in IMAGE_EXTENSIONS:
             cls._invalidate_texture_ui_cache(path)
             cls._schedule_gpu_texture_reload(path)
@@ -394,6 +413,34 @@ class AssetManager:
             cls._suppress_watcher_echo("modified", path)
         cls._emit_editor_asset_changed(path, "modified")
         return result
+
+    @classmethod
+    def _compile_render_effect_runtime(cls, path: str, guid: str) -> str:
+        """Compile and publish an effect artifact before notifying live users."""
+        if os.path.splitext(path)[1].lower() not in RENDER_EFFECT_EXTENSIONS:
+            return ""
+        try:
+            from Infernux.renderstack.render_effect import RenderEffect
+            from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+            from Infernux.renderstack.render_effect_compiler import (
+                RenderEffectArtifactRegistry,
+            )
+
+            artifact, document = RenderEffectArtifactRegistry.compile_and_publish(
+                path,
+                guid=guid,
+            )
+            loaded = cls._get_cached(guid)
+            if isinstance(loaded, RenderEffect) and isinstance(document, RenderEffectAsset):
+                loaded._publish_compiled_source(
+                    document,
+                    artifact_revision=artifact.revision,
+                    file_path=path,
+                    guid=guid,
+                )
+            return ""
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            return f"render effect compile failed; keeping last-known-good: {exc}"
 
     @classmethod
     def _emit_editor_asset_changed(cls, path: str, event_type: str = "modified") -> None:
@@ -812,7 +859,24 @@ class AssetManager:
             return AnimStateMachine.load(path)
         from Infernux.renderstack.render_effect import RenderEffect
         if asset_type is RenderEffect or (asset_type is None and path.endswith(".effect")):
-            return RenderEffect.load(path)
+            try:
+                from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+                from Infernux.renderstack.render_effect_compiler import (
+                    RenderEffectArtifactRegistry,
+                )
+
+                guid = cls._get_guid_from_path(path) or ""
+                artifact, document = RenderEffectArtifactRegistry.compile_and_publish(
+                    path,
+                    guid=guid,
+                )
+                if isinstance(document, RenderEffectAsset):
+                    effect = RenderEffect(document, file_path=path, guid=guid)
+                    effect._artifact_revision = artifact.revision
+                    return effect
+                return None
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return None
         return None
 
     @classmethod

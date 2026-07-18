@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from Infernux.renderstack.render_effect_asset import (
     dump_render_effect_document,
 )
 from Infernux.renderstack.render_effect_compiler import (
+    RenderEffectArtifactRegistry,
     RenderEffectCompileError,
     expand_render_effect_reference,
 )
@@ -74,6 +76,139 @@ def test_render_effect_save_and_load_round_trip(tmp_path):
     assert loaded is not None
     assert loaded.feature_type == "infernux.post.bloom"
     assert loaded.get_float("threshold") == pytest.approx(1.0)
+
+
+def _write_effect(path: Path, *, intensity=0.5, max_iterations=3, extra=None):
+    parameters = {
+        "intensity": intensity,
+        "max_iterations": max_iterations,
+    }
+    parameters.update(extra or {})
+    path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.bloom",
+                parameters=parameters,
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_render_effect_aot_artifact_distinguishes_dynamic_and_structural_edits(
+    tmp_path,
+    monkeypatch,
+):
+    from Infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Bloom.effect"
+    path.parent.mkdir()
+    _write_effect(path, intensity=0.5, max_iterations=3)
+
+    first, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+    first_generation = RenderEffectArtifactRegistry.topology_generation()
+    assert Path(first.artifact_path).is_file()
+
+    _write_effect(path, intensity=1.5, max_iterations=3)
+    dynamic, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+    assert dynamic.revision > first.revision
+    assert dynamic.structural_hash == first.structural_hash
+    assert RenderEffectArtifactRegistry.topology_generation() == first_generation
+
+    _write_effect(path, intensity=1.5, max_iterations=5)
+    structural, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+    assert structural.structural_hash != dynamic.structural_hash
+    assert RenderEffectArtifactRegistry.topology_generation() == first_generation + 1
+
+
+def test_render_effect_failed_compile_preserves_last_known_good_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    from Infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Bloom.effect"
+    path.parent.mkdir()
+    _write_effect(path)
+    published, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+    artifact_text = Path(published.artifact_path).read_text(encoding="utf-8")
+
+    _write_effect(path, extra={"not_a_bloom_parameter": 1.0})
+    with pytest.raises(RenderEffectCompileError, match="unknown parameters"):
+        RenderEffectArtifactRegistry.compile_and_publish(
+            str(path), guid="bloom-guid"
+        )
+
+    assert RenderEffectArtifactRegistry.get(str(path), "bloom-guid") == published
+    assert Path(published.artifact_path).read_text(encoding="utf-8") == artifact_text
+
+
+def test_render_effect_load_reuses_matching_persisted_artifact(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Bloom.effect"
+    path.parent.mkdir()
+    _write_effect(path)
+    published, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+    RenderEffectArtifactRegistry.clear()
+
+    def fail_compile(_cls, _document, _source_path, _guid):
+        raise AssertionError("matching AOT artifact should avoid feature recompilation")
+
+    monkeypatch.setattr(
+        RenderEffectArtifactRegistry,
+        "_compile_document",
+        classmethod(fail_compile),
+    )
+    restored, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+
+    assert restored.source_hash == published.source_hash
+    assert restored.structural_hash == published.structural_hash
+    assert restored.artifact_path == published.artifact_path
+
+
+def test_asset_publish_updates_loaded_render_effect_in_place(tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Bloom.effect"
+    path.parent.mkdir()
+    _write_effect(path, intensity=0.5)
+    loaded = RenderEffect.load(str(path))
+    assert loaded is not None
+    monkeypatch.setattr(
+        AssetManager,
+        "_get_cached",
+        classmethod(lambda _cls, guid: loaded if guid == "bloom-guid" else None),
+    )
+
+    assert AssetManager._compile_render_effect_runtime(str(path), "bloom-guid") == ""
+    first_revision = loaded.artifact_revision
+    _write_effect(path, intensity=2.0)
+    assert AssetManager._compile_render_effect_runtime(str(path), "bloom-guid") == ""
+
+    assert loaded.get_float("intensity") == pytest.approx(2.0)
+    assert loaded.artifact_revision > first_revision
 
 
 def test_render_stack_effect_slots_use_structured_serialized_list():
@@ -376,6 +511,25 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
         "infernux.post.tonemapping",
     ]
     assert effects[0].get_float("intensity") == pytest.approx(0.9)
+
+
+def test_effect_group_override_view_tracks_unoverridden_live_parameters():
+    from Infernux.renderstack.render_effect_compiler import _apply_group_overrides
+
+    source = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.bloom",
+            parameters={"intensity": 0.5, "threshold": 1.0, "max_iterations": 2},
+        )
+    )
+    view = _apply_group_overrides([source], {"intensity": 0.9}, "bloom")[0]
+
+    source.set_float("threshold", 2.5)
+    parameters = view.to_asset().parameters
+
+    assert parameters["intensity"] == pytest.approx(0.9)
+    assert parameters["threshold"] == pytest.approx(2.5)
+    assert view.revision == source.revision
 
 
 def test_effect_group_cycle_is_rejected(tmp_path):

@@ -44,6 +44,7 @@ class RenderEffect:
         self._file_path = str(file_path or "")
         self._guid = str(guid or "")
         self._revision = 0
+        self._artifact_revision = 0
         self._last_save_time = 0.0
         self._save_pending = False
 
@@ -89,6 +90,11 @@ class RenderEffect:
     def revision(self) -> int:
         """Monotonic parameter revision consumed by runtime upload caches."""
         return self._revision
+
+    @property
+    def artifact_revision(self) -> int:
+        """Last successfully compiled source revision published for this asset."""
+        return self._artifact_revision
 
     def to_asset(self) -> RenderEffectAsset:
         return RenderEffectAsset(
@@ -186,10 +192,62 @@ class RenderEffect:
         except (OSError, RuntimeError, ValueError):
             return False
         self._file_path = target
+        if not self._publish_saved_source(target):
+            return False
         self._last_save_time = time.monotonic()
         self._save_pending = False
         RenderEffect._pending_saves.discard(self)
         return True
+
+    def _publish_compiled_source(
+        self,
+        source: RenderEffectAsset,
+        *,
+        artifact_revision: int,
+        file_path: str = "",
+        guid: str = "",
+    ) -> None:
+        """Atomically replace live values after a successful source compile."""
+        previous = self.to_asset()
+        self._feature_type = source.feature_type
+        self._parameters = copy.deepcopy(dict(source.parameters))
+        self._dependencies = tuple(source.dependencies)
+        if file_path:
+            self._file_path = str(file_path)
+        if guid:
+            self._guid = str(guid)
+        self._artifact_revision = int(artifact_revision)
+        if previous != source:
+            self._revision += 1
+
+    def _publish_saved_source(self, target: str) -> bool:
+        """Compile immediately through the canonical asset transaction when active."""
+        try:
+            from Infernux.core.assets import AssetManager
+
+            database = AssetManager._asset_database
+            if database is None:
+                return True
+            guid = database.get_guid_from_path(target)
+            result = (
+                AssetManager.reimport_asset(target)
+                if guid
+                else AssetManager.import_asset(target)
+            )
+            if not result:
+                return False
+            from Infernux.renderstack.render_effect_compiler import (
+                RenderEffectArtifactRegistry,
+            )
+
+            artifact = RenderEffectArtifactRegistry.get(target, result.guid)
+            if artifact is not None:
+                self._artifact_revision = artifact.revision
+                if result.guid:
+                    self._guid = result.guid
+            return True
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
 
     def flush(self) -> None:
         if self._save_pending:

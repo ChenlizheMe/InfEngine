@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 from Infernux.core.asset_ref import RenderEffectRef
 from Infernux.renderstack.render_effect import RenderEffect
@@ -19,6 +20,221 @@ from Infernux.renderstack.render_effect_asset import (
 
 class RenderEffectCompileError(ValueError):
     """An effect source cannot satisfy its feature or graph contract."""
+
+
+_ARTIFACT_SCHEMA = "infernux.render_effect_artifact"
+_ARTIFACT_VERSION = 1
+
+
+@dataclass(frozen=True)
+class RenderEffectArtifact:
+    """Immutable, successfully compiled source revision published to runtime."""
+
+    source_key: str
+    source_hash: str
+    structural_hash: str
+    kind: str
+    revision: int
+    artifact_path: str
+    features: tuple[Mapping[str, Any], ...]
+
+
+class RenderEffectArtifactRegistry:
+    """Compile-then-publish registry with persistent last-known-good artifacts."""
+
+    _artifacts: dict[str, RenderEffectArtifact] = {}
+    _revision = 0
+    _topology_generation = 0
+
+    @classmethod
+    def topology_generation(cls) -> int:
+        return cls._topology_generation
+
+    @classmethod
+    def get(cls, path: str = "", guid: str = "") -> RenderEffectArtifact | None:
+        return cls._artifacts.get(cls._source_key(path, guid))
+
+    @classmethod
+    def clear(cls) -> None:
+        cls._artifacts.clear()
+        cls._revision = 0
+        cls._topology_generation = 0
+
+    @classmethod
+    def compile_and_publish(cls, path: str, *, guid: str = ""):
+        """Compile one source and atomically publish it after artifact IO succeeds."""
+        source_path = os.path.abspath(path)
+        try:
+            source_text = Path(source_path).read_text(encoding="utf-8")
+            document = parse_render_effect_document(source_text)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RenderEffectCompileError(f"failed to read render effect source: {exc}") from exc
+
+        source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        key = cls._source_key(source_path, guid)
+        existing = cls._artifacts.get(key)
+        if existing is not None and existing.source_hash == source_hash:
+            return existing, document
+
+        artifact_path = cls._artifact_path(source_path, guid)
+        if existing is None and artifact_path:
+            persisted = cls._load_persisted(
+                artifact_path,
+                key=key,
+                source_hash=source_hash,
+            )
+            if persisted is not None:
+                cls._artifacts[key] = persisted
+                cls._revision = max(cls._revision, persisted.revision)
+                cls._topology_generation += 1
+                return persisted, document
+
+        features = cls._compile_document(document, source_path, guid)
+        structural_hash = cls._structural_hash(document, features)
+        next_revision = cls._revision + 1
+        payload = {
+            "$schema": _ARTIFACT_SCHEMA,
+            "$version": _ARTIFACT_VERSION,
+            "source_key": key,
+            "source_hash": source_hash,
+            "structural_hash": structural_hash,
+            "kind": "effect" if isinstance(document, RenderEffectAsset) else "group",
+            "revision": next_revision,
+            "source": document.to_dict(),
+            "features": list(features),
+        }
+        if artifact_path:
+            from Infernux.core.document_store import write_document_text
+
+            os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+            write_document_text(
+                artifact_path,
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            )
+
+        artifact = RenderEffectArtifact(
+            source_key=key,
+            source_hash=source_hash,
+            structural_hash=structural_hash,
+            kind=payload["kind"],
+            revision=next_revision,
+            artifact_path=artifact_path,
+            features=features,
+        )
+        cls._revision = next_revision
+        cls._artifacts[key] = artifact
+        if existing is None or existing.structural_hash != structural_hash:
+            cls._topology_generation += 1
+        return artifact, document
+
+    @staticmethod
+    def _load_persisted(
+        artifact_path: str,
+        *,
+        key: str,
+        source_hash: str,
+    ) -> RenderEffectArtifact | None:
+        try:
+            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
+            if (
+                type(payload) is not dict
+                or payload.get("$schema") != _ARTIFACT_SCHEMA
+                or payload.get("$version") != _ARTIFACT_VERSION
+                or payload.get("source_key") != key
+                or payload.get("source_hash") != source_hash
+                or payload.get("kind") not in {"effect", "group"}
+                or type(payload.get("features")) is not list
+            ):
+                return None
+            revision = payload.get("revision")
+            structural_hash = payload.get("structural_hash")
+            if type(revision) is not int or revision <= 0:
+                return None
+            if type(structural_hash) is not str or len(structural_hash) != 64:
+                return None
+            return RenderEffectArtifact(
+                source_key=key,
+                source_hash=source_hash,
+                structural_hash=structural_hash,
+                kind=payload["kind"],
+                revision=revision,
+                artifact_path=artifact_path,
+                features=tuple(payload["features"]),
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    @classmethod
+    def _compile_document(cls, document, source_path: str, guid: str):
+        if isinstance(document, RenderEffectAsset):
+            sources = [RenderEffect(document, file_path=source_path, guid=guid)]
+        else:
+            sources = expand_render_effect_reference(
+                RenderEffectRef(guid=guid, path_hint=source_path)
+            )
+        return tuple(cls._compile_feature_record(source) for source in sources)
+
+    @staticmethod
+    def _compile_feature_record(source: RenderEffect) -> Mapping[str, Any]:
+        feature = get_render_effect_feature(source.feature_type)
+        passes = _record_feature_passes(source, feature)
+        return {
+            "feature_type": feature.type_id,
+            "topology": list(feature.topology_signature(source)),
+            "passes": [
+                {
+                    "name": render_pass.name,
+                    "type": render_pass._pass_type,
+                    "action": render_pass._action,
+                    "shader": render_pass._shader_name,
+                    "parameter_layout": list(render_pass._push_constants),
+                }
+                for render_pass in passes
+            ],
+        }
+
+    @staticmethod
+    def _structural_hash(document, features) -> str:
+        if isinstance(document, RenderEffectAsset):
+            structural = {
+                "kind": "effect",
+                "feature_type": document.feature_type,
+                "features": features,
+            }
+        else:
+            structural = {
+                "kind": "group",
+                "source": document.to_dict(),
+                "features": features,
+            }
+        encoded = json.dumps(structural, ensure_ascii=False, sort_keys=True, allow_nan=False)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _source_key(path: str, guid: str) -> str:
+        return str(guid or "").strip() or os.path.normcase(os.path.abspath(path))
+
+    @staticmethod
+    def _artifact_path(source_path: str, guid: str) -> str:
+        from Infernux.engine.project_context import get_project_root
+
+        project_root = get_project_root()
+        if not project_root:
+            return ""
+        identity = str(guid or "").strip()
+        if not identity:
+            identity = hashlib.sha256(
+                os.path.normcase(source_path).encode("utf-8")
+            ).hexdigest()[:32]
+        if not all(character.isalnum() or character in "-_" for character in identity):
+            identity = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+        return os.path.join(
+            project_root,
+            "Library",
+            "Artifacts",
+            "RenderEffect",
+            f"{identity}.inxeffect",
+        )
 
 
 @dataclass(frozen=True)
@@ -145,6 +361,8 @@ class CompiledEffectBinding:
 
     def collect_updates(self):
         """Return ``(requires_rebuild, native_updates)`` for current values."""
+        if self.source.feature_type != self.feature.type_id:
+            return True, []
         if self.feature.topology_signature(self.source) != self.topology_signature:
             return True, []
         passes = _record_feature_passes(self.source, self.feature)
@@ -298,18 +516,67 @@ def expand_render_effect_reference(
 
 
 def _apply_group_overrides(sources, overrides: Mapping, entry_id: str):
-    clones = [source.clone() for source in sources]
+    sources = list(sources)
     for name, value in overrides.items():
-        matched = False
-        for source in clones:
-            if source.has_parameter(name):
-                source.set_param(name, value)
-                matched = True
-        if not matched:
+        if not any(source.has_parameter(name) for source in sources):
             raise RenderEffectCompileError(
                 f"effect group entry {entry_id!r} overrides unknown parameter {name!r}"
             )
-    return clones
+    return [
+        _OverriddenRenderEffect(
+            source,
+            {name: value for name, value in overrides.items() if source.has_parameter(name)},
+        )
+        for source in sources
+    ]
+
+
+class _OverriddenRenderEffect(RenderEffect):
+    """Live view that overlays group-local values on a shared source asset."""
+
+    def __init__(self, source: RenderEffect, overrides: Mapping[str, Any]) -> None:
+        self._source = source
+        self._overrides = dict(overrides)
+        source_asset = source.to_asset()
+        parameters = dict(source_asset.parameters)
+        parameters.update(self._overrides)
+        super().__init__(
+            RenderEffectAsset(
+                feature_type=source_asset.feature_type,
+                parameters=parameters,
+                dependencies=source_asset.dependencies,
+            )
+        )
+
+    @property
+    def feature_type(self) -> str:
+        return self._source.feature_type
+
+    @property
+    def revision(self) -> int:
+        return self._source.revision
+
+    @property
+    def artifact_revision(self) -> int:
+        return self._source.artifact_revision
+
+    @property
+    def file_path(self) -> str:
+        return self._source.file_path
+
+    @property
+    def guid(self) -> str:
+        return self._source.guid
+
+    def to_asset(self) -> RenderEffectAsset:
+        source = self._source.to_asset()
+        parameters = dict(source.parameters)
+        parameters.update(self._overrides)
+        return RenderEffectAsset(
+            feature_type=source.feature_type,
+            parameters=parameters,
+            dependencies=source.dependencies,
+        )
 
 
 def _resolve_reference_path(reference: RenderEffectRef, parent: str) -> str:

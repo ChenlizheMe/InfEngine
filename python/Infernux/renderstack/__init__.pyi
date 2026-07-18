@@ -14,6 +14,8 @@ from Infernux.renderstack.render_effect_asset import EffectAssetReference as Eff
 from Infernux.renderstack.render_effect_asset import RenderEffectAsset as RenderEffectAsset
 from Infernux.renderstack.render_effect_asset import RenderEffectGroupAsset as RenderEffectGroupAsset
 from Infernux.renderstack.render_effect_asset import RenderEffectGroupEntry as RenderEffectGroupEntry
+from Infernux.renderstack.render_effect_compiler import RenderEffectArtifact as RenderEffectArtifact
+from Infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry as RenderEffectArtifactRegistry
 from Infernux.renderstack.render_effect_asset import direct_effect_dependencies as direct_effect_dependencies
 from Infernux.renderstack.render_effect_asset import dump_render_effect_document as dump_render_effect_document
 from Infernux.renderstack.render_effect_asset import parse_render_effect_document as parse_render_effect_document
@@ -57,6 +59,8 @@ __all__ = [
     "RenderEffectAsset",
     "RenderEffectGroupAsset",
     "RenderEffectGroupEntry",
+    "RenderEffectArtifact",
+    "RenderEffectArtifactRegistry",
     "parse_render_effect_document",
     "dump_render_effect_document",
     "direct_effect_dependencies",

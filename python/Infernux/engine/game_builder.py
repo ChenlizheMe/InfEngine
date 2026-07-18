@@ -965,7 +965,7 @@ finally:
     # ------------------------------------------------------------------
 
     def _copy_game_data(self, final_dir: str):
-        """Copy Assets, ProjectSettings, materials to Data/."""
+        """Copy authored data and selected runtime artifacts to Data/."""
         data_dir = os.path.join(final_dir, "Data")
         ignore = shutil.ignore_patterns(*self._EXCLUDE_PATTERNS)
         for dirname in self._GAME_DATA_DIRS:
@@ -998,6 +998,16 @@ finally:
                 Debug.log_internal(
                     f"  copied {dirname}/ in {time.perf_counter() - _t0:.2f}s"
                 )
+
+        effect_artifacts = os.path.join(
+            self.project_path, "Library", "Artifacts", "RenderEffect"
+        )
+        if os.path.isdir(effect_artifacts):
+            shutil.copytree(
+                effect_artifacts,
+                os.path.join(data_dir, "Library", "Artifacts", "RenderEffect"),
+                dirs_exist_ok=True,
+            )
 
         self._filter_shipped_requirements(data_dir)
 

@@ -483,6 +483,36 @@ def test_player_cleanup_removes_redundant_library_resources(tmp_path):
     assert not library_font.parent.parent.exists()
 
 
+def test_game_data_includes_render_effect_artifacts(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    artifact = (
+        Path(builder.project_path)
+        / "Library"
+        / "Artifacts"
+        / "RenderEffect"
+        / "bloom.inxeffect"
+    )
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text('{"$schema":"infernux.render_effect_artifact"}', encoding="utf-8")
+    final_dir = tmp_path / "dist"
+
+    builder._copy_game_data(str(final_dir))
+    shipped = (
+        final_dir
+        / "Data"
+        / "Library"
+        / "Artifacts"
+        / "RenderEffect"
+        / artifact.name
+    )
+
+    assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
+
+    builder._pack_content_archive(str(final_dir))
+    with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
+        assert "Library/Artifacts/RenderEffect/bloom.inxeffect" in archive.namelist()
+
+
 def test_payload_manifest_allows_project_asset_metadata(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"

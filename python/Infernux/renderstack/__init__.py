@@ -53,6 +53,8 @@ from Infernux.renderstack.render_effect_asset import (
     parse_render_effect_document,
 )
 from Infernux.renderstack.render_effect_compiler import (
+    RenderEffectArtifact,
+    RenderEffectArtifactRegistry,
     RenderEffectCompileError,
     RenderEffectFeature,
     get_render_effect_feature,
@@ -105,6 +107,8 @@ __all__ = [
     "dump_render_effect_document",
     "direct_effect_dependencies",
     "RenderEffectCompileError",
+    "RenderEffectArtifact",
+    "RenderEffectArtifactRegistry",
     "RenderEffectFeature",
     "get_render_effect_feature",
     "register_render_effect_feature",
