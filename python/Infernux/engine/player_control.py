@@ -972,7 +972,9 @@ def _observe_player(
         if component_fields:
             objects[name]["component_fields"] = component_fields
 
-    frame = dict(native.renderer_frame_snapshot)
+    from Infernux.application import _renderer_state_from_native
+
+    renderer_state = _renderer_state_from_native(native)
     result = {
         "scene_name": str(getattr(scene, "name", "") or ""),
         "scene_playing": bool(scene is not None and scene.is_playing()),
@@ -980,14 +982,10 @@ def _observe_player(
         "scene_manager_paused": bool(native_scene_manager.is_paused()),
         "play_state": str(state).lower(),
         "objects": objects,
-        "renderer_frame": frame,
-        "gpu_residency": dict(getattr(native, "gpu_residency_snapshot", {}) or {}),
-        "msaa": dict(getattr(native, "msaa_state", {}) or {}),
-        "submission_ready": bool(
-            frame.get("game_camera_available")
-            and frame.get("game_target_ready")
-            and int(frame.get("game_draw_call_count", 0) or 0) > 0
-        ),
+        "renderer_frame": renderer_state["frame"],
+        "gpu_residency": renderer_state["gpu_residency"],
+        "msaa": renderer_state["msaa"],
+        "submission_ready": renderer_state["submission_ready"],
         "last_processed_input_sequence": int(native.last_processed_synthetic_input_sequence),
         "pending_input_count": int(native.pending_synthetic_input_count),
         "game_focused": bool(Input.is_game_focused()),

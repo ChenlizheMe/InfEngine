@@ -5,6 +5,7 @@ from Infernux.engine import release_engine as release_engine
 from Infernux.engine import run_headless as run_headless
 from Infernux.engine import Engine as Engine
 from Infernux.engine import LogLevel as LogLevel
+from Infernux.application import Application as Application
 # Math
 from Infernux.math import Vector2 as Vector2
 from Infernux.math import Vector3 as Vector3

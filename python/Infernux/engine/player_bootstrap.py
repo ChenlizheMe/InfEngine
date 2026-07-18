@@ -96,6 +96,7 @@ class PlayerBootstrap:
 
     def _init_engine(self):
         self.engine = Engine(self.engine_log_level)
+        self.engine._set_application_role("player")
 
         # For windowed mode, use the requested size;
         # for fullscreen borderless, start at a default size — the

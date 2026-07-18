@@ -702,16 +702,16 @@ def _run_on_main(name: str, fn):
 
 
 def _renderer_state() -> dict[str, Any]:
-    from Infernux.engine.bootstrap import EditorBootstrap
+    from Infernux.application import Application, _renderer_state_from_native
 
-    bootstrap = EditorBootstrap.instance()
-    engine = bootstrap.engine if bootstrap is not None else None
+    engine = Application._current_engine()
+    if engine is None:
+        from Infernux.engine.bootstrap import EditorBootstrap
+
+        bootstrap = EditorBootstrap.instance()
+        engine = bootstrap.engine if bootstrap is not None else None
     native = engine.get_native_engine() if engine is not None else None
-    if native is None:
-        raise RuntimeError("Renderer telemetry requires a running graphical Editor session.")
-    frame = dict(native.renderer_frame_snapshot)
-    residency = dict(native.gpu_residency_snapshot)
-    msaa = dict(getattr(native, "msaa_state", {}) or {})
+    state = _renderer_state_from_native(native)
     try:
         preview_tasks = [dict(item) for item in native.preview_task_snapshots]
     except (AttributeError, RuntimeError):
@@ -720,17 +720,9 @@ def _renderer_state() -> dict[str, Any]:
         asset_runtime_record_count = len(native.asset_runtime_records)
     except Exception:
         asset_runtime_record_count = 0
-    return {
-        "frame": frame,
-        "gpu_residency": residency,
-        "msaa": msaa,
+    return state | {
         "preview_tasks": preview_tasks,
         "asset_runtime_record_count": asset_runtime_record_count,
-        "submission_ready": bool(
-            frame.get("game_camera_available")
-            and frame.get("game_target_ready")
-            and int(frame.get("game_draw_call_count", 0) or 0) > 0
-        ),
     }
 
 

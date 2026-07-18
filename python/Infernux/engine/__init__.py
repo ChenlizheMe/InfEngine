@@ -212,6 +212,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
     """
     import json
     import time
+    from Infernux.application import Application
     from .player_bootstrap import PlayerBootstrap
 
     # Packaged/standalone games skip the project lock entirely — they
@@ -276,11 +277,12 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap.engine.show()
         bootstrap.engine.run()
+        exit_code = Application._requested_exit_code()
     finally:
         if lock_path and lock_token:
             _remove_project_lock(lock_path, lock_token)
 
-    os._exit(0)
+    os._exit(exit_code)
 
 __all__ = [
     "Engine",

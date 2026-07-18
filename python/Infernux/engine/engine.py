@@ -15,6 +15,11 @@ _PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
 class Engine():
     def __init__(self, engine_log_level=LogLevel.Info, mode=RuntimeMode.Graphical):
         self._mode = RuntimeMode(mode)
+        self._application_role = (
+            "headless" if self._mode == RuntimeMode.Headless
+            else "player" if _PLAYER_MODE
+            else "editor"
+        )
         self._engine = Infernux(_safe_path(lib_dir), self._mode)
         self.set_log_level(engine_log_level)
         self._gui_objects = {}
@@ -32,6 +37,13 @@ class Engine():
         self._resources_manager = None  # Set in init_renderer (editor only)
         self._before_exit_callback = None
         self._editor_frame_sync_callback = None
+        from Infernux.application import Application
+        Application._bind_engine(self, self._application_role)
+
+    def _set_application_role(self, runtime_kind: str):
+        self._application_role = str(runtime_kind).strip().lower()
+        from Infernux.application import Application
+        Application._bind_engine(self, self._application_role)
 
     @staticmethod
     def _parse_present_mode(value) -> int | None:
@@ -316,7 +328,7 @@ class Engine():
 
     def request_exit(self):
         """Request a safe close, preserving graphical Editor confirmations."""
-        if self._mode == RuntimeMode.Graphical:
+        if self._mode == RuntimeMode.Graphical and self._application_role == "editor":
             try:
                 from Infernux.engine.scene_manager import SceneFileManager
 
@@ -487,6 +499,8 @@ class Engine():
         self._gui_objects.clear()
         self._engine = None
         self._resources_manager = None
+        from Infernux.application import Application
+        Application._unbind_engine(self)
         shutdown_complete.set()
 
     def _shutdown_play_mode(self):
