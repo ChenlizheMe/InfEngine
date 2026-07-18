@@ -269,13 +269,22 @@ ResourceHandle PassBuilder::ReadSampledDepth(ResourceHandle handle, VkPipelineSt
 ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmentIndex)
 {
     if (!m_graph->Owns(handle)) {
-        return handle;
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
+    // Model the previous attachment version as a graph-only input. A later
+    // SetClearColor() removes this dependency when the pass fully overwrites it.
+    pass.reads.push_back(
+        {handle, ResourceUsage::Read | ResourceUsage::VersionDependency, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED});
+
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
     access.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     access.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -287,11 +296,7 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
     if (pass.colorOutputs.size() <= attachmentIndex) {
         pass.colorOutputs.resize(attachmentIndex + 1);
     }
-    pass.colorOutputs[attachmentIndex] = handle;
-
-    // New version of the resource
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
+    pass.colorOutputs[attachmentIndex] = newHandle;
 
     return newHandle;
 }
@@ -299,23 +304,27 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
 ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle)) {
-        return handle;
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
+    pass.reads.push_back(
+        {handle, ResourceUsage::Read | ResourceUsage::VersionDependency, 0, 0, VK_IMAGE_LAYOUT_UNDEFINED});
+
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::DepthOutput;
     access.stages = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     access.access = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     access.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     pass.writes.push_back(access);
-    pass.depthOutput = handle;
-
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
+    pass.depthOutput = newHandle;
 
     return newHandle;
 }
@@ -347,23 +356,18 @@ ResourceHandle PassBuilder::ReadDepth(ResourceHandle handle)
 ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, VkPipelineStageFlags stages)
 {
     if (!m_graph->Owns(handle)) {
-        return handle;
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
-    ResourceAccess access;
-    access.handle = handle;
-    access.usage = ResourceUsage::ReadWrite;
-    access.stages = stages;
-    access.access = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    access.layout = VK_IMAGE_LAYOUT_GENERAL;
-
-    pass.reads.push_back(access);
-    pass.writes.push_back(access);
-
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
+    pass.reads.push_back({handle, ResourceUsage::Read, stages, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL});
+    pass.writes.push_back(
+        {newHandle, ResourceUsage::Write, stages, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL});
 
     return newHandle;
 }
@@ -382,13 +386,15 @@ ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle)
 ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
-        return handle;
+        return {};
+
+    ResourceHandle next = m_graph->AdvanceResourceVersion(handle);
+    if (!next.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.writes.push_back({handle, ResourceUsage::Write, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                           VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED});
-    auto next = handle;
-    ++next.version;
+    pass.writes.push_back({next, ResourceUsage::Write, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_UNDEFINED});
     return next;
 }
 
@@ -427,13 +433,17 @@ ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
 ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle)) {
-        return handle;
+        return {};
     }
+
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
 
     auto &pass = m_graph->m_passes[m_passId];
 
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::Transfer;
     access.stages = VK_PIPELINE_STAGE_TRANSFER_BIT;
     access.access = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -441,32 +451,31 @@ ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
 
     pass.writes.push_back(access);
 
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
-
     return newHandle;
 }
 
 ResourceHandle PassBuilder::WriteResolve(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle)) {
-        return handle;
+        return {};
     }
 
+    ResourceHandle newHandle = m_graph->AdvanceResourceVersion(handle);
+    if (!newHandle.IsValid())
+        return {};
+
     auto &pass = m_graph->m_passes[m_passId];
-    pass.resolveOutput = handle;
+    pass.resolveOutput = newHandle;
 
     // Track as a write so dependency/lifetime analysis picks it up
     ResourceAccess access;
-    access.handle = handle;
+    access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
     access.stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     access.access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     access.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     pass.writes.push_back(access);
 
-    ResourceHandle newHandle = handle;
-    newHandle.version++;
     return newHandle;
 }
 
@@ -480,6 +489,17 @@ void PassBuilder::SetClearColor(float r, float g, float b, float a)
     auto &pass = m_graph->m_passes[m_passId];
     pass.clearColor = {{r, g, b, a}};
     pass.clearColorEnabled = true;
+    pass.reads.erase(std::remove_if(pass.reads.begin(), pass.reads.end(),
+                                    [&](const ResourceAccess &read) {
+                                        if (static_cast<int>(read.usage & ResourceUsage::VersionDependency) == 0)
+                                            return false;
+                                        return std::any_of(pass.colorOutputs.begin(), pass.colorOutputs.end(),
+                                                           [&](ResourceHandle output) {
+                                                               return output.IsValid() && output.id == read.handle.id &&
+                                                                      output.version == read.handle.version + 1;
+                                                           });
+                                    }),
+                     pass.reads.end());
 }
 
 void PassBuilder::SetClearDepth(float depth, uint32_t stencil)
@@ -487,6 +507,16 @@ void PassBuilder::SetClearDepth(float depth, uint32_t stencil)
     auto &pass = m_graph->m_passes[m_passId];
     pass.clearDepth = {depth, stencil};
     pass.clearDepthEnabled = true;
+    if (pass.depthOutput.IsValid()) {
+        pass.reads.erase(std::remove_if(pass.reads.begin(), pass.reads.end(),
+                                        [&](const ResourceAccess &read) {
+                                            return static_cast<int>(read.usage & ResourceUsage::VersionDependency) !=
+                                                       0 &&
+                                                   read.handle.id == pass.depthOutput.id &&
+                                                   pass.depthOutput.version == read.handle.version + 1;
+                                        }),
+                         pass.reads.end());
+    }
 }
 
 // ============================================================================
@@ -504,8 +534,8 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
     : m_identity(std::move(other.m_identity)), m_context(std::exchange(other.m_context, nullptr)),
       m_rhiDevice(std::exchange(other.m_rhiDevice, nullptr)),
       m_pipelineManager(std::exchange(other.m_pipelineManager, nullptr)), m_passes(std::move(other.m_passes)),
-      m_resources(std::move(other.m_resources)), m_executionOrder(std::move(other.m_executionOrder)),
-      m_backbuffer(other.m_backbuffer), m_output(other.m_output),
+      m_resources(std::move(other.m_resources)), m_resourceVersions(std::move(other.m_resourceVersions)),
+      m_executionOrder(std::move(other.m_executionOrder)), m_backbuffer(other.m_backbuffer), m_output(other.m_output),
       m_backbufferFinalLayout(other.m_backbufferFinalLayout), m_compiled(std::exchange(other.m_compiled, false)),
       m_resourceStates(std::move(other.m_resourceStates)),
       m_initialResourceStates(std::move(other.m_initialResourceStates)),
@@ -534,6 +564,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_pipelineManager = std::exchange(other.m_pipelineManager, nullptr);
         m_passes = std::move(other.m_passes);
         m_resources = std::move(other.m_resources);
+        m_resourceVersions = std::move(other.m_resourceVersions);
         m_executionOrder = std::move(other.m_executionOrder);
         m_backbuffer = other.m_backbuffer;
         m_output = other.m_output;
@@ -573,6 +604,7 @@ void RenderGraph::Reset()
     FreeResources();
     m_passes.clear();
     m_resources.clear();
+    m_resourceVersions.clear();
     m_executionOrder.clear();
     m_resourceStates.clear();
     m_initialResourceStates.clear();
@@ -617,6 +649,7 @@ void RenderGraph::Destroy()
 
     m_passes.clear();
     m_resources.clear();
+    m_resourceVersions.clear();
     m_executionOrder.clear();
     m_resourceStates.clear();
     m_initialResourceStates.clear();
@@ -707,6 +740,7 @@ ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFor
     resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
 
     m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
     m_resourceStates.resize(m_resources.size());
     m_initialResourceStates.resize(m_resources.size());
     m_backbuffer = handle;
@@ -755,6 +789,7 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
     resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
 
     m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
     m_resourceStates.resize(m_resources.size());
     m_initialResourceStates.resize(m_resources.size());
 
@@ -854,9 +889,33 @@ ResourceHandle RenderGraph::CreateResource(const std::string &name, ResourceType
     resource.type = type;
 
     m_resources.push_back(std::move(resource));
+    m_resourceVersions.push_back(0);
     m_resourceStates.resize(m_resources.size());
     m_initialResourceStates.resize(m_resources.size());
 
+    return handle;
+}
+
+ResourceHandle RenderGraph::AdvanceResourceVersion(ResourceHandle handle)
+{
+    if (!Owns(handle)) {
+        INXLOG_ERROR("RenderGraph: cannot write a resource handle owned by another graph or epoch");
+        return {};
+    }
+
+    uint32_t &latestVersion = m_resourceVersions[handle.id];
+    if (handle.version != latestVersion) {
+        INXLOG_ERROR("RenderGraph: resource '", m_resources[handle.id].name, "' write uses stale version ",
+                     handle.version, " while latest is ", latestVersion);
+        return {};
+    }
+    if (latestVersion == std::numeric_limits<uint32_t>::max()) {
+        INXLOG_ERROR("RenderGraph: resource version overflow for '", m_resources[handle.id].name, "'");
+        return {};
+    }
+
+    ++latestVersion;
+    handle.version = latestVersion;
     return handle;
 }
 
@@ -874,7 +933,9 @@ bool RenderGraph::Compile()
     ComputeResourceLifetimes();
 
     // Step 3: Topological sort via Kahn's algorithm
-    TopologicalSort();
+    if (!TopologicalSort()) {
+        return false;
+    }
 
     // Step 4: Allocate transient resources
     if (!AllocateResources()) {

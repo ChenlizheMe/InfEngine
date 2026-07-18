@@ -751,8 +751,8 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
 
     auto guiCallback = m_guiRenderCallback;
 
-    m_renderGraph.AddPass("GUI", [backbuffer, extent, guiCallback](vk::PassBuilder &builder) {
-        builder.WriteColor(backbuffer, 0);
+    m_renderGraph.AddPass("GUI", [&backbuffer, extent, guiCallback](vk::PassBuilder &builder) {
+        backbuffer = builder.WriteColor(backbuffer, 0);
         builder.SetRenderArea(extent.width, extent.height);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 

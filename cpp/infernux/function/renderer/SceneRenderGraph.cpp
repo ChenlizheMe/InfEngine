@@ -906,16 +906,17 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
     }
 }
 
-void SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
-                                      vk::ResourceHandle depthTarget, uint32_t width, uint32_t height)
+vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
+                                                    vk::ResourceHandle depthTarget, uint32_t width, uint32_t height)
 {
     auto callbackIt = m_pythonCallbacks.find(name);
     if (callbackIt == m_pythonCallbacks.end())
-        return;
+        return colorTarget;
 
     auto callback = callbackIt->second;
-    m_renderGraph->AddPass(name, [=](vk::PassBuilder &builder) {
-        builder.WriteColor(colorTarget, 0);
+    vk::ResourceHandle writtenColor;
+    m_renderGraph->AddPass(name, [=, &writtenColor](vk::PassBuilder &builder) {
+        writtenColor = builder.WriteColor(colorTarget, 0);
         if (depthTarget.IsValid()) {
             builder.ReadDepth(depthTarget);
         }
@@ -927,6 +928,7 @@ void SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandl
             }
         };
     });
+    return writtenColor.IsValid() ? writtenColor : colorTarget;
 }
 
 void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
@@ -1013,6 +1015,25 @@ void SceneRenderGraph::BuildRenderGraph()
         // Pre-register transient textures so their ResourceHandles are
         // available before passes reference them.
         RegisterTransientTextures(width, height, customRTHandles);
+
+        auto publishResourceVersion = [&](vk::ResourceHandle handle) {
+            if (!handle.IsValid())
+                return;
+            if (m_importedColorTarget.IsValid() && handle.id == m_importedColorTarget.id) {
+                m_importedColorTarget = handle;
+                return;
+            }
+            if (m_importedResolveTarget.IsValid() && handle.id == m_importedResolveTarget.id) {
+                m_importedResolveTarget = handle;
+                return;
+            }
+            for (auto &[name, current] : customRTHandles) {
+                if (current.id == handle.id) {
+                    current = handle;
+                    return;
+                }
+            }
+        };
 
         // Track whether the multisampled backbuffer has been written since the
         // last explicit resolve. FullscreenQuad passes that sample the backbuffer
@@ -1216,12 +1237,13 @@ void SceneRenderGraph::BuildRenderGraph()
                         uint32_t resolveH = height;
                         std::string resolvePassName =
                             "__MSAA_resolve_pre_fs_" + std::to_string(msaaResolvePassCounter++);
+                        vk::ResourceHandle resolvedVersion;
 
                         m_renderGraph->AddTransferPass(resolvePassName, [importedColor, importedResolve, resolveW,
-                                                                         resolveH, msaaImage,
-                                                                         resolveImage](vk::PassBuilder &builder) {
+                                                                         resolveH, msaaImage, resolveImage,
+                                                                         &resolvedVersion](vk::PassBuilder &builder) {
                             builder.TransferRead(importedColor);
-                            builder.TransferWrite(importedResolve);
+                            resolvedVersion = builder.TransferWrite(importedResolve);
                             builder.SetRenderArea(resolveW, resolveH);
 
                             return [msaaImage, resolveImage, resolveW, resolveH](vk::RenderContext &ctx) {
@@ -1235,6 +1257,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
                             };
                         });
+                        publishResourceVersion(resolvedVersion);
                         backbufferDirtySinceResolve = false;
                     }
                 }
@@ -1312,6 +1335,7 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 // Determine output target (primary color)
                 vk::ResourceHandle fsOutputTarget = primaryColorTarget;
+                vk::ResourceHandle fsWrittenVersion;
 
                 // Determine MSAA sample count and output format.
                 // When writing to the MSAA backbuffer the pipeline sample
@@ -1345,7 +1369,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
-                m_renderGraph->AddPass(passDesc.name, [=](vk::PassBuilder &builder) {
+                m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion](vk::PassBuilder &builder) {
                     // Declare read dependencies for DAG edges + barriers
                     for (size_t i = 0; i < fsReadHandles.size(); ++i) {
                         if (i < fsIsDepthInputs.size() && fsIsDepthInputs[i]) {
@@ -1355,7 +1379,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         }
                     }
                     // Declare color output
-                    builder.WriteColor(fsOutputTarget, 0);
+                    fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
                     builder.SetRenderArea(fsPassWidth, fsPassHeight);
 
                     return [=, cachedRenderTarget = rhi::RenderTargetLayoutHandle{}](vk::RenderContext &ctx) mutable {
@@ -1423,6 +1447,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                          packedPushConstantSize);
                     };
                 });
+                publishResourceVersion(fsWrittenVersion);
 
                 if (writesBackbuffer) {
                     backbufferDirtySinceResolve = true;
@@ -1430,7 +1455,11 @@ void SceneRenderGraph::BuildRenderGraph()
                 continue;
             }
 
-            m_renderGraph->AddPass(passDesc.name, [=, &sharedDepth](vk::PassBuilder &builder) {
+            std::vector<vk::ResourceHandle> writtenColorVersions;
+            vk::ResourceHandle writtenDepthVersion;
+            vk::ResourceHandle writtenResolveVersion;
+            m_renderGraph->AddPass(passDesc.name, [=, &sharedDepth, &writtenColorVersions, &writtenDepthVersion,
+                                                   &writtenResolveVersion](vk::PassBuilder &builder) {
                 // Local alias to make vkCore capturable by nested lambdas (MSVC C3481)
                 InxVkCoreModular *localVkCore = vkCore;
 
@@ -1477,7 +1506,8 @@ void SceneRenderGraph::BuildRenderGraph()
                     auto rtIt = customRTHandles.find(passDesc.writeDepth);
                     if (rtIt != customRTHandles.end()) {
                         depth = rtIt->second;
-                        builder.WriteDepth(depth);
+                        writtenDepthVersion = builder.WriteDepth(depth);
+                        depth = writtenDepthVersion;
                     } else if (isShadowPass) {
                         // Fallback: create inline
                         auto depthTexIt = texDescMap.find(passDesc.writeDepth);
@@ -1486,18 +1516,24 @@ void SceneRenderGraph::BuildRenderGraph()
                                                       : VK_FORMAT_D32_SFLOAT;
                         depth = builder.CreateDepthStencil(passDesc.writeDepth, passWidth, passHeight, shadowDepthFmt,
                                                            VK_SAMPLE_COUNT_1_BIT);
-                        builder.WriteDepth(depth);
+                        writtenDepthVersion = builder.WriteDepth(depth);
+                        depth = writtenDepthVersion;
                     }
                 }
                 if (!depth.IsValid() && needsCreateDepth) {
                     // First pass that writes depth: create the shared resource
                     depth = builder.CreateDepthStencil("SceneDepth", width, height, depthFormat, msaaSamples);
-                    builder.WriteDepth(depth);
+                    writtenDepthVersion = builder.WriteDepth(depth);
+                    depth = writtenDepthVersion;
                     // Store for subsequent passes (captured by ref)
                     sharedDepth = depth;
                 } else if (!depth.IsValid() && writesDepth && depthForThisPass.IsValid()) {
                     // Later pass that also writes depth (rare)
-                    builder.WriteDepth(depthForThisPass);
+                    writtenDepthVersion = builder.WriteDepth(depthForThisPass);
+                    if (sharedDepth.IsValid() && writtenDepthVersion.IsValid() &&
+                        sharedDepth.id == writtenDepthVersion.id) {
+                        sharedDepth = writtenDepthVersion;
+                    }
                 } else if (!depth.IsValid() && passReadsDepth && depthForThisPass.IsValid()) {
                     // Pass reads depth (e.g., skybox, transparent) — attach as read-only
                     builder.ReadDepth(depthForThisPass);
@@ -1526,12 +1562,14 @@ void SceneRenderGraph::BuildRenderGraph()
                 // ----- Color outputs (MRT) -----
                 // Write all declared color targets at their respective slots.
                 for (const auto &[slot, handle] : colorTargets) {
-                    builder.WriteColor(handle, slot);
+                    auto written = builder.WriteColor(handle, slot);
+                    if (written.IsValid())
+                        writtenColorVersions.push_back(written);
                 }
 
                 // ----- MSAA Resolve (only on the last backbuffer pass) -----
                 if (resolveTarget.IsValid()) {
-                    builder.WriteResolve(resolveTarget);
+                    writtenResolveVersion = builder.WriteResolve(resolveTarget);
                 }
 
                 // ----- Render area -----
@@ -1558,6 +1596,11 @@ void SceneRenderGraph::BuildRenderGraph()
                 };
             });
 
+            for (const auto &written : writtenColorVersions)
+                publishResourceVersion(written);
+            publishResourceVersion(writtenDepthVersion);
+            publishResourceVersion(writtenResolveVersion);
+
             // After scene-pass AddPass completes (setup lambda ran synchronously),
             // sharedDepth is now valid.  Register it in customRTHandles under
             // all scene-size depth texture names so subsequent fullscreen quad
@@ -1580,9 +1623,9 @@ void SceneRenderGraph::BuildRenderGraph()
         // Auto-append system passes: component gizmos, editor gizmos,
         // and editor tools — all draw into the backbuffer with depth testing.
         // ====================================================================
-        AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
-        AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
-        AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+        m_importedColorTarget = AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
+        m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
+        m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
     }
 
     // Set output for proper resource tracking and dead-pass culling.

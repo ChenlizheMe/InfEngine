@@ -133,12 +133,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     ResourceHandle indirectArguments;
+    ResourceHandle discardedRewrite;
     ResourceHandle colorTarget;
     resources.graph.AddComputePass("BuildIndirectArguments", [&](PassBuilder &builder) {
         indirectArguments =
             builder.CreateBuffer("IndirectArguments", sizeof(VkDrawIndirectCommand),
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-        builder.WriteStorageBuffer(indirectArguments);
+        indirectArguments = builder.WriteStorageBuffer(indirectArguments);
         return [&](RenderContext &context) {
             auto &encoder = context.GetComputeCommandEncoder();
             encoder.BindPipeline(resources.computeHandle);
@@ -147,10 +148,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         };
     });
 
+    resources.graph.AddComputePass("DiscardedRewrite", [&](PassBuilder &builder) {
+        discardedRewrite = builder.WriteStorageBuffer(indirectArguments);
+        return [](RenderContext &) {};
+    });
+
     resources.graph.AddPass("IndirectDraw", [&](PassBuilder &builder) {
         builder.ReadIndirectBuffer(indirectArguments);
         colorTarget = builder.CreateTexture("IndirectColor", 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
-        builder.WriteColor(colorTarget);
+        colorTarget = builder.WriteColor(colorTarget);
         builder.SetRenderArea(16, 16);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         return [&](RenderContext &context) {
@@ -163,12 +169,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     });
     resources.graph.SetOutput(colorTarget);
 
+    if (!Require(indirectArguments.version == 1 && discardedRewrite.version == 2,
+                 "Buffer writes did not publish monotonic resource versions"))
+        return false;
+
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
     const auto executionNames = resources.graph.GetExecutionPassNames();
     if (!Require(executionNames.size() == 2 && executionNames[0] == "BuildIndirectArguments" &&
                      executionNames[1] == "IndirectDraw",
-                 "Compute-to-indirect dependency did not survive graph culling and sorting"))
+                 "Versioned culling kept an unrelated rewrite or dropped the compute-to-indirect dependency"))
         return false;
 
     VkDescriptorSetLayoutBinding storageBinding{};
@@ -319,7 +329,39 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                               sizeof(passedSamples), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
     if (!Require(queryResult == VK_SUCCESS, "Occlusion query readback failed"))
         return false;
-    return Require(passedSamples > 0, "Compute-generated indirect draw produced no visible samples");
+    if (!Require(passedSamples > 0, "Compute-generated indirect draw produced no visible samples"))
+        return false;
+
+    // Two logical versions share one physical image. A final pass cannot read
+    // both sides of an overwrite without a copy, because it would need to run
+    // both before and after that overwrite. Reject the cycle instead of
+    // silently falling back to declaration order.
+    RenderGraph invalidVersionGraph;
+    invalidVersionGraph.Initialize(&resources.context, &resources.pipelines);
+    ResourceHandle firstVersion;
+    ResourceHandle secondVersion;
+    ResourceHandle invalidOutput;
+    invalidVersionGraph.AddPass("FirstVersion", [&](PassBuilder &builder) {
+        firstVersion = builder.CreateTexture("VersionedColor", 4, 4, VK_FORMAT_R8G8B8A8_UNORM);
+        firstVersion = builder.WriteColor(firstVersion);
+        builder.SetRenderArea(4, 4);
+        return [](RenderContext &) {};
+    });
+    invalidVersionGraph.AddPass("OverwriteVersion", [&](PassBuilder &builder) {
+        secondVersion = builder.WriteColor(firstVersion);
+        builder.SetRenderArea(4, 4);
+        return [](RenderContext &) {};
+    });
+    invalidVersionGraph.AddPass("ConsumeBothVersions", [&](PassBuilder &builder) {
+        builder.Read(firstVersion);
+        builder.Read(secondVersion);
+        invalidOutput = builder.CreateTexture("InvalidOutput", 4, 4, VK_FORMAT_R8G8B8A8_UNORM);
+        invalidOutput = builder.WriteColor(invalidOutput);
+        builder.SetRenderArea(4, 4);
+        return [](RenderContext &) {};
+    });
+    invalidVersionGraph.SetOutput(invalidOutput);
+    return Require(!invalidVersionGraph.Compile(), "An unschedulable multi-version alias was not rejected");
 }
 } // namespace
 

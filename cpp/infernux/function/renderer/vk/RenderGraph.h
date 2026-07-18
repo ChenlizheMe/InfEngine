@@ -97,7 +97,8 @@ enum class ResourceUsage
     ShaderRead = 1 << 4,
     Transfer = 1 << 5,
     DepthRead = 1 << 6, ///< Read-only depth attachment (depth testing without writing)
-    IndirectArgument = 1 << 7
+    IndirectArgument = 1 << 7,
+    VersionDependency = 1 << 8 ///< Graph ordering only; emits no backend access or barrier
 };
 
 inline ResourceUsage operator|(ResourceUsage a, ResourceUsage b)
@@ -714,7 +715,8 @@ class RenderGraph
 
     [[nodiscard]] bool Owns(ResourceHandle handle) const noexcept
     {
-        return handle.IsValid() && handle.scope == m_identity.Current();
+        return handle.IsValid() && handle.scope == m_identity.Current() && handle.id < m_resources.size() &&
+               handle.id < m_resourceVersions.size() && handle.version <= m_resourceVersions[handle.id];
     }
 
     [[nodiscard]] bool Owns(PassHandle handle) const noexcept
@@ -763,14 +765,18 @@ class RenderGraph
     /// @brief Create a new resource entry
     ResourceHandle CreateResource(const std::string &name, ResourceType type);
 
+    /// Produce the next SSA-style version for a resource write. Writes must
+    /// consume the latest version; reads may keep referencing older versions.
+    ResourceHandle AdvanceResourceVersion(ResourceHandle handle);
+
     /// @brief Cull unused passes (from output backwards)
     void CullPasses();
 
     /// @brief Compute resource lifetimes
     void ComputeResourceLifetimes();
 
-    /// @brief Topological sort via Kahn's algorithm
-    void TopologicalSort();
+    /// @brief Topological sort via Kahn's algorithm. Returns false for cycles.
+    bool TopologicalSort();
 
     /// @brief Allocate transient resources
     bool AllocateResources();
@@ -837,6 +843,7 @@ class RenderGraph
     // Graph data
     std::vector<RenderPassData> m_passes;
     std::vector<ResourceData> m_resources;
+    std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;
 
     // Output

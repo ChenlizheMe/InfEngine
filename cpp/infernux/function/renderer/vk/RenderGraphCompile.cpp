@@ -34,18 +34,24 @@ void RenderGraph::CullPasses()
         pass.culled = true;
     }
 
-    // Find passes that write to the output
-    std::queue<uint32_t> workQueue;
-
-    for (uint32_t i = 0; i < m_passes.size(); i++) {
-        for (const auto &write : m_passes[i].writes) {
-            if (write.handle == m_output || write.handle == m_backbuffer) {
-                m_passes[i].culled = false;
-                m_passes[i].refCount = 1;
-                workQueue.push(i);
-                break;
-            }
+    // A resource version has exactly one producer. Build this once so both
+    // output rooting and backward propagation use the SSA-style handle rather
+    // than conflating every write to the same physical allocation.
+    std::unordered_map<ResourceHandle, uint32_t, ResourceHandleHash> producers;
+    for (uint32_t passId = 0; passId < m_passes.size(); ++passId) {
+        for (const auto &write : m_passes[passId].writes) {
+            producers.emplace(write.handle, passId);
         }
+    }
+
+    // Find the pass that writes the selected output version.
+    std::queue<uint32_t> workQueue;
+    ResourceHandle root = m_output.IsValid() ? m_output : m_backbuffer;
+    auto rootProducer = producers.find(root);
+    if (rootProducer != producers.end()) {
+        m_passes[rootProducer->second].culled = false;
+        m_passes[rootProducer->second].refCount = 1;
+        workQueue.push(rootProducer->second);
     }
 
     // Backward propagation
@@ -55,22 +61,17 @@ void RenderGraph::CullPasses()
 
         const auto &pass = m_passes[passId];
 
-        // Find passes that produce resources this pass reads
+        // Find the exact producer of every version this pass reads.
         for (const auto &read : pass.reads) {
-            for (uint32_t i = 0; i < m_passes.size(); i++) {
-                if (i == passId)
-                    continue;
-
-                for (const auto &write : m_passes[i].writes) {
-                    if (write.handle.id == read.handle.id) {
-                        if (m_passes[i].culled) {
-                            m_passes[i].culled = false;
-                            workQueue.push(i);
-                        }
-                        m_passes[i].refCount++;
-                    }
-                }
+            auto producer = producers.find(read.handle);
+            if (producer == producers.end() || producer->second == passId)
+                continue;
+            auto &producerPass = m_passes[producer->second];
+            if (producerPass.culled) {
+                producerPass.culled = false;
+                workQueue.push(producer->second);
             }
+            producerPass.refCount++;
         }
     }
 
@@ -117,7 +118,7 @@ void RenderGraph::ComputeResourceLifetimes()
 // Topological Sort (Kahn's Algorithm)
 // ============================================================================
 
-void RenderGraph::TopologicalSort()
+bool RenderGraph::TopologicalSort()
 {
     m_executionOrder.clear();
 
@@ -130,7 +131,7 @@ void RenderGraph::TopologicalSort()
     }
 
     if (activePasses.empty()) {
-        return;
+        return true;
     }
 
     // Build adjacency list: edge A→B means pass A must execute before pass B
@@ -143,62 +144,39 @@ void RenderGraph::TopologicalSort()
         inDegree[passId] = 0;
     }
 
-    // ====================================================================
-    // Build a resource_id → writer_pass_id map first, then connect reader
-    // passes from that map. This avoids the previous deeply nested scan.
-    // ====================================================================
-
-    // A single resource may be written by multiple passes (e.g. depth
-    // written and then rewritten by a later pass).  Store ALL writers.
-    std::unordered_map<uint32_t, std::vector<uint32_t>> resourceWriters; // resource_id → [writer pass ids]
-    std::unordered_map<uint32_t, std::vector<uint32_t>> depthWriters;    // depth resource_id → [writer pass ids]
-
+    std::unordered_map<ResourceHandle, uint32_t, ResourceHandleHash> producers;
+    std::unordered_map<ResourceHandle, std::vector<uint32_t>, ResourceHandleHash> readers;
     for (uint32_t writePassId : activePasses) {
         const auto &writePass = m_passes[writePassId];
         for (const auto &write : writePass.writes) {
-            resourceWriters[write.handle.id].push_back(writePassId);
+            producers.emplace(write.handle, writePassId);
         }
-        if (writePass.depthOutput.IsValid()) {
-            depthWriters[writePass.depthOutput.id].push_back(writePassId);
+    }
+    for (uint32_t readPassId : activePasses) {
+        const auto &readPass = m_passes[readPassId];
+        for (const auto &read : readPass.reads) {
+            readers[read.handle].push_back(readPassId);
+            auto producer = producers.find(read.handle);
+            if (producer != producers.end() && producer->second != readPassId)
+                adjacency[producer->second].push_back(readPassId);
         }
     }
 
-    // For each reader pass, look up writers via the map — O(1) per resource
-    // For each reader pass, look up writers via the map.
-    // IMPORTANT: Only create edges from writers declared BEFORE the reader
-    // (writePassId < readPassId).  Without this constraint, a resource that
-    // is written by an early pass, read by a middle pass, and written again
-    // by a late pass would create a spurious backward edge late→middle,
-    // forming a cycle.  The render graph does not version resources, so
-    // declaration order is used as a proxy for the intended data-flow
-    // timeline.  This matches the Python-side declaration order which is
-    // always the logical execution order.
-    for (uint32_t readPassId : activePasses) {
-        const auto &readPass = m_passes[readPassId];
-
-        for (const auto &read : readPass.reads) {
-            auto it = resourceWriters.find(read.handle.id);
-            if (it != resourceWriters.end()) {
-                for (uint32_t writePassId : it->second) {
-                    if (writePassId != readPassId && writePassId < readPassId) {
-                        adjacency[writePassId].push_back(readPassId);
-                        inDegree[readPassId]++;
-                    }
-                }
-            }
-        }
-
-        // depthInput: if a pass reads depth from another pass
-        if (readPass.depthInput.IsValid()) {
-            auto it = depthWriters.find(readPass.depthInput.id);
-            if (it != depthWriters.end()) {
-                for (uint32_t writePassId : it->second) {
-                    if (writePassId != readPassId && writePassId < readPassId) {
-                        adjacency[writePassId].push_back(readPassId);
-                        inDegree[readPassId]++;
-                    }
-                }
-            }
+    // Multiple versions share one physical allocation. Readers of version N
+    // must complete before the producer of N+1 overwrites that allocation.
+    // This anti-dependency is what makes reading an older branch deterministic
+    // even when the newer write was declared first.
+    for (const auto &[version, versionReaders] : readers) {
+        if (version.version == std::numeric_limits<uint32_t>::max())
+            continue;
+        ResourceHandle nextVersion = version;
+        ++nextVersion.version;
+        auto nextProducer = producers.find(nextVersion);
+        if (nextProducer == producers.end())
+            continue;
+        for (uint32_t readerPassId : versionReaders) {
+            if (readerPassId != nextProducer->second)
+                adjacency[readerPassId].push_back(nextProducer->second);
         }
     }
 
@@ -248,12 +226,11 @@ void RenderGraph::TopologicalSort()
     // Check for cycles
     if (m_executionOrder.size() != activePasses.size()) {
         INXLOG_ERROR("RenderGraph::TopologicalSort - Cycle detected! Sorted ", m_executionOrder.size(), " of ",
-                     activePasses.size(), " passes. Falling back to declaration order.");
+                     activePasses.size(), " passes. Versioned graph compilation was rejected.");
         m_executionOrder.clear();
-        for (uint32_t passId : activePasses) {
-            m_executionOrder.push_back(passId);
-        }
+        return false;
     }
+    return true;
 }
 
 // ============================================================================
@@ -1030,6 +1007,8 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
 
     // Helper: generate barrier for a resource access
     auto addBarrier = [&](const ResourceAccess &access, bool isDepthInput = false) {
+        if (static_cast<int>(access.usage & ResourceUsage::VersionDependency) != 0)
+            return;
         if (access.handle.id >= m_resources.size())
             return;
 
@@ -1155,6 +1134,8 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     }
 
     for (const auto &read : pass.reads) {
+        if (static_cast<int>(read.usage & ResourceUsage::VersionDependency) != 0)
+            continue;
         if (read.handle.id < m_resources.size()) {
             m_resourceStates[read.handle.id] = {read.layout, read.access, read.stages, passIndex};
         }
