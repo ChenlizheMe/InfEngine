@@ -17,6 +17,32 @@
 
 namespace infernux
 {
+namespace
+{
+ShaderProgramStageMask ToRuntimeStageMask(ShaderStageVisibility visibility) noexcept
+{
+    ShaderProgramStageMask result = ShaderProgramStageMask::None;
+    if (HasVisibility(visibility, ShaderStageVisibility::Vertex))
+        result = result | ShaderProgramStageMask::Vertex;
+    if (HasVisibility(visibility, ShaderStageVisibility::Fragment))
+        result = result | ShaderProgramStageMask::Fragment;
+    return result;
+}
+
+void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderProgramArtifact &target)
+{
+    target.shadingModel = source.shadingModel;
+    target.materialBufferSize = source.materialBufferSize;
+    target.alphaClipThresholdOffset = source.alphaClipThresholdOffset;
+    target.properties.reserve(source.properties.size());
+    for (const auto &property : source.properties) {
+        target.properties.push_back({property.schema.name, property.schema.type, property.schema.defaultValue,
+                                     property.schema.textureDefault, ToRuntimeStageMask(property.visibility),
+                                     property.schema.hdr, property.schema.range, property.bufferOffset,
+                                     property.textureSlot, property.byteSize, property.byteAlignment});
+    }
+}
+} // namespace
 
 ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact() const
 {
@@ -26,6 +52,7 @@ ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact() co
     artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
     artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
     artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;
+    CopyRuntimeInterface(interfaceArtifact, artifact);
     artifact.variants.push_back({target, interfaceArtifact.compatibilitySignature, vertexSpirv, fragmentSpirv});
     artifact.key.revision = ComputeShaderProgramArtifactRevision(artifact);
     return artifact;
@@ -83,6 +110,7 @@ ShaderProgramArtifact LinkedShaderProgramArtifactCompilation::CreateRuntimeArtif
     artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
     artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
     artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;
+    CopyRuntimeInterface(interfaceArtifact, artifact);
     artifact.variants.reserve(compiledVariants.size());
     for (const auto &variant : compiledVariants) {
         artifact.variants.push_back(

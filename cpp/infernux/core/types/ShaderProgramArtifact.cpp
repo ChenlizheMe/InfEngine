@@ -4,6 +4,7 @@
 #include <array>
 #include <iomanip>
 #include <sstream>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -66,6 +67,19 @@ size_t ShaderProgramVariantKeyHash::operator()(const ShaderProgramVariantKey &ke
     return static_cast<size_t>(hash);
 }
 
+bool ShaderProgramPropertyBinding::IsValid(uint32_t materialBufferSize) const noexcept
+{
+    if (name.empty() || type.empty() || stages == ShaderProgramStageMask::None)
+        return false;
+    if (bufferOffset.has_value() == textureSlot.has_value())
+        return false;
+    if (textureSlot)
+        return byteSize == 0 && byteAlignment == 0;
+    if (byteSize == 0 || byteAlignment == 0 || (*bufferOffset % byteAlignment) != 0)
+        return false;
+    return *bufferOffset <= materialBufferSize && byteSize <= materialBufferSize - *bufferOffset;
+}
+
 const ShaderProgramArtifact::PassVariant *ShaderProgramArtifact::FindVariant(ShaderCompileTarget target) const noexcept
 {
     for (const auto &variant : variants) {
@@ -78,8 +92,23 @@ const ShaderProgramArtifact::PassVariant *ShaderProgramArtifact::FindVariant(Sha
 bool ShaderProgramArtifact::IsValid() const noexcept
 {
     if (schemaVersion != CurrentSchemaVersion || !key.IsValid() || key.revision == 0 || compatibilitySignature == 0 ||
-        variants.empty()) {
+        domain >= ShaderProgramDomain::Count || variants.empty() || materialBufferSize % 16 != 0) {
         return false;
+    }
+
+    if (alphaClipThresholdOffset &&
+        (*alphaClipThresholdOffset > materialBufferSize || 4 > materialBufferSize - *alphaClipThresholdOffset)) {
+        return false;
+    }
+    std::unordered_set<std::string> propertyNames;
+    std::unordered_set<uint32_t> textureSlots;
+    propertyNames.reserve(properties.size());
+    textureSlots.reserve(properties.size());
+    for (const auto &property : properties) {
+        if (!property.IsValid(materialBufferSize) || !propertyNames.insert(property.name).second ||
+            (property.textureSlot && !textureSlots.insert(*property.textureSlot).second)) {
+            return false;
+        }
     }
 
     static_assert(static_cast<int>(ShaderCompileTarget::Count) <= 64);
@@ -115,6 +144,39 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
 {
     uint64_t hash = AppendString(FnvOffset, artifact.key.stages.vertexShaderId);
     hash = AppendString(hash, artifact.key.stages.fragmentShaderId);
+    const auto domain = static_cast<uint8_t>(artifact.domain);
+    hash = AppendBytes(hash, &domain, sizeof(domain));
+    hash = AppendString(hash, artifact.shadingModel);
+    hash = AppendBytes(hash, &artifact.materialBufferSize, sizeof(artifact.materialBufferSize));
+    const bool hasAlphaClipThreshold = artifact.alphaClipThresholdOffset.has_value();
+    hash = AppendBytes(hash, &hasAlphaClipThreshold, sizeof(hasAlphaClipThreshold));
+    if (artifact.alphaClipThresholdOffset)
+        hash = AppendBytes(hash, &*artifact.alphaClipThresholdOffset, sizeof(*artifact.alphaClipThresholdOffset));
+    const uint64_t propertyCount = artifact.properties.size();
+    hash = AppendBytes(hash, &propertyCount, sizeof(propertyCount));
+    for (const auto &property : artifact.properties) {
+        hash = AppendString(hash, property.name);
+        hash = AppendString(hash, property.type);
+        hash = AppendString(hash, property.defaultValue);
+        hash = AppendString(hash, property.textureDefault);
+        const auto stages = static_cast<uint8_t>(property.stages);
+        hash = AppendBytes(hash, &stages, sizeof(stages));
+        hash = AppendBytes(hash, &property.hdr, sizeof(property.hdr));
+        const bool hasRange = property.range.has_value();
+        hash = AppendBytes(hash, &hasRange, sizeof(hasRange));
+        if (property.range)
+            hash = AppendBytes(hash, property.range->data(), sizeof(double) * property.range->size());
+        const bool hasBufferOffset = property.bufferOffset.has_value();
+        hash = AppendBytes(hash, &hasBufferOffset, sizeof(hasBufferOffset));
+        if (property.bufferOffset)
+            hash = AppendBytes(hash, &*property.bufferOffset, sizeof(*property.bufferOffset));
+        const bool hasTextureSlot = property.textureSlot.has_value();
+        hash = AppendBytes(hash, &hasTextureSlot, sizeof(hasTextureSlot));
+        if (property.textureSlot)
+            hash = AppendBytes(hash, &*property.textureSlot, sizeof(*property.textureSlot));
+        hash = AppendBytes(hash, &property.byteSize, sizeof(property.byteSize));
+        hash = AppendBytes(hash, &property.byteAlignment, sizeof(property.byteAlignment));
+    }
     hash = AppendBytes(hash, &artifact.varyingInterfaceSignature, sizeof(artifact.varyingInterfaceSignature));
     hash = AppendBytes(hash, &artifact.materialLayoutSignature, sizeof(artifact.materialLayoutSignature));
     hash = AppendBytes(hash, &artifact.compatibilitySignature, sizeof(artifact.compatibilitySignature));

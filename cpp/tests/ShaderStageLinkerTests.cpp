@@ -23,6 +23,15 @@ const infernux::LinkedShaderProperty &RequireProperty(const infernux::ShaderProg
     return *property;
 }
 
+const infernux::ShaderProgramPropertyBinding &RequireRuntimeProperty(const infernux::ShaderProgramArtifact &artifact,
+                                                                     const std::string &name)
+{
+    const auto property = std::find_if(artifact.properties.begin(), artifact.properties.end(),
+                                       [&](const auto &candidate) { return candidate.name == name; });
+    assert(property != artifact.properties.end());
+    return *property;
+}
+
 bool HasDiagnostic(const infernux::ShaderProgramInterfaceArtifact &artifact, infernux::ShaderLinkDiagnosticCode code)
 {
     return std::any_of(artifact.diagnostics.begin(), artifact.diagnostics.end(),
@@ -160,6 +169,23 @@ void surface(out SurfaceData s)
     assert(runtimeArtifact.key.stages.vertexShaderId == "Tests/WaveDeform");
     assert(runtimeArtifact.key.stages.fragmentShaderId == "Tests/OceanSurface");
     assert(runtimeArtifact.key.revision != 0);
+    assert(runtimeArtifact.domain == infernux::ShaderProgramDomain::Mesh);
+    assert(runtimeArtifact.shadingModel == "pbr");
+    assert(runtimeArtifact.materialBufferSize == artifact.materialBufferSize);
+    assert(runtimeArtifact.alphaClipThresholdOffset == artifact.alphaClipThresholdOffset);
+    assert(runtimeArtifact.properties.size() == artifact.properties.size());
+    const auto &runtimeAmplitude = RequireRuntimeProperty(runtimeArtifact, "amplitude");
+    assert(runtimeAmplitude.bufferOffset == amplitude.bufferOffset);
+    assert(runtimeAmplitude.byteSize == amplitude.byteSize);
+    assert(infernux::HasStage(runtimeAmplitude.stages, infernux::ShaderProgramStageMask::Vertex));
+    assert(infernux::HasStage(runtimeAmplitude.stages, infernux::ShaderProgramStageMask::Fragment));
+    assert(runtimeAmplitude.range == amplitude.schema.range);
+    const auto &runtimeNormalMap = RequireRuntimeProperty(runtimeArtifact, "normalMap");
+    assert(runtimeNormalMap.IsTexture());
+    assert(runtimeNormalMap.textureSlot == normalMap.textureSlot);
+    assert(runtimeNormalMap.textureDefault == "Normal");
+    assert(!infernux::HasStage(runtimeNormalMap.stages, infernux::ShaderProgramStageMask::Vertex));
+    assert(infernux::HasStage(runtimeNormalMap.stages, infernux::ShaderProgramStageMask::Fragment));
     assert(runtimeArtifact.compatibilitySignature == compiledProgram.interfaceArtifact.compatibilitySignature);
     const auto *forwardVariant = runtimeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward);
     assert(forwardVariant != nullptr);
@@ -259,16 +285,8 @@ void surface(out SurfaceData s)
     const auto motionCompilation =
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Motion; });
-    assert(motionCompilation != completeCompilation.compiledVariants.end());
-    assert(motionCompilation->generatedVertexSource.find("#define INX_MOTION_PASS 1") != std::string::npos);
-    assert(motionCompilation->generatedVertexSource.find("mat4 previousViewProj;") != std::string::npos);
-    assert(motionCompilation->generatedVertexSource.find("layout(location = 15) out vec2 _inx_MotionVector;") !=
-           std::string::npos);
-    assert(motionCompilation->generatedVertexSource.find("aux.previousModel") != std::string::npos);
-    assert(motionCompilation->generatedFragmentSource.find("layout(location = 0) out vec2 outMotion;") !=
-           std::string::npos);
-    assert(motionCompilation->generatedFragmentSource.find("outMotion = _inx_MotionVector;") != std::string::npos);
-    assert(motionCompilation->generatedFragmentSource.find("surface(s);") != std::string::npos);
+    assert(motionCompilation == completeCompilation.compiledVariants.end());
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Motion) == nullptr);
 
     auto reorderedArtifact = completeArtifact;
     std::reverse(reorderedArtifact.variants.begin(), reorderedArtifact.variants.end());
@@ -276,6 +294,13 @@ void surface(out SurfaceData s)
     auto changedVariantArtifact = completeArtifact;
     changedVariantArtifact.variants[1].fragmentSpirv.back() ^= 1;
     assert(infernux::ComputeShaderProgramArtifactRevision(changedVariantArtifact) != completeArtifact.key.revision);
+    auto changedMaterialArtifact = completeArtifact;
+    auto changedProperty =
+        std::find_if(changedMaterialArtifact.properties.begin(), changedMaterialArtifact.properties.end(),
+                     [](const auto &property) { return property.name == "amplitude"; });
+    assert(changedProperty != changedMaterialArtifact.properties.end());
+    changedProperty->defaultValue = "0.75";
+    assert(infernux::ComputeShaderProgramArtifactRevision(changedMaterialArtifact) != completeArtifact.key.revision);
     const infernux::ShaderProgramVariantKey forwardProgramKey{completeArtifact.key,
                                                               infernux::ShaderCompileTarget::Forward};
     const infernux::ShaderProgramVariantKey shadowProgramKey{completeArtifact.key,

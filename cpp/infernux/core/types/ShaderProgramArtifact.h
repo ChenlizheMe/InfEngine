@@ -2,7 +2,9 @@
 
 #include <core/types/ShaderTypes.h>
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -102,12 +104,64 @@ struct ShaderProgramVariantKeyHash
     [[nodiscard]] size_t operator()(const ShaderProgramVariantKey &key) const noexcept;
 };
 
+enum class ShaderProgramDomain : uint8_t
+{
+    Mesh = 0,
+    ParticleSprite,
+
+    Count,
+};
+
+enum class ShaderProgramStageMask : uint8_t
+{
+    None = 0,
+    Vertex = 1 << 0,
+    Fragment = 1 << 1,
+};
+
+constexpr ShaderProgramStageMask operator|(ShaderProgramStageMask lhs, ShaderProgramStageMask rhs) noexcept
+{
+    return static_cast<ShaderProgramStageMask>(static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+}
+
+constexpr bool HasStage(ShaderProgramStageMask value, ShaderProgramStageMask stage) noexcept
+{
+    return (static_cast<uint8_t>(value) & static_cast<uint8_t>(stage)) != 0;
+}
+
+struct ShaderProgramPropertyBinding
+{
+    std::string name;
+    std::string type;
+    std::string defaultValue;
+    std::string textureDefault;
+    ShaderProgramStageMask stages = ShaderProgramStageMask::None;
+    bool hdr = false;
+    std::optional<std::array<double, 2>> range;
+    std::optional<uint32_t> bufferOffset;
+    std::optional<uint32_t> textureSlot;
+    uint32_t byteSize = 0;
+    uint32_t byteAlignment = 0;
+
+    [[nodiscard]] bool IsTexture() const noexcept
+    {
+        return textureSlot.has_value();
+    }
+
+    [[nodiscard]] bool IsValid(uint32_t materialBufferSize) const noexcept;
+};
+
 struct ShaderProgramArtifact
 {
-    static constexpr uint32_t CurrentSchemaVersion = 2;
+    static constexpr uint32_t CurrentSchemaVersion = 3;
 
     uint32_t schemaVersion = CurrentSchemaVersion;
     ShaderProgramKey key;
+    ShaderProgramDomain domain = ShaderProgramDomain::Mesh;
+    std::string shadingModel;
+    uint32_t materialBufferSize = 0;
+    std::optional<uint32_t> alphaClipThresholdOffset;
+    std::vector<ShaderProgramPropertyBinding> properties;
     uint64_t varyingInterfaceSignature = 0;
     uint64_t materialLayoutSignature = 0;
     uint64_t compatibilitySignature = 0;
