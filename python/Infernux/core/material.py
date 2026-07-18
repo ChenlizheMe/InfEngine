@@ -258,11 +258,14 @@ class Material:
 
     @property
     def render_queue(self) -> int:
-        return self._native.render_queue
+        return self._native.get_render_queue()
 
     @render_queue.setter
     def render_queue(self, value: int):
-        self._native.render_queue = value
+        from Infernux.lib import RenderStateOverride
+
+        self._native.set_render_queue(value)
+        self._native.mark_override(RenderStateOverride.RENDER_QUEUE)
 
     @property
     def shader_name(self) -> str:

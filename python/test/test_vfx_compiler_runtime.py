@@ -7,7 +7,14 @@ from Infernux.core.vfx_system import VfxEmitter
 from Infernux.core.vfx_system import VfxSystem
 from Infernux.components.particle_system import ParticleSystem
 from Infernux.core.asset_ref import ParticleGraphRef
-from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
+from Infernux.core.material import Material
+from Infernux.graph import (
+    AssetReference,
+    GraphDocument,
+    GraphLinkRecord,
+    GraphNodeRecord,
+    PortKind,
+)
 from Infernux.particle import (
     EmitterSettings,
     ExecutionTarget,
@@ -19,7 +26,9 @@ from Infernux.lib import SceneManager
 from Infernux.vfx import CpuParticleRuntime, VfxCompileError, VfxGraphCompiler
 
 
-def _two_output_rendering_graph() -> GraphDocument:
+def _two_output_rendering_graph(
+    material: AssetReference | None = None,
+) -> GraphDocument:
     rendering = ParticleEmitterAsset().rendering
     return GraphDocument(
         rendering.domain,
@@ -29,6 +38,7 @@ def _two_output_rendering_graph() -> GraphDocument:
                 "output.secondary",
                 "particle.output.sprite",
                 (280.0, 140.0),
+                {"material": material.to_dict()} if material is not None else {},
             ),
         ),
         (
@@ -286,6 +296,15 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     scene, engine, monkeypatch, tmp_path
 ):
     source = tmp_path / "GpuSmoke.particlegraph"
+    material_path = tmp_path / "GpuSmoke.mat"
+    material = Material.create_unlit("Gpu Smoke")
+    material.render_queue = 3075
+    material.blend_enable = True
+    material.depth_write_enable = False
+    assert material.save(str(material_path))
+    imported_material = engine.get_asset_database().import_asset(str(material_path))
+    assert imported_material.guid
+    material_ref = AssetReference(imported_material.guid, str(material_path))
     graph = ParticleGraphAsset(
         stable_id="gpu-smoke-component",
         emitters=(
@@ -297,7 +316,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 4),),
                 ),
-                rendering=_two_output_rendering_graph(),
+                rendering=_two_output_rendering_graph(material_ref),
             ),
         ),
     )
@@ -317,6 +336,18 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     emitter_id = component._gpu_emitter_ids[0]
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
     assert engine._gpu_particle_output_count(emitter_id) == 2
+    secondary_output_id = component._gpu_output_id("smoke", "output.secondary")
+    assert (
+        engine._gpu_particle_output_render_queue(emitter_id, secondary_output_id)
+        == 3075
+    )
+    live_material = Material.load(str(material_path))
+    assert live_material is not None
+    live_material.render_queue = 3090
+    assert (
+        engine._gpu_particle_output_render_queue(emitter_id, secondary_output_id)
+        == 3090
+    )
 
     component.update(0.0)
     assert component._gpu_controllers[0].simulation_step == 1
@@ -336,7 +367,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 8),),
                 ),
-                rendering=_two_output_rendering_graph(),
+                rendering=_two_output_rendering_graph(material_ref),
             ),
         ),
     )
@@ -346,6 +377,10 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     assert component._gpu_controllers[0].is_playing is False
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
     assert engine._gpu_particle_output_count(emitter_id) == 2
+    assert (
+        engine._gpu_particle_output_render_queue(emitter_id, secondary_output_id)
+        == 3090
+    )
     assert component.terminate_emitter(0) is True
     assert component.restart(0) is True
 

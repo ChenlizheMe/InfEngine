@@ -6,7 +6,13 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
+
+namespace infernux
+{
+class InxMaterial;
+}
 
 namespace infernux::particle
 {
@@ -24,7 +30,8 @@ struct GpuBillboardRendererDesc
     ShaderBytecode vertexShader;
     ShaderBytecode fragmentShader;
     rhi::BufferHandle instances;
-    GpuBillboardMaterialState material;
+    std::shared_ptr<InxMaterial> material;
+    GpuBillboardMaterialState fallbackMaterial;
 };
 
 struct alignas(16) GpuBillboardViewConstants
@@ -49,10 +56,7 @@ class ParticleGpuBillboardRenderer
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] int32_t RenderQueue() const noexcept
-    {
-        return m_material.renderQueue;
-    }
+    [[nodiscard]] int32_t RenderQueue() const noexcept;
     [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
     {
         return m_instances;
@@ -68,14 +72,17 @@ class ParticleGpuBillboardRenderer
     {
         rhi::RenderTargetLayoutHandle renderTargetLayout;
         MaterialPassPipelineDescriptor pass;
+        uint8_t materialStateSignature = 0;
         rhi::GraphicsPipelineHandle pipeline;
     };
 
     [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                                   const MaterialPassPipelineDescriptor &pass);
+    [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
 
     rhi::Device *m_device = nullptr;
-    GpuBillboardMaterialState m_material{};
+    std::shared_ptr<InxMaterial> m_material;
+    GpuBillboardMaterialState m_fallbackMaterial{};
     rhi::BufferHandle m_instances;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;

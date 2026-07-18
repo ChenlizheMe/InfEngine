@@ -1,7 +1,20 @@
 #include "ParticleGpuBillboardRenderer.h"
 
+#include <function/resources/InxMaterial/InxMaterial.h>
+
 namespace infernux::particle
 {
+
+namespace
+{
+
+uint8_t PipelineStateSignature(const GpuBillboardMaterialState &state) noexcept
+{
+    return static_cast<uint8_t>((state.blendEnabled ? 1u : 0u) | (state.depthTestEnabled ? 2u : 0u) |
+                                (state.depthWriteEnabled ? 4u : 0u));
+}
+
+} // namespace
 
 ParticleGpuBillboardRenderer::~ParticleGpuBillboardRenderer()
 {
@@ -17,6 +30,7 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
 
     m_device = &device;
     m_material = desc.material;
+    m_fallbackMaterial = desc.fallbackMaterial;
     m_instances = desc.instances;
     m_vertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
     m_fragmentShader = device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
@@ -57,7 +71,8 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
         m_device->Release(m_vertexShader);
     }
     m_device = nullptr;
-    m_material = {};
+    m_material.reset();
+    m_fallbackMaterial = {};
     m_instances = {};
     m_vertexShader = {};
     m_fragmentShader = {};
@@ -70,6 +85,20 @@ bool ParticleGpuBillboardRenderer::IsValid() const noexcept
 {
     return m_device && m_instances.IsValid() && m_vertexShader.IsValid() && m_fragmentShader.IsValid() &&
            m_layout.IsValid() && m_group.IsValid();
+}
+
+int32_t ParticleGpuBillboardRenderer::RenderQueue() const noexcept
+{
+    return ResolveMaterialState().renderQueue;
+}
+
+GpuBillboardMaterialState ParticleGpuBillboardRenderer::ResolveMaterialState() const noexcept
+{
+    if (!m_material || m_material->IsDeleted())
+        return m_fallbackMaterial;
+    const auto &renderState = m_material->GetRenderState();
+    return {renderState.renderQueue, renderState.blendEnable, renderState.depthTestEnable,
+            renderState.depthWriteEnable};
 }
 
 bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
@@ -96,8 +125,11 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
 {
     if (!renderTargetLayout.IsValid() || !pass.IsValid() || pass.target != ShaderCompileTarget::Forward)
         return {};
+    const auto materialState = ResolveMaterialState();
+    const uint8_t pipelineStateSignature = PipelineStateSignature(materialState);
     for (const auto &entry : m_pipelines) {
-        if (entry.renderTargetLayout == renderTargetLayout && entry.pass == pass)
+        if (entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
+            entry.materialStateSignature == pipelineStateSignature)
             return entry.pipeline;
     }
 
@@ -106,12 +138,12 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     desc.fragmentShader = m_fragmentShader;
     desc.renderTargetLayout = renderTargetLayout;
     desc.raster.cullMode = rhi::CullMode::None;
-    desc.depth.testEnabled = m_material.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
-    desc.depth.writeEnabled = m_material.depthWriteEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
+    desc.depth.testEnabled = materialState.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
+    desc.depth.writeEnabled = materialState.depthWriteEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.samples = pass.samples;
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];
-        desc.colorTargets[index].blendEnabled = m_material.blendEnabled;
+        desc.colorTargets[index].blendEnabled = materialState.blendEnabled;
     }
     desc.colorTargetCount = static_cast<uint32_t>(pass.colorFormats.size());
     desc.bindingLayouts[0] = m_layout;
@@ -120,7 +152,7 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     desc.pushConstantBytes = sizeof(GpuBillboardViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
-        m_pipelines.push_back({renderTargetLayout, pass, pipeline});
+        m_pipelines.push_back({renderTargetLayout, pass, pipelineStateSignature, pipeline});
     return pipeline;
 }
 

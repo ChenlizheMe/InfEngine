@@ -7,6 +7,7 @@
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <SDL3/SDL.h>
 
@@ -161,8 +162,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::GpuParticleOutputProgram primaryOutput;
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
-    primaryOutput.material.renderQueue = 3050;
-    primaryOutput.material.blendEnabled = false;
+    primaryOutput.material = std::make_shared<infernux::InxMaterial>("managed-primary-material");
+    auto primaryMaterialState = primaryOutput.material->GetRenderState();
+    primaryMaterialState.renderQueue = 3050;
+    primaryMaterialState.blendEnable = false;
+    primaryMaterialState.depthWriteEnable = false;
+    primaryOutput.material->SetRenderState(primaryMaterialState);
     managedProgram.outputs.push_back(primaryOutput);
     std::string managedError;
     if (!Require(particleSystems.CreateOrReplace(managedProgram, &managedError), managedError.c_str()) ||
@@ -183,7 +188,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     auto secondaryOutput = primaryOutput;
     secondaryOutput.id = 912;
     secondaryOutput.stableId = "managed-secondary";
-    secondaryOutput.material.renderQueue = 3075;
+    secondaryOutput.material = std::make_shared<infernux::InxMaterial>("managed-secondary-material");
+    auto secondaryMaterialState = secondaryOutput.material->GetRenderState();
+    secondaryMaterialState.renderQueue = 3075;
+    secondaryMaterialState.blendEnable = true;
+    secondaryMaterialState.depthWriteEnable = false;
+    secondaryOutput.material->SetRenderState(secondaryMaterialState);
     managedProgram.outputs.push_back(secondaryOutput);
     const bool managedReplacement = particleSystems.CreateOrReplace(managedProgram, &managedError);
     if (!managedReplacement || particleSystems.ActiveArtifactRevision(managedProgram.id) != 2 ||
@@ -214,7 +224,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     companionProgram.outputs.resize(1);
     companionProgram.outputs[0].id = 921;
     companionProgram.outputs[0].stableId = "companion-primary";
-    companionProgram.outputs[0].material.renderQueue = 3200;
+    companionProgram.outputs[0].material = std::make_shared<infernux::InxMaterial>("companion-material");
+    companionProgram.outputs[0].material->SetRenderQueue(3200);
     if (!Require(particleSystems.CreateOrReplaceBatch({companionProgram}, &managedError) &&
                      particleSystems.Size() == 2 && particleSystems.Contains(companionProgram.id) &&
                      particleSystems.ActiveOutputCount(companionProgram.id) == 1 && particleDrawRegistry.Size() == 3 &&
@@ -271,6 +282,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      managedEntries[0].instances == managedEntries[1].instances &&
                      managedEntries[0].indirectArguments == managedEntries[1].indirectArguments,
                  "GPU particle outputs did not share one simulated stream across ordered draw queues"))
+        return false;
+    primaryOutput.material->SetRenderQueue(3080);
+    const auto liveMaterialEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    if (!Require(particleSystems.ActiveOutputRenderQueue(managedProgram.id, primaryOutput.id) == 3080 &&
+                     liveMaterialEntries.size() == 2 && liveMaterialEntries[0].id == secondaryOutput.id &&
+                     liveMaterialEntries[1].id == primaryOutput.id,
+                 "GPU particle queue routing did not observe the shared material's live state"))
         return false;
     const auto managedEntry = managedEntries.front();
 
@@ -551,7 +569,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     billboardDesc.vertexShader = {particleVertexCode.data(), particleVertexCode.size()};
     billboardDesc.fragmentShader = {particleFragmentCode.data(), particleFragmentCode.size()};
     billboardDesc.instances = particleRuntime.InstanceBuffer();
-    billboardDesc.material.blendEnabled = false;
+    billboardDesc.fallbackMaterial.blendEnabled = false;
     billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
     billboardView.viewProjection[0] = 1.0f;

@@ -1,6 +1,7 @@
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <array>
 #include <cassert>
@@ -228,7 +229,13 @@ int main()
     billboardDesc.vertexShader = {billboardVertex.data(), billboardVertex.size()};
     billboardDesc.fragmentShader = {billboardFragment.data(), billboardFragment.size()};
     billboardDesc.instances = instanceBuffer;
-    billboardDesc.material.renderQueue = 3100;
+    billboardDesc.fallbackMaterial.renderQueue = 3100;
+    billboardDesc.material = std::make_shared<InxMaterial>("live-particle-material");
+    auto liveMaterialState = billboardDesc.material->GetRenderState();
+    liveMaterialState.renderQueue = 3100;
+    liveMaterialState.blendEnable = true;
+    liveMaterialState.depthWriteEnable = false;
+    billboardDesc.material->SetRenderState(liveMaterialState);
 
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
@@ -260,11 +267,29 @@ int main()
     assert(graphicsTrace.pipelines.size() == 2 && graphicsTrace.groups.size() == 2 &&
            graphicsTrace.constants.size() == 2 && graphicsTrace.indirectBuffers.size() == 2);
 
+    billboardDesc.material->SetRenderQueue(3150);
+    assert(billboard.RenderQueue() == 3150);
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
+    liveMaterialState = billboardDesc.material->GetRenderState();
+    liveMaterialState.blendEnable = false;
+    liveMaterialState.depthWriteEnable = true;
+    billboardDesc.material->SetRenderState(liveMaterialState);
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(device.graphicsPipelineCreates == 2 && device.graphicsPipelineReleases == 0);
+    const auto &updatedGraphicsDesc = device.graphicsPipelineDescs.back();
+    assert(!updatedGraphicsDesc.colorTargets[0].blendEnabled && updatedGraphicsDesc.depth.writeEnabled);
+    liveMaterialState.blendEnable = true;
+    liveMaterialState.depthWriteEnable = false;
+    billboardDesc.material->SetRenderState(liveMaterialState);
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(device.graphicsPipelineCreates == 2 && device.graphicsPipelineReleases == 0);
+
     MaterialPassPipelineDescriptor unsupportedPass = forwardPass;
     unsupportedPass.target = ShaderCompileTarget::GBuffer;
     assert(!billboard.RecordDraw(graphicsEncoder, firstTarget, unsupportedPass, indirectBuffer, view));
     billboard.Destroy();
-    assert(!billboard.IsValid() && device.graphicsPipelineReleases == 1);
+    assert(!billboard.IsValid() && device.graphicsPipelineReleases == 2);
 
     auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
     assert(registeredBillboard->Create(device, billboardDesc));

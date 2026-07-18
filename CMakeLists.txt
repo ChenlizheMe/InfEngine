@@ -494,7 +494,9 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_include_directories(infernux_particle_gpu_runtime_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
     )
+    target_link_libraries(infernux_particle_gpu_runtime_tests PRIVATE InfernuxRuntime)
     if(MSVC)
         target_compile_options(infernux_particle_gpu_runtime_tests PRIVATE /utf-8)
     endif()

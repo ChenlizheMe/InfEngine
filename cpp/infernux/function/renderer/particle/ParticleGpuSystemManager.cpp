@@ -125,6 +125,7 @@ struct ParticleGpuSystemManager::Impl
                                            program.billboardFragmentShader.size()};
             rendererDesc.instances = emitter->runtime->InstanceBuffer();
             rendererDesc.material = output.material;
+            rendererDesc.fallbackMaterial = output.fallbackMaterial;
             if (!renderer->Create(device, rendererDesc)) {
                 SetError(error,
                          "failed to create GPU particle billboard renderer for output '" + output.stableId + "'");
@@ -386,6 +387,18 @@ size_t ParticleGpuSystemManager::ActiveOutputCount(uint64_t id) const
         return 0;
     const auto found = m_impl->emitters.find(id);
     return found != m_impl->emitters.end() ? found->second->outputs.size() : 0;
+}
+
+int32_t ParticleGpuSystemManager::ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const
+{
+    if (!m_impl || outputId == 0)
+        return -1;
+    const auto emitter = m_impl->emitters.find(emitterId);
+    if (emitter == m_impl->emitters.end())
+        return -1;
+    const auto output = std::find_if(emitter->second->outputs.begin(), emitter->second->outputs.end(),
+                                     [outputId](const auto &candidate) { return candidate.id == outputId; });
+    return output != emitter->second->outputs.end() ? output->renderer->RenderQueue() : -1;
 }
 
 } // namespace infernux::particle

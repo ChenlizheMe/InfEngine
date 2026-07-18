@@ -71,6 +71,23 @@ void VerifyTransactionalFailure()
     assert(material.SerializeDocument() == before);
 }
 
+void VerifyRenderStateVersioning()
+{
+    InxMaterial material("LiveState", "unlit");
+    const uint64_t initialVersion = material.GetVersion();
+    material.SetRenderQueue(3042);
+    assert(material.GetVersion() == initialVersion + 1);
+    material.SetRenderQueue(3042);
+    assert(material.GetVersion() == initialVersion + 1);
+
+    auto state = material.GetRenderState();
+    state.blendEnable = !state.blendEnable;
+    material.SetRenderState(state);
+    assert(material.GetVersion() == initialVersion + 2);
+    material.SetRenderState(state);
+    assert(material.GetVersion() == initialVersion + 2);
+}
+
 } // namespace
 
 int main()
@@ -78,6 +95,7 @@ int main()
     VerifyLegacyMigration();
     VerifyStableReferencesAndClone();
     VerifyTransactionalFailure();
+    VerifyRenderStateVersioning();
     std::cout << "Material document tests passed\n";
     return 0;
 }

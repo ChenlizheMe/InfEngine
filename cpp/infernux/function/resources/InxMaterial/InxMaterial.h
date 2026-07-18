@@ -305,8 +305,11 @@ class InxMaterial
     }
     void SetRenderState(const RenderState &state)
     {
+        if (m_renderState == state)
+            return;
         m_renderState = state;
         m_pipelineDirty = true;
+        ++m_version;
     }
 
     [[nodiscard]] int32_t GetRenderQueue() const
@@ -315,7 +318,10 @@ class InxMaterial
     }
     void SetRenderQueue(int32_t queue)
     {
+        if (m_renderState.renderQueue == queue)
+            return;
         m_renderState.renderQueue = queue;
+        ++m_version;
     }
 
     [[nodiscard]] const std::string &GetPassTag() const

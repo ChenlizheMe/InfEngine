@@ -17,6 +17,7 @@
 #include <function/renderer/gui/InxScreenUIRenderer.h>
 #include <function/renderer/particle/ParticleGpuSystemManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/EditorCameraController.h>
 #include <glm/glm.hpp>
 #include <pybind11/numpy.h>
@@ -93,10 +94,12 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             if (!material.contains(field))
                 throw std::invalid_argument(std::string("GPU particle material is missing ") + field);
         }
-        decoded.material.renderQueue = py::cast<int32_t>(material["render_queue"]);
-        decoded.material.blendEnabled = py::cast<bool>(material["blend_enabled"]);
-        decoded.material.depthTestEnabled = py::cast<bool>(material["depth_test_enabled"]);
-        decoded.material.depthWriteEnabled = py::cast<bool>(material["depth_write_enabled"]);
+        decoded.fallbackMaterial.renderQueue = py::cast<int32_t>(material["render_queue"]);
+        decoded.fallbackMaterial.blendEnabled = py::cast<bool>(material["blend_enabled"]);
+        decoded.fallbackMaterial.depthTestEnabled = py::cast<bool>(material["depth_test_enabled"]);
+        decoded.fallbackMaterial.depthWriteEnabled = py::cast<bool>(material["depth_write_enabled"]);
+        if (material.contains("native") && !material["native"].is_none())
+            decoded.material = py::cast<std::shared_ptr<InxMaterial>>(material["native"]);
         program.outputs.push_back(std::move(decoded));
     }
     return program;
@@ -1876,6 +1879,14 @@ PYBIND11_MODULE(_Infernux, m)
                 return manager ? manager->ActiveOutputCount(emitterId) : size_t{0};
             },
             py::arg("emitter_id"), "Return the active GPU particle rendering output count")
+        .def(
+            "_gpu_particle_output_render_queue",
+            [](Infernux &self, uint64_t emitterId, uint64_t outputId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->ActiveOutputRenderQueue(emitterId, outputId) : int32_t{-1};
+            },
+            py::arg("emitter_id"), py::arg("output_id"), "Return the active GPU particle output render queue")
         // ========================================================================
         // Material Pipeline API - for refreshing material shaders at runtime
         // ========================================================================

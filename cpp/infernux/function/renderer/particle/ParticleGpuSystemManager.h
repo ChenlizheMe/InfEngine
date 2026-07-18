@@ -31,7 +31,8 @@ struct GpuParticleOutputProgram
 {
     uint64_t id = 0;
     std::string stableId;
-    GpuBillboardMaterialState material;
+    std::shared_ptr<InxMaterial> material;
+    GpuBillboardMaterialState fallbackMaterial;
 };
 
 struct GpuParticleEmitterProgram
@@ -87,6 +88,7 @@ class ParticleGpuSystemManager
     [[nodiscard]] size_t Size() const;
     [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
     [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;
+    [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
 
   private:
     struct Impl;

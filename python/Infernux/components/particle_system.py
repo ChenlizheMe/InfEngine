@@ -378,7 +378,7 @@ class ParticleSystem(InxComponent):
                         {
                             "id": self._gpu_output_id(emitter.stable_id, output.output_id),
                             "stable_id": output.output_id,
-                            "material": self._gpu_material_state(output),
+                            "material": self._gpu_material_binding(output),
                         }
                         for output in emitter.outputs
                     ],
@@ -576,12 +576,13 @@ class ParticleSystem(InxComponent):
         return value or 1
 
     @staticmethod
-    def _gpu_material_state(output) -> dict[str, object]:
+    def _gpu_material_binding(output) -> dict[str, object]:
         state: dict[str, object] = {
             "render_queue": 3000,
             "blend_enabled": True,
             "depth_test_enabled": True,
             "depth_write_enabled": False,
+            "native": None,
         }
         material_ref = output.material
         path = material_ref.path_hint
@@ -594,9 +595,15 @@ class ParticleSystem(InxComponent):
                     path = database.get_path_from_guid(material_ref.guid) or path
             except (AttributeError, RuntimeError):
                 pass
+        material = None
         if not path:
-            return state
-        if not os.path.isabs(path):
+            try:
+                from Infernux.core.material import Material
+
+                material = Material.get("ParticleBillboardMaterial")
+            except (AttributeError, RuntimeError):
+                pass
+        if path and not os.path.isabs(path):
             try:
                 from Infernux.engine.project_context import get_project_root
 
@@ -608,13 +615,14 @@ class ParticleSystem(InxComponent):
         try:
             from Infernux.core.material import Material
 
-            material = Material.load(path)
+            material = material or (Material.load(path) if path else None)
             if material is not None:
                 state.update(
                     render_queue=int(material.render_queue),
                     blend_enabled=bool(material.blend_enable),
                     depth_test_enabled=bool(material.depth_test_enable),
                     depth_write_enabled=bool(material.depth_write_enable),
+                    native=material.native,
                 )
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             pass
