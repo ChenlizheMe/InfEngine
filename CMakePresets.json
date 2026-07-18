@@ -82,6 +82,7 @@
       "configurePreset": "release",
       "configuration": "Release",
       "targets": [
+        "ALL_BUILD",
         "package_and_install_python"
       ]
     },
@@ -107,6 +108,7 @@
       "name": "release-macos",
       "configurePreset": "release-macos",
       "targets": [
+        "all",
         "package_and_install_python"
       ]
     },
@@ -118,6 +120,7 @@
       "name": "release-linux",
       "configurePreset": "release-linux",
       "targets": [
+        "all",
         "package_and_install_python"
       ]
     },
