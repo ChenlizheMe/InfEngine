@@ -18,6 +18,7 @@
 #include "rhi/RhiTypes.h"
 #include <core/types/ShaderTypes.h>
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -130,6 +131,10 @@ struct GraphPassDesc
 struct RenderGraphDescription
 {
     std::string name; ///< Graph name for debugging
+
+    /// Monotonic source artifact revision assigned when Python records the graph.
+    /// Steady-state frames send only this value to reuse an already-applied graph.
+    uint64_t sourceRevision = 0;
 
     std::vector<GraphTextureDesc> textures; ///< All texture resources
     std::vector<GraphPassDesc> passes;      ///< All passes in declaration order

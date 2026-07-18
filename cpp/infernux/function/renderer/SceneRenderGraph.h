@@ -148,6 +148,10 @@ class SceneRenderGraph
      */
     void ApplyPythonGraph(const RenderGraphDescription &desc);
 
+    /// True when this graph already owns the requested Python artifact and its
+    /// callback sample contract still matches the active render targets.
+    [[nodiscard]] bool IsPythonGraphCurrent(uint64_t sourceRevision) const;
+
     /**
      * @brief Set the screen UI renderer for DrawScreenUI passes
      * @param renderer Pointer to the screen UI renderer (may be nullptr)
@@ -508,6 +512,8 @@ class SceneRenderGraph
     bool m_graphBuilt = false;
     int m_effectiveMsaaSamples = 0;
     bool m_hasPythonGraph = false;
+    uint64_t m_pythonGraphSourceRevision = 0;
+    VkSampleCountFlagBits m_pythonCallbackSamples = VK_SAMPLE_COUNT_FLAG_BITS_MAX_ENUM;
     uint64_t m_graphBuildRevision = 0;
     uint64_t m_lastExecutedBuildRevision = 0;
     uint64_t m_executionCount = 0;

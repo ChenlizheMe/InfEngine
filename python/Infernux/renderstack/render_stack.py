@@ -541,8 +541,10 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
             context.submit_culling(culling)
         elif self._graph_desc is not None:
-            # Fast path: single C++ call avoids 3 extra Python→C++ round-trips
-            context.render_with_graph(camera, self._graph_desc)
+            # Steady state sends only a revision integer. A second camera or a
+            # rebuilt native graph falls back to the full description once.
+            if not context.render_compiled(camera, self._graph_desc.source_revision):
+                context.render_with_graph(camera, self._graph_desc)
 
     # ==================================================================
     # Private helpers

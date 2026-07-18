@@ -143,7 +143,25 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             return false;
         }
 
+        const bool depthOnlyMaterialPass =
+            pass.action == GraphPassActionType::DrawRenderers &&
+            (pass.shaderTarget == ShaderCompileTarget::Depth || pass.shaderTarget == ShaderCompileTarget::Shadow);
+        if (depthOnlyMaterialPass && (!pass.writeColors.empty() || pass.writeDepth.empty())) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: depth-only material pass '", pass.name,
+                         "' requires one depth output and no color outputs");
+            return false;
+        }
+
+        std::unordered_set<int> colorSlots;
+        bool writesBackbuffer = false;
+        bool writesSingleSampleTarget = false;
+
         for (const auto &[slot, textureName] : pass.writeColors) {
+            if (slot < 0 || slot >= 8 || !colorSlots.insert(slot).second) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' has an invalid or duplicate color slot ", slot);
+                return false;
+            }
             auto texIt = textures.find(textureName);
             if (texIt == textures.end()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes unknown color target '",
@@ -155,6 +173,8 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
                              textureName, "' as color slot ", slot);
                 return false;
             }
+            writesBackbuffer |= texIt->second->isBackbuffer;
+            writesSingleSampleTarget |= !texIt->second->isBackbuffer;
         }
 
         if (!pass.writeDepth.empty()) {
@@ -169,6 +189,35 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
                              pass.writeDepth, "' as depth");
                 return false;
             }
+            if (pass.action == GraphPassActionType::DrawRenderers) {
+                const bool singleSampleDepth =
+                    (texIt->second->width > 0 && texIt->second->height > 0) || texIt->second->sizeDivisor > 1;
+                writesSingleSampleTarget |= singleSampleDepth;
+                writesBackbuffer |= !singleSampleDepth;
+            }
+        }
+
+        if (pass.action == GraphPassActionType::DrawRenderers) {
+            for (const auto &textureName : pass.readTextures) {
+                const bool sampledInput =
+                    std::any_of(pass.inputBindings.begin(), pass.inputBindings.end(),
+                                [&textureName](const auto &binding) { return binding.second == textureName; });
+                if (sampledInput)
+                    continue;
+                auto texIt = textures.find(textureName);
+                if (texIt == textures.end() || !texIt->second->isDepth)
+                    continue;
+                const bool singleSampleDepth =
+                    (texIt->second->width > 0 && texIt->second->height > 0) || texIt->second->sizeDivisor > 1;
+                writesSingleSampleTarget |= singleSampleDepth;
+                writesBackbuffer |= !singleSampleDepth;
+            }
+        }
+
+        if (writesBackbuffer && writesSingleSampleTarget) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                         "' mixes backbuffer-sampled and single-sample transient attachments");
+            return false;
         }
 
         for (const auto &textureName : pass.readTextures) {
@@ -338,7 +387,18 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return;
     }
 
-    if (!ValidatePythonGraphDescription(desc)) {
+    const VkSampleCountFlagBits callbackSamples = m_vkCore->GetMaterialPipelineManager().GetSampleCount();
+    const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(desc, m_pythonGraphDesc);
+    const bool callbackContractChanged = m_pythonCallbackSamples != callbackSamples;
+    if (!topologyChanged && !callbackContractChanged) {
+        if (desc.sourceRevision != 0) {
+            m_pythonGraphSourceRevision = desc.sourceRevision;
+            m_pythonGraphDesc.sourceRevision = desc.sourceRevision;
+        }
+        return;
+    }
+
+    if (topologyChanged && !ValidatePythonGraphDescription(desc)) {
         return;
     }
 
@@ -364,6 +424,10 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(passDesc.shaderTarget);
         if (graphPassAction == GraphPassActionType::DrawRenderers) {
             materialPass.colorFormats.clear();
+            bool writesBackbuffer = passDesc.writeColors.empty() &&
+                                    passDesc.shaderTarget != ShaderCompileTarget::Depth &&
+                                    passDesc.shaderTarget != ShaderCompileTarget::Shadow;
+            bool writesSingleSampleTarget = false;
             auto colorOutputs = passDesc.writeColors;
             std::sort(colorOutputs.begin(), colorOutputs.end(),
                       [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
@@ -373,10 +437,16 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                     desc.textures.begin(), desc.textures.end(),
                     [&textureName](const GraphTextureDesc &textureDesc) { return textureDesc.name == textureName; });
                 if (texture != desc.textures.end()) {
+                    writesBackbuffer |= texture->isBackbuffer;
+                    writesSingleSampleTarget |= !texture->isBackbuffer;
                     materialPass.colorFormats.push_back(
                         texture->isBackbuffer ? rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat())
                                               : texture->format);
                 }
+            }
+            if (colorOutputs.empty() && writesBackbuffer) {
+                materialPass.colorFormats.push_back(
+                    rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat()));
             }
             if (!passDesc.writeDepth.empty()) {
                 const auto depth =
@@ -384,19 +454,36 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                         return desc.name == passDesc.writeDepth;
                     });
                 materialPass.depthFormat = depth != desc.textures.end() ? depth->format : rhi::PixelFormat::Undefined;
+                if (depth != desc.textures.end()) {
+                    const bool singleSampleDepth = (depth->width > 0 && depth->height > 0) || depth->sizeDivisor > 1;
+                    writesSingleSampleTarget |= singleSampleDepth;
+                    writesBackbuffer |= !singleSampleDepth;
+                }
             } else {
                 materialPass.depthFormat = rhi::PixelFormat::Undefined;
                 for (const std::string &textureName : passDesc.readTextures) {
+                    const bool sampledInput =
+                        std::any_of(passDesc.inputBindings.begin(), passDesc.inputBindings.end(),
+                                    [&textureName](const auto &binding) { return binding.second == textureName; });
+                    if (sampledInput)
+                        continue;
                     const auto depth = std::find_if(desc.textures.begin(), desc.textures.end(),
                                                     [&textureName](const GraphTextureDesc &desc) {
                                                         return desc.name == textureName && desc.isDepth;
                                                     });
                     if (depth != desc.textures.end()) {
                         materialPass.depthFormat = depth->format;
+                        const bool singleSampleDepth =
+                            (depth->width > 0 && depth->height > 0) || depth->sizeDivisor > 1;
+                        writesSingleSampleTarget |= singleSampleDepth;
+                        writesBackbuffer |= !singleSampleDepth;
                         break;
                     }
                 }
             }
+            materialPass.samples = writesSingleSampleTarget && !writesBackbuffer
+                                       ? rhi::SampleCount::One
+                                       : rhi::FromVkSampleCount(callbackSamples);
         }
 
         // Capture input bindings for passes that need graph texture access
@@ -477,17 +564,23 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve");
     };
 
-    // Store description for BuildRenderGraph()'s topology traversal.
-    // Only trigger a rebuild if the graph topology actually changed.
-    // ApplyPythonGraph is called every frame; avoid vkDeviceWaitIdle +
-    // full resource teardown when the description is identical.
-    bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(desc, m_pythonGraphDesc);
-
-    m_pythonGraphDesc = desc;
-    m_hasPythonGraph = true;
+    // Store description for BuildRenderGraph()'s topology traversal. Exact
+    // repeats return before validation/callback construction above.
     if (topologyChanged) {
+        m_pythonGraphDesc = desc;
+    }
+    m_hasPythonGraph = true;
+    m_pythonGraphSourceRevision = desc.sourceRevision;
+    m_pythonCallbackSamples = callbackSamples;
+    if (topologyChanged || callbackContractChanged) {
         m_needsRebuild = true;
     }
+}
+
+bool SceneRenderGraph::IsPythonGraphCurrent(uint64_t sourceRevision) const
+{
+    return sourceRevision != 0 && m_hasPythonGraph && m_pythonGraphSourceRevision == sourceRevision && m_vkCore &&
+           m_pythonCallbackSamples == m_vkCore->GetMaterialPipelineManager().GetSampleCount();
 }
 
 // ============================================================================
@@ -801,11 +894,13 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
         }
     }
 
-    // Custom-size depth textures (shadow maps)
+    // Custom-size depth textures (shadow maps and offscreen depth targets)
     for (const auto &tex : m_pythonGraphDesc.textures) {
-        if (tex.isDepth && tex.width > 0 && tex.height > 0) {
+        if (tex.isDepth && ((tex.width > 0 && tex.height > 0) || tex.sizeDivisor > 1)) {
+            uint32_t texW = tex.width > 0 ? tex.width : std::max(1u, width / tex.sizeDivisor);
+            uint32_t texH = tex.height > 0 ? tex.height : std::max(1u, height / tex.sizeDivisor);
             vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
-                tex.name, tex.width, tex.height, rhi::ToVkFormat(tex.format), VK_SAMPLE_COUNT_1_BIT, true);
+                tex.name, texW, texH, rhi::ToVkFormat(tex.format), VK_SAMPLE_COUNT_1_BIT, true);
             customRTHandles[tex.name] = handle;
         }
     }
@@ -955,15 +1050,18 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
             }
-            // Default: if no color outputs declared and not a shadow pass,
+            // Default: if no color outputs declared and not a depth-only pass,
             // write to MSAA backbuffer at slot 0.
-            // Shadow passes are depth-only and should have no color attachments.
+            // Shadow and semantic Depth passes have no color attachments.
             bool isShadowPassAction = (passDesc.action == GraphPassActionType::DrawShadowCasters);
-            if (colorTargets.empty() && !isShadowPassAction) {
+            const bool isDepthOnlyMaterialPass = passDesc.action == GraphPassActionType::DrawRenderers &&
+                                                 (passDesc.shaderTarget == ShaderCompileTarget::Depth ||
+                                                  passDesc.shaderTarget == ShaderCompileTarget::Shadow);
+            if (colorTargets.empty() && !isShadowPassAction && !isDepthOnlyMaterialPass) {
                 colorTargets[0] = m_importedColorTarget;
             }
             // Primary color target (slot 0) — used for MSAA resolve and compute fallback
-            vk::ResourceHandle primaryColorTarget = colorTargets.count(0) ? colorTargets[0] : m_importedColorTarget;
+            vk::ResourceHandle primaryColorTarget = colorTargets.count(0) ? colorTargets[0] : vk::ResourceHandle{};
             const bool writesBackbuffer = primaryColorTarget.IsValid() && m_importedColorTarget.IsValid() &&
                                           primaryColorTarget.id == m_importedColorTarget.id;
 
@@ -976,7 +1074,10 @@ void SceneRenderGraph::BuildRenderGraph()
                 auto texIt = texDescMap.find(readTex);
                 if (texIt != texDescMap.end()) {
                     if (texIt->second->isDepth) {
-                        readsDepth = true;
+                        const bool sampledInput =
+                            std::any_of(passDesc.inputBindings.begin(), passDesc.inputBindings.end(),
+                                        [&readTex](const auto &binding) { return binding.second == readTex; });
+                        readsDepth |= !sampledInput;
                     } else if (!texIt->second->isBackbuffer) {
                         // Non-depth, non-backbuffer read: look up custom RT handle
                         auto rtIt = customRTHandles.find(readTex);
@@ -1340,26 +1441,44 @@ void SceneRenderGraph::BuildRenderGraph()
                 uint32_t passHeight = height;
                 bool isShadowPass = (passDesc.action == GraphPassActionType::DrawShadowCasters);
 
-                // For shadow passes, look up the depth texture dimensions
-                if (isShadowPass && !passDesc.writeDepth.empty()) {
+                // Use the primary output's declared extent for offscreen passes.
+                if (!passDesc.writeColors.empty()) {
+                    const auto primary =
+                        std::min_element(passDesc.writeColors.begin(), passDesc.writeColors.end(),
+                                         [](const auto &left, const auto &right) { return left.first < right.first; });
+                    auto colorTexIt = texDescMap.find(primary->second);
+                    if (colorTexIt != texDescMap.end() && !colorTexIt->second->isBackbuffer) {
+                        if (colorTexIt->second->width > 0 && colorTexIt->second->height > 0) {
+                            passWidth = colorTexIt->second->width;
+                            passHeight = colorTexIt->second->height;
+                        } else if (colorTexIt->second->sizeDivisor > 1) {
+                            passWidth = std::max(1u, width / colorTexIt->second->sizeDivisor);
+                            passHeight = std::max(1u, height / colorTexIt->second->sizeDivisor);
+                        }
+                    }
+                } else if (!passDesc.writeDepth.empty()) {
                     auto depthTexIt = texDescMap.find(passDesc.writeDepth);
                     if (depthTexIt != texDescMap.end()) {
                         if (depthTexIt->second->width > 0)
                             passWidth = depthTexIt->second->width;
                         if (depthTexIt->second->height > 0)
                             passHeight = depthTexIt->second->height;
+                        if (depthTexIt->second->sizeDivisor > 1) {
+                            passWidth = std::max(1u, width / depthTexIt->second->sizeDivisor);
+                            passHeight = std::max(1u, height / depthTexIt->second->sizeDivisor);
+                        }
                     }
                 }
 
                 // ----- Depth -----
                 vk::ResourceHandle depth;
-                if (isShadowPass && !passDesc.writeDepth.empty()) {
-                    // Shadow pass writes to a pre-registered custom-size depth texture
+                if (!passDesc.writeDepth.empty()) {
+                    // Fixed-size and divided depth targets are pre-registered as 1x resources.
                     auto rtIt = customRTHandles.find(passDesc.writeDepth);
                     if (rtIt != customRTHandles.end()) {
                         depth = rtIt->second;
                         builder.WriteDepth(depth);
-                    } else {
+                    } else if (isShadowPass) {
                         // Fallback: create inline
                         auto depthTexIt = texDescMap.find(passDesc.writeDepth);
                         VkFormat shadowDepthFmt = depthTexIt != texDescMap.end()
@@ -1369,16 +1488,17 @@ void SceneRenderGraph::BuildRenderGraph()
                                                            VK_SAMPLE_COUNT_1_BIT);
                         builder.WriteDepth(depth);
                     }
-                } else if (needsCreateDepth) {
+                }
+                if (!depth.IsValid() && needsCreateDepth) {
                     // First pass that writes depth: create the shared resource
                     depth = builder.CreateDepthStencil("SceneDepth", width, height, depthFormat, msaaSamples);
                     builder.WriteDepth(depth);
                     // Store for subsequent passes (captured by ref)
                     sharedDepth = depth;
-                } else if (writesDepth && depthForThisPass.IsValid()) {
+                } else if (!depth.IsValid() && writesDepth && depthForThisPass.IsValid()) {
                     // Later pass that also writes depth (rare)
                     builder.WriteDepth(depthForThisPass);
-                } else if (passReadsDepth && depthForThisPass.IsValid()) {
+                } else if (!depth.IsValid() && passReadsDepth && depthForThisPass.IsValid()) {
                     // Pass reads depth (e.g., skybox, transparent) — attach as read-only
                     builder.ReadDepth(depthForThisPass);
                 }

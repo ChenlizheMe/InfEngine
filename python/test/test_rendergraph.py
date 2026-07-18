@@ -183,6 +183,20 @@ class TestRenderPassBuilder:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestGraphTextures:
+    def test_build_assigns_a_new_nonzero_source_revision(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            render_pass.write_depth("depth")
+            render_pass.draw_renderers()
+        graph.set_output("color")
+
+        first = graph.build()
+        second = graph.build()
+
+        assert first.source_revision > 0
+        assert second.source_revision > first.source_revision
+
     def test_create_and_get(self):
         g = RenderGraph("G")
         h = g.create_texture("t", format=Format.RGBA8_UNORM)

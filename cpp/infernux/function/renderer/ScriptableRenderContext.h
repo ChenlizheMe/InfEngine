@@ -161,6 +161,13 @@ class ScriptableRenderContext
     /// Avoids 3 extra Python→C++ round-trips compared to calling each step separately.
     void RenderWithGraph(Camera *camera, const RenderGraphDescription &desc);
 
+    /// Check whether the active SceneRenderGraph already owns an artifact.
+    [[nodiscard]] bool IsGraphRevisionCurrent(uint64_t sourceRevision) const;
+
+    /// Single-call steady-state render path that does not upload graph topology.
+    /// Returns false when the caller must fall back to RenderWithGraph().
+    bool RenderCompiled(Camera *camera, uint64_t sourceRevision);
+
     // ====================================================================
     // CommandBuffer integration
     // ====================================================================

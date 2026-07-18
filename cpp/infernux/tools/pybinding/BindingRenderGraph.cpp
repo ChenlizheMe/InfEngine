@@ -103,6 +103,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
     py::class_<RenderGraphDescription>(m, "RenderGraphDescription", "Complete render graph topology defined by Python")
         .def(py::init<>())
         .def_readwrite("name", &RenderGraphDescription::name, "Graph name for debugging")
+        .def_readwrite("source_revision", &RenderGraphDescription::sourceRevision,
+                       "Monotonic Python graph artifact revision")
         .def_readwrite("textures", &RenderGraphDescription::textures, "All texture resources")
         .def_readwrite("passes", &RenderGraphDescription::passes, "All passes in declaration order")
         .def_readwrite("output_texture", &RenderGraphDescription::outputTexture, "Name of the final output texture")

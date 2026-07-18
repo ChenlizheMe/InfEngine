@@ -506,6 +506,21 @@ void ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphD
     SubmitCulling(culling);
 }
 
+bool ScriptableRenderContext::IsGraphRevisionCurrent(uint64_t sourceRevision) const
+{
+    return m_graph && m_graph->IsPythonGraphCurrent(sourceRevision);
+}
+
+bool ScriptableRenderContext::RenderCompiled(Camera *camera, uint64_t sourceRevision)
+{
+    if (!IsGraphRevisionCurrent(sourceRevision))
+        return false;
+    SetupCameraProperties(camera);
+    CullingResults &culling = Cull(camera);
+    SubmitCulling(culling);
+    return true;
+}
+
 // ============================================================================
 // CommandBuffer integration
 // ============================================================================

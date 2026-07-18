@@ -62,6 +62,10 @@ void RegisterRenderPipelineBindings(py::module_ &m)
              "Submit all culling results as full draw calls (filtering done by graph pass callbacks)")
         .def("render_with_graph", &ScriptableRenderContext::RenderWithGraph, py::arg("camera"), py::arg("description"),
              "Single-call render: setup + cull + apply_graph + submit (avoids Python round-trips)")
+        .def("is_graph_revision_current", &ScriptableRenderContext::IsGraphRevisionCurrent, py::arg("source_revision"),
+             "Check whether the active graph already owns a Python artifact revision")
+        .def("render_compiled", &ScriptableRenderContext::RenderCompiled, py::arg("camera"), py::arg("source_revision"),
+             "Render with an already-applied graph without uploading topology")
         // CommandBuffer integration
         .def("execute_command_buffer", &ScriptableRenderContext::ExecuteCommandBuffer, py::arg("cmd"),
              "Execute a deferred CommandBuffer (commands are buffered until submit)")

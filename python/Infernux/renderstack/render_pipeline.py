@@ -181,7 +181,8 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             camera: The current camera being rendered.
             culling: Culling results from ``context.cull(camera)``.
         """
-        context.apply_graph(self._standalone_desc)
+        if not context.is_graph_revision_current(self._standalone_desc.source_revision):
+            context.apply_graph(self._standalone_desc)
         context.submit_culling(culling)
 
     def dispose(self):

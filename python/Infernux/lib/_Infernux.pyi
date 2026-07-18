@@ -1701,6 +1701,8 @@ class ScriptableRenderContext:
     def set_global_float(self, name: str, value: float) -> None: ...
     def set_global_vector(self, name: str, x: float, y: float, z: float, w: float) -> None: ...
     def render_with_graph(self, camera: Camera, description: RenderGraphDescription) -> None: ...
+    def is_graph_revision_current(self, source_revision: int) -> bool: ...
+    def render_compiled(self, camera: Camera, source_revision: int) -> bool: ...
 
 
 class RenderPipelineCallback:
@@ -1818,6 +1820,7 @@ class RenderGraphDescription:
     """Complete render graph topology defined by Python."""
 
     name: str
+    source_revision: int
     textures: List[GraphTextureDesc]
     passes: List[GraphPassDesc]
     output_texture: str

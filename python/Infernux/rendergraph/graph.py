@@ -23,6 +23,7 @@ Design: builder pattern with a fluent API for straightforward authoring.
 from __future__ import annotations
 
 import warnings
+from itertools import count
 from typing import Mapping, Optional, Tuple, List, Dict
 
 # Try to import the native types. If unavailable, we define stubs so the
@@ -36,6 +37,7 @@ from Infernux.lib import (
     PixelFormat,
 )
 _HAS_NATIVE = True
+_SOURCE_REVISION_COUNTER = count(1)
 
 
 # ============================================================================
@@ -868,6 +870,7 @@ class RenderGraph:
         """Build using native C++ types."""
         desc = RenderGraphDescription()
         desc.name = self._name
+        desc.source_revision = next(_SOURCE_REVISION_COUNTER)
 
         # Build texture list — construct full list then assign (pybind11
         # vectors return copies, so append() on a property doesn't work).
@@ -962,6 +965,7 @@ class RenderGraph:
         """Build as a dictionary (for testing without native module)."""
         return {
             "name": self._name,
+            "source_revision": next(_SOURCE_REVISION_COUNTER),
             "textures": [
                 {
                     "name": tex.name,

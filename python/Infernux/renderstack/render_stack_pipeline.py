@@ -134,4 +134,5 @@ class RenderStackPipeline(RenderPipeline):
             graph.set_output("color")
             self._fallback_desc = graph.build()
 
-        context.render_with_graph(camera, self._fallback_desc)
+        if not context.render_compiled(camera, self._fallback_desc.source_revision):
+            context.render_with_graph(camera, self._fallback_desc)
