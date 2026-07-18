@@ -1133,15 +1133,27 @@ vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk:
         return colorTarget;
 
     auto callback = callbackIt->second;
+    const vk::ResourceHandle rendererListHandle = m_visibleRendererList;
+    InxVkCoreModular *vkCore = m_vkCore;
     vk::ResourceHandle writtenColor;
     m_renderGraph->AddPass(name, [=, &writtenColor](vk::PassBuilder &builder) {
         writtenColor = builder.WriteColor(colorTarget, 0);
         if (depthTarget.IsValid()) {
             builder.ReadDepth(depthTarget);
         }
+        if (rendererListHandle.IsValid()) {
+            builder.ReadRendererList(rendererListHandle);
+            builder.SkipCallbackWhenRendererListsEmpty();
+        }
         builder.SetRenderArea(width, height);
 
-        return [callback, width, height](vk::RenderContext &ctx) {
+        return [callback, width, height, rendererListHandle, vkCore](vk::RenderContext &ctx) {
+            if (rendererListHandle.IsValid()) {
+                const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
+                const auto *drawCalls = rendererList ? &rendererList->DrawCalls() : nullptr;
+                if (!vkCore->UsesDrawCalls(drawCalls))
+                    vkCore->SetDrawCalls(drawCalls);
+            }
             if (callback) {
                 callback(ctx, width, height);
             }
@@ -1196,6 +1208,8 @@ void SceneRenderGraph::BuildRenderGraph()
     m_graphBuilt = false;
     m_shadowMapInputHandle = {};
     m_shadowMapInputIsDepth = false;
+    m_visibleRendererList = {};
+    m_shadowRendererList = {};
 
     if (!m_hasPythonGraph) {
         INXLOG_DEBUG("SceneRenderGraph::BuildRenderGraph - No Python graph configured");
@@ -1203,6 +1217,8 @@ void SceneRenderGraph::BuildRenderGraph()
     }
 
     ImportSceneTargetResources();
+    m_visibleRendererList = m_renderGraph->ImportRendererList("VisibleRenderers", &m_cachedRenderers);
+    m_shadowRendererList = m_renderGraph->ImportRendererList("ShadowRenderers", &m_cachedShadowRenderers);
 
     std::unordered_map<std::string, vk::ResourceHandle> customRTHandles;
     std::unordered_map<std::string, vk::ResourceHandle> bufferHandles;
@@ -1826,10 +1842,21 @@ void SceneRenderGraph::BuildRenderGraph()
             std::vector<vk::ResourceHandle> writtenColorVersions;
             vk::ResourceHandle writtenDepthVersion;
             vk::ResourceHandle writtenResolveVersion;
+            const bool usesShadowRendererList = command && command->type == GraphCommandType::DrawShadowCasters;
+            const bool usesVisibleRendererList = command && (command->type == GraphCommandType::DrawRenderers ||
+                                                             command->type == GraphCommandType::DrawSkybox);
+            const vk::ResourceHandle rendererListHandle =
+                usesShadowRendererList ? m_shadowRendererList
+                                       : (usesVisibleRendererList ? m_visibleRendererList : vk::ResourceHandle{});
             m_renderGraph->AddPass(passDesc.name, [=, &sharedDepth, &writtenColorVersions, &writtenDepthVersion,
                                                    &writtenResolveVersion](vk::PassBuilder &builder) {
                 // Local alias to make vkCore capturable by nested lambdas (MSVC C3481)
                 InxVkCoreModular *localVkCore = vkCore;
+
+                if (rendererListHandle.IsValid()) {
+                    builder.ReadRendererList(rendererListHandle);
+                    builder.SkipCallbackWhenRendererListsEmpty();
+                }
 
                 // ----- Determine pass dimensions -----
                 // Shadow caster passes may use custom-sized depth textures.
@@ -1958,7 +1985,18 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
-                return [callback, passWidth, passHeight, inputBindingHandles, isShadowPass](vk::RenderContext &ctx) {
+                return [callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
+                        usesShadowRendererList, localVkCore](vk::RenderContext &ctx) {
+                    if (rendererListHandle.IsValid()) {
+                        const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
+                        if (usesShadowRendererList) {
+                            localVkCore->SetShadowDrawCalls(rendererList ? &rendererList->DrawCalls() : nullptr);
+                        } else {
+                            const auto *drawCalls = rendererList ? &rendererList->DrawCalls() : nullptr;
+                            if (!localVkCore->UsesDrawCalls(drawCalls))
+                                localVkCore->SetDrawCalls(drawCalls);
+                        }
+                    }
                     if (callback)
                         callback(ctx, passWidth, passHeight);
                 };

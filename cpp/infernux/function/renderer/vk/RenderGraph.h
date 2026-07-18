@@ -48,6 +48,7 @@
 #include "VulkanRhiDevice.h"
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderGraphIdentity.h>
+#include <function/renderer/RendererList.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -80,7 +81,8 @@ enum class ResourceType
     Buffer,
     Texture2D,
     TextureCube,
-    DepthStencil
+    DepthStencil,
+    RendererList,
 };
 
 /**
@@ -99,7 +101,8 @@ enum class ResourceUsage
     DepthRead = 1 << 6, ///< Read-only depth attachment (depth testing without writing)
     IndirectArgument = 1 << 7,
     VersionDependency = 1 << 8, ///< Graph ordering only; emits no backend access or barrier
-    Present = 1 << 9            ///< Final presentation/export read
+    Present = 1 << 9,           ///< Final presentation/export read
+    RendererListRead = 1 << 10, ///< Host-side renderer list consumed by a raster callback
 };
 
 inline ResourceUsage operator|(ResourceUsage a, ResourceUsage b)
@@ -292,6 +295,7 @@ class RenderContext
     /// @brief Get resolved buffer for a resource handle
     [[nodiscard]] VkBuffer GetBuffer(ResourceHandle handle) const;
     [[nodiscard]] rhi::BufferHandle GetBufferHandle(ResourceHandle handle) const;
+    [[nodiscard]] const RendererList *GetRendererList(ResourceHandle handle) const;
 
   private:
     VkCommandBuffer m_cmdBuffer;
@@ -370,6 +374,13 @@ class PassBuilder
     /// Consume a buffer as graphics indirect draw arguments.
     ResourceHandle ReadIndirectBuffer(ResourceHandle handle);
 
+    /// Consume a host-side renderer list without creating a GPU barrier.
+    ResourceHandle ReadRendererList(ResourceHandle handle);
+
+    /// Skip only this pass's callback when all declared renderer lists are empty.
+    /// Attachment clears and layout transitions still execute.
+    void SkipCallbackWhenRendererListsEmpty(bool enabled = true);
+
     /// @brief Read a resource as transfer source (for blit/copy operations)
     ResourceHandle TransferRead(ResourceHandle handle);
 
@@ -437,6 +448,8 @@ struct RenderPassData
     bool clearDepthEnabled = false;
     bool hasResolveAttachment = false; // True when MSAA resolve is used
     bool hasSideEffect = false;
+    bool skipCallbackWhenRendererListsEmpty = false;
+    std::vector<ResourceHandle> rendererListInputs;
 
     // Vulkan objects (resolved during compile)
     VkRenderPass vulkanRenderPass = VK_NULL_HANDLE;
@@ -484,6 +497,7 @@ struct ResourceData
     rhi::TextureHandle rhiTexture;
     VkBuffer externalBuffer = VK_NULL_HANDLE;
     rhi::BufferHandle rhiBuffer;
+    const RendererList *externalRendererList = nullptr;
 
     // Allocated resources (for transient)
     VkImage allocatedImage = VK_NULL_HANDLE;
@@ -626,6 +640,9 @@ class RenderGraph
      */
     ResourceHandle ImportResolveTarget(VkImage image, VkImageView view, VkFormat format, uint32_t width,
                                        uint32_t height);
+
+    /// Import a stable host-side renderer list object. Its contents may change every frame.
+    ResourceHandle ImportRendererList(const std::string &name, const RendererList *rendererList);
 
     /**
      * @brief Override the initial tracked state of an imported/external resource.
@@ -796,6 +813,7 @@ class RenderGraph
     [[nodiscard]] rhi::TextureHandle ResolveRhiTexture(ResourceHandle handle) const;
     [[nodiscard]] VkBuffer ResolveBuffer(ResourceHandle handle) const;
     [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
+    [[nodiscard]] const RendererList *ResolveRendererList(ResourceHandle handle) const;
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
 
     /// Number of rebuilds that reused dependency analysis from an identical

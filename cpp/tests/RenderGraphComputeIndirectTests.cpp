@@ -1,3 +1,4 @@
+#include <function/renderer/RendererList.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
@@ -15,6 +16,11 @@
 
 namespace
 {
+using infernux::DrawCall;
+using infernux::RenderDomain;
+using infernux::RenderDomainBit;
+using infernux::RendererList;
+using infernux::RendererListPurpose;
 using infernux::ShaderReflection;
 using infernux::rhi::BindGroupHandle;
 using infernux::rhi::ComputePipelineHandle;
@@ -206,6 +212,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     ResourceHandle discardedRewrite;
     ResourceHandle copiedIndirectArguments;
     ResourceHandle colorTarget;
+    RendererList emptyRendererList;
+    std::vector<DrawCall> populatedDrawCalls(1);
+    RendererList populatedRendererList = RendererList::Borrow(populatedDrawCalls, RendererListPurpose::CameraVisible,
+                                                              RenderDomainBit(RenderDomain::SceneGeometry));
+    const ResourceHandle emptyRendererListHandle =
+        resources.graph.ImportRendererList("EmptyRendererList", &emptyRendererList);
+    const ResourceHandle populatedRendererListHandle =
+        resources.graph.ImportRendererList("PopulatedRendererList", &populatedRendererList);
+    uint32_t emptyRendererCallbackCount = 0;
+    uint32_t populatedRendererCallbackCount = 0;
     resources.graph.AddComputePass("BuildIndirectArguments", [&](PassBuilder &builder) {
         indirectArguments =
             builder.CreateBuffer("IndirectArguments", sizeof(VkDrawIndirectCommand),
@@ -252,6 +268,24 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
     });
+    resources.graph.AddComputePass("SkipEmptyRendererList", [&](PassBuilder &builder) {
+        builder.ReadRendererList(emptyRendererListHandle);
+        builder.SkipCallbackWhenRendererListsEmpty();
+        builder.SetSideEffect();
+        return [&](RenderContext &context) {
+            ++emptyRendererCallbackCount;
+            (void)context;
+        };
+    });
+    resources.graph.AddComputePass("RunPopulatedRendererList", [&](PassBuilder &builder) {
+        builder.ReadRendererList(populatedRendererListHandle);
+        builder.SkipCallbackWhenRendererListsEmpty();
+        builder.SetSideEffect();
+        return [&](RenderContext &context) {
+            if (context.GetRendererList(populatedRendererListHandle) == &populatedRendererList)
+                ++populatedRendererCallbackCount;
+        };
+    });
     resources.graph.SetOutput(colorTarget);
 
     if (!Require(indirectArguments.version == 1 && discardedRewrite.version == 2 &&
@@ -262,9 +296,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
     const auto executionNames = resources.graph.GetExecutionPassNames();
-    if (!Require(executionNames.size() == 3 && executionNames[0] == "BuildIndirectArguments" &&
-                     executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "IndirectDraw",
+    if (!Require(executionNames.size() == 5 && executionNames[0] == "BuildIndirectArguments" &&
+                     executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "IndirectDraw" &&
+                     executionNames[3] == "SkipEmptyRendererList" && executionNames[4] == "RunPopulatedRendererList",
                  "Versioned culling broke the compute-to-transfer-to-indirect dependency"))
+        return false;
+    if (!Require(resources.graph.ResolveRendererList(emptyRendererListHandle) == &emptyRendererList &&
+                     resources.graph.ResolveRendererList(populatedRendererListHandle) == &populatedRendererList,
+                 "Imported renderer lists did not preserve their stable host objects"))
         return false;
 
     VkDescriptorSetLayoutBinding storageBinding{};
@@ -390,6 +429,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     vkCmdResetQueryPool(commandBuffer, resources.queryPool, 0, 1);
     resources.graph.Execute(commandBuffer);
+    if (!Require(emptyRendererCallbackCount == 0 && populatedRendererCallbackCount == 1,
+                 "Renderer-list callback culling did not distinguish empty and populated lists"))
+        return false;
     if (!Require(vkEndCommandBuffer(commandBuffer) == VK_SUCCESS, "Command buffer end failed"))
         return false;
 

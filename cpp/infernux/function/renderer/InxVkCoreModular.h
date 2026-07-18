@@ -279,6 +279,11 @@ class InxVkCoreModular
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
     void SetDrawCalls(const std::vector<DrawCall> *drawCalls);
 
+    [[nodiscard]] bool UsesDrawCalls(const std::vector<DrawCall> *drawCalls) const noexcept
+    {
+        return m_drawCallsPtr == drawCalls;
+    }
+
     /// @brief Set shadow-caster draw calls (stores pointer, no copy)
     void SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls);
 

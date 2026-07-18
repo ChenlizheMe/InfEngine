@@ -533,6 +533,8 @@ class SceneRenderGraph
     vk::ResourceHandle m_importedColorTarget;
     vk::ResourceHandle m_importedResolveTarget; // 1x resolve target for MSAA
     vk::ResourceHandle m_importedDepthTarget;
+    vk::ResourceHandle m_visibleRendererList;
+    vk::ResourceHandle m_shadowRendererList;
 
     // Transient resources created by CreateTransientTexture()
     std::unordered_map<std::string, vk::ResourceHandle> m_transientResources;

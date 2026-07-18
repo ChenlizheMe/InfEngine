@@ -127,6 +127,11 @@ rhi::BufferHandle RenderContext::GetBufferHandle(ResourceHandle handle) const
     return m_graph ? m_graph->ResolveRhiBuffer(handle) : rhi::BufferHandle{};
 }
 
+const RendererList *RenderContext::GetRendererList(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveRendererList(handle) : nullptr;
+}
+
 // ============================================================================
 // PassBuilder Implementation
 // ============================================================================
@@ -416,6 +421,23 @@ ResourceHandle PassBuilder::ReadIndirectBuffer(ResourceHandle handle)
     return handle;
 }
 
+ResourceHandle PassBuilder::ReadRendererList(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::RendererList)
+        return handle;
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::RendererListRead, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
+    pass.rendererListInputs.push_back(handle);
+    return handle;
+}
+
+void PassBuilder::SkipCallbackWhenRendererListsEmpty(bool enabled)
+{
+    m_graph->m_passes[m_passId].skipCallbackWhenRendererListsEmpty = enabled;
+}
+
 ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle)) {
@@ -462,7 +484,8 @@ ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
 
 ResourceHandle PassBuilder::PresentRead(ResourceHandle handle)
 {
-    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer) {
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
+        m_graph->m_resources[handle.id].type == ResourceType::RendererList) {
         return handle;
     }
 
@@ -855,6 +878,15 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
     return handle;
 }
 
+ResourceHandle RenderGraph::ImportRendererList(const std::string &name, const RendererList *rendererList)
+{
+    ResourceHandle handle = CreateResource(name, ResourceType::RendererList);
+    auto &resource = m_resources[handle.id];
+    resource.isExternal = true;
+    resource.externalRendererList = rendererList;
+    return handle;
+}
+
 void RenderGraph::SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout, rhi::Access accessMask,
                                           rhi::PipelineStage stages)
 {
@@ -1130,7 +1162,15 @@ void RenderGraph::Execute(VkCommandBuffer commandBuffer)
         }
 
         // Execute pass callback
-        if (pass.executeCallback) {
+        bool executeCallback = static_cast<bool>(pass.executeCallback);
+        if (executeCallback && pass.skipCallbackWhenRendererListsEmpty) {
+            executeCallback =
+                std::any_of(pass.rendererListInputs.begin(), pass.rendererListInputs.end(), [&](ResourceHandle handle) {
+                    const RendererList *rendererList = ResolveRendererList(handle);
+                    return rendererList && !rendererList->Empty();
+                });
+        }
+        if (executeCallback) {
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
@@ -1293,6 +1333,14 @@ rhi::BufferHandle RenderGraph::ResolveRhiBuffer(ResourceHandle handle) const
     if (!Owns(handle) || handle.id >= m_resources.size())
         return {};
     return m_resources[handle.id].rhiBuffer;
+}
+
+const RendererList *RenderGraph::ResolveRendererList(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size())
+        return nullptr;
+    const auto &resource = m_resources[handle.id];
+    return resource.type == ResourceType::RendererList ? resource.externalRendererList : nullptr;
 }
 
 VkRenderPass RenderGraph::GetPassRenderPass(const std::string &passName) const

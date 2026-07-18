@@ -435,6 +435,7 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
         signature.push_back(pass.clearColorEnabled);
         signature.push_back(pass.clearDepthEnabled);
         signature.push_back(pass.hasResolveAttachment);
+        signature.push_back(pass.skipCallbackWhenRendererListsEmpty);
 
         signature.push_back(pass.reads.size());
         for (const auto &read : pass.reads)
@@ -1278,6 +1279,8 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
             return;
 
         const auto &resource = m_resources[access.handle.id];
+        if (resource.type == ResourceType::RendererList)
+            return;
 
         // Look up previous state (direct index — vectors kept in sync with m_resources)
         const auto &prevState = m_resourceStates[access.handle.id];
