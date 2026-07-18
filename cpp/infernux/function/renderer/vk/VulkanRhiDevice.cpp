@@ -51,6 +51,60 @@ VkDescriptorType ToVkDescriptorType(rhi::BindingType type)
     return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
+VkPrimitiveTopology ToVkTopology(rhi::PrimitiveTopology topology)
+{
+    switch (topology) {
+    case rhi::PrimitiveTopology::TriangleList:
+        return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    case rhi::PrimitiveTopology::TriangleStrip:
+        return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    case rhi::PrimitiveTopology::LineList:
+        return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    }
+    return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+}
+
+VkCullModeFlags ToVkCullMode(rhi::CullMode mode)
+{
+    switch (mode) {
+    case rhi::CullMode::None:
+        return VK_CULL_MODE_NONE;
+    case rhi::CullMode::Front:
+        return VK_CULL_MODE_FRONT_BIT;
+    case rhi::CullMode::Back:
+        return VK_CULL_MODE_BACK_BIT;
+    }
+    return VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
+}
+
+VkFrontFace ToVkFrontFace(rhi::FrontFace face)
+{
+    return face == rhi::FrontFace::Clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+}
+
+VkCompareOp ToVkCompareOp(rhi::CompareFunction function)
+{
+    switch (function) {
+    case rhi::CompareFunction::Never:
+        return VK_COMPARE_OP_NEVER;
+    case rhi::CompareFunction::Less:
+        return VK_COMPARE_OP_LESS;
+    case rhi::CompareFunction::Equal:
+        return VK_COMPARE_OP_EQUAL;
+    case rhi::CompareFunction::LessEqual:
+        return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case rhi::CompareFunction::Greater:
+        return VK_COMPARE_OP_GREATER;
+    case rhi::CompareFunction::NotEqual:
+        return VK_COMPARE_OP_NOT_EQUAL;
+    case rhi::CompareFunction::GreaterEqual:
+        return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case rhi::CompareFunction::Always:
+        return VK_COMPARE_OP_ALWAYS;
+    }
+    return VK_COMPARE_OP_MAX_ENUM;
+}
+
 } // namespace
 
 const rhi::GraphicsCommandEncoder::Dispatch VulkanRhiDevice::s_graphicsDispatch = {
@@ -404,6 +458,132 @@ rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::Com
                                                 GraphicsPipelinePayload{pipeline, layout, true, true});
 }
 
+rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc)
+{
+    if (m_device == VK_NULL_HANDLE || !desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid() ||
+        !desc.renderTargetLayout.IsValid() || desc.bindingLayoutCount > desc.bindingLayouts.size() ||
+        desc.colorTargetCount > desc.colorTargets.size() || (desc.pushConstantBytes % 4u) != 0u ||
+        (desc.pushConstantBytes > 0 && desc.pushConstantStages == rhi::ShaderStage::None))
+        return {};
+
+    const VkShaderModule vertex = Resolve(desc.vertexShader);
+    const VkShaderModule fragment = Resolve(desc.fragmentShader);
+    const VkRenderPass renderPass = Resolve(desc.renderTargetLayout);
+    if (vertex == VK_NULL_HANDLE || fragment == VK_NULL_HANDLE || renderPass == VK_NULL_HANDLE)
+        return {};
+
+    std::array<VkDescriptorSetLayout, rhi::GraphicsPipelineDesc::MaxBindingLayouts> layouts{};
+    for (uint32_t index = 0; index < desc.bindingLayoutCount; ++index) {
+        layouts[index] = Resolve(desc.bindingLayouts[index]);
+        if (layouts[index] == VK_NULL_HANDLE)
+            return {};
+    }
+
+    VkPushConstantRange pushConstants{};
+    if (desc.pushConstantBytes > 0) {
+        pushConstants.stageFlags = rhi::ToVkShaderStages(desc.pushConstantStages);
+        pushConstants.size = desc.pushConstantBytes;
+    }
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = desc.bindingLayoutCount;
+    layoutInfo.pSetLayouts = desc.bindingLayoutCount > 0 ? layouts.data() : nullptr;
+    layoutInfo.pushConstantRangeCount = desc.pushConstantBytes > 0 ? 1u : 0u;
+    layoutInfo.pPushConstantRanges = desc.pushConstantBytes > 0 ? &pushConstants : nullptr;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
+        return {};
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vertexInput{};
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = ToVkTopology(desc.topology);
+
+    VkPipelineViewportStateCreateInfo viewport{};
+    viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo raster{};
+    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    raster.polygonMode = desc.raster.wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+    raster.cullMode = ToVkCullMode(desc.raster.cullMode);
+    raster.frontFace = ToVkFrontFace(desc.raster.frontFace);
+    raster.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = rhi::ToVkSampleCount(desc.samples);
+
+    VkPipelineDepthStencilStateCreateInfo depth{};
+    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth.depthTestEnable = desc.depth.testEnabled ? VK_TRUE : VK_FALSE;
+    depth.depthWriteEnable = desc.depth.writeEnabled ? VK_TRUE : VK_FALSE;
+    depth.depthCompareOp = ToVkCompareOp(desc.depth.compare);
+
+    std::array<VkPipelineColorBlendAttachmentState, rhi::GraphicsPipelineDesc::MaxColorTargets> attachments{};
+    for (uint32_t index = 0; index < desc.colorTargetCount; ++index) {
+        const auto &target = desc.colorTargets[index];
+        if (!rhi::IsValidPixelFormat(target.format) || rhi::IsDepthFormat(target.format)) {
+            vkDestroyPipelineLayout(m_device, layout, nullptr);
+            return {};
+        }
+        auto &attachment = attachments[index];
+        attachment.blendEnable = target.blendEnabled ? VK_TRUE : VK_FALSE;
+        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        attachment.colorWriteMask = target.writeMask;
+    }
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = desc.colorTargetCount;
+    blend.pAttachments = desc.colorTargetCount > 0 ? attachments.data() : nullptr;
+
+    constexpr std::array<VkDynamicState, 2> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{};
+    dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamic.pDynamicStates = dynamicStates.data();
+
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
+    pipelineInfo.pStages = stages.data();
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewport;
+    pipelineInfo.pRasterizationState = &raster;
+    pipelineInfo.pMultisampleState = &multisample;
+    pipelineInfo.pDepthStencilState = &depth;
+    pipelineInfo.pColorBlendState = &blend;
+    pipelineInfo.pDynamicState = &dynamic;
+    pipelineInfo.layout = layout;
+    pipelineInfo.renderPass = renderPass;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+        vkDestroyPipelineLayout(m_device, layout, nullptr);
+        return {};
+    }
+    return Register<rhi::GraphicsPipelineHandle>(m_graphicsPipelines, m_freeGraphicsPipeline,
+                                                 GraphicsPipelinePayload{pipeline, layout, true, true});
+}
+
 rhi::RenderTargetLayoutHandle VulkanRhiDevice::RegisterRenderTargetLayout(VkRenderPass renderPass)
 {
     return renderPass == VK_NULL_HANDLE
@@ -455,6 +635,13 @@ void VulkanRhiDevice::Release(rhi::BindGroupHandle handle) noexcept
 }
 void VulkanRhiDevice::Release(rhi::GraphicsPipelineHandle handle) noexcept
 {
+    const auto *payload = ResolvePipeline(handle);
+    if (payload && m_device != VK_NULL_HANDLE) {
+        if (payload->ownsPipeline && payload->pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(m_device, payload->pipeline, nullptr);
+        if (payload->ownsLayout && payload->layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(m_device, payload->layout, nullptr);
+    }
     Release(m_graphicsPipelines, m_freeGraphicsPipeline, handle);
 }
 void VulkanRhiDevice::Release(rhi::ComputePipelineHandle handle) noexcept
@@ -575,6 +762,16 @@ void VulkanRhiDevice::DestroyOwnedResources() noexcept
 {
     if (m_device == VK_NULL_HANDLE)
         return;
+    for (auto &slot : m_graphicsPipelines) {
+        if (!slot.occupied)
+            continue;
+        if (slot.payload.ownsPipeline && slot.payload.pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(m_device, slot.payload.pipeline, nullptr);
+        if (slot.payload.ownsLayout && slot.payload.layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(m_device, slot.payload.layout, nullptr);
+        slot.payload.ownsPipeline = false;
+        slot.payload.ownsLayout = false;
+    }
     for (auto &slot : m_computePipelines) {
         if (!slot.occupied)
             continue;

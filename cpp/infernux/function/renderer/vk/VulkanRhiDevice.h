@@ -66,6 +66,7 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] rhi::ShaderModuleHandle CreateShaderModule(const rhi::ShaderModuleDesc &desc) override;
     [[nodiscard]] rhi::BindingLayoutHandle CreateBindingLayout(const rhi::BindingLayoutDesc &desc) override;
     [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const rhi::BindGroupDesc &desc) override;
+    [[nodiscard]] rhi::GraphicsPipelineHandle CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override;
     [[nodiscard]] rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
     bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override;
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
@@ -77,7 +78,7 @@ class VulkanRhiDevice final : public rhi::Device
     void Release(rhi::ShaderModuleHandle handle) noexcept override;
     void Release(rhi::BindingLayoutHandle handle) noexcept override;
     void Release(rhi::BindGroupHandle handle) noexcept override;
-    void Release(rhi::GraphicsPipelineHandle handle) noexcept;
+    void Release(rhi::GraphicsPipelineHandle handle) noexcept override;
     void Release(rhi::ComputePipelineHandle handle) noexcept override;
     void Release(rhi::RenderTargetLayoutHandle handle) noexcept;
 

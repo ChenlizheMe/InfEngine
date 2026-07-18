@@ -32,8 +32,6 @@ using infernux::rhi::ShaderModuleHandle;
 using infernux::vk::DeviceConfig;
 using infernux::vk::PassBuilder;
 using infernux::vk::PassCullReason;
-using infernux::vk::PipelineConfig;
-using infernux::vk::PipelineResult;
 using infernux::vk::RenderContext;
 using infernux::vk::RenderGraph;
 using infernux::vk::ResourceHandle;
@@ -49,12 +47,12 @@ struct TestResources
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkQueryPool queryPool = VK_NULL_HANDLE;
-    PipelineResult graphicsPipeline;
-
     BindGroupHandle computeGroup;
     BindingLayoutHandle computeBindingLayout;
     ComputePipelineHandle computeHandle;
     ShaderModuleHandle computeShader;
+    ShaderModuleHandle vertexShader;
+    ShaderModuleHandle fragmentShader;
     GraphicsPipelineHandle graphicsHandle;
 
     ~TestResources()
@@ -67,9 +65,10 @@ struct TestResources
             rhi.Release(computeGroup);
             rhi.Release(computeBindingLayout);
             rhi.Release(computeShader);
+            rhi.Release(vertexShader);
+            rhi.Release(fragmentShader);
 
             graph.Destroy();
-            pipelines.DestroyPipelineResult(graphicsPipeline);
 
             const VkDevice device = context.GetDevice();
             if (queryPool != VK_NULL_HANDLE)
@@ -383,27 +382,28 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.computeGroup.IsValid(), "RHI compute bind group creation failed"))
         return false;
 
-    PipelineConfig graphicsConfig;
-    graphicsConfig.vertexShaderCode = vertexCode;
-    graphicsConfig.fragmentShaderCode = fragmentCode;
-    graphicsConfig.renderPass = resources.graph.GetPassRenderPass("IndirectDraw");
-    graphicsConfig.extent = {16, 16};
-    graphicsConfig.depthTestEnable = false;
-    graphicsConfig.depthWriteEnable = false;
-    graphicsConfig.cullMode = VK_CULL_MODE_NONE;
-    resources.graphicsPipeline = resources.pipelines.CreateGraphicsPipeline(graphicsConfig);
-    if (!Require(resources.graphicsPipeline.pipeline != VK_NULL_HANDLE, "Graphics pipeline creation failed"))
-        return false;
-
-    resources.graphicsHandle =
-        rhi.RegisterGraphicsPipeline(resources.graphicsPipeline.pipeline, resources.graphicsPipeline.layout);
+    resources.vertexShader = rhi.CreateShaderModule({vertexCode.data(), vertexCode.size()});
+    resources.fragmentShader = rhi.CreateShaderModule({fragmentCode.data(), fragmentCode.size()});
+    infernux::rhi::GraphicsPipelineDesc graphicsDesc;
+    graphicsDesc.vertexShader = resources.vertexShader;
+    graphicsDesc.fragmentShader = resources.fragmentShader;
+    graphicsDesc.renderTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
+    graphicsDesc.raster.cullMode = infernux::rhi::CullMode::None;
+    graphicsDesc.colorTargets[0].format = infernux::rhi::PixelFormat::RGBA8UNorm;
+    graphicsDesc.colorTargetCount = 1;
+    resources.graphicsHandle = rhi.CreateGraphicsPipeline(graphicsDesc);
     if (!Require(resources.computeGroup.IsValid() && resources.computeHandle.IsValid() &&
+                     resources.vertexShader.IsValid() && resources.fragmentShader.IsValid() &&
                      resources.graphicsHandle.IsValid(),
-                 "Typed RHI registration failed"))
+                 "Typed RHI pipeline creation failed"))
         return false;
 
     rhi.Release(resources.computeShader);
     resources.computeShader = {};
+    rhi.Release(resources.vertexShader);
+    resources.vertexShader = {};
+    rhi.Release(resources.fragmentShader);
+    resources.fragmentShader = {};
 
     VkQueryPoolCreateInfo queryInfo{};
     queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;

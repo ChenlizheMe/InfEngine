@@ -17,11 +17,13 @@ struct FakeDevice final : rhi::Device
     uint32_t shaderCreates = 0;
     uint32_t layoutCreates = 0;
     uint32_t groupCreates = 0;
+    uint32_t graphicsPipelineCreates = 0;
     uint32_t pipelineCreates = 0;
     uint32_t bufferReleases = 0;
     uint32_t shaderReleases = 0;
     uint32_t layoutReleases = 0;
     uint32_t groupReleases = 0;
+    uint32_t graphicsPipelineReleases = 0;
     uint32_t pipelineReleases = 0;
     uint32_t writes = 0;
     uint32_t nextIndex = 1;
@@ -60,6 +62,12 @@ struct FakeDevice final : rhi::Device
         return {nextIndex++, 1};
     }
 
+    rhi::GraphicsPipelineHandle CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &) override
+    {
+        ++graphicsPipelineCreates;
+        return {nextIndex++, 1};
+    }
+
     bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override
     {
         assert(handle.IsValid() && offset == 0 && data && byteSize == sizeof(particle::GpuParticleTransforms));
@@ -82,6 +90,10 @@ struct FakeDevice final : rhi::Device
     void Release(rhi::BindGroupHandle handle) noexcept override
     {
         groupReleases += handle.IsValid() ? 1u : 0u;
+    }
+    void Release(rhi::GraphicsPipelineHandle handle) noexcept override
+    {
+        graphicsPipelineReleases += handle.IsValid() ? 1u : 0u;
     }
     void Release(rhi::ComputePipelineHandle handle) noexcept override
     {
