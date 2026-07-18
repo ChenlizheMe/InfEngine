@@ -785,6 +785,9 @@ class AssetManager:
             return AnimationClip3D
         if ext in ANIMFSM_EXTENSIONS:
             return AnimStateMachine
+        if ext == ".effect":
+            from Infernux.renderstack.render_effect import RenderEffect
+            return RenderEffect
         return None
 
     @classmethod
@@ -807,6 +810,9 @@ class AssetManager:
             return AnimationClip3D.load(path)
         if asset_type is AnimStateMachine:
             return AnimStateMachine.load(path)
+        from Infernux.renderstack.render_effect import RenderEffect
+        if asset_type is RenderEffect or (asset_type is None and path.endswith(".effect")):
+            return RenderEffect.load(path)
         return None
 
     @classmethod

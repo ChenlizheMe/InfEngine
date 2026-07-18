@@ -67,6 +67,7 @@ from .asset_ref import (
     AnimStateMachineRef,
     PhysicMaterialRef,
     VfxSystemRef,
+    RenderEffectRef,
 )
 
 __all__ = [
@@ -108,4 +109,5 @@ __all__ = [
     "AnimStateMachineRef",
     "PhysicMaterialRef",
     "VfxSystemRef",
+    "RenderEffectRef",
 ]

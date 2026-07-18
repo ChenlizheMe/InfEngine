@@ -38,6 +38,7 @@ from .asset_ref import (
     AudioClipRef as AudioClipRef,
     PhysicMaterialRef as PhysicMaterialRef,
     VfxSystemRef as VfxSystemRef,
+    RenderEffectRef as RenderEffectRef,
 )
 
 __all__ = [
@@ -70,4 +71,5 @@ __all__ = [
     "AudioClipRef",
     "PhysicMaterialRef",
     "VfxSystemRef",
+    "RenderEffectRef",
 ]

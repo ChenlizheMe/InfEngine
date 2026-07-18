@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from Infernux.components.component import InxComponent
 from Infernux.renderstack.injection_point import InjectionPoint
 from Infernux.renderstack.resource_bus import ResourceBus
-from Infernux.renderstack.effect_binding import EffectSlotBinding
+from Infernux.renderstack.effect_slot import EffectSlot
+from Infernux.renderstack.render_effect import RenderEffect
 
 if TYPE_CHECKING:
     from Infernux.renderstack.render_pass import RenderPass
@@ -33,6 +34,7 @@ class RenderStack(InxComponent):
     mounted_passes_json: str
     pipeline_params_json: str
     effect_stage_bindings_json: str
+    effect_slots: List[EffectSlot]
 
     @classmethod
     def instance(cls) -> Optional[RenderStack]:
@@ -58,8 +60,10 @@ class RenderStack(InxComponent):
         ...
     @property
     def effect_binding_error(self) -> str: ...
-    def get_effect_stage_slots(self, stage_id: str) -> tuple[EffectSlotBinding, ...]: ...
-    def set_effect_stage_slots(self, stage_id: str, slots: tuple[EffectSlotBinding, ...]) -> None: ...
+    def get_effect_stage_slots(self, stage_id: str) -> tuple[EffectSlot, ...]: ...
+    def set_effect_stage_slots(self, stage_id: str, slots: tuple[EffectSlot, ...]) -> None: ...
+    def add_effect_slot(self, stage_id: str, effect: Any = ..., *, enabled: bool = ...) -> EffectSlot: ...
+    def get_effect(self, stage_id: str, index: int = ...) -> Optional[RenderEffect]: ...
 
     @property
     def pipeline(self) -> RenderPipeline:

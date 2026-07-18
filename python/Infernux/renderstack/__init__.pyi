@@ -4,6 +4,8 @@ from Infernux.renderstack.injection_point import InjectionPoint as InjectionPoin
 from Infernux.renderstack.effect_stage import EffectResourceContract as EffectResourceContract
 from Infernux.renderstack.effect_stage import EffectScope as EffectScope
 from Infernux.renderstack.effect_stage import EffectStage as EffectStage
+from Infernux.renderstack.effect_slot import EffectSlot as EffectSlot
+from Infernux.renderstack.render_effect import RenderEffect as RenderEffect
 from Infernux.renderstack.effect_binding import EffectBindingDocument as EffectBindingDocument
 from Infernux.renderstack.effect_binding import EffectSlotBinding as EffectSlotBinding
 from Infernux.renderstack.effect_binding import dump_effect_binding_document as dump_effect_binding_document
@@ -45,6 +47,8 @@ __all__ = [
     "EffectStage",
     "EffectScope",
     "EffectResourceContract",
+    "EffectSlot",
+    "RenderEffect",
     "EffectBindingDocument",
     "EffectSlotBinding",
     "parse_effect_binding_document",

@@ -305,6 +305,11 @@ class PlayModeManager(PlayModeSerializationMixin):
             except ImportError:
                 # Material module not yet importable — benign during bootstrap.
                 pass
+            try:
+                from Infernux.renderstack.render_effect import RenderEffect
+                RenderEffect._suppress_auto_save = True
+            except ImportError:
+                pass
             notify_started = time.perf_counter()
             self._notify_state_change(old_state, self._state)
             notify_ms = (time.perf_counter() - notify_started) * 1000.0
@@ -318,6 +323,11 @@ class PlayModeManager(PlayModeSerializationMixin):
                 try:
                     from Infernux.core.material import Material
                     Material._suppress_auto_save = False
+                except ImportError:
+                    pass
+                try:
+                    from Infernux.renderstack.render_effect import RenderEffect
+                    RenderEffect._suppress_auto_save = False
                 except ImportError:
                     pass
                 try:
@@ -400,6 +410,11 @@ class PlayModeManager(PlayModeSerializationMixin):
             Material._suppress_auto_save = False
         except ImportError:
             # Material module not yet importable — benign during teardown.
+            pass
+        try:
+            from Infernux.renderstack.render_effect import RenderEffect
+            RenderEffect._suppress_auto_save = False
+        except ImportError:
             pass
 
         # 3. Discard any pending runtime scene load queued by user scripts

@@ -83,6 +83,7 @@ from Infernux.core import ShaderRef as ShaderRef
 from Infernux.core import AudioClipRef as AudioClipRef
 from Infernux.core import AnimationClipRef as AnimationClipRef
 from Infernux.core import AnimStateMachineRef as AnimStateMachineRef
+from Infernux.core import RenderEffectRef as RenderEffectRef
 # Debug — class only (use Debug.log / Debug.log_warning / …)
 from Infernux.debug import Debug as Debug
 # Submodules

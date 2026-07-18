@@ -145,6 +145,7 @@ __all__ = [
     "AudioClipRef",
     "AnimationClipRef",
     "AnimStateMachineRef",
+    "RenderEffectRef",
     # Debug — class only (use Debug.log / Debug.log_warning / …)
     "Debug",
     # Submodules

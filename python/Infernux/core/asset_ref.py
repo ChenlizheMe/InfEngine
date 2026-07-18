@@ -212,6 +212,56 @@ class VfxSystemRef(AssetRefBase):
             return None
 
 
+class RenderEffectRef(AssetRefBase):
+    """Reference to a mutable ``.effect`` asset runtime object."""
+
+    def __init__(self, effect=None, *, guid: str = "", path_hint: str = ""):
+        if effect is None:
+            super().__init__(guid=guid, path_hint=path_hint)
+            return
+        effect_guid = str(getattr(effect, "guid", "") or guid)
+        effect_path = str(getattr(effect, "file_path", "") or path_hint)
+        super().__init__(guid=effect_guid, path_hint=effect_path)
+        self._cached = effect
+
+    def resolve(self):
+        if self._cached is not None:
+            return self._cached
+        self._cached = self._do_resolve()
+        return self._cached
+
+    def _do_resolve(self):
+        from Infernux.core.assets import AssetManager
+        from Infernux.renderstack.render_effect import RenderEffect
+
+        if self._guid:
+            effect = AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
+            if effect is not None:
+                return effect
+        if self._path_hint:
+            return AssetManager.load(self._path_hint, asset_type=RenderEffect)
+        return self._cached
+
+    def __bool__(self):
+        return bool(self._guid or self._path_hint or self._cached is not None)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        effect = self.resolve()
+        if effect is None:
+            raise AttributeError(name)
+        return getattr(effect, name)
+
+    def __copy__(self):
+        copied = RenderEffectRef(guid=self._guid, path_hint=self._path_hint)
+        copied._cached = self._cached
+        return copied
+
+    def __deepcopy__(self, memo):
+        return self.__copy__()
+
+
 class TimelineFSMRef(AssetRefBase):
     """Reference to a Timeline state machine (.timelinefsm) asset.
 
@@ -339,6 +389,13 @@ def _ensure_registry():
             "extensions": ("*.vfxsystem",),
             "display":    "VFX System",
             "prefix":     "vfx",
+        },
+        "RenderEffect": {
+            "ref_class":  RenderEffectRef,
+            "drag_type":  "RENDER_EFFECT_FILE",
+            "extensions": ("*.effect",),
+            "display":    "Render Effect",
+            "prefix":     "effect",
         },
         "AnimationClip": {
             "ref_class":  AnimationClipRef,

@@ -407,12 +407,17 @@ class Engine():
 
     @staticmethod
     def _flush_pending_material_saves():
-        """Flush all Material wrappers that have throttled pending saves."""
+        """Flush throttled mutable rendering-asset saves."""
         try:
             from Infernux.core.material import Material
             Material.flush_all_pending()
         except Exception as exc:
             Debug.log_suppressed("Engine._flush_pending_material_saves", exc)
+        try:
+            from Infernux.renderstack.render_effect import RenderEffect
+            RenderEffect.flush_all_pending()
+        except Exception as exc:
+            Debug.log_suppressed("Engine._flush_pending_effect_saves", exc)
 
     def _clear_uploaded_gizmos(self):
         """Clear uploaded gizmo buffers once when Scene View is hidden."""

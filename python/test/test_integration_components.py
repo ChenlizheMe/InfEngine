@@ -20,8 +20,8 @@ from Infernux.core.assets import AssetManager
 from Infernux.core.material import Material
 from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
-from Infernux.renderstack.effect_binding import EffectSlotBinding
-from Infernux.renderstack.render_effect_asset import EffectAssetReference
+from Infernux.renderstack.effect_slot import EffectSlot
+from Infernux.core.asset_ref import RenderEffectRef
 
 from Infernux.lib import (
     SceneManager,
@@ -939,23 +939,29 @@ class TestComponentLifecycle:
 
     def test_renderstack_effect_slots_survive_component_serialization_hooks(self, scene):
         stack = scene.create_game_object("EffectBindingRenderStack").add_component(RenderStack)
-        reference = EffectAssetReference(
-            guid="missing-effect-guid",
-            path_hint="Assets/RenderEffects/Missing.effect",
-        )
         slots = (
-            EffectSlotBinding("empty-slot"),
-            EffectSlotBinding("effect-slot", reference, overrides={"strength": 0.75}),
+            EffectSlot(slot_id="empty-slot", stage_id="final"),
+            EffectSlot(
+                slot_id="effect-slot",
+                stage_id="final",
+                effect=RenderEffectRef(
+                    guid="missing-effect-guid",
+                    path_hint="Assets/RenderEffects/Missing.effect",
+                ),
+            ),
         )
         stack.set_effect_stage_slots("final", slots)
 
-        stack.on_before_serialize()
-        persisted = stack.effect_stage_bindings_json
-        stack._effect_binding_document = None
-        stack.on_after_deserialize()
+        persisted = stack._serialize_fields_document()
+        stack.effect_slots = []
+        stack._deserialize_fields_document(persisted)
 
-        assert persisted
-        assert stack.get_effect_stage_slots("final") == slots
+        restored = stack.get_effect_stage_slots("final")
+        assert len(restored) == 2
+        assert restored[0].slot_id == "empty-slot"
+        assert restored[1].slot_id == "effect-slot"
+        assert restored[1].effect_ref.guid == "missing-effect-guid"
+        assert stack.effect_stage_bindings_json == ""
 
     def test_renderstack_preserves_invalid_binding_source_for_recovery(self, scene):
         stack = scene.create_game_object("InvalidEffectBindingRenderStack").add_component(RenderStack)
