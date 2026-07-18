@@ -31,8 +31,9 @@ from typing import Mapping, Optional, Tuple, List, Dict
 from Infernux.lib import (
     RenderGraphDescription,
     GraphPassDesc,
+    GraphCommandDesc,
+    GraphCommandType,
     GraphTextureDesc,
-    GraphPassActionType,
     MaterialPassType,
     PixelFormat,
 )
@@ -890,14 +891,12 @@ class RenderGraph:
         desc.textures = tex_list
 
         # Build pass list
-        _action_map = {
-            "none": GraphPassActionType.NONE,
-            "draw_renderers": GraphPassActionType.DRAW_RENDERERS,
-            "draw_skybox": GraphPassActionType.DRAW_SKYBOX,
-            "custom": GraphPassActionType.CUSTOM,
-            "draw_shadow_casters": GraphPassActionType.DRAW_SHADOW_CASTERS,
-            "draw_screen_ui": GraphPassActionType.DRAW_SCREEN_UI,
-            "fullscreen_quad": GraphPassActionType.FULLSCREEN_QUAD,
+        _command_map = {
+            "draw_renderers": GraphCommandType.DRAW_RENDERERS,
+            "draw_skybox": GraphCommandType.DRAW_SKYBOX,
+            "draw_shadow_casters": GraphCommandType.DRAW_SHADOW_CASTERS,
+            "draw_screen_ui": GraphCommandType.DRAW_SCREEN_UI,
+            "fullscreen_quad": GraphCommandType.FULLSCREEN_QUAD,
         }
         _material_pass_map = {
             "forward": MaterialPassType.FORWARD,
@@ -931,28 +930,22 @@ class RenderGraph:
             else:
                 pd.clear_depth = False
 
-            pd.action = _action_map.get(p._action, GraphPassActionType.NONE)
-            pd.material_pass = _material_pass_map[p._material_pass]
-            pd.queue_min = p._queue_min
-            pd.queue_max = p._queue_max
-            pd.sort_mode = p._sort_mode
-            pd.pass_tag = p._pass_tag
-            pd.override_material = p._override_material
-
-            # Shader input bindings (e.g. shadow map sampled textures)
-            pd.input_bindings = list(p._input_bindings.items())
-
-            # DrawShadowCasters parameters
-            pd.light_index = p._light_index
-
-            # DrawScreenUI parameters
-            pd.screen_ui_list = p._screen_ui_list
-
-            # FullscreenQuad parameters
-            if p._shader_name:
-                pd.shader_name = p._shader_name
-            if p._push_constants:
-                pd.push_constants = list(p._push_constants.items())
+            command_type = _command_map.get(p._action)
+            if command_type is not None:
+                command = GraphCommandDesc()
+                command.type = command_type
+                command.material_pass = _material_pass_map[p._material_pass]
+                command.queue_min = p._queue_min
+                command.queue_max = p._queue_max
+                command.sort_mode = p._sort_mode
+                command.pass_tag = p._pass_tag
+                command.override_material = p._override_material
+                command.input_bindings = list(p._input_bindings.items())
+                command.light_index = p._light_index
+                command.screen_ui_list = p._screen_ui_list
+                command.shader_name = p._shader_name
+                command.push_constants = list(p._push_constants.items())
+                pd.commands = [command]
 
             pass_list.append(pd)
         desc.passes = pass_list

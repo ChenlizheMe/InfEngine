@@ -8,7 +8,8 @@ import Infernux.lib as native
 from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
-    GraphPassActionType, MaterialPassType, PixelFormat, SampleCount,
+    GraphCommandType, GraphPassActionType,
+    MaterialPassType, PixelFormat, SampleCount,
 )
 from Infernux.rendergraph.graph import RenderGraph, Format, TextureHandle
 
@@ -113,7 +114,9 @@ class TestRenderPassBuilder:
             p.draw_renderers(material_pass="gbuffer")
         graph.set_output("g0")
         description = graph.build()
-        assert description.passes[0].material_pass == MaterialPassType.GBUFFER
+        assert description.passes[0].action == GraphPassActionType.NONE
+        assert description.passes[0].commands[0].type == GraphCommandType.DRAW_RENDERERS
+        assert description.passes[0].commands[0].material_pass == MaterialPassType.GBUFFER
 
     def test_draw_renderers_rejects_unknown_material_pass(self):
         graph = _make_graph()
@@ -402,7 +405,8 @@ class TestBuild:
         graph.set_output("color")
         desc = graph.build()
         shadow_pass = next(p for p in desc.passes if p.name == "ShadowCaster")
-        assert shadow_pass.light_index == 0
+        assert shadow_pass.commands[0].type == GraphCommandType.DRAW_SHADOW_CASTERS
+        assert shadow_pass.commands[0].light_index == 0
         # hard/soft shadow selection lives on the Light component, not the
         # graph pass (the former shadow_type parameter was a dead end and
         # has been removed from the API).
@@ -422,8 +426,9 @@ class TestBuild:
         graph.set_output("_fx_out")
         desc = graph.build()
         fx_pass = next(p for p in desc.passes if p.name == "FX")
-        assert fx_pass.shader_name == "my_effect"
-        pc_dict = dict(fx_pass.push_constants)
+        assert fx_pass.commands[0].type == GraphCommandType.FULLSCREEN_QUAD
+        assert fx_pass.commands[0].shader_name == "my_effect"
+        pc_dict = dict(fx_pass.commands[0].push_constants)
         assert pc_dict["intensity"] == 0.5
         assert pc_dict["threshold"] == 1.0
 

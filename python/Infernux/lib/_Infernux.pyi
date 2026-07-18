@@ -128,6 +128,14 @@ class GraphPassActionType(IntEnum):
     FULLSCREEN_QUAD: int
 
 
+class GraphCommandType(IntEnum):
+    DRAW_RENDERERS: int
+    DRAW_SKYBOX: int
+    DRAW_SHADOW_CASTERS: int
+    DRAW_SCREEN_UI: int
+    FULLSCREEN_QUAD: int
+
+
 class MaterialPassType(IntEnum):
     FORWARD: int
     GBUFFER: int
@@ -1786,6 +1794,25 @@ class GraphTextureDesc:
     def __init__(self) -> None: ...
 
 
+class GraphCommandDesc:
+    """Typed command in the Python-defined graph IR."""
+
+    type: GraphCommandType
+    material_pass: MaterialPassType
+    queue_min: int
+    queue_max: int
+    sort_mode: str
+    pass_tag: str
+    override_material: str
+    input_bindings: List[Tuple[str, str]]
+    light_index: int
+    screen_ui_list: int
+    shader_name: str
+    push_constants: List[Tuple[str, float]]
+
+    def __init__(self) -> None: ...
+
+
 class GraphPassDesc:
     """Description of a single render pass in the Python-defined graph."""
 
@@ -1800,6 +1827,7 @@ class GraphPassDesc:
     clear_color_b: float
     clear_color_a: float
     clear_depth_value: float
+    commands: List[GraphCommandDesc]
     action: GraphPassActionType
     material_pass: MaterialPassType
     queue_min: int

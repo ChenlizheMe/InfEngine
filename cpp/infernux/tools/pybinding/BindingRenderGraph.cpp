@@ -54,6 +54,28 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .value("PICKING", ShaderCompileTarget::Picking)
         .value("MOTION", ShaderCompileTarget::Motion);
 
+    py::enum_<GraphCommandType>(m, "GraphCommandType", "Backend-neutral command recorded by a graph pass")
+        .value("DRAW_RENDERERS", GraphCommandType::DrawRenderers)
+        .value("DRAW_SKYBOX", GraphCommandType::DrawSkybox)
+        .value("DRAW_SHADOW_CASTERS", GraphCommandType::DrawShadowCasters)
+        .value("DRAW_SCREEN_UI", GraphCommandType::DrawScreenUI)
+        .value("FULLSCREEN_QUAD", GraphCommandType::FullscreenQuad);
+
+    py::class_<GraphCommandDesc>(m, "GraphCommandDesc", "Typed command in the Python-defined graph IR")
+        .def(py::init<>())
+        .def_readwrite("type", &GraphCommandDesc::type)
+        .def_readwrite("material_pass", &GraphCommandDesc::shaderTarget)
+        .def_readwrite("queue_min", &GraphCommandDesc::queueMin)
+        .def_readwrite("queue_max", &GraphCommandDesc::queueMax)
+        .def_readwrite("sort_mode", &GraphCommandDesc::sortMode)
+        .def_readwrite("pass_tag", &GraphCommandDesc::passTag)
+        .def_readwrite("override_material", &GraphCommandDesc::overrideMaterial)
+        .def_readwrite("light_index", &GraphCommandDesc::lightIndex)
+        .def_readwrite("screen_ui_list", &GraphCommandDesc::screenUIList)
+        .def_readwrite("shader_name", &GraphCommandDesc::shaderName)
+        .def_readwrite("push_constants", &GraphCommandDesc::pushConstants)
+        .def_readwrite("input_bindings", &GraphCommandDesc::inputBindings);
+
     // GraphTextureDesc struct
     py::class_<GraphTextureDesc>(m, "GraphTextureDesc", "Description of a texture resource in the Python-defined graph")
         .def(py::init<>())
@@ -82,7 +104,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("clear_color_b", &GraphPassDesc::clearColorB, "Clear color blue")
         .def_readwrite("clear_color_a", &GraphPassDesc::clearColorA, "Clear color alpha")
         .def_readwrite("clear_depth_value", &GraphPassDesc::clearDepthValue, "Depth clear value")
-        .def_readwrite("action", &GraphPassDesc::action, "Render action type")
+        .def_readwrite("commands", &GraphPassDesc::commands, "Typed commands recorded by this pass")
+        .def_readwrite("action", &GraphPassDesc::action, "Deprecated render action compatibility field")
         .def_readwrite("material_pass", &GraphPassDesc::shaderTarget, "Material shader program for DrawRenderers")
         .def_readwrite("queue_min", &GraphPassDesc::queueMin, "Minimum render queue (inclusive)")
         .def_readwrite("queue_max", &GraphPassDesc::queueMax, "Maximum render queue (inclusive)")

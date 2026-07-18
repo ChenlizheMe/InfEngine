@@ -44,6 +44,43 @@ enum class GraphPassActionType
     FullscreenQuad     ///< Draw a fullscreen triangle with a named shader (post-process)
 };
 
+/**
+ * @brief Backend-neutral command recorded by a graph pass.
+ *
+ * This replaces the legacy one-action-per-pass
+ * contract. Commands deliberately
+ * describe engine rendering operations rather than Vulkan calls so the same
+ * graph
+ * artifact can be compiled by another RHI backend later.
+ */
+enum class GraphCommandType
+{
+    DrawRenderers,
+    DrawSkybox,
+    DrawShadowCasters,
+    DrawScreenUI,
+    FullscreenQuad
+};
+
+struct GraphCommandDesc
+{
+    GraphCommandType type = GraphCommandType::DrawRenderers;
+    ShaderCompileTarget shaderTarget = ShaderCompileTarget::Forward;
+
+    int queueMin = 0;
+    int queueMax = 5000;
+    std::string sortMode;
+    std::string passTag;
+    std::string overrideMaterial;
+
+    int32_t lightIndex = 0;
+    int screenUIList = 0;
+
+    std::string shaderName;
+    std::vector<std::pair<std::string, float>> pushConstants;
+    std::vector<std::pair<std::string, std::string>> inputBindings;
+};
+
 // ============================================================================
 // Texture Description
 // ============================================================================
@@ -89,7 +126,15 @@ struct GraphPassDesc
     float clearColorA = 1.0f;
     float clearDepthValue = 1.0f;
 
-    // === Render action ===
+    // === Typed command IR ===
+    // Empty is valid for a resource-only pass. The current executor accepts
+    // one command while the IR is intentionally a list for the upcoming
+    // raster/compute/copy command-list executor.
+    std::vector<GraphCommandDesc> commands;
+
+    // === Legacy render action (input compatibility only) ===
+    // New graph builders populate commands instead. SceneRenderGraph
+    // normalizes old descriptions at its C++ boundary before validation.
     GraphPassActionType action = GraphPassActionType::None;
     ShaderCompileTarget shaderTarget = ShaderCompileTarget::Forward; ///< Material program used by DrawRenderers
 

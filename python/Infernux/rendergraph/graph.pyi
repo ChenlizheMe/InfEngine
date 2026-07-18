@@ -6,7 +6,6 @@ from Infernux.lib import (
     RenderGraphDescription,
     GraphPassDesc,
     GraphTextureDesc,
-    GraphPassActionType,
     MaterialPassType,
     PixelFormat,
 )

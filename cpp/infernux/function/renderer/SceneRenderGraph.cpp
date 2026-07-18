@@ -35,16 +35,83 @@ bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
            a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor;
 }
 
+bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
+{
+    return a.type == b.type && a.shaderTarget == b.shaderTarget && a.queueMin == b.queueMin &&
+           a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
+           a.overrideMaterial == b.overrideMaterial && a.lightIndex == b.lightIndex &&
+           a.screenUIList == b.screenUIList && a.shaderName == b.shaderName && a.pushConstants == b.pushConstants &&
+           a.inputBindings == b.inputBindings;
+}
+
+bool CommandListEquals(const std::vector<GraphCommandDesc> &a, const std::vector<GraphCommandDesc> &b)
+{
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const auto &lhs, const auto &rhs) {
+               return CommandDescEquals(lhs, rhs);
+           });
+}
+
+GraphCommandDesc LegacyCommand(const GraphPassDesc &pass)
+{
+    GraphCommandDesc command;
+    switch (pass.action) {
+    case GraphPassActionType::DrawRenderers:
+        command.type = GraphCommandType::DrawRenderers;
+        break;
+    case GraphPassActionType::DrawSkybox:
+        command.type = GraphCommandType::DrawSkybox;
+        break;
+    case GraphPassActionType::DrawShadowCasters:
+        command.type = GraphCommandType::DrawShadowCasters;
+        break;
+    case GraphPassActionType::DrawScreenUI:
+        command.type = GraphCommandType::DrawScreenUI;
+        break;
+    case GraphPassActionType::FullscreenQuad:
+        command.type = GraphCommandType::FullscreenQuad;
+        break;
+    default:
+        return {};
+    }
+    command.shaderTarget = pass.shaderTarget;
+    command.queueMin = pass.queueMin;
+    command.queueMax = pass.queueMax;
+    command.sortMode = pass.sortMode;
+    command.passTag = pass.passTag;
+    command.overrideMaterial = pass.overrideMaterial;
+    command.lightIndex = pass.lightIndex;
+    command.screenUIList = pass.screenUIList;
+    command.shaderName = pass.shaderName;
+    command.pushConstants = pass.pushConstants;
+    command.inputBindings = pass.inputBindings;
+    return command;
+}
+
+RenderGraphDescription NormalizeGraphCommands(const RenderGraphDescription &source)
+{
+    RenderGraphDescription normalized = source;
+    for (auto &pass : normalized.passes) {
+        if (!pass.commands.empty() || pass.action == GraphPassActionType::None ||
+            pass.action == GraphPassActionType::Custom) {
+            continue;
+        }
+        pass.commands.push_back(LegacyCommand(pass));
+    }
+    return normalized;
+}
+
+const GraphCommandDesc *PrimaryCommand(const GraphPassDesc &pass)
+{
+    return pass.commands.empty() ? nullptr : &pass.commands.front();
+}
+
 bool PassDescEquals(const GraphPassDesc &a, const GraphPassDesc &b)
 {
     return a.name == b.name && a.readTextures == b.readTextures && a.writeColors == b.writeColors &&
            a.writeDepth == b.writeDepth && a.clearColor == b.clearColor && a.clearDepth == b.clearDepth &&
            a.clearColorR == b.clearColorR && a.clearColorG == b.clearColorG && a.clearColorB == b.clearColorB &&
-           a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue && a.action == b.action &&
-           a.shaderTarget == b.shaderTarget && a.queueMin == b.queueMin && a.queueMax == b.queueMax &&
-           a.sortMode == b.sortMode && a.passTag == b.passTag && a.overrideMaterial == b.overrideMaterial &&
-           a.lightIndex == b.lightIndex && a.screenUIList == b.screenUIList && a.shaderName == b.shaderName &&
-           a.pushConstants == b.pushConstants && a.inputBindings == b.inputBindings;
+           a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue &&
+           CommandListEquals(a.commands, b.commands);
 }
 
 bool GraphDescEquals(const RenderGraphDescription &a, const RenderGraphDescription &b)
@@ -125,7 +192,13 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: duplicate pass '", pass.name, "'");
             return false;
         }
-        if (pass.action == GraphPassActionType::DrawShadowCasters) {
+        if (pass.commands.size() > 1) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                         "' records multiple commands; command-list execution is not enabled yet");
+            return false;
+        }
+        const GraphCommandDesc *command = PrimaryCommand(pass);
+        if (command && command->type == GraphCommandType::DrawShadowCasters) {
             if (!pass.writeColors.empty()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: shadow pass '", pass.name,
                              "' cannot write color targets");
@@ -143,9 +216,9 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             return false;
         }
 
-        const bool depthOnlyMaterialPass =
-            pass.action == GraphPassActionType::DrawRenderers &&
-            (pass.shaderTarget == ShaderCompileTarget::Depth || pass.shaderTarget == ShaderCompileTarget::Shadow);
+        const bool depthOnlyMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
+                                           (command->shaderTarget == ShaderCompileTarget::Depth ||
+                                            command->shaderTarget == ShaderCompileTarget::Shadow);
         if (depthOnlyMaterialPass && (!pass.writeColors.empty() || pass.writeDepth.empty())) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: depth-only material pass '", pass.name,
                          "' requires one depth output and no color outputs");
@@ -189,7 +262,7 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
                              pass.writeDepth, "' as depth");
                 return false;
             }
-            if (pass.action == GraphPassActionType::DrawRenderers) {
+            if (command && command->type == GraphCommandType::DrawRenderers) {
                 const bool singleSampleDepth =
                     (texIt->second->width > 0 && texIt->second->height > 0) || texIt->second->sizeDivisor > 1;
                 writesSingleSampleTarget |= singleSampleDepth;
@@ -197,10 +270,10 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             }
         }
 
-        if (pass.action == GraphPassActionType::DrawRenderers) {
+        if (command && command->type == GraphCommandType::DrawRenderers) {
             for (const auto &textureName : pass.readTextures) {
                 const bool sampledInput =
-                    std::any_of(pass.inputBindings.begin(), pass.inputBindings.end(),
+                    std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
                                 [&textureName](const auto &binding) { return binding.second == textureName; });
                 if (sampledInput)
                     continue;
@@ -228,7 +301,9 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             }
         }
 
-        for (const auto &[samplerName, textureName] : pass.inputBindings) {
+        if (!command)
+            continue;
+        for (const auto &[samplerName, textureName] : command->inputBindings) {
             if (textures.find(textureName) == textures.end()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' input '", samplerName,
                              "' references unknown texture '", textureName, "'");
@@ -387,8 +462,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return;
     }
 
+    RenderGraphDescription normalizedDesc = NormalizeGraphCommands(desc);
     const VkSampleCountFlagBits callbackSamples = m_vkCore->GetMaterialPipelineManager().GetSampleCount();
-    const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(desc, m_pythonGraphDesc);
+    const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(normalizedDesc, m_pythonGraphDesc);
     const bool callbackContractChanged = m_pythonCallbackSamples != callbackSamples;
     if (!topologyChanged && !callbackContractChanged) {
         if (desc.sourceRevision != 0) {
@@ -398,7 +474,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return;
     }
 
-    if (topologyChanged && !ValidatePythonGraphDescription(desc)) {
+    if (topologyChanged && !ValidatePythonGraphDescription(normalizedDesc)) {
         return;
     }
 
@@ -407,26 +483,30 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 
     InxVkCoreModular *vkCore = m_vkCore;
 
-    for (const auto &passDesc : desc.passes) {
-        // Build the render callback directly from the pass action.
-        const auto graphPassAction = passDesc.action;
-        if (graphPassAction == GraphPassActionType::DrawShadowCasters) {
+    for (const auto &passDesc : normalizedDesc.passes) {
+        const GraphCommandDesc *command = PrimaryCommand(passDesc);
+        if (!command) {
+            m_pythonCallbacks[passDesc.name] = [](vk::RenderContext &, uint32_t, uint32_t) {};
+            continue;
+        }
+        const auto commandType = command->type;
+        if (commandType == GraphCommandType::DrawShadowCasters) {
             m_hasShadowCasterPass = true;
         }
-        const int queueMin = passDesc.queueMin;
-        const int queueMax = passDesc.queueMax;
-        const int screenUIListIndex = passDesc.screenUIList;
-        const int lightIndex = passDesc.lightIndex;
-        const std::string sortMode = passDesc.sortMode;
-        const std::string overrideMaterial = passDesc.overrideMaterial;
-        const std::string passTag = passDesc.passTag;
+        const int queueMin = command->queueMin;
+        const int queueMax = command->queueMax;
+        const int screenUIListIndex = command->screenUIList;
+        const int lightIndex = command->lightIndex;
+        const std::string sortMode = command->sortMode;
+        const std::string overrideMaterial = command->overrideMaterial;
+        const std::string passTag = command->passTag;
         MaterialPassPipelineDescriptor materialPass =
-            vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(passDesc.shaderTarget);
-        if (graphPassAction == GraphPassActionType::DrawRenderers) {
+            vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(command->shaderTarget);
+        if (commandType == GraphCommandType::DrawRenderers) {
             materialPass.colorFormats.clear();
             bool writesBackbuffer = passDesc.writeColors.empty() &&
-                                    passDesc.shaderTarget != ShaderCompileTarget::Depth &&
-                                    passDesc.shaderTarget != ShaderCompileTarget::Shadow;
+                                    command->shaderTarget != ShaderCompileTarget::Depth &&
+                                    command->shaderTarget != ShaderCompileTarget::Shadow;
             bool writesSingleSampleTarget = false;
             auto colorOutputs = passDesc.writeColors;
             std::sort(colorOutputs.begin(), colorOutputs.end(),
@@ -434,9 +514,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             for (const auto &[slot, textureName] : colorOutputs) {
                 (void)slot;
                 const auto texture = std::find_if(
-                    desc.textures.begin(), desc.textures.end(),
+                    normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
                     [&textureName](const GraphTextureDesc &textureDesc) { return textureDesc.name == textureName; });
-                if (texture != desc.textures.end()) {
+                if (texture != normalizedDesc.textures.end()) {
                     writesBackbuffer |= texture->isBackbuffer;
                     writesSingleSampleTarget |= !texture->isBackbuffer;
                     materialPass.colorFormats.push_back(
@@ -449,12 +529,12 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                     rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat()));
             }
             if (!passDesc.writeDepth.empty()) {
-                const auto depth =
-                    std::find_if(desc.textures.begin(), desc.textures.end(), [&passDesc](const GraphTextureDesc &desc) {
-                        return desc.name == passDesc.writeDepth;
-                    });
-                materialPass.depthFormat = depth != desc.textures.end() ? depth->format : rhi::PixelFormat::Undefined;
-                if (depth != desc.textures.end()) {
+                const auto depth = std::find_if(
+                    normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
+                    [&passDesc](const GraphTextureDesc &desc) { return desc.name == passDesc.writeDepth; });
+                materialPass.depthFormat =
+                    depth != normalizedDesc.textures.end() ? depth->format : rhi::PixelFormat::Undefined;
+                if (depth != normalizedDesc.textures.end()) {
                     const bool singleSampleDepth = (depth->width > 0 && depth->height > 0) || depth->sizeDivisor > 1;
                     writesSingleSampleTarget |= singleSampleDepth;
                     writesBackbuffer |= !singleSampleDepth;
@@ -463,15 +543,15 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 materialPass.depthFormat = rhi::PixelFormat::Undefined;
                 for (const std::string &textureName : passDesc.readTextures) {
                     const bool sampledInput =
-                        std::any_of(passDesc.inputBindings.begin(), passDesc.inputBindings.end(),
+                        std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
                                     [&textureName](const auto &binding) { return binding.second == textureName; });
                     if (sampledInput)
                         continue;
-                    const auto depth = std::find_if(desc.textures.begin(), desc.textures.end(),
+                    const auto depth = std::find_if(normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
                                                     [&textureName](const GraphTextureDesc &desc) {
                                                         return desc.name == textureName && desc.isDepth;
                                                     });
-                    if (depth != desc.textures.end()) {
+                    if (depth != normalizedDesc.textures.end()) {
                         materialPass.depthFormat = depth->format;
                         const bool singleSampleDepth =
                             (depth->width > 0 && depth->height > 0) || depth->sizeDivisor > 1;
@@ -486,36 +566,32 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                                        : rhi::FromVkSampleCount(callbackSamples);
         }
 
-        // Capture input bindings for passes that need graph texture access
-        // (e.g. reading shadow map as a sampled texture).
-        const auto inputBindings = passDesc.inputBindings;
-
-        m_pythonCallbacks[passDesc.name] = [this, vkCore, graphPassAction, queueMin, queueMax, screenUIListIndex,
-                                            inputBindings, lightIndex, sortMode, overrideMaterial, passTag,
+        m_pythonCallbacks[passDesc.name] = [this, vkCore, commandType, queueMin, queueMax, screenUIListIndex,
+                                            lightIndex, sortMode, overrideMaterial, passTag,
                                             materialPass](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
-            switch (graphPassAction) {
-            case GraphPassActionType::DrawRenderers:
+            switch (commandType) {
+            case GraphCommandType::DrawRenderers:
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, sortMode, overrideMaterial,
                                           passTag, &materialPass);
                 break;
-            case GraphPassActionType::DrawSkybox: {
+            case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, skyboxQueue, skyboxQueue);
                 break;
             }
-            case GraphPassActionType::DrawShadowCasters:
+            case GraphCommandType::DrawShadowCasters:
                 // Shadow caster pass: draw filtered objects using shadow pipeline
                 // with lightVP from SceneLightCollector. The shadow pipeline is
                 // lazily created inside DrawShadowCasters().
                 vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, lightIndex);
                 break;
-            case GraphPassActionType::DrawScreenUI:
+            case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer) {
                     auto list = (screenUIListIndex == 0) ? ScreenUIList::Camera : ScreenUIList::Overlay;
                     m_screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h);
                 }
                 break;
-            case GraphPassActionType::FullscreenQuad:
+            case GraphCommandType::FullscreenQuad:
                 // FullscreenQuad passes are handled entirely inside
                 // BuildRenderGraph's execute lambda — the callback is a
                 // no-op placeholder so the pass entry exists in m_pythonCallbacks.
@@ -567,7 +643,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     // Store description for BuildRenderGraph()'s topology traversal. Exact
     // repeats return before validation/callback construction above.
     if (topologyChanged) {
-        m_pythonGraphDesc = desc;
+        m_pythonGraphDesc = std::move(normalizedDesc);
     }
     m_hasPythonGraph = true;
     m_pythonGraphSourceRevision = desc.sourceRevision;
@@ -1042,6 +1118,9 @@ void SceneRenderGraph::BuildRenderGraph()
         uint32_t msaaResolvePassCounter = 0;
 
         for (const auto &passDesc : sortedPasses) {
+            const GraphCommandDesc *command = PrimaryCommand(passDesc);
+            static const std::vector<std::pair<std::string, std::string>> kNoInputBindings;
+            const auto &commandInputBindings = command ? command->inputBindings : kNoInputBindings;
             // Look up render callback from the Python callbacks map
             auto callbackIt = m_pythonCallbacks.find(passDesc.name);
             if (callbackIt == m_pythonCallbacks.end()) {
@@ -1074,10 +1153,10 @@ void SceneRenderGraph::BuildRenderGraph()
             // Default: if no color outputs declared and not a depth-only pass,
             // write to MSAA backbuffer at slot 0.
             // Shadow and semantic Depth passes have no color attachments.
-            bool isShadowPassAction = (passDesc.action == GraphPassActionType::DrawShadowCasters);
-            const bool isDepthOnlyMaterialPass = passDesc.action == GraphPassActionType::DrawRenderers &&
-                                                 (passDesc.shaderTarget == ShaderCompileTarget::Depth ||
-                                                  passDesc.shaderTarget == ShaderCompileTarget::Shadow);
+            bool isShadowPassAction = command && command->type == GraphCommandType::DrawShadowCasters;
+            const bool isDepthOnlyMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
+                                                 (command->shaderTarget == ShaderCompileTarget::Depth ||
+                                                  command->shaderTarget == ShaderCompileTarget::Shadow);
             if (colorTargets.empty() && !isShadowPassAction && !isDepthOnlyMaterialPass) {
                 colorTargets[0] = m_importedColorTarget;
             }
@@ -1096,7 +1175,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 if (texIt != texDescMap.end()) {
                     if (texIt->second->isDepth) {
                         const bool sampledInput =
-                            std::any_of(passDesc.inputBindings.begin(), passDesc.inputBindings.end(),
+                            std::any_of(commandInputBindings.begin(), commandInputBindings.end(),
                                         [&readTex](const auto &binding) { return binding.second == readTex; });
                         readsDepth |= !sampledInput;
                     } else if (!texIt->second->isBackbuffer) {
@@ -1118,7 +1197,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 bool isDepth = false;
             };
             std::vector<InputBindingHandle> inputBindingHandles;
-            for (const auto &[samplerName, textureName] : passDesc.inputBindings) {
+            for (const auto &[samplerName, textureName] : commandInputBindings) {
                 auto texIt = texDescMap.find(textureName);
                 if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
                     // Backbuffer texture — use the imported color target
@@ -1213,7 +1292,7 @@ void SceneRenderGraph::BuildRenderGraph()
             //     must match the render pass attachment. We propagate the
             //     actual MSAA sample count into the FullscreenPipelineKey.
             // =================================================================
-            if (passDesc.action == GraphPassActionType::FullscreenQuad) {
+            if (command && command->type == GraphCommandType::FullscreenQuad) {
 
                 // ------ MSAA auto-resolve for backbuffer reads ------
                 if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
@@ -1265,10 +1344,10 @@ void SceneRenderGraph::BuildRenderGraph()
                 // Capture references for the execute lambda
                 FullscreenRenderer *fsRenderer = &m_fullscreenRenderer;
                 vk::RenderGraph *renderGraphPtr = m_renderGraph.get();
-                std::string shaderName = passDesc.shaderName;
+                std::string shaderName = command->shaderName;
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
-                for (const auto &[name, value] : passDesc.pushConstants) {
+                for (const auto &[name, value] : command->pushConstants) {
                     if (packedPushConstantSize / sizeof(float) < 32) {
                         packedPushConstants.values[packedPushConstantSize / sizeof(float)] = value;
                         packedPushConstantSize += sizeof(float);
@@ -1288,9 +1367,9 @@ void SceneRenderGraph::BuildRenderGraph()
                 // effects that just call read()).
                 std::vector<vk::ResourceHandle> fsReadHandles;
                 std::vector<bool> fsIsDepthInputs;
-                if (!passDesc.inputBindings.empty()) {
+                if (!commandInputBindings.empty()) {
                     // Use inputBindings order for deterministic sampler→binding mapping
-                    for (const auto &[samplerName, textureName] : passDesc.inputBindings) {
+                    for (const auto &[samplerName, textureName] : commandInputBindings) {
                         auto texIt = texDescMap.find(textureName);
                         if (texIt == texDescMap.end())
                             continue;
@@ -1468,7 +1547,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 // Determine the actual pass dimensions from the depth target.
                 uint32_t passWidth = width;
                 uint32_t passHeight = height;
-                bool isShadowPass = (passDesc.action == GraphPassActionType::DrawShadowCasters);
+                bool isShadowPass = command && command->type == GraphCommandType::DrawShadowCasters;
 
                 // Use the primary output's declared extent for offscreen passes.
                 if (!passDesc.writeColors.empty()) {
