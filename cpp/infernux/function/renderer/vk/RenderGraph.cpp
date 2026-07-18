@@ -718,6 +718,7 @@ void RenderGraph::Destroy()
             if (entry.framebuffer != VK_NULL_HANDLE)
                 framebuffers.push_back(entry.framebuffer);
         }
+        const bool hasBackendObjects = !framebuffers.empty() || !renderPasses.empty();
         auto destroyCaches = [device, framebuffers = std::move(framebuffers),
                               renderPasses = std::move(renderPasses)]() {
             for (VkFramebuffer framebuffer : framebuffers)
@@ -725,10 +726,12 @@ void RenderGraph::Destroy()
             for (VkRenderPass renderPass : renderPasses)
                 vkDestroyRenderPass(device, renderPass, nullptr);
         };
-        if (m_deletionQueue && !m_context->IsShuttingDown())
-            m_deletionQueue->Push(std::move(destroyCaches));
-        else
-            destroyCaches();
+        if (hasBackendObjects) {
+            if (m_deletionQueue && !m_context->IsShuttingDown())
+                m_deletionQueue->Push(std::move(destroyCaches));
+            else
+                destroyCaches();
+        }
     }
     m_renderPassCache.clear();
     m_renderTargetLayoutCache.clear();

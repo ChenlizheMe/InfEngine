@@ -1,5 +1,7 @@
 #include <function/renderer/RendererList.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
+#include <function/renderer/particle/ParticleGpuDrawRegistry.h>
+#include <function/renderer/particle/ParticleGpuSystemManager.h>
 #include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/renderer/vk/RenderGraph.h>
@@ -137,6 +139,75 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Failed to read generated SPIR-V test shaders"))
         return false;
 
+    infernux::FrameDeletionQueue particleDeletionQueue;
+    particleDeletionQueue.Initialize(2);
+    infernux::particle::ParticleGpuDrawRegistry particleDrawRegistry;
+    infernux::particle::ParticleGpuSystemManager particleSystems;
+    if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, particleDeletionQueue,
+                                            particleDrawRegistry),
+                 "GPU particle system manager initialization failed"))
+        return false;
+
+    infernux::particle::GpuParticleEmitterProgram managedProgram;
+    managedProgram.id = 91;
+    managedProgram.artifactRevision = 1;
+    managedProgram.stableId = "managed-emitter";
+    managedProgram.capacity = 32;
+    managedProgram.stateStride = 16;
+    for (auto &kernel : managedProgram.kernels)
+        kernel = particleComputeCode;
+    managedProgram.billboardVertexShader = particleVertexCode;
+    managedProgram.billboardFragmentShader = particleFragmentCode;
+    managedProgram.material.renderQueue = 3050;
+    managedProgram.material.blendEnabled = false;
+    std::string managedError;
+    if (!Require(particleSystems.CreateOrReplace(managedProgram, &managedError), managedError.c_str()) ||
+        !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
+                 "GPU particle system was not published atomically"))
+        return false;
+
+    auto invalidManagedProgram = managedProgram;
+    invalidManagedProgram.artifactRevision = 2;
+    invalidManagedProgram.billboardFragmentShader.clear();
+    if (!Require(!particleSystems.CreateOrReplace(invalidManagedProgram, &managedError) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
+                 "Invalid GPU particle replacement disturbed the active revision"))
+        return false;
+
+    managedProgram.artifactRevision = 2;
+    const bool managedReplacement = particleSystems.CreateOrReplace(managedProgram, &managedError);
+    if (!managedReplacement || particleSystems.ActiveArtifactRevision(managedProgram.id) != 2 ||
+        particleDeletionQueue.PendingCount() != 1) {
+        std::cerr << "GPU particle replacement detail: success=" << managedReplacement
+                  << " revision=" << particleSystems.ActiveArtifactRevision(managedProgram.id)
+                  << " pending=" << particleDeletionQueue.PendingCount() << " error=" << managedError << '\n';
+    }
+    if (!Require(managedReplacement && particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
+                     particleDeletionQueue.PendingCount() == 1,
+                 "Valid GPU particle hot replacement was not published with deferred retirement"))
+        return false;
+
+    infernux::particle::GpuParticleFrameRequest managedFrame;
+    managedFrame.frameIndex = 43;
+    managedFrame.spawnCount = 4;
+    managedFrame.systemSeed = 23;
+    managedFrame.simulationStep = 1;
+    managedFrame.deltaTime = 1.0f / 60.0f;
+    infernux::particle::GpuParticleTransforms managedTransforms;
+    managedTransforms.emitterToWorld[0] = managedTransforms.emitterToWorld[5] = managedTransforms.emitterToWorld[10] =
+        managedTransforms.emitterToWorld[15] = 1.0f;
+    managedTransforms.worldToEmitter = managedTransforms.emitterToWorld;
+    managedTransforms.simulationToWorld = managedTransforms.emitterToWorld;
+    managedTransforms.worldToSimulation = managedTransforms.emitterToWorld;
+    if (!Require(particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
+                 "GPU particle manager rejected a valid frame request"))
+        return false;
+    const auto managedEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    if (!Require(managedEntries.size() == 1, "GPU particle draw registry queue filtering failed"))
+        return false;
+    const auto managedEntry = managedEntries.front();
+
     ShaderReflection computeReflection;
     if (!Require(computeReflection.Reflect(computeCode, VK_SHADER_STAGE_COMPUTE_BIT),
                  "Generated compute SPIR-V reflection failed"))
@@ -222,6 +293,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     ResourceHandle indirectArguments;
     ResourceHandle discardedRewrite;
     ResourceHandle copiedIndirectArguments;
+    ResourceHandle managedInstances;
+    ResourceHandle managedIndirectArguments;
     ResourceHandle colorTarget;
     infernux::particle::ParticleGpuBillboardRenderer billboardRenderer;
     infernux::particle::GpuBillboardViewConstants billboardView;
@@ -281,16 +354,33 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         builder.ReadIndirectBuffer(copiedIndirectArguments);
         builder.ReadStorageBuffer(particleOutputs.instances, infernux::rhi::PipelineStage::VertexShader);
         builder.ReadIndirectBuffer(particleOutputs.indirectArguments);
+        managedInstances = builder.ImportBuffer("ManagedParticleInstances", managedEntry.instances,
+                                                static_cast<uint64_t>(managedEntry.capacity) *
+                                                    infernux::particle::ParticleGpuRuntime::RenderInstanceStride);
+        managedIndirectArguments = builder.ImportBuffer("ManagedParticleIndirect", managedEntry.indirectArguments, 16);
+        resources.graph.SetResourceInitialState(managedInstances, infernux::rhi::TextureLayout::Undefined,
+                                                infernux::rhi::Access::ShaderWrite,
+                                                infernux::rhi::PipelineStage::ComputeShader);
+        resources.graph.SetResourceInitialState(managedIndirectArguments, infernux::rhi::TextureLayout::Undefined,
+                                                infernux::rhi::Access::ShaderWrite,
+                                                infernux::rhi::PipelineStage::ComputeShader);
+        builder.ReadStorageBuffer(managedInstances, infernux::rhi::PipelineStage::VertexShader);
+        builder.ReadIndirectBuffer(managedIndirectArguments);
         colorTarget = builder.CreateTexture("IndirectColor", 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
         colorTarget = builder.WriteColor(colorTarget);
         builder.SetRenderArea(16, 16);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        return [&](RenderContext &context) {
+        auto managedRenderer = managedEntry.renderer;
+        return [&, managedRenderer](RenderContext &context) {
             vkCmdBeginQuery(context.GetCommandBuffer(), resources.queryPool, 0, 0);
             auto &encoder = context.GetGraphicsCommandEncoder();
             billboardRecorded =
                 billboardRenderer.RecordDraw(encoder, billboardTargetLayout, billboardPass,
                                              context.GetBufferHandle(particleOutputs.indirectArguments), billboardView);
+            billboardRecorded =
+                managedRenderer->RecordDraw(encoder, billboardTargetLayout, billboardPass,
+                                            context.GetBufferHandle(managedIndirectArguments), billboardView) &&
+                billboardRecorded;
             encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments));
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
@@ -444,6 +534,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(vkBeginCommandBuffer(commandBuffer, &beginInfo) == VK_SUCCESS, "Command buffer begin failed"))
         return false;
     vkCmdResetQueryPool(commandBuffer, resources.queryPool, 0, 1);
+    particleSystems.Execute(commandBuffer);
     resources.graph.Execute(commandBuffer);
     if (!Require(emptyRendererCallbackCount == 0 && populatedRendererCallbackCount == 1,
                  "Renderer-list callback culling did not distinguish empty and populated lists"))
@@ -482,6 +573,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!Require(passedSamples > 0, "Compute-generated indirect draw produced no visible samples"))
         return false;
+
+    if (!Require(!particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
+                 "GPU particle manager accepted the same engine frame twice"))
+        return false;
+    if (!Require(particleSystems.Remove(managedProgram.id) && particleSystems.Size() == 0 &&
+                     particleDrawRegistry.Size() == 0 && particleDeletionQueue.PendingCount() == 2,
+                 "GPU particle manager removal did not retire graph resources"))
+        return false;
+    particleSystems.Shutdown();
+    particleDeletionQueue.FlushAll();
 
     billboardRenderer.Destroy();
     resources.graph.Destroy();

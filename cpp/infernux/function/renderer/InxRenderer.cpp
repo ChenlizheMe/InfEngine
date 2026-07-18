@@ -20,6 +20,7 @@
 #include "gui/InxGUISemantics.h"
 #include "gui/InxScreenUIRenderer.h"
 #include "particle/ParticleGpuDrawRegistry.h"
+#include "particle/ParticleGpuSystemManager.h"
 #include "vk/RenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VmaContext.h"
@@ -79,6 +80,8 @@ InxRenderer::~InxRenderer()
     //    render graphs → screen UI → render targets → auxiliary renderers → GUI.
     m_gameRenderGraph.reset();
     m_sceneRenderGraph.reset();
+
+    m_particleGpuSystemManager.reset();
 
     m_screenUIRenderer.reset();
 
@@ -237,6 +240,12 @@ void InxRenderer::PreparePipeline()
 
         // Initialize default scene with gizmos
         InitializeDefaultScene();
+        m_particleGpuSystemManager = std::make_unique<particle::ParticleGpuSystemManager>();
+        if (!m_particleGpuSystemManager->Initialize(m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(),
+                                                    m_vkCore->GetDeletionQueue(), *m_particleGpuDrawRegistry)) {
+            m_particleGpuSystemManager.reset();
+            INXLOG_ERROR("Failed to initialize the GPU particle system manager");
+        }
 
         // Initialize RenderGraph pipeline (scene rendering in pre-render pass)
         if (!m_sceneRenderGraph) {
@@ -274,6 +283,9 @@ void InxRenderer::PreparePipeline()
             auto exT0 = ExClock::now();
 #endif
             // ---- Scene View: editor camera VP is already in UBO from UpdateUniformBuffer ----
+            if (m_particleGpuSystemManager)
+                m_particleGpuSystemManager->Execute(cmdBuf);
+
             if (sceneViewActive && m_sceneRenderGraph) {
                 if (m_sceneRenderGraph->HasCachedCameraVP()) {
                     const glm::mat4 previousViewProj = m_sceneRenderGraph->GetPreviousViewProj();
@@ -2433,6 +2445,11 @@ ParticleDrawCallBuffer *InxRenderer::GetParticleDrawCallBuffer()
 particle::ParticleGpuDrawRegistry *InxRenderer::GetParticleGpuDrawRegistry()
 {
     return m_particleGpuDrawRegistry.get();
+}
+
+particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
+{
+    return m_particleGpuSystemManager.get();
 }
 
 bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)

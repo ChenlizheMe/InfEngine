@@ -33,7 +33,8 @@ class ParticleDrawCallBuffer;
 namespace particle
 {
 class ParticleGpuDrawRegistry;
-}
+class ParticleGpuSystemManager;
+} // namespace particle
 class InxGUI;
 class InxGUIRenderable;
 class InxMaterial;
@@ -290,6 +291,7 @@ class InxRenderer
     ParticleDrawCallBuffer *GetParticleDrawCallBuffer();
 
     particle::ParticleGpuDrawRegistry *GetParticleGpuDrawRegistry();
+    particle::ParticleGpuSystemManager *GetParticleGpuSystemManager();
 
     /// @brief Set the selected object ID for outline tracking
     void SetSelectedObjectId(uint64_t objectId)
@@ -536,6 +538,7 @@ class InxRenderer
     std::unique_ptr<GizmosDrawCallBuffer> m_componentGizmos;
     std::unique_ptr<ParticleDrawCallBuffer> m_particleDrawCalls;
     std::unique_ptr<particle::ParticleGpuDrawRegistry> m_particleGpuDrawRegistry;
+    std::unique_ptr<particle::ParticleGpuSystemManager> m_particleGpuSystemManager;
     std::unique_ptr<OutlineRenderer> m_outlineRenderer;
     std::unique_ptr<TransientResourcePool> m_transientResourcePool;
     uint64_t m_gpuResidencyBudgetBytes = 0;

@@ -2006,6 +2006,10 @@ void SceneRenderGraph::BuildRenderGraph()
                         builder.ImportBuffer(prefix + "/Indirect", entry.indirectArguments, 16);
                     if (!instances.IsValid() || !indirectArguments.IsValid())
                         continue;
+                    m_renderGraph->SetResourceInitialState(instances, rhi::TextureLayout::Undefined,
+                                                           rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                    m_renderGraph->SetResourceInitialState(indirectArguments, rhi::TextureLayout::Undefined,
+                                                           rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
                     builder.ReadStorageBuffer(instances, rhi::PipelineStage::VertexShader);
                     builder.ReadIndirectBuffer(indirectArguments);
                     particlePackets.push_back({entry.renderer, instances, indirectArguments});

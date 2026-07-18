@@ -1,0 +1,80 @@
+#pragma once
+
+#include "ParticleGpuBillboardRenderer.h"
+#include "ParticleRenderGraph.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <vulkan/vulkan.h>
+
+namespace infernux
+{
+
+class FrameDeletionQueue;
+namespace vk
+{
+class VkDeviceContext;
+class VkPipelineManager;
+} // namespace vk
+
+namespace particle
+{
+
+class ParticleGpuDrawRegistry;
+
+struct GpuParticleEmitterProgram
+{
+    uint64_t id = 0;
+    uint64_t artifactRevision = 0;
+    std::string stableId;
+    uint32_t capacity = 0;
+    uint32_t stateStride = 0;
+    std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
+    std::vector<uint32_t> billboardVertexShader;
+    std::vector<uint32_t> billboardFragmentShader;
+    GpuBillboardMaterialState material;
+};
+
+/// Owns all GPU particle emitters and their once-per-engine-frame simulation
+/// graph. Camera graphs consume only the exported instance/indirect buffers.
+class ParticleGpuSystemManager
+{
+  public:
+    ParticleGpuSystemManager();
+    ~ParticleGpuSystemManager();
+
+    ParticleGpuSystemManager(const ParticleGpuSystemManager &) = delete;
+    ParticleGpuSystemManager &operator=(const ParticleGpuSystemManager &) = delete;
+    ParticleGpuSystemManager(ParticleGpuSystemManager &&) = delete;
+    ParticleGpuSystemManager &operator=(ParticleGpuSystemManager &&) = delete;
+
+    [[nodiscard]] bool Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
+                                  FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry);
+    void Shutdown() noexcept;
+
+    /// Compile-then-publish replacement. The active emitter remains untouched
+    /// when any resource, pipeline, or graph compilation step fails.
+    [[nodiscard]] bool CreateOrReplace(const GpuParticleEmitterProgram &program, std::string *error = nullptr);
+    [[nodiscard]] bool Remove(uint64_t id);
+    void Clear();
+
+    [[nodiscard]] bool BeginFrame(uint64_t id, const GpuParticleFrameRequest &request,
+                                  const GpuParticleTransforms &transforms);
+    void Execute(VkCommandBuffer commandBuffer);
+
+    [[nodiscard]] bool Contains(uint64_t id) const;
+    [[nodiscard]] size_t Size() const;
+    [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+};
+
+} // namespace particle
+} // namespace infernux
