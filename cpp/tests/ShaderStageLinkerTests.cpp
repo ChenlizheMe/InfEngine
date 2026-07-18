@@ -209,18 +209,17 @@ void surface(out SurfaceData s)
             std::cerr << error << '\n';
     }
     assert(completeCompilation.IsValid());
-    assert(completeCompilation.compiledVariants.size() == 3);
-    assert(completeCompilation.pendingTargets.size() == 3);
-    assert(completeCompilation.pendingTargets[0] == infernux::ShaderCompileTarget::Depth);
-    assert(completeCompilation.pendingTargets[1] == infernux::ShaderCompileTarget::Picking);
-    assert(completeCompilation.pendingTargets[2] == infernux::ShaderCompileTarget::Motion);
+    assert(completeCompilation.compiledVariants.size() == 5);
+    assert(completeCompilation.pendingTargets.size() == 1);
+    assert(completeCompilation.pendingTargets[0] == infernux::ShaderCompileTarget::Motion);
     const auto completeArtifact = completeCompilation.CreateRuntimeArtifact();
     assert(completeArtifact.IsValid());
-    assert(completeArtifact.variants.size() == 3);
+    assert(completeArtifact.variants.size() == 5);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
-    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Depth) == nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Depth) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Picking) != nullptr);
     assert(completeArtifact.key.revision != runtimeArtifact.key.revision);
     const auto shadowCompilation =
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
@@ -232,6 +231,30 @@ void surface(out SurfaceData s)
                "layout(set = 2, binding = 0) uniform sampler2D displacement;") != std::string::npos);
     assert(shadowCompilation->generatedFragmentSource.find("layout(location = 6) smooth in vec2 _inx_v_waveUV;") !=
            std::string::npos);
+
+    const auto depthCompilation =
+        std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Depth; });
+    assert(depthCompilation != completeCompilation.compiledVariants.end());
+    assert(depthCompilation->generatedFragmentSource.find("#define INX_DEPTH_PASS 1") != std::string::npos);
+    assert(depthCompilation->generatedFragmentSource.find("surface(s);") != std::string::npos);
+    assert(depthCompilation->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") !=
+           std::string::npos);
+    assert(depthCompilation->generatedFragmentSource.find("outObjectId") == std::string::npos);
+
+    const auto pickingCompilation =
+        std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Picking; });
+    assert(pickingCompilation != completeCompilation.compiledVariants.end());
+    assert(pickingCompilation->generatedVertexSource.find("set = 2, binding = 4") != std::string::npos);
+    assert(pickingCompilation->generatedVertexSource.find("layout(location = 15) flat out uvec2 _inx_ObjectId;") !=
+           std::string::npos);
+    assert(pickingCompilation->generatedVertexSource.find(
+               "_inx_ObjectId = instanceAuxData[gl_InstanceIndex].objectId;") != std::string::npos);
+    assert(pickingCompilation->generatedFragmentSource.find("layout(location = 15) flat in uvec2 _inx_ObjectId;") !=
+           std::string::npos);
+    assert(pickingCompilation->generatedFragmentSource.find("outObjectId = _inx_ObjectId;") != std::string::npos);
+    assert(pickingCompilation->generatedFragmentSource.find("surface(s);") != std::string::npos);
 
     auto reorderedArtifact = completeArtifact;
     std::reverse(reorderedArtifact.variants.begin(), reorderedArtifact.variants.end());
@@ -266,11 +289,9 @@ this_is_not_valid_glsl
                        [](const std::string &error) { return error.find("GBuffer:") != std::string::npos; }));
     assert(!atomicFailure.CreateRuntimeArtifact().IsValid());
 
-    const auto unsupportedDepthProgram = compiler.CompileLinkedProgram(
+    const auto supportedDepthProgram = compiler.CompileLinkedProgram(
         waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag", infernux::ShaderCompileTarget::Depth);
-    assert(!unsupportedDepthProgram.IsValid());
-    assert(unsupportedDepthProgram.errors.size() == 1);
-    assert(unsupportedDepthProgram.errors.front().find("Depth") != std::string::npos);
+    assert(supportedDepthProgram.IsValid());
 
     const std::string transparentFragment = R"(
 ShaderInfo

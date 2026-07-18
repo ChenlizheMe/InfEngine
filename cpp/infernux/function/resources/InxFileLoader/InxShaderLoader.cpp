@@ -62,9 +62,10 @@ bool LinkedShaderProgramArtifactCompilation::IsValid() const noexcept
     for (const auto &requirement : passPlan.requirements) {
         if (!requirement.enabled)
             continue;
-        const bool supported = requirement.target == ShaderCompileTarget::Forward ||
-                               requirement.target == ShaderCompileTarget::GBuffer ||
-                               requirement.target == ShaderCompileTarget::Shadow;
+        const bool supported =
+            requirement.target == ShaderCompileTarget::Forward || requirement.target == ShaderCompileTarget::GBuffer ||
+            requirement.target == ShaderCompileTarget::Shadow || requirement.target == ShaderCompileTarget::Depth ||
+            requirement.target == ShaderCompileTarget::Picking;
         const uint64_t targetBit = 1ull << static_cast<uint32_t>(requirement.target);
         if (supported && (compiledTargets & targetBit) == 0)
             return false;
@@ -919,6 +920,10 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         result << "#define INX_GBUFFER_PASS 1\n";
     else if (target == ShaderCompileTarget::Shadow)
         result << "#define INX_SHADOW_PASS 1\n";
+    else if (target == ShaderCompileTarget::Depth)
+        result << "#define INX_DEPTH_PASS 1\n";
+    else if (target == ShaderCompileTarget::Picking)
+        result << "#define INX_PICKING_PASS 1\n";
 
     // ================================================================
     // Inject engine globals UBO — always available except shadow
@@ -962,6 +967,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << LoadTemplate("vertex_builtins.glsl") << "\n";
                 if (linkedInterface && !desc.outputs.empty())
                     result << GlslStageInterfaceEmitter::EmitVertexDeclarations(*linkedInterface, desc);
+                if (target == ShaderCompileTarget::Picking)
+                    result << "\n" << LoadTemplate("picking_vertex_interface.glsl") << "\n";
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
                 // LightingUBO — only when the shading model requires it
@@ -977,7 +984,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
 
                 // Fragment output declarations
-                if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
+                if (target == ShaderCompileTarget::Picking) {
+                    result << "\n" << LoadTemplate("picking_fragment_interface.glsl") << "\n";
+                } else if (target == ShaderCompileTarget::Depth) {
+                    // Depth-only variants intentionally declare no color output.
+                } else if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
                     result << "\n// GBuffer outputs (deferred rendering)\n";
                     result << LoadTemplate("gbuffer_outputs.glsl") << "\n";
                 } else if (needsLightingUBO) {
@@ -1205,6 +1216,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << "    // Depth written automatically by hardware\n";
                 result << "}\n";
             }
+        } else if (target == ShaderCompileTarget::Depth || target == ShaderCompileTarget::Picking) {
+            std::string mainTpl = LoadTemplate(target == ShaderCompileTarget::Picking ? "surface_main_picking.glsl"
+                                                                                      : "surface_main_depth.glsl");
+            ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
+                               linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
+                                               : "    surface(s);");
+            result << "\n" << mainTpl << "\n";
         } else {
             // Forward / GBuffer: inject evaluate() from shading model
             std::string targetName = (target == ShaderCompileTarget::GBuffer) ? "gbuffer" : "forward";
@@ -1254,6 +1272,10 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             (target == ShaderCompileTarget::Shadow) ? "shadow_vertex_main.glsl" : "vertex_main.glsl";
         std::string mainTpl = LoadTemplate(templateName);
         ReplacePlaceholder(mainTpl, "${VERTEX_CALL}", vertexCall);
+        ReplacePlaceholder(mainTpl, "${PASS_VERTEX_OUTPUT}",
+                           target == ShaderCompileTarget::Picking
+                               ? "    _inx_ObjectId = instanceAuxData[gl_InstanceIndex].objectId;"
+                               : "");
         result << "\n" << mainTpl << "\n";
     }
 
@@ -1416,7 +1438,8 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
     LinkedShaderProgramCompilation compilation;
     compilation.target = target;
     if (target != ShaderCompileTarget::Forward && target != ShaderCompileTarget::GBuffer &&
-        target != ShaderCompileTarget::Shadow) {
+        target != ShaderCompileTarget::Shadow && target != ShaderCompileTarget::Depth &&
+        target != ShaderCompileTarget::Picking) {
         compilation.errors.push_back(std::string(ShaderCompileTargetName(target)) +
                                      " linked shader variant generation is not implemented");
         return compilation;
@@ -1464,9 +1487,10 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
         if (!requirement.enabled)
             continue;
 
-        const bool supported = requirement.target == ShaderCompileTarget::Forward ||
-                               requirement.target == ShaderCompileTarget::GBuffer ||
-                               requirement.target == ShaderCompileTarget::Shadow;
+        const bool supported =
+            requirement.target == ShaderCompileTarget::Forward || requirement.target == ShaderCompileTarget::GBuffer ||
+            requirement.target == ShaderCompileTarget::Shadow || requirement.target == ShaderCompileTarget::Depth ||
+            requirement.target == ShaderCompileTarget::Picking;
         if (!supported) {
             result.pendingTargets.push_back(requirement.target);
             continue;

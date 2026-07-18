@@ -38,4 +38,5 @@ ${VERTEX_CALL}
     v_TexCoord  = v.texCoord;
     v_ViewDepth = (ubo.view * worldPos).z;
     gl_Position = ubo.proj * ubo.view * worldPos;
+${PASS_VERTEX_OUTPUT}
 }
