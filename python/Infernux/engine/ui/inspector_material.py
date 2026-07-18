@@ -382,54 +382,62 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
     if render_compact_section_header(ctx, t("material.shader_section"), level="secondary",
                                      default_open=default_open):
         shaders = mat_data.setdefault("shaders", {})
-        vert_path = shaders.get("vertex", "")
-        frag_path = shaders.get("fragment", "")
+        vert_ref = shaders.get("vertex", "")
+        frag_ref = shaders.get("fragment", "")
+        vert_shader_id = shader_utils.shader_ref_id(vert_ref)
+        frag_shader_id = shader_utils.shader_ref_id(frag_ref)
         s_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
         from .inspector_components import _picker_assets
 
         def _apply_shader(shader_key, new_value, other_key):
             nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
             old_val = shaders.get(shader_key, "")
-            shaders[shader_key] = new_value
+            ext = ".vert" if shader_key == "vertex" else ".frag"
+            new_ref = shader_utils.make_shader_reference(new_value, ext)
+            if not new_ref["guid"] and not new_ref["shader_id"]:
+                return
+            shaders[shader_key] = new_ref
+            mat_data["material_version"] = 4
             changed = True
             change_key = f"shader.{shader_key}"
             requires_deserialize = True
             requires_pipeline_refresh = True
-            if new_value != old_val:
-                other_id = shaders.get(other_key, "")
-                v, f = (new_value, other_id) if shader_key == "vertex" else (other_id, new_value)
+            if new_ref != old_val:
+                other_id = shader_utils.shader_ref_id(shaders.get(other_key, ""))
+                new_id = shader_utils.shader_ref_id(new_ref)
+                v, f = (new_id, other_id) if shader_key == "vertex" else (other_id, new_id)
                 shader_utils.sync_all_shader_properties(mat_data, v, f, remove_unknown=True)
                 state.extra["shader_sync_key"] = f"{v}|{f}:{shader_utils.get_shader_property_generation()}"
 
         # Vertex shader
         field_label(ctx, t("material.vertex"), s_lw)
         vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
-        vert_display = shader_utils.shader_display_from_value(vert_path, vert_items)
+        vert_display = shader_utils.shader_display_from_value(vert_ref, vert_items)
 
         if _render_obj_field(ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
-                             lambda p: _on_shader_drop(p, ".vert", shaders),
+                             lambda p: _apply_shader("vertex", p, "fragment"),
                              picker_asset_items=lambda filt: _picker_assets(filt, "*.vert"),
                              on_pick=lambda picked: _apply_shader("vertex", picked, "fragment")):
             ctx.open_popup("mat_vert_popup")
         if ctx.begin_popup("mat_vert_popup"):
             for display, value in vert_items:
-                if ctx.selectable(display, value == vert_path):
+                if ctx.selectable(display, value == vert_shader_id):
                     _apply_shader("vertex", value, "fragment")
             ctx.end_popup()
 
         # Fragment shader
         field_label(ctx, t("material.fragment"), s_lw)
         frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
-        frag_display = shader_utils.shader_display_from_value(frag_path, frag_items)
+        frag_display = shader_utils.shader_display_from_value(frag_ref, frag_items)
 
         if _render_obj_field(ctx, "mat_frag", frag_display, "Frag", "SHADER_FILE",
-                             lambda p: _on_shader_drop(p, ".frag", shaders),
+                             lambda p: _apply_shader("fragment", p, "vertex"),
                              picker_asset_items=lambda filt: _picker_assets(filt, "*.frag"),
                              on_pick=lambda picked: _apply_shader("fragment", picked, "vertex")):
             ctx.open_popup("mat_frag_popup")
         if ctx.begin_popup("mat_frag_popup"):
             for display, value in frag_items:
-                if ctx.selectable(display, value == frag_path):
+                if ctx.selectable(display, value == frag_shader_id):
                     _apply_shader("fragment", value, "vertex")
             ctx.end_popup()
     _record_profile_timing("materialShader", section_t0)
@@ -774,8 +782,8 @@ def _sync_shader_annotations(mat_data, state):
     Returns ``(changed, requires_deserialize)`` — True if new/removed
     properties were detected and pushed to the native material.
     """
-    vert_shader_id = mat_data.get("shaders", {}).get("vertex", "")
-    frag_shader_id = mat_data.get("shaders", {}).get("fragment", "")
+    vert_shader_id = shader_utils.shader_ref_id(mat_data.get("shaders", {}).get("vertex", ""))
+    frag_shader_id = shader_utils.shader_ref_id(mat_data.get("shaders", {}).get("fragment", ""))
     prop_gen = shader_utils.get_shader_property_generation()
     sync_key = f"{vert_shader_id}|{frag_shader_id}:{prop_gen}"
     last_sync_key = state.extra.get("shader_sync_key", "")
@@ -999,10 +1007,12 @@ def _on_shader_drop(path: str, required_ext: str, shaders_dict: dict):
     if path.lower().endswith(required_ext):
         key = "vertex" if required_ext == ".vert" else "fragment"
         old = shaders_dict.get(key, "")
-        shaders_dict[key] = path
-        if path != old and _cached_data:
-            vert_id = shaders_dict.get("vertex", "")
-            frag_id = shaders_dict.get("fragment", "")
+        reference = shader_utils.make_shader_reference(path, required_ext)
+        shaders_dict[key] = reference
+        if reference != old and _cached_data:
+            _cached_data["material_version"] = 4
+            vert_id = shader_utils.shader_ref_id(shaders_dict.get("vertex", ""))
+            frag_id = shader_utils.shader_ref_id(shaders_dict.get("fragment", ""))
             shader_utils.sync_all_shader_properties(_cached_data, vert_id, frag_id, remove_unknown=True)
 
 

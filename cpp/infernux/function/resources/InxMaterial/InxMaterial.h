@@ -2,6 +2,7 @@
 
 #include <array>
 #include <core/types/InxFwdType.h>
+#include <core/types/ShaderAssetReference.h>
 #include <core/types/ShaderTypes.h>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -11,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -234,41 +236,63 @@ class InxMaterial
     /// @brief Set both vertex and fragment shader to the same name (convenience).
     void SetShader(const std::string &shaderName)
     {
-        m_vertShaderName = shaderName;
-        m_fragShaderName = shaderName;
+        m_vertexShader = ShaderAssetReference{"", shaderName, ""};
+        m_fragmentShader = ShaderAssetReference{"", shaderName, ""};
         m_pipelineDirty = true;
     }
 
     /// @brief Set vertex shader name independently.
     void SetVertShader(const std::string &name)
     {
-        m_vertShaderName = name;
+        m_vertexShader = ShaderAssetReference{"", name, ""};
         m_pipelineDirty = true;
     }
 
     /// @brief Set fragment shader name independently.
     void SetFragShader(const std::string &name)
     {
-        m_fragShaderName = name;
+        m_fragmentShader = ShaderAssetReference{"", name, ""};
+        m_pipelineDirty = true;
+    }
+
+    void SetVertShaderReference(ShaderAssetReference reference)
+    {
+        m_vertexShader = std::move(reference);
+        m_pipelineDirty = true;
+    }
+
+    void SetFragShaderReference(ShaderAssetReference reference)
+    {
+        m_fragmentShader = std::move(reference);
         m_pipelineDirty = true;
     }
 
     /// @brief Get the fragment shader name (primary identity for render meta).
     [[nodiscard]] const std::string &GetShaderName() const
     {
-        return m_fragShaderName;
+        return m_fragmentShader.shaderId;
     }
 
     /// @brief Get vertex shader name.
     [[nodiscard]] const std::string &GetVertShaderName() const
     {
-        return m_vertShaderName;
+        return m_vertexShader.shaderId;
     }
 
     /// @brief Get fragment shader name.
     [[nodiscard]] const std::string &GetFragShaderName() const
     {
-        return m_fragShaderName;
+        return m_fragmentShader.shaderId;
+    }
+
+    [[nodiscard]] const ShaderAssetReference &GetVertShaderReference() const noexcept
+    {
+        return m_vertexShader;
+    }
+
+    [[nodiscard]] const ShaderAssetReference &GetFragShaderReference() const noexcept
+    {
+        return m_fragmentShader;
     }
 
     // ========================================================================
@@ -402,7 +426,7 @@ class InxMaterial
     /// @brief Get unique shader ID for pipeline caching.
     [[nodiscard]] std::string GetShaderId() const
     {
-        return m_vertShaderName + "|" + m_fragShaderName;
+        return m_vertexShader.StableKey() + "|" + m_fragmentShader.StableKey();
     }
 
     /// @brief Get a unique key for this material (for pipeline/render-data caching)
@@ -563,8 +587,8 @@ class InxMaterial
     bool m_builtin = false; // Built-in materials cannot have shader changed
 
     // Shader identity — separate vert/frag names allow different combinations.
-    std::string m_vertShaderName; // e.g. "lit" — lookup key for vertex pass variants
-    std::string m_fragShaderName; // e.g. "lit" — lookup key for fragment pass variants
+    ShaderAssetReference m_vertexShader;
+    ShaderAssetReference m_fragmentShader;
 
     // Pass tag for draw call filtering (set from @pass_tag shader annotation)
     std::string m_passTag;

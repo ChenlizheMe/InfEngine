@@ -1332,6 +1332,8 @@ class InxMaterial:
     shader_name: str
     vert_shader_name: str
     frag_shader_name: str
+    vert_shader_reference: Dict[str, str]
+    frag_shader_reference: Dict[str, str]
 
     def set_shader(self, shader_name: str) -> None: ...
     def get_render_queue(self) -> int: ...

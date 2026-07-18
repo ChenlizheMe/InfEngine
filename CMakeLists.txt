@@ -536,6 +536,21 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.asset_dependency_graph COMMAND infernux_asset_dependency_graph_tests)
 
+    add_executable(infernux_material_document_tests
+        cpp/tests/MaterialDocumentTests.cpp
+    )
+    target_include_directories(infernux_material_document_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_material_document_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_material_document_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_material_document_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.material_document COMMAND infernux_material_document_tests)
+
     add_executable(infernux_mesh_artifact_tests
         cpp/tests/MeshArtifactTests.cpp
         cpp/infernux/core/log/InxLog.cpp

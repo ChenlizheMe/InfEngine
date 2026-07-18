@@ -65,18 +65,27 @@ std::vector<std::string> MaterialImporter::ScanDependencies(const ImportRequest 
         throw std::runtime_error("MaterialImporter failed to parse '" + request.sourcePath + "'");
     }
 
-    // Shader dependencies (vertex + fragment paths)
+    // Shader dependencies. Material v4 stores stable GUID references while v3
+    // stored a path or shader ID string.
     auto shadersIt = root.find("shaders");
     if (shadersIt != root.end() && shadersIt->is_object()) {
         for (const auto &key : {"vertex", "fragment"}) {
             auto it = shadersIt->find(key);
-            if (it == shadersIt->end() || !it->is_string())
+            if (it == shadersIt->end())
                 continue;
-            std::string shaderPath = it->get<std::string>();
-            if (shaderPath.empty())
-                continue;
-            // Resolve path → GUID via AssetDatabase
-            const std::string depGuid = request.resolveAssetGuid(shaderPath);
+            std::string depGuid;
+            if (it->is_object()) {
+                const auto guidIt = it->find("guid");
+                if (guidIt != it->end() && guidIt->is_string())
+                    depGuid = guidIt->get<std::string>();
+                if (depGuid.empty()) {
+                    const auto pathIt = it->find("path_hint");
+                    if (pathIt != it->end() && pathIt->is_string())
+                        depGuid = request.resolveAssetGuid(pathIt->get<std::string>());
+                }
+            } else if (it->is_string()) {
+                depGuid = request.resolveAssetGuid(it->get<std::string>());
+            }
             if (!depGuid.empty())
                 deps.insert(depGuid);
         }

@@ -70,7 +70,7 @@ class TestProjectPanelCreation:
         assert system.name == "Fire"
         assert system.emitters[0].graph.graph_kind == "vfx"
 
-    def test_create_material_writes_schema_v3_document(self, tmp_path, engine):
+    def test_create_material_writes_schema_v4_document(self, tmp_path, engine):
         from Infernux.lib import InxMaterial
 
         class RecordingAssetDatabase:
@@ -93,7 +93,9 @@ class TestProjectPanelCreation:
         path = tmp_path / "NewMaterial.mat"
         assert database.paths == [str(path)]
         document = json.loads(path.read_text(encoding="utf-8"))
-        assert document["material_version"] == 3
+        assert document["material_version"] == 4
+        assert document["shaders"]["vertex"]["shader_id"] == "standard"
+        assert document["shaders"]["fragment"]["shader_id"] == "unlit"
         assert document["name"] == "NewMaterial"
         assert document["builtin"] is False
         material = InxMaterial()

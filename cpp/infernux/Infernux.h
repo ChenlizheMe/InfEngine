@@ -386,6 +386,9 @@ class Infernux
     };
 
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
+    [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
+                                                                                   const std::string &vertexPath,
+                                                                                   const std::string &fragmentPath);
     [[nodiscard]] LinkedShaderProgramPreparation
     EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
 

@@ -2897,21 +2897,49 @@ Infernux::EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &
 {
     if (!material)
         return {};
-    return EnsureLinkedShaderProgramArtifact(
-        ShaderStagePair{material->GetVertShaderName(), material->GetFragShaderName()});
+
+    auto *adb = GetAssetDatabase();
+    if (!adb)
+        return {};
+
+    auto resolvePath = [&](const ShaderAssetReference &reference, const char *stage) {
+        if (!reference.guid.empty()) {
+            const std::string guidPath = adb->GetPathFromGuid(reference.guid);
+            if (!guidPath.empty())
+                return guidPath;
+        }
+        if (!reference.pathHint.empty()) {
+            const std::string hintGuid = adb->GetGuidFromPath(reference.pathHint);
+            std::error_code error;
+            const bool hintExists = !hintGuid.empty() || std::filesystem::exists(ToFsPath(reference.pathHint), error);
+            if (hintExists && (reference.guid.empty() || hintGuid.empty() || hintGuid == reference.guid))
+                return reference.pathHint;
+        }
+        return adb->FindShaderPathById(reference.shaderId, stage);
+    };
+
+    const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+    const std::string vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
+    const std::string fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
+    return EnsureLinkedShaderProgramArtifact(stages, vertexPath, fragmentPath);
 }
 
 Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages)
 {
-    LinkedShaderProgramPreparation result;
-    if (!m_renderer)
-        return result;
-
     auto *adb = GetAssetDatabase();
     if (!adb)
-        return result;
+        return {};
 
-    if (!stages.IsValid())
+    return EnsureLinkedShaderProgramArtifact(stages, adb->FindShaderPathById(stages.vertexShaderId, "vertex"),
+                                             adb->FindShaderPathById(stages.fragmentShaderId, "fragment"));
+}
+
+Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
+                                                                                     const std::string &vertexPath,
+                                                                                     const std::string &fragmentPath)
+{
+    LinkedShaderProgramPreparation result;
+    if (!m_renderer || !stages.IsValid())
         return result;
 
     const auto cached = m_linkedShaderProgramCache.find(stages);
@@ -2928,9 +2956,11 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
         }
     }
 
-    const std::string vertexPath = adb->FindShaderPathById(stages.vertexShaderId, "vertex");
-    const std::string fragmentPath = adb->FindShaderPathById(stages.fragmentShaderId, "fragment");
     if (vertexPath.empty() || fragmentPath.empty())
+        return result;
+
+    auto *adb = GetAssetDatabase();
+    if (!adb)
         return result;
 
     auto readSource = [&](const std::string &path, std::string &source) {
@@ -3196,12 +3226,20 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
             if (!material)
                 continue;
             if (material->GetFragShaderName() == previousShaderId) {
-                material->SetFragShader(shaderAsset->shaderId);
+                auto reference = material->GetFragShaderReference();
+                reference.guid = guid;
+                reference.shaderId = shaderAsset->shaderId;
+                reference.pathHint = shaderPath;
+                material->SetFragShaderReference(std::move(reference));
                 INXLOG_INFO("Infernux::ReloadShaderRuntime: updated material '", material->GetName(),
                             "' frag shader from '", previousShaderId, "' to '", shaderAsset->shaderId, "'");
             }
             if (material->GetVertShaderName() == previousShaderId) {
-                material->SetVertShader(shaderAsset->shaderId);
+                auto reference = material->GetVertShaderReference();
+                reference.guid = guid;
+                reference.shaderId = shaderAsset->shaderId;
+                reference.pathHint = shaderPath;
+                material->SetVertShaderReference(std::move(reference));
                 INXLOG_INFO("Infernux::ReloadShaderRuntime: updated material '", material->GetName(),
                             "' vert shader from '", previousShaderId, "' to '", shaderAsset->shaderId, "'");
             }

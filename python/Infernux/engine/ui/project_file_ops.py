@@ -69,12 +69,20 @@ SCENE_TEMPLATE = '''{{
 }}
 '''
 MATERIAL_TEMPLATE = '''{{
-  "material_version": 3,
+  "material_version": 4,
   "name": "{material_name}",
   "builtin": false,
   "shaders": {{
-    "vertex": "standard",
-    "fragment": "unlit"
+    "vertex": {{
+      "guid": "dc051849cf977cb35cc5ca3d59393894",
+      "shader_id": "standard",
+      "path_hint": ""
+    }},
+    "fragment": {{
+      "guid": "0ab8249d4dd3cb96438d65b4090a1209",
+      "shader_id": "unlit",
+      "path_hint": ""
+    }}
   }},
   "renderState": {{
     "cullMode": 1,

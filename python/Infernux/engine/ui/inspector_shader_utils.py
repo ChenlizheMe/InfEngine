@@ -227,12 +227,78 @@ def get_shader_file_path(shader_id: str, ext: str) -> str:
     return _get_shader_catalog(ext).get("paths", {}).get(shader_id)
 
 
-def shader_display_from_value(value: str, items):
+def shader_ref_id(value) -> str:
+    """Return the compiler shader ID from a v3 string or v4 reference."""
+    if isinstance(value, dict):
+        shader_id = value.get("shader_id", "")
+        return shader_id.strip() if isinstance(shader_id, str) else ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def make_shader_reference(value, ext: str) -> dict[str, str]:
+    """Build a canonical v4 material shader reference.
+
+    ``value`` may be a catalog shader ID, an asset path, or an existing
+    reference. GUID and path are enriched whenever imported metadata is
+    available; built-in ID-only references remain valid.
+    """
+    existing = value if isinstance(value, dict) else {}
+    guid = existing.get("guid", "") if isinstance(existing.get("guid", ""), str) else ""
+    shader_id = shader_ref_id(value)
+    path_hint = existing.get("path_hint", "") if isinstance(existing.get("path_hint", ""), str) else ""
+
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate.lower().endswith(ext) or os.path.isfile(candidate):
+            path_hint = candidate
+        else:
+            shader_id = candidate
+
+    database = None
+    try:
+        from Infernux.lib import AssetRegistry
+        database = AssetRegistry.instance().get_asset_database()
+    except (AttributeError, RuntimeError, ValueError):
+        pass
+
+    resolved_path = ""
+    if guid and database:
+        resolved_path = database.get_path_from_guid(guid) or ""
+    if not resolved_path and path_hint and os.path.isfile(path_hint):
+        resolved_path = path_hint
+    if not resolved_path:
+        resolved_path = get_shader_file_path(shader_id, ext) or ""
+
+    if resolved_path:
+        resolved_path = os.path.normpath(resolved_path).replace("\\", "/")
+        metadata = _read_compiled_shader_metadata(resolved_path)
+        if metadata is not None:
+            imported_id = metadata.get("shader_id", "")
+            imported_guid = metadata.get("guid", "")
+            if isinstance(imported_id, str) and imported_id.strip():
+                shader_id = imported_id.strip()
+            if isinstance(imported_guid, str) and imported_guid.strip():
+                guid = imported_guid.strip()
+        if not shader_id:
+            shader_id = parse_shader_id(resolved_path) or ""
+        if not guid and database:
+            guid = database.get_guid_from_path(resolved_path) or ""
+        path_hint = resolved_path
+
+    return {
+        "guid": guid,
+        "shader_id": shader_id,
+        "path_hint": path_hint,
+    }
+
+
+def shader_display_from_value(value, items):
     """Map a shader value to its display string for UI."""
+    shader_id = shader_ref_id(value)
     for display, v in items:
-        if v == value:
+        if v == shader_id:
             return display
-    return value
+    return shader_id
 
 
 def get_shader_candidates(ext: str, cache: dict = None):

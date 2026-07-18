@@ -16,6 +16,39 @@ namespace py = pybind11;
 namespace infernux
 {
 
+namespace
+{
+
+py::object ShaderReferenceToPython(const ShaderAssetReference &reference)
+{
+    return JsonToPython({
+        {"guid", reference.guid},
+        {"shader_id", reference.shaderId},
+        {"path_hint", reference.pathHint},
+    });
+}
+
+ShaderAssetReference ShaderReferenceFromPython(py::handle value)
+{
+    const nlohmann::json document = PythonToJson(value);
+    if (!document.is_object())
+        throw std::invalid_argument("shader reference must be a dictionary");
+    for (const char *field : {"guid", "shader_id", "path_hint"}) {
+        if (!document.contains(field) || !document[field].is_string())
+            throw std::invalid_argument(std::string("shader reference field '") + field + "' must be a string");
+    }
+    ShaderAssetReference reference{
+        document["guid"].get<std::string>(),
+        document["shader_id"].get<std::string>(),
+        document["path_hint"].get<std::string>(),
+    };
+    if (!reference.IsAssigned())
+        throw std::invalid_argument("shader reference requires guid or shader_id");
+    return reference;
+}
+
+} // namespace
+
 void RegisterResourceBindings(py::module_ &m)
 {
     py::register_exception<DocumentWriteSuperseded>(m, "DocumentWriteSuperseded");
@@ -196,6 +229,20 @@ void RegisterResourceBindings(py::module_ &m)
         .def_property(
             "frag_shader_name", &InxMaterial::GetFragShaderName,
             [](InxMaterial &m, const std::string &name) { m.SetFragShader(name); }, "Fragment shader name")
+        .def_property(
+            "vert_shader_reference",
+            [](const InxMaterial &material) { return ShaderReferenceToPython(material.GetVertShaderReference()); },
+            [](InxMaterial &material, py::handle reference) {
+                material.SetVertShaderReference(ShaderReferenceFromPython(reference));
+            },
+            "Stable vertex shader asset reference")
+        .def_property(
+            "frag_shader_reference",
+            [](const InxMaterial &material) { return ShaderReferenceToPython(material.GetFragShaderReference()); },
+            [](InxMaterial &material, py::handle reference) {
+                material.SetFragShaderReference(ShaderReferenceFromPython(reference));
+            },
+            "Stable fragment shader asset reference")
         .def("set_shader", &InxMaterial::SetShader, py::arg("shader_name"),
              "Set the material's shader by name (sets both vert and frag)")
         .def("get_render_queue", &InxMaterial::GetRenderQueue, "Get the render queue value")

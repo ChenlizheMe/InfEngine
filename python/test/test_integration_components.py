@@ -1312,7 +1312,9 @@ class TestMaterial:
         mat.set_float("testValue", 0.25)
         document = json.loads(mat.serialize())
 
-        assert document["material_version"] == 3
+        assert document["material_version"] == 4
+        assert document["shaders"]["vertex"]["shader_id"] == "standard"
+        assert document["shaders"]["fragment"]["shader_id"] == "lit"
 
         shader_metadata = json.loads(json.dumps(document))
         shader_metadata["_shader_property_order"] = ["baseColor", "testValue"]
@@ -1392,7 +1394,7 @@ class TestMaterial:
         path = tmp_path / "atomic.mat"
 
         assert mat.save_to(str(path)) is True
-        assert json.loads(path.read_text(encoding="utf-8"))["material_version"] == 3
+        assert json.loads(path.read_text(encoding="utf-8"))["material_version"] == 4
         assert list(tmp_path.glob("atomic.mat.tmp.*")) == []
 
     def test_renderer_embeds_typed_material_document(self, scene):
@@ -1405,7 +1407,7 @@ class TestMaterial:
         document = json.loads(renderer.serialize())
         slot = document["materials"][0]
         assert isinstance(slot["material"], dict)
-        assert slot["material"]["material_version"] == 3
+        assert slot["material"]["material_version"] == 4
         assert "material_json" not in slot
 
         serialized_scene = scene.serialize()

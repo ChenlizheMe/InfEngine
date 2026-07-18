@@ -532,6 +532,41 @@ def test_material_preview_does_not_cache_stale_generation(monkeypatch):
     assert module._get_cached_material_preview_tex(*args) == 42
 
 
+def test_shader_reference_recovers_from_stale_path_hint(monkeypatch, tmp_path):
+    import os
+
+    from Infernux.engine.ui import inspector_shader_utils as shader_utils
+
+    shader_path = tmp_path / "Recovered.frag"
+    shader_path.write_text("@shader_id: Recovered\n", encoding="utf-8")
+    monkeypatch.setattr(
+        shader_utils,
+        "_get_shader_catalog",
+        lambda _ext: {"items": [("Recovered", "Recovered")], "paths": {"Recovered": str(shader_path)}},
+    )
+    monkeypatch.setattr(
+        shader_utils,
+        "_read_compiled_shader_metadata",
+        lambda path: {"shader_id": "Recovered", "guid": "recovered-guid"}
+        if os.path.normpath(path) == os.path.normpath(str(shader_path)) else None,
+    )
+
+    reference = shader_utils.make_shader_reference(
+        {
+            "guid": "",
+            "shader_id": "Recovered",
+            "path_hint": str(tmp_path / "OldLocation.frag"),
+        },
+        ".frag",
+    )
+
+    assert reference == {
+        "guid": "recovered-guid",
+        "shader_id": "Recovered",
+        "path_hint": os.path.normpath(str(shader_path)).replace("\\", "/"),
+    }
+
+
 def test_initial_material_preview_uses_the_in_memory_document(monkeypatch, tmp_path):
     import Infernux.engine.ui.inspector_material as module
     from Infernux.engine.ui import asset_resource_preview

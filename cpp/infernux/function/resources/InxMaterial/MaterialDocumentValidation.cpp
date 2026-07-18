@@ -237,6 +237,20 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     }
 }
 
+void ValidateShaderReference(const json &document, std::string_view path)
+{
+    static const std::unordered_set<std::string> fields = {"guid", "shader_id", "path_hint"};
+    RequireExactFields(document, fields, {}, path);
+    for (const char *field : {"guid", "shader_id", "path_hint"}) {
+        if (!document[field].is_string())
+            Fail(path, std::string(field) + " must be a string");
+    }
+    if (document["guid"].get_ref<const std::string &>().empty() &&
+        document["shader_id"].get_ref<const std::string &>().empty()) {
+        Fail(path, "requires guid or shader_id");
+    }
+}
+
 } // namespace
 
 void ValidateMaterialDocument(const nlohmann::json &document, std::string_view path)
@@ -251,8 +265,11 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
     };
     static const std::unordered_set<std::string> shaderFields = {"vertex", "fragment"};
     RequireExactFields(document, required, optional, path);
-    if (!document["material_version"].is_number_integer() || document["material_version"].get<int>() != 3)
-        Fail(path, "material_version must be 3");
+    if (!document["material_version"].is_number_integer())
+        Fail(path, "material_version must be an integer");
+    const int materialVersion = document["material_version"].get<int>();
+    if (materialVersion != 3 && materialVersion != 4)
+        Fail(path, "material_version must be 3 or 4");
     if (!document["name"].is_string())
         Fail(path, "name must be a string");
     if (!document["builtin"].is_boolean())
@@ -260,8 +277,17 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
 
     const std::string shadersPath = std::string(path) + ".shaders";
     RequireExactFields(document["shaders"], shaderFields, {}, shadersPath);
-    if (!document["shaders"]["vertex"].is_string() || !document["shaders"]["fragment"].is_string())
-        Fail(shadersPath, "vertex and fragment must be strings");
+    if (materialVersion == 3) {
+        if (!document["shaders"]["vertex"].is_string() || !document["shaders"]["fragment"].is_string())
+            Fail(shadersPath, "version 3 vertex and fragment must be strings");
+        if (document["shaders"]["vertex"].get_ref<const std::string &>().empty() ||
+            document["shaders"]["fragment"].get_ref<const std::string &>().empty()) {
+            Fail(shadersPath, "version 3 vertex and fragment must not be empty");
+        }
+    } else {
+        ValidateShaderReference(document["shaders"]["vertex"], shadersPath + ".vertex");
+        ValidateShaderReference(document["shaders"]["fragment"], shadersPath + ".fragment");
+    }
 
     ValidateRenderState(document["renderState"], std::string(path) + ".renderState");
     if (document.contains("passTag") && !document["passTag"].is_string())
@@ -295,6 +321,26 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
                 Fail(path, "_shader_property_order contains duplicate property '" + name + "'");
         }
     }
+}
+
+nlohmann::json NormalizeMaterialDocument(const nlohmann::json &document, std::string_view path)
+{
+    ValidateMaterialDocument(document, path);
+    if (document["material_version"].get<int>() == 4)
+        return document;
+
+    json normalized = document;
+    normalized["material_version"] = 4;
+    for (const char *stage : {"vertex", "fragment"}) {
+        const std::string shaderId = document["shaders"][stage].get<std::string>();
+        normalized["shaders"][stage] = {
+            {"guid", ""},
+            {"shader_id", shaderId},
+            {"path_hint", ""},
+        };
+    }
+    ValidateMaterialDocument(normalized, path);
+    return normalized;
 }
 
 } // namespace infernux::material_document_validation

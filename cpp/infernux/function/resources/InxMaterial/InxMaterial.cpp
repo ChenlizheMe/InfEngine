@@ -35,6 +35,24 @@ bool IsBuiltinTextureToken(const std::string &value)
     return value == "white" || value == "black" || value == "normal";
 }
 
+json SerializeShaderReference(const ShaderAssetReference &reference)
+{
+    return {
+        {"guid", reference.guid},
+        {"shader_id", reference.shaderId},
+        {"path_hint", reference.pathHint},
+    };
+}
+
+ShaderAssetReference DeserializeShaderReference(const json &document)
+{
+    return ShaderAssetReference{
+        document["guid"].get<std::string>(),
+        document["shader_id"].get<std::string>(),
+        document["path_hint"].get<std::string>(),
+    };
+}
+
 std::string ResolveEngineTextureGuid(const std::string &textureRef)
 {
     if (IsBuiltinTextureToken(textureRef))
@@ -340,7 +358,9 @@ uint64_t InxMaterial::AllocateRuntimeId() noexcept
 size_t InxMaterial::GetRuntimeMemoryBytes() const noexcept
 {
     size_t bytes = sizeof(*this) + m_name.capacity() + m_guid.capacity() + m_filePath.capacity() +
-                   m_vertShaderName.capacity() + m_fragShaderName.capacity() + m_passTag.capacity();
+                   m_vertexShader.guid.capacity() + m_vertexShader.shaderId.capacity() +
+                   m_vertexShader.pathHint.capacity() + m_fragmentShader.guid.capacity() +
+                   m_fragmentShader.shaderId.capacity() + m_fragmentShader.pathHint.capacity() + m_passTag.capacity();
     bytes += m_properties.bucket_count() * sizeof(void *);
     bytes += m_properties.size() * sizeof(std::pair<const std::string, MaterialProperty>);
     for (const auto &[key, property] : m_properties) {
@@ -359,13 +379,13 @@ InxMaterial::InxMaterial(const std::string &name) : m_name(name)
 }
 
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
-    : m_name(name), m_vertShaderName(shaderName), m_fragShaderName(shaderName)
+    : m_name(name), m_vertexShader{"", shaderName, ""}, m_fragmentShader{"", shaderName, ""}
 {
 }
 
 InxMaterial::InxMaterial(const InxMaterial &other)
     : m_name(other.m_name), m_guid(other.m_guid), m_filePath(other.m_filePath), m_builtin(other.m_builtin),
-      m_vertShaderName(other.m_vertShaderName), m_fragShaderName(other.m_fragShaderName), m_passTag(other.m_passTag),
+      m_vertexShader(other.m_vertexShader), m_fragmentShader(other.m_fragmentShader), m_passTag(other.m_passTag),
       m_renderState(other.m_renderState), m_renderStateOverrides(other.m_renderStateOverrides),
       m_properties(other.m_properties), m_shaderPropertyOrder(other.m_shaderPropertyOrder), m_pipelineDirty(true),
       m_propertiesDirty(true), m_version(0), m_isDeleted(other.m_isDeleted)
@@ -383,8 +403,8 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_guid = other.m_guid;
     m_filePath = other.m_filePath;
     m_builtin = other.m_builtin;
-    m_vertShaderName = other.m_vertShaderName;
-    m_fragShaderName = other.m_fragShaderName;
+    m_vertexShader = other.m_vertexShader;
+    m_fragmentShader = other.m_fragmentShader;
     m_passTag = other.m_passTag;
     m_renderState = other.m_renderState;
     m_renderStateOverrides = other.m_renderStateOverrides;
@@ -534,9 +554,9 @@ size_t InxMaterial::GetPipelineHash() const
     size_t hash = 0;
     auto hashCombine = [&hash](size_t value) { hash ^= value + 0x9e3779b9 + (hash << 6) + (hash >> 2); };
 
-    // Hash shader names
-    hashCombine(std::hash<std::string>{}(m_vertShaderName));
-    hashCombine(std::hash<std::string>{}(m_fragShaderName));
+    // Path hints are recovery metadata and do not create distinct pipelines.
+    hashCombine(std::hash<std::string>{}(m_vertexShader.StableKey()));
+    hashCombine(std::hash<std::string>{}(m_fragmentShader.StableKey()));
 
     // Hash render state
     hashCombine(m_renderState.Hash());
@@ -634,13 +654,14 @@ void InxMaterial::SyncAlphaClipProperty()
 nlohmann::json InxMaterial::SerializeDocument() const
 {
     json j;
-    j["material_version"] = 3;
+    j["material_version"] = 4;
     j["name"] = m_name;
     j["builtin"] = m_builtin;
 
-    // Shader identity — separate vertex/fragment keys.
-    j["shaders"]["vertex"] = m_vertShaderName;
-    j["shaders"]["fragment"] = m_fragShaderName;
+    // GUID is authoritative, shader_id is the stable compiler identity, and
+    // path_hint recovers assets whose database has not been rebuilt yet.
+    j["shaders"]["vertex"] = SerializeShaderReference(m_vertexShader);
+    j["shaders"]["fragment"] = SerializeShaderReference(m_fragmentShader);
 
     // Render state
     json rs;
@@ -821,8 +842,8 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
 
     m_name = std::move(staged.m_name);
     m_builtin = staged.m_builtin;
-    m_vertShaderName = std::move(staged.m_vertShaderName);
-    m_fragShaderName = std::move(staged.m_fragShaderName);
+    m_vertexShader = std::move(staged.m_vertexShader);
+    m_fragmentShader = std::move(staged.m_fragmentShader);
     m_passTag = std::move(staged.m_passTag);
     m_renderState = staged.m_renderState;
     m_renderStateOverrides = staged.m_renderStateOverrides;
@@ -834,16 +855,16 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     return true;
 }
 
-bool InxMaterial::ApplyDocument(const nlohmann::json &j)
+bool InxMaterial::ApplyDocument(const nlohmann::json &document)
 {
     try {
-        material_document_validation::ValidateMaterialDocument(j);
+        const json j = material_document_validation::NormalizeMaterialDocument(document);
         m_name = j["name"].get<std::string>();
         m_builtin = j["builtin"].get<bool>();
 
         const auto &shaders = j["shaders"];
-        m_vertShaderName = shaders["vertex"].get<std::string>();
-        m_fragShaderName = shaders["fragment"].get<std::string>();
+        m_vertexShader = DeserializeShaderReference(shaders["vertex"]);
+        m_fragmentShader = DeserializeShaderReference(shaders["fragment"]);
 
         const auto &rs = j["renderState"];
         m_renderState.cullMode = static_cast<VkCullModeFlags>(rs["cullMode"].get<int>());
@@ -1235,8 +1256,8 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     clone->m_builtin = false; // Clones are never builtin
 
     // Deep copy shader identity
-    clone->m_vertShaderName = m_vertShaderName;
-    clone->m_fragShaderName = m_fragShaderName;
+    clone->m_vertexShader = m_vertexShader;
+    clone->m_fragmentShader = m_fragmentShader;
     clone->m_passTag = m_passTag;
 
     // Deep copy render state & overrides

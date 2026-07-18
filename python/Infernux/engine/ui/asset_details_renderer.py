@@ -1356,11 +1356,11 @@ def _refresh_material(state: _State):
 
 def _sync_material_shader_metadata(mat_data: dict):
     shaders = mat_data.get("shaders") if isinstance(mat_data.get("shaders"), dict) else {}
-    vert_shader_id = shaders.get("vertex", "")
-    frag_shader_id = shaders.get("fragment", "")
-    if vert_shader_id or frag_shader_id:
-        from . import inspector_shader_utils as shader_utils
+    from . import inspector_shader_utils as shader_utils
 
+    vert_shader_id = shader_utils.shader_ref_id(shaders.get("vertex", ""))
+    frag_shader_id = shader_utils.shader_ref_id(shaders.get("fragment", ""))
+    if vert_shader_id or frag_shader_id:
         shader_utils.sync_all_shader_properties(mat_data, vert_shader_id, frag_shader_id, remove_unknown=True)
 
 
