@@ -479,6 +479,11 @@ ResourceHandle PassBuilder::WriteResolve(ResourceHandle handle)
     return newHandle;
 }
 
+void PassBuilder::SetSideEffect(bool enabled)
+{
+    m_graph->m_passes[m_passId].hasSideEffect = enabled;
+}
+
 void PassBuilder::SetRenderArea(uint32_t width, uint32_t height)
 {
     m_graph->m_passes[m_passId].renderArea = {width, height};
@@ -1106,6 +1111,16 @@ std::vector<std::string> RenderGraph::GetExecutionPassNames() const
     return names;
 }
 
+std::vector<PassCompileInfo> RenderGraph::GetPassCompileInfos() const
+{
+    std::vector<PassCompileInfo> infos;
+    infos.reserve(m_passes.size());
+    for (const auto &pass : m_passes) {
+        infos.push_back({pass.name, pass.type, pass.culled, pass.cullReason});
+    }
+    return infos;
+}
+
 std::string RenderGraph::GetDebugString() const
 {
     std::ostringstream oss;
@@ -1114,9 +1129,24 @@ std::string RenderGraph::GetDebugString() const
     oss << "\nPasses:\n";
     for (const auto &pass : m_passes) {
         oss << "  [" << pass.id << "] " << pass.name;
-        if (pass.culled) {
-            oss << " (CULLED)";
+        const char *reason = "unreachable";
+        switch (pass.cullReason) {
+        case PassCullReason::GraphOutput:
+            reason = "graph-output";
+            break;
+        case PassCullReason::SideEffect:
+            reason = "side-effect";
+            break;
+        case PassCullReason::ExternalWrite:
+            reason = "external-write";
+            break;
+        case PassCullReason::Dependency:
+            reason = "dependency";
+            break;
+        case PassCullReason::Unreachable:
+            break;
         }
+        oss << (pass.culled ? " (CULLED: " : " (RETAINED: ") << reason << ")";
         oss << "\n";
 
         if (!pass.reads.empty()) {

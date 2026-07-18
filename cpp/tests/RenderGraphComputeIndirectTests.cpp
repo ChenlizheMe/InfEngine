@@ -18,6 +18,7 @@ using infernux::rhi::ComputePipelineHandle;
 using infernux::rhi::GraphicsPipelineHandle;
 using infernux::vk::DeviceConfig;
 using infernux::vk::PassBuilder;
+using infernux::vk::PassCullReason;
 using infernux::vk::PipelineConfig;
 using infernux::vk::PipelineResult;
 using infernux::vk::RenderContext;
@@ -330,6 +331,31 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(queryResult == VK_SUCCESS, "Occlusion query readback failed"))
         return false;
     if (!Require(passedSamples > 0, "Compute-generated indirect draw produced no visible samples"))
+        return false;
+
+    RenderGraph rootGraph;
+    rootGraph.Initialize(&resources.context, &resources.pipelines);
+    rootGraph.AddComputePass("Unreachable", [](PassBuilder &) { return [](RenderContext &) {}; });
+    rootGraph.AddComputePass("ExplicitSideEffect", [](PassBuilder &builder) {
+        builder.SetSideEffect();
+        return [](RenderContext &) {};
+    });
+    rootGraph.AddComputePass("ExternalWrite", [](PassBuilder &builder) {
+        auto external = builder.ImportBuffer("ExternalBuffer", VK_NULL_HANDLE, 16);
+        builder.WriteStorageBuffer(external);
+        return [](RenderContext &) {};
+    });
+    if (!Require(rootGraph.Compile(), "Side-effect root graph failed to compile"))
+        return false;
+    const auto rootExecution = rootGraph.GetExecutionPassNames();
+    if (!Require(rootExecution == std::vector<std::string>{"ExplicitSideEffect", "ExternalWrite"},
+                 "Side-effect or external-write culling roots are incorrect"))
+        return false;
+    const auto rootInfos = rootGraph.GetPassCompileInfos();
+    if (!Require(rootInfos.size() == 3 && rootInfos[0].culled && rootInfos[0].reason == PassCullReason::Unreachable &&
+                     !rootInfos[1].culled && rootInfos[1].reason == PassCullReason::SideEffect &&
+                     !rootInfos[2].culled && rootInfos[2].reason == PassCullReason::ExternalWrite,
+                 "Pass compile report did not preserve culling reasons"))
         return false;
 
     // Two logical versions share one physical image. A final pass cannot read

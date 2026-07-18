@@ -159,6 +159,23 @@ enum class PassType
     Present   ///< Final present pass
 };
 
+enum class PassCullReason
+{
+    Unreachable,
+    GraphOutput,
+    SideEffect,
+    ExternalWrite,
+    Dependency
+};
+
+struct PassCompileInfo
+{
+    std::string name;
+    PassType type = PassType::Graphics;
+    bool culled = true;
+    PassCullReason reason = PassCullReason::Unreachable;
+};
+
 /**
  * @brief Configuration for a render pass
  */
@@ -352,6 +369,10 @@ class PassBuilder
     /// @brief Write a resource as transfer destination (for blit/copy operations)
     ResourceHandle TransferWrite(ResourceHandle handle);
 
+    /// Keep this pass even when it has no path to a graph output. Use only for
+    /// externally observable work such as readback, events, or debug capture.
+    void SetSideEffect(bool enabled = true);
+
     /// @brief Set the pass render area
     void SetRenderArea(uint32_t width, uint32_t height);
 
@@ -405,6 +426,7 @@ struct RenderPassData
     bool clearColorEnabled = false;
     bool clearDepthEnabled = false;
     bool hasResolveAttachment = false; // True when MSAA resolve is used
+    bool hasSideEffect = false;
 
     // Vulkan objects (resolved during compile)
     VkRenderPass vulkanRenderPass = VK_NULL_HANDLE;
@@ -418,6 +440,7 @@ struct RenderPassData
     std::vector<uint32_t> dependsOn;
     uint32_t refCount = 0;
     bool culled = false;
+    PassCullReason cullReason = PassCullReason::Unreachable;
 
     // Pre-computed execution data (populated at end of Compile, used in Execute).
     // Eliminates per-frame struct construction for beginInfo, clear values,
@@ -699,6 +722,9 @@ class RenderGraph
 
     /// Passes in the compiled execution order, excluding culled passes.
     [[nodiscard]] std::vector<std::string> GetExecutionPassNames() const;
+
+    /// Declaration-order culling report for Graph Viewer and diagnostics.
+    [[nodiscard]] std::vector<PassCompileInfo> GetPassCompileInfos() const;
 
     /**
      * @brief Get resource count

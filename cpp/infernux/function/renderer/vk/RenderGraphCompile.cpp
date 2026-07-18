@@ -32,6 +32,7 @@ void RenderGraph::CullPasses()
     for (auto &pass : m_passes) {
         pass.refCount = 0;
         pass.culled = true;
+        pass.cullReason = PassCullReason::Unreachable;
     }
 
     // A resource version has exactly one producer. Build this once so both
@@ -46,12 +47,36 @@ void RenderGraph::CullPasses()
 
     // Find the pass that writes the selected output version.
     std::queue<uint32_t> workQueue;
+    auto retainRoot = [&](uint32_t passId, PassCullReason reason) {
+        auto &pass = m_passes[passId];
+        if (pass.culled) {
+            pass.culled = false;
+            pass.refCount = 1;
+            pass.cullReason = reason;
+            workQueue.push(passId);
+        } else {
+            ++pass.refCount;
+            if (reason == PassCullReason::GraphOutput)
+                pass.cullReason = reason;
+        }
+    };
+
     ResourceHandle root = m_output.IsValid() ? m_output : m_backbuffer;
     auto rootProducer = producers.find(root);
-    if (rootProducer != producers.end()) {
-        m_passes[rootProducer->second].culled = false;
-        m_passes[rootProducer->second].refCount = 1;
-        workQueue.push(rootProducer->second);
+    if (rootProducer != producers.end())
+        retainRoot(rootProducer->second, PassCullReason::GraphOutput);
+
+    for (uint32_t passId = 0; passId < m_passes.size(); ++passId) {
+        const auto &pass = m_passes[passId];
+        if (pass.hasSideEffect) {
+            retainRoot(passId, PassCullReason::SideEffect);
+            continue;
+        }
+        const bool writesExternal = std::any_of(pass.writes.begin(), pass.writes.end(), [&](const auto &write) {
+            return write.handle.id < m_resources.size() && m_resources[write.handle.id].isExternal;
+        });
+        if (writesExternal)
+            retainRoot(passId, PassCullReason::ExternalWrite);
     }
 
     // Backward propagation
@@ -69,6 +94,7 @@ void RenderGraph::CullPasses()
             auto &producerPass = m_passes[producer->second];
             if (producerPass.culled) {
                 producerPass.culled = false;
+                producerPass.cullReason = PassCullReason::Dependency;
                 workQueue.push(producer->second);
             }
             producerPass.refCount++;
