@@ -98,7 +98,8 @@ enum class ResourceUsage
     Transfer = 1 << 5,
     DepthRead = 1 << 6, ///< Read-only depth attachment (depth testing without writing)
     IndirectArgument = 1 << 7,
-    VersionDependency = 1 << 8 ///< Graph ordering only; emits no backend access or barrier
+    VersionDependency = 1 << 8, ///< Graph ordering only; emits no backend access or barrier
+    Present = 1 << 9            ///< Final presentation/export read
 };
 
 inline ResourceUsage operator|(ResourceUsage a, ResourceUsage b)
@@ -369,6 +370,9 @@ class PassBuilder
     /// @brief Write a resource as transfer destination (for blit/copy operations)
     ResourceHandle TransferWrite(ResourceHandle handle);
 
+    /// Declare the final presentation read and retain this pass as an external side effect.
+    ResourceHandle PresentRead(ResourceHandle handle);
+
     /// Keep this pass even when it has no path to a graph output. Use only for
     /// externally observable work such as readback, events, or debug capture.
     void SetSideEffect(bool enabled = true);
@@ -588,6 +592,9 @@ class RenderGraph
      */
     PassHandle AddTransferPass(const std::string &name, PassSetupCallback setup);
 
+    /// Add a final presentation/export pass outside a Vulkan render pass.
+    PassHandle AddPresentPass(const std::string &name, PassSetupCallback setup);
+
     /**
      * @brief Set the backbuffer (swapchain image) for this frame
      */
@@ -652,6 +659,9 @@ class RenderGraph
     ResourceHandle RegisterTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,
                                             VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
                                             bool isTransient = true);
+
+    /// Pre-register a transient buffer before pass declarations reference it.
+    ResourceHandle RegisterTransientBuffer(const std::string &name, VkDeviceSize size, VkBufferUsageFlags usage);
 
     // ========================================================================
     // Compilation and Execution

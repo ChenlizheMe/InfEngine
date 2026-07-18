@@ -358,6 +358,44 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Pass compile report did not preserve culling reasons"))
         return false;
 
+    RenderGraph typedResourceGraph;
+    typedResourceGraph.Initialize(&resources.context, &resources.pipelines);
+    auto registeredBuffer = typedResourceGraph.RegisterTransientBuffer(
+        "RegisteredStorage", 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    ResourceHandle writtenBuffer;
+    typedResourceGraph.AddComputePass("WriteRegisteredBuffer", [&](PassBuilder &builder) {
+        writtenBuffer = builder.WriteStorageBuffer(registeredBuffer);
+        return [](RenderContext &) {};
+    });
+    typedResourceGraph.SetOutput(writtenBuffer);
+    if (!Require(registeredBuffer.IsValid() && writtenBuffer.version == 1 && typedResourceGraph.Compile(),
+                 "Pre-registered transient buffer did not participate in graph compilation"))
+        return false;
+
+    RenderGraph presentGraph;
+    presentGraph.Initialize(&resources.context, &resources.pipelines);
+    auto presentTexture = presentGraph.RegisterTransientTexture("PresentTexture", 4, 4, VK_FORMAT_R8G8B8A8_UNORM);
+    ResourceHandle presentVersion;
+    presentGraph.AddPass("ProducePresentTexture", [&](PassBuilder &builder) {
+        presentVersion = builder.WriteColor(presentTexture);
+        builder.SetRenderArea(4, 4);
+        return [](RenderContext &) {};
+    });
+    presentGraph.AddPresentPass("Present", [&](PassBuilder &builder) {
+        builder.PresentRead(presentVersion);
+        return [](RenderContext &) {};
+    });
+    if (!Require(presentGraph.Compile(), "Present graph failed to compile"))
+        return false;
+    if (!Require(presentGraph.GetExecutionPassNames() == std::vector<std::string>{"ProducePresentTexture", "Present"},
+                 "Present access did not retain its producer dependency"))
+        return false;
+    const auto presentInfos = presentGraph.GetPassCompileInfos();
+    if (!Require(presentInfos.size() == 2 && presentInfos[1].type == infernux::vk::PassType::Present &&
+                     presentInfos[1].reason == PassCullReason::SideEffect,
+                 "Present pass did not report its typed side-effect root"))
+        return false;
+
     // Two logical versions share one physical image. A final pass cannot read
     // both sides of an overwrite without a copy, because it would need to run
     // both before and after that overwrite. Reject the cycle instead of

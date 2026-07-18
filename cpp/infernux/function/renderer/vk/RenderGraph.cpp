@@ -454,6 +454,19 @@ ResourceHandle PassBuilder::TransferWrite(ResourceHandle handle)
     return newHandle;
 }
 
+ResourceHandle PassBuilder::PresentRead(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer) {
+        return handle;
+    }
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::Present, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                          VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR});
+    pass.hasSideEffect = true;
+    return handle;
+}
+
 ResourceHandle PassBuilder::WriteResolve(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle)) {
@@ -722,6 +735,23 @@ PassHandle RenderGraph::AddTransferPass(const std::string &name, PassSetupCallba
     return handle;
 }
 
+PassHandle RenderGraph::AddPresentPass(const std::string &name, PassSetupCallback setup)
+{
+    PassHandle handle;
+    handle.scope = m_identity.Current();
+    handle.id = static_cast<uint32_t>(m_passes.size());
+
+    RenderPassData passData;
+    passData.name = name;
+    passData.id = handle.id;
+    passData.type = PassType::Present;
+    m_passes.push_back(std::move(passData));
+
+    PassBuilder builder(this, handle.id);
+    m_passes[handle.id].executeCallback = setup(builder);
+    return handle;
+}
+
 ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width,
                                           uint32_t height, VkSampleCountFlagBits samples, VkImageLayout initialLayout)
 {
@@ -846,6 +876,20 @@ ResourceHandle RenderGraph::RegisterTransientTexture(const std::string &name, ui
         res.textureDesc.format = format;
         res.textureDesc.samples = samples;
         res.textureDesc.isTransient = isTransient;
+    }
+    return handle;
+}
+
+ResourceHandle RenderGraph::RegisterTransientBuffer(const std::string &name, VkDeviceSize size,
+                                                    VkBufferUsageFlags usage)
+{
+    ResourceHandle handle = CreateResource(name, ResourceType::Buffer);
+    if (Owns(handle)) {
+        auto &resource = m_resources[handle.id];
+        resource.bufferDesc.name = name;
+        resource.bufferDesc.size = size;
+        resource.bufferDesc.usage = usage;
+        resource.bufferDesc.isTransient = true;
     }
     return handle;
 }
