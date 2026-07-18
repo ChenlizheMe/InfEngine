@@ -6,6 +6,7 @@ import threading
 import numpy as np
 import pytest
 
+from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.graph.types import CoordinateSpace
 from Infernux.particle import (
     EmitterSettings,
@@ -71,6 +72,72 @@ def test_numpy_random_matches_portable_scalar_golden_for_every_particle():
         dtype=np.float32,
     )
     np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:4], expected)
+
+
+def test_numpy_aot_executes_authored_random_expression_with_node_seed():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord("lifetime", "particle.init.set_lifetime"),
+            GraphNodeRecord("random", "common.random.f32"),
+            GraphNodeRecord("seed", "common.constant.u32", properties={"value": 73}),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.init", "out", "lifetime", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord("value", "random", "value", "lifetime", "value"),
+            GraphLinkRecord("seed", "seed", "value", "random", "seed"),
+        ),
+    )
+    settings = EmitterSettings(
+        capacity=4,
+        seed=19,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 2),),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(stable_id="random", settings=settings, init=init),)
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+    runtime = program.create_runtime(system_seed=5)
+
+    runtime.tick(0.0)
+
+    expected = np.asarray(
+        [particle_random_f32(5, 19, 73, particle_id, 0, 0, 0) for particle_id in range(2)],
+        dtype=np.float32,
+    )
+    np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:2], expected)
+
+
+def test_numpy_sphere_sampling_is_bounded_and_repeatable_after_reset():
+    settings = EmitterSettings(
+        capacity=32,
+        seed=81,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 32),),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+        shape=EmitterShape(
+            "sphere",
+            CoordinateSpace.WORLD,
+            radius=3.0,
+        ),
+    )
+    _program, runtime = _compile_runtime(settings, system_seed=9)
+    runtime.tick(0.0)
+    first = runtime.attributes["builtin.position"][:32].copy()
+
+    runtime.reset()
+    runtime.tick(0.0)
+    second = runtime.attributes["builtin.position"][:32]
+
+    assert np.linalg.norm(first, axis=1).max() <= 3.0
+    assert np.count_nonzero(np.linalg.norm(first, axis=1) > 0.0) == 32
+    np.testing.assert_array_equal(first, second)
 
 
 def test_numpy_space_conversion_applies_translation_only_to_positions():

@@ -74,6 +74,7 @@ class _RuntimeContext:
 class _StageLayout:
     scratch_types: tuple[TypeRef, ...]
     export_types: tuple[tuple[str, TypeRef], ...]
+    export_aliases: tuple[tuple[str, str], ...]
 
 
 class _StageWorkspace:
@@ -191,6 +192,7 @@ class NumpyParticleEmitterRuntime:
             "update": program.update.create_workspace(self.capacity),
             "rendering": program.rendering.create_workspace(self.capacity),
         }
+        self._render_aliases = dict(program.rendering.layout.export_aliases)
         self._context = _RuntimeContext(system_seed)
         self._active_count = 0
         self._spawn_accumulator = 0.0
@@ -285,9 +287,24 @@ class NumpyParticleEmitterRuntime:
         workspace = self._workspaces["rendering"]
         self.program.rendering.function(self, workspace, self._context, 0, count)
         exports = workspace.exports
-        position = exports.get("builtin.position", self.attributes["builtin.position"])
-        size = exports.get("builtin.size", self.attributes["builtin.size"])
-        color = exports.get("builtin.color", self.attributes["builtin.color"])
+        position_id = self._render_aliases.get("builtin.position")
+        size_id = self._render_aliases.get("builtin.size")
+        color_id = self._render_aliases.get("builtin.color")
+        position = (
+            self.attributes[position_id]
+            if position_id is not None
+            else exports.get("builtin.position", self.attributes["builtin.position"])
+        )
+        size = (
+            self.attributes[size_id]
+            if size_id is not None
+            else exports.get("builtin.size", self.attributes["builtin.size"])
+        )
+        color = (
+            self.attributes[color_id]
+            if color_id is not None
+            else exports.get("builtin.color", self.attributes["builtin.color"])
+        )
         output = self._instance_buffer[:count]
         np.copyto(output[:, 0:3], position[:count], casting="unsafe")
         np.copyto(output[:, 3], size[:count], casting="unsafe")
@@ -315,8 +332,14 @@ class NumpyParticleEmitterRuntime:
 
     def _initialize_range(self, start: int, count: int) -> None:
         particle_slice = slice(start, start + count)
+        init_writes = set(self.program.kernel.init.written_attributes)
         for stable_id, target in self.attributes.items():
-            np.copyto(target[particle_slice], self._attribute_defaults[stable_id], casting="unsafe")
+            if stable_id not in init_writes and stable_id != "builtin.id":
+                np.copyto(
+                    target[particle_slice],
+                    self._attribute_defaults[stable_id],
+                    casting="unsafe",
+                )
         self.alive[particle_slice] = True
         self._assign_particle_ids(start, count)
         workspace = self._workspaces["init"]
@@ -410,7 +433,9 @@ def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> Numpy
     conversions: list[dict[str, Any]] = []
     scratch_types: list[TypeRef] = []
     export_types: list[tuple[str, TypeRef]] = []
+    export_aliases: list[tuple[str, str]] = []
     values: dict[str, str] = {}
+    value_attributes: dict[str, str] = {}
     lines = [
         "def _kernel(state, workspace, context, start, count):",
         "    if count <= 0:",
@@ -449,6 +474,7 @@ def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> Numpy
                 f"    {name} = state.attributes[_attributes[{len(attributes) - 1}]][particle_slice]"
             )
             values[instruction.result_id] = name
+            value_attributes[instruction.result_id] = immediates["attribute"]
         elif opcode == "load_uniform":
             name = f"v{len(values)}"
             lines.append(f"    {name} = context.{immediates['name']}")
@@ -498,10 +524,14 @@ def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> Numpy
         elif opcode == "export_attribute":
             source = operand_names(instruction)[0]
             stable_id = immediates["attribute"]
-            export_types.append((stable_id, instruction.operands[0].value_type))
-            lines.append(
-                f"    np.copyto(exports[{stable_id!r}][:count], {source}, casting='unsafe')"
-            )
+            source_attribute = value_attributes.get(instruction.operands[0].value_id)
+            if source_attribute is not None:
+                export_aliases.append((stable_id, source_attribute))
+            else:
+                export_types.append((stable_id, instruction.operands[0].value_type))
+                lines.append(
+                    f"    np.copyto(exports[{stable_id!r}][:count], {source}, casting='unsafe')"
+                )
         else:
             raise NumpyParticleBackendError(f"NumPy backend does not implement {opcode!r}")
 
@@ -521,7 +551,11 @@ def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> Numpy
     return NumpyStageExecutable(
         function.stage.value,
         source,
-        _StageLayout(tuple(scratch_types), tuple(export_types)),
+        _StageLayout(
+            tuple(scratch_types),
+            tuple(export_types),
+            tuple(export_aliases),
+        ),
         namespace["_kernel"],
     )
 
