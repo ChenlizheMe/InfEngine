@@ -143,7 +143,6 @@ class TestSerialization:
         [
             (lambda data: data.pop("$version"), "invalid"),
             (lambda data: data.__setitem__("type_id", "removed:Type"), "unknown"),
-            (lambda data: data["fields"].__setitem__("legacy", True), "unknown"),
         ],
     )
     def test_document_identity_and_fields_are_strict(self, mutate, error):
@@ -151,6 +150,18 @@ class TestSerialization:
         mutate(data)
         with pytest.raises(ValueError, match=error):
             SerializableObject._deserialize(data)
+
+    def test_removed_field_is_ignored_and_renamed_field_is_restored(self):
+        class EvolvingStats(SerializableObject):
+            health: int = serialized_field(default=100, formerly_serialized_as="hp")
+
+        data = EvolvingStats()._serialize()
+        data["fields"] = {"hp": 42, "removed_debug_value": True}
+
+        restored = EvolvingStats._deserialize(data)
+
+        assert restored.health == 42
+        assert restored._serialize()["fields"] == {"health": 42}
 
     def test_missing_additive_field_uses_an_independent_declared_default(self):
         class AdditiveDefaults(SerializableObject):

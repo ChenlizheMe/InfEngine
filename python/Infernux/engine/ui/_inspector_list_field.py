@@ -256,11 +256,31 @@ def _render_serializable_list_item(ctx, field_name, index, item, items, metadata
     so_lw = max_label_w(ctx, list(so_fields.keys())) if so_fields else 0.0
     elem_changes = {}
     for so_fn, so_meta in so_fields.items():
-        so_val = getattr(item, so_fn, so_meta.default)
-        new_val = render_serialized_field(
-            ctx, f"##{field_name}_{index}_{so_fn}", so_fn,
-            so_meta, so_val, so_lw,
-        )
+        if getattr(so_meta, "hidden", False):
+            continue
+        from Infernux.components.serialized_field import FieldType, get_raw_field_value
+        reference_types = {
+            FieldType.MATERIAL,
+            FieldType.TEXTURE,
+            FieldType.SHADER,
+            FieldType.ASSET,
+        }
+        if so_meta.field_type in reference_types:
+            so_val = get_raw_field_value(item, so_fn)
+            new_val = _render_serializable_asset_reference(
+                ctx,
+                f"{field_name}_{index}_{so_fn}",
+                so_fn,
+                so_meta,
+                so_val,
+                so_lw,
+            )
+        else:
+            so_val = getattr(item, so_fn, so_meta.default)
+            new_val = render_serialized_field(
+                ctx, f"##{field_name}_{index}_{so_fn}", so_fn,
+                so_meta, so_val, so_lw,
+            )
         if has_field_changed(so_meta.field_type, so_val, new_val):
             elem_changes[so_fn] = new_val
     if not elem_changes:
@@ -270,6 +290,73 @@ def _render_serializable_list_item(ctx, field_name, index, item, items, metadata
         setattr(edited, fn, fv)
     items[index] = edited
     return True
+
+
+def _render_serializable_asset_reference(
+    ctx,
+    widget_id,
+    field_name,
+    metadata,
+    current_value,
+    label_width,
+):
+    """Render a resource ref nested inside a SerializableObject list item."""
+    from Infernux.components.serialized_field import FieldType
+    from Infernux.components._serialize_helpers import make_null_ref
+    from ._inspector_references import (
+        _create_asset_ref_from_payload,
+        _create_reference_value_from_payload,
+        _get_asset_ref_config,
+        _get_reference_display_name,
+        _picker_assets,
+        _resolve_asset_config,
+    )
+    from .inspector_utils import field_label, pretty_field_name
+
+    field_type = metadata.field_type
+    if field_type == FieldType.ASSET:
+        type_hint, drag_type, globs, prefix = _resolve_asset_config(metadata)
+    else:
+        type_hint, drag_type, globs, prefix = _get_asset_ref_config()[field_type]
+
+    selected = current_value
+
+    def _make_value(path):
+        if field_type == FieldType.ASSET:
+            return _create_asset_ref_from_payload(metadata, str(path))
+        return _create_reference_value_from_payload(field_type, path)
+
+    def _on_pick(path):
+        nonlocal selected
+        value = _make_value(path)
+        if value is not None:
+            selected = value
+
+    def _on_clear():
+        nonlocal selected
+        selected = make_null_ref(field_type, metadata)
+
+    assets_only = field_type == FieldType.TEXTURE
+
+    def _picker(filt):
+        values = []
+        for glob in globs:
+            values += _picker_assets(filt, glob, assets_only=assets_only)
+        return values
+
+    field_label(ctx, pretty_field_name(field_name), label_width)
+    render_object_field(
+        ctx,
+        f"{prefix}_nested_ref_{widget_id}",
+        _get_reference_display_name(field_type, current_value),
+        type_hint,
+        accept_drag_type=drag_type,
+        on_drop_callback=_on_pick,
+        picker_asset_items=_picker,
+        on_pick=_on_pick,
+        on_clear=_on_clear,
+    )
+    return selected
 
 
 def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,

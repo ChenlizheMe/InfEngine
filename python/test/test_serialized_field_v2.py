@@ -273,7 +273,6 @@ class TestStrictSerializationFailures:
         [
             (lambda data: data.__setitem__("__schema_version__", 0), "requires schema"),
             (lambda data: data.__setitem__("__type_name__", "Other"), "type mismatch"),
-            (lambda data: data.__setitem__("unknown", 1), "unknown"),
             (lambda data: data.__setitem__("health", "bad"), "requires an integer"),
         ],
     )
@@ -320,6 +319,26 @@ class TestStrictSerializationFailures:
         assert target.tags == []
         target.tags.append("local")
         assert AdditiveFields().tags == []
+
+    def test_removed_field_is_ignored_and_former_name_is_restored(self):
+        import json
+
+        class EvolvingFields(InxComponent):
+            health: int = serialized_field(default=10, formerly_serialized_as="hp")
+
+        document = json.loads(EvolvingFields()._serialize_fields())
+        document.pop("health")
+        document["hp"] = 42
+        document["removed_debug_value"] = True
+
+        target = EvolvingFields()
+        target._deserialize_fields(json.dumps(document))
+
+        assert target.health == 42
+        saved = json.loads(target._serialize_fields())
+        assert saved["health"] == 42
+        assert "hp" not in saved
+        assert "removed_debug_value" not in saved
 
     def test_runtime_schema_migration_hook_is_not_used(self):
         import json

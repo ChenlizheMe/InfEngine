@@ -207,18 +207,17 @@ class SerializableObject:
         fields_document = data.get("fields")
         if not isinstance(fields_document, dict):
             raise TypeError(f"{path}: SerializableObject fields must be an object")
-        document_fields = set(fields_document)
-        expected_fields = set(fields)
-        unknown = sorted(document_fields - expected_fields)
-        if unknown:
-            raise ValueError(
-                f"{path}: {type_id} field schema mismatch: unknown={unknown}"
-            )
+
+        from .serialized_field import resolve_serialized_field_sources
+        field_sources = resolve_serialized_field_sources(
+            fields_document, fields, owner_name=type_id
+        )
 
         from .value_codec import VALUE_CODECS
         for name, meta in fields.items():
-            if name in fields_document:
-                VALUE_CODECS.validate(fields_document[name], meta, f"{path}.{name}")
+            source_name = field_sources.get(name)
+            if source_name is not None:
+                VALUE_CODECS.validate(fields_document[source_name], meta, f"{path}.{name}")
         return actual_cls, fields
 
     @classmethod
@@ -229,12 +228,20 @@ class SerializableObject:
         from .serialized_field import copy_serialized_field_default
 
         fields_document = data["fields"]
+        from .serialized_field import resolve_serialized_field_sources
+        field_sources = resolve_serialized_field_sources(
+            fields_document,
+            fields,
+            owner_name=get_serializable_type_id(actual_cls),
+        )
         decoded = {
             name: (
                 _deserialize_so_value(
-                    fields_document[name], meta, f"{get_serializable_type_id(actual_cls)}.{name}"
+                    fields_document[field_sources[name]],
+                    meta,
+                    f"{get_serializable_type_id(actual_cls)}.{name}"
                 )
-                if name in fields_document
+                if name in field_sources
                 else copy_serialized_field_default(meta)
             )
             for name, meta in fields.items()

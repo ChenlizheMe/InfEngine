@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Callable, Dict, Optional, Tuple, Type, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TYPE_CHECKING, Union
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
@@ -57,9 +57,12 @@ class FieldMetadata:
     serializable_class: Optional[Type] = ...
     component_type: Optional[str] = ...
     hdr: bool = ...
+    asset_type: Optional[str] = ...
     python_type: Optional[Type] = ...
     getter: Optional[Callable] = ...
     setter: Optional[Callable] = ...
+    hidden: bool = ...
+    formerly_serialized_as: Tuple[str, ...] = ...
 
 
 class SerializedFieldDescriptor:
@@ -113,6 +116,7 @@ def serialized_field(
     element_class: Optional[Type] = ...,
     serializable_class: Optional[Type] = ...,
     component_type: Optional[str] = ...,
+    asset_type: Optional[str] = ...,
     range: Optional[Tuple[float, float]] = ...,
     tooltip: str = ...,
     readonly: bool = ...,
@@ -126,6 +130,8 @@ def serialized_field(
     required_component: Optional[str] = ...,
     visible_when: Optional[Callable] = ...,
     hdr: bool = ...,
+    hidden: bool = ...,
+    formerly_serialized_as: Optional[Union[str, Tuple[str, ...], List[str]]] = ...,
 ) -> Any:
     """Mark a field as serialized and inspector-visible.
 
@@ -136,6 +142,7 @@ def serialized_field(
         element_class: For LIST fields, the SerializableObject subclass for elements.
         serializable_class: For SERIALIZABLE_OBJECT fields, the concrete class.
         component_type: For COMPONENT fields, the target component type name.
+        asset_type: For ASSET fields, the registered asset type name.
         range: ``(min, max)`` tuple for numeric sliders / bounded drag.
         tooltip: Hover text shown in inspector.
         readonly: If ``True``, field is read-only in inspector.
@@ -149,6 +156,8 @@ def serialized_field(
         required_component: For GAME_OBJECT fields only.
         visible_when: ``fn(component) -> bool``; hides field when False.
         hdr: For COLOR fields only.  Allow HDR values (> 1.0).
+        hidden: Serialize without showing the field in the Inspector.
+        formerly_serialized_as: Previous persisted field name(s) accepted on load.
 
     Example::
 
@@ -156,6 +165,13 @@ def serialized_field(
             speed: float = serialized_field(default=5.0, range=(0, 100))
     """
     ...
+
+def resolve_serialized_field_sources(
+    document: Dict[str, Any],
+    fields: Dict[str, FieldMetadata],
+    *,
+    owner_name: str,
+) -> Dict[str, str]: ...
 
 
 def hide_field(default: Any = ...) -> Any:

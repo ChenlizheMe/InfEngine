@@ -12,7 +12,7 @@ Usage:
 """
 
 from enum import Enum, auto
-from typing import Any, Tuple, Optional, Type, Dict, Callable, TYPE_CHECKING
+from typing import Any, Tuple, Optional, Type, Dict, Callable, TYPE_CHECKING, List, Union
 from dataclasses import dataclass
 import copy
 import weakref
@@ -279,6 +279,7 @@ class FieldMetadata:
     hdr: bool = False                            # For COLOR: allow HDR mode toggle
     asset_type: Optional[str] = None             # For ASSET: registered asset type name (e.g. "AudioClip", "AnimStateMachine")
     hidden: bool = False                         # Unity HideInInspector: serialized but not rendered
+    formerly_serialized_as: Tuple[str, ...] = () # Previous persisted field names, newest first
 
     # For internal use
     python_type: Optional[Type] = None
@@ -1301,6 +1302,8 @@ def serialized_field(
     required_component: Optional[str] = None,
     visible_when: Optional[Callable] = None,
     hdr: bool = False,
+    hidden: bool = False,
+    formerly_serialized_as: Optional[Union[str, Tuple[str, ...], List[str]]] = None,
 ) -> Any:
     """
     Decorator/descriptor for marking a field as serialized and inspector-visible.
@@ -1330,6 +1333,9 @@ def serialized_field(
             the Hierarchy panel.
         hdr: For COLOR fields only.  If True, allow HDR values (> 1.0)
             in the colour picker.
+        hidden: Serialize the field without showing it in the Inspector.
+        formerly_serialized_as: Previous persisted names accepted while
+            loading older assets. Only the current field name is written.
     
     Returns:
         A descriptor that manages the field value and metadata
@@ -1374,6 +1380,18 @@ def serialized_field(
     if isinstance(default, Enum):
         enum_type = type(default)
     
+    if formerly_serialized_as is None:
+        serialized_aliases: Tuple[str, ...] = ()
+    elif isinstance(formerly_serialized_as, str):
+        serialized_aliases = (formerly_serialized_as,)
+    else:
+        serialized_aliases = tuple(formerly_serialized_as)
+    if any(not isinstance(alias, str) or not alias or alias.startswith("__")
+           for alias in serialized_aliases):
+        raise ValueError("formerly_serialized_as values must be non-empty field names")
+    if len(serialized_aliases) != len(set(serialized_aliases)):
+        raise ValueError("formerly_serialized_as values must be unique")
+
     metadata = FieldMetadata(
         name="",  # Will be set by __set_name__
         field_type=inferred_type,
@@ -1397,9 +1415,53 @@ def serialized_field(
         component_type=component_type,
         hdr=hdr,
         asset_type=asset_type,
+        hidden=hidden,
+        formerly_serialized_as=serialized_aliases,
     )
     
     return SerializedFieldDescriptor(metadata)
+
+
+def resolve_serialized_field_sources(
+    document: Dict[str, Any],
+    fields: Dict[str, FieldMetadata],
+    *,
+    owner_name: str,
+) -> Dict[str, str]:
+    """Map current field names to persisted keys for Unity-style evolution.
+
+    Current names take precedence over aliases. Unknown ordinary fields are
+    intentionally ignored so removing a field does not invalidate an asset.
+    Type validation still runs against every selected value afterwards.
+    """
+    current_names = set(fields)
+    alias_owner: Dict[str, str] = {}
+    for field_name, metadata in fields.items():
+        for alias in metadata.formerly_serialized_as:
+            if alias == field_name:
+                continue
+            if alias in current_names and alias != field_name:
+                raise ValueError(
+                    f"{owner_name}: serialized alias {alias!r} conflicts with a current field"
+                )
+            previous = alias_owner.get(alias)
+            if previous is not None and previous != field_name:
+                raise ValueError(
+                    f"{owner_name}: serialized alias {alias!r} is shared by "
+                    f"{previous!r} and {field_name!r}"
+                )
+            alias_owner[alias] = field_name
+
+    sources: Dict[str, str] = {}
+    for field_name, metadata in fields.items():
+        if field_name in document:
+            sources[field_name] = field_name
+            continue
+        for alias in metadata.formerly_serialized_as:
+            if alias in document:
+                sources[field_name] = alias
+                break
+    return sources
 
 
 _SERIALIZED_FIELDS_CACHE: dict = {}  # component_class -> Dict[str, FieldMetadata]

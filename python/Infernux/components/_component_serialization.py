@@ -67,17 +67,19 @@ class ComponentSerializationMixin:
 
         fields = get_serialized_fields(self.__class__)
         metadata_keys = {"__schema_version__", "__type_name__", "__component_id__"}
-        document_fields = set(data) - metadata_keys
-        expected_fields = set(fields)
-        unknown = sorted(document_fields - expected_fields)
         unknown_metadata = sorted(
             key for key in data if key.startswith("__") and key not in metadata_keys
         )
-        if unknown or unknown_metadata:
+        if unknown_metadata:
             raise ValueError(
                 f"{self.__class__.__name__} field schema mismatch: "
-                f"unknown={unknown + unknown_metadata}"
+                f"unknown={unknown_metadata}"
             )
+
+        from .serialized_field import resolve_serialized_field_sources
+        field_sources = resolve_serialized_field_sources(
+            data, fields, owner_name=self.__class__.__name__
+        )
 
         saved_id = data.get("__component_id__")
         if saved_id is not None and (type(saved_id) is not int or saved_id <= 0):
@@ -85,13 +87,16 @@ class ComponentSerializationMixin:
 
         from .value_codec import VALUE_CODECS
         for name, meta in fields.items():
-            if name in data:
-                VALUE_CODECS.validate(data[name], meta, f"{self.__class__.__name__}.{name}")
+            source_name = field_sources.get(name)
+            if source_name is not None:
+                VALUE_CODECS.validate(
+                    data[source_name], meta, f"{self.__class__.__name__}.{name}"
+                )
 
         decoded = {
             name: (
-                self._deserialize_value(data[name], meta)
-                if name in data
+                self._deserialize_value(data[field_sources[name]], meta)
+                if name in field_sources
                 else copy_serialized_field_default(meta)
             )
             for name, meta in fields.items()
