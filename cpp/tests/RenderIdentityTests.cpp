@@ -22,6 +22,18 @@ int main()
     assert(replacedRenderer.IsValid());
     assert(replacedRenderer != sceneProxy);
 
+    const RenderProxyHandle sameGenerationDifferentObject =
+        RenderProxyHandle::FromScene(ObjectHandle{object.id + 1, object.generation, object.worldId},
+                                     ObjectHandle{renderer.id + 1, renderer.generation, renderer.worldId});
+    assert(sameGenerationDifferentObject.IsValid());
+    assert(sameGenerationDifferentObject.MakeDrawIdentity() != sceneProxy.MakeDrawIdentity());
+
+    const RenderProxyHandle sameGenerationDifferentWorld =
+        RenderProxyHandle::FromScene(ObjectHandle{object.id, object.generation, object.worldId + 1},
+                                     ObjectHandle{renderer.id, renderer.generation, renderer.worldId + 1});
+    assert(sameGenerationDifferentWorld.IsValid());
+    assert(sameGenerationDifferentWorld.MakeDrawIdentity() != sceneProxy.MakeDrawIdentity());
+
     const RenderProxyHandle reloadedWorld =
         RenderProxyHandle::FromScene(ObjectHandle{object.id, object.generation, object.worldId + 1},
                                      ObjectHandle{renderer.id, renderer.generation + 2, renderer.worldId + 1});

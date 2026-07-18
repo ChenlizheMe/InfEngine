@@ -2,6 +2,7 @@
 
 #include <function/scene/ObjectHandle.h>
 
+#include <cstddef>
 #include <cstdint>
 
 namespace infernux
@@ -54,6 +55,17 @@ struct RenderDrawIdentity
 
 static_assert(sizeof(RenderDrawIdentity) <= 16, "RenderDrawIdentity must remain cheap to copy in draw-call hot paths");
 
+struct RenderDrawIdentityHash
+{
+    [[nodiscard]] size_t operator()(const RenderDrawIdentity &identity) const noexcept
+    {
+        uint64_t hash = identity.proxyLifetime;
+        hash ^= static_cast<uint64_t>(identity.primitiveIndex) + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+        hash ^= static_cast<uint64_t>(identity.domain) + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+        return static_cast<size_t>(hash);
+    }
+};
+
 /// Stable identity of one source that can produce render primitives.
 ///
 /// Scene-backed proxies retain both the owning GameObject lifetime and the
@@ -94,7 +106,7 @@ struct RenderProxyHandle
     {
         if (!IsValid())
             return {};
-        const uint64_t lifetime = IsSceneBacked() ? source.generation : syntheticId;
+        const uint64_t lifetime = IsSceneBacked() ? SceneLifetimeIdentity() : syntheticId;
         return RenderDrawIdentity{lifetime, primitiveIndex, domain};
     }
 
@@ -106,6 +118,27 @@ struct RenderProxyHandle
     bool operator!=(const RenderProxyHandle &rhs) const noexcept
     {
         return !(*this == rhs);
+    }
+
+  private:
+    [[nodiscard]] uint64_t SceneLifetimeIdentity() const noexcept
+    {
+        constexpr uint64_t offset = 14695981039346656037ull;
+        constexpr uint64_t prime = 1099511628211ull;
+        uint64_t hash = offset;
+        const auto append = [&](uint64_t value) {
+            for (uint32_t shift = 0; shift < 64; shift += 8) {
+                hash ^= static_cast<uint8_t>(value >> shift);
+                hash *= prime;
+            }
+        };
+        append(owner.id);
+        append(owner.generation);
+        append(owner.worldId);
+        append(source.id);
+        append(source.generation);
+        append(source.worldId);
+        return hash == 0 ? 1 : hash;
     }
 };
 
