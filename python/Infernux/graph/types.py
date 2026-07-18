@@ -1,0 +1,111 @@
+"""Backend-neutral value and coordinate-space types for authored graphs."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class ValueType(str, Enum):
+    BOOL = "bool"
+    I32 = "i32"
+    U32 = "u32"
+    F32 = "f32"
+    VEC2 = "vec2"
+    VEC3 = "vec3"
+    VEC4 = "vec4"
+    COLOR = "color"
+    MAT3 = "mat3"
+    MAT4 = "mat4"
+
+
+class CoordinateSpace(str, Enum):
+    NONE = "none"
+    EMITTER_LOCAL = "emitter_local"
+    SIMULATION = "simulation"
+    WORLD = "world"
+    VIEW = "view"
+    BILLBOARD = "billboard"
+    BAKE_BASIS = "bake_basis"
+
+
+@dataclass(frozen=True, order=True)
+class TypeRef:
+    value_type: ValueType
+    space: CoordinateSpace = CoordinateSpace.NONE
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "value_type", ValueType(self.value_type))
+        object.__setattr__(self, "space", CoordinateSpace(self.space))
+        if self.space is not CoordinateSpace.NONE and self.value_type not in {
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+        }:
+            raise ValueError("coordinate spaces are only valid on vector values")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"value_type": self.value_type.value, "space": self.space.value}
+
+    @classmethod
+    def from_dict(cls, value) -> "TypeRef":
+        if type(value) is not dict or set(value) != {"value_type", "space"}:
+            raise ValueError("type reference requires value_type and space")
+        return cls(ValueType(value["value_type"]), CoordinateSpace(value["space"]))
+
+
+class TypeSystem:
+    """Portable connection and numeric-unification rules."""
+
+    _NUMERIC = frozenset(
+        {
+            ValueType.I32,
+            ValueType.U32,
+            ValueType.F32,
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+            ValueType.COLOR,
+        }
+    )
+
+    def can_connect(self, source: TypeRef, target: TypeRef) -> bool:
+        if source == target:
+            return True
+        if source.space != target.space:
+            return False
+        return source.value_type in {ValueType.I32, ValueType.U32} and target.value_type is ValueType.F32
+
+    def unify_numeric(self, left: TypeRef, right: TypeRef) -> TypeRef:
+        if left.value_type not in self._NUMERIC or right.value_type not in self._NUMERIC:
+            raise TypeError(f"numeric operation cannot use {left} and {right}")
+        if left.space != right.space:
+            raise TypeError(
+                f"numeric operation cannot mix {left.space.value} and {right.space.value}"
+            )
+        if left == right:
+            return left
+        scalar = {ValueType.I32, ValueType.U32, ValueType.F32}
+        if left.value_type in scalar and right.value_type in scalar:
+            if ValueType.F32 in {left.value_type, right.value_type}:
+                return TypeRef(ValueType.F32, left.space)
+            if left.value_type != right.value_type:
+                raise TypeError("signed and unsigned integers require an explicit cast")
+            return left
+        if left.value_type is ValueType.COLOR and right.value_type is ValueType.VEC4:
+            return TypeRef(ValueType.VEC4, left.space)
+        if left.value_type is ValueType.VEC4 and right.value_type is ValueType.COLOR:
+            return TypeRef(ValueType.VEC4, left.space)
+        raise TypeError(f"numeric operation requires matching shapes, got {left} and {right}")
+
+
+PORTABLE_TYPE_SYSTEM = TypeSystem()
+
+
+__all__ = [
+    "CoordinateSpace",
+    "PORTABLE_TYPE_SYSTEM",
+    "TypeRef",
+    "TypeSystem",
+    "ValueType",
+]
