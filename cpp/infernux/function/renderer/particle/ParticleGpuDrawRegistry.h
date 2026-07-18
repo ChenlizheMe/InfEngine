@@ -23,6 +23,7 @@ class ParticleGpuDrawRegistry
 {
   public:
     [[nodiscard]] bool Set(GpuParticleDrawEntry entry);
+    [[nodiscard]] bool Replace(std::vector<GpuParticleDrawEntry> entries);
     [[nodiscard]] bool Remove(uint64_t id);
     void Clear();
 

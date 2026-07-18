@@ -60,6 +60,14 @@ class ParticleGpuSystemManager
     /// Compile-then-publish replacement. The active emitter remains untouched
     /// when any resource, pipeline, or graph compilation step fails.
     [[nodiscard]] bool CreateOrReplace(const GpuParticleEmitterProgram &program, std::string *error = nullptr);
+    /// Atomically replace every supplied emitter after all runtimes, renderers,
+    /// and the aggregate simulation graph have compiled successfully.
+    [[nodiscard]] bool CreateOrReplaceBatch(const std::vector<GpuParticleEmitterProgram> &programs,
+                                            std::string *error = nullptr);
+    /// Apply replacements and removals as one publication transaction. This is
+    /// used when a saved ParticleGraph adds or removes emitters during reload.
+    [[nodiscard]] bool ApplyBatch(const std::vector<GpuParticleEmitterProgram> &programs,
+                                  const std::vector<uint64_t> &removeIds, std::string *error = nullptr);
     [[nodiscard]] bool Remove(uint64_t id);
     void Clear();
 

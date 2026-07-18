@@ -292,6 +292,10 @@ class InxRenderer
 
     particle::ParticleGpuDrawRegistry *GetParticleGpuDrawRegistry();
     particle::ParticleGpuSystemManager *GetParticleGpuSystemManager();
+    [[nodiscard]] uint64_t GetNextFrameIndex() const noexcept
+    {
+        return m_frameCount + 1;
+    }
 
     /// @brief Set the selected object ID for outline tracking
     void SetSelectedObjectId(uint64_t objectId)

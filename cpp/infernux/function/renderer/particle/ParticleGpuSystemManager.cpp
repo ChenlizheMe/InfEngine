@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <unordered_set>
 #include <unordered_map>
 #include <utility>
 
@@ -132,6 +133,17 @@ struct ParticleGpuSystemManager::Impl
         return state;
     }
 
+    [[nodiscard]] static std::vector<GpuParticleDrawEntry> BuildDrawEntries(const EmitterMap &candidateEmitters)
+    {
+        std::vector<GpuParticleDrawEntry> entries;
+        entries.reserve(candidateEmitters.size());
+        for (const auto &[id, emitter] : candidateEmitters) {
+            entries.push_back({id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
+                               emitter->runtime->IndirectBuffer(), emitter->renderer});
+        }
+        return entries;
+    }
+
     void Retire(std::shared_ptr<GraphState> oldGraph, EmitterMap oldEmitters)
     {
         if (oldEmitters.empty())
@@ -187,24 +199,54 @@ void ParticleGpuSystemManager::Shutdown() noexcept
 
 bool ParticleGpuSystemManager::CreateOrReplace(const GpuParticleEmitterProgram &program, std::string *error)
 {
+    return CreateOrReplaceBatch({program}, error);
+}
+
+bool ParticleGpuSystemManager::CreateOrReplaceBatch(const std::vector<GpuParticleEmitterProgram> &programs,
+                                                    std::string *error)
+{
+    return ApplyBatch(programs, {}, error);
+}
+
+bool ParticleGpuSystemManager::ApplyBatch(const std::vector<GpuParticleEmitterProgram> &programs,
+                                          const std::vector<uint64_t> &removeIds, std::string *error)
+{
     if (error)
         error->clear();
     if (!m_impl || !m_impl->context || !m_impl->drawRegistry) {
         SetError(error, "GPU particle manager is not initialized");
         return false;
     }
-    auto emitter = m_impl->CreateEmitter(program, error);
-    if (!emitter)
+    if (programs.empty() && removeIds.empty()) {
+        SetError(error, "GPU particle update batch cannot be empty");
         return false;
+    }
 
     Impl::EmitterMap candidates = m_impl->emitters;
-    candidates[program.id] = emitter;
+    std::unordered_set<uint64_t> batchIds;
+    batchIds.reserve(programs.size() + removeIds.size());
+    for (const uint64_t id : removeIds) {
+        if (id == 0 || !batchIds.insert(id).second) {
+            SetError(error, "GPU particle update batch contains invalid or duplicate removal ids");
+            return false;
+        }
+        candidates.erase(id);
+    }
+    for (const auto &program : programs) {
+        if (!batchIds.insert(program.id).second) {
+            SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
+            return false;
+        }
+        auto emitter = m_impl->CreateEmitter(program, error);
+        if (!emitter)
+            return false;
+        candidates[program.id] = std::move(emitter);
+    }
     auto candidateGraph = m_impl->BuildGraph(candidates, error);
     if (!candidateGraph)
         return false;
-    if (!m_impl->drawRegistry->Set({program.id, program.capacity, emitter->runtime->InstanceBuffer(),
-                                    emitter->runtime->IndirectBuffer(), emitter->renderer})) {
-        SetError(error, "failed to publish GPU particle draw entry");
+    if (!m_impl->drawRegistry->Replace(Impl::BuildDrawEntries(candidates))) {
+        SetError(error, "failed to publish GPU particle draw entries");
         return false;
     }
 
@@ -225,8 +267,8 @@ bool ParticleGpuSystemManager::Remove(uint64_t id)
     auto candidateGraph = m_impl->BuildGraph(candidates, nullptr);
     if (!candidateGraph)
         return false;
-    if (m_impl->drawRegistry)
-        (void)m_impl->drawRegistry->Remove(id);
+    if (m_impl->drawRegistry && !m_impl->drawRegistry->Replace(Impl::BuildDrawEntries(candidates)))
+        return false;
 
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
@@ -243,8 +285,8 @@ void ParticleGpuSystemManager::Clear()
     auto candidateGraph = m_impl->BuildGraph({}, nullptr);
     if (!candidateGraph)
         return;
-    if (m_impl->drawRegistry)
-        m_impl->drawRegistry->Clear();
+    if (m_impl->drawRegistry && !m_impl->drawRegistry->Replace({}))
+        return;
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
     m_impl->graphState = std::move(candidateGraph);

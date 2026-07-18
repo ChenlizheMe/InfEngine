@@ -188,6 +188,36 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Valid GPU particle hot replacement was not published with deferred retirement"))
         return false;
 
+    auto companionProgram = managedProgram;
+    companionProgram.id = 92;
+    companionProgram.stableId = "managed-companion";
+    companionProgram.material.renderQueue = 3200;
+    if (!Require(particleSystems.CreateOrReplaceBatch({companionProgram}, &managedError) &&
+                     particleSystems.Size() == 2 && particleSystems.Contains(companionProgram.id) &&
+                     particleDrawRegistry.Size() == 2 && particleDeletionQueue.PendingCount() == 2,
+                 "GPU particle batch did not publish a valid companion emitter"))
+        return false;
+
+    auto invalidCompanion = companionProgram;
+    invalidCompanion.artifactRevision = 3;
+    invalidCompanion.billboardFragmentShader.clear();
+    auto candidateManagedProgram = managedProgram;
+    candidateManagedProgram.artifactRevision = 3;
+    if (!Require(!particleSystems.CreateOrReplaceBatch({candidateManagedProgram, invalidCompanion}, &managedError) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
+                     particleSystems.ActiveArtifactRevision(companionProgram.id) == 2 &&
+                     particleDrawRegistry.Size() == 2 && particleDeletionQueue.PendingCount() == 2,
+                 "Failed GPU particle batch disturbed its last-known-good emitters"))
+        return false;
+
+    managedProgram.artifactRevision = 3;
+    if (!Require(particleSystems.ApplyBatch({managedProgram}, {companionProgram.id}, &managedError) &&
+                     particleSystems.Size() == 1 && !particleSystems.Contains(companionProgram.id) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 3 &&
+                     particleDrawRegistry.Size() == 1 && particleDeletionQueue.PendingCount() == 3,
+                 "GPU particle replacement and removal were not published atomically"))
+        return false;
+
     infernux::particle::GpuParticleFrameRequest managedFrame;
     managedFrame.frameIndex = 43;
     managedFrame.spawnCount = 4;
@@ -578,7 +608,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle manager accepted the same engine frame twice"))
         return false;
     if (!Require(particleSystems.Remove(managedProgram.id) && particleSystems.Size() == 0 &&
-                     particleDrawRegistry.Size() == 0 && particleDeletionQueue.PendingCount() == 2,
+                     particleDrawRegistry.Size() == 0 && particleDeletionQueue.PendingCount() == 4,
                  "GPU particle manager removal did not retire graph resources"))
         return false;
     particleSystems.Shutdown();

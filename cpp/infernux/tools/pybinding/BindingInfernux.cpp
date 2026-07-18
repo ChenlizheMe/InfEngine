@@ -1,7 +1,9 @@
 #include "Infernux.h"
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <SDL3/SDL.h>
+#include <array>
 #include <cmath>
+#include <cstring>
 #include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
 #include <function/renderer/EditorTools.h>
@@ -13,6 +15,7 @@
 #include <function/renderer/gui/InxGUIRenderable.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
 #include <function/renderer/gui/InxScreenUIRenderer.h>
+#include <function/renderer/particle/ParticleGpuSystemManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/scene/EditorCameraController.h>
 #include <glm/glm.hpp>
@@ -23,6 +26,81 @@
 
 using namespace infernux;
 namespace py = pybind11;
+
+namespace
+{
+
+std::vector<uint32_t> DecodeParticleSpirv(const py::handle &value, const std::string &label)
+{
+    if (!py::isinstance<py::bytes>(value))
+        throw std::invalid_argument(label + " must be SPIR-V bytes");
+    const std::string bytes = py::cast<py::bytes>(value);
+    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+        throw std::invalid_argument(label + " has an invalid SPIR-V byte size");
+    std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+    if (words.front() != 0x07230203u)
+        throw std::invalid_argument(label + " has an invalid SPIR-V magic number");
+    return words;
+}
+
+particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &value)
+{
+    static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
+        "bootstrap", "init", "update", "render_reset", "rendering"};
+    for (const char *field : {"id", "artifact_revision", "stable_id", "capacity", "state_stride", "stages",
+                              "billboard", "material"}) {
+        if (!value.contains(field))
+            throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
+    }
+
+    particle::GpuParticleEmitterProgram program;
+    program.id = py::cast<uint64_t>(value["id"]);
+    program.artifactRevision = py::cast<uint64_t>(value["artifact_revision"]);
+    program.stableId = py::cast<std::string>(value["stable_id"]);
+    program.capacity = py::cast<uint32_t>(value["capacity"]);
+    program.stateStride = py::cast<uint32_t>(value["state_stride"]);
+
+    const py::dict stages = py::cast<py::dict>(value["stages"]);
+    for (size_t index = 0; index < StageNames.size(); ++index) {
+        const char *stage = StageNames[index];
+        if (!stages.contains(stage))
+            throw std::invalid_argument(std::string("GPU particle program is missing stage ") + stage);
+        program.kernels[index] = DecodeParticleSpirv(stages[stage], std::string("particle stage ") + stage);
+    }
+
+    const py::dict billboard = py::cast<py::dict>(value["billboard"]);
+    if (!billboard.contains("vertex") || !billboard.contains("fragment"))
+        throw std::invalid_argument("GPU particle billboard shaders are incomplete");
+    program.billboardVertexShader = DecodeParticleSpirv(billboard["vertex"], "particle billboard vertex shader");
+    program.billboardFragmentShader =
+        DecodeParticleSpirv(billboard["fragment"], "particle billboard fragment shader");
+
+    const py::dict material = py::cast<py::dict>(value["material"]);
+    for (const char *field : {"render_queue", "blend_enabled", "depth_test_enabled", "depth_write_enabled"}) {
+        if (!material.contains(field))
+            throw std::invalid_argument(std::string("GPU particle material is missing ") + field);
+    }
+    program.material.renderQueue = py::cast<int32_t>(material["render_queue"]);
+    program.material.blendEnabled = py::cast<bool>(material["blend_enabled"]);
+    program.material.depthTestEnabled = py::cast<bool>(material["depth_test_enabled"]);
+    program.material.depthWriteEnabled = py::cast<bool>(material["depth_write_enabled"]);
+    return program;
+}
+
+particle::GpuParticleTransforms DecodeGpuParticleTransforms(const py::buffer &value)
+{
+    const py::buffer_info info = value.request();
+    if (info.ndim != 1 || info.shape[0] != 64 || info.itemsize != sizeof(float) ||
+        info.format != py::format_descriptor<float>::format() || info.strides[0] != sizeof(float)) {
+        throw std::invalid_argument("GPU particle transforms must be a contiguous float32 array shaped (64,)");
+    }
+    particle::GpuParticleTransforms transforms;
+    std::memcpy(&transforms, info.ptr, sizeof(transforms));
+    return transforms;
+}
+
+} // namespace
 
 namespace infernux
 {
@@ -1705,6 +1783,69 @@ PYBIND11_MODULE(_Infernux, m)
                     renderer->GetParticleDrawCallBuffer()->RemoveBatch(batchId);
             },
             py::arg("batch_id"), "Remove a persistent particle instance batch")
+        .def(
+            "_replace_gpu_particle_emitters",
+            [](Infernux &self, const py::sequence &encodedPrograms, const std::vector<uint64_t> &removeIds) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                if (!manager)
+                    return std::string("GPU particle runtime requires graphical renderer initialization");
+
+                std::vector<particle::GpuParticleEmitterProgram> programs;
+                programs.reserve(encodedPrograms.size());
+                for (const py::handle item : encodedPrograms) {
+                    if (!py::isinstance<py::dict>(item))
+                        throw std::invalid_argument("GPU particle program batch must contain dictionaries");
+                    programs.push_back(DecodeGpuParticleProgram(py::reinterpret_borrow<py::dict>(item)));
+                }
+                std::string error;
+                if (!manager->ApplyBatch(programs, removeIds, &error))
+                    return error.empty() ? std::string("failed to publish GPU particle program batch") : error;
+                return std::string{};
+            },
+            py::arg("programs"), py::arg("remove_ids") = std::vector<uint64_t>{},
+            "Internal control-plane publication for one saved ParticleGraph revision")
+        .def(
+            "_begin_gpu_particle_frame",
+            [](Infernux &self, uint64_t emitterId, uint32_t spawnCount, uint32_t spawnBaseId,
+               uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
+               const py::buffer &transforms, bool simulate, bool render) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                if (!manager)
+                    return false;
+                particle::GpuParticleFrameRequest request;
+                request.frameIndex = renderer->GetNextFrameIndex();
+                request.spawnCount = spawnCount;
+                request.spawnBaseId = spawnBaseId;
+                request.spawnGeneration = spawnGeneration;
+                request.systemSeed = systemSeed;
+                request.simulationStep = simulationStep;
+                request.deltaTime = deltaTime;
+                request.simulate = simulate;
+                request.render = render;
+                return manager->BeginFrame(emitterId, request, DecodeGpuParticleTransforms(transforms));
+            },
+            py::arg("emitter_id"), py::arg("spawn_count"), py::arg("spawn_base_id"),
+            py::arg("spawn_generation"), py::arg("system_seed"), py::arg("simulation_step"),
+            py::arg("delta_time"), py::arg("transforms"), py::arg("simulate") = true, py::arg("render") = true,
+            "Internal once-per-engine-frame GPU particle scheduling hook")
+        .def(
+            "_remove_gpu_particle_emitter",
+            [](Infernux &self, uint64_t emitterId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager && manager->Remove(emitterId);
+            },
+            py::arg("emitter_id"), "Internal GPU particle emitter removal hook")
+        .def(
+            "_gpu_particle_artifact_revision",
+            [](Infernux &self, uint64_t emitterId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->ActiveArtifactRevision(emitterId) : uint64_t{0};
+            },
+            py::arg("emitter_id"), "Return the active GPU particle artifact revision")
         // ========================================================================
         // Material Pipeline API - for refreshing material shaders at runtime
         // ========================================================================

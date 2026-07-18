@@ -5,10 +5,20 @@
 namespace infernux::particle
 {
 
+namespace
+{
+
+bool IsValidEntry(const GpuParticleDrawEntry &entry)
+{
+    return entry.id != 0 && entry.capacity != 0 && entry.instances.IsValid() && entry.indirectArguments.IsValid() &&
+           entry.renderer && entry.renderer->IsValid() && entry.renderer->InstanceBuffer() == entry.instances;
+}
+
+} // namespace
+
 bool ParticleGpuDrawRegistry::Set(GpuParticleDrawEntry entry)
 {
-    if (entry.id == 0 || entry.capacity == 0 || !entry.instances.IsValid() || !entry.indirectArguments.IsValid() ||
-        !entry.renderer || !entry.renderer->IsValid() || entry.renderer->InstanceBuffer() != entry.instances)
+    if (!IsValidEntry(entry))
         return false;
 
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -18,6 +28,22 @@ bool ParticleGpuDrawRegistry::Set(GpuParticleDrawEntry entry)
         m_entries.push_back(std::move(entry));
     else
         *existing = std::move(entry);
+    ++m_revision;
+    return true;
+}
+
+bool ParticleGpuDrawRegistry::Replace(std::vector<GpuParticleDrawEntry> entries)
+{
+    if (!std::all_of(entries.begin(), entries.end(), IsValidEntry))
+        return false;
+    std::sort(entries.begin(), entries.end(),
+              [](const auto &left, const auto &right) { return left.id < right.id; });
+    if (std::adjacent_find(entries.begin(), entries.end(),
+                           [](const auto &left, const auto &right) { return left.id == right.id; }) != entries.end())
+        return false;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_entries = std::move(entries);
     ++m_revision;
     return true;
 }
