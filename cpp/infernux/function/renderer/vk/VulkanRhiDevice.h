@@ -1,9 +1,11 @@
 #pragma once
 
 #include <function/renderer/rhi/RhiCommand.h>
+#include <function/renderer/rhi/RhiDevice.h>
 
 #include <cstdint>
 #include <vector>
+#include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
 namespace infernux::vk
@@ -31,11 +33,12 @@ struct VulkanTransferCommandContext
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
 };
 
-class VulkanRhiDevice
+class VulkanRhiDevice final : public rhi::Device
 {
   public:
     VulkanRhiDevice() = default;
-    explicit VulkanRhiDevice(VkDevice device) noexcept : m_device(device)
+    explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE) noexcept
+        : m_device(device), m_allocator(allocator)
     {
     }
 
@@ -46,9 +49,9 @@ class VulkanRhiDevice
 
     ~VulkanRhiDevice();
 
-    void Reset(VkDevice device = VK_NULL_HANDLE) noexcept;
+    void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE) noexcept;
 
-    [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer);
+    [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0);
     [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
     [[nodiscard]] rhi::TextureViewHandle RegisterTextureView(VkImageView view);
     [[nodiscard]] rhi::SamplerHandle RegisterSampler(VkSampler sampler);
@@ -59,18 +62,23 @@ class VulkanRhiDevice
     [[nodiscard]] rhi::ComputePipelineHandle RegisterComputePipeline(VkPipeline pipeline, VkPipelineLayout layout);
     /// Create a compute pipeline from backend-neutral RHI handles. The
     /// returned pipeline and its layout are owned by this adapter.
-    [[nodiscard]] rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc);
+    [[nodiscard]] rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override;
+    [[nodiscard]] rhi::ShaderModuleHandle CreateShaderModule(const rhi::ShaderModuleDesc &desc) override;
+    [[nodiscard]] rhi::BindingLayoutHandle CreateBindingLayout(const rhi::BindingLayoutDesc &desc) override;
+    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const rhi::BindGroupDesc &desc) override;
+    [[nodiscard]] rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
+    bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override;
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
-    void Release(rhi::BufferHandle handle) noexcept;
+    void Release(rhi::BufferHandle handle) noexcept override;
     void Release(rhi::TextureHandle handle) noexcept;
     void Release(rhi::TextureViewHandle handle) noexcept;
     void Release(rhi::SamplerHandle handle) noexcept;
-    void Release(rhi::ShaderModuleHandle handle) noexcept;
-    void Release(rhi::BindingLayoutHandle handle) noexcept;
-    void Release(rhi::BindGroupHandle handle) noexcept;
+    void Release(rhi::ShaderModuleHandle handle) noexcept override;
+    void Release(rhi::BindingLayoutHandle handle) noexcept override;
+    void Release(rhi::BindGroupHandle handle) noexcept override;
     void Release(rhi::GraphicsPipelineHandle handle) noexcept;
-    void Release(rhi::ComputePipelineHandle handle) noexcept;
+    void Release(rhi::ComputePipelineHandle handle) noexcept override;
     void Release(rhi::RenderTargetLayoutHandle handle) noexcept;
 
     [[nodiscard]] VkBuffer Resolve(rhi::BufferHandle handle) const noexcept;
@@ -90,6 +98,34 @@ class VulkanRhiDevice
                                                                          VkCommandBuffer commandBuffer) noexcept;
 
   private:
+    struct BufferPayload
+    {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        void *mappedData = nullptr;
+        uint64_t byteSize = 0;
+        bool owned = false;
+    };
+
+    struct ShaderModulePayload
+    {
+        VkShaderModule module = VK_NULL_HANDLE;
+        bool owned = false;
+    };
+
+    struct BindingLayoutPayload
+    {
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        bool owned = false;
+    };
+
+    struct BindGroupPayload
+    {
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        bool owned = false;
+    };
+
     struct GraphicsPipelinePayload
     {
         VkPipeline pipeline = VK_NULL_HANDLE;
@@ -117,7 +153,9 @@ class VulkanRhiDevice
 
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::GraphicsPipelineHandle handle) const noexcept;
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept;
-    void DestroyOwnedComputePipelines() noexcept;
+    [[nodiscard]] VkDescriptorPool CreateDescriptorPool();
+    [[nodiscard]] VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool &pool);
+    void DestroyOwnedResources() noexcept;
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline);
     static void BindGroup(void *context, rhi::GraphicsPipelineHandle pipeline, uint32_t setIndex,
@@ -147,16 +185,18 @@ class VulkanRhiDevice
     static const rhi::TransferCommandEncoder::DispatchTable s_transferDispatch;
 
     VkDevice m_device = VK_NULL_HANDLE;
-    std::vector<Slot<VkBuffer>> m_buffers;
+    VmaAllocator m_allocator = VK_NULL_HANDLE;
+    std::vector<Slot<BufferPayload>> m_buffers;
     std::vector<Slot<VkImage>> m_textures;
     std::vector<Slot<VkImageView>> m_textureViews;
     std::vector<Slot<VkSampler>> m_samplers;
-    std::vector<Slot<VkShaderModule>> m_shaderModules;
-    std::vector<Slot<VkDescriptorSetLayout>> m_bindingLayouts;
-    std::vector<Slot<VkDescriptorSet>> m_bindGroups;
+    std::vector<Slot<ShaderModulePayload>> m_shaderModules;
+    std::vector<Slot<BindingLayoutPayload>> m_bindingLayouts;
+    std::vector<Slot<BindGroupPayload>> m_bindGroups;
     std::vector<Slot<GraphicsPipelinePayload>> m_graphicsPipelines;
     std::vector<Slot<GraphicsPipelinePayload>> m_computePipelines;
     std::vector<Slot<VkRenderPass>> m_renderTargetLayouts;
+    std::vector<VkDescriptorPool> m_ownedDescriptorPools;
 
     uint32_t m_freeBuffer = UINT32_MAX;
     uint32_t m_freeTexture = UINT32_MAX;

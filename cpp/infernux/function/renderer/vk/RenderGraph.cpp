@@ -231,7 +231,8 @@ ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffe
     resource.bufferDesc.isTransient = false;
     resource.isExternal = true;
     resource.externalBuffer = buffer;
-    resource.rhiBuffer = m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterBuffer(buffer) : rhi::BufferHandle{};
+    resource.rhiBuffer =
+        m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterBuffer(buffer, size) : rhi::BufferHandle{};
 
     return handle;
 }

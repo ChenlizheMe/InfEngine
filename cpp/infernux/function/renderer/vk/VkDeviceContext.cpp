@@ -312,7 +312,6 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
         return false;
     }
     BuildCapabilities();
-    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device);
 
     // Step 6: Create VMA allocator
     m_vmaAllocator = CreateVmaAllocator(m_instance, m_physicalDevice, m_device);
@@ -320,6 +319,7 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
         INXLOG_ERROR("Failed to create VMA allocator");
         return false;
     }
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator);
 
     INXLOG_INFO("Vulkan device context initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -378,7 +378,6 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
         return false;
     }
     BuildCapabilities();
-    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device);
 
     // Step 3: Create VMA allocator
     m_vmaAllocator = CreateVmaAllocator(m_instance, m_physicalDevice, m_device);
@@ -386,6 +385,7 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
         INXLOG_ERROR("Failed to create VMA allocator");
         return false;
     }
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator);
 
     INXLOG_INFO("Vulkan device initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);

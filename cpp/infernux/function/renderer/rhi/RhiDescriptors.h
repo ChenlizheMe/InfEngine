@@ -83,6 +83,50 @@ enum class BindingType : uint8_t
     CombinedTextureSampler,
 };
 
+enum class BufferUsageFlags : uint16_t
+{
+    None = 0,
+    Storage = 1u << 0,
+    Uniform = 1u << 1,
+    Vertex = 1u << 2,
+    Index = 1u << 3,
+    Indirect = 1u << 4,
+    TransferSource = 1u << 5,
+    TransferDestination = 1u << 6,
+};
+
+[[nodiscard]] constexpr BufferUsageFlags operator|(BufferUsageFlags lhs, BufferUsageFlags rhs) noexcept
+{
+    return static_cast<BufferUsageFlags>(static_cast<uint16_t>(lhs) | static_cast<uint16_t>(rhs));
+}
+
+[[nodiscard]] constexpr bool HasBufferUsage(BufferUsageFlags available, BufferUsageFlags required) noexcept
+{
+    return (static_cast<uint16_t>(available) & static_cast<uint16_t>(required)) == static_cast<uint16_t>(required);
+}
+
+enum class BufferMemory : uint8_t
+{
+    DeviceLocal,
+    Upload,
+    Readback,
+};
+
+struct BufferDesc
+{
+    uint64_t byteSize = 0;
+    BufferUsageFlags usage = BufferUsageFlags::None;
+    BufferMemory memory = BufferMemory::DeviceLocal;
+    const void *initialData = nullptr;
+    uint64_t initialDataBytes = 0;
+};
+
+struct ShaderModuleDesc
+{
+    const uint32_t *spirv = nullptr;
+    size_t wordCount = 0;
+};
+
 struct SamplerDesc
 {
     FilterMode minFilter = FilterMode::Linear;
@@ -115,9 +159,27 @@ struct TextureBinding
 struct BufferBinding
 {
     uint32_t binding = 0;
+    BindingType type = BindingType::StorageBuffer;
     BufferHandle buffer;
     uint64_t offset = 0;
     uint64_t byteSize = 0;
+};
+
+struct BindingLayoutDesc
+{
+    static constexpr size_t MaxEntries = 16;
+
+    std::array<BindingLayoutEntry, MaxEntries> entries{};
+    uint32_t entryCount = 0;
+};
+
+struct BindGroupDesc
+{
+    static constexpr size_t MaxBufferBindings = 16;
+
+    BindingLayoutHandle layout;
+    std::array<BufferBinding, MaxBufferBindings> buffers{};
+    uint32_t bufferCount = 0;
 };
 
 struct RasterState

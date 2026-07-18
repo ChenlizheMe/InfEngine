@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -46,8 +47,6 @@ struct TestResources
     RenderGraph graph;
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSetLayout computeSetLayout = VK_NULL_HANDLE;
     VkQueryPool queryPool = VK_NULL_HANDLE;
     PipelineResult graphicsPipeline;
 
@@ -74,10 +73,6 @@ struct TestResources
             const VkDevice device = context.GetDevice();
             if (queryPool != VK_NULL_HANDLE)
                 vkDestroyQueryPool(device, queryPool, nullptr);
-            if (descriptorPool != VK_NULL_HANDLE)
-                vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-            if (computeSetLayout != VK_NULL_HANDLE)
-                pipelines.DestroyDescriptorSetLayout(computeSetLayout);
             if (commandPool != VK_NULL_HANDLE)
                 vkDestroyCommandPool(device, commandPool, nullptr);
 
@@ -306,22 +301,41 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Imported renderer lists did not preserve their stable host objects"))
         return false;
 
-    VkDescriptorSetLayoutBinding storageBinding{};
-    storageBinding.binding = 0;
-    storageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    storageBinding.descriptorCount = 1;
-    storageBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    resources.computeSetLayout = resources.pipelines.CreateDescriptorSetLayout({storageBinding});
-    if (!Require(resources.computeSetLayout != VK_NULL_HANDLE, "Compute descriptor layout creation failed"))
-        return false;
-
-    const VkShaderModule computeModule = resources.pipelines.CreateShaderModule(computeCode);
-    if (!Require(computeModule != VK_NULL_HANDLE, "Compute shader module creation failed"))
-        return false;
-
     auto &rhi = resources.context.GetRhiDevice();
-    resources.computeShader = rhi.RegisterShaderModule(computeModule);
-    resources.computeBindingLayout = rhi.RegisterBindingLayout(resources.computeSetLayout);
+    infernux::rhi::Device &deviceApi = rhi;
+    const std::array<uint32_t, 4> initialUpload = {1, 2, 3, 4};
+    infernux::rhi::BufferDesc uploadDesc;
+    uploadDesc.byteSize = sizeof(initialUpload);
+    uploadDesc.usage = infernux::rhi::BufferUsageFlags::Uniform;
+    uploadDesc.memory = infernux::rhi::BufferMemory::Upload;
+    uploadDesc.initialData = initialUpload.data();
+    uploadDesc.initialDataBytes = sizeof(initialUpload);
+    const auto uploadBuffer = deviceApi.CreateBuffer(uploadDesc);
+    const uint32_t replacement = 9;
+    if (!Require(uploadBuffer.IsValid() &&
+                     deviceApi.WriteBuffer(uploadBuffer, sizeof(uint32_t), &replacement, sizeof(replacement)),
+                 "RHI upload buffer creation or update failed"))
+        return false;
+
+    infernux::rhi::BufferDesc residentDesc;
+    residentDesc.byteSize = 4096;
+    residentDesc.usage = infernux::rhi::BufferUsageFlags::Storage | infernux::rhi::BufferUsageFlags::Indirect |
+                         infernux::rhi::BufferUsageFlags::TransferDestination;
+    const auto residentBuffer = deviceApi.CreateBuffer(residentDesc);
+    if (!Require(residentBuffer.IsValid(), "RHI device-local buffer creation failed"))
+        return false;
+    deviceApi.Release(residentBuffer);
+    deviceApi.Release(uploadBuffer);
+
+    resources.computeShader = rhi.CreateShaderModule({computeCode.data(), computeCode.size()});
+    infernux::rhi::BindingLayoutDesc layoutDesc;
+    layoutDesc.entries[0] = {0, infernux::rhi::BindingType::StorageBuffer, infernux::rhi::ShaderStage::Compute, 1};
+    layoutDesc.entryCount = 1;
+    resources.computeBindingLayout = rhi.CreateBindingLayout(layoutDesc);
+    if (!Require(resources.computeShader.IsValid() && resources.computeBindingLayout.IsValid(),
+                 "RHI compute shader or binding layout creation failed"))
+        return false;
+
     infernux::rhi::ComputePipelineDesc computeDesc;
     computeDesc.computeShader = resources.computeShader;
     computeDesc.bindingLayouts[0] = resources.computeBindingLayout;
@@ -330,42 +344,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.computeHandle.IsValid(), "RHI compute pipeline creation failed"))
         return false;
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 1;
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    if (!Require(vkCreateDescriptorPool(device, &poolInfo, nullptr, &resources.descriptorPool) == VK_SUCCESS,
-                 "Descriptor pool creation failed"))
+    infernux::rhi::BindGroupDesc groupDesc;
+    groupDesc.layout = resources.computeBindingLayout;
+    groupDesc.buffers[0].binding = 0;
+    groupDesc.buffers[0].type = infernux::rhi::BindingType::StorageBuffer;
+    groupDesc.buffers[0].buffer = resources.graph.ResolveRhiBuffer(indirectArguments);
+    groupDesc.buffers[0].byteSize = sizeof(VkDrawIndirectCommand);
+    groupDesc.bufferCount = 1;
+    resources.computeGroup = rhi.CreateBindGroup(groupDesc);
+    if (!Require(resources.computeGroup.IsValid(), "RHI compute bind group creation failed"))
         return false;
-
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo setInfo{};
-    setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    setInfo.descriptorPool = resources.descriptorPool;
-    setInfo.descriptorSetCount = 1;
-    setInfo.pSetLayouts = &resources.computeSetLayout;
-    if (!Require(vkAllocateDescriptorSets(device, &setInfo, &descriptorSet) == VK_SUCCESS,
-                 "Descriptor set allocation failed"))
-        return false;
-
-    VkDescriptorBufferInfo argumentInfo{};
-    argumentInfo.buffer = resources.graph.ResolveBuffer(indirectArguments);
-    argumentInfo.offset = 0;
-    argumentInfo.range = sizeof(VkDrawIndirectCommand);
-    if (!Require(argumentInfo.buffer != VK_NULL_HANDLE, "RenderGraph did not allocate the indirect buffer"))
-        return false;
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptorSet;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.pBufferInfo = &argumentInfo;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
     PipelineConfig graphicsConfig;
     graphicsConfig.vertexShaderCode = vertexCode;
@@ -379,7 +367,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.graphicsPipeline.pipeline != VK_NULL_HANDLE, "Graphics pipeline creation failed"))
         return false;
 
-    resources.computeGroup = rhi.RegisterBindGroup(descriptorSet);
     resources.graphicsHandle =
         rhi.RegisterGraphicsPipeline(resources.graphicsPipeline.pipeline, resources.graphicsPipeline.layout);
     if (!Require(resources.computeGroup.IsValid() && resources.computeHandle.IsValid() &&
@@ -388,7 +375,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     rhi.Release(resources.computeShader);
-    resources.pipelines.DestroyShaderModule(computeModule);
+    resources.computeShader = {};
 
     VkQueryPoolCreateInfo queryInfo{};
     queryInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;

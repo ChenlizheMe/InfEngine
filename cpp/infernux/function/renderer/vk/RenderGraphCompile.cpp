@@ -1068,7 +1068,9 @@ bool RenderGraph::AllocateResources()
             }
         }
 
-        resource.rhiBuffer = m_rhiDevice ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer) : rhi::BufferHandle{};
+        resource.rhiBuffer = m_rhiDevice
+                                 ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer, resource.bufferDesc.size)
+                                 : rhi::BufferHandle{};
     }
 
     return true;

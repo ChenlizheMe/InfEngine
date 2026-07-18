@@ -471,12 +471,16 @@ if(INFERNUX_BUILD_TESTS)
     add_executable(infernux_vulkan_rhi_device_tests
         cpp/tests/VulkanRhiDeviceTests.cpp
         cpp/infernux/core/log/InxLog.cpp
+        cpp/infernux/function/renderer/vk/VmaContext.cpp
         cpp/infernux/function/renderer/vk/VulkanRhiDevice.cpp
     )
     target_include_directories(infernux_vulkan_rhi_device_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
-    target_link_libraries(infernux_vulkan_rhi_device_tests PRIVATE Vulkan::Vulkan)
+    target_link_libraries(infernux_vulkan_rhi_device_tests PRIVATE
+        Vulkan::Vulkan
+        GPUOpen::VulkanMemoryAllocator
+    )
     if(MSVC)
         target_compile_options(infernux_vulkan_rhi_device_tests PRIVATE /utf-8)
     endif()
