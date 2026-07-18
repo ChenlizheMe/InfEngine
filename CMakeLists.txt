@@ -365,6 +365,19 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.component_data_store COMMAND infernux_component_data_store_tests)
 
+    add_executable(infernux_component_document_validation_tests
+        cpp/tests/ComponentDocumentValidationTests.cpp
+        cpp/infernux/function/scene/ComponentDocumentValidation.cpp
+    )
+    target_include_directories(infernux_component_document_validation_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    if(MSVC)
+        target_compile_options(infernux_component_document_validation_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.component_document_validation COMMAND infernux_component_document_validation_tests)
+
     add_executable(infernux_render_identity_tests
         cpp/tests/RenderIdentityTests.cpp
     )

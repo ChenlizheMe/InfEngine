@@ -21,6 +21,7 @@ from Infernux.components import (
     InxComponent, serialized_field, FieldType, get_serialized_fields,
     Range, Tooltip, Header, Space, Group, InfoText, DragSpeed,
     Multiline, ReadOnly, HideInInspector, NonSerialized, HDR, Color,
+    FormerlySerializedAs,
     VALUE_CODECS,
 )
 from Infernux.components.serialized_field import (
@@ -92,6 +93,13 @@ class TestBuildField:
     def test_hide_in_inspector_serialized_but_hidden(self):
         meta = build_field_from_annotation(Annotated[int, HideInInspector], default=7)
         assert meta is not None and meta.hidden is True
+
+    def test_formerly_serialized_as_marker_collects_aliases(self):
+        meta = build_field_from_annotation(
+            Annotated[int, FormerlySerializedAs("hp"), FormerlySerializedAs("hit_points")],
+            default=7,
+        )
+        assert meta.formerly_serialized_as == ("hp", "hit_points")
 
     def test_non_serialized_returns_sentinel(self):
         from Infernux.components.serialized_field import NON_SERIALIZED_FIELD
@@ -339,6 +347,20 @@ class TestStrictSerializationFailures:
         assert saved["health"] == 42
         assert "hp" not in saved
         assert "removed_debug_value" not in saved
+
+    def test_annotation_marker_restores_former_name(self):
+        import json
+
+        class EvolvingFields(InxComponent):
+            health: Annotated[int, FormerlySerializedAs("hp")] = 10
+
+        document = json.loads(EvolvingFields()._serialize_fields())
+        document["hp"] = document.pop("health") + 5
+
+        target = EvolvingFields()
+        target._deserialize_fields(json.dumps(document))
+
+        assert target.health == 15
 
     def test_runtime_schema_migration_hook_is_not_used(self):
         import json

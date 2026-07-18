@@ -32,6 +32,60 @@ class FieldType(Enum):
     UNKNOWN = auto()
 
 
+@dataclass(frozen=True)
+class Range:
+    lo: float
+    hi: float
+    slider: bool = ...
+
+@dataclass(frozen=True)
+class Tooltip:
+    text: str
+
+@dataclass(frozen=True)
+class Header:
+    text: str
+
+@dataclass(frozen=True)
+class Space:
+    height: float = ...
+
+@dataclass(frozen=True)
+class Group:
+    name: str
+
+@dataclass(frozen=True)
+class InfoText:
+    text: str
+
+@dataclass(frozen=True)
+class DragSpeed:
+    speed: float
+
+@dataclass(frozen=True)
+class RequiredComponent:
+    type_name: str
+
+@dataclass(frozen=True)
+class FormerlySerializedAs:
+    name: str
+
+class Multiline: ...
+class ReadOnly: ...
+class HideInInspector: ...
+class NonSerialized: ...
+class HDR: ...
+
+class Color:
+    def __new__(
+        cls,
+        r: float = ...,
+        g: float = ...,
+        b: float = ...,
+        a: float = ...,
+    ) -> list[float]: ...
+
+
 @dataclass
 class FieldMetadata:
     """Metadata for a serialized field."""

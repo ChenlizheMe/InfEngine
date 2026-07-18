@@ -1,6 +1,5 @@
 #include "ComponentDocumentValidation.h"
 
-#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -10,17 +9,6 @@ namespace infernux::component_document_validation
 {
 namespace
 {
-
-bool IsBaseField(std::string_view field)
-{
-    return field == "schema_version" || field == "type" || field == "enabled" || field == "execution_order" ||
-           field == "component_id";
-}
-
-template <typename Range> bool Contains(const Range &fields, std::string_view target)
-{
-    return std::find(fields.begin(), fields.end(), target) != fields.end();
-}
 
 std::string FieldPath(std::string_view componentType, std::string_view field)
 {
@@ -43,11 +31,10 @@ void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_v
     if (!document.is_object())
         throw std::invalid_argument(std::string(expectedType) + " document must be an object");
 
-    for (const auto &[key, value] : document.items()) {
-        (void)value;
-        if (!IsBaseField(key) && !Contains(requiredFields, key) && !Contains(optionalFields, key))
-            throw std::invalid_argument(std::string(expectedType) + " contains unknown field '" + key + "'");
-    }
+    // Component payloads evolve like Unity-serialized fields: removed ordinary
+    // fields are ignored when an older asset is read. Reserved envelope fields
+    // remain strict below, and selected current fields are still type-checked.
+    (void)optionalFields;
 
     const auto &version = RequireField(document, "schema_version", expectedType);
     if (!version.is_number_integer() || version.get<int>() != schemaVersion)

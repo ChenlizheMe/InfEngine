@@ -163,6 +163,23 @@ class TestSerialization:
         assert restored.health == 42
         assert restored._serialize()["fields"] == {"health": 42}
 
+    def test_stable_type_id_and_former_type_alias_survive_a_rename(self):
+        class RenamedStats(SerializableObject):
+            __serialized_type_id__ = "gameplay:CharacterStats"
+            __formerly_serialized_type_as__ = ("legacy.stats:Stats",)
+
+            health: int = 100
+
+        data = RenamedStats(health=42)._serialize()
+        assert data["type_id"] == "gameplay:CharacterStats"
+        data["type_id"] = "legacy.stats:Stats"
+
+        restored = SerializableObject._deserialize(data)
+
+        assert type(restored) is RenamedStats
+        assert restored.health == 42
+        assert restored._serialize()["type_id"] == "gameplay:CharacterStats"
+
     def test_missing_additive_field_uses_an_independent_declared_default(self):
         class AdditiveDefaults(SerializableObject):
             hp: int = serialized_field(default=100)

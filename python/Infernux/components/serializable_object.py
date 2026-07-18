@@ -35,6 +35,11 @@ _SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
 def get_serializable_type_id(value: type | "SerializableObject") -> str:
     """Return the stable current-format identity for a serializable type."""
     value_type = value if isinstance(value, type) else type(value)
+    explicit_id = value_type.__dict__.get("__serialized_type_id__", "")
+    if explicit_id:
+        if not isinstance(explicit_id, str):
+            raise TypeError("__serialized_type_id__ must be a string")
+        return explicit_id
     return f"{value_type.__module__}:{value_type.__qualname__}"
 
 
@@ -57,6 +62,8 @@ class SerializableObject:
     """
 
     _serialized_fields_: Dict[str, "FieldMetadata"] = {}
+    __serialized_type_id__ = ""
+    __formerly_serialized_type_as__: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------
     # Metaclass-style auto-registration
@@ -66,7 +73,17 @@ class SerializableObject:
         super().__init_subclass__(**kwargs)
 
         cls._serialized_fields_ = {}
-        _SERIALIZABLE_REGISTRY[get_serializable_type_id(cls)] = cls
+        current_type_id = get_serializable_type_id(cls)
+        aliases = tuple(cls.__dict__.get("__formerly_serialized_type_as__", ()))
+        type_ids = (current_type_id, *aliases)
+        if any(not isinstance(type_id, str) or not type_id for type_id in type_ids):
+            raise ValueError("serialized type IDs and aliases must be non-empty strings")
+        if len(type_ids) != len(set(type_ids)):
+            raise ValueError("serialized type IDs and aliases must be unique")
+        for type_id in type_ids:
+            # Last definition wins so editor script hot-reload can replace a
+            # class while preserving the authored type identity.
+            _SERIALIZABLE_REGISTRY[type_id] = cls
 
         own_annotations = cls.__dict__.get('__annotations__', {})
 

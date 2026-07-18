@@ -142,6 +142,12 @@ class RequiredComponent:
     type_name: str
 
 
+@dataclass(frozen=True)
+class FormerlySerializedAs:
+    """Accept a previous persisted field name while writing the current name."""
+    name: str
+
+
 class _MarkerSentinel:
     """Base for value-less markers usable as ``Marker`` or ``Marker()``."""
     def __init_subclass__(cls, **kw):
@@ -1160,6 +1166,9 @@ def _apply_markers(meta: 'FieldMetadata', markers: list) -> Optional['FieldMetad
             meta.drag_speed = m.speed
         elif isinstance(m, RequiredComponent):
             meta.required_component = m.type_name
+        elif isinstance(m, FormerlySerializedAs):
+            aliases = _normalize_serialized_aliases((*meta.formerly_serialized_as, m.name))
+            meta.formerly_serialized_as = aliases
         elif _is_marker(m, Multiline):
             meta.multiline = True
         elif _is_marker(m, ReadOnly):
@@ -1380,17 +1389,7 @@ def serialized_field(
     if isinstance(default, Enum):
         enum_type = type(default)
     
-    if formerly_serialized_as is None:
-        serialized_aliases: Tuple[str, ...] = ()
-    elif isinstance(formerly_serialized_as, str):
-        serialized_aliases = (formerly_serialized_as,)
-    else:
-        serialized_aliases = tuple(formerly_serialized_as)
-    if any(not isinstance(alias, str) or not alias or alias.startswith("__")
-           for alias in serialized_aliases):
-        raise ValueError("formerly_serialized_as values must be non-empty field names")
-    if len(serialized_aliases) != len(set(serialized_aliases)):
-        raise ValueError("formerly_serialized_as values must be unique")
+    serialized_aliases = _normalize_serialized_aliases(formerly_serialized_as)
 
     metadata = FieldMetadata(
         name="",  # Will be set by __set_name__
@@ -1420,6 +1419,23 @@ def serialized_field(
     )
     
     return SerializedFieldDescriptor(metadata)
+
+
+def _normalize_serialized_aliases(
+    aliases: Optional[Union[str, Tuple[str, ...], List[str]]],
+) -> Tuple[str, ...]:
+    """Validate and normalize persisted field aliases without reordering them."""
+    if aliases is None:
+        values: Tuple[str, ...] = ()
+    elif isinstance(aliases, str):
+        values = (aliases,)
+    else:
+        values = tuple(aliases)
+    if any(not isinstance(alias, str) or not alias or alias.startswith("__") for alias in values):
+        raise ValueError("formerly serialized names must be non-empty ordinary field names")
+    if len(values) != len(set(values)):
+        raise ValueError("formerly serialized names must be unique")
+    return values
 
 
 def resolve_serialized_field_sources(
