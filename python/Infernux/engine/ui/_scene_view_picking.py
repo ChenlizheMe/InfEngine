@@ -38,18 +38,32 @@ class SceneViewPickingMixin:
     def _handle_picking_and_selection(self, ctx, vp, gizmo_consumed, overlay_hovered,
                                       is_scene_hovered, play_border_clr):
         """Handle object picking, box-select, and play-mode border drawing."""
+        self._poll_scene_object_pick()
+
         if (is_scene_hovered and not gizmo_consumed
                 and not overlay_hovered
                 and ctx.is_mouse_button_clicked(0)
                 and not self._box_select_active):
             ctrl = ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
-            picked_id = self._pick_scene_object(ctx, vp)
-            if picked_id:
+            local_x, local_y = vp.mouse_local(ctx)
+            request_id = 0
+            if (0 <= local_x <= vp.width and 0 <= local_y <= vp.height and self._engine):
+                request_id = self._engine.request_scene_object_pick(
+                    local_x, local_y, vp.width, vp.height
+                )
+            if request_id:
+                self._pending_scene_pick = {
+                    "request_id": request_id,
+                    "x": local_x,
+                    "y": local_y,
+                    "width": vp.width,
+                    "height": vp.height,
+                    "ctrl": ctrl,
+                }
+            else:
+                picked_id = self._pick_scene_object(ctx, vp)
                 if self._on_object_picked:
                     self._on_object_picked(picked_id, ctrl)
-            else:
-                if self._on_object_picked:
-                    self._on_object_picked(0, ctrl)
 
         # Box-select
         if self._box_select_active:
@@ -79,6 +93,66 @@ class SceneViewPickingMixin:
                 *play_border_clr,
                 thickness=Theme.BORDER_THICKNESS,
             )
+
+    def _poll_scene_object_pick(self):
+        pending = self._pending_scene_pick
+        if not pending or not self._engine:
+            return
+        result = self._engine.query_scene_object_pick(pending["request_id"])
+        status = result.get("status", "unknown")
+        if status == "pending":
+            return
+        self._pending_scene_pick = None
+        if status != "completed":
+            Debug.log_warning(f"Scene GPU picking failed: {result.get('error', status)}")
+            candidates = self._engine.pick_scene_object_ids(
+                pending["x"], pending["y"], pending["width"], pending["height"]
+            )
+            ids = [int(value) for value in candidates
+                   if int(value) > 0 and int(value) not in _GIZMO_IDS]
+            picked_id = self._cycle_pick_candidates(
+                ids, pending["x"], pending["y"], pending["width"], pending["height"]
+            )
+            if self._on_object_picked:
+                self._on_object_picked(picked_id, pending["ctrl"])
+            return
+
+        gpu_id = int(result.get("object_id", 0) or 0)
+        candidates = self._engine.pick_scene_object_ids(
+            pending["x"], pending["y"], pending["width"], pending["height"]
+        )
+        ids = [int(value) for value in candidates
+               if int(value) > 0 and int(value) not in _GIZMO_IDS]
+        if gpu_id > 0 and gpu_id not in _GIZMO_IDS:
+            ids = [gpu_id] + [value for value in ids if value != gpu_id]
+
+        picked_id = self._cycle_pick_candidates(
+            ids, pending["x"], pending["y"], pending["width"], pending["height"]
+        )
+        if self._on_object_picked:
+            self._on_object_picked(picked_id, pending["ctrl"])
+
+    def _cycle_pick_candidates(self, ids, local_x, local_y, width, height) -> int:
+        if not ids:
+            self._pick_cycle_candidates = []
+            self._pick_cycle_index = -1
+            return 0
+
+        viewport = (int(width), int(height))
+        same_viewport = self._pick_cycle_last_viewport == viewport
+        last_x, last_y = self._pick_cycle_last_mouse
+        same_spot = abs(local_x - last_x) <= 3.0 and abs(local_y - last_y) <= 3.0
+        same_candidates = ids == self._pick_cycle_candidates
+        if same_viewport and same_spot and same_candidates and self._pick_cycle_index >= 0:
+            index = (self._pick_cycle_index + 1) % len(ids)
+        else:
+            index = 0
+
+        self._pick_cycle_candidates = ids
+        self._pick_cycle_index = index
+        self._pick_cycle_last_mouse = (local_x, local_y)
+        self._pick_cycle_last_viewport = viewport
+        return ids[index]
 
     def _finalize_box_select(self, ctx: InxGUIContext, vp: ViewportInfo):
         """Complete a box-select drag: find objects inside the rectangle."""
@@ -169,25 +243,5 @@ class SceneViewPickingMixin:
             if object_id > 0 and object_id not in _GIZMO_IDS:
                 ids.append(object_id)
 
-        if not ids:
-            self._pick_cycle_candidates = []
-            self._pick_cycle_index = -1
-            return 0
-
-        same_viewport = self._pick_cycle_last_viewport == (int(vp.width), int(vp.height))
-        last_x, last_y = self._pick_cycle_last_mouse
-        same_spot = abs(local_x - last_x) <= 3.0 and abs(local_y - last_y) <= 3.0
-        same_candidates = ids == self._pick_cycle_candidates
-
-        if same_viewport and same_spot and same_candidates and self._pick_cycle_index >= 0:
-            index = (self._pick_cycle_index + 1) % len(ids)
-        else:
-            index = 0
-
-        self._pick_cycle_candidates = ids
-        self._pick_cycle_index = index
-        self._pick_cycle_last_mouse = (local_x, local_y)
-        self._pick_cycle_last_viewport = (int(vp.width), int(vp.height))
-
-        return ids[index]
+        return self._cycle_pick_candidates(ids, local_x, local_y, vp.width, vp.height)
 

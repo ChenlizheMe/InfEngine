@@ -207,7 +207,8 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
 // Multi-camera UBO update via command buffer
 // ============================================================================
 
-void InxVkCoreModular::CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm::mat4 &view, const glm::mat4 &proj)
+void InxVkCoreModular::CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm::mat4 &view, const glm::mat4 &proj,
+                                              const glm::mat4 *previousViewProj)
 {
     // All material descriptor sets reference the single scene UBO; the
     // in-command-buffer update below is what makes one buffer safe across
@@ -222,6 +223,7 @@ void InxVkCoreModular::CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm:
     ubo.model = glm::mat4(1.0f);
     ubo.view = view;
     ubo.proj = proj;
+    ubo.previousViewProj = previousViewProj ? *previousViewProj : proj * view;
 
     // Barrier: ensure previous shader reads from the UBO are complete
     vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);

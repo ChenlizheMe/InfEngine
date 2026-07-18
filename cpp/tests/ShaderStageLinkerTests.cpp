@@ -256,6 +256,20 @@ void surface(out SurfaceData s)
     assert(pickingCompilation->generatedFragmentSource.find("outObjectId = _inx_ObjectId;") != std::string::npos);
     assert(pickingCompilation->generatedFragmentSource.find("surface(s);") != std::string::npos);
 
+    const auto motionCompilation =
+        std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Motion; });
+    assert(motionCompilation != completeCompilation.compiledVariants.end());
+    assert(motionCompilation->generatedVertexSource.find("#define INX_MOTION_PASS 1") != std::string::npos);
+    assert(motionCompilation->generatedVertexSource.find("mat4 previousViewProj;") != std::string::npos);
+    assert(motionCompilation->generatedVertexSource.find("layout(location = 15) out vec2 _inx_MotionVector;") !=
+           std::string::npos);
+    assert(motionCompilation->generatedVertexSource.find("aux.previousModel") != std::string::npos);
+    assert(motionCompilation->generatedFragmentSource.find("layout(location = 0) out vec2 outMotion;") !=
+           std::string::npos);
+    assert(motionCompilation->generatedFragmentSource.find("outMotion = _inx_MotionVector;") != std::string::npos);
+    assert(motionCompilation->generatedFragmentSource.find("surface(s);") != std::string::npos);
+
     auto reorderedArtifact = completeArtifact;
     std::reverse(reorderedArtifact.variants.begin(), reorderedArtifact.variants.end());
     assert(infernux::ComputeShaderProgramArtifactRevision(reorderedArtifact) == completeArtifact.key.revision);

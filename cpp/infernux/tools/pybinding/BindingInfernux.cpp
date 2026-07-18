@@ -1462,6 +1462,47 @@ PYBIND11_MODULE(_Infernux, m)
         .def("pick_scene_object_ids", &Infernux::PickSceneObjectIds, py::arg("screen_x"), py::arg("screen_y"),
              py::arg("viewport_width"), py::arg("viewport_height"),
              "Pick ordered scene object candidate IDs from screen coordinates")
+        .def(
+            "request_scene_object_pick",
+            [](Infernux &self, float x, float y, float viewportWidth, float viewportHeight) {
+                auto *renderer = self.GetRenderer();
+                return renderer ? renderer->RequestScenePick(x, y, viewportWidth, viewportHeight) : 0;
+            },
+            py::arg("screen_x"), py::arg("screen_y"), py::arg("viewport_width"), py::arg("viewport_height"),
+            "Request an on-demand GPU object-ID pick. Returns an asynchronous request ID.")
+        .def(
+            "query_scene_object_pick",
+            [](Infernux &self, uint64_t requestId) {
+                auto *renderer = self.GetRenderer();
+                const ScenePickSnapshot snapshot =
+                    renderer ? renderer->QueryScenePick(requestId)
+                             : ScenePickSnapshot{requestId, ScenePickStatus::Unknown, 0,
+                                                 "Graphical renderer is unavailable"};
+                const char *status = "unknown";
+                switch (snapshot.status) {
+                case ScenePickStatus::Pending:
+                    status = "pending";
+                    break;
+                case ScenePickStatus::Completed:
+                    status = "completed";
+                    break;
+                case ScenePickStatus::Failed:
+                    status = "failed";
+                    break;
+                case ScenePickStatus::Cancelled:
+                    status = "cancelled";
+                    break;
+                case ScenePickStatus::Unknown:
+                    break;
+                }
+                py::dict result;
+                result["request_id"] = snapshot.requestId;
+                result["status"] = status;
+                result["object_id"] = snapshot.objectId;
+                result["error"] = snapshot.error;
+                return result;
+            },
+            py::arg("request_id"), "Query an asynchronous GPU object-ID pick.")
         .def("pick_gizmo_axis", &Infernux::PickGizmoAxis, py::arg("screen_x"), py::arg("screen_y"),
              py::arg("viewport_width"), py::arg("viewport_height"),
              "Lightweight gizmo axis proximity test for hover highlighting (no scene raycast)")

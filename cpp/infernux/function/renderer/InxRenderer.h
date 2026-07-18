@@ -5,6 +5,7 @@
 #include "GpuResidency.h"
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
+#include "ScenePickingService.h"
 #include <array>
 #include <chrono>
 #include <core/log/InxLog.h>           // LogLevel enum (used in SetLogLevel)
@@ -267,6 +268,8 @@ class InxRenderer
     [[nodiscard]] uint64_t RequestCapture(CaptureSource source, const std::string &outputPath);
     [[nodiscard]] CaptureSnapshot QueryCapture(uint64_t captureId) const;
     [[nodiscard]] bool CancelCapture(uint64_t captureId);
+    [[nodiscard]] uint64_t RequestScenePick(float x, float y, float viewportWidth, float viewportHeight);
+    [[nodiscard]] ScenePickSnapshot QueryScenePick(uint64_t requestId) const;
 
     // Editor gizmos
     void SetShowGrid(bool show);
@@ -511,6 +514,7 @@ class InxRenderer
     std::unique_ptr<SceneRenderTarget> m_sceneRenderTarget;
     std::unique_ptr<SceneRenderGraph> m_sceneRenderGraph;
     std::unique_ptr<CaptureService> m_captureService;
+    std::unique_ptr<ScenePickingService> m_scenePickingService;
     struct PendingCapture
     {
         uint64_t id = 0;

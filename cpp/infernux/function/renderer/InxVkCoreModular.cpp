@@ -840,6 +840,8 @@ void InxVkCoreModular::UpdateUniformBuffer(uint32_t currentImage, const float *v
         ubo.proj[1][1] *= -1; // Flip Y for Vulkan
     }
 
+    ubo.previousViewProj = ubo.proj * ubo.view;
+
     // Stage the UBO data — the actual GPU write happens inline in the
     // command buffer via CmdUpdateUniformBuffer() during RecordCommandBuffer().
     // This eliminates the CPU→GPU race on the scene UBO that previously

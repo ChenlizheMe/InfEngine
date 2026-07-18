@@ -309,6 +309,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     sceneUBO.model = previewModel;
     sceneUBO.view = view;
     sceneUBO.proj = proj;
+    sceneUBO.previousViewProj = proj * view;
 
     // ------------------------------------------------------------------
     // Prepare preview lighting UBO.

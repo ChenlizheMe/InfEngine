@@ -411,6 +411,8 @@ class SceneRenderGraph
         m_cachedView = glm::mat4(1.0f);
         m_cachedProj = glm::mat4(1.0f);
         m_hasCachedCameraVP = false;
+        m_previousViewProj = glm::mat4(1.0f);
+        m_cameraHistoryValid = false;
         m_needsRebuild = true;
         // Prevent Execute() from running the old compiled graph before
         // EnsureGraphBuilt() has a chance to rebuild it.  Without this,
@@ -437,6 +439,19 @@ class SceneRenderGraph
     [[nodiscard]] const glm::mat4 &GetCachedProj() const
     {
         return m_cachedProj;
+    }
+
+    [[nodiscard]] glm::mat4 GetPreviousViewProj() const
+    {
+        return m_cameraHistoryValid ? m_previousViewProj : m_cachedProj * m_cachedView;
+    }
+
+    void CommitCameraHistory()
+    {
+        if (!m_hasCachedCameraVP)
+            return;
+        m_previousViewProj = m_cachedProj * m_cachedView;
+        m_cameraHistoryValid = true;
     }
 
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
@@ -548,6 +563,8 @@ class SceneRenderGraph
     glm::mat4 m_cachedView{1.0f};
     glm::mat4 m_cachedProj{1.0f};
     bool m_hasCachedCameraVP = false;
+    glm::mat4 m_previousViewProj{1.0f};
+    bool m_cameraHistoryValid = false;
 
     // Per-graph shadow descriptor sets (set 1) — multi-camera shadow isolation.
     // One set per frame-in-flight to prevent host-side vkUpdateDescriptorSets

@@ -361,8 +361,11 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptor(ShaderCompileTarget ta
         break;
     case ShaderCompileTarget::Forward:
     case ShaderCompileTarget::GBuffer:
-    case ShaderCompileTarget::Motion:
         pipeline.colorFormats = {rhi::FromVkFormat(m_colorFormat)};
+        break;
+    case ShaderCompileTarget::Motion:
+        pipeline.colorFormats = {rhi::PixelFormat::RG16SFloat};
+        pipeline.samples = rhi::SampleCount::One;
         break;
     case ShaderCompileTarget::Count:
         break;

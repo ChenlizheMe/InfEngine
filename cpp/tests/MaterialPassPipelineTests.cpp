@@ -47,6 +47,14 @@ int main()
     invalidPicking.colorFormats = {PixelFormat::RGBA8UNorm};
     assert(!invalidPicking.IsValid());
 
+    const MaterialPassPipelineDescriptor motion{
+        ShaderCompileTarget::Motion,
+        {PixelFormat::RG16SFloat},
+        PixelFormat::D32SFloat,
+        SampleCount::One,
+    };
+    assert(motion.IsValid());
+
     auto invalidDepth = depth;
     invalidDepth.colorFormats = {PixelFormat::RGBA8UNorm};
     assert(!invalidDepth.IsValid());
@@ -60,8 +68,9 @@ int main()
     descriptors.insert(gbuffer);
     descriptors.insert(depth);
     descriptors.insert(picking);
+    descriptors.insert(motion);
     descriptors.insert(forward);
-    assert(descriptors.size() == 4);
+    assert(descriptors.size() == 5);
 
     auto differentSamples = forward;
     differentSamples.samples = SampleCount::One;

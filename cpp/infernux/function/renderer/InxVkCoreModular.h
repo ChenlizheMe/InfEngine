@@ -960,7 +960,8 @@ class InxVkCoreModular
 
     /// @brief Update the VP UBO inline in a command buffer (for multi-camera rendering).
     /// Uses vkCmdUpdateBuffer with proper barriers so each render graph sees its own VP matrices.
-    void CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm::mat4 &view, const glm::mat4 &proj);
+    void CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm::mat4 &view, const glm::mat4 &proj,
+                                const glm::mat4 *previousViewProj = nullptr);
 
     /// @brief Create a raw Vulkan buffer via VMA
     void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer,

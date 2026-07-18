@@ -10,6 +10,7 @@
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
 #include "ParticleDrawCallBuffer.h"
+#include "ScenePickingService.h"
 #include "SceneRenderGraph.h"
 #include "SceneRenderTarget.h"
 #include "ScriptableRenderContext.h"
@@ -53,6 +54,7 @@ InxRenderer::InxRenderer()
     m_vkCore = std::make_unique<InxVkCoreModular>();
     m_view = std::make_unique<InxView>();
     m_captureService = std::make_unique<CaptureService>();
+    m_scenePickingService = std::make_unique<ScenePickingService>();
 }
 
 InxRenderer::~InxRenderer()
@@ -80,6 +82,7 @@ InxRenderer::~InxRenderer()
     m_screenUIRenderer.reset();
 
     m_captureService.reset();
+    m_scenePickingService.reset();
 
     m_gameRenderTarget.reset();
     m_sceneRenderTarget.reset();
@@ -215,6 +218,7 @@ void InxRenderer::PreparePipeline()
 {
     if (m_vkCore) {
         m_vkCore->PreparePipeline();
+        m_scenePickingService->Initialize(m_vkCore.get());
 
         INXLOG_DEBUG("Init GUI.");
         m_gui = std::make_unique<InxGUI>(m_vkCore.get());
@@ -242,7 +246,8 @@ void InxRenderer::PreparePipeline()
 
         // Hook RenderGraph execution into the pre-render callback
         m_vkCore->SetRenderGraphExecutor([this](VkCommandBuffer cmdBuf) {
-            const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene)) &&
+            const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene) ||
+                                           (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
                                           m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
                                           m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
 
@@ -267,6 +272,11 @@ void InxRenderer::PreparePipeline()
 #endif
             // ---- Scene View: editor camera VP is already in UBO from UpdateUniformBuffer ----
             if (sceneViewActive && m_sceneRenderGraph) {
+                if (m_sceneRenderGraph->HasCachedCameraVP()) {
+                    const glm::mat4 previousViewProj = m_sceneRenderGraph->GetPreviousViewProj();
+                    m_vkCore->CmdUpdateUniformBuffer(cmdBuf, m_sceneRenderGraph->GetCachedView(),
+                                                     m_sceneRenderGraph->GetCachedProj(), &previousViewProj);
+                }
                 // Swap in scene-specific draw calls (includes gizmos)
                 if (m_sceneRenderGraph->HasCachedDrawCalls()) {
                     m_vkCore->SetDrawCalls(&m_sceneRenderGraph->GetCachedDrawCalls());
@@ -281,12 +291,18 @@ void InxRenderer::PreparePipeline()
                 // Set per-graph shadow descriptor (set 1) for multi-camera isolation
                 m_vkCore->SetActiveShadowDescriptorSet(m_sceneRenderGraph->GetPerViewDescriptorSet());
                 m_sceneRenderGraph->Execute(cmdBuf);
+                m_sceneRenderGraph->CommitCameraHistory();
             }
 #if INFERNUX_FRAME_PROFILE
             auto exT1 = ExClock::now();
 #endif
             if (sceneViewActive && m_sceneRenderGraph) {
                 m_sceneRenderGraph->ResolveSceneMsaa(cmdBuf);
+            }
+            if (sceneViewActive && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
+                m_sceneRenderTarget) {
+                m_scenePickingService->Record(cmdBuf, m_sceneRenderTarget->GetWidth(),
+                                              m_sceneRenderTarget->GetHeight());
             }
 #if INFERNUX_FRAME_PROFILE
             auto exT2 = ExClock::now();
@@ -316,7 +332,8 @@ void InxRenderer::PreparePipeline()
                     glm::mat4 gameProj = m_gameRenderGraph->HasCachedCameraVP() ? m_gameRenderGraph->GetCachedProj()
                                                                                 : gameCam->GetProjectionMatrix();
 
-                    m_vkCore->CmdUpdateUniformBuffer(cmdBuf, gameView, gameProj);
+                    const glm::mat4 previousGameViewProj = m_gameRenderGraph->GetPreviousViewProj();
+                    m_vkCore->CmdUpdateUniformBuffer(cmdBuf, gameView, gameProj, &previousGameViewProj);
 
                     {
                         glm::mat4 invView = glm::inverse(gameView);
@@ -335,6 +352,7 @@ void InxRenderer::PreparePipeline()
                     auto exTg0 = ExClock::now();
 #endif
                     m_gameRenderGraph->Execute(cmdBuf);
+                    m_gameRenderGraph->CommitCameraHistory();
 #if INFERNUX_FRAME_PROFILE
                     auto exTg1 = ExClock::now();
 #endif
@@ -630,9 +648,10 @@ void InxRenderer::DrawFrame()
     _fp.stamp(); // [4] after GUI::BuildFrame (ImGui → Python panels)
 #endif
 
-    const bool sceneViewActive =
-        ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene)) && m_sceneRenderTarget &&
-         m_sceneRenderTarget->IsReady() && m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
+    const bool sceneViewActive = ((m_sceneViewVisible || HasPendingCapture(CaptureSource::Scene) ||
+                                   (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
+                                  m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
+                                  m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
 
     // Prepare scene rendering data (collect + cull + sort) AFTER GUI processing
     // so we always operate on the current scene state.
@@ -2327,6 +2346,23 @@ bool InxRenderer::CancelCapture(uint64_t captureId)
                        [captureId](const PendingCapture &capture) { return capture.id == captureId; }),
         m_pendingCaptures.end());
     return true;
+}
+
+uint64_t InxRenderer::RequestScenePick(float x, float y, float viewportWidth, float viewportHeight)
+{
+    if (!m_scenePickingService)
+        return 0;
+    const uint64_t requestId = m_scenePickingService->Request(x, y, viewportWidth, viewportHeight);
+    if (requestId != 0)
+        RequestFullSpeedFrame();
+    return requestId;
+}
+
+ScenePickSnapshot InxRenderer::QueryScenePick(uint64_t requestId) const
+{
+    if (!m_scenePickingService)
+        return {requestId, ScenePickStatus::Unknown, 0, "Scene picking service is unavailable"};
+    return m_scenePickingService->Query(requestId);
 }
 
 void InxRenderer::ResizeSceneRenderTarget(uint32_t width, uint32_t height)

@@ -269,6 +269,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     sceneUBO.model = modelMat;
     sceneUBO.view = view;
     sceneUBO.proj = proj;
+    sceneUBO.previousViewProj = proj * view;
 
     // ── Lighting UBO ─────────────────────────────────────────────────
     ShaderLightingUBO lightingUBO{};
@@ -915,6 +916,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     sceneUBO.model = modelMat;
     sceneUBO.view = view;
     sceneUBO.proj = proj;
+    sceneUBO.previousViewProj = proj * view;
 
     ShaderLightingUBO lightingUBO{};
     memset(&lightingUBO, 0, sizeof(lightingUBO));

@@ -924,6 +924,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         result << "#define INX_DEPTH_PASS 1\n";
     else if (target == ShaderCompileTarget::Picking)
         result << "#define INX_PICKING_PASS 1\n";
+    else if (target == ShaderCompileTarget::Motion)
+        result << "#define INX_MOTION_PASS 1\n";
 
     // ================================================================
     // Inject engine globals UBO — always available except shadow
@@ -969,6 +971,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << GlslStageInterfaceEmitter::EmitVertexDeclarations(*linkedInterface, desc);
                 if (target == ShaderCompileTarget::Picking)
                     result << "\n" << LoadTemplate("picking_vertex_interface.glsl") << "\n";
+                else if (target == ShaderCompileTarget::Motion)
+                    result << "\n" << LoadTemplate("motion_vertex_interface.glsl") << "\n";
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
                 // LightingUBO — only when the shading model requires it
@@ -986,6 +990,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 // Fragment output declarations
                 if (target == ShaderCompileTarget::Picking) {
                     result << "\n" << LoadTemplate("picking_fragment_interface.glsl") << "\n";
+                } else if (target == ShaderCompileTarget::Motion) {
+                    result << "\n" << LoadTemplate("motion_fragment_interface.glsl") << "\n";
                 } else if (target == ShaderCompileTarget::Depth) {
                     // Depth-only variants intentionally declare no color output.
                 } else if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
@@ -1216,9 +1222,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << "    // Depth written automatically by hardware\n";
                 result << "}\n";
             }
-        } else if (target == ShaderCompileTarget::Depth || target == ShaderCompileTarget::Picking) {
-            std::string mainTpl = LoadTemplate(target == ShaderCompileTarget::Picking ? "surface_main_picking.glsl"
-                                                                                      : "surface_main_depth.glsl");
+        } else if (target == ShaderCompileTarget::Depth || target == ShaderCompileTarget::Picking ||
+                   target == ShaderCompileTarget::Motion) {
+            const char *templateName =
+                target == ShaderCompileTarget::Picking
+                    ? "surface_main_picking.glsl"
+                    : (target == ShaderCompileTarget::Motion ? "surface_main_motion.glsl" : "surface_main_depth.glsl");
+            std::string mainTpl = LoadTemplate(templateName);
             ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
                                linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
                                                : "    surface(s);");
@@ -1272,10 +1282,21 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             (target == ShaderCompileTarget::Shadow) ? "shadow_vertex_main.glsl" : "vertex_main.glsl";
         std::string mainTpl = LoadTemplate(templateName);
         ReplacePlaceholder(mainTpl, "${VERTEX_CALL}", vertexCall);
-        ReplacePlaceholder(mainTpl, "${PASS_VERTEX_OUTPUT}",
-                           target == ShaderCompileTarget::Picking
-                               ? "    _inx_ObjectId = instanceAuxData[gl_InstanceIndex].objectId;"
-                               : "");
+        std::string passVertexOutput;
+        if (target == ShaderCompileTarget::Picking) {
+            passVertexOutput = "    _inx_ObjectId = instanceAuxData[gl_InstanceIndex].objectId;";
+        } else if (target == ShaderCompileTarget::Motion) {
+            passVertexOutput = R"(    InstanceAuxData aux = instanceAuxData[gl_InstanceIndex];
+    if ((aux.flags & 1u) != 0u) {
+        vec4 previousClip = ubo.previousViewProj * aux.previousModel * vec4(v.position, 1.0);
+        vec2 currentNdc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
+        vec2 previousNdc = previousClip.xy / max(abs(previousClip.w), 1e-6);
+        _inx_MotionVector = (currentNdc - previousNdc) * vec2(0.5, -0.5);
+    } else {
+        _inx_MotionVector = vec2(0.0);
+    })";
+        }
+        ReplacePlaceholder(mainTpl, "${PASS_VERTEX_OUTPUT}", passVertexOutput);
         result << "\n" << mainTpl << "\n";
     }
 

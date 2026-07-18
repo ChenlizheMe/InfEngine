@@ -264,6 +264,8 @@ void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
     m_importedColorTarget = {};
     m_importedResolveTarget = {};
     m_importedDepthTarget = {};
+    m_previousViewProj = glm::mat4(1.0f);
+    m_cameraHistoryValid = false;
 }
 
 void SceneRenderGraph::Destroy()

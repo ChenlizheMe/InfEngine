@@ -16,6 +16,8 @@ import Infernux.resources as _resources
 
 # Gizmo handle IDs — must match C++ EditorTools constants
 from Infernux.debug import Debug
+
+_SCENE_VIEWPORT_SEMANTIC_ID = "scene_view.viewport"
 from Infernux.lib._Infernux import (
     GIZMO_X_AXIS_ID,
     GIZMO_Y_AXIS_ID,
@@ -173,6 +175,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         "_gizmo_drag_restore_dynamic",
         "_gizmo_snap_active",
         "_was_focused",
+        "_pending_scene_pick",
     }
 
     # Key codes imported from shared imgui_keys module
@@ -249,6 +252,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._pick_cycle_index = -1
         self._pick_cycle_last_mouse = (-1.0, -1.0)
         self._pick_cycle_last_viewport = (0, 0)
+        self._pending_scene_pick = None
 
         # Box-select state
         self._box_select_active = False
@@ -434,6 +438,15 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         
         if scene_texture_id != 0:
             ctx.image(scene_texture_id, float(scene_width), float(scene_height), 0.0, 0.0, 1.0, 1.0)
+
+            # Give the rendered image a real interaction item. This keeps
+            # human clicks and MCP synthetic SDL input on the same surface.
+            ctx.set_cursor_pos_x(cursor_start_x)
+            ctx.set_cursor_pos_y(cursor_start_y)
+            ctx.invisible_button("##SceneViewportInput", float(scene_width), float(scene_height))
+            ctx.record_semantic_item(
+                "viewport", "Scene Viewport", True, _SCENE_VIEWPORT_SEMANTIC_ID
+            )
 
             vp = capture_viewport_info(ctx)
             is_scene_hovered = vp.is_hovered

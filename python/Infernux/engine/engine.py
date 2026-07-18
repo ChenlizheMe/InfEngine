@@ -817,6 +817,17 @@ class Engine():
             return []
         return list(self._engine.pick_scene_object_ids(screen_x, screen_y, viewport_width, viewport_height))
 
+    def request_scene_object_pick(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float) -> int:
+        if self._engine is None:
+            return 0
+        return int(self._engine.request_scene_object_pick(screen_x, screen_y, viewport_width, viewport_height))
+
+    def query_scene_object_pick(self, request_id: int) -> dict:
+        if self._engine is None:
+            return {"request_id": int(request_id), "status": "unknown", "object_id": 0,
+                    "error": "Engine is unavailable"}
+        return dict(self._engine.query_scene_object_pick(int(request_id)))
+
     # ========================================================================
     # Render Pipeline API (SRP)
     # ========================================================================
