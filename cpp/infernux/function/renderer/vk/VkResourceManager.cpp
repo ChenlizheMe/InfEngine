@@ -63,6 +63,8 @@ ReadbackFormatInfo GetReadbackFormatInfo(VkFormat format)
         return {4, 16, "float32"};
     case VK_FORMAT_R32_SFLOAT:
         return {1, 4, "float32"};
+    case VK_FORMAT_R32G32_UINT:
+        return {2, 8, "uint32"};
     default:
         throw std::invalid_argument("Image format is not supported by GPU readback");
     }

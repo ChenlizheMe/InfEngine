@@ -43,6 +43,8 @@ namespace infernux::rhi
         return VK_FORMAT_R16G16B16A16_SFLOAT;
     case PixelFormat::R32SFloat:
         return VK_FORMAT_R32_SFLOAT;
+    case PixelFormat::RG32UInt:
+        return VK_FORMAT_R32G32_UINT;
     case PixelFormat::RGBA32SFloat:
         return VK_FORMAT_R32G32B32A32_SFLOAT;
     case PixelFormat::RGB10A2UNorm:
@@ -81,6 +83,8 @@ namespace infernux::rhi
         return PixelFormat::RGBA16SFloat;
     case VK_FORMAT_R32_SFLOAT:
         return PixelFormat::R32SFloat;
+    case VK_FORMAT_R32G32_UINT:
+        return PixelFormat::RG32UInt;
     case VK_FORMAT_R32G32B32A32_SFLOAT:
         return PixelFormat::RGBA32SFloat;
     case VK_FORMAT_A2R10G10B10_UNORM_PACK32:

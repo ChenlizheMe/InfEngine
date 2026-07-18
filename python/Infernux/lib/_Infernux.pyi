@@ -152,6 +152,7 @@ class PixelFormat(IntEnum):
     RG16_SFLOAT: int
     RGBA16_SFLOAT: int
     R32_SFLOAT: int
+    RG32_UINT: int
     RGBA32_SFLOAT: int
     RGB10A2_UNORM: int
     D32_SFLOAT: int

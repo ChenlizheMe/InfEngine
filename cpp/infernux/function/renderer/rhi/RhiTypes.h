@@ -19,6 +19,7 @@ enum class PixelFormat : uint8_t
     RG16SFloat,
     RGBA16SFloat,
     R32SFloat,
+    RG32UInt,
     RGBA32SFloat,
     RGB10A2UNorm,
     D32SFloat,

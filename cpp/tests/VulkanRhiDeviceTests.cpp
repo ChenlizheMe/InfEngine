@@ -1,3 +1,4 @@
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 
 #include <cassert>
@@ -21,6 +22,9 @@ template <typename NativeHandle> NativeHandle FakeHandle(uintptr_t value)
 
 int main()
 {
+    static_assert(rhi::ToVkFormat(rhi::PixelFormat::RG32UInt) == VK_FORMAT_R32G32_UINT);
+    static_assert(rhi::FromVkFormat(VK_FORMAT_R32G32_UINT) == rhi::PixelFormat::RG32UInt);
+
     vk::VulkanRhiDevice device;
 
     const VkImageView firstNative = FakeHandle<VkImageView>(0x101);
