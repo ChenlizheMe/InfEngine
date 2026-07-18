@@ -628,6 +628,16 @@ PYBIND11_MODULE(_Infernux, m)
                                        snapshot.retiredMaterialDescriptorSetCount;
                                    result["material_descriptor_pool_count"] = snapshot.materialDescriptorPoolCount;
                                    result["material_pipeline_count"] = snapshot.materialPipelineCount;
+                                   result["shadow_material_descriptor_set_count"] =
+                                       snapshot.shadowMaterialDescriptorSetCount;
+                                   result["shadow_material_descriptor_pool_count"] =
+                                       snapshot.shadowMaterialDescriptorPoolCount;
+                                   result["shadow_material_binding_cache_hits"] =
+                                       snapshot.shadowMaterialBindingCacheHits;
+                                   result["shadow_material_binding_cache_misses"] =
+                                       snapshot.shadowMaterialBindingCacheMisses;
+                                   result["shadow_material_binding_retirements"] =
+                                       snapshot.shadowMaterialBindingRetirements;
                                    result["runtime_mesh_entry_count"] = snapshot.runtimeMeshEntryCount;
                                    result["runtime_mesh_bytes"] = snapshot.runtimeMeshBytes;
                                    result["scheduled_release_bytes"] = snapshot.scheduledReleaseBytes;

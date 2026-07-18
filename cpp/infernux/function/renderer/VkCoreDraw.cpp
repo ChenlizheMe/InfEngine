@@ -958,6 +958,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     // Pre-build draw list (filter once, reuse for all cascades)
     m_shadowDrawScratch.clear();
     m_shadowDrawScratch.reserve(shadowDrawCalls().size());
+    m_resolvedShadowMaterialsScratch.clear();
+    m_resolvedShadowMaterialsScratch.reserve(shadowDrawCalls().size());
     for (const DrawCall &dc : shadowDrawCalls()) {
         if (!dc.castsShadows || !dc.material)
             continue;
@@ -968,20 +970,19 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         if (bufIt == m_perObjectBuffers.end() || !bufIt->second.vertexBuffer || !bufIt->second.indexBuffer)
             continue;
 
-        VkPipeline pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
-        if (pip == VK_NULL_HANDLE) {
-            // Lazy creation: shadow shared resources are ready, create per-material pipeline now
-            CreateMaterialShadowPipeline(dc.material, dc.material->GetVertShaderName(),
-                                         dc.material->GetFragShaderName());
-            pip = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
+        auto resolved = m_resolvedShadowMaterialsScratch.find(dc.material.get());
+        if (resolved == m_resolvedShadowMaterialsScratch.end()) {
+            const VkDescriptorSet descriptorSet = EnsureMaterialShadowPipeline(
+                dc.material, dc.material->GetVertShaderName(), dc.material->GetFragShaderName());
+            ResolvedShadowMaterial resources{};
+            resources.pipeline = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
+            resources.descriptorSet = descriptorSet;
+            resolved = m_resolvedShadowMaterialsScratch.emplace(dc.material.get(), resources).first;
         }
-        if (pip == VK_NULL_HANDLE)
-            continue; // no per-material shadow pipeline available, skip
-        // m_shadowDrawScratch.push_back(
-        //     {&dc, bufIt, pip, dc.material->GetPassDescriptorSet(ShaderCompileTarget::Shadow), dc.worldBounds});
-        VkDescriptorSet shadowMatDesc = dc.material->GetPassDescriptorSet(ShaderCompileTarget::Shadow);
-        if (shadowMatDesc == VK_NULL_HANDLE)
-            shadowMatDesc = m_shadowMaterialDummyDescSet;
+        const VkPipeline pip = resolved->second.pipeline;
+        const VkDescriptorSet shadowMatDesc = resolved->second.descriptorSet;
+        if (pip == VK_NULL_HANDLE || shadowMatDesc == VK_NULL_HANDLE)
+            continue;
         m_shadowDrawScratch.push_back({&dc, bufIt, pip, shadowMatDesc, dc.worldBounds});
     }
 
@@ -1003,6 +1004,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     std::sort(m_shadowDrawScratch.begin(), m_shadowDrawScratch.end(), [](const ShadowDraw &a, const ShadowDraw &b) {
         if (a.shadowPipeline != b.shadowPipeline)
             return a.shadowPipeline < b.shadowPipeline;
+        if (a.shadowMaterialDescSet != b.shadowMaterialDescSet)
+            return a.shadowMaterialDescSet < b.shadowMaterialDescSet;
         VkBuffer va = a.bufIt->second.vertexBuffer->GetBuffer();
         VkBuffer vb_b = b.bufIt->second.vertexBuffer->GetBuffer();
         if (va != vb_b)
@@ -1364,16 +1367,14 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
     //   (b) Fragment-stage texture samplers (bindings 0..N-1) and fragment
     //       MaterialProperties UBO (binding N) for alpha-clip shadow materials.
     //
-    // We declare up to kMaxShadowTextures sampler slots so the layout is
+    // We declare a fixed set of sampler slots so the layout is
     // compatible with any alpha-clip shader.  Non-alpha-clip materials simply
     // leave those bindings unused.
-    static constexpr uint32_t kMaxShadowTextures = 8;
-
     if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE) {
         std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-        // Texture samplers for alpha-clip fragment (binding 0..kMaxShadowTextures-1)
-        for (uint32_t i = 0; i < kMaxShadowTextures; ++i) {
+        // Texture samplers for alpha-clip and vertex deformation.
+        for (uint32_t i = 0; i < kMaxShadowMaterialTextures; ++i) {
             VkDescriptorSetLayoutBinding texBinding{};
             texBinding.binding = i;
             texBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1382,10 +1383,10 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
             bindings.push_back(texBinding);
         }
 
-        // Fragment MaterialProperties UBO at binding = kMaxShadowTextures
+        // Fragment MaterialProperties UBO follows the sampler range.
         {
             VkDescriptorSetLayoutBinding fragMatBinding{};
-            fragMatBinding.binding = kMaxShadowTextures;
+            fragMatBinding.binding = kMaxShadowMaterialTextures;
             fragMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             fragMatBinding.descriptorCount = 1;
             fragMatBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1428,26 +1429,6 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
 
         if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_shadowDescPool) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create shadow descriptor pool");
-            return false;
-        }
-    }
-
-    if (m_shadowMaterialDescPool == VK_NULL_HANDLE) {
-        std::array<VkDescriptorPoolSize, 2> poolSizes{};
-        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSizes[0].descriptorCount = 1024 * 2; // vertex UBO + fragment UBO per set
-        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSizes[1].descriptorCount = 1024 * kMaxShadowTextures;
-
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        poolInfo.maxSets = 1024;
-        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-        poolInfo.pPoolSizes = poolSizes.data();
-
-        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_shadowMaterialDescPool) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to create shadow material descriptor pool");
             return false;
         }
     }
@@ -1589,8 +1570,9 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyPipelineLayout(device, m_shadowPipelineLayout, nullptr);
         m_shadowPipelineLayout = VK_NULL_HANDLE;
     }
-    // m_shadowMaterialDummyDescSet is allocated from m_shadowMaterialDescPool.
-    // Do not free it individually here; destroying the pool reclaims all sets.
+    // Cached material sets are reclaimed with their owner pool pages. Deferred
+    // replacements were flushed before this device-idle cleanup path.
+    m_shadowMaterialBindingCache.clear();
     m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
     if (m_shadowDescPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device, m_shadowDescPool, nullptr);
@@ -1601,10 +1583,11 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyDescriptorSetLayout(device, m_shadowDescSetLayout, nullptr);
         m_shadowDescSetLayout = VK_NULL_HANDLE;
     }
-    if (m_shadowMaterialDescPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_shadowMaterialDescPool, nullptr);
-        m_shadowMaterialDescPool = VK_NULL_HANDLE;
+    for (VkDescriptorPool pool : m_shadowMaterialDescPools) {
+        if (pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device, pool, nullptr);
     }
+    m_shadowMaterialDescPools.clear();
     if (m_shadowMaterialDescSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, m_shadowMaterialDescSetLayout, nullptr);
         m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;

@@ -866,6 +866,8 @@ void InxVkCoreModular::TickDeletionQueue()
     m_resourceManager.PollAsyncGraphicsSubmissions();
     m_resourceManager.PollImageReadbacks();
     m_deletionQueue.Tick();
+    if ((m_ensureFrameCounter & 63u) == 0u)
+        CollectUnusedShadowMaterialBindings();
     if (m_materialPipelineManagerInitialized)
         (void)m_materialPipelineManager.CollectUnusedRenderData();
     (void)m_textureCache.TrimToBudget();

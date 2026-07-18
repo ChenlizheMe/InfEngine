@@ -1497,6 +1497,11 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.retiredMaterialDescriptorSetCount = materialResidency.retiredDescriptorSetCount;
     snapshot.materialDescriptorPoolCount = materialResidency.descriptorPoolCount;
     snapshot.materialPipelineCount = materialResidency.pipelineCount;
+    snapshot.shadowMaterialDescriptorSetCount = materialResidency.shadowDescriptorSetCount;
+    snapshot.shadowMaterialDescriptorPoolCount = materialResidency.shadowDescriptorPoolCount;
+    snapshot.shadowMaterialBindingCacheHits = materialResidency.shadowBindingCacheHits;
+    snapshot.shadowMaterialBindingCacheMisses = materialResidency.shadowBindingCacheMisses;
+    snapshot.shadowMaterialBindingRetirements = materialResidency.shadowBindingRetirements;
     snapshot.runtimeMeshEntryCount = m_vkCore->GetRuntimeMeshGpuEntryCount();
     snapshot.runtimeMeshBytes = m_vkCore->GetRuntimeMeshGpuResidentBytes();
     snapshot.scheduledReleaseBytes = m_vkCore->GetRetiredMeshGpuLeaseBytes() +

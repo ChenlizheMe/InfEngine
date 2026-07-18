@@ -498,8 +498,15 @@ class InxVkCoreModular
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetGpuResidency() const;
     [[nodiscard]] MaterialGpuResidencySnapshot GetMaterialGpuResidency() const
     {
-        return m_materialPipelineManagerInitialized ? m_materialPipelineManager.GetResidencySnapshot()
+        MaterialGpuResidencySnapshot snapshot = m_materialPipelineManagerInitialized
+                                                    ? m_materialPipelineManager.GetResidencySnapshot()
                                                     : MaterialGpuResidencySnapshot{};
+        snapshot.shadowDescriptorSetCount = m_shadowMaterialBindingCache.size();
+        snapshot.shadowDescriptorPoolCount = m_shadowMaterialDescPools.size();
+        snapshot.shadowBindingCacheHits = m_shadowMaterialBindingCacheHits;
+        snapshot.shadowBindingCacheMisses = m_shadowMaterialBindingCacheMisses;
+        snapshot.shadowBindingRetirements = m_shadowMaterialBindingRetirements;
+        return snapshot;
     }
     [[nodiscard]] size_t GetRuntimeMeshGpuEntryCount() const;
     [[nodiscard]] uint64_t GetRuntimeMeshGpuResidentBytes() const;
@@ -716,10 +723,10 @@ class InxVkCoreModular
     /// @brief Release GPU preview resources while the ImGui Vulkan backend is still alive.
     void ReleaseGpuPreviews();
 
-    /// @brief Create a per-material shadow pipeline using the material's shadow
-    ///        vertex and fragment variants.
-    void CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
-                                      const std::string &fragShaderName);
+    /// @brief Resolve the shared shadow pipeline and cached material binding.
+    /// @return The material descriptor set used at set 2, or VK_NULL_HANDLE on failure.
+    VkDescriptorSet EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
+                                                 const std::string &vertShaderName, const std::string &fragShaderName);
 
     /// Shadow pipeline layout always includes set 2; bind this when a material
     /// has no per-material shadow descriptors (e.g. alpha clip off, no vtx UBO).
@@ -1299,6 +1306,13 @@ class InxVkCoreModular
     std::vector<ShadowDraw> m_shadowDrawScratch;
     std::vector<uint32_t> m_shadowCascadeVisible; ///< Per-cascade visible indices into m_shadowDrawScratch
 
+    struct ResolvedShadowMaterial
+    {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    };
+    std::unordered_map<const InxMaterial *, ResolvedShadowMaterial> m_resolvedShadowMaterialsScratch;
+
     // Pre/Post scene render callbacks
     PostSceneRenderCallback m_postSceneRenderCallback;
 
@@ -1309,7 +1323,6 @@ class InxVkCoreModular
     VkDescriptorSetLayout m_shadowDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_shadowDescPool = VK_NULL_HANDLE;
-    VkDescriptorPool m_shadowMaterialDescPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> m_shadowDescSets;
     std::vector<VkBuffer> m_shadowUboBuffers;
     std::vector<VmaAllocation> m_shadowUboAllocations;
@@ -1323,8 +1336,44 @@ class InxVkCoreModular
     std::unordered_map<std::string, VkPipeline> m_shadowPipelineCache;
     uint64_t m_shaderHotReloadRetirementCount = 0;
 
+    static constexpr uint32_t kMaxShadowMaterialTextures = 8;
+    static constexpr uint32_t kShadowMaterialPoolPageSize = 256;
+
+    struct ShadowMaterialBindingEntry
+    {
+        std::weak_ptr<InxMaterial> owner;
+        std::string materialKey;
+        uint64_t materialVersion = 0;
+        uint64_t artifactRevision = 0;
+        size_t resourceSignature = 0;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        VkDescriptorPool ownerPool = VK_NULL_HANDLE;
+        std::vector<std::shared_ptr<vk::VkTexture>> textureKeepAlive;
+    };
+
+    struct ShadowDescriptorAllocation
+    {
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        VkDescriptorPool ownerPool = VK_NULL_HANDLE;
+    };
+
+    std::vector<VkDescriptorPool> m_shadowMaterialDescPools;
+    std::unordered_map<const InxMaterial *, ShadowMaterialBindingEntry> m_shadowMaterialBindingCache;
+    uint64_t m_shadowMaterialBindingCacheHits = 0;
+    uint64_t m_shadowMaterialBindingCacheMisses = 0;
+    uint64_t m_shadowMaterialBindingRetirements = 0;
+
     /// @brief Lazily create/recreate shadow pipeline resources.
     bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass);
+    [[nodiscard]] VkDescriptorPool CreateShadowMaterialDescriptorPoolPage(uint32_t maxSets);
+    [[nodiscard]] ShadowDescriptorAllocation AllocateShadowMaterialDescriptorSet();
+    [[nodiscard]] VkDescriptorSet EnsureShadowMaterialBinding(const std::shared_ptr<InxMaterial> &material,
+                                                              const MaterialDescriptorSet *forwardMaterialDesc,
+                                                              const ShaderProgram *forwardProgram,
+                                                              const ShaderProgram *shadowProgram,
+                                                              uint64_t artifactRevision);
+    void RetireShadowMaterialBinding(ShadowMaterialBindingEntry entry);
+    void CollectUnusedShadowMaterialBindings();
     /// @brief Create shadow depth sampler for shadow map sampling.
     bool CreateShadowDepthSampler();
     /// @brief Cleanup shadow pipeline resources.

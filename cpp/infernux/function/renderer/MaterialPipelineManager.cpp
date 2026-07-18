@@ -134,6 +134,7 @@ void MaterialPipelineManager::DestroyNonForwardPipelines(InxMaterial *material, 
         if (pass == ShaderCompileTarget::Shadow) {
             material->SetPassPipeline(pass, VK_NULL_HANDLE);
             material->SetPassPipelineLayout(pass, VK_NULL_HANDLE);
+            material->SetPassDescriptorSet(pass, VK_NULL_HANDLE);
             material->SetPassShaderProgram(pass, nullptr);
             continue;
         }
