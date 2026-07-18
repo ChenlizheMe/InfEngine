@@ -122,6 +122,10 @@ struct ShaderEntryPointSet
 /// Detect GLSL entry declarations without matching comments or string literals.
 [[nodiscard]] ShaderEntryPointSet DetectShaderEntryPoints(std::string_view source);
 
+/// Rename the first matching GLSL function declaration while preserving all other source text.
+[[nodiscard]] std::string RewriteShaderEntryPoint(std::string_view source, std::string_view returnType,
+                                                  std::string_view entryPoint, std::string_view replacement);
+
 /// Find a user-authored layout(...) qualifier without matching comments or strings.
 [[nodiscard]] std::optional<ShaderSourceLocation> FindShaderLayoutDeclaration(std::string_view source);
 

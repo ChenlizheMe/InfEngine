@@ -97,6 +97,30 @@ void surface (out SurfaceData surface) { }
     assert(!entries.main);
     assert(!entries.vertex);
 
+    const std::string legacySurfaceSource = R"(
+#version 450
+// @shader_id: legacy_surface
+// @shading_model: unlit
+// @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
+void surface(out SurfaceData s)
+{
+    s = InitSurfaceData();
+}
+)";
+    const infernux::ShaderEntryPointSet legacyEntries = infernux::DetectShaderEntryPoints(legacySurfaceSource);
+    assert(legacyEntries.surface);
+    assert(!legacyEntries.main);
+    assert(!legacyEntries.vertex);
+
+    const std::string vertexEntrySource = R"(
+// VertexOutput vertex(inout VertexInput ignored)
+VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
+)";
+    const std::string rewrittenVertex =
+        infernux::RewriteShaderEntryPoint(vertexEntrySource, "VertexOutput", "vertex", "inxVertexEntry");
+    assert(rewrittenVertex.find("// VertexOutput vertex(inout VertexInput ignored)") != std::string::npos);
+    assert(rewrittenVertex.find("VertexOutput inxVertexEntry(inout VertexInput value)") != std::string::npos);
+
     auto compiler = MakeCompiler();
     infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
     const infernux::ShaderDescriptor descriptor = compiler.ParseShaderSource(richSource, "WaveSurface.frag");

@@ -763,22 +763,43 @@ ShaderEntryPointSet DetectShaderEntryPoints(std::string_view source)
 {
     ShaderEntryPointSet entries;
     Lexer lexer(source);
-    Token first = lexer.Next();
-    while (first.kind != TokenKind::End) {
-        if (first.kind != TokenKind::Identifier || first.text != "void") {
-            first = lexer.Next();
-            continue;
+    Token returnType = lexer.Next();
+    Token name = lexer.Next();
+    Token open = lexer.Next();
+    while (open.kind != TokenKind::End) {
+        if (returnType.kind == TokenKind::Identifier && name.kind == TokenKind::Identifier &&
+            open.kind == TokenKind::LeftParen) {
+            entries.main = entries.main || (returnType.text == "void" && name.text == "main");
+            entries.surface = entries.surface || (returnType.text == "void" && name.text == "surface");
+            entries.vertex = entries.vertex || ((returnType.text == "void" || returnType.text == "VertexOutput") &&
+                                                name.text == "vertex");
         }
-        const Token name = lexer.Next();
-        const Token open = lexer.Next();
-        if (name.kind == TokenKind::Identifier && open.kind == TokenKind::LeftParen) {
-            entries.main = entries.main || name.text == "main";
-            entries.surface = entries.surface || name.text == "surface";
-            entries.vertex = entries.vertex || name.text == "vertex";
-        }
-        first = open;
+        returnType = name;
+        name = open;
+        open = lexer.Next();
     }
     return entries;
+}
+
+std::string RewriteShaderEntryPoint(std::string_view source, std::string_view expectedReturnType,
+                                    std::string_view entryPoint, std::string_view replacement)
+{
+    Lexer lexer(source);
+    Token returnType = lexer.Next();
+    Token name = lexer.Next();
+    Token open = lexer.Next();
+    while (open.kind != TokenKind::End) {
+        if (returnType.kind == TokenKind::Identifier && returnType.text == expectedReturnType &&
+            name.kind == TokenKind::Identifier && name.text == entryPoint && open.kind == TokenKind::LeftParen) {
+            std::string rewritten(source);
+            rewritten.replace(name.begin.offset, name.end.offset - name.begin.offset, replacement);
+            return rewritten;
+        }
+        returnType = name;
+        name = open;
+        open = lexer.Next();
+    }
+    return std::string(source);
 }
 
 std::optional<ShaderSourceLocation> FindShaderLayoutDeclaration(std::string_view source)

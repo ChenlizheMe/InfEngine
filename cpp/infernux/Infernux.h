@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <core/threading/JobSystem.h>
 #include <core/types/InxFwdType.h>
+#include <core/types/ShaderProgramArtifact.h>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -368,6 +369,27 @@ class Infernux
 
     /// @brief Push a compiled ShaderAsset into the renderer (SPIR-V + variants + render meta).
     void RegisterShaderToRenderer(const struct ShaderAsset &asset);
+
+    struct LinkedShaderProgramPreparation
+    {
+        bool usesLinkedArtifact = false;
+        bool success = true;
+        std::string error;
+    };
+
+    struct LinkedShaderProgramCacheEntry
+    {
+        uint64_t sourceStamp = 0;
+        ShaderProgramKey programKey;
+        uint64_t failedSourceStamp = 0;
+        std::string lastError;
+    };
+
+    [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
+    [[nodiscard]] LinkedShaderProgramPreparation
+    EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
+
+    std::unordered_map<ShaderStagePair, LinkedShaderProgramCacheEntry, ShaderStagePairHash> m_linkedShaderProgramCache;
 
     struct TexturePreviewCompleted
     {

@@ -43,6 +43,8 @@ class SceneRenderTarget;
 class TransientResourcePool;
 class InxGUIContext;
 class InxScreenUIRenderer;
+struct ShaderProgramArtifact;
+struct ShaderProgramKey;
 namespace vk
 {
 class ImageReadbackTicket;
@@ -170,6 +172,9 @@ class InxRenderer
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetGpuResidency() const;
 
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
+    bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
+    void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver);
     bool HasShader(const std::string &name, const std::string &type) const;
 
     /// @brief Store shader render-state annotations (forwarded to InxVkCoreModular)
@@ -479,6 +484,7 @@ class InxRenderer
     uint64_t m_frameCount = 0;
 
     std::unique_ptr<InxVkCoreModular> m_vkCore;
+    std::function<void(const std::shared_ptr<InxMaterial> &)> m_shaderProgramArtifactResolver;
     std::unique_ptr<InxGUI> m_gui;
     std::unique_ptr<InxView> m_view;
     bool m_guiPlayerMode = false;

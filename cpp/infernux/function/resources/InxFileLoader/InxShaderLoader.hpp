@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SPIRV/GlslangToSpv.h>
+#include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
@@ -28,6 +29,8 @@ struct LinkedShaderProgramCompilation
     {
         return interfaceArtifact.IsValid() && errors.empty() && !vertexSpirv.empty() && !fragmentSpirv.empty();
     }
+
+    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact() const;
 };
 
 // ============================================================================
@@ -106,8 +109,8 @@ class InxShaderLoader
     static std::unordered_map<std::string, std::vector<char>> s_gbufferVariantCache;
 
   private:
-    glslang::SpvOptions m_options;
-    TBuiltInResource m_builtInResources;
+    glslang::SpvOptions m_options{};
+    TBuiltInResource m_builtInResources{};
 
     void InitGLSLBuiltResources();
     EShLanguage GetShaderType(const std::string &typeStr);

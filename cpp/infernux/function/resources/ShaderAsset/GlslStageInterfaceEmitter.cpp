@@ -71,7 +71,8 @@ std::string GlslStageInterfaceEmitter::EmitFragmentDeclarations(const ShaderProg
     source << "struct FragmentInput {\n";
     for (const auto &varying : artifact.varyings)
         source << "    " << varying.glslType << " " << varying.name << ";\n";
-    source << "};\n";
+    source << "};\n"
+              "FragmentInput fragmentInput;\n";
     return source.str();
 }
 
@@ -79,13 +80,12 @@ std::string GlslStageInterfaceEmitter::EmitVertexCall(const ShaderProgramInterfa
                                                       const ShaderDescriptor &vertex)
 {
     if (vertex.outputs.empty())
-        return "    vertex(v);\n";
+        return "    inxVertexEntry(v);\n";
 
     std::ostringstream source;
-    source << "    VertexOutput output;\n";
-    source << "    vertex(v, output);\n";
+    source << "    VertexOutput _inx_output = inxVertexEntry(v);\n";
     for (const auto &varying : artifact.varyings)
-        source << "    " << VariableName(varying.name) << " = output." << varying.name << ";\n";
+        source << "    " << VariableName(varying.name) << " = _inx_output." << varying.name << ";\n";
     return source.str();
 }
 
@@ -95,10 +95,9 @@ std::string GlslStageInterfaceEmitter::EmitSurfaceCall(const ShaderProgramInterf
         return "    surface(s);";
 
     std::ostringstream source;
-    source << "    FragmentInput input;\n";
     for (const auto &varying : artifact.varyings)
-        source << "    input." << varying.name << " = " << VariableName(varying.name) << ";\n";
-    source << "    surface(input, s);";
+        source << "    fragmentInput." << varying.name << " = " << VariableName(varying.name) << ";\n";
+    source << "    surface(s);";
     return source.str();
 }
 

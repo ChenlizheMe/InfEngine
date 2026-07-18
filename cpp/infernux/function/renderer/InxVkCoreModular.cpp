@@ -366,6 +366,36 @@ void InxVkCoreModular::LoadShader(const char *name, const std::vector<char> &spi
     m_shaderCache.LoadShader(name, spirvCode, type, m_pipelineManager);
 }
 
+bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
+{
+    const auto publish = m_shaderCache.PublishProgramArtifact(artifact);
+    if (!publish.accepted)
+        return false;
+    if (!publish.changed)
+        return true;
+
+    if (m_materialPipelineManagerInitialized)
+        m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(artifact.key.stages);
+
+    if (publish.replacedProgram) {
+        auto previous = m_shaderCache.GetProgramCache().TakeProgram(*publish.replacedProgram);
+        if (previous) {
+            auto retired = std::shared_ptr<ShaderProgram>(std::move(previous));
+            m_deletionQueue.Push([retired = std::move(retired)]() mutable { retired.reset(); });
+            ++m_shaderHotReloadRetirementCount;
+        }
+    }
+
+    INXLOG_INFO("Published shader program artifact '", artifact.key.ToString(), "'");
+    return true;
+}
+
+bool InxVkCoreModular::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
+{
+    const auto *artifact = m_shaderCache.FindProgramArtifact(programKey.stages);
+    return artifact && artifact->key == programKey;
+}
+
 void InxVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
                                              const std::string &depthWrite, const std::string &depthTest,
                                              const std::string &blend, int queue, const std::string &passTag,

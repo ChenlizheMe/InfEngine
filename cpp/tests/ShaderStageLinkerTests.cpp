@@ -53,13 +53,15 @@ ShaderInfo
         Smooth Float unusedOutput
     }
 }
-void vertex(inout VertexInput vertex, out VertexOutput output)
+VertexOutput vertex(inout VertexInput v)
 {
-    vertex.position.y += material.amplitude + texture(displacement, vertex.texCoord).r;
-    output.waveUV = vertex.texCoord;
-    output.waveHeight = vertex.position.y;
-    output.waveBand = 1;
-    output.unusedOutput = 0.0;
+    VertexOutput result;
+    v.position.y += material.amplitude + texture(displacement, v.texCoord).r;
+    result.waveUV = v.texCoord;
+    result.waveHeight = v.position.y;
+    result.waveBand = 1;
+    result.unusedOutput = 0.0;
+    return result;
 }
 )";
     const std::string oceanFragment = R"(
@@ -81,12 +83,12 @@ ShaderInfo
         Smooth Float2 waveUV Semantic(TexCoord7)
     }
 }
-void surface(in FragmentInput input, out SurfaceData surface)
+void surface(out SurfaceData s)
 {
-    surface = InitSurfaceData();
-    surface.albedo = material.deepColor.rgb * texture(normalMap, input.waveUV).rgb;
-    surface.emission = vec3(input.waveUV, input.waveHeight);
-    surface.metallic = float(input.waveBand) * 0.1;
+    s = InitSurfaceData();
+    s.albedo = material.deepColor.rgb * texture(normalMap, fragmentInput.waveUV).rgb;
+    s.emission = vec3(fragmentInput.waveUV, fragmentInput.waveHeight);
+    s.metallic = float(fragmentInput.waveBand) * 0.1;
 }
 )";
 
@@ -115,17 +117,17 @@ void surface(in FragmentInput input, out SurfaceData surface)
     assert(speed.bufferOffset == 4);
     const auto &windDirection = RequireProperty(artifact, "windDirection");
     assert(windDirection.bufferOffset == 16);
-    assert(windDirection.byteSize == 16);
+    assert(windDirection.byteSize == 12);
     const auto &windStrength = RequireProperty(artifact, "windStrength");
-    assert(windStrength.bufferOffset == 32);
+    assert(windStrength.bufferOffset == 28);
     const auto &displacement = RequireProperty(artifact, "displacement");
     assert(displacement.textureSlot == 0);
     const auto &deepColor = RequireProperty(artifact, "deepColor");
-    assert(deepColor.bufferOffset == 48);
+    assert(deepColor.bufferOffset == 32);
     const auto &normalMap = RequireProperty(artifact, "normalMap");
     assert(normalMap.textureSlot == 1);
-    assert(artifact.alphaClipThresholdOffset == 64);
-    assert(artifact.materialBufferSize == 80);
+    assert(artifact.alphaClipThresholdOffset == 48);
+    assert(artifact.materialBufferSize == 64);
     assert(artifact.varyingInterfaceSignature != 0);
     assert(artifact.materialLayoutSignature != 0);
     assert(artifact.compatibilitySignature != 0);
@@ -140,12 +142,23 @@ void surface(in FragmentInput input, out SurfaceData surface)
         std::cerr << "--- generated fragment ---\n" << compiledProgram.generatedFragmentSource;
     }
     assert(compiledProgram.IsValid());
+    const auto runtimeArtifact = compiledProgram.CreateRuntimeArtifact();
+    assert(runtimeArtifact.IsValid());
+    assert(runtimeArtifact.key.stages.vertexShaderId == "Tests/WaveDeform");
+    assert(runtimeArtifact.key.stages.fragmentShaderId == "Tests/OceanSurface");
+    assert(runtimeArtifact.key.revision != 0);
+    assert(runtimeArtifact.compatibilitySignature == compiledProgram.interfaceArtifact.compatibilitySignature);
+    assert(runtimeArtifact.vertexSpirv == compiledProgram.vertexSpirv);
+    assert(runtimeArtifact.fragmentSpirv == compiledProgram.fragmentSpirv);
+    assert(runtimeArtifact.key.ToString().find("Tests/WaveDeform|Tests/OceanSurface@") == 0);
     assert(compiledProgram.generatedVertexSource.find("layout(location = 6) smooth out vec2 _inx_v_waveUV;") !=
            std::string::npos);
     assert(compiledProgram.generatedFragmentSource.find("layout(location = 7) flat in int _inx_v_waveBand;") !=
            std::string::npos);
-    assert(compiledProgram.generatedVertexSource.find("vertex(v, output);") != std::string::npos);
-    assert(compiledProgram.generatedFragmentSource.find("surface(input, s);") != std::string::npos);
+    assert(compiledProgram.generatedVertexSource.find("VertexOutput _inx_output = inxVertexEntry(v);") !=
+           std::string::npos);
+    assert(compiledProgram.generatedFragmentSource.find("fragmentInput.waveUV = _inx_v_waveUV;") != std::string::npos);
+    assert(compiledProgram.generatedFragmentSource.find("surface(s);") != std::string::npos);
     assert(compiledProgram.generatedVertexSource.find("binding = 2) uniform sampler2D displacement;") !=
            std::string::npos);
     assert(compiledProgram.generatedFragmentSource.find("binding = 3) uniform sampler2D normalMap;") !=
@@ -170,7 +183,49 @@ void surface(out SurfaceData surface)
         compiler.CompileLinkedForward(waveVertex, "WaveDeform.vert", fragmentWithoutCustomInputs, "PlainSurface.frag");
     assert(unconsumedOutputsProgram.IsValid());
     assert(unconsumedOutputsProgram.interfaceArtifact.varyings.empty());
-    assert(unconsumedOutputsProgram.generatedVertexSource.find("vertex(v, output);") != std::string::npos);
+    assert(unconsumedOutputsProgram.generatedVertexSource.find("VertexOutput _inx_output = inxVertexEntry(v);") !=
+           std::string::npos);
+
+    const std::string legacyStandardVertex = R"(
+#version 450
+@shader_id: standard
+)";
+    const auto migrationProgram = compiler.CompileLinkedForward(legacyStandardVertex, "standard.vert",
+                                                                fragmentWithoutCustomInputs, "PlainSurface.frag");
+    assert(migrationProgram.IsValid());
+    assert(migrationProgram.CreateRuntimeArtifact().IsValid());
+    assert(migrationProgram.CreateRuntimeArtifact().key.stages.vertexShaderId == "standard");
+    assert(migrationProgram.generatedVertexSource.find("uniform MaterialProperties") == std::string::npos);
+    assert(migrationProgram.generatedFragmentSource.find("uniform MaterialProperties") != std::string::npos);
+
+    const std::string migrationMaterialFragment = R"(
+ShaderInfo
+{
+    Version 1
+    Name "Tests/MigrationMaterial"
+    ShadingModel "Unlit"
+    Properties
+    {
+        Color baseColor = [0.15, 0.65, 1.0, 1.0] HDR
+        Float intensity = 1.0 Range(0.0, 2.0)
+        Texture2D texSampler = white
+    }
+}
+void surface(out SurfaceData surface)
+{
+    surface = InitSurfaceData();
+    vec4 sampled = texture(texSampler, v_TexCoord);
+    surface.albedo = sampled.rgb * material.baseColor.rgb * material.intensity;
+    surface.alpha = sampled.a * material.baseColor.a;
+}
+)";
+    const auto migrationMaterialProgram = compiler.CompileLinkedForward(
+        legacyStandardVertex, "standard.vert", migrationMaterialFragment, "MigrationMaterial.frag");
+    if (!migrationMaterialProgram.IsValid()) {
+        for (const auto &error : migrationMaterialProgram.errors)
+            std::cerr << error << '\n';
+    }
+    assert(migrationMaterialProgram.IsValid());
 
     const std::string lavaFragment = R"(
 ShaderInfo
@@ -268,6 +323,19 @@ void main() { }
     assert(repeated.varyingInterfaceSignature == artifact.varyingInterfaceSignature);
     assert(repeated.materialLayoutSignature == artifact.materialLayoutSignature);
     assert(repeated.compatibilitySignature == artifact.compatibilitySignature);
+
+    const auto repeatedCompilation =
+        compiler.CompileLinkedForward(waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag");
+    assert(repeatedCompilation.IsValid());
+    assert(repeatedCompilation.CreateRuntimeArtifact().key == runtimeArtifact.key);
+
+    std::string changedFragment = oceanFragment;
+    changedFragment.replace(changedFragment.find("0.1"), 3, "0.2");
+    const auto changedCompilation =
+        compiler.CompileLinkedForward(waveVertex, "WaveDeform.vert", changedFragment, "OceanSurface.frag");
+    assert(changedCompilation.IsValid());
+    assert(changedCompilation.CreateRuntimeArtifact().key.stages == runtimeArtifact.key.stages);
+    assert(changedCompilation.CreateRuntimeArtifact().key.revision != runtimeArtifact.key.revision);
 
     std::cout << "Shader stage linker tests passed\n";
     return 0;

@@ -447,7 +447,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
         if (vertCode && fragCode) {
             VkBuffer lightingBuffer = m_lightingUbo ? m_lightingUbo->GetBuffer() : VK_NULL_HANDLE;
             m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-                defaultMaterial, *vertCode, *fragCode, defaultMaterial->GetShaderId(),
+                defaultMaterial, *vertCode, *fragCode, ShaderProgramKey{{vertId, fragId}, 0},
                 m_sceneUbo ? m_sceneUbo->GetBuffer() : VK_NULL_HANDLE, sizeof(UniformBufferObject), lightingBuffer,
                 sizeof(ShaderLightingUBO));
         } else {
@@ -469,7 +469,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
         if (errVertCode && errFragCode) {
             VkBuffer lightingBuffer = m_lightingUbo ? m_lightingUbo->GetBuffer() : VK_NULL_HANDLE;
             auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-                errorMaterial, *errVertCode, *errFragCode, errorMaterial->GetShaderId(),
+                errorMaterial, *errVertCode, *errFragCode, ShaderProgramKey{{errVertId, errFragId}, 0},
                 m_sceneUbo ? m_sceneUbo->GetBuffer() : VK_NULL_HANDLE, sizeof(UniformBufferObject), lightingBuffer,
                 sizeof(ShaderLightingUBO));
             if (renderData && renderData->isValid) {
@@ -561,15 +561,17 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
                                         renderMeta->alphaClip);
     }
 
-    const auto *vertCode = m_shaderCache.FindVertCode(vertShaderName);
-    const auto *fragCode = m_shaderCache.FindFragCode(fragShaderName);
+    const ShaderStagePair stages{vertShaderName, fragShaderName};
+    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
+    const auto *vertCode = artifact ? &artifact->vertexSpirv : m_shaderCache.FindVertCode(vertShaderName);
+    const auto *fragCode = artifact ? &artifact->fragmentSpirv : m_shaderCache.FindFragCode(fragShaderName);
+    const ShaderProgramKey programKey = artifact ? artifact->key : ShaderProgramKey{stages, 0};
 
     if (vertCode && fragCode && m_materialPipelineManagerInitialized) {
         VkDeviceSize sceneUboSize = sizeof(UniformBufferObject);
         VkDeviceSize lightingUboSize = sizeof(ShaderLightingUBO);
         auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-            material, *vertCode, *fragCode, material->GetShaderId(), sceneUbo, sceneUboSize, lightingUbo,
-            lightingUboSize);
+            material, *vertCode, *fragCode, programKey, sceneUbo, sceneUboSize, lightingUbo, lightingUboSize);
 
         bool forwardOk = renderData && renderData->isValid;
 
@@ -585,8 +587,13 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         return forwardOk;
     }
 
-    INXLOG_WARN("RefreshMaterialPipeline: shader codes not found or MPM not initialized for '", material->GetName(),
-                "' (vert='", vertShaderName, "', frag='", fragShaderName, "')");
+    static std::unordered_set<std::string> reportedMissingPrograms;
+    const std::string missingProgramKey =
+        vertShaderName + "|" + fragShaderName + (m_materialPipelineManagerInitialized ? "|ready" : "|initializing");
+    if (reportedMissingPrograms.insert(missingProgramKey).second) {
+        INXLOG_WARN("RefreshMaterialPipeline: shader codes not found or MPM not initialized for '", material->GetName(),
+                    "' (vert='", vertShaderName, "', frag='", fragShaderName, "')");
+    }
 
     // Dump available shader keys for debugging
     static int dumpCount = 0;

@@ -151,6 +151,43 @@ const std::vector<char> *VkShaderCache::FindFragCode(const std::string &id) cons
     return FindCodeInMap(m_fragCodes, id);
 }
 
+ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const ShaderProgramArtifact &artifact)
+{
+    ShaderProgramArtifactPublishResult result;
+    if (!artifact.IsValid()) {
+        INXLOG_ERROR("VkShaderCache: rejected invalid shader program artifact");
+        return result;
+    }
+
+    const auto existing = m_programArtifacts.find(artifact.key.stages);
+    if (existing != m_programArtifacts.end() && existing->second.key == artifact.key) {
+        result.accepted = true;
+        return result;
+    }
+
+    // Validate and materialize all Vulkan program-level resources before the
+    // current artifact is replaced. A failed publish leaves last-known-good live.
+    ShaderProgram *program =
+        m_programCache.GetOrCreateProgram(artifact.key, artifact.vertexSpirv, artifact.fragmentSpirv);
+    if (!program || !program->IsValid()) {
+        INXLOG_ERROR("VkShaderCache: failed to materialize shader program artifact '", artifact.key.ToString(), "'");
+        return result;
+    }
+
+    if (existing != m_programArtifacts.end())
+        result.replacedProgram = existing->second.key;
+    m_programArtifacts[artifact.key.stages] = artifact;
+    result.accepted = true;
+    result.changed = true;
+    return result;
+}
+
+const ShaderProgramArtifact *VkShaderCache::FindProgramArtifact(const ShaderStagePair &stages) const
+{
+    const auto found = m_programArtifacts.find(stages);
+    return found != m_programArtifacts.end() ? &found->second : nullptr;
+}
+
 // ============================================================================
 // Lifecycle
 // ============================================================================
@@ -166,6 +203,7 @@ void VkShaderCache::DestroyModules(vk::VkPipelineManager &pm)
 void VkShaderCache::Clear()
 {
     m_programCache.Clear();
+    m_programArtifacts.clear();
     m_vertCodes.clear();
     m_fragCodes.clear();
     m_vertModules.clear();

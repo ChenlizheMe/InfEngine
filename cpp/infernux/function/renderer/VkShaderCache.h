@@ -11,6 +11,7 @@
 
 #include <function/renderer/shader/ShaderProgram.h>
 
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -37,6 +38,13 @@ struct ShaderRenderMeta
     std::string passTag;    // "opaque", "transparent", etc. (empty = matches all)
     std::string stencil;    // "compare,ref,pass,fail,zfail" (empty = no stencil)
     std::string alphaClip;  // "off" or threshold string e.g. "0.5" (empty = default)
+};
+
+struct ShaderProgramArtifactPublishResult
+{
+    bool accepted = false;
+    bool changed = false;
+    std::optional<ShaderProgramKey> replacedProgram;
 };
 
 /**
@@ -88,6 +96,9 @@ class VkShaderCache
     /// Find fragment SPIR-V code by exact name, filename, or stem.
     [[nodiscard]] const std::vector<char> *FindFragCode(const std::string &id) const;
 
+    [[nodiscard]] ShaderProgramArtifactPublishResult PublishProgramArtifact(const ShaderProgramArtifact &artifact);
+    [[nodiscard]] const ShaderProgramArtifact *FindProgramArtifact(const ShaderStagePair &stages) const;
+
     // ── ShaderProgramCache Access ──────────────────────────────────────────
 
     [[nodiscard]] ShaderProgramCache &GetProgramCache()
@@ -122,6 +133,7 @@ class VkShaderCache
     std::unordered_map<std::string, std::vector<char>> m_vertCodes;
     std::unordered_map<std::string, std::vector<char>> m_fragCodes;
     std::unordered_map<std::string, ShaderRenderMeta> m_renderMetas;
+    std::unordered_map<ShaderStagePair, ShaderProgramArtifact, ShaderStagePairHash> m_programArtifacts;
     ShaderProgramCache m_programCache;
 };
 

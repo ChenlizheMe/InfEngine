@@ -17,6 +17,21 @@
 namespace infernux
 {
 
+ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact() const
+{
+    ShaderProgramArtifact artifact;
+    artifact.key.stages.vertexShaderId = interfaceArtifact.vertex.shaderId;
+    artifact.key.stages.fragmentShaderId = interfaceArtifact.fragment.shaderId;
+    artifact.key.revision = ComputeShaderProgramRevision(generatedVertexSource, generatedFragmentSource,
+                                                         interfaceArtifact.compatibilitySignature);
+    artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
+    artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
+    artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;
+    artifact.vertexSpirv = vertexSpirv;
+    artifact.fragmentSpirv = fragmentSpirv;
+    return artifact;
+}
+
 // Static members
 std::vector<std::string> InxShaderLoader::s_additionalSearchPaths;
 std::unordered_map<std::string, std::string> InxShaderLoader::s_templateCache;
@@ -75,7 +90,13 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
                                ShaderStageVisibility stage, const std::string &stageName,
                                std::vector<std::string> &errors)
 {
-    if (artifact.materialBufferSize > 0) {
+    const bool stageUsesMaterialBuffer =
+        std::any_of(artifact.properties.begin(), artifact.properties.end(),
+                    [&](const LinkedShaderProperty &property) {
+                        return property.bufferOffset && HasVisibility(property.visibility, stage);
+                    }) ||
+        (stage == ShaderStageVisibility::Fragment && artifact.alphaClipThresholdOffset.has_value());
+    if (stageUsesMaterialBuffer) {
         const auto uniformBuffer =
             std::find_if(reflection.GetUniformBuffers().begin(), reflection.GetUniformBuffers().end(),
                          [](const UniformBufferInfo &buffer) { return buffer.name == "MaterialProperties"; });
@@ -86,8 +107,19 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
                 uniformBuffer->binding != GlslStageInterfaceEmitter::MaterialBufferBinding) {
                 errors.push_back(stageName + " MaterialProperties reflected at an unexpected descriptor binding");
             }
-            if (uniformBuffer->size != artifact.materialBufferSize) {
-                errors.push_back(stageName + " MaterialProperties size does not match the linked material layout");
+            uint32_t requiredStageExtent = 0;
+            for (const auto &property : artifact.properties) {
+                if (property.bufferOffset && HasVisibility(property.visibility, stage)) {
+                    requiredStageExtent = std::max(requiredStageExtent, *property.bufferOffset + property.byteSize);
+                }
+            }
+            if (stage == ShaderStageVisibility::Fragment && artifact.alphaClipThresholdOffset)
+                requiredStageExtent = std::max(requiredStageExtent, *artifact.alphaClipThresholdOffset + 4u);
+            if (uniformBuffer->size < requiredStageExtent || uniformBuffer->size > artifact.materialBufferSize) {
+                errors.push_back(stageName + " MaterialProperties reflected size " +
+                                 std::to_string(uniformBuffer->size) + " is outside the linked stage range [" +
+                                 std::to_string(requiredStageExtent) + ", " +
+                                 std::to_string(artifact.materialBufferSize) + "]");
             }
             auto validateMember = [&](const std::string &name, uint32_t expectedOffset) {
                 const auto member =
@@ -101,10 +133,10 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
                 }
             };
             for (const auto &property : artifact.properties) {
-                if (property.bufferOffset)
+                if (property.bufferOffset && HasVisibility(property.visibility, stage))
                     validateMember(property.schema.name, *property.bufferOffset);
             }
-            if (artifact.alphaClipThresholdOffset)
+            if (stage == ShaderStageVisibility::Fragment && artifact.alphaClipThresholdOffset)
                 validateMember("_AlphaClipThreshold", *artifact.alphaClipThresholdOffset);
         }
     }
@@ -746,11 +778,19 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     std::ostringstream codeSourceStream;
     for (const auto &codeLine : codeLines)
         codeSourceStream << codeLine << '\n';
-    const std::string codeSource = codeSourceStream.str();
+    std::string codeSource = codeSourceStream.str();
     const bool userHasLayoutDecls = FindShaderLayoutDeclaration(codeSource).has_value();
     const ShaderEntryPointSet generatedEntries = DetectShaderEntryPoints(codeSource);
     const bool hasSurfaceFunc = generatedEntries.surface;
     const bool hasMainFunc = generatedEntries.main;
+    if (desc.isVertexShader && desc.hasVertexFunc) {
+        codeSource = RewriteShaderEntryPoint(codeSource, "void", "vertex", "inxVertexEntry");
+        codeSource = RewriteShaderEntryPoint(codeSource, "VertexOutput", "vertex", "inxVertexEntry");
+        codeLines.clear();
+        std::istringstream rewrittenCode(codeSource);
+        while (std::getline(rewrittenCode, line))
+            codeLines.push_back(line);
+    }
 
     std::ostringstream result;
 
@@ -902,8 +942,17 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // Surface fragment shaders always get _AlphaClipThreshold injected
     // so that alpha clip can be toggled at runtime via material properties.
     bool isSurfaceFragment = desc.isFragmentShader && hasSurfaceFunc;
+    const ShaderStageVisibility linkedStage =
+        desc.isVertexShader ? ShaderStageVisibility::Vertex : ShaderStageVisibility::Fragment;
+    const bool linkedStageUsesMaterialBuffer =
+        linkedInterface && (std::any_of(linkedInterface->properties.begin(), linkedInterface->properties.end(),
+                                        [&](const LinkedShaderProperty &property) {
+                                            return property.bufferOffset &&
+                                                   HasVisibility(property.visibility, linkedStage);
+                                        }) ||
+                            (desc.isFragmentShader && linkedInterface->alphaClipThresholdOffset.has_value()));
     bool needsMaterialUBO =
-        linkedInterface ? linkedInterface->materialBufferSize > 0 : (!desc.properties.empty() || isSurfaceFragment);
+        linkedInterface ? linkedStageUsesMaterialBuffer : (!desc.properties.empty() || isSurfaceFragment);
     // Vertex shaders with vertex() may need material properties in shadow (as constants)
     bool shadowVertexNeedsMaterial = (target == ShaderCompileTarget::Shadow && desc.isVertexShader &&
                                       desc.hasVertexFunc && !desc.properties.empty());
@@ -1108,7 +1157,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         std::string vertexCall;
         if (desc.hasVertexFunc) {
             vertexCall = linkedInterface ? GlslStageInterfaceEmitter::EmitVertexCall(*linkedInterface, desc)
-                                         : "    vertex(v);\n";
+                                         : "    inxVertexEntry(v);\n";
         }
         std::string templateName =
             (target == ShaderCompileTarget::Shadow) ? "shadow_vertex_main.glsl" : "vertex_main.glsl";
@@ -1405,10 +1454,10 @@ void InxShaderLoader::InitGLSLBuiltResources()
     m_builtInResources.maxFragmentUniformComponents = 4096;
     m_builtInResources.maxDrawBuffers = 32;
     m_builtInResources.maxVertexUniformVectors = 128;
-    m_builtInResources.maxVaryingVectors = 8;
+    m_builtInResources.maxVaryingVectors = 16;
     m_builtInResources.maxFragmentUniformVectors = 16;
     m_builtInResources.maxVertexOutputVectors = 16;
-    m_builtInResources.maxFragmentInputVectors = 15;
+    m_builtInResources.maxFragmentInputVectors = 16;
     m_builtInResources.minProgramTexelOffset = -8;
     m_builtInResources.maxProgramTexelOffset = 7;
     m_builtInResources.maxClipDistances = 8;

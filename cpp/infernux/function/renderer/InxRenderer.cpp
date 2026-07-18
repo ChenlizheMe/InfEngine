@@ -1593,6 +1593,21 @@ void InxRenderer::LoadShader(const char *name, const std::vector<char> &code, co
     m_vkCore->LoadShader(name, code, type);
 }
 
+bool InxRenderer::PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact)
+{
+    return m_vkCore && m_vkCore->PublishShaderProgramArtifact(artifact);
+}
+
+bool InxRenderer::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
+{
+    return m_vkCore && m_vkCore->HasShaderProgramArtifact(programKey);
+}
+
+void InxRenderer::SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
+{
+    m_shaderProgramArtifactResolver = std::move(resolver);
+}
+
 void InxRenderer::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
                                         const std::string &depthWrite, const std::string &depthTest,
                                         const std::string &blend, int queue, const std::string &passTag,
@@ -2332,6 +2347,9 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
+    if (m_shaderProgramArtifactResolver)
+        m_shaderProgramArtifactResolver(material);
+
     // Get shader names from material
     const std::string &vertName = material->GetVertShaderName();
     const std::string &fragName = material->GetFragShaderName();
@@ -2352,6 +2370,8 @@ InxRenderer::BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &materia
 {
     if (!m_vkCore || !material)
         return nullptr;
+    if (m_shaderProgramArtifactResolver)
+        m_shaderProgramArtifactResolver(material);
     return m_vkCore->BeginMaterialPreviewGPU(material, size);
 }
 
@@ -2369,6 +2389,12 @@ InxRenderer::BeginMeshPreviewGPU(const InxMesh &mesh, const std::vector<std::sha
 {
     if (!m_vkCore)
         return nullptr;
+    if (m_shaderProgramArtifactResolver) {
+        for (const auto &material : materials) {
+            if (material)
+                m_shaderProgramArtifactResolver(material);
+        }
+    }
     return m_vkCore->BeginMeshPreviewGPU(mesh, materials, size);
 }
 

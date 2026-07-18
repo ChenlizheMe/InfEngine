@@ -79,7 +79,9 @@ std::optional<PropertyLayout> GetPropertyLayout(std::string_view type)
         return PropertyLayout{4, 4};
     if (type == "Float2")
         return PropertyLayout{8, 8};
-    if (type == "Float3" || type == "Float4" || type == "Color")
+    if (type == "Float3")
+        return PropertyLayout{16, 12};
+    if (type == "Float4" || type == "Color")
         return PropertyLayout{16, 16};
     if (type == "Mat4")
         return PropertyLayout{16, 64};

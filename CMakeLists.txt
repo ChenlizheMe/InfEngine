@@ -593,7 +593,9 @@ if(INFERNUX_BUILD_TESTS)
         INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/Infernux/resources/shaders"
     )
     if(MSVC)
-        target_compile_options(infernux_shader_info_schema_tests PRIVATE /utf-8)
+        target_compile_options(infernux_shader_info_schema_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_shader_info_schema_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.shader_info_schema COMMAND infernux_shader_info_schema_tests)
 
@@ -609,7 +611,9 @@ if(INFERNUX_BUILD_TESTS)
         INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/Infernux/resources/shaders"
     )
     if(MSVC)
-        target_compile_options(infernux_shader_stage_linker_tests PRIVATE /utf-8)
+        target_compile_options(infernux_shader_stage_linker_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_shader_stage_linker_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.shader_stage_linker COMMAND infernux_shader_stage_linker_tests)
 

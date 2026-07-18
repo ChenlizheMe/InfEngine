@@ -22,6 +22,13 @@ void ClearForwardPassHandles(InxMaterial *material)
     material->SetPassShaderProgram(ShaderCompileTarget::Forward, nullptr);
 }
 
+size_t FoldProgramKeyHash(size_t pipelineHash, const ShaderProgramKey &programKey)
+{
+    const size_t programHash = ShaderProgramKeyHash{}(programKey);
+    pipelineHash ^= programHash + 0x9e3779b97f4a7c15ull + (pipelineHash << 6) + (pipelineHash >> 2);
+    return pipelineHash;
+}
+
 } // namespace
 
 // ============================================================================
@@ -319,8 +326,8 @@ VkPipeline MaterialPipelineManager::GetCachedPipeline(size_t pipelineHash) const
 
 MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection(
     std::shared_ptr<InxMaterial> material, const std::vector<char> &vertShaderCode,
-    const std::vector<char> &fragShaderCode, const std::string &shaderId, VkBuffer sceneUBO, VkDeviceSize sceneUBOSize,
-    VkBuffer lightingUBO, VkDeviceSize lightingUBOSize)
+    const std::vector<char> &fragShaderCode, const ShaderProgramKey &programKey, VkBuffer sceneUBO,
+    VkDeviceSize sceneUBOSize, VkBuffer lightingUBO, VkDeviceSize lightingUBOSize)
 {
     if (!material) {
         INXLOG_ERROR("Cannot create render data for null material");
@@ -335,6 +342,7 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
         size_t currentHash = material->GetPipelineHash();
         // Fold MRT attachment count into hash so forward vs. deferred pipelines differ
         currentHash = FoldMRTAttachmentHash(currentHash);
+        currentHash = FoldProgramKeyHash(currentHash, programKey);
 
         if (it->second->isValid) {
             if (it->second->pipelineHash == currentHash) {
@@ -369,7 +377,7 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     }
 
     // Get or create shader program (with reflection)
-    ShaderProgram *program = m_shaderProgramCache->GetOrCreateProgram(shaderId, vertShaderCode, fragShaderCode);
+    ShaderProgram *program = m_shaderProgramCache->GetOrCreateProgram(programKey, vertShaderCode, fragShaderCode);
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("Failed to get shader program for material: ", name);
         // Store an invalid render data entry so subsequent frames can detect
@@ -377,7 +385,9 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
         if (m_renderDataMap.find(name) == m_renderDataMap.end()) {
             auto failedData = std::make_unique<MaterialRenderData>();
             failedData->material = material;
-            failedData->pipelineHash = material->GetPipelineHash();
+            failedData->pipelineHash =
+                FoldProgramKeyHash(FoldMRTAttachmentHash(material->GetPipelineHash()), programKey);
+            failedData->programKey = programKey;
             failedData->isValid = false;
             m_renderDataMap[name] = std::move(failedData);
         }
@@ -390,6 +400,8 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     renderData->pipelineHash = material->GetPipelineHash();
     // Fold MRT attachment count into hash (must match the logic in the early-return path above)
     renderData->pipelineHash = FoldMRTAttachmentHash(renderData->pipelineHash);
+    renderData->pipelineHash = FoldProgramKeyHash(renderData->pipelineHash, programKey);
+    renderData->programKey = programKey;
     renderData->shaderProgram = program;
     renderData->vertModule = program->GetVertexModule();
     renderData->fragModule = program->GetFragmentModule();
@@ -703,6 +715,22 @@ void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &
     }
 
     INXLOG_INFO("Invalidated ", materialsToRemove.size(), " materials using shader '", shaderId, "'");
+}
+
+void MaterialPipelineManager::InvalidateMaterialsUsingProgramPair(const ShaderStagePair &stages)
+{
+    if (!stages.IsValid())
+        throw std::invalid_argument("Material program-pair invalidation requires both shader identifiers");
+
+    std::vector<std::string> materialsToRemove;
+    for (const auto &[name, data] : m_renderDataMap) {
+        if (data && data->programKey.stages == stages)
+            materialsToRemove.push_back(name);
+    }
+    for (const auto &name : materialsToRemove)
+        RemoveRenderData(name);
+
+    INXLOG_INFO("Invalidated ", materialsToRemove.size(), " materials using shader program '", stages.ToString(), "'");
 }
 
 uint32_t MaterialPipelineManager::InvalidateMaterialsUsingTexture(const std::string &textureGuid)

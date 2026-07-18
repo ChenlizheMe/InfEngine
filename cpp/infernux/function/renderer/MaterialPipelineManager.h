@@ -31,7 +31,8 @@ struct MaterialRenderData
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkShaderModule vertModule = VK_NULL_HANDLE;
     VkShaderModule fragModule = VK_NULL_HANDLE;
-    ShaderProgram *shaderProgram = nullptr;           // Reference to cached shader program
+    ShaderProgram *shaderProgram = nullptr; // Reference to cached shader program
+    ShaderProgramKey programKey;
     MaterialDescriptorSet *materialDescSet = nullptr; // Per-material descriptor set
     size_t pipelineHash = 0;
     bool isValid = false;
@@ -84,8 +85,9 @@ class MaterialPipelineManager
      * @param material The material to get render data for
      * @param vertShaderCode SPIR-V code for vertex shader
      * @param fragShaderCode SPIR-V code for fragment shader
-     * @param shaderId Unique shader program identifier
-     * @param sceneUBO Scene uniform buffer for binding (binding=0)
+     * @param programKey Typed vertex/fragment pair and immutable artifact revision
+     * @param sceneUBO Scene uniform
+     * buffer for binding (binding=0)
      * @param sceneUBOSize Size of scene UBO
      * @param lightingUBO Lighting uniform buffer for binding (binding=1)
      * @param lightingUBOSize Size of lighting UBO
@@ -93,7 +95,7 @@ class MaterialPipelineManager
      */
     MaterialRenderData *
     GetOrCreateRenderDataWithReflection(std::shared_ptr<InxMaterial> material, const std::vector<char> &vertShaderCode,
-                                        const std::vector<char> &fragShaderCode, const std::string &shaderId,
+                                        const std::vector<char> &fragShaderCode, const ShaderProgramKey &programKey,
                                         VkBuffer sceneUBO, VkDeviceSize sceneUBOSize,
                                         VkBuffer lightingUBO = VK_NULL_HANDLE, VkDeviceSize lightingUBOSize = 0);
 
@@ -172,6 +174,8 @@ class MaterialPipelineManager
      * @param shaderId The shader identifier that was modified
      */
     void InvalidateMaterialsUsingShader(const std::string &shaderId);
+
+    void InvalidateMaterialsUsingProgramPair(const ShaderStagePair &stages);
 
     /**
      * @brief Remove render data for materials that reference a specific texture.

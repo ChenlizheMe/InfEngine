@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ShaderReflection.h"
+#include <core/types/ShaderProgramArtifact.h>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -82,7 +83,7 @@ class ShaderProgram
      * @return true if creation succeeded
      */
     bool Create(VkDevice device, const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
-                const std::string &shaderId);
+                const ShaderProgramKey &programKey);
 
     /**
      * @brief Destroy all Vulkan resources
@@ -93,6 +94,11 @@ class ShaderProgram
     [[nodiscard]] const std::string &GetShaderId() const
     {
         return m_shaderId;
+    }
+
+    [[nodiscard]] const ShaderProgramKey &GetProgramKey() const noexcept
+    {
+        return m_programKey;
     }
 
     [[nodiscard]] VkShaderModule GetVertexModule() const
@@ -201,6 +207,7 @@ class ShaderProgram
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     std::string m_shaderId;
+    ShaderProgramKey m_programKey;
 
     static inline VkDescriptorSetLayout s_globalsDescSetLayout = VK_NULL_HANDLE;
     static inline bool s_updateAfterBindEnabled = false;
@@ -288,18 +295,20 @@ class ShaderProgramCache
     /**
      * @brief Get or create a shader program
      */
-    ShaderProgram *GetOrCreateProgram(const std::string &shaderId, const std::vector<char> &vertSpirv,
+    ShaderProgram *GetOrCreateProgram(const ShaderProgramKey &programKey, const std::vector<char> &vertSpirv,
                                       const std::vector<char> &fragSpirv);
 
     /**
      * @brief Get existing program
      */
-    ShaderProgram *GetProgram(const std::string &shaderId);
+    ShaderProgram *GetProgram(const ShaderProgramKey &programKey);
 
     /**
      * @brief Check if program exists
      */
-    bool HasProgram(const std::string &shaderId) const;
+    bool HasProgram(const ShaderProgramKey &programKey) const;
+
+    [[nodiscard]] std::unique_ptr<ShaderProgram> TakeProgram(const ShaderProgramKey &programKey);
 
     /**
      * @brief Transfer ownership of all programs using the specified shader.
@@ -316,8 +325,8 @@ class ShaderProgramCache
 
   private:
     VkDevice m_device = VK_NULL_HANDLE;
-    std::unordered_map<std::string, std::unique_ptr<ShaderProgram>> m_programs;
-    std::unordered_set<std::string> m_failedPrograms; // Shader IDs that failed creation
+    std::unordered_map<ShaderProgramKey, std::unique_ptr<ShaderProgram>, ShaderProgramKeyHash> m_programs;
+    std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_failedPrograms;
 };
 
 } // namespace infernux
