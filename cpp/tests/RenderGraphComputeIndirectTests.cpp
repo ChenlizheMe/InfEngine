@@ -528,6 +528,66 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Pre-registered transient buffer did not participate in graph compilation"))
         return false;
 
+    RenderGraph bufferAliasGraph;
+    bufferAliasGraph.Initialize(&resources.context, &resources.pipelines);
+    constexpr VkDeviceSize aliasBufferBytes = 64 * 1024;
+    const auto firstAliasBuffer = bufferAliasGraph.RegisterTransientBuffer("FirstAliasBuffer", aliasBufferBytes,
+                                                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    const auto aliasBridge =
+        bufferAliasGraph.RegisterTransientBuffer("AliasBridge", 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    const auto secondAliasBuffer = bufferAliasGraph.RegisterTransientBuffer("SecondAliasBuffer", aliasBufferBytes,
+                                                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    ResourceHandle firstAliasVersion;
+    ResourceHandle aliasBridgeVersion;
+    ResourceHandle secondAliasVersion;
+    bufferAliasGraph.AddComputePass("WriteFirstAlias", [&](PassBuilder &builder) {
+        firstAliasVersion = builder.WriteStorageBuffer(firstAliasBuffer);
+        return [](RenderContext &) {};
+    });
+    bufferAliasGraph.AddComputePass("BridgeAliasLifetimes", [&](PassBuilder &builder) {
+        builder.ReadStorageBuffer(firstAliasVersion);
+        aliasBridgeVersion = builder.WriteStorageBuffer(aliasBridge);
+        return [](RenderContext &) {};
+    });
+    bufferAliasGraph.AddComputePass("WriteSecondAlias", [&](PassBuilder &builder) {
+        builder.ReadStorageBuffer(aliasBridgeVersion);
+        secondAliasVersion = builder.WriteStorageBuffer(secondAliasBuffer);
+        return [](RenderContext &) {};
+    });
+    bufferAliasGraph.SetOutput(secondAliasVersion);
+    if (!Require(bufferAliasGraph.Compile(), "Transient buffer alias graph failed to compile"))
+        return false;
+    if (!Require(bufferAliasGraph.ResolveBuffer(firstAliasVersion) != VK_NULL_HANDLE &&
+                     bufferAliasGraph.ResolveBuffer(secondAliasVersion) != VK_NULL_HANDLE &&
+                     bufferAliasGraph.ResolveBuffer(firstAliasVersion) !=
+                         bufferAliasGraph.ResolveBuffer(secondAliasVersion),
+                 "Aliased transient buffers did not retain distinct Vulkan handles"))
+        return false;
+    if (!Require(bufferAliasGraph.GetTransientAllocationCount() == 2,
+                 "Non-overlapping transient buffers did not reuse one allocation"))
+        return false;
+
+    infernux::FrameDeletionQueue graphDeletionQueue;
+    graphDeletionQueue.Initialize(2);
+    RenderGraph deferredReleaseGraph;
+    deferredReleaseGraph.Initialize(&resources.context, &resources.pipelines, &graphDeletionQueue);
+    const auto deferredBuffer =
+        deferredReleaseGraph.RegisterTransientBuffer("DeferredBuffer", 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    ResourceHandle deferredBufferVersion;
+    deferredReleaseGraph.AddComputePass("WriteDeferredBuffer", [&](PassBuilder &builder) {
+        deferredBufferVersion = builder.WriteStorageBuffer(deferredBuffer);
+        return [](RenderContext &) {};
+    });
+    deferredReleaseGraph.SetOutput(deferredBufferVersion);
+    if (!Require(deferredReleaseGraph.Compile(), "Deferred-release graph failed to compile"))
+        return false;
+    deferredReleaseGraph.Reset();
+    if (!Require(graphDeletionQueue.PendingCount() == 1,
+                 "RenderGraph reset did not defer transient resource destruction"))
+        return false;
+    deferredReleaseGraph.Destroy();
+    graphDeletionQueue.FlushAll();
+
     RenderGraph presentGraph;
     presentGraph.Initialize(&resources.context, &resources.pipelines);
     auto presentTexture = presentGraph.RegisterTransientTexture("PresentTexture", 4, 4, VK_FORMAT_R8G8B8A8_UNORM);

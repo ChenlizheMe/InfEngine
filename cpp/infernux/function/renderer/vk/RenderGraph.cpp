@@ -580,7 +580,8 @@ RenderGraph::~RenderGraph()
 RenderGraph::RenderGraph(RenderGraph &&other) noexcept
     : m_identity(std::move(other.m_identity)), m_context(std::exchange(other.m_context, nullptr)),
       m_rhiDevice(std::exchange(other.m_rhiDevice, nullptr)),
-      m_pipelineManager(std::exchange(other.m_pipelineManager, nullptr)), m_passes(std::move(other.m_passes)),
+      m_pipelineManager(std::exchange(other.m_pipelineManager, nullptr)),
+      m_deletionQueue(std::exchange(other.m_deletionQueue, nullptr)), m_passes(std::move(other.m_passes)),
       m_resources(std::move(other.m_resources)), m_resourceVersions(std::move(other.m_resourceVersions)),
       m_executionOrder(std::move(other.m_executionOrder)), m_backbuffer(other.m_backbuffer), m_output(other.m_output),
       m_backbufferFinalLayout(other.m_backbufferFinalLayout), m_compiled(std::exchange(other.m_compiled, false)),
@@ -611,6 +612,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_context = std::exchange(other.m_context, nullptr);
         m_rhiDevice = std::exchange(other.m_rhiDevice, nullptr);
         m_pipelineManager = std::exchange(other.m_pipelineManager, nullptr);
+        m_deletionQueue = std::exchange(other.m_deletionQueue, nullptr);
         m_passes = std::move(other.m_passes);
         m_resources = std::move(other.m_resources);
         m_resourceVersions = std::move(other.m_resourceVersions);
@@ -641,18 +643,19 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
     return *this;
 }
 
-void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager)
+void RenderGraph::Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager,
+                             FrameDeletionQueue *deletionQueue)
 {
     m_context = context;
     m_rhiDevice = context ? &context->GetRhiDevice() : nullptr;
     m_pipelineManager = pipelineManager;
+    m_deletionQueue = deletionQueue;
 }
 
 void RenderGraph::Reset()
 {
-    // Only free per-frame resources, not cached VkRenderPass/VkFramebuffer objects
-    // FreeResources() destroys per-frame framebuffers and transient images.
-    // RenderPass cache and framebuffer cache persist across frames.
+    // Render-pass objects remain reusable across graph rebuilds. Framebuffers
+    // that reference transient views retire together with those views.
     FreeResources();
     m_passes.clear();
     m_resources.clear();
@@ -676,24 +679,35 @@ void RenderGraph::Destroy()
 {
     FreeResources();
 
-    // Destroy cached render passes
+    // Retire cached framebuffers before their compatible render passes.
     if (m_context) {
-        VkDevice device = m_context->GetDevice();
+        const VkDevice device = m_context->GetDevice();
+        std::vector<VkFramebuffer> framebuffers;
+        std::vector<VkRenderPass> renderPasses;
         for (auto &[key, rp] : m_renderPassCache) {
             if (m_rhiDevice) {
                 const auto layoutIt = m_renderTargetLayoutCache.find(key);
                 if (layoutIt != m_renderTargetLayoutCache.end())
                     m_rhiDevice->Release(layoutIt->second);
             }
-            if (rp != VK_NULL_HANDLE) {
-                vkDestroyRenderPass(device, rp, nullptr);
-            }
+            if (rp != VK_NULL_HANDLE)
+                renderPasses.push_back(rp);
         }
         for (auto &[key, entry] : m_framebufferCache) {
-            if (entry.framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device, entry.framebuffer, nullptr);
-            }
+            if (entry.framebuffer != VK_NULL_HANDLE)
+                framebuffers.push_back(entry.framebuffer);
         }
+        auto destroyCaches = [device, framebuffers = std::move(framebuffers),
+                              renderPasses = std::move(renderPasses)]() {
+            for (VkFramebuffer framebuffer : framebuffers)
+                vkDestroyFramebuffer(device, framebuffer, nullptr);
+            for (VkRenderPass renderPass : renderPasses)
+                vkDestroyRenderPass(device, renderPass, nullptr);
+        };
+        if (m_deletionQueue && !m_context->IsShuttingDown())
+            m_deletionQueue->Push(std::move(destroyCaches));
+        else
+            destroyCaches();
     }
     m_renderPassCache.clear();
     m_renderTargetLayoutCache.clear();
@@ -711,6 +725,7 @@ void RenderGraph::Destroy()
     m_context = nullptr;
     m_rhiDevice = nullptr;
     m_pipelineManager = nullptr;
+    m_deletionQueue = nullptr;
     m_identity.AdvanceEpoch();
 }
 

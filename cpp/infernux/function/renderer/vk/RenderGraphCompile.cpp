@@ -697,6 +697,7 @@ bool RenderGraph::AllocateResources()
     };
 
     std::vector<AllocationRequest> imageAllocRequests;
+    std::vector<AllocationRequest> bufferAllocRequests;
 
     for (uint32_t ri = 0; ri < static_cast<uint32_t>(m_resources.size()); ++ri) {
         auto &resource = m_resources[ri];
@@ -783,30 +784,30 @@ bool RenderGraph::AllocateResources()
             imageAllocRequests.push_back({ri, memReqs, memTypeIndex});
 
         } else if (resource.type == ResourceType::Buffer) {
-            // Buffers are allocated individually. vmaCreateBuffer keeps the
-            // VkBuffer/VmaAllocation ownership paired and lets AUTO memory
-            // selection inspect the actual usage flags.
             VkBufferCreateInfo bufferInfo{};
             bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
             bufferInfo.size = resource.bufferDesc.size;
             bufferInfo.usage = resource.bufferDesc.usage;
             bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-            VmaAllocator allocator = m_context->GetVmaAllocator();
-            VmaAllocationCreateInfo allocCreateInfo{};
-            allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-            const VkResult bufferResult =
-                vmaCreateBuffer(allocator, &bufferInfo, &allocCreateInfo, &resource.allocatedBuffer,
-                                &resource.allocatedMemory, nullptr);
-            if (bufferResult != VK_SUCCESS) {
+            if (vkCreateBuffer(device, &bufferInfo, nullptr, &resource.allocatedBuffer) != VK_SUCCESS) {
                 resource.allocatedBuffer = VK_NULL_HANDLE;
-                resource.allocatedMemory = VK_NULL_HANDLE;
-                INXLOG_ERROR("Failed to create buffer resource '", resource.name,
-                             "' (VkResult=", static_cast<int>(bufferResult), ")");
+                INXLOG_ERROR("Failed to create buffer resource '", resource.name, "'");
                 return false;
             }
-            resource.rhiBuffer =
-                m_rhiDevice ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer) : rhi::BufferHandle{};
+
+            VkMemoryRequirements memReqs{};
+            vkGetBufferMemoryRequirements(device, resource.allocatedBuffer, &memReqs);
+
+            VmaAllocationCreateInfo probeAllocInfo{};
+            probeAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            uint32_t memTypeIndex = 0;
+            if (vmaFindMemoryTypeIndexForBufferInfo(m_context->GetVmaAllocator(), &bufferInfo, &probeAllocInfo,
+                                                    &memTypeIndex) != VK_SUCCESS) {
+                INXLOG_ERROR("Failed to select memory for buffer resource '", resource.name, "'");
+                return false;
+            }
+            bufferAllocRequests.push_back({ri, memReqs, memTypeIndex});
         }
     }
 
@@ -993,6 +994,81 @@ bool RenderGraph::AllocateResources()
         if (!ownedByResource) {
             m_aliasedMemoryHeaps.push_back(heap.allocation);
         }
+    }
+
+    // Transient buffers use the same interval-colouring rule as images, but
+    // remain in separate heaps because Vulkan memory requirements are
+    // resource-class specific. Distinct VkBuffer handles alias only the raw
+    // allocation and therefore preserve their declared usages.
+    std::sort(bufferAllocRequests.begin(), bufferAllocRequests.end(),
+              [](const AllocationRequest &a, const AllocationRequest &b) { return a.memReqs.size > b.memReqs.size; });
+
+    struct BufferMemoryHeap
+    {
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkDeviceSize size = 0;
+        uint32_t memoryTypeIndex = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> occupants;
+    };
+    std::vector<BufferMemoryHeap> bufferHeaps;
+
+    for (const auto &req : bufferAllocRequests) {
+        auto &resource = m_resources[req.resourceIndex];
+        bool placed = false;
+
+        if (resource.bufferDesc.isTransient && resource.firstPass <= resource.lastPass) {
+            for (auto &heap : bufferHeaps) {
+                if (heap.memoryTypeIndex != req.memoryTypeIndex || req.memReqs.size > heap.size)
+                    continue;
+
+                const bool overlaps = std::any_of(heap.occupants.begin(), heap.occupants.end(), [&](const auto &life) {
+                    return lifetimesOverlap(resource.firstPass, resource.lastPass, life.first, life.second);
+                });
+                if (overlaps)
+                    continue;
+
+                if (vkBindBufferMemory(device, resource.allocatedBuffer, heap.memory, 0) != VK_SUCCESS)
+                    continue;
+
+                resource.allocatedMemory = VK_NULL_HANDLE;
+                heap.occupants.push_back({resource.firstPass, resource.lastPass});
+                placed = true;
+                break;
+            }
+        }
+
+        if (!placed) {
+            VmaAllocationCreateInfo allocCreateInfo{};
+            allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+
+            VmaAllocation allocation = VK_NULL_HANDLE;
+            VmaAllocationInfo allocationInfo{};
+            if (vmaAllocateMemory(m_context->GetVmaAllocator(), &req.memReqs, &allocCreateInfo, &allocation,
+                                  &allocationInfo) != VK_SUCCESS) {
+                INXLOG_ERROR("Failed to allocate memory for buffer resource: ", resource.name);
+                return false;
+            }
+            if (vkBindBufferMemory(device, resource.allocatedBuffer, allocationInfo.deviceMemory, 0) != VK_SUCCESS) {
+                vmaFreeMemory(m_context->GetVmaAllocator(), allocation);
+                INXLOG_ERROR("Failed to bind memory for buffer resource: ", resource.name);
+                return false;
+            }
+
+            resource.allocatedMemory = allocation;
+            if (resource.bufferDesc.isTransient && resource.firstPass <= resource.lastPass) {
+                BufferMemoryHeap heap;
+                heap.allocation = allocation;
+                heap.memory = allocationInfo.deviceMemory;
+                heap.size = req.memReqs.size;
+                heap.memoryTypeIndex = req.memoryTypeIndex;
+                heap.occupants.push_back({resource.firstPass, resource.lastPass});
+                bufferHeaps.push_back(std::move(heap));
+            }
+        }
+
+        resource.rhiBuffer = m_rhiDevice ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer) : rhi::BufferHandle{};
     }
 
     return true;
@@ -1515,65 +1591,72 @@ void RenderGraph::FreeResources()
         return;
     }
 
-    if (!m_context->IsShuttingDown()) {
-        vkDeviceWaitIdle(device);
-        SDL_PumpEvents();
-    }
-
-    // Framebuffers reference VkImageViews that we are about to destroy.
-    // Cached framebuffers become INVALID when their referenced views are
-    // destroyed (Vulkan spec: "a framebuffer is invalid if one of its
-    // referenced VkImageViews was destroyed").  If the driver recycles
-    // VkImageView handles, a subsequent Compile could return a stale
-    // framebuffer from the cache via hash collision, causing device lost.
-    // Flush the entire framebuffer cache to prevent this.
+    std::vector<VkFramebuffer> framebuffers;
+    framebuffers.reserve(m_framebufferCache.size());
     for (auto &[key, entry] : m_framebufferCache) {
-        if (entry.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device, entry.framebuffer, nullptr);
-        }
+        if (entry.framebuffer != VK_NULL_HANDLE)
+            framebuffers.push_back(entry.framebuffer);
     }
     m_framebufferCache.clear();
 
-    // Clear pass framebuffer references.
-    for (auto &pass : m_passes) {
+    for (auto &pass : m_passes)
         pass.framebuffer = VK_NULL_HANDLE;
-    }
 
-    // Free allocated transient resources (images/buffers/memory)
+    std::vector<VkImageView> imageViews;
+    std::vector<VkImage> images;
+    std::vector<VkBuffer> buffers;
+    std::unordered_set<VmaAllocation> allocationSet;
     for (auto &resource : m_resources) {
         if (resource.isExternal)
             continue;
 
         if (resource.allocatedView != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, resource.allocatedView, nullptr);
+            imageViews.push_back(resource.allocatedView);
             resource.allocatedView = VK_NULL_HANDLE;
         }
-
         if (resource.allocatedImage != VK_NULL_HANDLE) {
-            vkDestroyImage(device, resource.allocatedImage, nullptr);
+            images.push_back(resource.allocatedImage);
             resource.allocatedImage = VK_NULL_HANDLE;
         }
-
         if (resource.allocatedBuffer != VK_NULL_HANDLE) {
-            vmaDestroyBuffer(m_context->GetVmaAllocator(), resource.allocatedBuffer, resource.allocatedMemory);
+            buffers.push_back(resource.allocatedBuffer);
             resource.allocatedBuffer = VK_NULL_HANDLE;
-            resource.allocatedMemory = VK_NULL_HANDLE;
         }
-
         if (resource.allocatedMemory != VK_NULL_HANDLE) {
-            vmaFreeMemory(m_context->GetVmaAllocator(), resource.allocatedMemory);
+            allocationSet.insert(resource.allocatedMemory);
             resource.allocatedMemory = VK_NULL_HANDLE;
         }
     }
 
-    // Free aliased memory heaps (not owned by any single resource)
-    VmaAllocator allocator = m_context->GetVmaAllocator();
-    for (VmaAllocation heap : m_aliasedMemoryHeaps) {
-        if (heap != VK_NULL_HANDLE) {
-            vmaFreeMemory(allocator, heap);
-        }
-    }
+    allocationSet.insert(m_aliasedMemoryHeaps.begin(), m_aliasedMemoryHeaps.end());
     m_aliasedMemoryHeaps.clear();
+
+    std::vector<VmaAllocation> allocations(allocationSet.begin(), allocationSet.end());
+    const VmaAllocator allocator = m_context->GetVmaAllocator();
+    auto destroyRetired = [device, allocator, framebuffers = std::move(framebuffers),
+                           imageViews = std::move(imageViews), images = std::move(images), buffers = std::move(buffers),
+                           allocations = std::move(allocations)]() mutable {
+        for (VkFramebuffer framebuffer : framebuffers)
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+        for (VkImageView view : imageViews)
+            vkDestroyImageView(device, view, nullptr);
+        for (VkImage image : images)
+            vkDestroyImage(device, image, nullptr);
+        for (VkBuffer buffer : buffers)
+            vkDestroyBuffer(device, buffer, nullptr);
+        for (VmaAllocation allocation : allocations)
+            vmaFreeMemory(allocator, allocation);
+    };
+
+    if (m_deletionQueue && !m_context->IsShuttingDown()) {
+        m_deletionQueue->Push(std::move(destroyRetired));
+    } else {
+        if (!m_context->IsShuttingDown()) {
+            vkDeviceWaitIdle(device);
+            SDL_PumpEvents();
+        }
+        destroyRetired();
+    }
 }
 
 uint64_t RenderGraph::GetTransientResidentBytes() const
@@ -1595,6 +1678,17 @@ uint64_t RenderGraph::GetTransientResidentBytes() const
         bytes += info.size;
     }
     return bytes;
+}
+
+size_t RenderGraph::GetTransientAllocationCount() const
+{
+    std::unordered_set<VmaAllocation> allocations;
+    for (const auto &resource : m_resources) {
+        if (!resource.isExternal && resource.allocatedMemory != VK_NULL_HANDLE)
+            allocations.insert(resource.allocatedMemory);
+    }
+    allocations.insert(m_aliasedMemoryHeaps.begin(), m_aliasedMemoryHeaps.end());
+    return allocations.size();
 }
 
 } // namespace vk

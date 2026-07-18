@@ -46,6 +46,7 @@
 
 #include "VkTypes.h"
 #include "VulkanRhiDevice.h"
+#include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderGraphIdentity.h>
 #include <function/renderer/RendererList.h>
@@ -578,7 +579,8 @@ class RenderGraph
      * @param context Device context for Vulkan access
      * @param pipelineManager Pipeline manager for render pass creation
      */
-    void Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager);
+    void Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager,
+                    FrameDeletionQueue *deletionQueue = nullptr);
 
     /**
      * @brief Reset the graph for a new frame
@@ -815,6 +817,7 @@ class RenderGraph
     [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
     [[nodiscard]] const RendererList *ResolveRendererList(ResourceHandle handle) const;
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
+    [[nodiscard]] size_t GetTransientAllocationCount() const;
 
     /// Number of rebuilds that reused dependency analysis from an identical
     /// graph structure. Native resource handles and frame bindings are never
@@ -921,6 +924,7 @@ class RenderGraph
     VkDeviceContext *m_context = nullptr;
     VulkanRhiDevice *m_rhiDevice = nullptr;
     VkPipelineManager *m_pipelineManager = nullptr;
+    FrameDeletionQueue *m_deletionQueue = nullptr;
 
     // Graph data
     std::vector<RenderPassData> m_passes;
