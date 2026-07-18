@@ -358,6 +358,13 @@ def _ensure_categories():
         autosave_debounce=0.35,
     )
 
+    _categories["particle_graph"] = AssetCategoryDef(
+        display_name="asset.display_particlegraph",
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+        load_fn=_load_particlegraph,
+        custom_body_fn=_render_particlegraph_body,
+    )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Per-category loaders
@@ -1233,6 +1240,57 @@ def _load_vfxsystem(path: str):
     except (OSError, VfxSchemaError, ValueError, TypeError):
         return None
     return system, {"vfx_path": path}
+
+
+def _load_particlegraph(path: str):
+    from Infernux.particle.asset import ParticleGraphAsset, ParticleGraphSchemaError
+
+    try:
+        graph = ParticleGraphAsset.load(path)
+    except (OSError, ParticleGraphSchemaError, ValueError, TypeError):
+        return None
+    return graph, {"particle_graph_path": path}
+
+
+def _render_particlegraph_body(ctx: InxGUIContext, panel, state: _State):
+    from Infernux.particle.asset import ParticleGraphAsset
+    from .inspector_utils import field_label
+
+    graph = state.settings
+    if not isinstance(graph, ParticleGraphAsset):
+        ctx.label(t("asset.failed_load").format(name=t("asset.display_particlegraph")))
+        return
+
+    label_width = 120.0
+    field_label(ctx, t("asset.display_particlegraph"), label_width)
+    ctx.same_line()
+    ctx.label(graph.name or os.path.basename(state.file_path))
+    field_label(ctx, t("asset.particle_emitters"), label_width)
+    ctx.same_line()
+    ctx.label(str(len(graph.emitters)))
+
+    ctx.dummy(0, 8)
+    if not ctx.button(t("asset.particle_open_editor")):
+        return
+    open_fn = getattr(panel, "open_particle_graph", None) if panel is not None else None
+    if callable(open_fn):
+        open_fn(state.file_path)
+        return
+    try:
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from Infernux.engine.ui.window_manager import WindowManager
+
+        wm = WindowManager.instance()
+        editor = wm.open_window("particle_graph_editor") if wm is not None else None
+        if editor is not None and hasattr(editor, "_open_particlegraph"):
+            editor._open_particlegraph(state.file_path)
+            ClosablePanel.focus_panel_by_id("particle_graph_editor")
+            try:
+                wm._engine.select_docked_window("particle_graph_editor")
+            except Exception:
+                pass
+    except Exception as exc:
+        Debug.log_suppressed("asset_details_renderer.open_particlegraph", exc)
 
 
 def _render_vfxsystem_body(ctx: InxGUIContext, panel, state: _State):

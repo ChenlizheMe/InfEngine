@@ -96,6 +96,8 @@ class ProjectPanel : public EditorPanel
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimFsm;
     /// Create VFX system: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createVfxSystem;
+    /// Create Particle Graph: (currentPath, name) → (ok, errorMsg)
+    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createParticleGraph;
     /// Create transform timeline: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimTimeline;
     /// Create timeline state machine: (currentPath, name) → (ok, errorMsg)
@@ -126,6 +128,8 @@ class ProjectPanel : public EditorPanel
     std::function<void(const std::string &)> openAnimFsm;
     /// Open VFX system: (filePath)
     std::function<void(const std::string &)> openVfxSystem;
+    /// Open Particle Graph: (filePath)
+    std::function<void(const std::string &)> openParticleGraph;
     /// Open transform timeline: (filePath)
     std::function<void(const std::string &)> openAnimTimeline;
     /// Open timeline state machine: (filePath)

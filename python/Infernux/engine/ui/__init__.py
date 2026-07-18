@@ -34,6 +34,7 @@ _EXPORTS = {
     "AnimFSMEditorPanel": (".animfsm_editor_panel", "AnimFSMEditorPanel"),
     "AnimTimelineEditorPanel": (".animtimeline_editor_panel", "AnimTimelineEditorPanel"),
     "VfxGraphEditorPanel": (".vfx_graph_editor_panel", "VfxGraphEditorPanel"),
+    "ParticleGraphEditorPanel": (".particle_graph_editor_panel", "ParticleGraphEditorPanel"),
     "EditorPanel": (".editor_panel", "EditorPanel"),
     "EditorServices": (".editor_services", "EditorServices"),
     "EditorEventBus": (".event_bus", "EditorEventBus"),

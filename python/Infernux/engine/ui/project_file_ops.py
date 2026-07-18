@@ -712,6 +712,37 @@ def create_vfxsystem(current_path: str, system_name: str, asset_database=None):
     return True, ""
 
 
+def create_particlegraph(current_path: str, graph_name: str, asset_database=None):
+    """Create and AOT-compile a strict ``.particlegraph`` authoring asset."""
+    if not graph_name or not current_path:
+        return False, "Invalid Particle Graph name"
+
+    graph_name = graph_name.strip()
+    if not graph_name:
+        return False, "Particle Graph name cannot be empty"
+    if graph_name.lower().endswith(".particlegraph"):
+        graph_name = graph_name[: -len(".particlegraph")]
+
+    file_name = graph_name + ".particlegraph"
+    file_path = os.path.join(current_path, file_name)
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+
+    from Infernux.particle.asset import ParticleGraphAsset
+
+    try:
+        ParticleGraphAsset(name=graph_name).save(file_path)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return False, str(exc)
+
+    if asset_database:
+        try:
+            _import_new_asset(file_path, asset_database)
+        except Exception as exc:
+            return False, str(exc)
+    return True, ""
+
+
 def create_animtimeline(current_path: str, timeline_name: str, asset_database=None):
     """Create a ``.animtimeline`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not timeline_name or not current_path:

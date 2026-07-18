@@ -22,6 +22,7 @@ from Infernux.engine.ui.engine_status import EngineStatus as EngineStatus
 from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel as BuildSettingsPanel
 from Infernux.engine.ui.viewport_utils import ViewportInfo as ViewportInfo, capture_viewport_info as capture_viewport_info
 from Infernux.engine.ui.ui_editor_panel import UIEditorPanel as UIEditorPanel
+from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel as ParticleGraphEditorPanel
 from Infernux.engine.ui.selection_manager import SelectionManager as SelectionManager
 from Infernux.engine.ui.editor_panel import EditorPanel as EditorPanel
 from Infernux.engine.ui.editor_services import EditorServices as EditorServices
@@ -48,6 +49,7 @@ __all__ = [
     "ViewportInfo",
     "capture_viewport_info",
     "UIEditorPanel",
+    "ParticleGraphEditorPanel",
     "SelectionManager",
     "EditorPanel",
     "EditorServices",

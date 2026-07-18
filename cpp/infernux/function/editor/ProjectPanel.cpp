@@ -259,6 +259,7 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
         {".animclip3d", "animclip3d"},
         {".animfsm", "animfsm"},
         {".vfxsystem", "file"},
+        {".particlegraph", "file"},
         {".effect", "file"},
         {".effectgroup", "file"},
         {".effectstack", "file"},
@@ -1672,6 +1673,9 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
         } else if (item.ext == ".vfxsystem") {
             if (openVfxSystem)
                 openVfxSystem(item.path);
+        } else if (item.ext == ".particlegraph") {
+            if (openParticleGraph)
+                openParticleGraph(item.path);
         } else if (item.ext == ".animtimeline") {
             if (openAnimTimeline)
                 openAnimTimeline(item.path);
@@ -2890,6 +2894,13 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
             CreateAndRename("NewVFXSystem", ".vfxsystem", [this](const std::string &name) {
                 if (createVfxSystem)
                     return createVfxSystem(m_currentPath, name);
+                return std::make_pair(false, std::string("No callback"));
+            });
+        }
+        if (ctx->Selectable(Tr("project.create_particlegraph"), false)) {
+            CreateAndRename("NewParticleGraph", ".particlegraph", [this](const std::string &name) {
+                if (createParticleGraph)
+                    return createParticleGraph(m_currentPath, name);
                 return std::make_pair(false, std::string("No callback"));
             });
         }

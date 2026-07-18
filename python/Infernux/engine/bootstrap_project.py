@@ -84,6 +84,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         file_ops.create_animfsm, cur, name, adb)
     pp.create_vfxsystem = lambda cur, name: _safe_project_create(
         file_ops.create_vfxsystem, cur, name, adb)
+    pp.create_particlegraph = lambda cur, name: _safe_project_create(
+        file_ops.create_particlegraph, cur, name, adb)
     pp.create_animtimeline = lambda cur, name: _safe_project_create(
         file_ops.create_animtimeline, cur, name, adb)
     pp.create_timelinefsm = lambda cur, name: _safe_project_create(
@@ -287,6 +289,23 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                 pass
 
     pp.open_vfx_system = _open_vfx_system
+
+    def _open_particle_graph(file_path):
+        from Infernux.engine.ui.window_manager import WindowManager
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+        wm = WindowManager.instance()
+        if wm is None:
+            return
+        panel = wm.open_window("particle_graph_editor")
+        if panel is not None and hasattr(panel, "_open_particlegraph"):
+            panel._open_particlegraph(file_path)
+            ClosablePanel.focus_panel_by_id("particle_graph_editor")
+            try:
+                wm._engine.select_docked_window("particle_graph_editor")
+            except Exception:
+                pass
+
+    pp.open_particle_graph = _open_particle_graph
 
     def _open_anim_timeline(file_path):
         from Infernux.engine.ui.window_manager import WindowManager

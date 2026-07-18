@@ -32,6 +32,7 @@ from Infernux.engine.ui import (
     AnimFSMEditorPanel,
     AnimTimelineEditorPanel,
     VfxGraphEditorPanel,
+    ParticleGraphEditorPanel,
     EditorPanel,
     EditorServices,
     EditorEventBus,

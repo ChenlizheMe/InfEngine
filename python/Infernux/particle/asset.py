@@ -267,10 +267,10 @@ _ROOTS = {
 
 def default_stage_graph(stage: str) -> GraphDocument:
     domain, root_uid, root_type = _ROOTS[stage]
-    nodes = [GraphNodeRecord(root_uid, root_type)]
+    nodes = [GraphNodeRecord(root_uid, root_type, (0.0, 0.0))]
     links = []
     if stage == "rendering":
-        nodes.append(GraphNodeRecord("output.sprite", "particle.output.sprite"))
+        nodes.append(GraphNodeRecord("output.sprite", "particle.output.sprite", (280.0, 0.0)))
         links.append(
             GraphLinkRecord(
                 "root-to-sprite",

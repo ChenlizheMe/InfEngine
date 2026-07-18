@@ -9,6 +9,7 @@ from Infernux.engine.ui.project_file_ops import (
     create_material,
     create_physic_material,
     create_prefab_from_gameobject,
+    create_particlegraph,
     create_vfxsystem,
 )
 
@@ -69,6 +70,16 @@ class TestProjectPanelCreation:
         system = VfxSystem.load(str(tmp_path / "Fire.vfxsystem"))
         assert system.name == "Fire"
         assert system.emitters[0].graph.graph_kind == "vfx"
+
+    def test_create_particlegraph_callback(self):
+        pp = ProjectPanel()
+        pp.create_particlegraph = lambda cur, name: (True, "")
+        opened = []
+        pp.open_particle_graph = lambda path: opened.append(path)
+
+        assert pp.create_particlegraph("/path", "Smoke") == (True, "")
+        pp.open_particle_graph("/path/Smoke.particlegraph")
+        assert opened == ["/path/Smoke.particlegraph"]
 
     def test_create_material_writes_schema_v4_document(self, tmp_path, engine):
         from Infernux.lib import InxMaterial
