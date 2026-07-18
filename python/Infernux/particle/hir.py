@@ -187,6 +187,32 @@ class ParticleGraphCompiler:
             raise ParticleCompileError(
                 f"emitter {emitter.stable_id!r} Rendering stage requires at least one output"
             )
+        invalid_sort = next(
+            (
+                output
+                for output in outputs
+                if output.sort_mode not in {"none", "back_to_front", "front_to_back"}
+            ),
+            None,
+        )
+        if invalid_sort is not None:
+            raise ParticleCompileError(
+                f"particle output {invalid_sort.output_id!r} has unsupported sort mode "
+                f"{invalid_sort.sort_mode!r}"
+            )
+        invalid_shadows = next(
+            (
+                output
+                for output in outputs
+                if output.receive_shadows and not output.receive_scene_lighting
+            ),
+            None,
+        )
+        if invalid_shadows is not None:
+            raise ParticleCompileError(
+                f"particle output {invalid_shadows.output_id!r} cannot receive shadows "
+                "while scene lighting is disabled"
+            )
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,

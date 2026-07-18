@@ -45,6 +45,30 @@ std::vector<uint32_t> DecodeParticleSpirv(const py::handle &value, const std::st
     return words;
 }
 
+particle::ParticleSortMode DecodeParticleSortMode(const std::string &value)
+{
+    if (value == "none")
+        return particle::ParticleSortMode::None;
+    if (value == "back_to_front")
+        return particle::ParticleSortMode::BackToFront;
+    if (value == "front_to_back")
+        return particle::ParticleSortMode::FrontToBack;
+    throw std::invalid_argument("GPU particle output sort_mode must be 'none', 'back_to_front', or 'front_to_back'");
+}
+
+const char *ParticleSortModeName(particle::ParticleSortMode value)
+{
+    switch (value) {
+    case particle::ParticleSortMode::None:
+        return "none";
+    case particle::ParticleSortMode::BackToFront:
+        return "back_to_front";
+    case particle::ParticleSortMode::FrontToBack:
+        return "front_to_back";
+    }
+    return "none";
+}
+
 particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &value)
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
@@ -82,13 +106,17 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         if (!py::isinstance<py::dict>(item))
             throw std::invalid_argument("GPU particle outputs must contain dictionaries");
         const py::dict output = py::reinterpret_borrow<py::dict>(item);
-        for (const char *field : {"id", "stable_id", "material"}) {
+        for (const char *field :
+             {"id", "stable_id", "material", "receive_scene_lighting", "receive_shadows", "sort_mode"}) {
             if (!output.contains(field))
                 throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
         }
         particle::GpuParticleOutputProgram decoded;
         decoded.id = py::cast<uint64_t>(output["id"]);
         decoded.stableId = py::cast<std::string>(output["stable_id"]);
+        decoded.semantics.receiveSceneLighting = py::cast<bool>(output["receive_scene_lighting"]);
+        decoded.semantics.receiveShadows = py::cast<bool>(output["receive_shadows"]);
+        decoded.semantics.sortMode = DecodeParticleSortMode(py::cast<std::string>(output["sort_mode"]));
         const py::dict material = py::cast<py::dict>(output["material"]);
         for (const char *field : {"render_queue", "blend_enabled", "depth_test_enabled", "depth_write_enabled"}) {
             if (!material.contains(field))
@@ -1899,6 +1927,22 @@ PYBIND11_MODULE(_Infernux, m)
                 return manager ? manager->ActiveOutputRenderQueue(emitterId, outputId) : int32_t{-1};
             },
             py::arg("emitter_id"), py::arg("output_id"), "Return the active GPU particle output render queue")
+        .def(
+            "_gpu_particle_output_semantics",
+            [](Infernux &self, uint64_t emitterId, uint64_t outputId) -> py::object {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                const auto semantics =
+                    manager ? manager->ActiveOutputSemantics(emitterId, outputId) : std::nullopt;
+                if (!semantics)
+                    return py::none();
+                py::dict result;
+                result["receive_scene_lighting"] = semantics->receiveSceneLighting;
+                result["receive_shadows"] = semantics->receiveShadows;
+                result["sort_mode"] = ParticleSortModeName(semantics->sortMode);
+                return result;
+            },
+            py::arg("emitter_id"), py::arg("output_id"), "Return the active GPU particle output semantics")
         // ========================================================================
         // Material Pipeline API - for refreshing material shaders at runtime
         // ========================================================================

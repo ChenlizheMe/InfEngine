@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuBillboardRenderer.h"
+#include "ParticleOutputSemantics.h"
 #include "ParticleRenderGraph.h"
 
 #include <core/types/ShaderProgramArtifact.h>
@@ -9,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -36,6 +38,7 @@ struct GpuParticleOutputProgram
     std::shared_ptr<InxMaterial> material;
     std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     GpuBillboardMaterialState fallbackMaterial;
+    ParticleOutputSemantics semantics;
 };
 
 struct GpuParticleEmitterProgram
@@ -99,6 +102,8 @@ class ParticleGpuSystemManager
     [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
     [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
+    [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
+                                                                               uint64_t outputId) const;
 
   private:
     struct Impl;

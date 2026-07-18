@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuBillboardRenderer.h"
+#include "ParticleOutputSemantics.h"
 
 #include <cstdint>
 #include <memory>
@@ -17,6 +18,7 @@ struct GpuParticleDrawEntry
     rhi::BufferHandle instances;
     rhi::BufferHandle indirectArguments;
     std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
+    ParticleOutputSemantics semantics;
 };
 
 class ParticleGpuDrawRegistry

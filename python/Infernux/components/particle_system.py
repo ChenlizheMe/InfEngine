@@ -379,6 +379,9 @@ class ParticleSystem(InxComponent):
                             "id": self._gpu_output_id(emitter.stable_id, output.output_id),
                             "stable_id": output.output_id,
                             "material": self._gpu_material_binding(output),
+                            "receive_scene_lighting": output.receive_scene_lighting,
+                            "receive_shadows": output.receive_shadows,
+                            "sort_mode": output.sort_mode,
                         }
                         for output in emitter.outputs
                     ],

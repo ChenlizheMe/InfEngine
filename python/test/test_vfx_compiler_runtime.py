@@ -337,6 +337,11 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
     assert engine._gpu_particle_output_count(emitter_id) == 2
     secondary_output_id = component._gpu_output_id("smoke", "output.secondary")
+    assert engine._gpu_particle_output_semantics(emitter_id, secondary_output_id) == {
+        "receive_scene_lighting": False,
+        "receive_shadows": False,
+        "sort_mode": "back_to_front",
+    }
     assert (
         engine._gpu_particle_output_render_queue(emitter_id, secondary_output_id)
         == 3075

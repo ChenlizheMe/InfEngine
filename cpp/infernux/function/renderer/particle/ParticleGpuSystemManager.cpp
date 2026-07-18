@@ -44,6 +44,7 @@ struct ParticleGpuSystemManager::Impl
             std::shared_ptr<InxMaterial> material;
             std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
             GpuBillboardMaterialState fallbackMaterial;
+            ParticleOutputSemantics semantics;
             std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
         };
 
@@ -150,6 +151,11 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle output identity must be valid and unique per emitter");
                 return {};
             }
+            if (!output.semantics.IsValid()) {
+                SetError(error, "GPU particle output '" + output.stableId +
+                                    "' cannot receive shadows while scene lighting is disabled");
+                return {};
+            }
             auto renderer =
                 CreateOutputRenderer(*emitter, output.material, output.fallbackMaterial, output.shaderProgram);
             if (!renderer) {
@@ -158,7 +164,7 @@ struct ParticleGpuSystemManager::Impl
                 return {};
             }
             emitter->outputs.push_back({output.id, output.stableId, output.material, output.shaderProgram,
-                                        output.fallbackMaterial, std::move(renderer)});
+                                        output.fallbackMaterial, output.semantics, std::move(renderer)});
         }
         return emitter;
     }
@@ -200,7 +206,7 @@ struct ParticleGpuSystemManager::Impl
             (void)id;
             for (const auto &output : emitter->outputs) {
                 entries.push_back({output.id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
-                                   emitter->runtime->IndirectBuffer(), output.renderer});
+                                   emitter->runtime->IndirectBuffer(), output.renderer, output.semantics});
             }
         }
         return entries;
@@ -509,6 +515,19 @@ int32_t ParticleGpuSystemManager::ActiveOutputRenderQueue(uint64_t emitterId, ui
     const auto output = std::find_if(emitter->second->outputs.begin(), emitter->second->outputs.end(),
                                      [outputId](const auto &candidate) { return candidate.id == outputId; });
     return output != emitter->second->outputs.end() ? output->renderer->RenderQueue() : -1;
+}
+
+std::optional<ParticleOutputSemantics> ParticleGpuSystemManager::ActiveOutputSemantics(uint64_t emitterId,
+                                                                                       uint64_t outputId) const
+{
+    if (!m_impl || outputId == 0)
+        return std::nullopt;
+    const auto emitter = m_impl->emitters.find(emitterId);
+    if (emitter == m_impl->emitters.end())
+        return std::nullopt;
+    const auto output = std::find_if(emitter->second->outputs.begin(), emitter->second->outputs.end(),
+                                     [outputId](const auto &candidate) { return candidate.id == outputId; });
+    return output != emitter->second->outputs.end() ? std::optional{output->semantics} : std::nullopt;
 }
 
 } // namespace infernux::particle

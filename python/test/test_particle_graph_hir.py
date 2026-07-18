@@ -361,6 +361,26 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
 
 
 @pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        ('sort="distance"', "unsupported sort mode"),
+        (
+            "receive_scene_lighting=False,\n                receive_shadows=True,\n                sort=\"back_to_front\"",
+            "cannot receive shadows",
+        ),
+    ],
+)
+def test_particle_output_rejects_invalid_render_semantics(replacement, message):
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        'receive_scene_lighting=True,\n                receive_shadows=True,\n                sort="back_to_front"',
+        replacement,
+    )
+
+    with pytest.raises(ParticleCompileError, match=message):
+        ParticleScriptCompiler().compile(source, source_name="InvalidOutput.particle.py")
+
+
+@pytest.mark.parametrize(
     ("source", "message"),
     [
         ("open('side-effect.txt', 'w')\n" + PARTICLE_SCRIPT_SOURCE, "unsupported top-level"),

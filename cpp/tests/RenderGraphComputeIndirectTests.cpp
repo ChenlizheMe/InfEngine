@@ -184,6 +184,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::GpuParticleOutputProgram primaryOutput;
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
+    primaryOutput.semantics.sortMode = infernux::particle::ParticleSortMode::FrontToBack;
     primaryOutput.material = std::make_shared<infernux::InxMaterial>("managed-primary-material");
     auto primaryMaterialState = primaryOutput.material->GetRenderState();
     primaryMaterialState.renderQueue = 3050;
@@ -196,6 +197,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "GPU particle system was not published atomically"))
+        return false;
+    const auto primarySemantics = particleSystems.ActiveOutputSemantics(managedProgram.id, primaryOutput.id);
+    if (!Require(primarySemantics && !primarySemantics->receiveSceneLighting && !primarySemantics->receiveShadows &&
+                     primarySemantics->sortMode == infernux::particle::ParticleSortMode::FrontToBack,
+                 "GPU particle output semantics were lost during publication"))
+        return false;
+
+    auto invalidSemanticsProgram = managedProgram;
+    invalidSemanticsProgram.artifactRevision = 2;
+    invalidSemanticsProgram.outputs[0].semantics.receiveShadows = true;
+    if (!Require(!particleSystems.CreateOrReplace(invalidSemanticsProgram, &managedError) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1,
+                 "Invalid GPU particle output semantics disturbed the active revision"))
         return false;
 
     auto linkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
@@ -339,6 +353,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto managedEntries = particleDrawRegistry.Snapshot(3000, 3100);
     if (!Require(managedEntries.size() == 2 && managedEntries[0].renderer->RenderQueue() == 3050 &&
                      managedEntries[1].renderer->RenderQueue() == 3075 &&
+                     managedEntries[0].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
+                     managedEntries[1].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
                      managedEntries[0].instances == managedEntries[1].instances &&
                      managedEntries[0].indirectArguments == managedEntries[1].indirectArguments,
                  "GPU particle outputs did not share one simulated stream across ordered draw queues"))
