@@ -274,7 +274,8 @@ int main()
     assert(billboard.RenderQueue() == 3150);
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
-    assert(graphicsTrace.constants.back().materialTint == std::array<float, 4>({0.25f, 0.5f, 0.75f, 0.8f}));
+    const std::array<float, 4> expectedTint = {0.25f, 0.5f, 0.75f, 0.8f};
+    assert(graphicsTrace.constants.back().materialTint == expectedTint);
     liveMaterialState = billboardDesc.material->GetRenderState();
     liveMaterialState.blendEnable = false;
     liveMaterialState.depthWriteEnable = true;

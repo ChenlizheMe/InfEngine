@@ -337,7 +337,8 @@ rhi::BindingLayoutHandle VulkanRhiDevice::CreateBindingLayout(const rhi::Binding
 
 rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &desc)
 {
-    if (m_device == VK_NULL_HANDLE || !desc.layout.IsValid() || desc.bufferCount > desc.buffers.size())
+    if (m_device == VK_NULL_HANDLE || !desc.layout.IsValid() || desc.bufferCount > desc.buffers.size() ||
+        desc.textureCount > desc.textures.size())
         return {};
     const VkDescriptorSetLayout layout = Resolve(desc.layout);
     if (layout == VK_NULL_HANDLE)
@@ -348,7 +349,9 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
         return {};
 
     std::array<VkDescriptorBufferInfo, rhi::BindGroupDesc::MaxBufferBindings> infos{};
-    std::array<VkWriteDescriptorSet, rhi::BindGroupDesc::MaxBufferBindings> writes{};
+    std::array<VkDescriptorImageInfo, rhi::BindGroupDesc::MaxTextureBindings> imageInfos{};
+    std::array<VkWriteDescriptorSet, rhi::BindGroupDesc::MaxBufferBindings + rhi::BindGroupDesc::MaxTextureBindings>
+        writes{};
     for (uint32_t index = 0; index < desc.bufferCount; ++index) {
         const auto &binding = desc.buffers[index];
         if (binding.type != rhi::BindingType::StorageBuffer && binding.type != rhi::BindingType::UniformBuffer) {
@@ -371,8 +374,40 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
         writes[index].descriptorType = ToVkDescriptorType(binding.type);
         writes[index].pBufferInfo = &infos[index];
     }
-    if (desc.bufferCount > 0)
-        vkUpdateDescriptorSets(m_device, desc.bufferCount, writes.data(), 0, nullptr);
+    for (uint32_t index = 0; index < desc.textureCount; ++index) {
+        const auto &binding = desc.textures[index];
+        if (binding.type != rhi::BindingType::SampledTexture && binding.type != rhi::BindingType::StorageTexture &&
+            binding.type != rhi::BindingType::Sampler && binding.type != rhi::BindingType::CombinedTextureSampler) {
+            vkFreeDescriptorSets(m_device, pool, 1, &set);
+            return {};
+        }
+        const bool needsTexture = binding.type != rhi::BindingType::Sampler;
+        const bool needsSampler =
+            binding.type == rhi::BindingType::Sampler || binding.type == rhi::BindingType::CombinedTextureSampler;
+        const VkImageView texture = needsTexture ? Resolve(binding.texture) : VK_NULL_HANDLE;
+        const VkSampler sampler = needsSampler ? Resolve(binding.sampler) : VK_NULL_HANDLE;
+        if ((needsTexture && texture == VK_NULL_HANDLE) || (needsSampler && sampler == VK_NULL_HANDLE)) {
+            vkFreeDescriptorSets(m_device, pool, 1, &set);
+            return {};
+        }
+        auto &imageInfo = imageInfos[index];
+        imageInfo.imageView = texture;
+        imageInfo.sampler = sampler;
+        imageInfo.imageLayout = binding.type == rhi::BindingType::StorageTexture
+                                    ? VK_IMAGE_LAYOUT_GENERAL
+                                    : (binding.depthRead ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                         : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        auto &write = writes[desc.bufferCount + index];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = set;
+        write.dstBinding = binding.binding;
+        write.descriptorCount = 1;
+        write.descriptorType = ToVkDescriptorType(binding.type);
+        write.pImageInfo = &imageInfo;
+    }
+    const uint32_t writeCount = desc.bufferCount + desc.textureCount;
+    if (writeCount > 0)
+        vkUpdateDescriptorSets(m_device, writeCount, writes.data(), 0, nullptr);
     return Register<rhi::BindGroupHandle>(m_bindGroups, m_freeBindGroup, BindGroupPayload{set, pool, true});
 }
 
@@ -718,9 +753,13 @@ VkDescriptorPool VulkanRhiDevice::CreateDescriptorPool()
 {
     if (m_device == VK_NULL_HANDLE)
         return VK_NULL_HANDLE;
-    const std::array<VkDescriptorPoolSize, 2> sizes = {
+    const std::array<VkDescriptorPoolSize, 6> sizes = {
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
         VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096},
     };
     VkDescriptorPoolCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

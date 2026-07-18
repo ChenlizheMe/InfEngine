@@ -50,10 +50,14 @@ struct TestResources
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkQueryPool queryPool = VK_NULL_HANDLE;
+    VkSampler sampledTextureSampler = VK_NULL_HANDLE;
     BindGroupHandle computeGroup;
+    BindGroupHandle sampledTextureGroup;
     BindingLayoutHandle computeBindingLayout;
+    BindingLayoutHandle sampledTextureBindingLayout;
     ComputePipelineHandle computeHandle;
     ShaderModuleHandle computeShader;
+    infernux::rhi::SamplerHandle sampledTextureSamplerHandle;
 
     ~TestResources()
     {
@@ -62,11 +66,16 @@ struct TestResources
             auto &rhi = context.GetRhiDevice();
             rhi.Release(computeHandle);
             rhi.Release(computeGroup);
+            rhi.Release(sampledTextureGroup);
             rhi.Release(computeBindingLayout);
+            rhi.Release(sampledTextureBindingLayout);
             rhi.Release(computeShader);
+            rhi.Release(sampledTextureSamplerHandle);
             graph.Destroy();
 
             const VkDevice device = context.GetDevice();
+            if (sampledTextureSampler != VK_NULL_HANDLE)
+                vkDestroySampler(device, sampledTextureSampler, nullptr);
             if (queryPool != VK_NULL_HANDLE)
                 vkDestroyQueryPool(device, queryPool, nullptr);
             if (commandPool != VK_NULL_HANDLE)
@@ -496,6 +505,36 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
+
+    infernux::rhi::BindingLayoutDesc sampledTextureLayoutDesc;
+    sampledTextureLayoutDesc.entries[0] = {0, infernux::rhi::BindingType::CombinedTextureSampler,
+                                           infernux::rhi::ShaderStage::Fragment, 1};
+    sampledTextureLayoutDesc.entryCount = 1;
+    resources.sampledTextureBindingLayout = rhi.CreateBindingLayout(sampledTextureLayoutDesc);
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+    if (!Require(resources.sampledTextureBindingLayout.IsValid() &&
+                     vkCreateSampler(device, &samplerInfo, nullptr, &resources.sampledTextureSampler) == VK_SUCCESS,
+                 "RHI sampled texture layout or Vulkan sampler creation failed"))
+        return false;
+    resources.sampledTextureSamplerHandle = rhi.RegisterSampler(resources.sampledTextureSampler);
+    infernux::rhi::BindGroupDesc sampledTextureGroupDesc;
+    sampledTextureGroupDesc.layout = resources.sampledTextureBindingLayout;
+    sampledTextureGroupDesc.textures[0] = {0, infernux::rhi::BindingType::CombinedTextureSampler,
+                                           resources.graph.ResolveRhiTextureView(colorTarget),
+                                           resources.sampledTextureSamplerHandle, false};
+    sampledTextureGroupDesc.textureCount = 1;
+    resources.sampledTextureGroup = rhi.CreateBindGroup(sampledTextureGroupDesc);
+    if (!Require(resources.sampledTextureGroup.IsValid(), "RHI combined texture sampler bind group creation failed"))
+        return false;
+
     const auto executionNames = resources.graph.GetExecutionPassNames();
     if (!Require(executionNames.size() == 10 && executionNames[0] == "BuildIndirectArguments" &&
                      executionNames[1] == "CopyIndirectArguments" &&

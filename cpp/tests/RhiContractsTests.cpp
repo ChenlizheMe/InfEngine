@@ -196,5 +196,14 @@ int main()
     computeDesc.bindingLayouts[0] = {10, 1};
     computeDesc.bindingLayoutCount = 1;
     assert(computeDesc.computeShader.IsValid());
+
+    BindGroupDesc groupDesc;
+    groupDesc.layout = {15, 1};
+    groupDesc.buffers[0] = {0, BindingType::StorageBuffer, {16, 1}, 0, 256};
+    groupDesc.bufferCount = 1;
+    groupDesc.textures[0] = {1, BindingType::CombinedTextureSampler, {17, 1}, {18, 1}, false};
+    groupDesc.textureCount = 1;
+    assert(groupDesc.textures[0].texture.IsValid());
+    assert(groupDesc.textures[0].sampler.IsValid());
     return 0;
 }

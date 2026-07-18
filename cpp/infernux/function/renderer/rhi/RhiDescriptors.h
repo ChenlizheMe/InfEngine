@@ -151,6 +151,7 @@ struct BindingLayoutEntry
 struct TextureBinding
 {
     uint32_t binding = 0;
+    BindingType type = BindingType::CombinedTextureSampler;
     TextureViewHandle texture;
     SamplerHandle sampler;
     bool depthRead = false;
@@ -176,10 +177,13 @@ struct BindingLayoutDesc
 struct BindGroupDesc
 {
     static constexpr size_t MaxBufferBindings = 16;
+    static constexpr size_t MaxTextureBindings = 16;
 
     BindingLayoutHandle layout;
     std::array<BufferBinding, MaxBufferBindings> buffers{};
     uint32_t bufferCount = 0;
+    std::array<TextureBinding, MaxTextureBindings> textures{};
+    uint32_t textureCount = 0;
 };
 
 struct RasterState
