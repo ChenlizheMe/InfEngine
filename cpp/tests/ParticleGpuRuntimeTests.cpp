@@ -138,7 +138,7 @@ int main()
 
     particle::ParticleGpuRuntime runtime;
     assert(runtime.Create(device, desc));
-    assert(runtime.IsValid() && runtime.Capacity() == 1000);
+    assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64);
     assert(device.buffers.size() == 6);
     assert(device.buffers[0].byteSize == 64000);
     assert(device.buffers[3].byteSize == 48000);
@@ -167,7 +167,7 @@ int main()
     assert(trace.constants[2].simulationStep == 9);
 
     runtime.Destroy();
-    assert(!runtime.IsValid());
+    assert(!runtime.IsValid() && runtime.StateStride() == 0);
     assert(device.pipelineReleases == 5 && device.groupReleases == 1 && device.layoutReleases == 1);
     assert(device.bufferReleases == 6);
     return 0;

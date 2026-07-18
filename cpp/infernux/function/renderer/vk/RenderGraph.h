@@ -344,6 +344,11 @@ class PassBuilder
     /// @brief Import an external buffer
     [[nodiscard]] ResourceHandle ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size);
 
+    /// Import a buffer owned by another RHI subsystem. The graph registers a
+    /// non-owning Vulkan alias for barriers and draw commands; the original
+    /// RHI handle remains owned by its caller.
+    [[nodiscard]] ResourceHandle ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size);
+
     /// @brief Read a texture in shader
     ResourceHandle Read(ResourceHandle handle, rhi::PipelineStage stages = rhi::PipelineStage::FragmentShader);
 
@@ -368,6 +373,9 @@ class PassBuilder
 
     /// Read a storage buffer from a compute shader.
     ResourceHandle ReadStorageBuffer(ResourceHandle handle);
+
+    /// Read a uniform buffer from a compute shader.
+    ResourceHandle ReadUniformBuffer(ResourceHandle handle);
 
     /// Write a storage buffer from a compute shader.
     ResourceHandle WriteStorageBuffer(ResourceHandle handle);

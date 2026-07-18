@@ -1,4 +1,5 @@
 #include <function/renderer/RendererList.h>
+#include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
@@ -283,6 +284,29 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     });
     resources.graph.SetOutput(colorTarget);
 
+    auto &rhi = resources.context.GetRhiDevice();
+    infernux::particle::GpuEmitterDesc particleDesc;
+    particleDesc.capacity = 32;
+    particleDesc.stateStride = 16;
+    for (auto &kernel : particleDesc.kernels)
+        kernel = {computeCode.data(), computeCode.size()};
+    infernux::particle::ParticleGpuRuntime particleRuntime;
+    if (!Require(particleRuntime.Create(rhi, particleDesc), "Particle GPU runtime creation failed"))
+        return false;
+
+    infernux::particle::ParticleRenderGraph particleGraph;
+    if (!Require(particleGraph.Attach(resources.graph, particleRuntime, "Particle/TestEmitter"),
+                 "Particle RenderGraph attachment failed"))
+        return false;
+    infernux::particle::GpuParticleFrameRequest particleFrame;
+    particleFrame.frameIndex = 42;
+    particleFrame.spawnCount = 3;
+    particleFrame.systemSeed = 17;
+    particleFrame.simulationStep = 9;
+    particleFrame.deltaTime = 1.0f / 60.0f;
+    if (!Require(particleGraph.BeginFrame(particleFrame), "Particle frame request was rejected"))
+        return false;
+
     if (!Require(indirectArguments.version == 1 && discardedRewrite.version == 2 &&
                      copiedIndirectArguments.version == 1,
                  "Buffer writes did not publish monotonic resource versions"))
@@ -291,9 +315,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
     const auto executionNames = resources.graph.GetExecutionPassNames();
-    if (!Require(executionNames.size() == 5 && executionNames[0] == "BuildIndirectArguments" &&
+    if (!Require(executionNames.size() == 10 && executionNames[0] == "BuildIndirectArguments" &&
                      executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "IndirectDraw" &&
-                     executionNames[3] == "SkipEmptyRendererList" && executionNames[4] == "RunPopulatedRendererList",
+                     executionNames[3] == "SkipEmptyRendererList" && executionNames[4] == "RunPopulatedRendererList" &&
+                     executionNames[5] == "Particle/TestEmitter/Bootstrap" &&
+                     executionNames[6] == "Particle/TestEmitter/Init" &&
+                     executionNames[7] == "Particle/TestEmitter/Update" &&
+                     executionNames[8] == "Particle/TestEmitter/RenderReset" &&
+                     executionNames[9] == "Particle/TestEmitter/Rendering",
                  "Versioned culling broke the compute-to-transfer-to-indirect dependency"))
         return false;
     if (!Require(resources.graph.ResolveRendererList(emptyRendererListHandle) == &emptyRendererList &&
@@ -301,7 +330,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Imported renderer lists did not preserve their stable host objects"))
         return false;
 
-    auto &rhi = resources.context.GetRhiDevice();
     infernux::rhi::Device &deviceApi = rhi;
     const std::array<uint32_t, 4> initialUpload = {1, 2, 3, 4};
     infernux::rhi::BufferDesc uploadDesc;
@@ -413,6 +441,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(emptyRendererCallbackCount == 0 && populatedRendererCallbackCount == 1,
                  "Renderer-list callback culling did not distinguish empty and populated lists"))
         return false;
+    if (!Require(!particleGraph.HasPendingFrame() && particleGraph.LastConsumedFrame() == 42,
+                 "Particle graph did not consume exactly one armed frame"))
+        return false;
+    if (!Require(!particleGraph.BeginFrame(particleFrame), "Particle graph accepted the same engine frame twice"))
+        return false;
     if (!Require(vkEndCommandBuffer(commandBuffer) == VK_SUCCESS, "Command buffer end failed"))
         return false;
 
@@ -440,6 +473,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!Require(passedSamples > 0, "Compute-generated indirect draw produced no visible samples"))
         return false;
+
+    resources.graph.Destroy();
+    particleRuntime.Destroy();
 
     RenderGraph rootGraph;
     rootGraph.Initialize(&resources.context, &resources.pipelines);

@@ -237,6 +237,15 @@ ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffe
     return handle;
 }
 
+ResourceHandle PassBuilder::ImportBuffer(const std::string &name, rhi::BufferHandle buffer, uint64_t size)
+{
+    if (!buffer.IsValid() || size == 0 || !m_graph->m_rhiDevice)
+        return {};
+    const VkBuffer nativeBuffer = m_graph->m_rhiDevice->Resolve(buffer);
+    return nativeBuffer != VK_NULL_HANDLE ? ImportBuffer(name, nativeBuffer, static_cast<VkDeviceSize>(size))
+                                          : ResourceHandle{};
+}
+
 ResourceHandle PassBuilder::Read(ResourceHandle handle, rhi::PipelineStage stages)
 {
     if (!m_graph->Owns(handle)) {
@@ -393,6 +402,17 @@ ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle)
     auto &pass = m_graph->m_passes[m_passId];
     pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
                           rhi::Access::ShaderRead, rhi::TextureLayout::Undefined});
+    return handle;
+}
+
+ResourceHandle PassBuilder::ReadUniformBuffer(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
+        return handle;
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
+                          rhi::Access::UniformRead, rhi::TextureLayout::Undefined});
     return handle;
 }
 

@@ -85,6 +85,10 @@ class ParticleGpuRuntime
     {
         return m_capacity;
     }
+    [[nodiscard]] uint32_t StateStride() const noexcept
+    {
+        return m_stateStride;
+    }
     [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept
     {
         return m_states;
@@ -117,6 +121,7 @@ class ParticleGpuRuntime
 
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
+    uint32_t m_stateStride = 0;
     rhi::BufferHandle m_states;
     rhi::BufferHandle m_freeList;
     rhi::BufferHandle m_counters;

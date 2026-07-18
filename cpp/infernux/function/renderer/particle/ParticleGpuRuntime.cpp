@@ -41,6 +41,7 @@ bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
 
     m_device = &device;
     m_capacity = desc.capacity;
+    m_stateStride = desc.stateStride;
     const auto storage = rhi::BufferUsageFlags::Storage;
     m_states = device.CreateBuffer({stateBytes, storage});
     m_freeList = device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
@@ -123,6 +124,7 @@ void ParticleGpuRuntime::Destroy() noexcept
     }
     m_device = nullptr;
     m_capacity = 0;
+    m_stateStride = 0;
     m_states = {};
     m_freeList = {};
     m_counters = {};
@@ -219,7 +221,7 @@ void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKe
 
 uint32_t ParticleGpuRuntime::GroupCount(uint32_t invocationCount) noexcept
 {
-    return invocationCount == 0 ? 0 : (invocationCount + WorkgroupSize - 1) / WorkgroupSize;
+    return invocationCount == 0 ? 0 : 1 + (invocationCount - 1) / WorkgroupSize;
 }
 
 } // namespace infernux::particle
