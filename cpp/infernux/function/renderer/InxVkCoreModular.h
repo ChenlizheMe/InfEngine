@@ -41,6 +41,7 @@
 #include "InxRenderStruct.h"
 #include "MaterialPipelineManager.h"
 #include "ProfileConfig.h"
+#include "RenderInstanceHistory.h"
 #include "VkShaderCache.h"
 #include "VkTextureCache.h"
 #include "vk/VkCore.h"
@@ -1452,13 +1453,16 @@ class InxVkCoreModular
     };
     std::vector<SkinBufferFrame> m_skinInstanceBuffers; ///< GPUSkinInstanceData per draw instance
     std::vector<SkinBufferFrame> m_skinPaletteBuffers;  ///< mat4 bone palettes per draw instance
+    std::vector<SkinBufferFrame> m_instanceAuxBuffers;  ///< Optional GPUInstanceAuxData per draw instance
     static constexpr size_t SKIN_INSTANCE_BUFFER_INITIAL_CAPACITY = 256;
     static constexpr size_t SKIN_PALETTE_BUFFER_INITIAL_CAPACITY = 1024;
+    static constexpr size_t INSTANCE_AUX_BUFFER_INITIAL_CAPACITY = 1;
 
     /// @brief Running write offset into the instance SSBO (reset per frame).
     uint32_t m_instanceWriteOffset = 0;
     uint32_t m_skinPaletteWriteOffset = 0;
     std::unordered_map<const void *, GPUSkinInstanceData> m_skinPaletteFrameCache;
+    RenderInstanceHistory m_instanceHistory;
     /// @brief Frame counter for detecting new frames and resetting offset.
     uint64_t m_lastInstanceFrame = UINT64_MAX;
 
@@ -1468,7 +1472,9 @@ class InxVkCoreModular
     /// @brief Update the globals descriptor set binding 1 with the current frame's instance buffer.
     void UpdateInstanceBufferDescriptor(uint32_t frameIndex);
     void EnsureSkinBuffersCapacity(uint32_t frameIndex, size_t skinInstanceCount, size_t boneMatrixCount);
+    void EnsureInstanceAuxBufferCapacity(uint32_t frameIndex, size_t instanceCount);
     void UpdateSkinBufferDescriptors(uint32_t frameIndex);
+    void UpdateInstanceAuxBufferDescriptor(uint32_t frameIndex);
     void ResetPerFrameGpuStreamOffsets();
 
   public:
@@ -1480,6 +1486,12 @@ class InxVkCoreModular
     /// @brief Write a single instance matrix into the frame's instance SSBO.
     /// Grows the buffer and refreshes the descriptor if needed.
     [[nodiscard]] bool WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix);
+
+    /// @brief Lazily prepare the optional picking/motion stream for one logical frame.
+    void PrepareInstanceAuxiliary(uint64_t frameSerial, size_t totalInstances);
+    [[nodiscard]] bool WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t instanceIndex,
+                                              const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
+                                              uint64_t objectId);
 };
 
 } // namespace infernux
