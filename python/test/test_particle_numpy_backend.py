@@ -12,6 +12,7 @@ from Infernux.particle import (
     EmitterSettings,
     EmitterShape,
     ExecutionTarget,
+    GpuParticleEmitterController,
     NumpyParticleBackendError,
     NumpyParticleCompiler,
     ParticleArtifactRegistry,
@@ -22,6 +23,7 @@ from Infernux.particle import (
     ParticleKernelLowerer,
     ParticleKernelProgram,
     ScalarRange,
+    decode_particle_runtime_metadata,
     particle_random_f32,
 )
 
@@ -278,3 +280,69 @@ def test_numpy_compiler_does_not_silently_run_an_explicit_gpu_emitter():
 
     with pytest.raises(NumpyParticleBackendError, match="requires the GPU backend"):
         NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+
+
+def test_runtime_metadata_is_backend_neutral_and_preserves_schedule():
+    asset = ParticleGraphAsset(
+        stable_id="runtime-metadata",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="gpu-only",
+                settings=EmitterSettings(target=ExecutionTarget.GPU, capacity=64),
+            ),
+            ParticleEmitterAsset(
+                stable_id="portable",
+                settings=EmitterSettings(target=ExecutionTarget.AUTO, capacity=32),
+            ),
+        ),
+    )
+
+    metadata = decode_particle_runtime_metadata(ParticleGraphCompiler().compile(asset))
+
+    assert metadata.schedule == ("gpu-only", "portable")
+    assert metadata.emitters[0].settings.target is ExecutionTarget.GPU
+    assert metadata.emitters[0].settings.capacity == 64
+    assert metadata.emitters[0].outputs[0].output_type == "sprite"
+
+
+def test_gpu_controller_schedules_bursts_pause_and_resume_without_particle_storage():
+    controller = GpuParticleEmitterController(
+        EmitterSettings(
+            capacity=8,
+            seed=17,
+            spawn_rate=2.0,
+            bursts=(ParticleBurst(0.0, 3), ParticleBurst(1.0, 2)),
+        )
+    )
+
+    first = controller.tick(0.0)
+    second = controller.tick(0.5)
+    controller.pause()
+    paused = controller.tick(10.0)
+    controller.play()
+    resumed = controller.tick(0.5)
+
+    assert (first.spawn_count, first.spawn_base_id, first.simulation_step) == (3, 0, 0)
+    assert (second.spawn_count, second.spawn_base_id, second.simulation_step) == (1, 3, 1)
+    assert paused.spawn_count == 0
+    assert paused.simulate is False
+    assert paused.simulation_step == 2
+    assert (resumed.spawn_count, resumed.spawn_base_id, resumed.simulation_step) == (3, 4, 2)
+    assert resumed.system_seed == 17
+
+
+def test_gpu_controller_caps_dispatch_work_and_resets_deterministically():
+    controller = GpuParticleEmitterController(
+        EmitterSettings(
+            capacity=4,
+            spawn_rate=0.0,
+            bursts=(ParticleBurst(0.0, 100),),
+        )
+    )
+
+    assert controller.tick(0.0).spawn_count == 4
+    controller.reset(playing=False)
+    assert controller.tick(1.0).spawn_count == 0
+    controller.play()
+    restarted = controller.tick(0.0)
+    assert (restarted.spawn_count, restarted.spawn_base_id, restarted.simulation_step) == (4, 0, 0)

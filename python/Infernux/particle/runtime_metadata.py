@@ -1,0 +1,140 @@
+"""Backend-neutral runtime metadata decoded from Particle HIR."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+from Infernux.graph.types import AssetReference
+
+from .asset import EmitterSettings
+from .hir import ParticleOutputDescriptor, ParticleProgramHIR
+
+
+class ParticleRuntimeMetadataError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class ParticleEmitterRuntimeMetadata:
+    stable_id: str
+    settings: EmitterSettings
+    outputs: tuple[ParticleOutputDescriptor, ...]
+
+
+@dataclass(frozen=True)
+class ParticleProgramRuntimeMetadata:
+    behavior_hash: str
+    emitters: tuple[ParticleEmitterRuntimeMetadata, ...]
+
+    @property
+    def schedule(self) -> tuple[str, ...]:
+        return tuple(emitter.stable_id for emitter in self.emitters)
+
+
+def decode_particle_runtime_metadata(
+    hir: ParticleProgramHIR | Mapping[str, Any],
+) -> ParticleProgramRuntimeMetadata:
+    if isinstance(hir, ParticleProgramHIR):
+        by_id = {
+            emitter.stable_id: ParticleEmitterRuntimeMetadata(
+                emitter.stable_id,
+                emitter.settings,
+                tuple(emitter.render_plan.outputs),
+            )
+            for emitter in hir.emitters
+        }
+        return _ordered_metadata(hir.behavior_hash, tuple(hir.schedule.emitter_ids), by_id)
+    if not isinstance(hir, Mapping):
+        raise ParticleRuntimeMetadataError(
+            "Particle HIR must be a compiled program or artifact mapping"
+        )
+
+    behavior_hash = hir.get("behavior_hash")
+    schedule_value = hir.get("schedule")
+    emitters_value = hir.get("emitters")
+    if (
+        type(behavior_hash) is not str
+        or type(schedule_value) is not list
+        or not all(type(value) is str and value for value in schedule_value)
+        or type(emitters_value) is not list
+    ):
+        raise ParticleRuntimeMetadataError("Particle artifact HIR header is invalid")
+
+    by_id: dict[str, ParticleEmitterRuntimeMetadata] = {}
+    for index, encoded in enumerate(emitters_value):
+        location = f"particle artifact HIR emitters[{index}]"
+        if type(encoded) is not dict:
+            raise ParticleRuntimeMetadataError(f"{location} must be an object")
+        stable_id = encoded.get("stable_id")
+        settings_value = encoded.get("settings")
+        render_plan = encoded.get("render_plan")
+        if type(stable_id) is not str or not stable_id or stable_id in by_id:
+            raise ParticleRuntimeMetadataError(f"{location} stable_id is invalid")
+        if type(settings_value) is not dict or type(render_plan) is not list:
+            raise ParticleRuntimeMetadataError(f"{location} runtime metadata is invalid")
+        try:
+            settings = EmitterSettings.from_dict(settings_value, f"{location}.settings")
+            outputs = tuple(
+                _decode_output(value, f"{location}.render_plan[{output_index}]")
+                for output_index, value in enumerate(render_plan)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ParticleRuntimeMetadataError(str(exc)) from exc
+        if not outputs:
+            raise ParticleRuntimeMetadataError(f"{location} requires a rendering output")
+        by_id[stable_id] = ParticleEmitterRuntimeMetadata(stable_id, settings, outputs)
+    return _ordered_metadata(behavior_hash, tuple(schedule_value), by_id)
+
+
+def _ordered_metadata(
+    behavior_hash: str,
+    schedule: tuple[str, ...],
+    by_id: Mapping[str, ParticleEmitterRuntimeMetadata],
+) -> ParticleProgramRuntimeMetadata:
+    if len(schedule) != len(set(schedule)) or set(schedule) != set(by_id):
+        raise ParticleRuntimeMetadataError(
+            "Particle HIR schedule and emitter metadata do not match"
+        )
+    return ParticleProgramRuntimeMetadata(
+        behavior_hash,
+        tuple(by_id[stable_id] for stable_id in schedule),
+    )
+
+
+def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
+    if type(value) is not dict or set(value) != {
+        "output_id",
+        "output_type",
+        "material",
+        "receive_scene_lighting",
+        "receive_shadows",
+        "sort_mode",
+    }:
+        raise ParticleRuntimeMetadataError(f"{location} is invalid")
+    if (
+        type(value["output_id"]) is not str
+        or not value["output_id"]
+        or type(value["output_type"]) is not str
+        or not value["output_type"]
+        or type(value["receive_scene_lighting"]) is not bool
+        or type(value["receive_shadows"]) is not bool
+        or type(value["sort_mode"]) is not str
+    ):
+        raise ParticleRuntimeMetadataError(f"{location} fields are invalid")
+    return ParticleOutputDescriptor(
+        value["output_id"],
+        value["output_type"],
+        AssetReference.from_dict(value["material"]),
+        value["receive_scene_lighting"],
+        value["receive_shadows"],
+        value["sort_mode"],
+    )
+
+
+__all__ = [
+    "ParticleEmitterRuntimeMetadata",
+    "ParticleProgramRuntimeMetadata",
+    "ParticleRuntimeMetadataError",
+    "decode_particle_runtime_metadata",
+]

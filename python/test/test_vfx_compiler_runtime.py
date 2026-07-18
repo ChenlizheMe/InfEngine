@@ -9,6 +9,7 @@ from Infernux.components.particle_system import ParticleSystem
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.particle import (
     EmitterSettings,
+    ExecutionTarget,
     ParticleBurst,
     ParticleEmitterAsset,
     ParticleGraphAsset,
@@ -221,6 +222,7 @@ def test_particle_system_hot_switches_to_new_published_artifact_revision(
     first.save(str(source))
     component = ParticleSystem()
     component.graph = ParticleGraphRef(path_hint=str(source))
+    component.simulation_target = ExecutionTarget.CPU
     game_object = scene.create_game_object("HotParticleGraphProbe")
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
@@ -250,6 +252,73 @@ def test_particle_system_hot_switches_to_new_published_artifact_revision(
     assert component._artifact_revision > first_revision
     assert component._runtimes[0].particle_count == 4
     component._remove_native_batch()
+
+
+def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
+    scene, engine, monkeypatch, tmp_path
+):
+    source = tmp_path / "GpuSmoke.particlegraph"
+    graph = ParticleGraphAsset(
+        stable_id="gpu-smoke-component",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=32,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 4),),
+                ),
+            ),
+        ),
+    )
+    graph.save(str(source))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("GpuParticleGraphProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+
+    assert component._runtime_target is ExecutionTarget.GPU
+    assert component._runtimes == []
+    assert len(component._gpu_controllers) == 1
+    emitter_id = component._gpu_emitter_ids[0]
+    assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
+
+    component.update(0.0)
+    assert component._gpu_controllers[0].simulation_step == 1
+    assert component.pause_emitter(999) is False
+    assert component.pause_emitter(0) is True
+    component.update(1.0)
+    assert component._gpu_controllers[0].simulation_step == 1
+    previous_revision = component._artifact_revision
+    revised_graph = ParticleGraphAsset(
+        stable_id="gpu-smoke-component",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=64,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 8),),
+                ),
+            ),
+        ),
+    )
+    revised_graph.save(str(source))
+    component.update(0.0)
+    assert component._artifact_revision > previous_revision
+    assert component._gpu_controllers[0].is_playing is False
+    assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
+    assert component.terminate_emitter(0) is True
+    assert component.restart(0) is True
+
+    component._remove_native_batch()
+    assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 
 
 def test_particle_system_simulation_does_not_depend_on_a_graphical_renderer(

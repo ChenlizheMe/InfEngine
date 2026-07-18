@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
 from .asset import EmitterSettings, ExecutionTarget
 from .hir import ParticleOutputDescriptor, ParticleProgramHIR
@@ -18,6 +18,10 @@ from .kernel_ir import (
     ParticleEmitterKernelIR,
     ParticleKernelFunction,
     ParticleKernelProgram,
+)
+from .runtime_metadata import (
+    ParticleRuntimeMetadataError,
+    decode_particle_runtime_metadata,
 )
 
 
@@ -140,15 +144,21 @@ class NumpyParticleCompiler:
         hir: ParticleProgramHIR | Mapping[str, Any],
         kernel: ParticleKernelProgram,
     ) -> NumpyParticleProgram:
-        behavior_hash, schedule, emitter_inputs = _runtime_inputs(hir)
-        if behavior_hash != kernel.source_behavior_hash:
+        try:
+            metadata = decode_particle_runtime_metadata(hir)
+        except ParticleRuntimeMetadataError as exc:
+            raise NumpyParticleBackendError(str(exc)) from exc
+        if metadata.behavior_hash != kernel.source_behavior_hash:
             raise NumpyParticleBackendError("Particle HIR and Kernel IR behavior hashes differ")
         kernel_ids = tuple(emitter.stable_id for emitter in kernel.emitters)
-        if schedule != kernel_ids or tuple(emitter_inputs) != kernel_ids:
+        if metadata.schedule != kernel_ids:
             raise NumpyParticleBackendError("Particle HIR and Kernel IR emitter schedules differ")
+        emitter_inputs = {emitter.stable_id: emitter for emitter in metadata.emitters}
         programs = []
         for emitter in kernel.emitters:
-            settings, outputs = emitter_inputs[emitter.stable_id]
+            runtime_metadata = emitter_inputs[emitter.stable_id]
+            settings = runtime_metadata.settings
+            outputs = runtime_metadata.outputs
             if settings.target is ExecutionTarget.GPU:
                 raise NumpyParticleBackendError(
                     f"emitter {emitter.stable_id!r} explicitly requires the GPU backend"
@@ -431,91 +441,6 @@ class NumpyParticleEmitterRuntime:
             raise NumpyParticleBackendError(
                 "NumPy particle runtime is owned by another thread"
             )
-
-
-def _runtime_inputs(
-    hir: ParticleProgramHIR | Mapping[str, Any],
-) -> tuple[
-    str,
-    tuple[str, ...],
-    dict[str, tuple[EmitterSettings, tuple[ParticleOutputDescriptor, ...]]],
-]:
-    if isinstance(hir, ParticleProgramHIR):
-        return (
-            hir.behavior_hash,
-            tuple(hir.schedule.emitter_ids),
-            {
-                emitter.stable_id: (emitter.settings, tuple(emitter.render_plan.outputs))
-                for emitter in hir.emitters
-            },
-        )
-    if not isinstance(hir, Mapping):
-        raise NumpyParticleBackendError("Particle HIR must be a compiled program or artifact mapping")
-    behavior_hash = hir.get("behavior_hash")
-    schedule_value = hir.get("schedule")
-    emitters_value = hir.get("emitters")
-    if (
-        type(behavior_hash) is not str
-        or type(schedule_value) is not list
-        or not all(type(value) is str and value for value in schedule_value)
-        or type(emitters_value) is not list
-    ):
-        raise NumpyParticleBackendError("Particle artifact HIR header is invalid")
-
-    emitters = {}
-    for index, encoded in enumerate(emitters_value):
-        location = f"particle artifact HIR emitters[{index}]"
-        if type(encoded) is not dict:
-            raise NumpyParticleBackendError(f"{location} must be an object")
-        stable_id = encoded.get("stable_id")
-        settings_value = encoded.get("settings")
-        render_plan = encoded.get("render_plan")
-        if type(stable_id) is not str or not stable_id or stable_id in emitters:
-            raise NumpyParticleBackendError(f"{location} stable_id is invalid")
-        if type(settings_value) is not dict or type(render_plan) is not list:
-            raise NumpyParticleBackendError(f"{location} runtime metadata is invalid")
-        try:
-            settings = EmitterSettings.from_dict(settings_value, f"{location}.settings")
-            outputs = tuple(
-                _output_from_artifact(value, f"{location}.render_plan[{output_index}]")
-                for output_index, value in enumerate(render_plan)
-            )
-        except (TypeError, ValueError) as exc:
-            raise NumpyParticleBackendError(str(exc)) from exc
-        if not outputs:
-            raise NumpyParticleBackendError(f"{location} requires a rendering output")
-        emitters[stable_id] = (settings, outputs)
-    return behavior_hash, tuple(schedule_value), emitters
-
-
-def _output_from_artifact(value: Any, location: str) -> ParticleOutputDescriptor:
-    if type(value) is not dict or set(value) != {
-        "output_id",
-        "output_type",
-        "material",
-        "receive_scene_lighting",
-        "receive_shadows",
-        "sort_mode",
-    }:
-        raise NumpyParticleBackendError(f"{location} is invalid")
-    if (
-        type(value["output_id"]) is not str
-        or not value["output_id"]
-        or type(value["output_type"]) is not str
-        or not value["output_type"]
-        or type(value["receive_scene_lighting"]) is not bool
-        or type(value["receive_shadows"]) is not bool
-        or type(value["sort_mode"]) is not str
-    ):
-        raise NumpyParticleBackendError(f"{location} fields are invalid")
-    return ParticleOutputDescriptor(
-        value["output_id"],
-        value["output_type"],
-        AssetReference.from_dict(value["material"]),
-        value["receive_scene_lighting"],
-        value["receive_shadows"],
-        value["sort_mode"],
-    )
 
 
 def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> NumpyStageExecutable:

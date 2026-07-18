@@ -73,6 +73,7 @@ class ParticleGpuSystemManager
 
     [[nodiscard]] bool BeginFrame(uint64_t id, const GpuParticleFrameRequest &request,
                                   const GpuParticleTransforms &transforms);
+    [[nodiscard]] bool Reset(uint64_t id);
     void Execute(VkCommandBuffer commandBuffer);
 
     [[nodiscard]] bool Contains(uint64_t id) const;

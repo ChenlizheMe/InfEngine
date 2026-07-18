@@ -3,9 +3,9 @@
 #include <SDL3/SDL.h>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
+#include <cstring>
 #include <function/renderer/EditorTools.h>
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/ParticleDrawCallBuffer.h>
@@ -48,8 +48,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
-    for (const char *field : {"id", "artifact_revision", "stable_id", "capacity", "state_stride", "stages",
-                              "billboard", "material"}) {
+    for (const char *field :
+         {"id", "artifact_revision", "stable_id", "capacity", "state_stride", "stages", "billboard", "material"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -73,8 +73,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     if (!billboard.contains("vertex") || !billboard.contains("fragment"))
         throw std::invalid_argument("GPU particle billboard shaders are incomplete");
     program.billboardVertexShader = DecodeParticleSpirv(billboard["vertex"], "particle billboard vertex shader");
-    program.billboardFragmentShader =
-        DecodeParticleSpirv(billboard["fragment"], "particle billboard fragment shader");
+    program.billboardFragmentShader = DecodeParticleSpirv(billboard["fragment"], "particle billboard fragment shader");
 
     const py::dict material = py::cast<py::dict>(value["material"]);
     for (const char *field : {"render_queue", "blend_enabled", "depth_test_enabled", "depth_write_enabled"}) {
@@ -1838,6 +1837,14 @@ PYBIND11_MODULE(_Infernux, m)
                 return manager && manager->Remove(emitterId);
             },
             py::arg("emitter_id"), "Internal GPU particle emitter removal hook")
+        .def(
+            "_reset_gpu_particle_emitter",
+            [](Infernux &self, uint64_t emitterId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager && manager->Reset(emitterId);
+            },
+            py::arg("emitter_id"), "Reset one GPU emitter at the next simulation boundary")
         .def(
             "_gpu_particle_artifact_revision",
             [](Infernux &self, uint64_t emitterId) {

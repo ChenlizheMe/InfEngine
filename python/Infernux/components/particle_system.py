@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from typing import Optional
 
 import numpy as np
@@ -10,6 +12,8 @@ from Infernux.core.asset_ref import ParticleGraphRef, VfxSystemRef
 from Infernux.core.vfx_system import VfxSystem
 from Infernux.debug import Debug
 from Infernux.particle import (
+    ExecutionTarget,
+    GpuParticleEmitterController,
     NumpyParticleCompiler,
     NumpyParticleEmitterRuntime,
     ParticleArtifactRegistry,
@@ -17,6 +21,8 @@ from Infernux.particle import (
     ParticleGraphCompiler,
     ParticleKernelLowerer,
     ParticleKernelProgram,
+    decode_gpu_particle_spirv,
+    decode_particle_runtime_metadata,
 )
 from Infernux.vfx import CpuParticleRuntime, VfxCompileError, VfxGraphCompiler
 
@@ -36,15 +42,21 @@ class ParticleSystem(InxComponent):
     # Kept only so scenes authored before ParticleGraph remain loadable.
     system: VfxSystemRef = serialized_field(default=None, asset_type="VfxSystem", hidden=True)
     emitter_index: int = serialized_field(default=0, range=(0, 1024), hidden=True)
+    simulation_target: ExecutionTarget = serialized_field(default=ExecutionTarget.AUTO)
     simulation_speed: float = serialized_field(default=1.0, range=(0.0, 10.0))
     play_on_awake: bool = serialized_field(default=True)
 
     _runtime: Optional[CpuParticleRuntime] = None
     _runtimes: list[NumpyParticleEmitterRuntime]
+    _gpu_controllers: list[GpuParticleEmitterController]
+    _gpu_emitter_ids: list[int]
+    _runtime_target: ExecutionTarget | None = None
     _particle_program = None
+    _particle_metadata = None
     _artifact_revision: int = 0
     _artifact_source_key: str = ""
     _emitter_to_world_cache: Optional[np.ndarray] = None
+    _gpu_transform_buffers: dict[bool, np.ndarray]
     _batch_id: int = 0
     _submitted_batch_ids: set[int]
     _playing: bool = False
@@ -52,10 +64,15 @@ class ParticleSystem(InxComponent):
     def awake(self):
         self._runtime = None
         self._runtimes = []
+        self._gpu_controllers = []
+        self._gpu_emitter_ids = []
+        self._runtime_target = None
         self._particle_program = None
+        self._particle_metadata = None
         self._artifact_revision = 0
         self._artifact_source_key = ""
         self._emitter_to_world_cache = None
+        self._gpu_transform_buffers = {}
         self._submitted_batch_ids = set()
         self._batch_id = (int(self.game_object.id) << 16) ^ int(self.component_id)
         if self._batch_id == 0:
@@ -63,58 +80,100 @@ class ParticleSystem(InxComponent):
         self._playing = bool(self.play_on_awake)
 
     def start(self):
-        self._compile_asset()
+        if not self._has_runtime():
+            self._compile_asset()
 
-    def play(self, emitter_index: int | None = None) -> None:
+    def on_enable(self):
+        if hasattr(self, "_runtimes") and not self._has_runtime():
+            self._compile_asset()
+
+    def play(self, emitter_index: int | None = None) -> bool:
         if emitter_index is None:
             self._playing = True
-            for runtime in getattr(self, "_runtimes", ()):
+            runtimes = tuple(getattr(self, "_runtimes", ())) + tuple(
+                getattr(self, "_gpu_controllers", ())
+            )
+            for runtime in runtimes:
                 runtime.play()
-            return
+            return bool(runtimes)
         runtime = self._runtime_at(emitter_index)
-        if runtime is not None:
-            runtime.play()
+        if runtime is None:
+            return False
+        runtime.play()
+        return True
 
-    def pause(self, emitter_index: int | None = None) -> None:
+    def pause(self, emitter_index: int | None = None) -> bool:
         if emitter_index is None:
             self._playing = False
-            for runtime in getattr(self, "_runtimes", ()):
+            runtimes = tuple(getattr(self, "_runtimes", ())) + tuple(
+                getattr(self, "_gpu_controllers", ())
+            )
+            for runtime in runtimes:
                 runtime.pause()
-            return
+            return bool(runtimes)
         runtime = self._runtime_at(emitter_index)
-        if runtime is not None:
-            runtime.pause()
+        if runtime is None:
+            return False
+        runtime.pause()
+        return True
 
-    def stop(self, emitter_index: int | None = None) -> None:
+    def stop(self, emitter_index: int | None = None) -> bool:
         if emitter_index is None:
             self._playing = False
             for index, runtime in enumerate(getattr(self, "_runtimes", ())):
                 runtime.reset()
                 runtime.pause()
                 self._remove_emitter_batches(index)
+            for runtime in getattr(self, "_gpu_controllers", ()):
+                runtime.reset(playing=False)
+            self._reset_gpu_emitters()
             if self._runtime is not None:
                 self._runtime.reset()
                 self._remove_native_batch()
-            return
+            return bool(self._runtimes or self._gpu_controllers or self._runtime)
         runtime = self._runtime_at(emitter_index)
-        if runtime is not None:
+        if runtime is None:
+            return False
+        if self._runtime_target is ExecutionTarget.GPU:
+            runtime.reset(playing=False)
+            self._reset_gpu_emitters(emitter_index)
+        else:
             runtime.reset()
             runtime.pause()
             self._remove_emitter_batches(emitter_index)
+        return True
 
-    def restart(self, emitter_index: int | None = None) -> None:
+    def restart(self, emitter_index: int | None = None) -> bool:
         if emitter_index is None:
             self._playing = True
             for runtime in getattr(self, "_runtimes", ()):
                 runtime.reset()
                 runtime.play()
+            for runtime in getattr(self, "_gpu_controllers", ()):
+                runtime.reset(playing=True)
+            self._reset_gpu_emitters()
             if self._runtime is not None:
                 self._runtime.reset()
-            return
+            return bool(self._runtimes or self._gpu_controllers or self._runtime)
         runtime = self._runtime_at(emitter_index)
-        if runtime is not None:
+        if runtime is None:
+            return False
+        if self._runtime_target is ExecutionTarget.GPU:
+            runtime.reset(playing=True)
+            self._reset_gpu_emitters(emitter_index)
+        else:
             runtime.reset()
             runtime.play()
+        return True
+
+    def start_emitter(self, emitter_index: int) -> bool:
+        return self.play(emitter_index)
+
+    def pause_emitter(self, emitter_index: int) -> bool:
+        return self.pause(emitter_index)
+
+    def terminate_emitter(self, emitter_index: int) -> bool:
+        return self.stop(emitter_index)
 
     def update(self, delta_time: float):
         if not self._has_runtime() and not self._compile_asset():
@@ -123,30 +182,35 @@ class ParticleSystem(InxComponent):
         scaled_delta_time = float(delta_time) * float(self.simulation_speed)
         if scaled_delta_time < 0.0:
             return
-        if self._runtimes:
+        if self._gpu_controllers:
+            self._update_gpu_particle_graph(scaled_delta_time)
+        elif self._runtimes:
             self._update_particle_graph(scaled_delta_time)
         elif self._playing and self._runtime is not None:
             self._update_legacy_vfx(scaled_delta_time)
 
     def on_disable(self):
         self._remove_native_batch()
+        self._clear_runtime_state()
 
     def on_destroy(self):
         self._remove_native_batch()
+        self._clear_runtime_state()
 
     def on_validate(self):
         self._remove_native_batch()
-        self._runtime = None
-        self._runtimes = []
-        self._particle_program = None
-        self._artifact_revision = 0
-        self._artifact_source_key = ""
-        self._emitter_to_world_cache = None
+        self._clear_runtime_state()
 
     def _compile_asset(self) -> bool:
         graph_ref = get_raw_field_value(self, "graph")
         if graph_ref is not None and (
-            bool(graph_ref) or graph_ref.path_hint or graph_ref.resolve() is not None
+            isinstance(graph_ref, ParticleGraphAsset)
+            or bool(graph_ref)
+            or getattr(graph_ref, "path_hint", "")
+            or (
+                callable(getattr(graph_ref, "resolve", None))
+                and graph_ref.resolve() is not None
+            )
         ):
             return self._compile_particle_graph(graph_ref)
         return self._compile_legacy_vfx()
@@ -154,34 +218,52 @@ class ParticleSystem(InxComponent):
     def _compile_particle_graph(self, graph_ref: ParticleGraphRef) -> bool:
         try:
             path = self._particle_source_path(graph_ref)
+            artifact = None
             if path:
-                artifact = ParticleArtifactRegistry.get(path, guid=graph_ref.guid)
+                guid = getattr(graph_ref, "guid", "")
+                artifact = ParticleArtifactRegistry.get(path, guid=guid)
                 if artifact is None:
-                    artifact = ParticleArtifactRegistry.compile_path(path, guid=graph_ref.guid)
+                    artifact = ParticleArtifactRegistry.compile_path(path, guid=guid)
+                hir = artifact.hir
                 kernel = ParticleKernelProgram.from_dict(artifact.kernel_ir)
-                program = NumpyParticleCompiler().compile(artifact.hir, kernel)
                 revision = artifact.revision
                 source_key = artifact.source_key
             else:
-                asset = graph_ref.resolve()
+                asset = (
+                    graph_ref
+                    if isinstance(graph_ref, ParticleGraphAsset)
+                    else graph_ref.resolve()
+                )
                 if not isinstance(asset, ParticleGraphAsset):
                     return False
                 hir = ParticleGraphCompiler().compile(asset)
-                program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+                kernel = ParticleKernelLowerer().lower(hir)
                 revision = 0
                 source_key = ""
-            runtimes = [emitter.create_runtime() for emitter in program.emitters]
-            if not self._playing:
-                for runtime in runtimes:
-                    runtime.pause()
+            metadata = decode_particle_runtime_metadata(hir)
+            target = self._select_runtime_target(metadata, artifact)
+            if target is ExecutionTarget.GPU:
+                self._publish_gpu_particle_graph(artifact, metadata)
+                program = None
+                runtimes = []
+            else:
+                program = NumpyParticleCompiler().compile(hir, kernel)
+                runtimes = [emitter.create_runtime() for emitter in program.emitters]
+                if not self._playing:
+                    for runtime in runtimes:
+                        runtime.pause()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             Debug.log_error(f"[ParticleSystem] ParticleGraph compile failed: {exc}")
             return False
 
-        self._remove_native_batch()
+        if target is ExecutionTarget.CPU:
+            self._remove_gpu_emitters()
+        self._remove_cpu_batches()
         self._runtime = None
         self._particle_program = program
         self._runtimes = runtimes
+        self._particle_metadata = metadata
+        self._runtime_target = target
         self._artifact_revision = revision
         self._artifact_source_key = source_key
         self._emitter_to_world_cache = None
@@ -201,9 +283,150 @@ class ParticleSystem(InxComponent):
         except VfxCompileError as exc:
             Debug.log_error(f"[ParticleSystem] VFX compile failed: {exc}")
             return False
+        self._remove_gpu_emitters()
+        self._remove_cpu_batches()
         self._runtime = CpuParticleRuntime(artifact)
         self._material_guid = emitter.renderer.material
+        self._runtime_target = ExecutionTarget.CPU
         return True
+
+    def _select_runtime_target(self, metadata, artifact) -> ExecutionTarget:
+        override = ExecutionTarget(get_raw_field_value(self, "simulation_target"))
+        declared = {
+            emitter.settings.target
+            for emitter in metadata.emitters
+            if emitter.settings.target is not ExecutionTarget.AUTO
+        }
+        if len(declared) > 1:
+            raise RuntimeError(
+                "first-generation ParticleGraph runtime requires one simulation target"
+            )
+        declared_target = next(iter(declared), ExecutionTarget.AUTO)
+        if (
+            override is not ExecutionTarget.AUTO
+            and declared_target is not ExecutionTarget.AUTO
+            and override is not declared_target
+        ):
+            raise RuntimeError(
+                f"ParticleSystem requests {override.value}, but its graph requires "
+                f"{declared_target.value}"
+            )
+
+        native = self._native_engine()
+        gpu_available = bool(
+            artifact is not None
+            and native is not None
+            and hasattr(native, "_replace_gpu_particle_emitters")
+            and hasattr(native, "_begin_gpu_particle_frame")
+        )
+        target = override if override is not ExecutionTarget.AUTO else declared_target
+        if target is ExecutionTarget.AUTO:
+            target = ExecutionTarget.GPU if gpu_available else ExecutionTarget.CPU
+        if target is ExecutionTarget.GPU and not gpu_available:
+            raise RuntimeError(
+                "GPU ParticleGraph execution requires a saved AOT artifact and graphical renderer"
+            )
+        return target
+
+    def _publish_gpu_particle_graph(self, artifact, metadata) -> None:
+        if artifact is None:
+            raise RuntimeError("GPU ParticleGraph execution requires an AOT artifact")
+        native = self._native_engine()
+        if native is None:
+            raise RuntimeError("GPU ParticleGraph execution requires a graphical renderer")
+
+        glsl_emitters = artifact.gpu_glsl.get("emitters")
+        if type(glsl_emitters) is not list or len(glsl_emitters) != len(metadata.emitters):
+            raise RuntimeError("ParticleGraph GPU emitter metadata is incomplete")
+
+        programs = []
+        controllers = []
+        emitter_ids = []
+        previous_playing = {}
+        previous_metadata = getattr(self, "_particle_metadata", None)
+        if previous_metadata is not None:
+            previous_playing = {
+                emitter.stable_id: controller.is_playing
+                for emitter, controller in zip(
+                    previous_metadata.emitters,
+                    getattr(self, "_gpu_controllers", ()),
+                )
+            }
+        for index, (emitter, glsl_emitter) in enumerate(
+            zip(metadata.emitters, glsl_emitters)
+        ):
+            if len(emitter.outputs) != 1:
+                raise RuntimeError(
+                    "the current GPU particle vertical slice requires exactly one renderer output"
+                )
+            if (
+                type(glsl_emitter) is not dict
+                or glsl_emitter.get("stable_id") != emitter.stable_id
+                or type(glsl_emitter.get("state_stride")) is not int
+            ):
+                raise RuntimeError("ParticleGraph GPU layout does not match its runtime schedule")
+            decoded = decode_gpu_particle_spirv(artifact.gpu_spirv, index)
+            emitter_id = self._gpu_emitter_id(emitter.stable_id)
+            programs.append(
+                {
+                    "id": emitter_id,
+                    "artifact_revision": artifact.revision,
+                    "stable_id": emitter.stable_id,
+                    "capacity": emitter.settings.capacity,
+                    "state_stride": glsl_emitter["state_stride"],
+                    "stages": decoded["stages"],
+                    "billboard": decoded["billboard"],
+                    "material": self._gpu_material_state(emitter.outputs[0]),
+                }
+            )
+            controllers.append(
+                GpuParticleEmitterController(
+                    emitter.settings,
+                    playing=previous_playing.get(emitter.stable_id, self._playing),
+                )
+            )
+            emitter_ids.append(emitter_id)
+
+        removed = sorted(set(getattr(self, "_gpu_emitter_ids", ())) - set(emitter_ids))
+        error = native._replace_gpu_particle_emitters(programs, removed)
+        if error:
+            raise RuntimeError(error)
+        self._gpu_controllers = controllers
+        self._gpu_emitter_ids = emitter_ids
+
+    def _update_gpu_particle_graph(self, delta_time: float) -> None:
+        native = self._native_engine()
+        metadata = self._particle_metadata
+        if native is None or metadata is None:
+            return
+        emitter_to_world = self._emitter_matrix()
+        if self._emitter_to_world_cache is None or not np.array_equal(
+            emitter_to_world, self._emitter_to_world_cache
+        ):
+            self._emitter_to_world_cache = emitter_to_world
+            self._gpu_transform_buffers = {}
+
+        for emitter_id, emitter, controller in zip(
+            self._gpu_emitter_ids,
+            metadata.emitters,
+            self._gpu_controllers,
+        ):
+            schedule = controller.tick(delta_time)
+            transforms = self._gpu_transform_buffer(
+                emitter.settings.simulation_space.value == "local"
+            )
+            native._begin_gpu_particle_frame(
+                emitter_id,
+                schedule.spawn_count,
+                schedule.spawn_base_id,
+                schedule.spawn_generation,
+                schedule.system_seed,
+                schedule.simulation_step,
+                schedule.delta_time,
+                transforms,
+                schedule.simulate,
+                schedule.render,
+            )
 
     def _update_particle_graph(self, delta_time: float) -> None:
         native = self._native_engine()
@@ -257,37 +480,129 @@ class ParticleSystem(InxComponent):
             return
         graph_ref = get_raw_field_value(self, "graph")
         path = self._particle_source_path(graph_ref)
-        artifact = ParticleArtifactRegistry.get(path, guid=graph_ref.guid)
+        artifact = ParticleArtifactRegistry.get(
+            path,
+            guid=getattr(graph_ref, "guid", ""),
+        )
         if artifact is not None and artifact.revision != self._artifact_revision:
             self._compile_particle_graph(graph_ref)
 
     def _runtime_at(self, emitter_index: int):
         if type(emitter_index) is not int:
             return None
-        runtimes = getattr(self, "_runtimes", ())
+        runtimes = (
+            getattr(self, "_gpu_controllers", ())
+            if self._runtime_target is ExecutionTarget.GPU
+            else getattr(self, "_runtimes", ())
+        )
         return runtimes[emitter_index] if 0 <= emitter_index < len(runtimes) else None
 
     def _has_runtime(self) -> bool:
-        return bool(getattr(self, "_runtimes", ())) or self._runtime is not None
+        return bool(
+            getattr(self, "_runtimes", ()) or getattr(self, "_gpu_controllers", ())
+        ) or self._runtime is not None
 
     def _emitter_matrix(self) -> np.ndarray:
         flat = self.transform.local_to_world_matrix()
         return np.asarray(flat, dtype=np.float32).reshape((4, 4), order="F")
 
+    def _gpu_transform_buffer(self, local_simulation: bool) -> np.ndarray:
+        cached = self._gpu_transform_buffers.get(local_simulation)
+        if cached is not None:
+            return cached
+        emitter_to_world = self._emitter_to_world_cache
+        if emitter_to_world is None:
+            emitter_to_world = self._emitter_matrix()
+        try:
+            world_to_emitter = np.linalg.inv(emitter_to_world).astype(np.float32)
+        except np.linalg.LinAlgError:
+            world_to_emitter = np.linalg.pinv(emitter_to_world).astype(np.float32)
+        identity = np.identity(4, dtype=np.float32)
+        simulation_to_world = emitter_to_world if local_simulation else identity
+        world_to_simulation = world_to_emitter if local_simulation else identity
+        result = np.ascontiguousarray(
+            np.concatenate(
+                [
+                    emitter_to_world.reshape(16, order="F"),
+                    world_to_emitter.reshape(16, order="F"),
+                    simulation_to_world.reshape(16, order="F"),
+                    world_to_simulation.reshape(16, order="F"),
+                ]
+            ),
+            dtype=np.float32,
+        )
+        self._gpu_transform_buffers[local_simulation] = result
+        return result
+
     @staticmethod
     def _particle_source_path(graph_ref: ParticleGraphRef) -> str:
         if graph_ref is None:
             return ""
-        if graph_ref.guid:
+        guid = getattr(graph_ref, "guid", "")
+        path_hint = getattr(graph_ref, "path_hint", "")
+        if guid:
             try:
                 from Infernux.core.asset_ref import _get_asset_database
 
                 database = _get_asset_database()
                 if database:
-                    return database.get_path_from_guid(graph_ref.guid) or graph_ref.path_hint
+                    return database.get_path_from_guid(guid) or path_hint
             except (AttributeError, RuntimeError):
                 pass
-        return graph_ref.path_hint
+        return path_hint
+
+    def _gpu_emitter_id(self, stable_id: str) -> int:
+        identity = f"{int(self._batch_id) & 0xFFFFFFFFFFFFFFFF}:{stable_id}"
+        value = int.from_bytes(
+            hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest(),
+            "little",
+        )
+        return value or 1
+
+    @staticmethod
+    def _gpu_material_state(output) -> dict[str, object]:
+        state: dict[str, object] = {
+            "render_queue": 3000,
+            "blend_enabled": True,
+            "depth_test_enabled": True,
+            "depth_write_enabled": False,
+        }
+        material_ref = output.material
+        path = material_ref.path_hint
+        if material_ref.guid:
+            try:
+                from Infernux.core.asset_ref import _get_asset_database
+
+                database = _get_asset_database()
+                if database:
+                    path = database.get_path_from_guid(material_ref.guid) or path
+            except (AttributeError, RuntimeError):
+                pass
+        if not path:
+            return state
+        if not os.path.isabs(path):
+            try:
+                from Infernux.engine.project_context import get_project_root
+
+                project_root = get_project_root()
+                if project_root:
+                    path = os.path.join(project_root, path)
+            except (AttributeError, RuntimeError):
+                pass
+        try:
+            from Infernux.core.material import Material
+
+            material = Material.load(path)
+            if material is not None:
+                state.update(
+                    render_queue=int(material.render_queue),
+                    blend_enabled=bool(material.blend_enable),
+                    depth_test_enabled=bool(material.depth_test_enable),
+                    depth_write_enabled=bool(material.depth_write_enable),
+                )
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            pass
+        return state
 
     @staticmethod
     def _output_material_guid(material) -> str:
@@ -319,6 +634,51 @@ class ParticleSystem(InxComponent):
                 native.remove_particle_batch(batch_id)
             self._submitted_batch_ids.discard(batch_id)
 
+    def _reset_gpu_emitters(self, emitter_index: int | None = None) -> None:
+        native = self._native_engine()
+        if native is None or not hasattr(native, "_reset_gpu_particle_emitter"):
+            return
+        emitter_ids = getattr(self, "_gpu_emitter_ids", ())
+        if emitter_index is None:
+            selected = emitter_ids
+        elif 0 <= emitter_index < len(emitter_ids):
+            selected = (emitter_ids[emitter_index],)
+        else:
+            return
+        for emitter_id in selected:
+            native._reset_gpu_particle_emitter(emitter_id)
+
+    def _remove_gpu_emitters(self) -> None:
+        native = self._native_engine()
+        if native is not None and hasattr(native, "_remove_gpu_particle_emitter"):
+            for emitter_id in getattr(self, "_gpu_emitter_ids", ()):
+                native._remove_gpu_particle_emitter(emitter_id)
+        self._gpu_emitter_ids = []
+        self._gpu_controllers = []
+
+    def _remove_cpu_batches(self) -> None:
+        native = self._native_engine()
+        batch_ids = set(getattr(self, "_submitted_batch_ids", set()))
+        if self._batch_id:
+            batch_ids.add(self._batch_id)
+        if native is not None:
+            for batch_id in batch_ids:
+                native.remove_particle_batch(batch_id)
+        self._submitted_batch_ids = set()
+
+    def _clear_runtime_state(self) -> None:
+        self._runtime = None
+        self._runtimes = []
+        self._gpu_controllers = []
+        self._gpu_emitter_ids = []
+        self._runtime_target = None
+        self._particle_program = None
+        self._particle_metadata = None
+        self._artifact_revision = 0
+        self._artifact_source_key = ""
+        self._emitter_to_world_cache = None
+        self._gpu_transform_buffers = {}
+
     @staticmethod
     def _native_engine():
         try:
@@ -330,14 +690,8 @@ class ParticleSystem(InxComponent):
             return None
 
     def _remove_native_batch(self) -> None:
-        native = self._native_engine()
-        batch_ids = set(getattr(self, "_submitted_batch_ids", set()))
-        if self._batch_id:
-            batch_ids.add(self._batch_id)
-        if native is not None:
-            for batch_id in batch_ids:
-                native.remove_particle_batch(batch_id)
-        self._submitted_batch_ids = set()
+        self._remove_cpu_batches()
+        self._remove_gpu_emitters()
 
 
 __all__ = ["ParticleSystem"]

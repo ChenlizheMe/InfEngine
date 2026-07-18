@@ -230,8 +230,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedTransforms.worldToEmitter = managedTransforms.emitterToWorld;
     managedTransforms.simulationToWorld = managedTransforms.emitterToWorld;
     managedTransforms.worldToSimulation = managedTransforms.emitterToWorld;
+    if (!Require(particleSystems.Reset(managedProgram.id) && !particleSystems.Reset(999999),
+                 "GPU particle manager reset lookup is incorrect"))
+        return false;
     if (!Require(particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
                  "GPU particle manager rejected a valid frame request"))
+        return false;
+    if (!Require(particleSystems.Reset(managedProgram.id) &&
+                     particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
+                 "GPU particle reset did not cancel and replace a pending frame request"))
         return false;
     const auto managedEntries = particleDrawRegistry.Snapshot(3000, 3100);
     if (!Require(managedEntries.size() == 1, "GPU particle draw registry queue filtering failed"))

@@ -10,8 +10,8 @@
 #include <algorithm>
 #include <map>
 #include <memory>
-#include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace infernux::particle
@@ -305,6 +305,17 @@ bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameReq
         !emitter->second->runtime->UpdateTransforms(transforms))
         return false;
     return scheduler->second->BeginFrame(request);
+}
+
+bool ParticleGpuSystemManager::Reset(uint64_t id)
+{
+    if (!m_impl || !m_impl->graphState)
+        return false;
+    const auto scheduler = m_impl->graphState->schedulerById.find(id);
+    if (scheduler == m_impl->graphState->schedulerById.end())
+        return false;
+    scheduler->second->Reset();
+    return true;
 }
 
 void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)

@@ -52,9 +52,12 @@ class ParticleRenderGraph
 
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, const std::string &namePrefix);
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
-    void RequireBootstrap() noexcept
+    void Reset() noexcept
     {
         m_bootstrapPending = true;
+        m_framePending = false;
+        m_hasConsumedFrame = false;
+        m_lastConsumedFrame = 0;
     }
 
     [[nodiscard]] bool IsAttached() const noexcept
