@@ -1378,7 +1378,7 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
             texBinding.binding = i;
             texBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             texBinding.descriptorCount = 1;
-            texBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            texBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             bindings.push_back(texBinding);
         }
 

@@ -377,9 +377,26 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
     if (m_materialPipelineManagerInitialized)
         m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(artifact.key.stages);
 
+    // Linked shadow pipelines are keyed by the stable stage pair plus artifact
+    // revision. Retire every older revision for this pair before its owning
+    // ShaderProgram modules leave the cache.
+    const std::string shadowProgramPrefix = artifact.key.stages.ToString() + "|";
+    const VkDevice device = GetDevice();
+    for (auto it = m_shadowPipelineCache.begin(); it != m_shadowPipelineCache.end();) {
+        if (it->first.rfind(shadowProgramPrefix, 0) != 0) {
+            ++it;
+            continue;
+        }
+        const VkPipeline pipeline = it->second;
+        if (pipeline != VK_NULL_HANDLE)
+            m_deletionQueue.Push([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+        ++m_shaderHotReloadRetirementCount;
+        it = m_shadowPipelineCache.erase(it);
+    }
+
     if (publish.replacedProgram) {
-        auto previous = m_shaderCache.GetProgramCache().TakeProgram(*publish.replacedProgram);
-        if (previous) {
+        auto previousPrograms = m_shaderCache.GetProgramCache().TakePrograms(*publish.replacedProgram);
+        for (auto &previous : previousPrograms) {
             auto retired = std::shared_ptr<ShaderProgram>(std::move(previous));
             m_deletionQueue.Push([retired = std::move(retired)]() mutable { retired.reset(); });
             ++m_shaderHotReloadRetirementCount;

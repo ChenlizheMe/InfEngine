@@ -3010,7 +3010,7 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
         return result;
     }
 
-    auto compilation = compiler.CompileLinkedForward(vertexSource, vertexPath, fragmentSource, fragmentPath);
+    auto compilation = compiler.CompileLinkedProgramArtifact(vertexSource, vertexPath, fragmentSource, fragmentPath);
     if (!compilation.IsValid()) {
         result.success = false;
         std::ostringstream diagnostics;
@@ -3039,6 +3039,17 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
         result.error = "Renderer rejected the linked shader program artifact; last-known-good remains active";
         rememberFailure(result.error);
         return result;
+    }
+
+    if (!compilation.pendingTargets.empty()) {
+        std::ostringstream pending;
+        for (const auto target : compilation.pendingTargets) {
+            if (pending.tellp() > 0)
+                pending << ", ";
+            pending << ShaderCompileTargetName(target);
+        }
+        INXLOG_DEBUG("Linked shader program '", artifact.key.stages.ToString(),
+                     "' has planned targets awaiting backend generation: ", pending.str());
     }
 
     m_linkedShaderProgramCache[stages] = LinkedShaderProgramCacheEntry{sourceStamp, artifact.key, 0, {}};

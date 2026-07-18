@@ -83,7 +83,7 @@ class ShaderProgram
      * @return true if creation succeeded
      */
     bool Create(VkDevice device, const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
-                const ShaderProgramKey &programKey);
+                const ShaderProgramVariantKey &variantKey);
 
     /**
      * @brief Destroy all Vulkan resources
@@ -98,7 +98,12 @@ class ShaderProgram
 
     [[nodiscard]] const ShaderProgramKey &GetProgramKey() const noexcept
     {
-        return m_programKey;
+        return m_variantKey.program;
+    }
+
+    [[nodiscard]] ShaderCompileTarget GetCompileTarget() const noexcept
+    {
+        return m_variantKey.target;
     }
 
     [[nodiscard]] VkShaderModule GetVertexModule() const
@@ -207,7 +212,7 @@ class ShaderProgram
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     std::string m_shaderId;
-    ShaderProgramKey m_programKey;
+    ShaderProgramVariantKey m_variantKey;
 
     static inline VkDescriptorSetLayout s_globalsDescSetLayout = VK_NULL_HANDLE;
     static inline bool s_updateAfterBindEnabled = false;
@@ -297,18 +302,26 @@ class ShaderProgramCache
      */
     ShaderProgram *GetOrCreateProgram(const ShaderProgramKey &programKey, const std::vector<char> &vertSpirv,
                                       const std::vector<char> &fragSpirv);
+    ShaderProgram *GetOrCreateProgram(const ShaderProgramVariantKey &variantKey, const std::vector<char> &vertSpirv,
+                                      const std::vector<char> &fragSpirv);
 
     /**
      * @brief Get existing program
      */
     ShaderProgram *GetProgram(const ShaderProgramKey &programKey);
+    ShaderProgram *GetProgram(const ShaderProgramVariantKey &variantKey);
 
     /**
      * @brief Check if program exists
      */
     bool HasProgram(const ShaderProgramKey &programKey) const;
+    bool HasProgram(const ShaderProgramVariantKey &variantKey) const;
 
     [[nodiscard]] std::unique_ptr<ShaderProgram> TakeProgram(const ShaderProgramKey &programKey);
+    [[nodiscard]] std::unique_ptr<ShaderProgram> TakeProgram(const ShaderProgramVariantKey &variantKey);
+
+    /// Transfer every semantic pass program belonging to one artifact revision.
+    [[nodiscard]] std::vector<std::unique_ptr<ShaderProgram>> TakePrograms(const ShaderProgramKey &programKey);
 
     /**
      * @brief Transfer ownership of all programs using the specified shader.
@@ -325,8 +338,8 @@ class ShaderProgramCache
 
   private:
     VkDevice m_device = VK_NULL_HANDLE;
-    std::unordered_map<ShaderProgramKey, std::unique_ptr<ShaderProgram>, ShaderProgramKeyHash> m_programs;
-    std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_failedPrograms;
+    std::unordered_map<ShaderProgramVariantKey, std::unique_ptr<ShaderProgram>, ShaderProgramVariantKeyHash> m_programs;
+    std::unordered_set<ShaderProgramVariantKey, ShaderProgramVariantKeyHash> m_failedPrograms;
 };
 
 } // namespace infernux

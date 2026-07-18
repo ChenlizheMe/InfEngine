@@ -4,6 +4,7 @@
 #include <glslang/Public/ShaderLang.h>
 
 #include <algorithm>
+#include <array>
 #include <core/log/InxLog.h>
 #include <filesystem>
 #include <fstream>
@@ -22,12 +23,74 @@ ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact() co
     ShaderProgramArtifact artifact;
     artifact.key.stages.vertexShaderId = interfaceArtifact.vertex.shaderId;
     artifact.key.stages.fragmentShaderId = interfaceArtifact.fragment.shaderId;
-    artifact.key.revision = ComputeShaderProgramRevision(generatedVertexSource, generatedFragmentSource, target,
-                                                         interfaceArtifact.compatibilitySignature);
     artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
     artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
     artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;
     artifact.variants.push_back({target, interfaceArtifact.compatibilitySignature, vertexSpirv, fragmentSpirv});
+    artifact.key.revision = ComputeShaderProgramArtifactRevision(artifact);
+    return artifact;
+}
+
+bool LinkedShaderProgramArtifactCompilation::IsValid() const noexcept
+{
+    if (!interfaceArtifact.IsValid() || !passPlan.IsValid() || !errors.empty() || compiledVariants.empty())
+        return false;
+    if (passPlan.stages.vertexShaderId != interfaceArtifact.vertex.shaderId ||
+        passPlan.stages.fragmentShaderId != interfaceArtifact.fragment.shaderId) {
+        return false;
+    }
+
+    bool hasForward = false;
+    uint64_t compiledTargets = 0;
+    for (const auto &variant : compiledVariants) {
+        if (!variant.IsValid() ||
+            variant.interfaceArtifact.compatibilitySignature != interfaceArtifact.compatibilitySignature) {
+            return false;
+        }
+        const int targetIndex = static_cast<int>(variant.target);
+        if (targetIndex < 0 || targetIndex >= static_cast<int>(ShaderCompileTarget::Count))
+            return false;
+        const uint64_t targetBit = 1ull << static_cast<uint32_t>(targetIndex);
+        if ((compiledTargets & targetBit) != 0)
+            return false;
+        compiledTargets |= targetBit;
+        hasForward |= variant.target == ShaderCompileTarget::Forward;
+    }
+    if (!hasForward)
+        return false;
+
+    for (const auto &requirement : passPlan.requirements) {
+        if (!requirement.enabled)
+            continue;
+        const bool supported = requirement.target == ShaderCompileTarget::Forward ||
+                               requirement.target == ShaderCompileTarget::GBuffer ||
+                               requirement.target == ShaderCompileTarget::Shadow;
+        const uint64_t targetBit = 1ull << static_cast<uint32_t>(requirement.target);
+        if (supported && (compiledTargets & targetBit) == 0)
+            return false;
+    }
+    return true;
+}
+
+ShaderProgramArtifact LinkedShaderProgramArtifactCompilation::CreateRuntimeArtifact() const
+{
+    if (!IsValid())
+        return {};
+
+    ShaderProgramArtifact artifact;
+    artifact.key.stages = passPlan.stages;
+    artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
+    artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
+    artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;
+    artifact.variants.reserve(compiledVariants.size());
+    for (const auto &variant : compiledVariants) {
+        artifact.variants.push_back(
+            {variant.target, interfaceArtifact.compatibilitySignature, variant.vertexSpirv, variant.fragmentSpirv});
+    }
+    std::sort(artifact.variants.begin(), artifact.variants.end(), [](const auto &lhs, const auto &rhs) {
+        return static_cast<int>(lhs.target) < static_cast<int>(rhs.target);
+    });
+    artifact.key.revision = ComputeShaderProgramArtifactRevision(artifact);
     return artifact;
 }
 
@@ -95,9 +158,21 @@ void ValidateReflectedVaryings(const std::vector<ShaderIOVariable> &reflected,
 }
 
 void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderProgramInterfaceArtifact &artifact,
-                               ShaderStageVisibility stage, const std::string &stageName,
+                               ShaderStageVisibility stage, ShaderCompileTarget target, const std::string &stageName,
                                std::vector<std::string> &errors)
 {
+    // The depth-only Shadow fragment intentionally strips all surface
+    // resources unless its specialized alpha path needs them. The generated
+    // program and Vulkan reflection still validate that specialized layout;
+    // the linked full-material contract applies to Forward/GBuffer and to the
+    // deforming Shadow vertex stage.
+    if (target == ShaderCompileTarget::Shadow && stage == ShaderStageVisibility::Fragment)
+        return;
+
+    const uint32_t expectedSet =
+        target == ShaderCompileTarget::Shadow ? 2u : GlslStageInterfaceEmitter::MaterialDescriptorSet;
+    const uint32_t expectedTextureBinding =
+        target == ShaderCompileTarget::Shadow ? 0u : GlslStageInterfaceEmitter::FirstTextureBinding;
     const bool stageUsesMaterialBuffer =
         std::any_of(artifact.properties.begin(), artifact.properties.end(),
                     [&](const LinkedShaderProperty &property) {
@@ -111,7 +186,7 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
         if (uniformBuffer == reflection.GetUniformBuffers().end()) {
             errors.push_back(stageName + " SPIR-V reflection is missing the linked MaterialProperties block");
         } else {
-            if (uniformBuffer->set != GlslStageInterfaceEmitter::MaterialDescriptorSet ||
+            if (uniformBuffer->set != expectedSet ||
                 uniformBuffer->binding != GlslStageInterfaceEmitter::MaterialBufferBinding) {
                 errors.push_back(stageName + " MaterialProperties reflected at an unexpected descriptor binding");
             }
@@ -159,8 +234,8 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
             errors.push_back(stageName + " SPIR-V reflection is missing texture '" + property.schema.name + "'");
             continue;
         }
-        const uint32_t expectedBinding = GlslStageInterfaceEmitter::FirstTextureBinding + *property.textureSlot;
-        if (image->set != GlslStageInterfaceEmitter::MaterialDescriptorSet || image->binding != expectedBinding) {
+        const uint32_t expectedBinding = expectedTextureBinding + *property.textureSlot;
+        if (image->set != expectedSet || image->binding != expectedBinding) {
             errors.push_back(stageName + " texture '" + property.schema.name +
                              "' reflected at an unexpected descriptor binding");
         }
@@ -871,11 +946,15 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             // Shadow vertex variant: use shadow-specific builtins (shadow UBO at set 0)
             result << "\n// Auto-generated shadow vertex builtins\n";
             result << LoadTemplate("shadow_vertex_builtins.glsl") << "\n";
+            if (linkedInterface && !desc.outputs.empty())
+                result << GlslStageInterfaceEmitter::EmitVertexDeclarations(*linkedInterface, desc);
         } else if (desc.isFragmentShader && target == ShaderCompileTarget::Shadow) {
             // Shadow fragment variant: only fragment varyings for interface matching
             // No InxGlobals (set 2) — shadow pipeline layout only provides set 0
             result << "\n// Auto-generated fragment varyings (shadow — interface match)\n";
             result << LoadTemplate("fragment_varyings.glsl") << "\n";
+            if (linkedInterface && !desc.inputs.empty())
+                result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
         } else {
             if (desc.isVertexShader) {
                 // Unified vertex builtins for all shading models
@@ -919,12 +998,16 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     const bool shadowAlphaFragment =
         (target == ShaderCompileTarget::Shadow && shadowNeedsAlphaClip && desc.isFragmentShader);
     int shadowTexBaseBinding = 0; // textures start at binding 0 in set 2
-    if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip) {
-        if (linkedInterface && target != ShaderCompileTarget::Shadow) {
+    if (target != ShaderCompileTarget::Shadow || shadowNeedsAlphaClip || shadowVertexNeedsGlobals) {
+        if (linkedInterface) {
             const ShaderStageVisibility stage =
                 desc.isVertexShader ? ShaderStageVisibility::Vertex : ShaderStageVisibility::Fragment;
-            const std::string declarations =
-                GlslStageInterfaceEmitter::EmitTextureDeclarations(*linkedInterface, stage);
+            const uint32_t descriptorSet =
+                target == ShaderCompileTarget::Shadow ? 2u : GlslStageInterfaceEmitter::MaterialDescriptorSet;
+            const uint32_t firstBinding =
+                target == ShaderCompileTarget::Shadow ? 0u : GlslStageInterfaceEmitter::FirstTextureBinding;
+            const std::string declarations = GlslStageInterfaceEmitter::EmitTextureDeclarations(
+                *linkedInterface, stage, descriptorSet, firstBinding);
             if (!declarations.empty())
                 result << "\n// Linked material texture bindings\n" << declarations << "\n";
         } else if (!desc.textureProperties.empty() && desc.isFragmentShader) {
@@ -1343,8 +1426,79 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
     compilation.interfaceArtifact = ShaderStageLinker::Link(vertex, fragment);
     compilation.errors.insert(compilation.errors.end(), vertex.errors.begin(), vertex.errors.end());
     compilation.errors.insert(compilation.errors.end(), fragment.errors.begin(), fragment.errors.end());
+    for (const auto &diagnostic : compilation.interfaceArtifact.diagnostics) {
+        if (diagnostic.severity == ShaderLinkDiagnosticSeverity::Error)
+            compilation.errors.push_back(diagnostic.message);
+    }
     if (!compilation.interfaceArtifact.IsValid() || !compilation.errors.empty())
         return compilation;
+
+    return CompileLinkedProgramVariant(vertexSource, vertexPath, fragmentSource, fragmentPath, target,
+                                       compilation.interfaceArtifact);
+}
+
+LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArtifact(const std::string &vertexSource,
+                                                                                     const std::string &vertexPath,
+                                                                                     const std::string &fragmentSource,
+                                                                                     const std::string &fragmentPath)
+{
+    LinkedShaderProgramArtifactCompilation result;
+    const ShaderDescriptor vertex = ParseShaderSource(vertexSource, vertexPath);
+    const ShaderDescriptor fragment = ParseShaderSource(fragmentSource, fragmentPath);
+    result.interfaceArtifact = ShaderStageLinker::Link(vertex, fragment);
+    result.errors.insert(result.errors.end(), vertex.errors.begin(), vertex.errors.end());
+    result.errors.insert(result.errors.end(), fragment.errors.begin(), fragment.errors.end());
+    for (const auto &diagnostic : result.interfaceArtifact.diagnostics) {
+        if (diagnostic.severity == ShaderLinkDiagnosticSeverity::Error)
+            result.errors.push_back(diagnostic.message);
+    }
+    if (!result.interfaceArtifact.IsValid() || !result.errors.empty())
+        return result;
+
+    result.passPlan = ShaderPassVariantPlanner::Plan(vertex, fragment, result.interfaceArtifact);
+    result.errors.insert(result.errors.end(), result.passPlan.diagnostics.begin(), result.passPlan.diagnostics.end());
+    if (!result.passPlan.IsValid() || !result.errors.empty())
+        return result;
+
+    for (const auto &requirement : result.passPlan.requirements) {
+        if (!requirement.enabled)
+            continue;
+
+        const bool supported = requirement.target == ShaderCompileTarget::Forward ||
+                               requirement.target == ShaderCompileTarget::GBuffer ||
+                               requirement.target == ShaderCompileTarget::Shadow;
+        if (!supported) {
+            result.pendingTargets.push_back(requirement.target);
+            continue;
+        }
+
+        auto variant = CompileLinkedProgramVariant(vertexSource, vertexPath, fragmentSource, fragmentPath,
+                                                   requirement.target, result.interfaceArtifact);
+        if (!variant.IsValid()) {
+            if (variant.errors.empty()) {
+                result.errors.push_back(std::string(ShaderCompileTargetName(requirement.target)) +
+                                        ": linked variant compilation failed");
+            } else {
+                for (const auto &error : variant.errors) {
+                    result.errors.push_back(std::string(ShaderCompileTargetName(requirement.target)) + ": " + error);
+                }
+            }
+            continue;
+        }
+        result.compiledVariants.push_back(std::move(variant));
+    }
+    return result;
+}
+
+LinkedShaderProgramCompilation
+InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, const std::string &vertexPath,
+                                             const std::string &fragmentSource, const std::string &fragmentPath,
+                                             ShaderCompileTarget target,
+                                             const ShaderProgramInterfaceArtifact &interfaceArtifact)
+{
+    LinkedShaderProgramCompilation compilation;
+    compilation.target = target;
+    compilation.interfaceArtifact = interfaceArtifact;
 
     compilation.generatedVertexSource =
         PreprocessShaderSource(vertexSource, vertexPath, target, &compilation.interfaceArtifact);
@@ -1372,7 +1526,7 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
         ValidateReflectedVaryings(vertexReflection.GetOutputs(), compilation.interfaceArtifact, "vertex",
                                   compilation.errors);
         ValidateReflectedMaterial(vertexReflection, compilation.interfaceArtifact, ShaderStageVisibility::Vertex,
-                                  "vertex", compilation.errors);
+                                  target, "vertex", compilation.errors);
     }
     if (!fragmentReflection.Reflect(compilation.fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
         compilation.errors.push_back("failed to reflect linked fragment SPIR-V");
@@ -1380,7 +1534,7 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
         ValidateReflectedVaryings(fragmentReflection.GetInputs(), compilation.interfaceArtifact, "fragment",
                                   compilation.errors);
         ValidateReflectedMaterial(fragmentReflection, compilation.interfaceArtifact, ShaderStageVisibility::Fragment,
-                                  "fragment", compilation.errors);
+                                  target, "fragment", compilation.errors);
     }
     return compilation;
 }

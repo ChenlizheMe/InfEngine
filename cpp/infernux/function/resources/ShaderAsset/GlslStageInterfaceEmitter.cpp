@@ -102,15 +102,15 @@ std::string GlslStageInterfaceEmitter::EmitSurfaceCall(const ShaderProgramInterf
 }
 
 std::string GlslStageInterfaceEmitter::EmitTextureDeclarations(const ShaderProgramInterfaceArtifact &artifact,
-                                                               ShaderStageVisibility stage)
+                                                               ShaderStageVisibility stage, uint32_t descriptorSet,
+                                                               uint32_t firstTextureBinding)
 {
     std::ostringstream source;
     for (const auto &property : artifact.properties) {
         if (!property.textureSlot || !HasVisibility(property.visibility, stage))
             continue;
-        source << "layout(set = " << MaterialDescriptorSet
-               << ", binding = " << (FirstTextureBinding + *property.textureSlot) << ") uniform sampler2D "
-               << property.schema.name << ";\n";
+        source << "layout(set = " << descriptorSet << ", binding = " << (firstTextureBinding + *property.textureSlot)
+               << ") uniform sampler2D " << property.schema.name << ";\n";
     }
     return source.str();
 }

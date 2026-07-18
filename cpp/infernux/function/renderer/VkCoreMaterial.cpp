@@ -576,6 +576,17 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
 
         bool forwardOk = renderData && renderData->isValid;
 
+        if (forwardOk && artifact) {
+            for (const auto target : {ShaderCompileTarget::GBuffer, ShaderCompileTarget::Shadow}) {
+                ShaderProgram *variantProgram = nullptr;
+                if (artifact->FindVariant(target)) {
+                    variantProgram =
+                        m_shaderCache.GetProgramCache().GetProgram(ShaderProgramVariantKey{artifact->key, target});
+                }
+                material->SetPassShaderProgram(target, variantProgram);
+            }
+        }
+
         if (forwardOk && m_shadowPipelineReady) {
             // Shadow resources are created lazily by DrawShadowCasters. Eagerly
             // allocating here makes every transient/runtime material consume a
@@ -920,9 +931,23 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
     ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram : nullptr;
+    const ShaderStagePair stagePair{vertShaderName, fragShaderName};
+    const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
+    ShaderProgram *linkedShadowProgram = nullptr;
+    if (linkedArtifact && linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
+        linkedShadowProgram = m_shaderCache.GetProgramCache().GetProgram(
+            ShaderProgramVariantKey{linkedArtifact->key, ShaderCompileTarget::Shadow});
+    }
     bool hasVertexMaterialUBO = forwardProgram && forwardProgram->HasVertexMaterialUBO();
+    const bool hasVertexMaterialTextures =
+        linkedShadowProgram &&
+        std::any_of(linkedShadowProgram->GetDescriptorBindings().begin(),
+                    linkedShadowProgram->GetDescriptorBindings().end(), [](const MergedDescriptorBinding &binding) {
+                        return binding.set == 2 && binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
+                               (binding.stageFlags & VK_SHADER_STAGE_VERTEX_BIT) != 0;
+                    });
     bool hasAlphaClip = material->GetRenderState().alphaClipEnabled;
-    bool needsShadowMaterialDesc = hasVertexMaterialUBO || hasAlphaClip;
+    bool needsShadowMaterialDesc = hasVertexMaterialUBO || hasVertexMaterialTextures || hasAlphaClip;
 
     auto retireOldShadowDescriptorSet = [&](VkDescriptorSet descriptorSet) {
         if (descriptorSet == VK_NULL_HANDLE || descriptorSet == m_shadowMaterialDummyDescSet ||
@@ -988,7 +1013,7 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         // texture writes and to determine fragment MaterialProperties binding)
         std::vector<std::pair<uint32_t, MaterialDescriptorSet::TextureBinding>> sortedTexBindings;
         uint32_t shadowTexCount = 0;
-        if (hasAlphaClip && forwardMaterialDesc) {
+        if ((hasAlphaClip || hasVertexMaterialTextures) && forwardMaterialDesc) {
             sortedTexBindings.assign(forwardMaterialDesc->textureBindings.begin(),
                                      forwardMaterialDesc->textureBindings.end());
             std::sort(sortedTexBindings.begin(), sortedTexBindings.end(),
@@ -1178,21 +1203,23 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
         }
     }
 
-    // Vertex shader: prefer shadow vertex variant, fall back to forward pass vertex shader
+    // Structured programs consume the semantic Shadow variant directly. The
+    // suffix lookup remains only for legacy independently compiled stages.
     std::string shadowVertName = vertShaderName + "/shadow";
     std::string shadowFragName = fragShaderName + "/shadow";
 
-    VkShaderModule vertModule = GetShaderModule(shadowVertName, "vertex");
-    if (vertModule == VK_NULL_HANDLE)
+    VkShaderModule vertModule =
+        linkedShadowProgram ? linkedShadowProgram->GetVertexModule() : GetShaderModule(shadowVertName, "vertex");
+    if (vertModule == VK_NULL_HANDLE && !linkedArtifact)
         vertModule = GetShaderModule(vertShaderName, "vertex");
 
-    // Fragment shader: only create a per-material shadow pipeline when a
-    // generated shadow variant exists for this material.
-    VkShaderModule fragModule = GetShaderModule(shadowFragName, "fragment");
+    VkShaderModule fragModule =
+        linkedShadowProgram ? linkedShadowProgram->GetFragmentModule() : GetShaderModule(shadowFragName, "fragment");
     if (fragModule == VK_NULL_HANDLE) {
         static std::unordered_set<std::string> s_warnedShadowFragShaders;
-        if (s_warnedShadowFragShaders.insert(shadowFragName).second) {
-            INXLOG_WARN("CreateMaterialShadowPipeline: missing shadow fragment module '", shadowFragName,
+        const std::string missingName = linkedArtifact ? linkedArtifact->key.ToString() + ":Shadow" : shadowFragName;
+        if (s_warnedShadowFragShaders.insert(missingName).second) {
+            INXLOG_WARN("CreateMaterialShadowPipeline: missing shadow fragment program '", missingName,
                         "' — materials using this shader will use default shadow pass");
         }
         return;
@@ -1209,10 +1236,14 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
 
     // ---- Shadow pipeline cache: share VkPipeline across materials with same shader + cull mode ----
     VkCullModeFlags matCullMode = material->GetRenderState().cullMode;
-    std::string shadowShaderKey = shadowVertName + "|" + shadowFragName + "|cull" + std::to_string(matCullMode);
+    std::string shadowShaderKey = vertShaderName + "|" + fragShaderName + "|";
+    shadowShaderKey += linkedArtifact ? std::to_string(linkedArtifact->key.revision) + ":Shadow" : "legacy-shadow";
+    shadowShaderKey += "|cull" + std::to_string(matCullMode);
     auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
+        material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
+        material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowProgram);
         return;
     }
 
@@ -1222,14 +1253,16 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
     // Vertex input — only attributes consumed by the shadow vertex shader (full mesh buffer still bound).
     auto bindingDesc = Vertex::getBindingDescription();
     ShaderReflection shadowVertRefl;
-    bool haveVertRefl = false;
-    if (const auto *spv = m_shaderCache.FindVertCode(shadowVertName)) {
-        haveVertRefl = shadowVertRefl.Reflect(*spv, VK_SHADER_STAGE_VERTEX_BIT);
-    }
+    bool haveVertRefl = linkedShadowProgram != nullptr;
+    if (linkedShadowProgram)
+        shadowVertRefl = linkedShadowProgram->GetVertexReflection();
     if (!haveVertRefl) {
-        if (const auto *spv = m_shaderCache.FindVertCode(vertShaderName)) {
+        if (const auto *spv = m_shaderCache.FindVertCode(shadowVertName))
             haveVertRefl = shadowVertRefl.Reflect(*spv, VK_SHADER_STAGE_VERTEX_BIT);
-        }
+    }
+    if (!haveVertRefl && !linkedArtifact) {
+        if (const auto *spv = m_shaderCache.FindVertCode(vertShaderName))
+            haveVertRefl = shadowVertRefl.Reflect(*spv, VK_SHADER_STAGE_VERTEX_BIT);
     }
     if (!haveVertRefl && forwardProgram != nullptr && vertModule == forwardProgram->GetVertexModule()) {
         shadowVertRefl = forwardProgram->GetVertexReflection();
@@ -1300,6 +1333,8 @@ void InxVkCoreModular::CreateMaterialShadowPipeline(std::shared_ptr<InxMaterial>
 
     m_shadowPipelineCache[shadowShaderKey] = shadowPipeline;
     material->SetPassPipeline(ShaderCompileTarget::Shadow, shadowPipeline);
+    material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
+    material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowProgram);
     INXLOG_DEBUG("Created per-material shadow pipeline for '", material->GetName(), "'");
 }
 

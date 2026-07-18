@@ -21,7 +21,9 @@ class GlslStageInterfaceEmitter final
                                                     const ShaderDescriptor &vertex);
     [[nodiscard]] static std::string EmitSurfaceCall(const ShaderProgramInterfaceArtifact &artifact);
     [[nodiscard]] static std::string EmitTextureDeclarations(const ShaderProgramInterfaceArtifact &artifact,
-                                                             ShaderStageVisibility stage);
+                                                             ShaderStageVisibility stage,
+                                                             uint32_t descriptorSet = MaterialDescriptorSet,
+                                                             uint32_t firstTextureBinding = FirstTextureBinding);
     [[nodiscard]] static std::string EmitMaterialBlockMembers(const ShaderProgramInterfaceArtifact &artifact);
 };
 

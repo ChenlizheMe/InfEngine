@@ -74,6 +74,34 @@ struct ShaderProgramKeyHash
     [[nodiscard]] size_t operator()(const ShaderProgramKey &key) const noexcept;
 };
 
+struct ShaderProgramVariantKey
+{
+    ShaderProgramKey program;
+    ShaderCompileTarget target = ShaderCompileTarget::Forward;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return program.IsValid() && target >= ShaderCompileTarget::Forward && target < ShaderCompileTarget::Count;
+    }
+
+    [[nodiscard]] std::string ToString() const;
+
+    friend bool operator==(const ShaderProgramVariantKey &lhs, const ShaderProgramVariantKey &rhs) noexcept
+    {
+        return lhs.program == rhs.program && lhs.target == rhs.target;
+    }
+
+    friend bool operator!=(const ShaderProgramVariantKey &lhs, const ShaderProgramVariantKey &rhs) noexcept
+    {
+        return !(lhs == rhs);
+    }
+};
+
+struct ShaderProgramVariantKeyHash
+{
+    [[nodiscard]] size_t operator()(const ShaderProgramVariantKey &key) const noexcept;
+};
+
 struct ShaderProgramArtifact
 {
     static constexpr uint32_t CurrentSchemaVersion = 2;
@@ -107,5 +135,9 @@ struct ShaderProgramArtifact
                                                     std::string_view generatedFragmentSource,
                                                     ShaderCompileTarget target,
                                                     uint64_t compatibilitySignature) noexcept;
+
+/// Computes the runtime identity of the complete, ordered pass-variant set.
+/// key.revision is deliberately ignored so this can initialize that field.
+[[nodiscard]] uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artifact) noexcept;
 
 } // namespace infernux

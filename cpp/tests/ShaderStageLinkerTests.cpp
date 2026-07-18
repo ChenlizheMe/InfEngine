@@ -202,6 +202,70 @@ void surface(out SurfaceData s)
     assert(gbufferProgram.generatedFragmentSource.find("layout(location = 0) out vec4 outGBuf0;") != std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("fragmentInput.waveUV = _inx_v_waveUV;") != std::string::npos);
 
+    const auto completeCompilation =
+        compiler.CompileLinkedProgramArtifact(waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag");
+    if (!completeCompilation.IsValid()) {
+        for (const auto &error : completeCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(completeCompilation.IsValid());
+    assert(completeCompilation.compiledVariants.size() == 3);
+    assert(completeCompilation.pendingTargets.size() == 3);
+    assert(completeCompilation.pendingTargets[0] == infernux::ShaderCompileTarget::Depth);
+    assert(completeCompilation.pendingTargets[1] == infernux::ShaderCompileTarget::Picking);
+    assert(completeCompilation.pendingTargets[2] == infernux::ShaderCompileTarget::Motion);
+    const auto completeArtifact = completeCompilation.CreateRuntimeArtifact();
+    assert(completeArtifact.IsValid());
+    assert(completeArtifact.variants.size() == 3);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Depth) == nullptr);
+    assert(completeArtifact.key.revision != runtimeArtifact.key.revision);
+    const auto shadowCompilation =
+        std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
+    assert(shadowCompilation != completeCompilation.compiledVariants.end());
+    assert(shadowCompilation->generatedVertexSource.find("layout(location = 6) smooth out vec2 _inx_v_waveUV;") !=
+           std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find(
+               "layout(set = 2, binding = 0) uniform sampler2D displacement;") != std::string::npos);
+    assert(shadowCompilation->generatedFragmentSource.find("layout(location = 6) smooth in vec2 _inx_v_waveUV;") !=
+           std::string::npos);
+
+    auto reorderedArtifact = completeArtifact;
+    std::reverse(reorderedArtifact.variants.begin(), reorderedArtifact.variants.end());
+    assert(infernux::ComputeShaderProgramArtifactRevision(reorderedArtifact) == completeArtifact.key.revision);
+    auto changedVariantArtifact = completeArtifact;
+    changedVariantArtifact.variants[1].fragmentSpirv.back() ^= 1;
+    assert(infernux::ComputeShaderProgramArtifactRevision(changedVariantArtifact) != completeArtifact.key.revision);
+    const infernux::ShaderProgramVariantKey forwardProgramKey{completeArtifact.key,
+                                                              infernux::ShaderCompileTarget::Forward};
+    const infernux::ShaderProgramVariantKey shadowProgramKey{completeArtifact.key,
+                                                             infernux::ShaderCompileTarget::Shadow};
+    assert(forwardProgramKey.IsValid());
+    assert(forwardProgramKey != shadowProgramKey);
+    assert(infernux::ShaderProgramVariantKeyHash{}(forwardProgramKey) !=
+           infernux::ShaderProgramVariantKeyHash{}(shadowProgramKey));
+
+    std::string brokenGBufferFragment = oceanFragment;
+    const std::string validMetallicLine = "    s.metallic = float(fragmentInput.waveBand) * 0.1;";
+    const std::string brokenMetallicLine = R"(
+#ifdef INX_GBUFFER_PASS
+this_is_not_valid_glsl
+#else
+    s.metallic = float(fragmentInput.waveBand) * 0.1;
+#endif
+)";
+    brokenGBufferFragment.replace(brokenGBufferFragment.find(validMetallicLine), validMetallicLine.size(),
+                                  brokenMetallicLine);
+    const auto atomicFailure = compiler.CompileLinkedProgramArtifact(waveVertex, "WaveDeform.vert",
+                                                                     brokenGBufferFragment, "OceanSurface.frag");
+    assert(!atomicFailure.IsValid());
+    assert(std::any_of(atomicFailure.errors.begin(), atomicFailure.errors.end(),
+                       [](const std::string &error) { return error.find("GBuffer:") != std::string::npos; }));
+    assert(!atomicFailure.CreateRuntimeArtifact().IsValid());
+
     const auto unsupportedDepthProgram = compiler.CompileLinkedProgram(
         waveVertex, "WaveDeform.vert", oceanFragment, "OceanSurface.frag", infernux::ShaderCompileTarget::Depth);
     assert(!unsupportedDepthProgram.IsValid());
@@ -238,6 +302,16 @@ void surface(out SurfaceData surface)
     assert(!transparentPlan.Find(infernux::ShaderCompileTarget::Depth)->enabled);
     assert(!transparentPlan.Find(infernux::ShaderCompileTarget::Picking)->enabled);
     assert(!transparentPlan.Find(infernux::ShaderCompileTarget::Motion)->enabled);
+
+    const auto transparentCompilation = compiler.CompileLinkedProgramArtifact(
+        waveVertex, "WaveDeform.vert", transparentFragment, "TransparentForwardOnly.frag");
+    assert(transparentCompilation.IsValid());
+    assert(transparentCompilation.compiledVariants.size() == 1);
+    assert(transparentCompilation.pendingTargets.empty());
+    const auto transparentArtifact = transparentCompilation.CreateRuntimeArtifact();
+    assert(transparentArtifact.IsValid());
+    assert(transparentArtifact.variants.size() == 1);
+    assert(transparentArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo

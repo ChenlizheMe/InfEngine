@@ -7,6 +7,7 @@
 #include "InxError.h"
 #include "vk/VkCore.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace infernux
@@ -160,22 +161,40 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
     }
 
     const auto existing = m_programArtifacts.find(artifact.key.stages);
-    if (existing != m_programArtifacts.end() && existing->second.key == artifact.key) {
-        result.accepted = true;
-        return result;
+    const bool sameRevision = existing != m_programArtifacts.end() && existing->second.key == artifact.key;
+    if (sameRevision) {
+        const bool fullyMaterialized = std::all_of(artifact.variants.begin(), artifact.variants.end(),
+                                                   [&](const ShaderProgramArtifact::PassVariant &variant) {
+                                                       return m_programCache.HasProgram({artifact.key, variant.target});
+                                                   });
+        if (fullyMaterialized) {
+            result.accepted = true;
+            return result;
+        }
     }
 
     // Validate and materialize all Vulkan program-level resources before the
-    // current artifact is replaced. A failed publish leaves last-known-good live.
-    const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
-    if (!forward) {
+    // current artifact is replaced. A failed publish removes the incomplete
+    // revision and leaves last-known-good live.
+    if (!artifact.FindVariant(ShaderCompileTarget::Forward)) {
         INXLOG_ERROR("VkShaderCache: shader program artifact has no Forward variant");
         return result;
     }
-    ShaderProgram *program =
-        m_programCache.GetOrCreateProgram(artifact.key, forward->vertexSpirv, forward->fragmentSpirv);
-    if (!program || !program->IsValid()) {
-        INXLOG_ERROR("VkShaderCache: failed to materialize shader program artifact '", artifact.key.ToString(), "'");
+
+    for (const auto &variant : artifact.variants) {
+        const ShaderProgramVariantKey variantKey{artifact.key, variant.target};
+        ShaderProgram *program =
+            m_programCache.GetOrCreateProgram(variantKey, variant.vertexSpirv, variant.fragmentSpirv);
+        if (!program || !program->IsValid()) {
+            INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", variantKey.ToString(), "'");
+            (void)m_programCache.TakePrograms(artifact.key);
+            return result;
+        }
+    }
+
+    if (sameRevision) {
+        result.accepted = true;
+        result.changed = true;
         return result;
     }
 

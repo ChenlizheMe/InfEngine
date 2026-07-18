@@ -5,6 +5,7 @@
 #include <core/types/ShaderTypes.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
+#include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
@@ -31,6 +32,18 @@ struct LinkedShaderProgramCompilation
         return interfaceArtifact.IsValid() && errors.empty() && !vertexSpirv.empty() && !fragmentSpirv.empty();
     }
 
+    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact() const;
+};
+
+struct LinkedShaderProgramArtifactCompilation
+{
+    ShaderProgramInterfaceArtifact interfaceArtifact;
+    ShaderPassVariantPlan passPlan;
+    std::vector<LinkedShaderProgramCompilation> compiledVariants;
+    std::vector<ShaderCompileTarget> pendingTargets;
+    std::vector<std::string> errors;
+
+    [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact() const;
 };
 
@@ -90,6 +103,14 @@ class InxShaderLoader
                                                                       const std::string &fragmentPath,
                                                                       ShaderCompileTarget target);
 
+    /// Link once, plan every semantic pass, and AOT compile the complete set
+    /// currently supported by the runtime. Unsupported planned targets remain
+    /// explicit in pendingTargets and are never substituted with Forward code.
+    [[nodiscard]] LinkedShaderProgramArtifactCompilation CompileLinkedProgramArtifact(const std::string &vertexSource,
+                                                                                      const std::string &vertexPath,
+                                                                                      const std::string &fragmentSource,
+                                                                                      const std::string &fragmentPath);
+
     /// Parse a single "@key: value" or "// @key: value" annotation line.
     /// Returns {key, value} or nullopt if the line is not an annotation.
     static std::optional<std::pair<std::string, std::string>> ParseAnnotation(const std::string &line);
@@ -123,6 +144,11 @@ class InxShaderLoader
     /// Compile GLSL source to SPIR-V. Returns false on failure (sets s_lastCompileError).
     bool CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
                      std::vector<char> &outSpirv);
+
+    [[nodiscard]] LinkedShaderProgramCompilation
+    CompileLinkedProgramVariant(const std::string &vertexSource, const std::string &vertexPath,
+                                const std::string &fragmentSource, const std::string &fragmentPath,
+                                ShaderCompileTarget target, const ShaderProgramInterfaceArtifact &interfaceArtifact);
 
     /// Preprocess and compile a shader variant, storing it in the transient target cache.
     void CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
