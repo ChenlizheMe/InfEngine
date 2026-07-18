@@ -1,9 +1,11 @@
+#include <function/renderer/shader/ShaderReflection.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +15,7 @@
 
 namespace
 {
+using infernux::ShaderReflection;
 using infernux::rhi::BindGroupHandle;
 using infernux::rhi::ComputePipelineHandle;
 using infernux::rhi::GraphicsPipelineHandle;
@@ -105,7 +108,7 @@ bool Require(bool condition, const char *message)
 }
 
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
-         const std::filesystem::path &fragmentPath)
+         const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath)
 {
     TestResources resources;
     if (!Require(SDL_Init(SDL_INIT_VIDEO), SDL_GetError()))
@@ -129,8 +132,74 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto computeCode = ReadSpirv(computePath);
     const auto vertexCode = ReadSpirv(vertexPath);
     const auto fragmentCode = ReadSpirv(fragmentPath);
-    if (!Require(!computeCode.empty() && !vertexCode.empty() && !fragmentCode.empty(),
+    const auto reflectionCode = ReadSpirv(reflectionPath);
+    if (!Require(!computeCode.empty() && !vertexCode.empty() && !fragmentCode.empty() && !reflectionCode.empty(),
                  "Failed to read generated SPIR-V test shaders"))
+        return false;
+
+    ShaderReflection computeReflection;
+    if (!Require(computeReflection.Reflect(computeCode, VK_SHADER_STAGE_COMPUTE_BIT),
+                 "Generated compute SPIR-V reflection failed"))
+        return false;
+    const auto &storageBuffers = computeReflection.GetStorageBuffers();
+    const auto reflectedBindings = computeReflection.GetDescriptorSetLayoutBindings(0);
+    if (!Require(storageBuffers.size() == 1 && storageBuffers[0].set == 0 && storageBuffers[0].binding == 0 &&
+                     storageBuffers[0].stageFlags == VK_SHADER_STAGE_COMPUTE_BIT,
+                 "Compute storage buffer was not reflected with its set, binding, and stage"))
+        return false;
+    if (!Require(reflectedBindings.size() == 1 && reflectedBindings[0].binding == 0 &&
+                     reflectedBindings[0].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+                     reflectedBindings[0].stageFlags == VK_SHADER_STAGE_COMPUTE_BIT,
+                 "Storage reflection did not produce a Vulkan descriptor layout binding"))
+        return false;
+    if (!Require(computeReflection.GetUsedDescriptorSets() == std::vector<uint32_t>{0},
+                 "Storage resources were omitted from reflected descriptor sets"))
+        return false;
+
+    ShaderReflection storageReflection;
+    if (!Require(storageReflection.Reflect(reflectionCode, VK_SHADER_STAGE_COMPUTE_BIT),
+                 "Storage resource reflection fixture failed"))
+        return false;
+    const auto &reflectedBuffers = storageReflection.GetStorageBuffers();
+    const auto &reflectedImages = storageReflection.GetStorageImages();
+    const auto &reflectedSampled = storageReflection.GetSampledImages();
+    if (!Require(reflectedBuffers.size() == 2 && reflectedImages.size() == 2 && reflectedSampled.size() == 2,
+                 "Storage reflection omitted a buffer, image, texture, or sampler"))
+        return false;
+    const auto setOneBindings = storageReflection.GetDescriptorSetLayoutBindings(1);
+    const auto setTwoBindings = storageReflection.GetDescriptorSetLayoutBindings(2);
+    const auto setThreeBindings = storageReflection.GetDescriptorSetLayoutBindings(3);
+    if (!Require(setOneBindings.size() == 2 && setOneBindings[0].binding == 2 &&
+                     setOneBindings[0].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE &&
+                     setOneBindings[1].binding == 3 &&
+                     setOneBindings[1].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                 "Storage image descriptor bindings are incorrect"))
+        return false;
+    if (!Require(setTwoBindings.size() == 2 && setTwoBindings[0].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE &&
+                     setTwoBindings[1].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER,
+                 "Separate texture and sampler descriptor types are incorrect"))
+        return false;
+    if (!Require(setThreeBindings.size() == 2 &&
+                     setThreeBindings[0].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+                     setThreeBindings[1].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                 "Storage buffer descriptor bindings are incorrect"))
+        return false;
+    const auto inputBuffer = std::find_if(reflectedBuffers.begin(), reflectedBuffers.end(),
+                                          [](const auto &info) { return info.binding == 0; });
+    const auto outputBuffer = std::find_if(reflectedBuffers.begin(), reflectedBuffers.end(),
+                                           [](const auto &info) { return info.binding == 1; });
+    const auto inputImage = std::find_if(reflectedImages.begin(), reflectedImages.end(),
+                                         [](const auto &info) { return info.binding == 2; });
+    const auto outputImage = std::find_if(reflectedImages.begin(), reflectedImages.end(),
+                                          [](const auto &info) { return info.binding == 3; });
+    if (!Require(inputBuffer != reflectedBuffers.end() && inputBuffer->readOnly &&
+                     outputBuffer != reflectedBuffers.end() && outputBuffer->writeOnly &&
+                     inputImage != reflectedImages.end() && inputImage->readOnly &&
+                     outputImage != reflectedImages.end() && outputImage->writeOnly,
+                 "Storage access qualifiers were not preserved by reflection"))
+        return false;
+    if (!Require(storageReflection.GetUsedDescriptorSets() == std::vector<uint32_t>({1, 2, 3}),
+                 "Storage reflection descriptor set discovery is incomplete"))
         return false;
 
     ResourceHandle indirectArguments;
@@ -476,9 +545,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
 int main(int argc, char **argv)
 {
-    if (argc != 4) {
-        std::cerr << "Expected compute, vertex, and fragment SPIR-V paths\n";
+    if (argc != 5) {
+        std::cerr << "Expected compute, vertex, fragment, and reflection SPIR-V paths\n";
         return 2;
     }
-    return Run(argv[1], argv[2], argv[3]) ? 0 : 1;
+    return Run(argv[1], argv[2], argv[3], argv[4]) ? 0 : 1;
 }

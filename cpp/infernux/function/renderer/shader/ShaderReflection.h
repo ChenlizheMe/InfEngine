@@ -58,6 +58,29 @@ struct SampledImageInfo
     uint32_t set;
     uint32_t arraySize; // For texture arrays
     VkShaderStageFlags stageFlags;
+    VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+};
+
+struct StorageBufferInfo
+{
+    std::string name;
+    uint32_t binding = 0;
+    uint32_t set = 0;
+    uint32_t arraySize = 1;
+    VkShaderStageFlags stageFlags = 0;
+    bool readOnly = false;
+    bool writeOnly = false;
+};
+
+struct StorageImageInfo
+{
+    std::string name;
+    uint32_t binding = 0;
+    uint32_t set = 0;
+    uint32_t arraySize = 1;
+    VkShaderStageFlags stageFlags = 0;
+    bool readOnly = false;
+    bool writeOnly = false;
 };
 
 /**
@@ -119,6 +142,14 @@ class ShaderReflection
     {
         return m_sampledImages;
     }
+    [[nodiscard]] const std::vector<StorageBufferInfo> &GetStorageBuffers() const
+    {
+        return m_storageBuffers;
+    }
+    [[nodiscard]] const std::vector<StorageImageInfo> &GetStorageImages() const
+    {
+        return m_storageImages;
+    }
     [[nodiscard]] const std::vector<PushConstantInfo> &GetPushConstants() const
     {
         return m_pushConstants;
@@ -158,6 +189,8 @@ class ShaderReflection
 
     std::vector<UniformBufferInfo> m_uniformBuffers;
     std::vector<SampledImageInfo> m_sampledImages;
+    std::vector<StorageBufferInfo> m_storageBuffers;
+    std::vector<StorageImageInfo> m_storageImages;
     std::vector<PushConstantInfo> m_pushConstants;
     std::vector<ShaderIOVariable> m_inputs;
     std::vector<ShaderIOVariable> m_outputs;

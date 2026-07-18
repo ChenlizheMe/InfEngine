@@ -167,6 +167,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.binding = compiler.get_decoration(image.id, spv::DecorationBinding);
             info.set = compiler.get_decoration(image.id, spv::DecorationDescriptorSet);
             info.stageFlags = stage;
+            info.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
             const auto &type = compiler.get_type(image.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];
@@ -183,6 +184,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.set = compiler.get_decoration(sampler.id, spv::DecorationDescriptorSet);
             info.stageFlags = stage;
             info.arraySize = 1;
+            info.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
 
             m_sampledImages.push_back(info);
             INXLOG_DEBUG("Reflected separate sampler: ", info.name, " binding=", info.binding);
@@ -195,12 +197,44 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.binding = compiler.get_decoration(image.id, spv::DecorationBinding);
             info.set = compiler.get_decoration(image.id, spv::DecorationDescriptorSet);
             info.stageFlags = stage;
+            info.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 
             const auto &type = compiler.get_type(image.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];
 
             m_sampledImages.push_back(info);
             INXLOG_DEBUG("Reflected separate image: ", info.name, " binding=", info.binding);
+        }
+
+        for (const auto &buffer : resources.storage_buffers) {
+            StorageBufferInfo info;
+            info.name = buffer.name;
+            info.binding = compiler.get_decoration(buffer.id, spv::DecorationBinding);
+            info.set = compiler.get_decoration(buffer.id, spv::DecorationDescriptorSet);
+            info.stageFlags = stage;
+            const auto &type = compiler.get_type(buffer.type_id);
+            info.arraySize = type.array.empty() ? 1 : type.array[0];
+            const auto accessFlags = compiler.get_buffer_block_flags(buffer.id);
+            info.readOnly = accessFlags.get(spv::DecorationNonWritable);
+            info.writeOnly = accessFlags.get(spv::DecorationNonReadable);
+            m_storageBuffers.push_back(info);
+            INXLOG_DEBUG("Reflected storage buffer: ", info.name, " binding=", info.binding, " set=", info.set);
+        }
+
+        for (const auto &image : resources.storage_images) {
+            StorageImageInfo info;
+            info.name = image.name;
+            info.binding = compiler.get_decoration(image.id, spv::DecorationBinding);
+            info.set = compiler.get_decoration(image.id, spv::DecorationDescriptorSet);
+            info.stageFlags = stage;
+            const auto &type = compiler.get_type(image.type_id);
+            info.arraySize = type.array.empty() ? 1 : type.array[0];
+            info.readOnly = type.image.access == spv::AccessQualifierReadOnly ||
+                            compiler.has_decoration(image.id, spv::DecorationNonWritable);
+            info.writeOnly = type.image.access == spv::AccessQualifierWriteOnly ||
+                             compiler.has_decoration(image.id, spv::DecorationNonReadable);
+            m_storageImages.push_back(info);
+            INXLOG_DEBUG("Reflected storage image: ", info.name, " binding=", info.binding, " set=", info.set);
         }
 
         // Process push constants
@@ -257,7 +291,8 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
         }
 
         INXLOG_DEBUG("Shader reflection complete: ", m_uniformBuffers.size(), " UBOs, ", m_sampledImages.size(),
-                     " samplers");
+                     " sampled resources, ", m_storageBuffers.size(), " storage buffers, ", m_storageImages.size(),
+                     " storage images");
 
         return true;
     } catch (const std::exception &e) {
@@ -288,13 +323,38 @@ std::vector<VkDescriptorSetLayoutBinding> ShaderReflection::GetDescriptorSetLayo
         if (image.set == set) {
             VkDescriptorSetLayoutBinding binding{};
             binding.binding = image.binding;
-            binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            binding.descriptorType = image.descriptorType;
             binding.descriptorCount = image.arraySize;
             binding.stageFlags = image.stageFlags;
             binding.pImmutableSamplers = nullptr;
             bindings.push_back(binding);
         }
     }
+
+    for (const auto &buffer : m_storageBuffers) {
+        if (buffer.set == set) {
+            VkDescriptorSetLayoutBinding binding{};
+            binding.binding = buffer.binding;
+            binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            binding.descriptorCount = buffer.arraySize;
+            binding.stageFlags = buffer.stageFlags;
+            bindings.push_back(binding);
+        }
+    }
+
+    for (const auto &image : m_storageImages) {
+        if (image.set == set) {
+            VkDescriptorSetLayoutBinding binding{};
+            binding.binding = image.binding;
+            binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            binding.descriptorCount = image.arraySize;
+            binding.stageFlags = image.stageFlags;
+            bindings.push_back(binding);
+        }
+    }
+
+    std::sort(bindings.begin(), bindings.end(),
+              [](const auto &left, const auto &right) { return left.binding < right.binding; });
 
     return bindings;
 }
@@ -315,6 +375,16 @@ std::vector<uint32_t> ShaderReflection::GetUsedDescriptorSets() const
         }
     }
 
+    for (const auto &buffer : m_storageBuffers) {
+        if (std::find(sets.begin(), sets.end(), buffer.set) == sets.end())
+            sets.push_back(buffer.set);
+    }
+
+    for (const auto &image : m_storageImages) {
+        if (std::find(sets.begin(), sets.end(), image.set) == sets.end())
+            sets.push_back(image.set);
+    }
+
     std::sort(sets.begin(), sets.end());
     return sets;
 }
@@ -323,6 +393,8 @@ void ShaderReflection::Clear()
 {
     m_uniformBuffers.clear();
     m_sampledImages.clear();
+    m_storageBuffers.clear();
+    m_storageImages.clear();
     m_pushConstants.clear();
     m_inputs.clear();
     m_outputs.clear();
