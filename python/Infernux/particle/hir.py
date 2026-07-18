@@ -339,8 +339,12 @@ class ParticleGraphCompiler:
                                 "initial_speed_max": settings.initial_speed.maximum,
                                 "lifetime_min": settings.lifetime.minimum,
                                 "lifetime_max": settings.lifetime.maximum,
+                                "seed": settings.seed,
                                 "shape": settings.shape.kind.value,
                                 "shape_space": settings.shape.space.value,
+                                "shape_radius": settings.shape.radius,
+                                "shape_angle_degrees": settings.shape.angle_degrees,
+                                "shape_dimensions": list(settings.shape.dimensions),
                             }.items()
                         )
                     ),

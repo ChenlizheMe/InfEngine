@@ -11,11 +11,12 @@ from typing import Any, Mapping
 
 from .asset import ParticleGraphAsset
 from .hir import ParticleGraphCompiler, ParticleProgramHIR
+from .kernel_ir import ParticleKernelLowerer, ParticleKernelProgram
 from .script import ParticleScriptCompiler
 
 
 PARTICLE_ARTIFACT_SCHEMA = "infernux.particle_artifact"
-PARTICLE_ARTIFACT_VERSION = 1
+PARTICLE_ARTIFACT_VERSION = 2
 
 
 class ParticleArtifactError(ValueError):
@@ -32,6 +33,7 @@ class ParticleArtifact:
     behavior_hash: str
     artifact_path: str
     hir: Mapping[str, Any]
+    kernel_ir: Mapping[str, Any]
 
 
 class ParticleArtifactRegistry:
@@ -94,7 +96,11 @@ class ParticleArtifactRegistry:
             )
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc
-        hir = _program_to_dict(program)
+        try:
+            hir = _program_to_dict(program)
+            kernel_ir = ParticleKernelLowerer().lower(program).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise ParticleArtifactError(f"particle AOT lowering failed: {exc}") from exc
         revision = cls._revision + 1
         payload = {
             "$schema": PARTICLE_ARTIFACT_SCHEMA,
@@ -106,6 +112,7 @@ class ParticleArtifactRegistry:
             "semantic_hash": program.semantic_hash,
             "behavior_hash": program.behavior_hash,
             "hir": hir,
+            "kernel_ir": kernel_ir,
         }
         if artifact_path:
             from Infernux.core.document_store import write_document_text
@@ -124,6 +131,7 @@ class ParticleArtifactRegistry:
             program.behavior_hash,
             artifact_path,
             hir,
+            kernel_ir,
         )
         cls._revision = revision
         cls._artifacts[key] = artifact
@@ -177,10 +185,14 @@ class ParticleArtifactRegistry:
                 or payload.get("source_hash") != source_hash
                 or payload.get("source_kind") != source_kind
                 or type(payload.get("hir")) is not dict
+                or type(payload.get("kernel_ir")) is not dict
             ):
                 return None
             revision = payload.get("revision")
             if type(revision) is not int or revision <= 0:
+                return None
+            kernel_program = ParticleKernelProgram.from_dict(payload["kernel_ir"])
+            if kernel_program.source_behavior_hash != payload["behavior_hash"]:
                 return None
             return ParticleArtifact(
                 key,
@@ -191,6 +203,7 @@ class ParticleArtifactRegistry:
                 str(payload["behavior_hash"]),
                 artifact_path,
                 payload["hir"],
+                kernel_program.to_dict(),
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):
             return None

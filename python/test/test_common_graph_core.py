@@ -27,11 +27,13 @@ def _expression_document(position=(0.0, 0.0)):
             GraphNodeRecord("add", "common.math.add"),
             GraphNodeRecord("normal", "common.vector.normalize"),
             GraphNodeRecord("random", "common.random.f32"),
+            GraphNodeRecord("seed", "common.constant.u32", properties={"value": 17}),
         ),
         links=(
             GraphLinkRecord("l1", "a", "value", "add", "a"),
             GraphLinkRecord("l2", "b", "value", "add", "b"),
             GraphLinkRecord("l3", "add", "result", "normal", "value"),
+            GraphLinkRecord("l4", "seed", "value", "random", "seed"),
         ),
     )
 
@@ -73,6 +75,7 @@ def test_common_add_normalize_random_compile_to_typed_expression_ir():
     assert by_result["add.result"].result_type.value_type is ValueType.VEC3
     assert by_result["normal.result"].opcode == "normalize"
     assert by_result["random.value"].opcode == "random_f32"
+    assert by_result["random.value"].operands[2].value_id == "seed.value"
     assert dict(program.outputs)["normal.result"].value_type is ValueType.VEC3
 
 

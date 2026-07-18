@@ -41,6 +41,13 @@ COMMON_NODE_DEFINITIONS = (
         {"expression": "constant"},
     ),
     NodeDef(
+        "common.constant.u32",
+        "Unsigned Integer",
+        (_output("value", TypeRef(ValueType.U32)),),
+        (PropertyDef("value", TypeRef(ValueType.U32), 0),),
+        {"expression": "constant"},
+    ),
+    NodeDef(
         "common.constant.vec3",
         "Vector 3",
         (_output("value", TypeRef(ValueType.VEC3)),),
