@@ -9,6 +9,7 @@ from Infernux.lib import (
     MaterialPassType,
     PixelFormat,
 )
+from Infernux.renderstack.effect_stage import EffectScope, EffectStage
 
 Format = PixelFormat
 
@@ -181,6 +182,10 @@ class RenderGraph:
     def injection_points(self) -> list:
         """List of injection points for pass extension."""
         ...
+    @property
+    def effect_stages(self) -> List[EffectStage]:
+        """Pipeline-declared user attachment stages in topology order."""
+        ...
     def set_msaa_samples(self, samples: int) -> None:
         """Set the MSAA sample count for all render targets."""
         ...
@@ -219,6 +224,9 @@ class RenderGraph:
     def has_injection_point(self, name: str) -> bool:
         """Check if an injection point with the given name exists."""
         ...
+    def has_effect_stage(self, stable_id: str) -> bool:
+        """Check for a declared stage or migration alias."""
+        ...
     def injection_point(
         self,
         name: str,
@@ -227,6 +235,22 @@ class RenderGraph:
         resources: Optional[set] = ...,
     ) -> None:
         """Declare an injection point where external passes can be inserted."""
+        ...
+    def effect_stage(
+        self,
+        stable_id: str,
+        *,
+        scope: EffectScope | str = ...,
+        display_name: str = ...,
+        inputs: Optional[set[str]] = ...,
+        outputs: Optional[set[str]] = ...,
+        capabilities: Optional[set[str]] = ...,
+        aliases: Tuple[str, ...] = ...,
+    ) -> EffectStage:
+        """Declare a stable user-facing RenderEffect attachment stage."""
+        ...
+    def effects(self, stable_id: str, **kwargs: object) -> EffectStage:
+        """Pipeline-author shorthand for ``effect_stage``."""
         ...
     def screen_ui_section(self, *, resources: set | None = ...) -> None:
         """Declare a screen UI section in the graph topology."""
@@ -253,7 +277,7 @@ class RenderGraph:
         """Set the final output texture of the render graph."""
         ...
     def validate_no_ip_before_first_pass(self) -> None:
-        """Validate that no injection point appears before the first pass."""
+        """Validate that no user extension point appears before the first pass."""
         ...
     def get_debug_string(self) -> str:
         """Return a human-readable summary of the graph for debugging."""

@@ -8,6 +8,7 @@ from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.render_effect import RenderEffect
 from Infernux.renderstack.render_effect_asset import RenderEffectAsset
 from Infernux.renderstack.render_stack import RenderStack
+from Infernux.renderstack.render_pipeline import RenderPipeline
 
 
 def test_render_effect_has_material_like_typed_parameter_api():
@@ -159,3 +160,54 @@ def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
     effect.set_float("intensity", 1.5)
 
     assert raw_ref.resolve().get_float("intensity") == pytest.approx(1.5)
+
+
+def test_default_pipeline_declares_effect_stages_in_topology_order():
+    stack = RenderStack()
+
+    assert [stage.stable_id for stage in stack.effect_stages] == [
+        "after_opaque",
+        "after_sky",
+        "after_transparent",
+        "final",
+    ]
+
+    topology = stack._build_full_topology_probe().topology_sequence
+    assert topology.index(("effect_stage", "final")) < topology.index(
+        ("pass", "_ScreenUI_Camera")
+    )
+
+
+def test_render_stack_rejects_undeclared_stage_but_preserves_orphan_slots():
+    stack = RenderStack()
+    orphan = EffectSlot(stage_id="removed_stage")
+    stack.effect_slots = [orphan]
+
+    assert stack.orphan_effect_slots == (orphan,)
+    with pytest.raises(ValueError, match="does not declare EffectStage"):
+        stack.add_effect_slot("removed_stage")
+    assert stack.effect_slots == [orphan]
+
+
+def test_render_stack_canonicalizes_declared_stage_aliases():
+    class RenamedStagePipeline(RenderPipeline):
+        name = "Renamed Stage"
+
+        def define_topology(self, graph):
+            graph.create_texture("color", camera_target=True)
+            with graph.add_pass("Opaque") as render_pass:
+                render_pass.write_color("color")
+                render_pass.draw_renderers()
+            graph.effects("final", aliases=("old_final",))
+            graph.set_output("color")
+
+    stack = RenderStack()
+    stack._pipeline = RenamedStagePipeline()
+    slot = EffectSlot(stage_id="old_final")
+    stack.effect_slots = [slot]
+
+    stack._canonicalize_effect_stage_aliases()
+
+    assert slot.stage_id == "final"
+    assert stack.get_effect_stage_slots("old_final") == (slot,)
+    assert stack.orphan_effect_slots == ()

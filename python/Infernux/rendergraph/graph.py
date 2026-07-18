@@ -528,8 +528,11 @@ class RenderGraph:
         # Topology auto-recording
         self._topology: List[Tuple[str, str]] = []
         self._injection_points_list: List = []  # List[InjectionPoint]
+        self._effect_stages_list: List = []  # List[EffectStage]
         # Optional callback invoked at each injection_point() (set by RenderStack)
         self._injection_callback = None
+        # Optional callback invoked at each pipeline-declared EffectStage.
+        self._effect_stage_callback = None
 
     @property
     def name(self) -> str:
@@ -559,13 +562,18 @@ class RenderGraph:
 
     @property
     def topology_sequence(self) -> List[Tuple[str, str]]:
-        """Auto-recorded topology: ``[("pass", name), ("ip", display), ...]``."""
+        """Auto-recorded topology using stable IDs for user effect stages."""
         return list(self._topology)
 
     @property
     def injection_points(self) -> list:
         """All injection points declared via ``injection_point()``."""
         return list(self._injection_points_list)
+
+    @property
+    def effect_stages(self) -> list:
+        """Pipeline-declared user attachment stages in topology order."""
+        return list(self._effect_stages_list)
 
     # ---- Resource creation ----
 
@@ -687,6 +695,10 @@ class RenderGraph:
         """Check if an injection point with *name* has been declared."""
         return any(ip.name == name for ip in self._injection_points_list)
 
+    def has_effect_stage(self, stable_id: str) -> bool:
+        """Return whether a stage or one of its migration aliases is declared."""
+        return any(stage.accepts_id(stable_id) for stage in self._effect_stages_list)
+
     # ---- Injection points ----
 
     def injection_point(
@@ -717,6 +729,62 @@ class RenderGraph:
 
         if self._injection_callback is not None:
             self._injection_callback(name)
+
+    # ---- Pipeline-declared user EffectStages ----
+
+    def effect_stage(
+        self,
+        stable_id: str,
+        *,
+        scope="composite",
+        display_name: str = "",
+        inputs=None,
+        outputs=None,
+        capabilities=None,
+        aliases=(),
+    ):
+        """Declare one stable user-facing RenderEffect attachment stage.
+
+        The stage is topology, not scene data. A RenderStack may bind ordered
+        slots to this declaration but cannot invent additional stages.
+        """
+        from Infernux.renderstack.effect_stage import (
+            EffectResourceContract,
+            EffectStage,
+        )
+
+        stage = EffectStage(
+            stable_id=stable_id,
+            scope=scope,
+            display_name=display_name,
+            contract=EffectResourceContract(
+                inputs=frozenset(inputs or ()),
+                outputs=frozenset(outputs or ()),
+                capabilities=frozenset(capabilities or ()),
+            ),
+            aliases=tuple(aliases),
+        )
+        claimed_ids = {
+            value
+            for existing in self._effect_stages_list
+            for value in (existing.stable_id, *existing.aliases)
+        }
+        stage_ids = {stage.stable_id, *stage.aliases}
+        conflict = sorted(claimed_ids.intersection(stage_ids))
+        if conflict:
+            raise ValueError(
+                f"EffectStage IDs must be unique in graph '{self._name}': {conflict}"
+            )
+
+        self._effect_stages_list.append(stage)
+        self._topology.append(("effect_stage", stage.stable_id))
+        if self._effect_stage_callback is not None:
+            self._effect_stage_callback(stage)
+        return stage
+
+    def effects(self, stable_id: str, **kwargs):
+        """Pipeline-author shorthand for :meth:`effect_stage`."""
+        return self.effect_stage(stable_id, **kwargs)
 
     # ---- Convenience: ScreenUI + post-process section ----
 
@@ -841,7 +909,7 @@ class RenderGraph:
     # ---- Validation & finalization ----
 
     def validate_no_ip_before_first_pass(self) -> None:
-        """Raise ``ValueError`` if an injection point precedes the first pass.
+        """Reject user extension points that precede the first render pass.
 
         The new API forbids IPs before the very first pass (use
         ``after_opaque`` etc. instead).
@@ -849,11 +917,10 @@ class RenderGraph:
         for kind, _label in self._topology:
             if kind == "pass":
                 return  # first entry is a pass — OK
-            if kind == "ip":
+            if kind in {"ip", "effect_stage"}:
                 raise ValueError(
-                    f"Graph '{self._name}': injection point declared before "
-                    "the first pass. The new API does not allow IPs before "
-                    "the first pass."
+                    f"Graph '{self._name}': {kind} declared before the first "
+                    "pass. This user extension point requires an upstream result."
                 )
 
     def _validate_graph(self) -> None:

@@ -6,7 +6,8 @@ RenderPipelineAsset acts as a factory for pipeline instances.
 
 RenderStack integration:
     Subclasses implement ``define_topology(graph)`` to declare passes
-    and injection points inline on the ``RenderGraph``.  The system
+    and stable EffectStages inline on the ``RenderGraph``. Legacy injection
+    points remain available during migration. The system
     auto-records the topology sequence. ScreenUI/post-process section is
     inserted explicitly by calling ``graph.screen_ui_section()``.
 
@@ -90,8 +91,9 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
 
     RenderStack integration:
         Subclasses implement ``define_topology(graph)`` to declare passes
-        and injection points inline.  The ``RenderGraph`` auto-records
-        the topology sequence.
+        and ``graph.effects(stable_id, ...)`` attachment stages inline. The
+        ``RenderGraph`` auto-records the topology sequence; scene RenderStacks
+        may only bind effects to those declarations.
     """
 
     # Display name for Editor UI and discovery. Subclasses should override.
@@ -200,7 +202,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         Subclass implementation should:
         1. Create textures via ``graph.create_texture(...)``
         2. Add passes via ``graph.add_pass(...)``
-        3. Declare injection points via ``graph.injection_point(...)``
+        3. Declare user stages via ``graph.effects(...)``
         4. Call ``graph.set_output(...)``
 
         **Rules**:

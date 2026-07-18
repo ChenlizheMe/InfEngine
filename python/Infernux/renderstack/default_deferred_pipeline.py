@@ -158,6 +158,14 @@ class DefaultDeferredPipeline(RenderPipeline):
             )
 
         graph.injection_point("after_gbuffer", resources=GBUFFER_RESOURCES)
+        graph.effects(
+            "after_gbuffer",
+            scope="stage",
+            display_name="After GBuffer",
+            inputs=GBUFFER_RESOURCES,
+            outputs=GBUFFER_RESOURCES,
+            capabilities={"fullscreen", "multiple_render_targets"},
+        )
 
         # ---- Pass 2: Deferred lighting (fullscreen) ----
         with graph.add_pass("DeferredLightingPass") as p:
@@ -176,14 +184,47 @@ class DefaultDeferredPipeline(RenderPipeline):
             p.fullscreen_quad(DEFERRED_LIGHTING_SHADER)
 
         graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_opaque",
+            scope="stage",
+            display_name="After Opaque Lighting",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
         # ---- Pass 3: Skybox ----
         add_skybox_pass(graph)
         graph.injection_point("after_sky", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_sky",
+            scope="composite",
+            display_name="After Sky",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
         # ---- Pass 4: Transparent objects (forward rendering) ----
         add_transparent_pass(graph)
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_transparent",
+            scope="composite",
+            display_name="After Transparent",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
+
+        graph.effects(
+            "final",
+            scope="composite",
+            display_name="Final Post Processing",
+            inputs={"color"},
+            outputs={"color"},
+            capabilities={"fullscreen", "hdr_to_display"},
+        )
 
         # ---- Post-process + ScreenUI injection points ----
         add_standard_post_process_section(graph, enable_screen_ui=self.enable_screen_ui)

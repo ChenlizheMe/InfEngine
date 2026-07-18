@@ -99,7 +99,7 @@ class RenderPipeline:
 
         1. Create textures via ``graph.create_texture(...)``
         2. Add passes via ``graph.add_pass(...)``
-        3. Declare injection points via ``graph.injection_point(...)``
+        3. Declare stable stages via ``graph.effects(...)``
         4. Call ``graph.set_output(...)``
 
         Args:

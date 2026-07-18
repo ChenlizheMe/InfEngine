@@ -122,14 +122,47 @@ class DefaultForwardPipeline(RenderPipeline):
         # Pass 1: Opaque objects (front-to-back for early-z)
         add_forward_opaque_pass(graph)
         graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_opaque",
+            scope="stage",
+            display_name="After Opaque",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
         # Pass 2: Skybox (renders after opaque, depth-tested)
         add_skybox_pass(graph)
         graph.injection_point("after_sky", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_sky",
+            scope="composite",
+            display_name="After Sky",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
 
         # Pass 3: Transparent objects (back-to-front for blending)
         add_transparent_pass(graph)
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
+        graph.effects(
+            "after_transparent",
+            scope="composite",
+            display_name="After Transparent",
+            inputs=SCENE_RESOURCES,
+            outputs={"color"},
+            capabilities={"fullscreen"},
+        )
+
+        graph.effects(
+            "final",
+            scope="composite",
+            display_name="Final Post Processing",
+            inputs={"color"},
+            outputs={"color"},
+            capabilities={"fullscreen", "hdr_to_display"},
+        )
 
         # Post-process + ScreenUI injection points
         add_standard_post_process_section(graph, enable_screen_ui=self.enable_screen_ui)

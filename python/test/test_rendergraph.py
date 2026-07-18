@@ -13,6 +13,7 @@ from Infernux.lib import (
     MaterialPassType, PixelFormat, SampleCount,
 )
 from Infernux.rendergraph.graph import BufferHandle, RenderGraph, Format, TextureHandle
+from Infernux.renderstack.effect_stage import EffectScope
 
 
 # ── Helpers ──
@@ -484,6 +485,54 @@ class TestInjectionPointCallback:
         ip_names = [ip.name for ip in graph.injection_points]
         assert ip_names.count("before_post_process") == 1
         assert ip_names.count("after_post_process") == 1
+
+
+class TestEffectStageDeclaration:
+    def test_effect_stage_records_stable_identity_and_contract(self):
+        graph = _make_graph()
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            render_pass.draw_renderers()
+
+        fired = []
+        graph._effect_stage_callback = fired.append
+        stage = graph.effects(
+            "final",
+            scope="composite",
+            display_name="Final Post Processing",
+            inputs={"color"},
+            outputs={"color"},
+            capabilities={"fullscreen"},
+            aliases=("post_process",),
+        )
+
+        assert stage.scope is EffectScope.COMPOSITE
+        assert stage.contract.inputs == frozenset({"color"})
+        assert graph.effect_stages == [stage]
+        assert graph.has_effect_stage("final")
+        assert graph.has_effect_stage("post_process")
+        assert ("effect_stage", "final") in graph.topology_sequence
+        assert fired == [stage]
+
+    def test_effect_stage_rejects_duplicate_ids_and_aliases(self):
+        graph = _make_graph()
+        graph.effects("final", aliases=("post_process",))
+
+        with pytest.raises(ValueError, match="must be unique"):
+            graph.effects("post_process")
+        with pytest.raises(ValueError, match="must be unique"):
+            graph.effects("other", aliases=("final",))
+
+    def test_effect_stage_before_first_pass_is_rejected(self):
+        graph = _make_graph()
+        graph.effects("final")
+        with graph.add_pass("Opaque") as render_pass:
+            render_pass.write_color("color")
+            render_pass.draw_renderers()
+        graph.set_output("color")
+
+        with pytest.raises(ValueError, match="requires an upstream result"):
+            graph.build()
 
 
 # ══════════════════════════════════════════════════════════════════════
