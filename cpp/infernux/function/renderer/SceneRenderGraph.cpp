@@ -1373,9 +1373,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         written = builder.TransferWrite(destinationHandle);
                         builder.SetSideEffect(passDesc.sideEffect);
                         return [sourceHandle, written, copyBytes](vk::RenderContext &ctx) {
-                            VkBufferCopy region{0, 0, copyBytes};
-                            vkCmdCopyBuffer(ctx.GetCommandBuffer(), ctx.GetBuffer(sourceHandle), ctx.GetBuffer(written),
-                                            1, &region);
+                            ctx.GetTransferCommandEncoder().CopyBuffer(ctx.GetBufferHandle(sourceHandle),
+                                                                       ctx.GetBufferHandle(written), {0, 0, copyBytes});
                         };
                     });
                     publishResourceVersion(written);
@@ -1392,21 +1391,17 @@ void SceneRenderGraph::BuildRenderGraph()
                     const VkExtent3D destinationExtent = textureExtent(command->destinationResource);
                     const VkExtent3D copyExtent{std::min(sourceExtent.width, destinationExtent.width),
                                                 std::min(sourceExtent.height, destinationExtent.height), 1};
-                    const VkImageAspectFlags aspect =
-                        sourceDesc->isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+                    const rhi::TextureAspect aspect =
+                        sourceDesc->isDepth ? rhi::TextureAspect::Depth : rhi::TextureAspect::Color;
                     vk::ResourceHandle written;
                     m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
                         builder.TransferRead(sourceHandle);
                         written = builder.TransferWrite(destinationHandle);
                         builder.SetSideEffect(passDesc.sideEffect);
                         return [sourceHandle, written, copyExtent, aspect](vk::RenderContext &ctx) {
-                            VkImageCopy region{};
-                            region.srcSubresource = {aspect, 0, 0, 1};
-                            region.dstSubresource = {aspect, 0, 0, 1};
-                            region.extent = copyExtent;
-                            vkCmdCopyImage(ctx.GetCommandBuffer(), ctx.GetImage(sourceHandle),
-                                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ctx.GetImage(written),
-                                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                            ctx.GetTransferCommandEncoder().CopyTexture(
+                                ctx.GetTextureHandle(sourceHandle), ctx.GetTextureHandle(written),
+                                {aspect, 0, 0, 0, 0, copyExtent.width, copyExtent.height, copyExtent.depth});
                         };
                     });
                     publishResourceVersion(written);

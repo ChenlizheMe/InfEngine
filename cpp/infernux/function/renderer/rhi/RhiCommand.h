@@ -125,7 +125,73 @@ class ComputeCommandEncoder
     const DispatchTable *m_dispatch = nullptr;
 };
 
+enum class TextureAspect : uint8_t
+{
+    Color,
+    Depth,
+    Stencil,
+    DepthStencil,
+};
+
+struct BufferCopyRegion
+{
+    uint64_t sourceOffset = 0;
+    uint64_t destinationOffset = 0;
+    uint64_t byteSize = 0;
+};
+
+struct TextureCopyRegion
+{
+    TextureAspect aspect = TextureAspect::Color;
+    uint32_t sourceMip = 0;
+    uint32_t sourceLayer = 0;
+    uint32_t destinationMip = 0;
+    uint32_t destinationLayer = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+};
+
+class TransferCommandEncoder
+{
+  public:
+    struct DispatchTable
+    {
+        void (*copyBuffer)(void *, BufferHandle, BufferHandle, const BufferCopyRegion &) = nullptr;
+        void (*copyTexture)(void *, TextureHandle, TextureHandle, const TextureCopyRegion &) = nullptr;
+    };
+
+    constexpr TransferCommandEncoder() noexcept = default;
+    constexpr TransferCommandEncoder(void *context, const DispatchTable *dispatch) noexcept
+        : m_context(context), m_dispatch(dispatch)
+    {
+    }
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept
+    {
+        return m_context != nullptr && m_dispatch != nullptr;
+    }
+
+    void CopyBuffer(BufferHandle source, BufferHandle destination, const BufferCopyRegion &region) const
+    {
+        if (IsValid() && m_dispatch->copyBuffer && source.IsValid() && destination.IsValid() && region.byteSize > 0)
+            m_dispatch->copyBuffer(m_context, source, destination, region);
+    }
+
+    void CopyTexture(TextureHandle source, TextureHandle destination, const TextureCopyRegion &region) const
+    {
+        if (IsValid() && m_dispatch->copyTexture && source.IsValid() && destination.IsValid() && region.width > 0 &&
+            region.height > 0 && region.depth > 0)
+            m_dispatch->copyTexture(m_context, source, destination, region);
+    }
+
+  private:
+    void *m_context = nullptr;
+    const DispatchTable *m_dispatch = nullptr;
+};
+
 static_assert(sizeof(GraphicsCommandEncoder) == sizeof(void *) * 2);
 static_assert(sizeof(ComputeCommandEncoder) == sizeof(void *) * 2);
+static_assert(sizeof(TransferCommandEncoder) == sizeof(void *) * 2);
 
 } // namespace infernux::rhi

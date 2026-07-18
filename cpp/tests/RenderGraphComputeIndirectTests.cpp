@@ -135,11 +135,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     ResourceHandle indirectArguments;
     ResourceHandle discardedRewrite;
+    ResourceHandle copiedIndirectArguments;
     ResourceHandle colorTarget;
     resources.graph.AddComputePass("BuildIndirectArguments", [&](PassBuilder &builder) {
         indirectArguments =
             builder.CreateBuffer("IndirectArguments", sizeof(VkDrawIndirectCommand),
-                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         indirectArguments = builder.WriteStorageBuffer(indirectArguments);
         return [&](RenderContext &context) {
             auto &encoder = context.GetComputeCommandEncoder();
@@ -154,8 +156,21 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return [](RenderContext &) {};
     });
 
+    resources.graph.AddTransferPass("CopyIndirectArguments", [&](PassBuilder &builder) {
+        builder.TransferRead(indirectArguments);
+        copiedIndirectArguments =
+            builder.CreateBuffer("CopiedIndirectArguments", sizeof(VkDrawIndirectCommand),
+                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+        copiedIndirectArguments = builder.TransferWrite(copiedIndirectArguments);
+        return [&](RenderContext &context) {
+            context.GetTransferCommandEncoder().CopyBuffer(context.GetBufferHandle(indirectArguments),
+                                                           context.GetBufferHandle(copiedIndirectArguments),
+                                                           {0, 0, sizeof(VkDrawIndirectCommand)});
+        };
+    });
+
     resources.graph.AddPass("IndirectDraw", [&](PassBuilder &builder) {
-        builder.ReadIndirectBuffer(indirectArguments);
+        builder.ReadIndirectBuffer(copiedIndirectArguments);
         colorTarget = builder.CreateTexture("IndirectColor", 16, 16, VK_FORMAT_R8G8B8A8_UNORM);
         colorTarget = builder.WriteColor(colorTarget);
         builder.SetRenderArea(16, 16);
@@ -164,22 +179,23 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             vkCmdBeginQuery(context.GetCommandBuffer(), resources.queryPool, 0, 0);
             auto &encoder = context.GetGraphicsCommandEncoder();
             encoder.BindPipeline(resources.graphicsHandle);
-            encoder.DrawIndirect(context.GetBufferHandle(indirectArguments), 0, 1, sizeof(VkDrawIndirectCommand));
+            encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments), 0, 1, sizeof(VkDrawIndirectCommand));
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
     });
     resources.graph.SetOutput(colorTarget);
 
-    if (!Require(indirectArguments.version == 1 && discardedRewrite.version == 2,
+    if (!Require(indirectArguments.version == 1 && discardedRewrite.version == 2 &&
+                     copiedIndirectArguments.version == 1,
                  "Buffer writes did not publish monotonic resource versions"))
         return false;
 
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
     const auto executionNames = resources.graph.GetExecutionPassNames();
-    if (!Require(executionNames.size() == 2 && executionNames[0] == "BuildIndirectArguments" &&
-                     executionNames[1] == "IndirectDraw",
-                 "Versioned culling kept an unrelated rewrite or dropped the compute-to-indirect dependency"))
+    if (!Require(executionNames.size() == 3 && executionNames[0] == "BuildIndirectArguments" &&
+                     executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "IndirectDraw",
+                 "Versioned culling broke the compute-to-transfer-to-indirect dependency"))
         return false;
 
     VkDescriptorSetLayoutBinding storageBinding{};

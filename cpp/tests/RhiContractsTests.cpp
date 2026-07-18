@@ -23,6 +23,12 @@ struct RecordedCommands
     uint32_t dispatchX = 0;
     uint32_t dispatchY = 0;
     uint32_t dispatchZ = 0;
+    BufferHandle copySourceBuffer;
+    BufferHandle copyDestinationBuffer;
+    BufferCopyRegion bufferCopy;
+    TextureHandle copySourceTexture;
+    TextureHandle copyDestinationTexture;
+    TextureCopyRegion textureCopy;
 };
 
 void BindPipeline(void *context, GraphicsPipelineHandle pipeline)
@@ -82,6 +88,22 @@ void DispatchComputeIndirect(void *, BufferHandle, uint64_t)
 {
 }
 
+void CopyBuffer(void *context, BufferHandle source, BufferHandle destination, const BufferCopyRegion &region)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.copySourceBuffer = source;
+    recorded.copyDestinationBuffer = destination;
+    recorded.bufferCopy = region;
+}
+
+void CopyTexture(void *context, TextureHandle source, TextureHandle destination, const TextureCopyRegion &region)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.copySourceTexture = source;
+    recorded.copyDestinationTexture = destination;
+    recorded.textureCopy = region;
+}
+
 } // namespace
 
 int main()
@@ -124,6 +146,28 @@ int main()
     assert(recorded.dispatchX == 4);
     assert(recorded.dispatchY == 2);
     assert(recorded.dispatchZ == 1);
+
+    const BufferHandle copySourceBuffer{11, 1};
+    const BufferHandle copyDestinationBuffer{12, 1};
+    const TextureHandle copySourceTexture{13, 1};
+    const TextureHandle copyDestinationTexture{14, 1};
+    const TransferCommandEncoder::DispatchTable transferDispatch{CopyBuffer, CopyTexture};
+    const TransferCommandEncoder transferEncoder(&recorded, &transferDispatch);
+    transferEncoder.CopyBuffer(copySourceBuffer, copyDestinationBuffer, {16, 32, 128});
+    transferEncoder.CopyTexture(copySourceTexture, copyDestinationTexture,
+                                {TextureAspect::Depth, 1, 2, 3, 4, 64, 32, 1});
+    assert(recorded.copySourceBuffer == copySourceBuffer);
+    assert(recorded.copyDestinationBuffer == copyDestinationBuffer);
+    assert(recorded.bufferCopy.sourceOffset == 16);
+    assert(recorded.bufferCopy.destinationOffset == 32);
+    assert(recorded.bufferCopy.byteSize == 128);
+    assert(recorded.copySourceTexture == copySourceTexture);
+    assert(recorded.copyDestinationTexture == copyDestinationTexture);
+    assert(recorded.textureCopy.aspect == TextureAspect::Depth);
+    assert(recorded.textureCopy.sourceMip == 1);
+    assert(recorded.textureCopy.destinationLayer == 4);
+    assert(recorded.textureCopy.width == 64);
+    assert(recorded.textureCopy.height == 32);
 
     GraphicsPipelineDesc desc;
     desc.vertexShader = {1, 1};

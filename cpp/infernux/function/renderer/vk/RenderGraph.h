@@ -271,10 +271,9 @@ class RenderContext
 
     /// @brief Get resolved texture for a resource handle
     [[nodiscard]] VkImageView GetTexture(ResourceHandle handle) const;
-    [[nodiscard]] VkImage GetImage(ResourceHandle handle) const;
-
     /// Backend-neutral texture view used by RHI draw paths.
     [[nodiscard]] rhi::TextureViewHandle GetTextureView(ResourceHandle handle) const;
+    [[nodiscard]] rhi::TextureHandle GetTextureHandle(ResourceHandle handle) const;
 
     [[nodiscard]] rhi::GraphicsCommandEncoder &GetGraphicsCommandEncoder()
     {
@@ -284,6 +283,11 @@ class RenderContext
     [[nodiscard]] rhi::ComputeCommandEncoder &GetComputeCommandEncoder()
     {
         return m_computeEncoder;
+    }
+
+    [[nodiscard]] rhi::TransferCommandEncoder &GetTransferCommandEncoder()
+    {
+        return m_transferEncoder;
     }
 
     /// @brief Get resolved buffer for a resource handle
@@ -297,6 +301,8 @@ class RenderContext
     rhi::GraphicsCommandEncoder m_graphicsEncoder;
     VulkanComputeCommandContext m_computeCommandContext;
     rhi::ComputeCommandEncoder m_computeEncoder;
+    VulkanTransferCommandContext m_transferCommandContext;
+    rhi::TransferCommandEncoder m_transferEncoder;
     VkViewport m_viewport{};
     VkRect2D m_scissor{};
 };
@@ -476,6 +482,7 @@ struct ResourceData
     VkImage externalImage = VK_NULL_HANDLE;
     VkImageView externalView = VK_NULL_HANDLE;
     rhi::TextureViewHandle rhiView;
+    rhi::TextureHandle rhiTexture;
     VkBuffer externalBuffer = VK_NULL_HANDLE;
     rhi::BufferHandle rhiBuffer;
 
@@ -785,8 +792,8 @@ class RenderGraph
     // ========================================================================
 
     [[nodiscard]] VkImageView ResolveTextureView(ResourceHandle handle) const;
-    [[nodiscard]] VkImage ResolveImage(ResourceHandle handle) const;
     [[nodiscard]] rhi::TextureViewHandle ResolveRhiTextureView(ResourceHandle handle) const;
+    [[nodiscard]] rhi::TextureHandle ResolveRhiTexture(ResourceHandle handle) const;
     [[nodiscard]] VkBuffer ResolveBuffer(ResourceHandle handle) const;
     [[nodiscard]] rhi::BufferHandle ResolveRhiBuffer(ResourceHandle handle) const;
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;

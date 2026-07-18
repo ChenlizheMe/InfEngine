@@ -14,10 +14,16 @@ const rhi::ComputeCommandEncoder::DispatchTable VulkanRhiDevice::s_computeDispat
     &VulkanRhiDevice::BindComputePipeline, &VulkanRhiDevice::BindComputeGroup, &VulkanRhiDevice::PushComputeConstants,
     &VulkanRhiDevice::Dispatch, &VulkanRhiDevice::DispatchIndirect};
 
+const rhi::TransferCommandEncoder::DispatchTable VulkanRhiDevice::s_transferDispatch = {
+    &VulkanRhiDevice::CopyBuffer,
+    &VulkanRhiDevice::CopyTexture,
+};
+
 void VulkanRhiDevice::Reset(VkDevice device) noexcept
 {
     m_device = device;
     ResetSlots(m_buffers, m_freeBuffer);
+    ResetSlots(m_textures, m_freeTexture);
     ResetSlots(m_textureViews, m_freeTextureView);
     ResetSlots(m_samplers, m_freeSampler);
     ResetSlots(m_shaderModules, m_freeShaderModule);
@@ -32,6 +38,12 @@ rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer)
 {
     return buffer == VK_NULL_HANDLE ? rhi::BufferHandle{}
                                     : Register<rhi::BufferHandle>(m_buffers, m_freeBuffer, buffer);
+}
+
+rhi::TextureHandle VulkanRhiDevice::RegisterTexture(VkImage image)
+{
+    return image == VK_NULL_HANDLE ? rhi::TextureHandle{}
+                                   : Register<rhi::TextureHandle>(m_textures, m_freeTexture, image);
 }
 
 template <typename HandleType, typename Payload>
@@ -157,6 +169,11 @@ void VulkanRhiDevice::Release(rhi::BufferHandle handle) noexcept
 {
     Release(m_buffers, m_freeBuffer, handle);
 }
+
+void VulkanRhiDevice::Release(rhi::TextureHandle handle) noexcept
+{
+    Release(m_textures, m_freeTexture, handle);
+}
 void VulkanRhiDevice::Release(rhi::SamplerHandle handle) noexcept
 {
     Release(m_samplers, m_freeSampler, handle);
@@ -195,6 +212,12 @@ VkBuffer VulkanRhiDevice::Resolve(rhi::BufferHandle handle) const noexcept
 {
     const auto *payload = Resolve(m_buffers, handle);
     return payload ? *payload : VK_NULL_HANDLE;
+}
+
+VkImage VulkanRhiDevice::Resolve(rhi::TextureHandle handle) const noexcept
+{
+    const auto *image = Resolve(m_textures, handle);
+    return image ? *image : VK_NULL_HANDLE;
 }
 VkSampler VulkanRhiDevice::Resolve(rhi::SamplerHandle handle) const noexcept
 {
@@ -250,6 +273,13 @@ rhi::ComputeCommandEncoder VulkanRhiDevice::MakeComputeCommandEncoder(VulkanComp
     context.commandBuffer = commandBuffer;
     context.boundPipeline = {};
     return {&context, &s_computeDispatch};
+}
+
+rhi::TransferCommandEncoder VulkanRhiDevice::MakeTransferCommandEncoder(VulkanTransferCommandContext &context,
+                                                                        VkCommandBuffer commandBuffer) noexcept
+{
+    context = {this, commandBuffer};
+    return {&context, &s_transferDispatch};
 }
 
 void VulkanRhiDevice::BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline)
@@ -354,6 +384,52 @@ void VulkanRhiDevice::DispatchIndirect(void *context, rhi::BufferHandle argument
     const VkBuffer native = command.device ? command.device->Resolve(arguments) : VK_NULL_HANDLE;
     if (command.commandBuffer != VK_NULL_HANDLE && command.boundPipeline.IsValid() && native != VK_NULL_HANDLE)
         vkCmdDispatchIndirect(command.commandBuffer, native, offset);
+}
+
+void VulkanRhiDevice::CopyBuffer(void *context, rhi::BufferHandle source, rhi::BufferHandle destination,
+                                 const rhi::BufferCopyRegion &region)
+{
+    auto &command = *static_cast<VulkanTransferCommandContext *>(context);
+    const VkBuffer nativeSource = command.device ? command.device->Resolve(source) : VK_NULL_HANDLE;
+    const VkBuffer nativeDestination = command.device ? command.device->Resolve(destination) : VK_NULL_HANDLE;
+    if (command.commandBuffer == VK_NULL_HANDLE || nativeSource == VK_NULL_HANDLE ||
+        nativeDestination == VK_NULL_HANDLE || region.byteSize == 0)
+        return;
+    const VkBufferCopy copy{region.sourceOffset, region.destinationOffset, region.byteSize};
+    vkCmdCopyBuffer(command.commandBuffer, nativeSource, nativeDestination, 1, &copy);
+}
+
+void VulkanRhiDevice::CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
+                                  const rhi::TextureCopyRegion &region)
+{
+    auto &command = *static_cast<VulkanTransferCommandContext *>(context);
+    const VkImage nativeSource = command.device ? command.device->Resolve(source) : VK_NULL_HANDLE;
+    const VkImage nativeDestination = command.device ? command.device->Resolve(destination) : VK_NULL_HANDLE;
+    if (command.commandBuffer == VK_NULL_HANDLE || nativeSource == VK_NULL_HANDLE ||
+        nativeDestination == VK_NULL_HANDLE || region.width == 0 || region.height == 0 || region.depth == 0)
+        return;
+
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    switch (region.aspect) {
+    case rhi::TextureAspect::Color:
+        break;
+    case rhi::TextureAspect::Depth:
+        aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        break;
+    case rhi::TextureAspect::Stencil:
+        aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+        break;
+    case rhi::TextureAspect::DepthStencil:
+        aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        break;
+    }
+
+    VkImageCopy copy{};
+    copy.srcSubresource = {aspect, region.sourceMip, region.sourceLayer, 1};
+    copy.dstSubresource = {aspect, region.destinationMip, region.destinationLayer, 1};
+    copy.extent = {region.width, region.height, region.depth};
+    vkCmdCopyImage(command.commandBuffer, nativeSource, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, nativeDestination,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 }
 
 } // namespace infernux::vk

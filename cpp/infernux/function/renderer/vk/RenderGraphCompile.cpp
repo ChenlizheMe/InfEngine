@@ -735,6 +735,8 @@ bool RenderGraph::AllocateResources()
         }
         resource.rhiView =
             m_rhiDevice ? m_rhiDevice->RegisterTextureView(resource.allocatedView) : rhi::TextureViewHandle{};
+        resource.rhiTexture =
+            m_rhiDevice ? m_rhiDevice->RegisterTexture(resource.allocatedImage) : rhi::TextureHandle{};
     }
 
     // Track aliased memory heaps for cleanup
@@ -1241,6 +1243,8 @@ void RenderGraph::FreeResources()
         for (auto &resource : m_resources) {
             m_rhiDevice->Release(resource.rhiView);
             resource.rhiView = {};
+            m_rhiDevice->Release(resource.rhiTexture);
+            resource.rhiTexture = {};
             m_rhiDevice->Release(resource.rhiBuffer);
             resource.rhiBuffer = {};
         }

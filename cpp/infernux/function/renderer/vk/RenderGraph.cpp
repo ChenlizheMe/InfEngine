@@ -65,6 +65,7 @@ RenderContext::RenderContext(VkCommandBuffer cmdBuffer, RenderGraph *graph) : m_
     if (m_graph && m_graph->m_rhiDevice) {
         m_graphicsEncoder = m_graph->m_rhiDevice->MakeGraphicsCommandEncoder(m_graphicsCommandContext, cmdBuffer);
         m_computeEncoder = m_graph->m_rhiDevice->MakeComputeCommandEncoder(m_computeCommandContext, cmdBuffer);
+        m_transferEncoder = m_graph->m_rhiDevice->MakeTransferCommandEncoder(m_transferCommandContext, cmdBuffer);
     }
 }
 
@@ -106,14 +107,14 @@ VkImageView RenderContext::GetTexture(ResourceHandle handle) const
     return m_graph ? m_graph->ResolveTextureView(handle) : VK_NULL_HANDLE;
 }
 
-VkImage RenderContext::GetImage(ResourceHandle handle) const
-{
-    return m_graph ? m_graph->ResolveImage(handle) : VK_NULL_HANDLE;
-}
-
 rhi::TextureViewHandle RenderContext::GetTextureView(ResourceHandle handle) const
 {
     return m_graph ? m_graph->ResolveRhiTextureView(handle) : rhi::TextureViewHandle{};
+}
+
+rhi::TextureHandle RenderContext::GetTextureHandle(ResourceHandle handle) const
+{
+    return m_graph ? m_graph->ResolveRhiTexture(handle) : rhi::TextureHandle{};
 }
 
 VkBuffer RenderContext::GetBuffer(ResourceHandle handle) const
@@ -207,6 +208,7 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
     resource.externalView = view;
     resource.rhiView =
         m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_graph->m_rhiDevice ? m_graph->m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
 
     return handle;
 }
@@ -778,6 +780,7 @@ ResourceHandle RenderGraph::SetBackbuffer(VkImage image, VkImageView view, VkFor
     resource.externalImage = image;
     resource.externalView = view;
     resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
 
     m_resources.push_back(std::move(resource));
     m_resourceVersions.push_back(0);
@@ -827,6 +830,7 @@ ResourceHandle RenderGraph::ImportResolveTarget(VkImage image, VkImageView view,
     resource.externalImage = image;
     resource.externalView = view;
     resource.rhiView = m_rhiDevice ? m_rhiDevice->RegisterTextureView(view) : rhi::TextureViewHandle{};
+    resource.rhiTexture = m_rhiDevice ? m_rhiDevice->RegisterTexture(image) : rhi::TextureHandle{};
 
     m_resources.push_back(std::move(resource));
     m_resourceVersions.push_back(0);
@@ -1241,20 +1245,19 @@ VkImageView RenderGraph::ResolveTextureView(ResourceHandle handle) const
     return resource.allocatedView;
 }
 
-VkImage RenderGraph::ResolveImage(ResourceHandle handle) const
-{
-    if (!Owns(handle) || handle.id >= m_resources.size())
-        return VK_NULL_HANDLE;
-    const auto &resource = m_resources[handle.id];
-    return resource.isExternal ? resource.externalImage : resource.allocatedImage;
-}
-
 rhi::TextureViewHandle RenderGraph::ResolveRhiTextureView(ResourceHandle handle) const
 {
     if (!Owns(handle) || handle.id >= m_resources.size()) {
         return {};
     }
     return m_resources[handle.id].rhiView;
+}
+
+rhi::TextureHandle RenderGraph::ResolveRhiTexture(ResourceHandle handle) const
+{
+    if (!Owns(handle) || handle.id >= m_resources.size())
+        return {};
+    return m_resources[handle.id].rhiTexture;
 }
 
 VkBuffer RenderGraph::ResolveBuffer(ResourceHandle handle) const

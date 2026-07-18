@@ -25,6 +25,12 @@ struct VulkanComputeCommandContext
     rhi::ComputePipelineHandle boundPipeline;
 };
 
+struct VulkanTransferCommandContext
+{
+    VulkanRhiDevice *device = nullptr;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+};
+
 class VulkanRhiDevice
 {
   public:
@@ -41,6 +47,7 @@ class VulkanRhiDevice
     void Reset(VkDevice device = VK_NULL_HANDLE) noexcept;
 
     [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer);
+    [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
     [[nodiscard]] rhi::TextureViewHandle RegisterTextureView(VkImageView view);
     [[nodiscard]] rhi::SamplerHandle RegisterSampler(VkSampler sampler);
     [[nodiscard]] rhi::ShaderModuleHandle RegisterShaderModule(VkShaderModule module);
@@ -51,6 +58,7 @@ class VulkanRhiDevice
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
     void Release(rhi::BufferHandle handle) noexcept;
+    void Release(rhi::TextureHandle handle) noexcept;
     void Release(rhi::TextureViewHandle handle) noexcept;
     void Release(rhi::SamplerHandle handle) noexcept;
     void Release(rhi::ShaderModuleHandle handle) noexcept;
@@ -61,6 +69,7 @@ class VulkanRhiDevice
     void Release(rhi::RenderTargetLayoutHandle handle) noexcept;
 
     [[nodiscard]] VkBuffer Resolve(rhi::BufferHandle handle) const noexcept;
+    [[nodiscard]] VkImage Resolve(rhi::TextureHandle handle) const noexcept;
     [[nodiscard]] VkImageView Resolve(rhi::TextureViewHandle handle) const noexcept;
     [[nodiscard]] VkSampler Resolve(rhi::SamplerHandle handle) const noexcept;
     [[nodiscard]] VkShaderModule Resolve(rhi::ShaderModuleHandle handle) const noexcept;
@@ -72,6 +81,8 @@ class VulkanRhiDevice
                                                                          VkCommandBuffer commandBuffer) noexcept;
     [[nodiscard]] rhi::ComputeCommandEncoder MakeComputeCommandEncoder(VulkanComputeCommandContext &context,
                                                                        VkCommandBuffer commandBuffer) noexcept;
+    [[nodiscard]] rhi::TransferCommandEncoder MakeTransferCommandEncoder(VulkanTransferCommandContext &context,
+                                                                         VkCommandBuffer commandBuffer) noexcept;
 
   private:
     struct GraphicsPipelinePayload
@@ -118,11 +129,18 @@ class VulkanRhiDevice
     static void Dispatch(void *context, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ);
     static void DispatchIndirect(void *context, rhi::BufferHandle arguments, uint64_t offset);
 
+    static void CopyBuffer(void *context, rhi::BufferHandle source, rhi::BufferHandle destination,
+                           const rhi::BufferCopyRegion &region);
+    static void CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
+                            const rhi::TextureCopyRegion &region);
+
     static const rhi::GraphicsCommandEncoder::Dispatch s_graphicsDispatch;
     static const rhi::ComputeCommandEncoder::DispatchTable s_computeDispatch;
+    static const rhi::TransferCommandEncoder::DispatchTable s_transferDispatch;
 
     VkDevice m_device = VK_NULL_HANDLE;
     std::vector<Slot<VkBuffer>> m_buffers;
+    std::vector<Slot<VkImage>> m_textures;
     std::vector<Slot<VkImageView>> m_textureViews;
     std::vector<Slot<VkSampler>> m_samplers;
     std::vector<Slot<VkShaderModule>> m_shaderModules;
@@ -133,6 +151,7 @@ class VulkanRhiDevice
     std::vector<Slot<VkRenderPass>> m_renderTargetLayouts;
 
     uint32_t m_freeBuffer = UINT32_MAX;
+    uint32_t m_freeTexture = UINT32_MAX;
     uint32_t m_freeTextureView = UINT32_MAX;
     uint32_t m_freeSampler = UINT32_MAX;
     uint32_t m_freeShaderModule = UINT32_MAX;
