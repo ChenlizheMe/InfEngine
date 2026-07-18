@@ -857,6 +857,19 @@ void VkDeviceContext::BuildCapabilities()
     }
 }
 
+rhi::SampleCountMask VkDeviceContext::GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept
+{
+    if (m_physicalDevice == VK_NULL_HANDLE || format == VK_FORMAT_UNDEFINED || usage == 0)
+        return 0;
+
+    VkImageFormatProperties properties{};
+    if (vkGetPhysicalDeviceImageFormatProperties(m_physicalDevice, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                 usage, 0, &properties) != VK_SUCCESS) {
+        return 0;
+    }
+    return ToRhiSampleCountMask(properties.sampleCounts);
+}
+
 QueueFamilyIndices VkDeviceContext::FindQueueFamilies(VkPhysicalDevice device) const
 {
     QueueFamilyIndices indices;

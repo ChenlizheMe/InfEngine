@@ -982,6 +982,7 @@ def _observe_player(
         "objects": objects,
         "renderer_frame": frame,
         "gpu_residency": dict(getattr(native, "gpu_residency_snapshot", {}) or {}),
+        "msaa": dict(getattr(native, "msaa_state", {}) or {}),
         "submission_ready": bool(
             frame.get("game_camera_available")
             and frame.get("game_target_ready")

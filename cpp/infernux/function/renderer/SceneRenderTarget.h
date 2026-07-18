@@ -140,6 +140,7 @@ class SceneRenderTarget
     VkFormat GetDepthFormat() const;
 
     [[nodiscard]] uint64_t GetResidentBytes() const;
+    [[nodiscard]] uint64_t GetMsaaColorResidentBytes() const;
 
     // ========================================================================
     // Outline Mask Render Target (for post-process selection outline)
@@ -186,12 +187,12 @@ class SceneRenderTarget
     VmaAllocation m_colorAllocation = VK_NULL_HANDLE;
     VkImageView m_colorImageView = VK_NULL_HANDLE;
 
-    // MSAA color attachment (4x, transient render target)
+    // MSAA color attachment (2x/4x/8x; absent at 1x)
     VkImage m_msaaColorImage = VK_NULL_HANDLE;
     VmaAllocation m_msaaColorAllocation = VK_NULL_HANDLE;
     VkImageView m_msaaColorImageView = VK_NULL_HANDLE;
 
-    // Depth attachment (4x to match MSAA color)
+    // Depth attachment (sample count matches the active color target)
     VkImage m_depthImage = VK_NULL_HANDLE;
     VmaAllocation m_depthAllocation = VK_NULL_HANDLE;
     VkImageView m_depthImageView = VK_NULL_HANDLE;

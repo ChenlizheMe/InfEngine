@@ -711,6 +711,7 @@ def _renderer_state() -> dict[str, Any]:
         raise RuntimeError("Renderer telemetry requires a running graphical Editor session.")
     frame = dict(native.renderer_frame_snapshot)
     residency = dict(native.gpu_residency_snapshot)
+    msaa = dict(getattr(native, "msaa_state", {}) or {})
     try:
         preview_tasks = [dict(item) for item in native.preview_task_snapshots]
     except (AttributeError, RuntimeError):
@@ -722,6 +723,7 @@ def _renderer_state() -> dict[str, Any]:
     return {
         "frame": frame,
         "gpu_residency": residency,
+        "msaa": msaa,
         "preview_tasks": preview_tasks,
         "asset_runtime_record_count": asset_runtime_record_count,
         "submission_ready": bool(

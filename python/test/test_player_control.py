@@ -517,6 +517,13 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
             "material_descriptor_set_count": 3,
             "retired_material_descriptor_set_count": 0,
         },
+        "msaa_state": {
+            "active_samples": 4,
+            "supported_samples": [1, 2, 4, 8],
+            "scene_target_aligned": True,
+            "game_target_aligned": True,
+            "material_pipelines_aligned": True,
+        },
         "last_processed_synthetic_input_sequence": 0,
         "pending_synthetic_input_count": 0,
     })()
@@ -563,6 +570,13 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     assert data["gpu_residency"] == {
         "material_descriptor_set_count": 3,
         "retired_material_descriptor_set_count": 0,
+    }
+    assert data["msaa"] == {
+        "active_samples": 4,
+        "supported_samples": [1, 2, 4, 8],
+        "scene_target_aligned": True,
+        "game_target_aligned": True,
+        "material_pipelines_aligned": True,
     }
 
     scene_manager.is_paused = lambda: True

@@ -409,6 +409,17 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.rhi_capabilities COMMAND infernux_rhi_capabilities_tests)
 
+    add_executable(infernux_msaa_policy_tests
+        cpp/tests/MsaaPolicyTests.cpp
+    )
+    target_include_directories(infernux_msaa_policy_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_msaa_policy_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.msaa_policy COMMAND infernux_msaa_policy_tests)
+
     add_executable(infernux_rhi_contracts_tests
         cpp/tests/RhiContractsTests.cpp
     )

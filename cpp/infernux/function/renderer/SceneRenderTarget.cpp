@@ -98,6 +98,15 @@ uint64_t SceneRenderTarget::GetResidentBytes() const
     return bytes;
 }
 
+uint64_t SceneRenderTarget::GetMsaaColorResidentBytes() const
+{
+    if (m_msaaColorAllocation == VK_NULL_HANDLE)
+        return 0;
+    VmaAllocationInfo info{};
+    vmaGetAllocationInfo(m_vkCore->GetDeviceContext().GetVmaAllocator(), m_msaaColorAllocation, &info);
+    return info.size;
+}
+
 void SceneRenderTarget::CreateColorAttachment()
 {
     auto imageInfo =

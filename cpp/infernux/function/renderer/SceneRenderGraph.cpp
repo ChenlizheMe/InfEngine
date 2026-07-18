@@ -250,6 +250,22 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     return true;
 }
 
+void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
+{
+    if (!sceneTarget)
+        return;
+
+    m_sceneTarget = sceneTarget;
+    m_width = sceneTarget->GetWidth();
+    m_height = sceneTarget->GetHeight();
+    m_graphBuilt = false;
+    m_needsRebuild = true;
+    m_needsCompile = true;
+    m_importedColorTarget = {};
+    m_importedResolveTarget = {};
+    m_importedDepthTarget = {};
+}
+
 void SceneRenderGraph::Destroy()
 {
     m_fullscreenRenderer.Destroy();
@@ -347,11 +363,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         // (e.g. reading shadow map as a sampled texture).
         const auto inputBindings = passDesc.inputBindings;
 
-        // Capture screen UI renderer pointer for DrawScreenUI passes
-        InxScreenUIRenderer *screenUIRenderer = m_screenUIRenderer;
-
-        m_pythonCallbacks[passDesc.name] = [vkCore, graphPassAction, queueMin, queueMax, screenUIRenderer,
-                                            screenUIListIndex, inputBindings, lightIndex, sortMode, overrideMaterial,
+        m_pythonCallbacks[passDesc.name] = [this, vkCore, graphPassAction, queueMin, queueMax, screenUIListIndex,
+                                            inputBindings, lightIndex, sortMode, overrideMaterial,
                                             passTag](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
             switch (graphPassAction) {
             case GraphPassActionType::DrawRenderers:
@@ -370,9 +383,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, lightIndex);
                 break;
             case GraphPassActionType::DrawScreenUI:
-                if (screenUIRenderer) {
+                if (m_screenUIRenderer) {
                     auto list = (screenUIListIndex == 0) ? ScreenUIList::Camera : ScreenUIList::Overlay;
-                    screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h);
+                    m_screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h);
                 }
                 break;
             case GraphPassActionType::FullscreenQuad:
@@ -454,8 +467,9 @@ void SceneRenderGraph::EnsureGraphBuilt()
     // (via GetRequestedMsaaSamples()) and call SetMsaaSamples() to recreate
     if (m_hasPythonGraph && m_pythonGraphDesc.msaaSamples > 0) {
         auto currentMsaa = static_cast<int>(m_sceneTarget->GetMsaaSampleCount());
-        if (m_pythonGraphDesc.msaaSamples != currentMsaa) {
-            INXLOG_DEBUG("SceneRenderGraph: MSAA mismatch (pipeline wants ", m_pythonGraphDesc.msaaSamples,
+        const int effectiveMsaa = m_effectiveMsaaSamples > 0 ? m_effectiveMsaaSamples : m_pythonGraphDesc.msaaSamples;
+        if (effectiveMsaa != currentMsaa) {
+            INXLOG_DEBUG("SceneRenderGraph: MSAA mismatch (validated request is ", effectiveMsaa,
                          "x, scene target has ", currentMsaa, "x) — skipping frame, waiting for resize");
             m_needsRebuild = true;
             // Prevent Execute() from running the stale compiled graph

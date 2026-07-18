@@ -85,6 +85,22 @@ struct RendererFrameTelemetrySnapshot
     std::unordered_map<std::string, std::unordered_map<std::string, double>> guiPanelSubTimesMs;
 };
 
+struct MsaaStateSnapshot
+{
+    int activeSamples = 1;
+    int sceneRequestedSamples = 0;
+    int gameRequestedSamples = 0;
+    uint32_t supportedSampleMask = 0;
+    bool requestConflict = false;
+    bool sceneTargetAligned = true;
+    bool gameTargetAligned = true;
+    bool materialPipelinesAligned = true;
+    uint64_t sceneMsaaColorBytes = 0;
+    uint64_t gameMsaaColorBytes = 0;
+    uint64_t reconfigurationCount = 0;
+    uint64_t rejectedRequestCount = 0;
+};
+
 struct UIPerformanceMetricStats
 {
     size_t sampleCount = 0;
@@ -399,6 +415,9 @@ class InxRenderer
     /// @brief Get current MSAA sample count (1 = off).
     int GetMsaaSamples() const;
 
+    /// @brief Read validated requests, device support and resource alignment.
+    [[nodiscard]] MsaaStateSnapshot GetMsaaStateSnapshot() const;
+
     // ========================================================================
     // Present Mode
     // ========================================================================
@@ -615,6 +634,17 @@ class InxRenderer
     /// @brief Check scene & game render graph MSAA requests; apply if changed.
     /// @return true if MSAA change was triggered and DrawFrame should return early.
     bool CheckAndApplyMsaaRequest();
+
+    [[nodiscard]] uint32_t GetSupportedMsaaSampleMask() const;
+    [[nodiscard]] bool ApplyMsaaSamples(int samples, const char *source);
+    void SetEffectiveGraphMsaaSamples(int samples);
+
+    int m_sceneRequestedMsaaSamples = 0;
+    int m_gameRequestedMsaaSamples = 0;
+    bool m_msaaRequestConflict = false;
+    uint64_t m_msaaReconfigurationCount = 0;
+    uint64_t m_msaaRejectedRequestCount = 0;
+    uint64_t m_lastMsaaRejectionSignature = 0;
 
     /// @brief Build EngineGlobalsUBO and stage it for the current frame.
     void StageEngineGlobalsUBO();

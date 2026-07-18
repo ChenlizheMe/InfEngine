@@ -11,9 +11,11 @@
 
 #include "InxError.h"
 #include "InxVkCoreModular.h"
+#include "MsaaPolicy.h"
 #include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
+#include "vk/RhiVulkanTypes.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 
@@ -431,6 +433,26 @@ void InxVkCoreModular::InitializeMaterialSystem()
         // Use SceneRenderTarget-compatible formats: HDR R16G16B16A16_SFLOAT color + device depth format
         VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
         VkFormat depthFormat = m_deviceContext.FindDepthFormat();
+        const auto colorSamples = m_deviceContext.GetImageSampleCountMask(
+            colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        const auto resolveSamples = m_deviceContext.GetImageSampleCountMask(
+            colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        const auto depthSamples =
+            m_deviceContext.GetImageSampleCountMask(depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+        const auto supportedSamples = GetSceneTargetSampleCountMask(colorSamples, resolveSamples, depthSamples);
+        const int requestedSamples = static_cast<int>(m_msaaSampleCount);
+        if (!SupportsMsaaSampleCount(supportedSamples, requestedSamples)) {
+            const int fallbackSamples = SelectSupportedMsaaAtOrBelow(supportedSamples, requestedSamples);
+            if (fallbackSamples == 0) {
+                throw std::runtime_error(
+                    "No common MSAA sample count is supported by the scene color and depth formats");
+            }
+            INXLOG_WARN("Default ", requestedSamples,
+                        "x MSAA is unsupported for the HDR color/depth target pair; using ", fallbackSamples,
+                        "x. Runtime requests remain strict and will not silently downgrade.");
+            m_msaaSampleCount = rhi::ToVkSampleCount(ToRhiSampleCount(fallbackSamples));
+        }
         m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
                                              colorFormat, depthFormat, m_msaaSampleCount,
                                              m_shaderCache.GetProgramCache(), &m_deletionQueue,
@@ -508,6 +530,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
 
 void InxVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSampleCount)
 {
+    m_msaaSampleCount = newSampleCount;
     if (!m_materialPipelineManagerInitialized) {
         return;
     }

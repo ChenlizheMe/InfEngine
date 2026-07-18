@@ -173,6 +173,18 @@ class SceneRenderGraph
         return m_hasPythonGraph ? m_pythonGraphDesc.msaaSamples : 0;
     }
 
+    /// Set the globally validated sample count used by this view. Scene and
+    /// game graphs currently share material pipelines and therefore must use
+    /// one compatible sample count.
+    void SetEffectiveMsaaSamples(int samples)
+    {
+        m_effectiveMsaaSamples = samples;
+    }
+
+    /// Replace the external target without reinitializing graph-owned pools.
+    /// The next EnsureGraphBuilt call imports the replacement resources.
+    void ReplaceSceneTarget(SceneRenderTarget *sceneTarget);
+
     // ========================================================================
     // Resource management
     // ========================================================================
@@ -479,6 +491,7 @@ class SceneRenderGraph
     bool m_needsRebuild = true;
     bool m_needsCompile = true;
     bool m_graphBuilt = false;
+    int m_effectiveMsaaSamples = 0;
     bool m_hasPythonGraph = false;
     uint64_t m_graphBuildRevision = 0;
     uint64_t m_lastExecutedBuildRevision = 0;

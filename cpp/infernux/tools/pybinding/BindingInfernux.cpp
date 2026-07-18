@@ -1331,6 +1331,32 @@ PYBIND11_MODULE(_Infernux, m)
                 return r ? r->GetMsaaSamples() : 4;
             },
             "Get current MSAA sample count (1=off)")
+        .def_property_readonly(
+            "msaa_state",
+            [](const Infernux &self) {
+                const auto *renderer = self.GetRenderer();
+                const MsaaStateSnapshot snapshot = renderer ? renderer->GetMsaaStateSnapshot() : MsaaStateSnapshot{};
+                py::list supportedSamples;
+                for (const int samples : {1, 2, 4, 8}) {
+                    if ((snapshot.supportedSampleMask & static_cast<uint32_t>(samples)) != 0)
+                        supportedSamples.append(samples);
+                }
+                py::dict result;
+                result["active_samples"] = snapshot.activeSamples;
+                result["scene_requested_samples"] = snapshot.sceneRequestedSamples;
+                result["game_requested_samples"] = snapshot.gameRequestedSamples;
+                result["supported_samples"] = std::move(supportedSamples);
+                result["request_conflict"] = snapshot.requestConflict;
+                result["scene_target_aligned"] = snapshot.sceneTargetAligned;
+                result["game_target_aligned"] = snapshot.gameTargetAligned;
+                result["material_pipelines_aligned"] = snapshot.materialPipelinesAligned;
+                result["scene_msaa_color_bytes"] = snapshot.sceneMsaaColorBytes;
+                result["game_msaa_color_bytes"] = snapshot.gameMsaaColorBytes;
+                result["reconfiguration_count"] = snapshot.reconfigurationCount;
+                result["rejected_request_count"] = snapshot.rejectedRequestCount;
+                return result;
+            },
+            "Validated MSAA requests, device support, resource alignment, and reconfiguration counters")
         // ========================================================================
         // Present Mode
         // ========================================================================

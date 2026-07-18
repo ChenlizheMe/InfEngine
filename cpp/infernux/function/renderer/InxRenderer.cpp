@@ -7,6 +7,7 @@
 #include "EditorTools.h"
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
+#include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
 #include "ParticleDrawCallBuffer.h"
 #include "SceneRenderGraph.h"
@@ -18,6 +19,7 @@
 #include "gui/InxGUISemantics.h"
 #include "gui/InxScreenUIRenderer.h"
 #include "vk/RenderGraph.h"
+#include "vk/RhiVulkanTypes.h"
 #include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -220,6 +222,7 @@ void InxRenderer::PreparePipeline()
 
         // Initialize scene render target with default size
         m_sceneRenderTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
+        m_sceneRenderTarget->SetMsaaSampleCount(m_vkCore->GetMaterialPipelineManager().GetSampleCount());
         m_sceneRenderTarget->Initialize(800, 600);
         ++m_sceneRenderTargetGeneration;
 
@@ -1174,17 +1177,68 @@ void InxRenderer::DrawFrame()
 
 bool InxRenderer::CheckAndApplyMsaaRequest()
 {
-    auto checkGraph = [this](SceneRenderGraph *graph) -> bool {
-        if (!graph)
-            return false;
-        int requested = graph->GetRequestedMsaaSamples();
-        if (requested > 0 && requested != GetMsaaSamples()) {
-            SetMsaaSamples(requested);
-            return true;
+    m_sceneRequestedMsaaSamples = m_sceneRenderGraph ? m_sceneRenderGraph->GetRequestedMsaaSamples() : 0;
+    m_gameRequestedMsaaSamples =
+        (m_gameCameraEnabled && m_gameRenderGraph) ? m_gameRenderGraph->GetRequestedMsaaSamples() : 0;
+
+    const MsaaRequestResolution resolution =
+        ResolveMsaaRequests(m_sceneRequestedMsaaSamples, m_gameRequestedMsaaSamples);
+    const int currentSamples = GetMsaaSamples();
+
+    auto rejectRequest = [this, resolution](MsaaRequestStatus status, uint32_t supportedMask) {
+        const uint64_t signature = (static_cast<uint64_t>(status) << 56u) |
+                                   (static_cast<uint64_t>(m_sceneRequestedMsaaSamples & 0xff) << 40u) |
+                                   (static_cast<uint64_t>(m_gameRequestedMsaaSamples & 0xff) << 32u) | supportedMask;
+        if (signature == m_lastMsaaRejectionSignature)
+            return;
+        m_lastMsaaRejectionSignature = signature;
+        ++m_msaaRejectedRequestCount;
+
+        if (status == MsaaRequestStatus::ConflictingRequests) {
+            INXLOG_ERROR(
+                "Scene and Game render graphs request incompatible global MSAA settings (Scene=",
+                m_sceneRequestedMsaaSamples, "x, Game=", m_gameRequestedMsaaSamples,
+                "x). Keeping the last-known-good setting; both graphs must agree while material pipelines are shared.");
+        } else if (status == MsaaRequestStatus::InvalidSceneRequest ||
+                   status == MsaaRequestStatus::InvalidGameRequest) {
+            INXLOG_ERROR("Invalid render graph MSAA request (Scene=", m_sceneRequestedMsaaSamples,
+                         "x, Game=", m_gameRequestedMsaaSamples, "x). Valid values are 0, 1, 2, 4, and 8.");
+        } else {
+            INXLOG_ERROR("Requested ", resolution.samples,
+                         "x MSAA is unsupported by the HDR color/depth target pair (supported mask=", supportedMask,
+                         "). Keeping the last-known-good setting.");
         }
-        return false;
     };
-    return checkGraph(m_sceneRenderGraph.get()) || checkGraph(m_gameRenderGraph.get());
+
+    if (resolution.status == MsaaRequestStatus::NoRequest) {
+        m_msaaRequestConflict = false;
+        m_lastMsaaRejectionSignature = 0;
+        SetEffectiveGraphMsaaSamples(currentSamples);
+        return false;
+    }
+
+    if (!resolution.IsAccepted()) {
+        m_msaaRequestConflict = resolution.status == MsaaRequestStatus::ConflictingRequests;
+        rejectRequest(resolution.status, GetSupportedMsaaSampleMask());
+        SetEffectiveGraphMsaaSamples(currentSamples);
+        return false;
+    }
+
+    const uint32_t supportedMask = GetSupportedMsaaSampleMask();
+    if (!SupportsMsaaSampleCount(static_cast<rhi::SampleCountMask>(supportedMask), resolution.samples)) {
+        m_msaaRequestConflict = false;
+        rejectRequest(MsaaRequestStatus::Accepted, supportedMask);
+        SetEffectiveGraphMsaaSamples(currentSamples);
+        return false;
+    }
+
+    m_msaaRequestConflict = false;
+    m_lastMsaaRejectionSignature = 0;
+    SetEffectiveGraphMsaaSamples(resolution.samples);
+    const bool reconfigured = ApplyMsaaSamples(resolution.samples, "render graph");
+    if (!reconfigured)
+        SetEffectiveGraphMsaaSamples(GetMsaaSamples());
+    return reconfigured;
 }
 
 void InxRenderer::StageEngineGlobalsUBO()
@@ -2619,6 +2673,7 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
         // Create a dedicated SceneRenderGraph for game camera
         m_gameRenderGraph = std::make_unique<SceneRenderGraph>();
         m_gameRenderGraph->Initialize(m_vkCore.get(), m_gameRenderTarget.get());
+        m_gameRenderGraph->SetEffectiveMsaaSamples(GetMsaaSamples());
 
         // Create the screen UI renderer for GPU-based 2D UI in the game render graph
         if (!m_screenUIRenderer) {
@@ -2681,97 +2736,180 @@ InxScreenUIRenderer *InxRenderer::GetScreenUIRenderer()
 // MSAA Configuration
 // ============================================================================
 
-static VkSampleCountFlagBits IntToSampleCount(int samples)
+uint32_t InxRenderer::GetSupportedMsaaSampleMask() const
 {
-    switch (samples) {
-    case 1:
-        return VK_SAMPLE_COUNT_1_BIT;
-    case 2:
-        return VK_SAMPLE_COUNT_2_BIT;
-    case 4:
-        return VK_SAMPLE_COUNT_4_BIT;
-    case 8:
-        return VK_SAMPLE_COUNT_8_BIT;
-    default:
-        INXLOG_WARN("Invalid MSAA sample count ", samples, ", clamping to 4");
-        return VK_SAMPLE_COUNT_4_BIT;
-    }
+    if (!m_vkCore)
+        return 0;
+    const VkFormat colorFormat =
+        m_sceneRenderTarget ? m_sceneRenderTarget->GetColorFormat() : VK_FORMAT_R16G16B16A16_SFLOAT;
+    const VkFormat depthFormat =
+        m_sceneRenderTarget ? m_sceneRenderTarget->GetDepthFormat() : m_vkCore->GetDeviceContext().FindDepthFormat();
+    const auto &deviceContext = m_vkCore->GetDeviceContext();
+    const auto colorSamples = deviceContext.GetImageSampleCountMask(colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                                                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    const auto resolveSamples = deviceContext.GetImageSampleCountMask(
+        colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    const auto depthSamples =
+        deviceContext.GetImageSampleCountMask(depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    return GetSceneTargetSampleCountMask(colorSamples, resolveSamples, depthSamples);
 }
 
 void InxRenderer::SetMsaaSamples(int samples)
 {
-    VkSampleCountFlagBits vkSamples = IntToSampleCount(samples);
+    if (!ApplyMsaaSamples(samples, "engine API"))
+        SetEffectiveGraphMsaaSamples(GetMsaaSamples());
+}
 
-    // Check if already set
-    if (m_sceneRenderTarget && m_sceneRenderTarget->GetMsaaSampleCount() == vkSamples) {
-        return; // No change
+bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
+{
+    if (!IsValidMsaaSampleCount(samples)) {
+        ++m_msaaRejectedRequestCount;
+        INXLOG_ERROR("Rejected invalid ", source, " MSAA request ", samples, "x; valid values are 1, 2, 4, and 8.");
+        return false;
     }
 
-    // Must drain GPU before destroying Vulkan resources
+    const uint32_t supportedMask = GetSupportedMsaaSampleMask();
+    if (!SupportsMsaaSampleCount(static_cast<rhi::SampleCountMask>(supportedMask), samples)) {
+        ++m_msaaRejectedRequestCount;
+        INXLOG_ERROR("Rejected unsupported ", source, " MSAA request ", samples,
+                     "x for the HDR color/depth target pair (supported mask=", supportedMask,
+                     "). The active setting remains unchanged.");
+        return false;
+    }
+
+    const VkSampleCountFlagBits vkSamples = rhi::ToVkSampleCount(ToRhiSampleCount(samples));
+    const bool sceneAligned = !m_sceneRenderTarget || m_sceneRenderTarget->GetMsaaSampleCount() == vkSamples;
+    const bool gameAligned = !m_gameRenderTarget || m_gameRenderTarget->GetMsaaSampleCount() == vkSamples;
+    const bool materialsAligned = !m_vkCore || m_vkCore->GetMaterialPipelineManager().GetSampleCount() == vkSamples;
+
+    if (sceneAligned && gameAligned && materialsAligned)
+        return false;
+
     if (m_vkCore) {
         m_vkCore->GetDeviceContext().WaitIdle();
     }
 
-    // 1. Recreate scene render target with new sample count
-    if (m_sceneRenderTarget) {
-        uint32_t w = m_sceneRenderTarget->GetWidth();
-        uint32_t h = m_sceneRenderTarget->GetHeight();
-        m_sceneRenderTarget->SetMsaaSampleCount(vkSamples);
-        m_sceneRenderTarget->Cleanup();
-        m_sceneRenderTarget->Initialize(w, h);
+    std::unique_ptr<SceneRenderTarget> replacementSceneTarget;
+    std::unique_ptr<SceneRenderTarget> replacementGameTarget;
+    std::unique_ptr<InxScreenUIRenderer> replacementScreenUI;
 
-        // Force render graph rebuild to pick up new MSAA resources
-        // (OnResize is a no-op when dimensions haven't changed)
-        if (m_sceneRenderGraph) {
-            m_sceneRenderGraph->MarkDirty();
+    auto createReplacement = [this, vkSamples](const SceneRenderTarget &source) {
+        auto replacement = std::make_unique<SceneRenderTarget>(m_vkCore.get());
+        replacement->SetMsaaSampleCount(vkSamples);
+        if (!replacement->Initialize(source.GetWidth(), source.GetHeight()))
+            replacement.reset();
+        return replacement;
+    };
+
+    if (!sceneAligned) {
+        replacementSceneTarget = createReplacement(*m_sceneRenderTarget);
+        if (!replacementSceneTarget) {
+            INXLOG_ERROR("Failed to create the replacement Scene target for ", samples,
+                         "x MSAA; keeping all current resources.");
+            return false;
         }
     }
 
-    // 2. Recreate game render target with new sample count
-    if (m_gameRenderTarget) {
-        uint32_t w = m_gameRenderTarget->GetWidth();
-        uint32_t h = m_gameRenderTarget->GetHeight();
-        m_gameRenderTarget->SetMsaaSampleCount(vkSamples);
-        m_gameRenderTarget->Cleanup();
-        m_gameRenderTarget->Initialize(w, h);
-
-        // Force render graph rebuild to pick up new MSAA resources
-        if (m_gameRenderGraph) {
-            m_gameRenderGraph->MarkDirty();
-        }
-
-        // Reinitialize ScreenUIRenderer with new sample count
-        if (m_screenUIRenderer) {
-            m_screenUIRenderer = std::make_unique<InxScreenUIRenderer>();
-            m_screenUIRenderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                           m_gameRenderTarget->GetColorFormat(),
-                                           m_gameRenderTarget->GetMsaaSampleCount());
-            m_screenUIRenderer->SetDeletionQueue(&m_vkCore->GetDeletionQueue());
-            if (m_gameRenderGraph) {
-                m_gameRenderGraph->SetScreenUIRenderer(m_screenUIRenderer.get());
-            }
+    if (!gameAligned) {
+        replacementGameTarget = createReplacement(*m_gameRenderTarget);
+        if (!replacementGameTarget) {
+            INXLOG_ERROR("Failed to create the replacement Game target for ", samples,
+                         "x MSAA; keeping all current resources.");
+            return false;
         }
     }
 
-    // 3. Reinitialize material pipeline manager with new MSAA setting
-    if (m_vkCore) {
-        m_vkCore->ReinitializeMaterialPipelines(vkSamples);
+    if (m_gameRenderTarget && (!gameAligned || !materialsAligned)) {
+        replacementScreenUI = std::make_unique<InxScreenUIRenderer>();
+        if (!replacementScreenUI->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
+                                             m_gameRenderTarget->GetColorFormat(), vkSamples)) {
+            INXLOG_ERROR("Failed to create the replacement Screen UI pipeline for ", samples,
+                         "x MSAA; keeping all current resources.");
+            return false;
+        }
+        replacementScreenUI->SetDeletionQueue(&m_vkCore->GetDeletionQueue());
     }
 
-    // 4. Reset outline renderer — it caches framebuffers and image views
-    //    from the old SceneRenderTarget.  Without cleanup it would use
-    //    destroyed Vulkan handles on the next frame → crash.
     if (m_outlineRenderer) {
         m_outlineRenderer->Cleanup();
     }
+
+    std::unique_ptr<SceneRenderTarget> retiredSceneTarget;
+    std::unique_ptr<SceneRenderTarget> retiredGameTarget;
+    if (replacementSceneTarget) {
+        retiredSceneTarget = std::move(m_sceneRenderTarget);
+        m_sceneRenderTarget = std::move(replacementSceneTarget);
+        if (m_sceneRenderGraph)
+            m_sceneRenderGraph->ReplaceSceneTarget(m_sceneRenderTarget.get());
+        ++m_sceneRenderTargetGeneration;
+        if (m_captureService)
+            m_captureService->InvalidateSource(CaptureSource::Scene, m_sceneRenderTargetGeneration);
+    }
+    if (replacementGameTarget) {
+        retiredGameTarget = std::move(m_gameRenderTarget);
+        m_gameRenderTarget = std::move(replacementGameTarget);
+        if (m_gameRenderGraph)
+            m_gameRenderGraph->ReplaceSceneTarget(m_gameRenderTarget.get());
+        ++m_gameRenderTargetGeneration;
+        if (m_captureService)
+            m_captureService->InvalidateSource(CaptureSource::Game, m_gameRenderTargetGeneration);
+    }
+    if (replacementScreenUI) {
+        m_screenUIRenderer = std::move(replacementScreenUI);
+        if (m_gameRenderGraph)
+            m_gameRenderGraph->SetScreenUIRenderer(m_screenUIRenderer.get());
+    }
+
+    if (m_vkCore)
+        m_vkCore->ReinitializeMaterialPipelines(vkSamples);
+
+    SetEffectiveGraphMsaaSamples(samples);
+    ++m_msaaReconfigurationCount;
+    INXLOG_INFO("Applied ", samples, "x MSAA from ", source,
+                " to Scene, Game, material, preview, and Screen UI paths.");
+    return true;
 }
 
 int InxRenderer::GetMsaaSamples() const
 {
-    if (m_sceneRenderTarget) {
+    if (m_sceneRenderTarget)
         return static_cast<int>(m_sceneRenderTarget->GetMsaaSampleCount());
-    }
+    if (m_gameRenderTarget)
+        return static_cast<int>(m_gameRenderTarget->GetMsaaSampleCount());
+    if (m_vkCore)
+        return static_cast<int>(m_vkCore->GetMaterialPipelineManager().GetSampleCount());
     return 4; // default
+}
+
+void InxRenderer::SetEffectiveGraphMsaaSamples(int samples)
+{
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->SetEffectiveMsaaSamples(samples);
+    if (m_gameRenderGraph)
+        m_gameRenderGraph->SetEffectiveMsaaSamples(samples);
+}
+
+MsaaStateSnapshot InxRenderer::GetMsaaStateSnapshot() const
+{
+    MsaaStateSnapshot snapshot;
+    snapshot.activeSamples = GetMsaaSamples();
+    snapshot.sceneRequestedSamples = m_sceneRequestedMsaaSamples;
+    snapshot.gameRequestedSamples = m_gameRequestedMsaaSamples;
+    snapshot.supportedSampleMask = GetSupportedMsaaSampleMask();
+    snapshot.requestConflict = m_msaaRequestConflict;
+    snapshot.sceneTargetAligned =
+        !m_sceneRenderTarget || static_cast<int>(m_sceneRenderTarget->GetMsaaSampleCount()) == snapshot.activeSamples;
+    snapshot.gameTargetAligned =
+        !m_gameRenderTarget || static_cast<int>(m_gameRenderTarget->GetMsaaSampleCount()) == snapshot.activeSamples;
+    snapshot.materialPipelinesAligned =
+        !m_vkCore ||
+        static_cast<int>(m_vkCore->GetMaterialPipelineManager().GetSampleCount()) == snapshot.activeSamples;
+    snapshot.sceneMsaaColorBytes = m_sceneRenderTarget ? m_sceneRenderTarget->GetMsaaColorResidentBytes() : 0;
+    snapshot.gameMsaaColorBytes = m_gameRenderTarget ? m_gameRenderTarget->GetMsaaColorResidentBytes() : 0;
+    snapshot.reconfigurationCount = m_msaaReconfigurationCount;
+    snapshot.rejectedRequestCount = m_msaaRejectedRequestCount;
+    return snapshot;
 }
 
 void InxRenderer::SetPresentMode(int mode)

@@ -218,6 +218,11 @@ class VkDeviceContext
         return m_capabilities;
     }
 
+    /// Query sample support for one concrete image descriptor usage. Format
+    /// capabilities expose the generic attachment baseline; render targets
+    /// with transfer/resolve usage must validate the exact usage combination.
+    [[nodiscard]] rhi::SampleCountMask GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept;
+
     [[nodiscard]] VulkanRhiDevice &GetRhiDevice() noexcept
     {
         return *m_rhiDevice;

@@ -120,6 +120,13 @@ def test_runtime_renderer_state_combines_frame_submission_and_gpu_residency(monk
             "tracked_bytes": 4096,
             "material_pipeline_count": 2,
         }
+        msaa_state = {
+            "active_samples": 4,
+            "supported_samples": [1, 2, 4, 8],
+            "scene_target_aligned": True,
+            "game_target_aligned": True,
+            "material_pipelines_aligned": True,
+        }
         preview_task_snapshots = [
             {
                 "kind": "material",
@@ -153,6 +160,9 @@ def test_runtime_renderer_state_combines_frame_submission_and_gpu_residency(monk
     assert state["frame"]["ui_panel_times_ms"]["project"] == pytest.approx(0.42)
     assert state["frame"]["ui_panel_sub_times_ms"]["project"]["folderTree"] == pytest.approx(0.19)
     assert state["gpu_residency"]["tracked_bytes"] == 4096
+    assert state["msaa"]["active_samples"] == 4
+    assert state["msaa"]["supported_samples"] == [1, 2, 4, 8]
+    assert state["msaa"]["material_pipelines_aligned"] is True
     assert state["preview_tasks"][0]["ready_generation"] == 2
     assert state["asset_runtime_record_count"] == 3
     assert state["submission_ready"] is True
