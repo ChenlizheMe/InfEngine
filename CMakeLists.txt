@@ -376,6 +376,19 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.render_identity COMMAND infernux_render_identity_tests)
 
+    add_executable(infernux_render_instance_history_tests
+        cpp/tests/RenderInstanceHistoryTests.cpp
+    )
+    target_include_directories(infernux_render_instance_history_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_render_instance_history_tests PRIVATE glm::glm)
+    if(MSVC)
+        target_compile_options(infernux_render_instance_history_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.render_instance_history COMMAND infernux_render_instance_history_tests)
+
     add_executable(infernux_render_graph_identity_tests
         cpp/tests/RenderGraphIdentityTests.cpp
     )
