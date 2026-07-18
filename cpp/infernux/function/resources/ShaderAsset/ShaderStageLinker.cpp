@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 #include <limits>
 #include <string_view>
@@ -65,6 +66,18 @@ std::optional<std::string_view> GlslType(std::string_view type)
 uint32_t VaryingLocationCount(std::string_view type)
 {
     return type == "Mat4" ? 4u : 1u;
+}
+
+bool HasCapability(const ShaderDescriptor &descriptor, std::string_view capability)
+{
+    return std::any_of(
+        descriptor.capabilities.begin(), descriptor.capabilities.end(), [&](const std::string &candidate) {
+            return candidate.size() == capability.size() &&
+                   std::equal(candidate.begin(), candidate.end(), capability.begin(), [](char lhs, char rhs) {
+                       return std::tolower(static_cast<unsigned char>(lhs)) ==
+                              std::tolower(static_cast<unsigned char>(rhs));
+                   });
+        });
 }
 
 struct PropertyLayout
@@ -238,6 +251,8 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
     ShaderProgramInterfaceArtifact artifact;
     artifact.vertex = {vertex.shaderId, vertex.filePath, vertex.schemaVersion};
     artifact.fragment = {fragment.shaderId, fragment.filePath, fragment.schemaVersion};
+    artifact.domain =
+        HasCapability(vertex, "ParticleSprite") ? ShaderProgramDomain::ParticleSprite : ShaderProgramDomain::Mesh;
     artifact.shadingModel = fragment.shadingModel;
     artifact.firstUserVaryingLocation = options.firstUserVaryingLocation;
 
@@ -349,11 +364,13 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
         return lhs.fragment->name < rhs.fragment->name;
     });
 
+    uint32_t maximumVaryingLocations = options.maximumVaryingLocations;
+    if (artifact.domain == ShaderProgramDomain::ParticleSprite)
+        maximumVaryingLocations = std::min(maximumVaryingLocations, 14u); // location 14 carries particle alpha
     uint32_t location = options.firstUserVaryingLocation;
     uint64_t varyingSignature = FnvOffset;
     for (const auto &entry : pending) {
-        if (entry.locationCount > options.maximumVaryingLocations ||
-            location > options.maximumVaryingLocations - entry.locationCount) {
+        if (entry.locationCount > maximumVaryingLocations || location > maximumVaryingLocations - entry.locationCount) {
             artifact.diagnostics.push_back(
                 MakeDiagnostic(ShaderLinkDiagnosticCode::LocationLimitExceeded,
                                "varying '" + entry.fragment->name + "' exceeds the available stage interface locations",
@@ -390,6 +407,7 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
 
     uint64_t compatibility = FnvOffset;
     compatibility = HashNumber(compatibility, artifact.schemaVersion);
+    compatibility = HashNumber(compatibility, static_cast<uint8_t>(artifact.domain));
     compatibility = HashNumber(compatibility, artifact.varyingInterfaceSignature);
     compatibility = HashNumber(compatibility, artifact.materialLayoutSignature);
     compatibility = HashBytes(compatibility, artifact.shadingModel);

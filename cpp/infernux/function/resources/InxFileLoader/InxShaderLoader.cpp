@@ -31,6 +31,7 @@ ShaderProgramStageMask ToRuntimeStageMask(ShaderStageVisibility visibility) noex
 
 void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderProgramArtifact &target)
 {
+    target.domain = source.domain;
     target.shadingModel = source.shadingModel;
     target.materialBufferSize = source.materialBufferSize;
     target.alphaClipThresholdOffset = source.alphaClipThresholdOffset;
@@ -870,6 +871,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                           const ShaderDescriptor *shadingModel, ShaderCompileTarget target,
                                           const ShaderProgramInterfaceArtifact *linkedInterface) const
 {
+    const bool particleSpriteDomain = linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite;
     // Separate resolved source into: version line, annotation lines, code lines
     std::istringstream stream(resolvedSource);
     std::string line;
@@ -969,7 +971,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         (target == ShaderCompileTarget::Shadow && desc.isVertexShader && desc.hasVertexFunc);
     bool shadowFragmentNeedsGlobals =
         (target == ShaderCompileTarget::Shadow && desc.isFragmentShader && shadowNeedsAlphaClip);
-    if (target != ShaderCompileTarget::Shadow) {
+    if (target != ShaderCompileTarget::Shadow && !particleSpriteDomain) {
         result << "\n// Auto-generated engine globals UBO (set 2)\n";
         result << LoadTemplate("globals_ubo.glsl") << "\n";
     } else if (shadowVertexNeedsGlobals || shadowFragmentNeedsGlobals) {
@@ -999,7 +1001,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             if (desc.isVertexShader) {
                 // Unified vertex builtins for all shading models
                 result << "\n// Auto-generated vertex builtins (unified)\n";
-                result << LoadTemplate("vertex_builtins.glsl") << "\n";
+                result << LoadTemplate(particleSpriteDomain ? "particle_sprite_vertex_builtins.glsl"
+                                                            : "vertex_builtins.glsl")
+                       << "\n";
                 if (linkedInterface && !desc.outputs.empty())
                     result << GlslStageInterfaceEmitter::EmitVertexDeclarations(*linkedInterface, desc);
                 if (target == ShaderCompileTarget::Picking)
@@ -1016,7 +1020,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
 
                 // Unified fragment varying inputs
                 result << "\n// Auto-generated fragment varyings (unified)\n";
-                result << LoadTemplate("fragment_varyings.glsl") << "\n";
+                result << LoadTemplate(particleSpriteDomain ? "particle_sprite_fragment_varyings.glsl"
+                                                            : "fragment_varyings.glsl")
+                       << "\n";
                 if (linkedInterface && !desc.inputs.empty())
                     result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
 
@@ -1293,7 +1299,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                                    : "    surface(s);");
                 result << "\n" << mainTpl << "\n";
             } else {
-                std::string mainTpl = LoadTemplate("surface_main.glsl");
+                std::string mainTpl =
+                    LoadTemplate(particleSpriteDomain ? "particle_sprite_surface_main.glsl" : "surface_main.glsl");
                 ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
                                    linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
                                                    : "    surface(s);");
@@ -1312,7 +1319,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                          : "    inxVertexEntry(v);\n";
         }
         std::string templateName =
-            (target == ShaderCompileTarget::Shadow) ? "shadow_vertex_main.glsl" : "vertex_main.glsl";
+            target == ShaderCompileTarget::Shadow
+                ? "shadow_vertex_main.glsl"
+                : (particleSpriteDomain ? "particle_sprite_vertex_main.glsl" : "vertex_main.glsl");
         std::string mainTpl = LoadTemplate(templateName);
         ReplacePlaceholder(mainTpl, "${VERTEX_CALL}", vertexCall);
         std::string passVertexOutput;
@@ -1399,7 +1408,9 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
             if (!hasSurfaceImport) {
                 resolvedSource = "@import: surface\n" + resolvedSource;
             }
-            if (!hasObjectUtilsImport) {
+            const bool particleSpriteDomain =
+                linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite;
+            if (!hasObjectUtilsImport && !particleSpriteDomain) {
                 resolvedSource = "@import: lib/object_utils\n" + resolvedSource;
             }
         }

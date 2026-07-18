@@ -1,5 +1,6 @@
 #pragma once
 
+#include <core/types/ShaderTypes.h>
 #include <cstdint>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
 #include <optional>
@@ -103,6 +104,7 @@ struct ShaderProgramInterfaceArtifact
     uint32_t schemaVersion = CurrentSchemaVersion;
     ShaderStageReference vertex;
     ShaderStageReference fragment;
+    ShaderProgramDomain domain = ShaderProgramDomain::Mesh;
     std::string shadingModel;
     uint32_t firstUserVaryingLocation = 6;
     uint32_t materialBufferSize = 0;

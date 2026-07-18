@@ -3,6 +3,14 @@
 namespace infernux
 {
 
+enum class ShaderProgramDomain : unsigned char
+{
+    Mesh = 0,
+    ParticleSprite,
+
+    Count,
+};
+
 // ============================================================================
 // ShaderCompileTarget — identifies which rendering pass variant to compile for.
 //

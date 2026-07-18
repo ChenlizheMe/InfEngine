@@ -373,6 +373,75 @@ void surface(out SurfaceData surface)
     assert(transparentArtifact.variants.size() == 1);
     assert(transparentArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
+    const std::string particleVertex = R"(
+ShaderInfo
+{
+    Version 1
+    Name "Tests/ParticleSprite"
+    Capabilities [ParticleSprite]
+}
+)";
+    const std::string particleFragment = R"(
+ShaderInfo
+{
+    Version 1
+    Name "Tests/ParticleSurface"
+    ShadingModel "Unlit"
+    Surface Transparent
+    Properties
+    {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D texSampler = white
+    }
+}
+void surface(out SurfaceData surface)
+{
+    surface = InitSurfaceData();
+    vec4 sampled = texture(texSampler, v_TexCoord);
+    surface.albedo = sampled.rgb * v_Color * material.baseColor.rgb;
+    surface.alpha = sampled.a * material.baseColor.a;
+}
+)";
+    const auto particleVertexDescriptor = compiler.ParseShaderSource(particleVertex, "ParticleSprite.vert");
+    const auto particleFragmentDescriptor = compiler.ParseShaderSource(particleFragment, "ParticleSurface.frag");
+    const auto particleInterface =
+        infernux::ShaderStageLinker::Link(particleVertexDescriptor, particleFragmentDescriptor);
+    assert(particleInterface.IsValid());
+    assert(particleInterface.domain == infernux::ShaderProgramDomain::ParticleSprite);
+    const auto particlePlan = infernux::ShaderPassVariantPlanner::Plan(particleVertexDescriptor,
+                                                                       particleFragmentDescriptor, particleInterface);
+    assert(particlePlan.IsValid());
+    assert(particlePlan.Find(infernux::ShaderCompileTarget::Forward)->enabled);
+    for (const auto target : {infernux::ShaderCompileTarget::GBuffer, infernux::ShaderCompileTarget::Shadow,
+                              infernux::ShaderCompileTarget::Depth, infernux::ShaderCompileTarget::Picking,
+                              infernux::ShaderCompileTarget::Motion}) {
+        assert(!particlePlan.Find(target)->enabled);
+    }
+    const auto particleCompilation = compiler.CompileLinkedProgramArtifact(particleVertex, "ParticleSprite.vert",
+                                                                           particleFragment, "ParticleSurface.frag");
+    if (!particleCompilation.IsValid()) {
+        for (const auto &error : particleCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(particleCompilation.IsValid());
+    assert(particleCompilation.compiledVariants.size() == 1);
+    assert(particleCompilation.pendingTargets.empty());
+    const auto &particleForward = particleCompilation.compiledVariants.front();
+    assert(particleForward.generatedVertexSource.find("readonly buffer ParticleInstances") != std::string::npos);
+    assert(particleForward.generatedVertexSource.find("layout(location = 14) out float v_ParticleAlpha;") !=
+           std::string::npos);
+    assert(particleForward.generatedVertexSource.find("UniformBufferObject") == std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("layout(location = 14) in float v_ParticleAlpha;") !=
+           std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("s.alpha *= v_ParticleAlpha;") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("set = 0, binding = 2") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("set = 0, binding = 14") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("_Globals") == std::string::npos);
+    const auto particleArtifact = particleCompilation.CreateRuntimeArtifact();
+    assert(particleArtifact.IsValid());
+    assert(particleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
+    assert(particleArtifact.variants.size() == 1);
+
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo
 {

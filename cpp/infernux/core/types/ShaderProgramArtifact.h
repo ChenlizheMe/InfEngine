@@ -104,14 +104,6 @@ struct ShaderProgramVariantKeyHash
     [[nodiscard]] size_t operator()(const ShaderProgramVariantKey &key) const noexcept;
 };
 
-enum class ShaderProgramDomain : uint8_t
-{
-    Mesh = 0,
-    ParticleSprite,
-
-    Count,
-};
-
 enum class ShaderProgramStageMask : uint8_t
 {
     None = 0,
