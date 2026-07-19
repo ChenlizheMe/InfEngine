@@ -16,12 +16,14 @@ from Infernux.particle import (
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleKernelLowerer,
+    PointCache,
     build_gpu_particle_migration,
     compile_gpu_particle_spirv,
     standard_particle_attributes,
     validate_gpu_particle_spirv,
 )
-from Infernux.graph.types import TypeRef, ValueType
+from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
+from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 
 def _gpu_source():
@@ -30,6 +32,50 @@ def _gpu_source():
     )
     kernel = ParticleKernelLowerer().lower(hir)
     return GpuParticleGlslLowerer().lower(kernel)
+
+
+def _point_cache_gpu_source():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord("velocity", "particle.init.set_velocity"),
+            GraphNodeRecord("particle_id", "particle.attribute.read_u32"),
+            GraphNodeRecord(
+                "sample",
+                "particle.point_cache.sample_position",
+                properties={
+                    "interface": "spawn-points",
+                    "channel": "$position",
+                    "lookup": "stable_id",
+                    "semantic": "position",
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.init", "out", "velocity", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord("id", "particle_id", "value", "sample", "index"),
+            GraphLinkRecord("value", "sample", "value", "velocity", "value"),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="point-cache-emitter",
+        init=init,
+        data_interfaces=(
+            PointCache(
+                stable_id="spawn-points",
+                cache=AssetReference(guid="point-cache-guid"),
+                space=CoordinateSpace.WORLD,
+                id_channel="stable_id",
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id="point-cache-gpu", emitters=(emitter,))
+    )
+    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
 def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
@@ -125,6 +171,34 @@ def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults
     stale_layout["attribute_fields"][0].pop("offset")
     with pytest.raises(GpuParticleCompileError, match="layout entry"):
         build_gpu_particle_migration(stale_layout, next_layout, next_kernel.emitters[0])
+
+
+def test_gpu_point_cache_lowering_emits_stable_set_one_layout_and_valid_spirv():
+    emitter = _point_cache_gpu_source().emitters[0]
+    layout = emitter.data_interface_layout
+
+    assert layout["version"] == 1
+    assert layout["sample_count"] == 1
+    assert layout["point_caches"][0]["stable_id"] == "spawn-points"
+    assert layout["point_caches"][0]["data_binding"] == 1
+    assert layout["point_caches"][0]["lookup_binding"] == 2
+    sample = layout["point_caches"][0]["samples"][0]
+    assert sample == {
+        "sample_index": 0,
+        "interface": "spawn-points",
+        "channel": "$position",
+        "value_type": "vec3",
+        "lookup": "stable_id",
+        "semantic": "position",
+    }
+    assert "set = 1, binding = 0" in emitter.init
+    assert "inx_pc_resolve_0" in emitter.init
+    assert "inx_sample_point_cache_0" in emitter.init
+
+    compiled = native._compile_compute_glsl_batch(
+        emitter.stages(), "particle-point-cache-test"
+    )
+    assert set(compiled) == set(emitter.stages())
 
 
 def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):

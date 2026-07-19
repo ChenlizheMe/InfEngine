@@ -54,6 +54,12 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
     "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
     "sample_shape_direction": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
+    "sample_point_cache": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface", "channel", "lookup", "semantic"}),
+        _ALL_STAGES,
+    ),
     "less_than": KernelOpcodeSpec(True, 2),
     "set_alive": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
     "export_attribute": KernelOpcodeSpec(
@@ -289,6 +295,40 @@ def _validate_opcode_types(
             _validate_u32(random_slot, "random_slot")
         if len(set(random_slots)) != len(random_slots):
             raise KernelSemanticError("kernel shape sampling random slots must be unique")
+    elif opcode == "sample_point_cache":
+        if operands != (TypeRef(ValueType.U32),):
+            raise KernelSemanticError("point cache sampling requires one u32 index or stable ID")
+        if result_type is None or result_type.value_type not in {
+            ValueType.F32,
+            ValueType.U32,
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+            ValueType.COLOR,
+        }:
+            raise KernelSemanticError("point cache sampling has an unsupported result type")
+        if any(
+            type(immediates[name]) is not str or not immediates[name].strip()
+            for name in ("interface", "channel")
+        ):
+            raise KernelSemanticError("point cache interface and channel names cannot be empty")
+        if immediates["lookup"] not in {"index", "stable_id"}:
+            raise KernelSemanticError("point cache lookup must use index or stable_id")
+        if immediates["semantic"] not in {
+            "raw",
+            "position",
+            "direction",
+            "vector",
+            "normal",
+        }:
+            raise KernelSemanticError("point cache sample semantic is invalid")
+        if immediates["semantic"] == "raw":
+            if result_type.space is not CoordinateSpace.NONE:
+                raise KernelSemanticError("raw point cache samples cannot carry a coordinate space")
+        elif result_type != TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION):
+            raise KernelSemanticError(
+                "transformed point cache samples must produce a simulation-space vec3"
+            )
     elif opcode == "less_than":
         if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
             ValueType.I32,

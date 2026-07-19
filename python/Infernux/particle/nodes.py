@@ -10,7 +10,7 @@ from Infernux.graph.registry import (
     PortKind,
     PropertyDef,
 )
-from Infernux.graph.types import AssetReference, TypeRef, ValueType
+from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 
 def _stream(port_id: str, direction: PortDirection) -> PortDef:
@@ -38,6 +38,47 @@ def _operation(type_id: str, label: str, opcode: str, properties=()) -> NodeDef:
         ),
         properties,
         {"particle_hir": opcode},
+    )
+
+
+def _point_cache_sample(
+    type_id: str,
+    label: str,
+    result_type: TypeRef,
+    *,
+    channel: str,
+    semantic: str = "raw",
+) -> NodeDef:
+    return NodeDef(
+        type_id,
+        label,
+        (
+            PortDef(
+                "index",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.U32),
+                required=False,
+                default=0,
+            ),
+            PortDef("value", PortDirection.OUTPUT, value_type=result_type),
+        ),
+        (
+            PropertyDef("interface", TypeRef(ValueType.STRING), ""),
+            PropertyDef("channel", TypeRef(ValueType.STRING), channel),
+            PropertyDef("lookup", TypeRef(ValueType.STRING), "index"),
+            PropertyDef("semantic", TypeRef(ValueType.STRING), semantic),
+        ),
+        {"expression": "sample_point_cache"},
+    )
+
+
+def _attribute_read(type_id: str, label: str, result_type: TypeRef, attribute: str) -> NodeDef:
+    return NodeDef(
+        type_id,
+        label,
+        (PortDef("value", PortDirection.OUTPUT, value_type=result_type),),
+        (PropertyDef("attribute", TypeRef(ValueType.STRING), attribute),),
+        {"expression": "load_attribute"},
     )
 
 
@@ -89,6 +130,94 @@ PARTICLE_NODE_DEFINITIONS = (
             PropertyDef("sort", TypeRef(ValueType.STRING), "back_to_front"),
         ),
         {"particle_hir": "render.sprite"},
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_f32",
+        "Sample Point Cache Float",
+        TypeRef(ValueType.F32),
+        channel="value",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_u32",
+        "Sample Point Cache UInt",
+        TypeRef(ValueType.U32),
+        channel="$id",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_vec2",
+        "Sample Point Cache Vector 2",
+        TypeRef(ValueType.VEC2),
+        channel="value",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_vec3_raw",
+        "Sample Point Cache Vector 3",
+        TypeRef(ValueType.VEC3),
+        channel="value",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_vec4",
+        "Sample Point Cache Vector 4",
+        TypeRef(ValueType.VEC4),
+        channel="value",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_color",
+        "Sample Point Cache Color",
+        TypeRef(ValueType.COLOR),
+        channel="$color",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_position",
+        "Sample Point Cache Position",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        channel="$position",
+        semantic="position",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_direction",
+        "Sample Point Cache Direction",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        channel="direction",
+        semantic="direction",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_normal",
+        "Sample Point Cache Normal",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        channel="$normal",
+        semantic="normal",
+    ),
+    _point_cache_sample(
+        "particle.point_cache.sample_vector",
+        "Sample Point Cache Vector",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        channel="velocity",
+        semantic="vector",
+    ),
+    _attribute_read(
+        "particle.attribute.read_f32",
+        "Read Float Attribute",
+        TypeRef(ValueType.F32),
+        "builtin.age",
+    ),
+    _attribute_read(
+        "particle.attribute.read_u32",
+        "Read UInt Attribute",
+        TypeRef(ValueType.U32),
+        "builtin.id",
+    ),
+    _attribute_read(
+        "particle.attribute.read_vec3",
+        "Read Vector Attribute",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        "builtin.position",
+    ),
+    _attribute_read(
+        "particle.attribute.read_color",
+        "Read Color Attribute",
+        TypeRef(ValueType.COLOR),
+        "builtin.color",
     ),
 )
 

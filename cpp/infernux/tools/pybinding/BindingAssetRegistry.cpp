@@ -66,6 +66,29 @@ py::array PointCacheChannelArray(const std::shared_ptr<InxPointCache> &pointCach
     result.attr("setflags")(false);
     return result;
 }
+
+void PointCacheLookupIndices(const std::shared_ptr<InxPointCache> &pointCache,
+                             const py::array_t<uint32_t, py::array::c_style> &stableIds,
+                             py::array_t<uint32_t, py::array::c_style> pointIndices)
+{
+    if (!pointCache)
+        throw std::invalid_argument("point cache is null");
+    const auto cpuData = pointCache->GetCpuData();
+    if (!cpuData || !cpuData->IsValid())
+        throw std::runtime_error("point cache has no valid CPU data");
+    const auto input = stableIds.request();
+    auto output = pointIndices.request();
+    if (input.ndim != 1 || output.ndim != 1 || input.shape[0] != output.shape[0])
+        throw std::invalid_argument("point cache ID lookup requires matching one-dimensional arrays");
+    if (!pointIndices.writeable())
+        throw std::invalid_argument("point cache ID lookup output must be writable");
+    const auto *source = static_cast<const uint32_t *>(input.ptr);
+    auto *destination = static_cast<uint32_t *>(output.ptr);
+    const size_t count = static_cast<size_t>(input.shape[0]);
+    py::gil_scoped_release release;
+    for (size_t index = 0; index < count; ++index)
+        destination[index] = cpuData->FindPointIndex(source[index]);
+}
 } // namespace
 
 void RegisterAssetRegistryBindings(py::module_ &m)
@@ -203,6 +226,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("name", &InxPointCache::GetName)
         .def_property_readonly("guid", &InxPointCache::GetGuid)
         .def_property_readonly("file_path", &InxPointCache::GetFilePath)
+        .def_property_readonly("generation", &InxPointCache::GetGeneration)
         .def_property_readonly("stable_id",
                                [](const InxPointCache &self) {
                                    const auto &cpu = self.GetCpuData();
@@ -242,7 +266,15 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             },
             py::arg("name"))
         .def("channel_array", &PointCacheChannelArray, py::arg("name"),
-             "Return a zero-copy, read-only NumPy view of one channel generation");
+             "Return a zero-copy, read-only NumPy view of one channel generation")
+        .def("lookup_index",
+             [](const InxPointCache &self, uint32_t stableId) {
+                 const auto &cpu = self.GetCpuData();
+                 return cpu ? cpu->FindPointIndex(stableId) : UINT32_MAX;
+             },
+             py::arg("stable_id"))
+        .def("lookup_indices", &PointCacheLookupIndices, py::arg("stable_ids"), py::arg("point_indices"),
+             "Map a contiguous uint32 stable-ID array to point indices in one native batch");
 
     // ── AssetRegistry — unified asset cache (singleton) ─────────────────
     py::class_<AssetRegistry, std::unique_ptr<AssetRegistry, py::nodelete>>(m, "AssetRegistry")
@@ -327,6 +359,12 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return self.BeginLoadAsset(guid, ResourceType::Texture);
             },
             py::arg("guid"), "Schedule texture artifact load/decode on JobSystem")
+        .def(
+            "load_point_cache",
+            [](AssetRegistry &self, const std::string &path) {
+                return self.LoadAssetByPath<InxPointCache>(path, ResourceType::PointCache);
+            },
+            py::arg("path"), "Load an imported Point Cache CPU artifact by path")
         .def(
             "load_point_cache_by_guid",
             [](AssetRegistry &self, const std::string &guid) {

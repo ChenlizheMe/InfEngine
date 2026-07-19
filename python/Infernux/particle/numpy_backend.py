@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
-from typing import Any, Collection, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 import numpy as np
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
 from .asset import EmitterSettings, ExecutionTarget
+from .data_interface import PointCache
 from .hir import ParticleOutputDescriptor, ParticleProgramHIR
 from .kernel_ir import (
     KernelCompileError,
@@ -34,6 +35,104 @@ PARTICLE_INSTANCE_FLOATS = 9
 
 class NumpyParticleBackendError(RuntimeError):
     pass
+
+
+def _point_cache_channel_name(interface: PointCache, authored_name: str) -> str:
+    aliases = {
+        "$position": interface.position_channel,
+        "$normal": interface.normal_channel,
+        "$color": interface.color_channel,
+        "$id": interface.id_channel,
+    }
+    return aliases.get(authored_name, authored_name)
+
+
+class _NumpyPointCacheBinding:
+    def __init__(self, interface: PointCache, asset: Any) -> None:
+        if asset is None or not hasattr(asset, "channel_array"):
+            raise NumpyParticleBackendError(
+                f"point cache interface {interface.stable_id!r} did not resolve to an InxPointCache"
+            )
+        self.interface = interface
+        self.asset = asset
+        self._generation = -1
+        self._channels: dict[str, np.ndarray] = {}
+        self._expected_types: dict[str, TypeRef] = {}
+        self._cache_to_space = np.asarray(
+            interface.cache_to_space, dtype=np.float32
+        ).reshape(4, 4)
+        self.refresh()
+
+    def refresh(self) -> None:
+        generation = int(self.asset.generation)
+        if generation == self._generation:
+            return
+        self._generation = generation
+        self._channels = {}
+
+    def require_channel(self, authored_name: str, value_type: TypeRef) -> None:
+        name = _point_cache_channel_name(self.interface, authored_name)
+        previous = self._expected_types.get(name)
+        if previous is not None and previous != value_type:
+            raise NumpyParticleBackendError(
+                f"point cache channel {name!r} is sampled with incompatible types"
+            )
+        self._expected_types[name] = value_type
+        self.channel(authored_name, value_type)
+
+    def channel(self, authored_name: str, value_type: TypeRef) -> np.ndarray:
+        self.refresh()
+        name = _point_cache_channel_name(self.interface, authored_name)
+        channel = self._channels.get(name)
+        if channel is None:
+            try:
+                channel = self.asset.channel_array(name)
+            except (KeyError, RuntimeError, ValueError) as exc:
+                raise NumpyParticleBackendError(
+                    f"point cache interface {self.interface.stable_id!r} has no usable channel {name!r}"
+                ) from exc
+            self._channels[name] = channel
+        expected_dtype = np.dtype(_dtype(value_type))
+        components = _component_count(value_type)
+        expected_shape = (
+            (int(self.asset.point_count),)
+            if components == 1
+            else (int(self.asset.point_count), components)
+        )
+        if channel.dtype != expected_dtype or channel.shape != expected_shape:
+            raise NumpyParticleBackendError(
+                f"point cache channel {name!r} does not match {value_type.value_type.value}"
+            )
+        return channel
+
+    def cache_to_simulation(self, context: "_RuntimeContext") -> np.ndarray:
+        return (
+            context.conversion(
+                self.interface.space.value,
+                CoordinateSpace.SIMULATION.value,
+            )
+            @ self._cache_to_space
+        )
+
+
+def _default_point_cache_resolver(interface: PointCache):
+    from Infernux.lib import AssetRegistry
+
+    registry = AssetRegistry.instance()
+    reference = interface.cache
+    asset = (
+        registry.load_point_cache_by_guid(reference.guid)
+        if reference.guid
+        else registry.load_point_cache(reference.path_hint)
+        if reference.path_hint
+        else None
+    )
+    if asset is None:
+        identity = reference.guid or reference.path_hint or "<empty reference>"
+        raise NumpyParticleBackendError(
+            f"point cache interface {interface.stable_id!r} cannot load {identity!r}"
+        )
+    return asset
 
 
 class _RuntimeContext:
@@ -94,6 +193,10 @@ class _StageWorkspace:
         }
         self.random_u32_a = np.empty(capacity, dtype=np.uint32)
         self.random_u32_b = np.empty(capacity, dtype=np.uint32)
+        self.sample_ids = np.empty(capacity, dtype=np.uint32)
+        self.sample_indices = np.empty(capacity, dtype=np.uint32)
+        self.sample_valid = np.empty(capacity, dtype=np.bool_)
+        self.sample_vector = np.empty((capacity, 3), dtype=np.float32)
         self.random_float = tuple(
             np.empty(capacity, dtype=np.float32) for _index in range(6)
         )
@@ -119,6 +222,7 @@ class NumpyParticleEmitterProgram:
     update: NumpyStageExecutable
     rendering: NumpyStageExecutable
     outputs: tuple[ParticleOutputDescriptor, ...]
+    point_caches: tuple[tuple[str, _NumpyPointCacheBinding], ...] = ()
 
     def create_runtime(self, *, system_seed: int = 0) -> "NumpyParticleEmitterRuntime":
         return NumpyParticleEmitterRuntime(self, system_seed=system_seed)
@@ -149,6 +253,7 @@ class NumpyParticleCompiler:
         kernel: ParticleKernelProgram,
         *,
         emitter_ids: Collection[str] | None = None,
+        point_cache_resolver: Callable[[PointCache], Any] | None = None,
     ) -> NumpyParticleProgram:
         try:
             metadata = decode_particle_runtime_metadata(hir)
@@ -183,15 +288,34 @@ class NumpyParticleCompiler:
                 raise NumpyParticleBackendError(
                     f"emitter {emitter.stable_id!r} explicitly requires the GPU backend"
                 )
+            referenced_point_caches = {
+                instruction.immediate_dict()["interface"]
+                for function in (emitter.init, emitter.update, emitter.rendering)
+                for instruction in function.instructions
+                if instruction.opcode == "sample_point_cache"
+            }
+            interface_by_id = {
+                interface.stable_id: interface
+                for interface in emitter.data_interfaces
+                if isinstance(interface, PointCache)
+            }
+            resolver = point_cache_resolver or _default_point_cache_resolver
+            point_caches = {
+                stable_id: _NumpyPointCacheBinding(
+                    interface_by_id[stable_id], resolver(interface_by_id[stable_id])
+                )
+                for stable_id in sorted(referenced_point_caches)
+            }
             programs.append(
                 NumpyParticleEmitterProgram(
                     emitter.stable_id,
                     settings,
                     emitter,
-                    _compile_stage(emitter.init, emitter.random_seed),
-                    _compile_stage(emitter.update, emitter.random_seed),
-                    _compile_stage(emitter.rendering, emitter.random_seed),
+                    _compile_stage(emitter.init, emitter.random_seed, point_caches),
+                    _compile_stage(emitter.update, emitter.random_seed, point_caches),
+                    _compile_stage(emitter.rendering, emitter.random_seed, point_caches),
                     outputs,
+                    tuple(point_caches.items()),
                 )
             )
         return NumpyParticleProgram(kernel.kernel_hash, tuple(programs))
@@ -355,6 +479,7 @@ class NumpyParticleEmitterRuntime:
         delta_time = float(delta_time)
         if not math.isfinite(delta_time) or delta_time < 0.0:
             raise ValueError("particle delta_time must be finite and non-negative")
+        self._refresh_data_interfaces()
         if not self._playing:
             return self.instance_buffer()
 
@@ -386,6 +511,7 @@ class NumpyParticleEmitterRuntime:
         return instances
 
     def instance_buffer(self) -> np.ndarray:
+        self._refresh_data_interfaces()
         count = self._active_count
         if count == 0:
             return self._instance_buffer[:0]
@@ -416,6 +542,10 @@ class NumpyParticleEmitterRuntime:
         np.copyto(output[:, 4:8], color[:count], casting="unsafe")
         output[:, 8].fill(0.0)
         return output
+
+    def _refresh_data_interfaces(self) -> None:
+        for _stable_id, binding in self.program.point_caches:
+            binding.refresh()
 
     def _scheduled_spawn_count(self, previous: float, current: float, delta_time: float) -> int:
         self._spawn_accumulator += self.settings.spawn_rate * delta_time
@@ -531,11 +661,18 @@ class NumpyParticleEmitterRuntime:
             )
 
 
-def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> NumpyStageExecutable:
+def _compile_stage(
+    function: ParticleKernelFunction,
+    emitter_seed: int,
+    point_caches: Mapping[str, _NumpyPointCacheBinding],
+) -> NumpyStageExecutable:
     constants: list[Any] = []
     attributes: list[str] = []
     shape_parameters: list[dict[str, Any]] = []
     conversions: list[dict[str, Any]] = []
+    point_cache_samples: list[
+        tuple[_NumpyPointCacheBinding, str, TypeRef, str, str]
+    ] = []
     scratch_types: list[TypeRef] = []
     export_types: list[tuple[str, TypeRef]] = []
     export_aliases: list[tuple[str, str]] = []
@@ -608,6 +745,29 @@ def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> Numpy
                 f"    _sample_shape({output}, _shape_parameters[{len(shape_parameters) - 1}], "
                 f"'{mode}', {emitter_seed}, state, particle_slice, context, workspace)"
             )
+        elif opcode == "sample_point_cache":
+            index_or_id = operand_names(instruction)[0]
+            output = result_buffer(instruction)
+            try:
+                binding = point_caches[immediates["interface"]]
+            except KeyError as exc:
+                raise NumpyParticleBackendError(
+                    f"NumPy backend has no point cache binding {immediates['interface']!r}"
+                ) from exc
+            binding.require_channel(immediates["channel"], instruction.result_type)
+            point_cache_samples.append(
+                (
+                    binding,
+                    immediates["channel"],
+                    instruction.result_type,
+                    immediates["lookup"],
+                    immediates["semantic"],
+                )
+            )
+            lines.append(
+                f"    _sample_point_cache({output}, {index_or_id}, "
+                f"_point_cache_samples[{len(point_cache_samples) - 1}], context, workspace)"
+            )
         elif opcode == "convert_space":
             source = operand_names(instruction)[0]
             output = result_buffer(instruction)
@@ -647,10 +807,12 @@ def _compile_stage(function: ParticleKernelFunction, emitter_seed: int) -> Numpy
         "_constants": tuple(constants),
         "_shape_parameters": tuple(shape_parameters),
         "_conversions": tuple(conversions),
+        "_point_cache_samples": tuple(point_cache_samples),
         "_convert_space": _convert_space,
         "_normalize": _normalize,
         "_random_range": _random_range,
         "_sample_shape": _sample_shape,
+        "_sample_point_cache": _sample_point_cache,
     }
     exec(compile(source, f"<particle-numpy-{function.stage.value}>", "exec"), namespace)
     return NumpyStageExecutable(
@@ -815,6 +977,44 @@ def _normalize(output, source, length_scratch) -> None:
         out=output,
         where=length_scratch[:, None] > 0.0,
     )
+
+
+def _sample_point_cache(output, index_or_id, sample, context, workspace) -> None:
+    binding, channel_name, value_type, lookup, semantic = sample
+    channel = binding.channel(channel_name, value_type)
+    count = output.shape[0]
+    sample_ids = workspace.sample_ids[:count]
+    point_indices = workspace.sample_indices[:count]
+    valid = workspace.sample_valid[:count]
+    np.copyto(sample_ids, index_or_id, casting="unsafe")
+    if lookup == "stable_id":
+        binding.asset.lookup_indices(sample_ids, point_indices)
+    else:
+        np.copyto(point_indices, sample_ids)
+
+    point_count = int(binding.asset.point_count)
+    np.less(point_indices, point_count, out=valid)
+    np.minimum(point_indices, point_count - 1, out=point_indices)
+    np.take(channel, point_indices, axis=0, out=output)
+    mask = valid if output.ndim == 1 else valid[:, None]
+    np.multiply(output, mask, out=output, casting="unsafe")
+
+    if semantic == "raw":
+        return
+    matrix = binding.cache_to_simulation(context)
+    linear = matrix[:3, :3]
+    if semantic == "normal":
+        try:
+            linear = np.linalg.inv(linear).T.astype(np.float32)
+        except np.linalg.LinAlgError as exc:
+            raise NumpyParticleBackendError(
+                f"point cache interface {binding.interface.stable_id!r} has a singular normal transform"
+            ) from exc
+    transformed = workspace.sample_vector[:count]
+    np.matmul(output, linear.T, out=transformed)
+    if semantic == "position":
+        np.add(transformed, matrix[:3, 3], out=transformed)
+    np.copyto(output, transformed)
 
 
 def _convert_space(output, source, parameters, context) -> None:

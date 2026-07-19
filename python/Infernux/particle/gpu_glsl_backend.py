@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import base64
 import hashlib
 import re
@@ -12,6 +12,7 @@ import zlib
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
+from .data_interface import PointCache
 from .kernel_ir import (
     KernelCompileError,
     KernelInstruction,
@@ -107,6 +108,7 @@ class GpuParticleEmitterSource:
     render_reset: str
     rendering: str
     data_interfaces: tuple[dict[str, Any], ...] = ()
+    data_interface_layout: dict[str, Any] = field(default_factory=dict)
 
     def stages(self) -> dict[str, str]:
         return {
@@ -133,6 +135,7 @@ class GpuParticleEmitterSource:
             ],
             "state_stride": self.state_stride,
             "data_interfaces": [dict(value) for value in self.data_interfaces],
+            "data_interface_layout": dict(self.data_interface_layout),
             "stages": self.stages(),
         }
 
@@ -145,7 +148,7 @@ class GpuParticleProgramSource:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": "infernux.particle_gpu_glsl",
-            "$version": 3,
+            "$version": 4,
             "kernel_hash": self.kernel_hash,
             "emitters": [emitter.to_dict() for emitter in self.emitters],
         }
@@ -167,11 +170,12 @@ class GpuParticleGlslLowerer:
     ) -> GpuParticleEmitterSource:
         fields = _attribute_fields(emitter)
         attribute_layout, state_stride = _std430_attribute_layout(fields)
-        prelude = _shader_prelude(fields, emitter.random_seed)
+        data_interface_layout = _point_cache_layout(emitter)
+        prelude = _shader_prelude(fields, emitter.random_seed, data_interface_layout)
         bootstrap = prelude + _bootstrap_main()
-        init_body, _ = _StageCompiler(emitter, fields).compile(emitter.init)
-        update_body, _ = _StageCompiler(emitter, fields).compile(emitter.update)
-        rendering_body, exports = _StageCompiler(emitter, fields).compile(
+        init_body, _ = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.init)
+        update_body, _ = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.update)
+        rendering_body, exports = _StageCompiler(emitter, fields, data_interface_layout).compile(
             emitter.rendering
         )
         required = {"builtin.position", "builtin.size", "builtin.color"}
@@ -194,6 +198,7 @@ class GpuParticleGlslLowerer:
             prelude + _render_reset_main(),
             prelude + _rendering_main(rendering_body, exports),
             tuple(interface.to_dict() for interface in emitter.data_interfaces),
+            data_interface_layout,
         )
 
 
@@ -410,12 +415,24 @@ class _StageCompiler:
         self,
         emitter: ParticleEmitterKernelIR,
         fields: tuple[tuple[str, TypeRef, str], ...],
+        data_interface_layout: dict[str, Any],
     ) -> None:
         self._emitter = emitter
         self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
         self._values: dict[str, str] = {}
         self._exports: dict[str, str] = {}
         self._lines: list[str] = []
+        self._point_cache_samples = {
+            (
+                sample["interface"],
+                sample["channel"],
+                sample["value_type"],
+                sample["lookup"],
+                sample["semantic"],
+            ): sample["sample_index"]
+            for interface in data_interface_layout.get("point_caches", ())
+            for sample in interface["samples"]
+        }
 
     def compile(self, function: ParticleKernelFunction) -> tuple[str, dict[str, str]]:
         for instruction in function.instructions:
@@ -472,6 +489,21 @@ class _StageCompiler:
                 f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
                 f"state.{self._field('builtin.id')[1]}, state.spawn_generation)"
             )
+        elif opcode == "sample_point_cache":
+            key = (
+                immediate["interface"],
+                immediate["channel"],
+                result_type.value_type.value,
+                immediate["lookup"],
+                immediate["semantic"],
+            )
+            try:
+                sample_index = self._point_cache_samples[key]
+            except KeyError as exc:
+                raise GpuParticleCompileError(
+                    f"GPU point cache sample layout is missing {key!r}"
+                ) from exc
+            expression = f"inx_sample_point_cache_{sample_index}({operands[0]})"
         elif opcode == "convert_space":
             expression = _space_conversion(operands[0], result_type, immediate)
         elif opcode == "store_attribute":
@@ -504,6 +536,71 @@ class _StageCompiler:
             raise GpuParticleCompileError(
                 f"GPU kernel references unknown attribute {stable_id!r}"
             ) from exc
+
+
+def _point_cache_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
+    interfaces = {
+        interface.stable_id: interface
+        for interface in emitter.data_interfaces
+        if isinstance(interface, PointCache)
+    }
+    samples: dict[str, set[tuple[str, str, str, str]]] = {}
+    for function in (emitter.init, emitter.update, emitter.rendering):
+        for instruction in function.instructions:
+            if instruction.opcode != "sample_point_cache":
+                continue
+            immediate = instruction.immediate_dict()
+            stable_id = immediate["interface"]
+            if stable_id not in interfaces:
+                raise GpuParticleCompileError(
+                    f"GPU kernel references unknown point cache interface {stable_id!r}"
+                )
+            samples.setdefault(stable_id, set()).add(
+                (
+                    immediate["channel"],
+                    instruction.result_type.value_type.value,
+                    immediate["lookup"],
+                    immediate["semantic"],
+                )
+            )
+
+    if len(samples) > 7:
+        raise GpuParticleCompileError(
+            "GPU particle emitters currently support at most seven sampled PointCache interfaces"
+        )
+    point_caches = []
+    sample_index = 0
+    for interface_index, stable_id in enumerate(sorted(samples)):
+        encoded_samples = []
+        for channel, value_type, lookup, semantic in sorted(samples[stable_id]):
+            encoded_samples.append(
+                {
+                    "sample_index": sample_index,
+                    "interface": stable_id,
+                    "channel": channel,
+                    "value_type": value_type,
+                    "lookup": lookup,
+                    "semantic": semantic,
+                }
+            )
+            sample_index += 1
+        point_caches.append(
+            {
+                "stable_id": stable_id,
+                "interface_index": interface_index,
+                "data_binding": 1 + interface_index * 2,
+                "lookup_binding": 2 + interface_index * 2,
+                "samples": encoded_samples,
+            }
+        )
+    return {
+        "version": 1,
+        "metadata_binding": 0,
+        "interface_stride_words": 32,
+        "sample_stride_words": 4,
+        "sample_count": sample_index,
+        "point_caches": point_caches,
+    }
 
 
 def _attribute_fields(
@@ -714,13 +811,136 @@ def _pack_std430_default(
         )
 
 
+def _point_cache_glsl(layout: dict[str, Any]) -> str:
+    point_caches = layout.get("point_caches", ())
+    if not point_caches:
+        return ""
+    interface_stride = int(layout["interface_stride_words"])
+    sample_stride = int(layout["sample_stride_words"])
+    sample_base = len(point_caches) * interface_stride
+    lines = [
+        "layout(std430, set = 1, binding = 0) readonly buffer InxPointCacheMetadata { uint inx_pc_meta[]; };"
+    ]
+    for interface in point_caches:
+        interface_index = int(interface["interface_index"])
+        lines.extend(
+            (
+                f"layout(std430, set = 1, binding = {int(interface['data_binding'])}) "
+                f"readonly buffer InxPointCacheData{interface_index} {{ uint inx_pc_data_{interface_index}[]; }};",
+                f"layout(std430, set = 1, binding = {int(interface['lookup_binding'])}) "
+                f"readonly buffer InxPointCacheLookup{interface_index} {{ uvec2 inx_pc_lookup_{interface_index}[]; }};",
+            )
+        )
+        base = interface_index * interface_stride
+        lines.extend(
+            (
+                f"uint inx_pc_resolve_{interface_index}(uint key) {{",
+                f"    uint point_count = inx_pc_meta[{base + 28}u];",
+                f"    uint lookup_mode = inx_pc_meta[{base + 30}u];",
+                "    if (lookup_mode == 0u) return key < point_count ? key : 0xffffffffu;",
+                f"    uint mask = inx_pc_meta[{base + 29}u];",
+                "    uint slot = (key * 0x9e3779b1u) & mask;",
+                "    for (uint probe = 0u; probe <= mask; ++probe) {",
+                f"        uvec2 entry = inx_pc_lookup_{interface_index}[slot];",
+                "        if (entry.y == 0xffffffffu) return 0xffffffffu;",
+                "        if (entry.x == key) return entry.y;",
+                "        slot = (slot + 1u) & mask;",
+                "    }",
+                "    return 0xffffffffu;",
+                "}",
+                f"mat4 inx_pc_matrix_{interface_index}() {{",
+                "    return mat4(",
+                *(
+                    "        vec4("
+                    + ", ".join(
+                        f"uintBitsToFloat(inx_pc_meta[{base + column * 4 + row}u])"
+                        for row in range(4)
+                    )
+                    + (")," if column < 3 else ")")
+                    for column in range(4)
+                ),
+                "    );",
+                "}",
+                f"mat3 inx_pc_normal_matrix_{interface_index}() {{",
+                "    return mat3(",
+                *(
+                    "        vec3("
+                    + ", ".join(
+                        f"uintBitsToFloat(inx_pc_meta[{base + 16 + column * 4 + row}u])"
+                        for row in range(3)
+                    )
+                    + (")," if column < 2 else ")")
+                    for column in range(3)
+                ),
+                "    );",
+                "}",
+            )
+        )
+
+        for sample in interface["samples"]:
+            index = int(sample["sample_index"])
+            metadata = sample_base + index * sample_stride
+            kind = ValueType(sample["value_type"])
+            glsl_type = _glsl_type(TypeRef(kind))
+            zero = "0u" if kind is ValueType.U32 else f"{glsl_type}(0.0)"
+            word = f"inx_pc_meta[{metadata}u] + point_index * inx_pc_meta[{metadata + 1}u]"
+            if kind is ValueType.U32:
+                loaded = f"inx_pc_data_{interface_index}[word]"
+            elif kind is ValueType.F32:
+                loaded = f"uintBitsToFloat(inx_pc_data_{interface_index}[word])"
+            else:
+                components = {
+                    ValueType.VEC2: 2,
+                    ValueType.VEC3: 3,
+                    ValueType.VEC4: 4,
+                    ValueType.COLOR: 4,
+                }[kind]
+                loaded = (
+                    f"{glsl_type}("
+                    + ", ".join(
+                        f"uintBitsToFloat(inx_pc_data_{interface_index}[word + {component}u])"
+                        for component in range(components)
+                    )
+                    + ")"
+                )
+            resolve = (
+                f"(key < inx_pc_meta[{base + 28}u] ? key : 0xffffffffu)"
+                if sample["lookup"] == "index"
+                else f"inx_pc_resolve_{interface_index}(key)"
+            )
+            semantic = sample["semantic"]
+            if semantic == "position":
+                transformed = f"(inx_pc_matrix_{interface_index}() * vec4(value, 1.0)).xyz"
+            elif semantic in {"direction", "vector"}:
+                transformed = f"mat3(inx_pc_matrix_{interface_index}()) * value"
+            elif semantic == "normal":
+                transformed = f"inx_pc_normal_matrix_{interface_index}() * value"
+            else:
+                transformed = "value"
+            lines.extend(
+                (
+                    f"{glsl_type} inx_sample_point_cache_{index}(uint key) {{",
+                    f"    uint point_index = {resolve};",
+                    f"    if (point_index == 0xffffffffu) return {zero};",
+                    f"    uint word = {word};",
+                    f"    {glsl_type} value = {loaded};",
+                    f"    return {transformed};",
+                    "}",
+                )
+            )
+    return "\n".join(lines)
+
+
 def _shader_prelude(
-    fields: tuple[tuple[str, TypeRef, str], ...], emitter_seed: int
+    fields: tuple[tuple[str, TypeRef, str], ...],
+    emitter_seed: int,
+    data_interface_layout: dict[str, Any],
 ) -> str:
     state_fields = "\n".join(
         f"    {_storage_type(value_type)} {field};"
         for _stable_id, value_type, field in fields
     )
+    data_interface_glsl = _point_cache_glsl(data_interface_layout)
     return f"""#version 450
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
@@ -759,6 +979,7 @@ layout(std140, set = 0, binding = 5) uniform ParticleTransforms {{
     mat4 world_to_simulation;
 }} transforms;
 layout(std430, set = 0, binding = 6) buffer ParticleRenderIndices {{ uint render_indices[]; }};
+{data_interface_glsl}
 layout(push_constant) uniform ParticlePushConstants {{
     uint capacity;
     uint invocation_count;

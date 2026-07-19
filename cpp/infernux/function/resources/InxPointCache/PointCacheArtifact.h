@@ -28,6 +28,18 @@ enum class PointCacheChannelSemantic : uint32_t
     Count,
 };
 
+enum class PointCacheIdLookupMode : uint32_t
+{
+    Identity = 0,
+    Hash,
+};
+
+struct PointCacheIdLookupEntry
+{
+    uint32_t stableId = 0;
+    uint32_t pointIndex = UINT32_MAX;
+};
+
 struct PointCacheChannel
 {
     std::string name;
@@ -45,8 +57,12 @@ struct PointCacheCpuData
     uint32_t pointCount = 0;
     std::vector<PointCacheChannel> channels;
     std::vector<uint8_t> bytes;
+    PointCacheIdLookupMode idLookupMode = PointCacheIdLookupMode::Identity;
+    std::vector<PointCacheIdLookupEntry> idLookup;
 
     [[nodiscard]] const PointCacheChannel *FindChannel(std::string_view channelName) const noexcept;
+    void RebuildIdLookup();
+    [[nodiscard]] uint32_t FindPointIndex(uint32_t stableId) const noexcept;
     [[nodiscard]] bool IsValid() const noexcept;
 };
 

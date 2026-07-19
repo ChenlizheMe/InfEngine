@@ -63,6 +63,21 @@ int main()
     assert(restored.FindChannel("position") != nullptr);
     assert(restored.FindChannel("stable_id")->byteOffset == 32);
     assert(restored.bytes == source.bytes);
+    assert(restored.idLookupMode == infernux::PointCacheIdLookupMode::Hash);
+    assert(restored.FindPointIndex(7) == 0);
+    assert(restored.FindPointIndex(42) == 1);
+    assert(restored.FindPointIndex(999) == UINT32_MAX);
+
+    auto identityIds = source;
+    WriteU32(identityIds.bytes, 32, 0);
+    WriteU32(identityIds.bytes, 36, 1);
+    const auto identity = infernux::PointCacheArtifact::Deserialize(
+        infernux::PointCacheArtifact::Serialize(identityIds, SourceHash), SourceHash);
+    assert(identity.idLookupMode == infernux::PointCacheIdLookupMode::Identity);
+    assert(identity.idLookup.empty());
+    assert(identity.FindPointIndex(0) == 0);
+    assert(identity.FindPointIndex(1) == 1);
+    assert(identity.FindPointIndex(2) == UINT32_MAX);
 
     RequireInvalid([&] { (void)infernux::PointCacheArtifact::Deserialize(artifact, "different-source"); });
     std::string corrupted = artifact;

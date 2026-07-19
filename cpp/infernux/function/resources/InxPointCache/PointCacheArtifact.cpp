@@ -1,5 +1,6 @@
 #include "PointCacheArtifact.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -229,6 +230,67 @@ const PointCacheChannel *PointCacheCpuData::FindChannel(std::string_view channel
     return nullptr;
 }
 
+void PointCacheCpuData::RebuildIdLookup()
+{
+    const auto idChannel = std::find_if(channels.begin(), channels.end(), [](const PointCacheChannel &channel) {
+        return channel.semantic == PointCacheChannelSemantic::Id;
+    });
+    if (idChannel == channels.end() || idChannel->type != PointCacheChannelType::UInt)
+        throw std::invalid_argument("point cache cannot build an ID lookup without a uint ID channel");
+
+    bool identity = true;
+    for (uint32_t point = 0; point < pointCount; ++point) {
+        const uint64_t offset = idChannel->byteOffset + static_cast<uint64_t>(point) * idChannel->elementStride;
+        if (ReadPayloadU32(bytes, offset) != point) {
+            identity = false;
+            break;
+        }
+    }
+    idLookup.clear();
+    if (identity) {
+        idLookupMode = PointCacheIdLookupMode::Identity;
+        return;
+    }
+
+    uint64_t minimumCapacity = static_cast<uint64_t>(pointCount) + (static_cast<uint64_t>(pointCount) + 1U) / 2U;
+    uint64_t capacity = 1;
+    while (capacity < minimumCapacity)
+        capacity <<= 1U;
+    if (capacity > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
+        throw std::invalid_argument("point cache ID lookup exceeds the supported size");
+
+    idLookupMode = PointCacheIdLookupMode::Hash;
+    idLookup.assign(static_cast<size_t>(capacity), PointCacheIdLookupEntry{});
+    const uint32_t mask = static_cast<uint32_t>(capacity - 1U);
+    for (uint32_t point = 0; point < pointCount; ++point) {
+        const uint64_t offset = idChannel->byteOffset + static_cast<uint64_t>(point) * idChannel->elementStride;
+        const uint32_t stableId = ReadPayloadU32(bytes, offset);
+        uint32_t slot = (stableId * 0x9e3779b1U) & mask;
+        while (idLookup[slot].pointIndex != UINT32_MAX)
+            slot = (slot + 1U) & mask;
+        idLookup[slot] = {stableId, point};
+    }
+}
+
+uint32_t PointCacheCpuData::FindPointIndex(uint32_t stableId) const noexcept
+{
+    if (idLookupMode == PointCacheIdLookupMode::Identity)
+        return stableId < pointCount ? stableId : UINT32_MAX;
+    if (idLookup.empty())
+        return UINT32_MAX;
+    const uint32_t mask = static_cast<uint32_t>(idLookup.size() - 1U);
+    uint32_t slot = (stableId * 0x9e3779b1U) & mask;
+    for (size_t probe = 0; probe < idLookup.size(); ++probe) {
+        const auto &entry = idLookup[slot];
+        if (entry.pointIndex == UINT32_MAX)
+            return UINT32_MAX;
+        if (entry.stableId == stableId)
+            return entry.pointIndex;
+        slot = (slot + 1U) & mask;
+    }
+    return UINT32_MAX;
+}
+
 bool PointCacheCpuData::IsValid() const noexcept
 {
     try {
@@ -308,6 +370,7 @@ PointCacheCpuData PointCacheArtifact::Deserialize(std::string_view bytes, std::s
     if (!reader.AtEnd())
         throw std::invalid_argument("point cache artifact contains trailing data");
     ValidatePointCache(cache);
+    cache.RebuildIdLookup();
     return cache;
 }
 

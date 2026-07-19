@@ -299,6 +299,23 @@ class ParticleEmitterKernelIR:
                     f"kernel emitter {expected_stage.value} function has stage {function.stage.value}"
                 )
             self._validate_attribute_access(function)
+            self._validate_data_interface_access(function)
+
+    def _validate_data_interface_access(self, function: ParticleKernelFunction) -> None:
+        interfaces = {interface.stable_id: interface for interface in self.data_interfaces}
+        for instruction in function.instructions:
+            if instruction.opcode != "sample_point_cache":
+                continue
+            stable_id = instruction.immediate_dict()["interface"]
+            interface = interfaces.get(stable_id)
+            if interface is None:
+                raise KernelCompileError(
+                    f"kernel references unknown point cache interface {stable_id!r}"
+                )
+            if not isinstance(interface, PointCache):
+                raise KernelCompileError(
+                    f"kernel data interface {stable_id!r} is not a PointCache"
+                )
 
     def _validate_attribute_access(self, function: ParticleKernelFunction) -> None:
         schema = {stable_id: value_type for stable_id, value_type, _default in self.attributes}
@@ -800,6 +817,13 @@ class _KernelBuilder:
             )
             if instruction.opcode == "constant":
                 value = self.constant(instruction.result_type, instruction.operands[0].literal, source)
+            elif instruction.opcode == "load_attribute":
+                value = self.load(instruction.immediate_dict()["attribute"], source)
+                if self._value_types[value] != instruction.result_type:
+                    raise KernelCompileError(
+                        f"expression attribute type mismatch for "
+                        f"{instruction.immediate_dict()['attribute']!r}"
+                    )
             else:
                 values = []
                 for operand in instruction.operands:
@@ -812,11 +836,11 @@ class _KernelBuilder:
                             ) from exc
                     else:
                         values.append(self.constant(operand.value_type, operand.literal, source))
-                immediates = (
-                    {"random_slot": self.next_random_slot()}
-                    if instruction.opcode == "random_f32"
-                    else {}
-                )
+                immediates = instruction.immediate_dict()
+                if instruction.opcode == "random_f32":
+                    if immediates:
+                        raise KernelCompileError("random expression cannot define authored immediates")
+                    immediates = {"random_slot": self.next_random_slot()}
                 value = self.emit(
                     instruction.opcode,
                     instruction.result_type,

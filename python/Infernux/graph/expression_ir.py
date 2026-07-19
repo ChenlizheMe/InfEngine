@@ -46,6 +46,10 @@ class ExpressionInstruction:
     operands: tuple[ExpressionOperand, ...]
     source_node_uid: str
     source_port_id: str
+    immediates: tuple[tuple[str, Any], ...] = ()
+
+    def immediate_dict(self) -> dict[str, Any]:
+        return dict(self.immediates)
 
 
 @dataclass(frozen=True)
@@ -136,8 +140,8 @@ class ExpressionCompiler:
                 raise ExpressionCompileError(
                     [ExpressionDiagnostic("missing_target", f"{definition.type_id} has no expression target", node_uid)]
                 )
-            if opcode == "constant":
-                prop = definition.properties[0]
+            immediates = []
+            for prop in definition.properties:
                 literal = node.properties.get(prop.id, prop.default)
                 literal_error = self._literal_error(prop.value_type, literal)
                 if literal_error:
@@ -150,8 +154,13 @@ class ExpressionCompiler:
                             )
                         ]
                     )
+                immediates.append((prop.id, literal))
+            if opcode == "constant":
+                prop = definition.properties[0]
+                literal = node.properties.get(prop.id, prop.default)
                 operands = [ExpressionOperand(prop.value_type, literal=literal)]
                 result_type = prop.value_type
+                immediates = []
             instructions.append(
                 ExpressionInstruction(
                     result_id,
@@ -160,6 +169,7 @@ class ExpressionCompiler:
                     tuple(operands),
                     node_uid,
                     port_id,
+                    tuple(immediates),
                 )
             )
             active.remove(key)

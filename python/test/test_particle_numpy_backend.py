@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
-from Infernux.graph.types import CoordinateSpace
+from Infernux.graph.types import AssetReference, CoordinateSpace
 from Infernux.particle import (
     EmitterSettings,
     EmitterShape,
@@ -22,11 +22,41 @@ from Infernux.particle import (
     ParticleGraphCompiler,
     ParticleKernelLowerer,
     ParticleKernelProgram,
+    PointCache,
     ParticleRuntimeCompatibility,
     ScalarRange,
     decode_particle_runtime_metadata,
     particle_random_f32,
 )
+
+
+class _FakePointCache:
+    def __init__(self, positions, stable_ids=(0, 1, 2)):
+        self.generation = 1
+        self._positions = np.asarray(positions, dtype=np.float32)
+        self._stable_ids = np.asarray(stable_ids, dtype=np.uint32)
+        self.lookup_count = 0
+
+    @property
+    def point_count(self):
+        return self._positions.shape[0]
+
+    def channel_array(self, name):
+        if name == "position":
+            return self._positions
+        if name == "stable_id":
+            return self._stable_ids
+        raise KeyError(name)
+
+    def lookup_indices(self, stable_ids, point_indices):
+        self.lookup_count += 1
+        mapping = {int(value): index for index, value in enumerate(self._stable_ids)}
+        for index, value in enumerate(stable_ids):
+            point_indices[index] = mapping.get(int(value), 0xFFFFFFFF)
+
+    def replace_positions(self, positions):
+        self._positions = np.asarray(positions, dtype=np.float32)
+        self.generation += 1
 
 
 def _compile_runtime(settings: EmitterSettings, *, system_seed: int = 0):
@@ -129,6 +159,117 @@ def test_numpy_aot_executes_authored_random_expression_with_node_seed():
         dtype=np.float32,
     )
     np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:2], expected)
+
+
+def test_numpy_point_cache_sampling_uses_typed_interface_and_refreshes_generation():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord("velocity", "particle.init.set_velocity"),
+            GraphNodeRecord(
+                "particle_id",
+                "particle.attribute.read_u32",
+                properties={"attribute": "builtin.id"},
+            ),
+            GraphNodeRecord(
+                "sample",
+                "particle.point_cache.sample_position",
+                properties={
+                    "interface": "spawn-points",
+                    "channel": "$position",
+                    "lookup": "stable_id",
+                    "semantic": "position",
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.init", "out", "velocity", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord(
+                "id", "particle_id", "value", "sample", "index"
+            ),
+            GraphLinkRecord("value", "sample", "value", "velocity", "value"),
+        ),
+    )
+    cache_to_world = (
+        1.0,
+        0.0,
+        0.0,
+        10.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+    interface = PointCache(
+        stable_id="spawn-points",
+        cache=AssetReference(guid="fake-cache"),
+        space=CoordinateSpace.WORLD,
+        cache_to_space=cache_to_world,
+        id_channel="stable_id",
+    )
+    settings = EmitterSettings(
+        capacity=3,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 3),),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="point-cache-emitter",
+                settings=settings,
+                init=init,
+                data_interfaces=(interface,),
+            ),
+        )
+    )
+    fake = _FakePointCache([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    hir = ParticleGraphCompiler().compile(asset)
+    kernel = ParticleKernelLowerer().lower(hir)
+    sample = next(
+        instruction
+        for instruction in kernel.emitters[0].init.instructions
+        if instruction.opcode == "sample_point_cache"
+    )
+    assert sample.immediate_dict() == {
+        "interface": "spawn-points",
+        "channel": "$position",
+        "lookup": "stable_id",
+        "semantic": "position",
+    }
+    program = NumpyParticleCompiler().compile(
+        hir,
+        kernel,
+        point_cache_resolver=lambda _interface: fake,
+    )
+    runtime = program.create_runtime()
+
+    runtime.tick(0.0)
+    np.testing.assert_array_equal(
+        runtime.attributes["builtin.velocity"][:3],
+        [[11, 2, 3], [14, 5, 6], [17, 8, 9]],
+    )
+    assert fake.lookup_count > 0
+
+    fake.replace_positions([[2, 3, 4], [5, 6, 7], [8, 9, 10]])
+    runtime.reset()
+    runtime.tick(0.0)
+    np.testing.assert_array_equal(
+        runtime.attributes["builtin.velocity"][:3],
+        [[12, 3, 4], [15, 6, 7], [18, 9, 10]],
+    )
 
 
 def test_numpy_sphere_sampling_is_bounded_and_repeatable_after_reset():

@@ -29,6 +29,10 @@ class InxPointCache final
     {
         return m_cpuData;
     }
+    [[nodiscard]] uint64_t GetGeneration() const noexcept
+    {
+        return m_generation;
+    }
 
     void SetGuid(std::string value)
     {
@@ -45,6 +49,7 @@ class InxPointCache final
     void SetCpuData(std::shared_ptr<const PointCacheCpuData> value)
     {
         m_cpuData = std::move(value);
+        ++m_generation;
     }
 
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
@@ -54,6 +59,7 @@ class InxPointCache final
     std::string m_filePath;
     std::string m_name;
     std::shared_ptr<const PointCacheCpuData> m_cpuData;
+    uint64_t m_generation = 0;
 };
 
 } // namespace infernux

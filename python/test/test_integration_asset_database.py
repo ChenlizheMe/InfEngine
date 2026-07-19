@@ -334,6 +334,15 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
         assert runtime.has_channel("position")
         assert not runtime.has_channel("missing")
         assert runtime.cpu_byte_size > 0
+        initial_generation = runtime.generation
+        assert initial_generation > 0
+        assert runtime.lookup_index(7) == 0
+        assert runtime.lookup_index(42) == 1
+        assert runtime.lookup_index(99) == 0xFFFFFFFF
+        lookup_source = np.asarray([42, 99, 7], dtype=np.uint32)
+        lookup_result = np.empty(3, dtype=np.uint32)
+        runtime.lookup_indices(lookup_source, lookup_result)
+        np.testing.assert_array_equal(lookup_result, [1, 0xFFFFFFFF, 0])
 
         original_positions = runtime.channel_array("position")
         stable_ids = runtime.channel_array("stable_id")
@@ -359,6 +368,7 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
         assert reimported, reimported.error
 
         current_positions = runtime.channel_array("position")
+        assert runtime.generation == initial_generation + 1
         np.testing.assert_array_equal(current_positions, [[9.0, 8.0, 7.0], [-4.0, 5.5, 6.0]])
         np.testing.assert_array_equal(original_positions, [[1.0, 2.0, 3.0], [-4.0, 5.5, 6.0]])
         published_artifact = artifact.read_bytes()
@@ -372,6 +382,7 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
         assert failed.guid == result.guid
         assert "stable point IDs must be unique" in failed.error
         assert artifact.read_bytes() == published_artifact
+        assert runtime.generation == initial_generation + 1
         np.testing.assert_array_equal(runtime.channel_array("position"), current_positions)
     finally:
         if "result" in locals() and result.guid:

@@ -116,6 +116,7 @@ class ParticleGraphCompiler:
                         "result": canonical_ids[instruction.result_id],
                         "opcode": instruction.opcode,
                         "type": instruction.result_type.to_dict(),
+                        "immediates": list(instruction.immediates),
                         "operands": [
                             {
                                 "type": operand.value_type.to_dict(),
