@@ -34,6 +34,16 @@ layout(std430, set = 0, binding = 4) buffer SortDispatchArguments {
     uint sort_group_count_y;
     uint sort_group_count_z;
 };
+layout(std430, set = 0, binding = 5) readonly buffer Bounds {
+    uint bounds_min_x;
+    uint bounds_min_y;
+    uint bounds_min_z;
+    uint bounds_max_x;
+    uint bounds_max_y;
+    uint bounds_max_z;
+    uint bounds_valid;
+    uint bounds_reserved;
+};
 layout(push_constant) uniform CullConstants {
     vec4 frustum_planes[6];
     uint capacity;
@@ -70,7 +80,32 @@ void main() {
     draw_first_vertex = source_first_vertex;
     draw_first_instance = source_first_instance;
     uint source_count = min(source_instance_count, pc.capacity);
-    sort_group_count_x = (source_count + 255u) / 256u;
+    bool bounds_visible = bounds_valid != 0u;
+    if (bounds_visible) {
+        uint ordered_min[3] = uint[3](bounds_min_x, bounds_min_y, bounds_min_z);
+        uint ordered_max[3] = uint[3](bounds_max_x, bounds_max_y, bounds_max_z);
+        vec3 lower;
+        vec3 upper;
+        for (uint axis = 0u; axis < 3u; ++axis) {
+            uint min_bits = (ordered_min[axis] & 0x80000000u) != 0u
+                                ? (ordered_min[axis] ^ 0x80000000u)
+                                : ~ordered_min[axis];
+            uint max_bits = (ordered_max[axis] & 0x80000000u) != 0u
+                                ? (ordered_max[axis] ^ 0x80000000u)
+                                : ~ordered_max[axis];
+            lower[axis] = uintBitsToFloat(min_bits);
+            upper[axis] = uintBitsToFloat(max_bits);
+        }
+        for (uint plane_index = 0u; plane_index < 6u; ++plane_index) {
+            vec4 plane = pc.frustum_planes[plane_index];
+            vec3 positive_vertex = mix(lower, upper, greaterThanEqual(plane.xyz, vec3(0.0)));
+            if (dot(plane.xyz, positive_vertex) + plane.w < 0.0) {
+                bounds_visible = false;
+                break;
+            }
+        }
+    }
+    sort_group_count_x = bounds_visible ? (source_count + 255u) / 256u : 0u;
     sort_group_count_y = 1u;
     sort_group_count_z = 1u;
 }
@@ -156,7 +191,7 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
 {
     Destroy();
     if (desc.capacity == 0 || !desc.instances.IsValid() || !desc.sourceIndirectArguments.IsValid() ||
-        !desc.program.IsValid()) {
+        !desc.bounds.IsValid() || !desc.program.IsValid()) {
         return false;
     }
 
@@ -164,19 +199,22 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
     m_capacity = desc.capacity;
     m_instances = desc.instances;
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
+    m_bounds = desc.bounds;
     const auto storage = rhi::BufferUsageFlags::Storage;
     m_visibleIndices = device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
-    m_drawIndirectArguments = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect});
-    m_sortDispatchArguments = device.CreateBuffer({12, storage | rhi::BufferUsageFlags::Indirect});
+    m_drawIndirectArguments =
+        device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource});
+    m_sortDispatchArguments =
+        device.CreateBuffer({12, storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource});
     if (!m_visibleIndices.IsValid() || !m_drawIndirectArguments.IsValid() || !m_sortDispatchArguments.IsValid()) {
         Destroy();
         return false;
     }
 
     rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 5; ++binding)
+    for (uint32_t binding = 0; binding < 6; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 5;
+    layoutDesc.entryCount = 6;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
@@ -185,8 +223,9 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 5> buffers = {
+    const std::array<rhi::BufferHandle, 6> buffers = {
         m_instances, m_sourceIndirectArguments, m_visibleIndices, m_drawIndirectArguments, m_sortDispatchArguments,
+        m_bounds,
     };
     for (uint32_t binding = 0; binding < buffers.size(); ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
@@ -236,6 +275,7 @@ void ParticleGpuCuller::Destroy() noexcept
     m_capacity = 0;
     m_instances = {};
     m_sourceIndirectArguments = {};
+    m_bounds = {};
     m_visibleIndices = {};
     m_drawIndirectArguments = {};
     m_sortDispatchArguments = {};
@@ -249,14 +289,16 @@ void ParticleGpuCuller::Destroy() noexcept
 bool ParticleGpuCuller::IsValid() const noexcept
 {
     return m_device && m_capacity > 0 && m_instances.IsValid() && m_sourceIndirectArguments.IsValid() &&
-           m_visibleIndices.IsValid() && m_drawIndirectArguments.IsValid() && m_sortDispatchArguments.IsValid() &&
-           m_layout.IsValid() && m_group.IsValid() && m_resetPipeline.IsValid() && m_cullPipeline.IsValid() &&
-           m_finalizePipeline.IsValid();
+           m_bounds.IsValid() && m_visibleIndices.IsValid() && m_drawIndirectArguments.IsValid() &&
+           m_sortDispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_resetPipeline.IsValid() &&
+           m_cullPipeline.IsValid() && m_finalizePipeline.IsValid();
 }
 
-void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder) const
+void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder,
+                                    const std::array<float, PlaneCount * 4> &frustumPlanes) const
 {
     GpuParticleCullConstants constants;
+    constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
     Record(encoder, m_resetPipeline, constants, 1);
 }

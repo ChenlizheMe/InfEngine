@@ -24,6 +24,7 @@
 #include "vk/RenderGraph.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -609,6 +610,7 @@ class SceneRenderGraph
     // uses the exact same matrices that were active during SetupCameraProperties.
     glm::mat4 m_cachedView{1.0f};
     glm::mat4 m_cachedProj{1.0f};
+    std::array<float, 24> m_particleFrustumPlanes{};
     bool m_hasCachedCameraVP = false;
     glm::mat4 m_previousViewProj{1.0f};
     bool m_cameraHistoryValid = false;

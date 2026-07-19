@@ -12,6 +12,7 @@
 #include "InxVkCoreModular.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "particle/ParticleGpuBounds.h"
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
@@ -1024,6 +1025,18 @@ void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
 
         m_fullscreenRenderer.ResetPool();
 
+        if (!m_particleCullers.empty()) {
+            Frustum frustum;
+            frustum.ExtractFromMatrix(m_cachedProj * m_cachedView);
+            for (uint32_t index = 0; index < particle::ParticleGpuCuller::PlaneCount; ++index) {
+                const auto &plane = frustum.GetPlane(static_cast<Frustum::PlaneIndex>(index));
+                m_particleFrustumPlanes[index * 4 + 0] = plane.normal.x;
+                m_particleFrustumPlanes[index * 4 + 1] = plane.normal.y;
+                m_particleFrustumPlanes[index * 4 + 2] = plane.normal.z;
+                m_particleFrustumPlanes[index * 4 + 3] = plane.distance;
+            }
+        }
+
         m_renderGraph->Execute(commandBuffer);
         ++m_executionCount;
         m_lastExecutedBuildRevision = m_graphBuildRevision;
@@ -1353,7 +1366,8 @@ void SceneRenderGraph::BuildRenderGraph()
         auto existing = m_particleCullers.find(entry.id);
         if (existing != m_particleCullers.end() && existing->second && existing->second->Capacity() == entry.capacity &&
             existing->second->InstanceBuffer() == entry.instances &&
-            existing->second->SourceIndirectBuffer() == entry.indirectArguments) {
+            existing->second->SourceIndirectBuffer() == entry.indirectArguments &&
+            existing->second->BoundsBuffer() == entry.bounds) {
             continue;
         }
 
@@ -1362,6 +1376,7 @@ void SceneRenderGraph::BuildRenderGraph()
         desc.capacity = entry.capacity;
         desc.instances = entry.instances;
         desc.sourceIndirectArguments = entry.indirectArguments;
+        desc.bounds = entry.bounds;
         desc.program = entry.cullProgram->View();
         if (!culler->Create(m_vkCore->GetDeviceContext().GetRhiDevice(), desc)) {
             INXLOG_ERROR("SceneRenderGraph: failed to create per-view culler for GPU particle output ", entry.id);
@@ -1487,6 +1502,7 @@ void SceneRenderGraph::BuildRenderGraph()
         {
             vk::ResourceHandle instances;
             vk::ResourceHandle sourceIndirectArguments;
+            vk::ResourceHandle bounds;
             vk::ResourceHandle renderIndices;
             vk::ResourceHandle indirectArguments;
             vk::ResourceHandle sortDispatchArguments;
@@ -1515,6 +1531,8 @@ void SceneRenderGraph::BuildRenderGraph()
                                                                particle::ParticleGpuRuntime::RenderInstanceStride);
                 resources.sourceIndirectArguments =
                     builder.ImportBuffer(prefix + "/SourceIndirect", entry.indirectArguments, 16);
+                resources.bounds = builder.ImportBuffer(prefix + "/Bounds", entry.bounds,
+                                                        particle::ParticleGpuBounds::BoundsBufferBytes);
                 resources.renderIndices =
                     builder.ImportBuffer(prefix + "/VisibleIndices", culler->VisibleIndexBuffer(), elementBytes);
                 resources.indirectArguments =
@@ -1525,6 +1543,8 @@ void SceneRenderGraph::BuildRenderGraph()
                 m_renderGraph->SetResourceInitialState(resources.instances, rhi::TextureLayout::Undefined,
                                                        rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
                 m_renderGraph->SetResourceInitialState(resources.sourceIndirectArguments, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                m_renderGraph->SetResourceInitialState(resources.bounds, rhi::TextureLayout::Undefined,
                                                        rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
                 const auto visibleIndexLastStage = entry.semantics.sortMode == particle::ParticleSortMode::None
                                                        ? rhi::PipelineStage::VertexShader
@@ -1543,9 +1563,12 @@ void SceneRenderGraph::BuildRenderGraph()
                                                        sortDispatchLastAccess, sortDispatchLastStage);
 
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
+                builder.ReadStorageBuffer(resources.bounds);
                 resources.indirectArguments = builder.WriteStorageBuffer(resources.indirectArguments);
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
-                return [culler](vk::RenderContext &ctx) { culler->RecordReset(ctx.GetComputeCommandEncoder()); };
+                return [this, culler](vk::RenderContext &ctx) {
+                    culler->RecordReset(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
+                };
             });
             m_renderGraph->AddComputePass(prefix + "/Cull", [&, culler](vk::PassBuilder &builder) {
                 builder.ReadStorageBuffer(resources.instances);
@@ -1555,17 +1578,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 resources.indirectArguments =
                     builder.ReadWrite(resources.indirectArguments, rhi::PipelineStage::ComputeShader);
                 return [this, culler](vk::RenderContext &ctx) {
-                    Frustum frustum;
-                    frustum.ExtractFromMatrix(m_cachedProj * m_cachedView);
-                    std::array<float, particle::ParticleGpuCuller::PlaneCount * 4> planes{};
-                    for (uint32_t index = 0; index < particle::ParticleGpuCuller::PlaneCount; ++index) {
-                        const auto &plane = frustum.GetPlane(static_cast<Frustum::PlaneIndex>(index));
-                        planes[index * 4 + 0] = plane.normal.x;
-                        planes[index * 4 + 1] = plane.normal.y;
-                        planes[index * 4 + 2] = plane.normal.z;
-                        planes[index * 4 + 3] = plane.distance;
-                    }
-                    culler->RecordCull(ctx.GetComputeCommandEncoder(), planes);
+                    culler->RecordCull(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
                 };
             });
             m_renderGraph->AddComputePass(prefix + "/Finalize", [&, culler](vk::PassBuilder &builder) {
@@ -1574,7 +1587,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
                 return [culler](vk::RenderContext &ctx) { culler->RecordFinalize(ctx.GetComputeCommandEncoder()); };
             });
-            if (resources.instances.IsValid() && resources.renderIndices.IsValid() &&
+            if (resources.instances.IsValid() && resources.bounds.IsValid() && resources.renderIndices.IsValid() &&
                 resources.indirectArguments.IsValid() && resources.sortDispatchArguments.IsValid()) {
                 particleGraphResources.emplace(entry.id, resources);
             }

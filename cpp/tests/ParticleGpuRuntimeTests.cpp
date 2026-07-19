@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <vector>
 
 namespace
@@ -334,8 +335,9 @@ int main()
     assert(device.buffers[0].byteSize == 64000);
     assert(device.buffers[3].byteSize == 48000);
     assert(rhi::HasBufferUsage(device.buffers[4].usage, rhi::BufferUsageFlags::Indirect));
-    assert(device.buffers[5].memory == rhi::BufferMemory::Upload);
-    assert(device.buffers[6].byteSize == 4000 && device.buffers[6].usage == rhi::BufferUsageFlags::Storage);
+    assert(device.buffers[5].byteSize == 4000 && device.buffers[5].usage == rhi::BufferUsageFlags::Storage);
+    assert(device.buffers[6].byteSize == sizeof(particle::GpuParticleTransforms) &&
+           device.buffers[6].memory == rhi::BufferMemory::Upload);
     assert(device.shaderCreates == 5 && device.shaderReleases == 5);
     assert(device.layoutCreates == 1 && device.groupCreates == 1 && device.pipelineCreates == 5);
 
@@ -411,6 +413,7 @@ int main()
     cullerDesc.capacity = runtime.Capacity();
     cullerDesc.instances = runtime.InstanceBuffer();
     cullerDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+    cullerDesc.bounds = {800, 1};
     cullerDesc.program = {
         {cullWords[0].data(), cullWords[0].size()},
         {cullWords[1].data(), cullWords[1].size()},
@@ -426,7 +429,8 @@ int main()
     assert(gameCuller.Create(cullDevice, cullerDesc));
     assert(sceneCuller.IsValid() && gameCuller.IsValid() && sceneCuller.Capacity() == 1000 &&
            sceneCuller.InstanceBuffer() == runtime.InstanceBuffer() &&
-           sceneCuller.SourceIndirectBuffer() == runtime.IndirectBuffer());
+           sceneCuller.SourceIndirectBuffer() == runtime.IndirectBuffer() &&
+           sceneCuller.BoundsBuffer() == cullerDesc.bounds);
     assert(sceneCuller.VisibleIndexBuffer() != gameCuller.VisibleIndexBuffer() &&
            sceneCuller.DrawIndirectBuffer() != gameCuller.DrawIndirectBuffer() &&
            sceneCuller.SortDispatchBuffer() != gameCuller.SortDispatchBuffer());
@@ -435,8 +439,8 @@ int main()
            rhi::HasBufferUsage(cullDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect) &&
            cullDevice.buffers[2].byteSize == 12 &&
            rhi::HasBufferUsage(cullDevice.buffers[2].usage, rhi::BufferUsageFlags::Indirect));
-    assert(cullDevice.layouts.size() == 2 && cullDevice.layouts[0].entryCount == 5 &&
-           cullDevice.bindGroups.size() == 2 && cullDevice.bindGroups[0].bufferCount == 5 &&
+    assert(cullDevice.layouts.size() == 2 && cullDevice.layouts[0].entryCount == 6 &&
+           cullDevice.bindGroups.size() == 2 && cullDevice.bindGroups[0].bufferCount == 6 &&
            cullDevice.shaderCreates == 6 && cullDevice.shaderReleases == 6 && cullDevice.pipelineCreates == 6);
 
     CullTrace cullTrace;
@@ -447,14 +451,15 @@ int main()
     std::array<float, particle::ParticleGpuCuller::PlaneCount * 4> frustumPlanes{};
     for (size_t index = 0; index < frustumPlanes.size(); ++index)
         frustumPlanes[index] = static_cast<float>(index + 1);
-    sceneCuller.RecordReset(cullEncoder);
+    sceneCuller.RecordReset(cullEncoder, frustumPlanes);
     sceneCuller.RecordCull(cullEncoder, frustumPlanes);
     sceneCuller.RecordFinalize(cullEncoder);
     assert(cullTrace.pipelines.size() == 3 && cullTrace.groups.size() == 3 && cullTrace.constants.size() == 3);
     assert(cullTrace.dispatches == std::vector<uint32_t>({1, 1}));
     assert(cullTrace.indirectDispatches == std::vector<rhi::BufferHandle>({sceneCuller.SortDispatchBuffer()}));
-    assert(cullTrace.constants[0].capacity == 1000 && cullTrace.constants[1].capacity == 1000 &&
-           cullTrace.constants[1].frustumPlanes == frustumPlanes && cullTrace.constants[2].capacity == 1000);
+    assert(cullTrace.constants[0].capacity == 1000 && cullTrace.constants[0].frustumPlanes == frustumPlanes &&
+           cullTrace.constants[1].capacity == 1000 && cullTrace.constants[1].frustumPlanes == frustumPlanes &&
+           cullTrace.constants[2].capacity == 1000);
     sceneCuller.Destroy();
     gameCuller.Destroy();
     assert(!sceneCuller.IsValid() && !gameCuller.IsValid() && cullDevice.bufferReleases == 6 &&
@@ -572,8 +577,8 @@ int main()
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({6, 2}));
-    assert(device.groupBufferCounts == std::vector<uint32_t>({6, 1}));
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({7, 2}));
+    assert(device.groupBufferCounts == std::vector<uint32_t>({7, 1}));
     assert(device.groupTextureCounts == std::vector<uint32_t>({0, 1}));
     assert(textureResolveCount == 1);
 
@@ -756,24 +761,38 @@ int main()
     assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 4 && linkedDevice.textureReleases == 3 &&
            linkedDevice.samplerReleases == 3);
 
-    auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
-    assert(registeredBillboard->Create(device, billboardDesc));
-    particle::ParticleGpuDrawRegistry registry;
-    const uint64_t initialRevision = registry.Revision();
-    assert(registry.Set(
-        {77, runtime.Capacity(), instanceBuffer, renderIndexBuffer, indirectBuffer, registeredBillboard, nullptr, {}}));
-    assert(registry.Revision() == initialRevision + 1 && registry.Size() == 1);
-    const auto visibleEntries = registry.Snapshot(3000, 3200);
-    assert(visibleEntries.size() == 1 && visibleEntries[0].id == 77);
-    assert(registry.Snapshot(0, 2999).empty());
-    assert(registry.Remove(77) && !registry.Remove(77) && registry.Size() == 0);
-    registeredBillboard.reset();
+    {
+        auto registryBillboardDesc = billboardDesc;
+        registryBillboardDesc.renderIndices = renderIndexBuffer;
+        auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
+        assert(registeredBillboard->Create(device, registryBillboardDesc));
+        particle::ParticleGpuDrawRegistry registry;
+        const uint64_t initialRevision = registry.Revision();
+        particle::GpuParticleDrawEntry registryEntry;
+        registryEntry.id = 77;
+        registryEntry.capacity = runtime.Capacity();
+        registryEntry.instances = instanceBuffer;
+        registryEntry.renderIndices = renderIndexBuffer;
+        registryEntry.indirectArguments = indirectBuffer;
+        registryEntry.bounds = {999, 1};
+        registryEntry.renderer = registeredBillboard;
+        assert(registry.Set(std::move(registryEntry)));
+        assert(registry.Revision() == initialRevision + 1 && registry.Size() == 1);
+        const auto visibleEntries = registry.Snapshot(3000, 3200);
+        assert(visibleEntries.size() == 1 && visibleEntries[0].id == 77);
+        assert(registry.Snapshot(0, 2999).empty());
+        assert(registry.Remove(77) && !registry.Remove(77) && registry.Size() == 0);
+    }
 
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
+    if (device.pipelineReleases != 5 || device.groupReleases != 5 || device.layoutReleases != 3) {
+        std::cerr << "release counts: pipelines=" << device.pipelineReleases << " groups=" << device.groupReleases
+                  << " layouts=" << device.layoutReleases << '\n';
+    }
     assert(device.pipelineReleases == 5 && device.groupReleases == 5 && device.layoutReleases == 3);
     assert(device.textureReleases == 4 && device.samplerReleases == 4);
     assert(device.shaderReleases == 9);
-    assert(device.bufferReleases == 6);
+    assert(device.bufferReleases == 7);
     return 0;
 }

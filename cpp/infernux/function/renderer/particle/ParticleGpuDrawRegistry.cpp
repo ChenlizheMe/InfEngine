@@ -14,7 +14,7 @@ namespace
 bool IsValidEntry(const GpuParticleDrawEntry &entry)
 {
     return entry.id != 0 && entry.capacity != 0 && entry.instances.IsValid() && entry.renderIndices.IsValid() &&
-           entry.indirectArguments.IsValid() && entry.renderer && entry.renderer->IsValid() &&
+           entry.indirectArguments.IsValid() && entry.bounds.IsValid() && entry.renderer && entry.renderer->IsValid() &&
            entry.renderer->InstanceBuffer() == entry.instances &&
            entry.renderer->RenderIndexBuffer() == entry.renderIndices &&
            (!entry.cullProgram || entry.cullProgram->IsValid()) &&

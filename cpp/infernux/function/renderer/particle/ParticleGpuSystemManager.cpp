@@ -52,6 +52,7 @@ struct ParticleGpuSystemManager::Impl
         uint64_t artifactRevision = 0;
         std::string stableId;
         std::unique_ptr<ParticleGpuRuntime> runtime;
+        std::unique_ptr<ParticleGpuBounds> bounds;
         std::vector<uint32_t> billboardVertexShader;
         std::vector<uint32_t> billboardFragmentShader;
         std::vector<Output> outputs;
@@ -74,6 +75,7 @@ struct ParticleGpuSystemManager::Impl
     GpuBillboardTextureVersionResolver textureVersionResolver;
     std::shared_ptr<const GpuParticleCullProgramStorage> cullProgram;
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
+    std::shared_ptr<const GpuParticleBoundsProgramStorage> boundsProgram;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
 
@@ -142,6 +144,20 @@ struct ParticleGpuSystemManager::Impl
             SetError(error, "failed to create GPU particle simulation runtime");
             return {};
         }
+        if (!boundsProgram || !boundsProgram->IsValid()) {
+            SetError(error, "GPU particle bounds kernels are unavailable");
+            return {};
+        }
+        emitter->bounds = std::make_unique<ParticleGpuBounds>();
+        GpuParticleBoundsDesc boundsDesc;
+        boundsDesc.capacity = emitter->runtime->Capacity();
+        boundsDesc.instances = emitter->runtime->InstanceBuffer();
+        boundsDesc.sourceIndirectArguments = emitter->runtime->IndirectBuffer();
+        boundsDesc.program = boundsProgram->View();
+        if (!emitter->bounds->Create(device, boundsDesc)) {
+            SetError(error, "failed to create GPU particle bounds reducer");
+            return {};
+        }
 
         std::unordered_set<uint64_t> outputIds;
         std::unordered_set<std::string> outputStableIds;
@@ -195,7 +211,7 @@ struct ParticleGpuSystemManager::Impl
         for (const auto &[id, emitter] : candidateEmitters) {
             auto scheduler = std::make_unique<ParticleRenderGraph>();
             const std::string prefix = "GpuParticle/" + std::to_string(id);
-            if (!scheduler->Attach(*state->graph, *emitter->runtime, prefix)) {
+            if (!scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, prefix)) {
                 SetError(error, "failed to attach GPU particle emitter to the simulation graph");
                 return {};
             }
@@ -227,6 +243,7 @@ struct ParticleGpuSystemManager::Impl
                 entry.instances = emitter->runtime->InstanceBuffer();
                 entry.renderIndices = output.renderer->RenderIndexBuffer();
                 entry.indirectArguments = emitter->runtime->IndirectBuffer();
+                entry.bounds = emitter->bounds->BoundsBuffer();
                 entry.renderer = output.renderer;
                 entry.cullProgram = output.shaderProgram ? cullProgram : nullptr;
                 entry.sortProgram = output.semantics.sortMode == ParticleSortMode::None ? nullptr : sortProgram;
@@ -264,9 +281,10 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
                                           GpuBillboardTextureResolver textureResolver,
                                           GpuBillboardTextureVersionResolver textureVersionResolver,
                                           const GpuParticleSortProgram &sortProgram,
-                                          const GpuParticleCullProgram &cullProgram)
+                                          const GpuParticleCullProgram &cullProgram,
+                                          const GpuParticleBoundsProgram &boundsProgram)
 {
-    if (!m_impl || m_impl->context || !context.IsValid())
+    if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid())
         return false;
     m_impl->context = &context;
     m_impl->pipelines = &pipelines;
@@ -274,6 +292,12 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
     m_impl->drawRegistry = &drawRegistry;
     m_impl->textureResolver = std::move(textureResolver);
     m_impl->textureVersionResolver = std::move(textureVersionResolver);
+    auto boundsStorage = std::make_shared<GpuParticleBoundsProgramStorage>();
+    if (!boundsStorage->Assign(boundsProgram)) {
+        Shutdown();
+        return false;
+    }
+    m_impl->boundsProgram = std::move(boundsStorage);
     if (cullProgram.IsValid()) {
         auto storage = std::make_shared<GpuParticleCullProgramStorage>();
         if (!storage->Assign(cullProgram)) {
@@ -311,6 +335,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->textureVersionResolver = {};
     m_impl->cullProgram.reset();
     m_impl->sortProgram.reset();
+    m_impl->boundsProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;
     m_impl->context = nullptr;

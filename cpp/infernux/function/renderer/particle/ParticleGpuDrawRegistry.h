@@ -21,6 +21,7 @@ struct GpuParticleDrawEntry
     rhi::BufferHandle instances;
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle indirectArguments;
+    rhi::BufferHandle bounds;
     std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
     std::shared_ptr<const GpuParticleCullProgramStorage> cullProgram;
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;

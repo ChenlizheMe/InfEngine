@@ -18,12 +18,16 @@ std::string StageName(const std::string &prefix, const char *stage)
 
 } // namespace
 
-bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, const std::string &namePrefix)
+bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
+                                 const std::string &namePrefix)
 {
-    if (IsAttached() || !runtime.IsValid() || namePrefix.empty() || runtime.StateStride() == 0)
+    if (IsAttached() || !runtime.IsValid() || !bounds.IsValid() ||
+        bounds.InstanceBuffer() != runtime.InstanceBuffer() ||
+        bounds.SourceIndirectBuffer() != runtime.IndirectBuffer() || namePrefix.empty() || runtime.StateStride() == 0)
         return false;
 
     m_runtime = &runtime;
+    m_bounds = &bounds;
     vk::ResourceHandle states;
     vk::ResourceHandle freeList;
     vk::ResourceHandle counters;
@@ -31,6 +35,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle renderIndices;
     vk::ResourceHandle indirect;
     vk::ResourceHandle transforms;
+    vk::ResourceHandle boundsBuffer;
+    vk::ResourceHandle boundsDispatch;
 
     graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
         const uint64_t capacity = runtime.Capacity();
@@ -47,8 +53,13 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             builder.ImportBuffer(StageName(namePrefix, "Indirect"), runtime.IndirectBuffer(), IndirectBufferBytes);
         transforms = builder.ImportBuffer(StageName(namePrefix, "Transforms"), runtime.TransformBuffer(),
                                           sizeof(GpuParticleTransforms));
+        boundsBuffer = builder.ImportBuffer(StageName(namePrefix, "Bounds"), bounds.BoundsBuffer(),
+                                            ParticleGpuBounds::BoundsBufferBytes);
+        boundsDispatch = builder.ImportBuffer(StageName(namePrefix, "BoundsDispatch"), bounds.DispatchBuffer(),
+                                              ParticleGpuBounds::DispatchBufferBytes);
         if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
-            !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid())
+            !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !boundsBuffer.IsValid() ||
+            !boundsDispatch.IsValid())
             return vk::PassExecuteCallback{};
 
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
@@ -64,8 +75,10 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     });
 
     if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
-        !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid()) {
+        !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !boundsBuffer.IsValid() ||
+        !boundsDispatch.IsValid()) {
         m_runtime = nullptr;
+        m_bounds = nullptr;
         return false;
     }
 
@@ -100,7 +113,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
         indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
         return [this](vk::RenderContext &context) {
-            if (!m_framePending || !m_request.render || !m_runtime)
+            if (!m_framePending || !m_runtime)
                 return;
             m_runtime->RecordRenderReset(context.GetComputeCommandEncoder());
         };
@@ -121,13 +134,38 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                 m_runtime->RecordRendering(context.GetComputeCommandEncoder(), m_request.systemSeed,
                                            m_request.simulationStep);
             }
+        };
+    });
+
+    graph.AddComputePass(StageName(namePrefix, "BoundsReset"), [&](vk::PassBuilder &builder) {
+        builder.ReadStorageBuffer(instances);
+        builder.ReadStorageBuffer(indirect);
+        boundsBuffer = builder.WriteStorageBuffer(boundsBuffer);
+        boundsDispatch = builder.WriteStorageBuffer(boundsDispatch);
+        return [this](vk::RenderContext &context) {
+            if (!m_framePending || !m_bounds)
+                return;
+            m_bounds->RecordReset(context.GetComputeCommandEncoder());
+        };
+    });
+
+    graph.AddComputePass(StageName(namePrefix, "BoundsReduce"), [&](vk::PassBuilder &builder) {
+        builder.ReadStorageBuffer(instances);
+        builder.ReadStorageBuffer(indirect);
+        boundsBuffer = builder.ReadWrite(boundsBuffer, rhi::PipelineStage::ComputeShader);
+        builder.ReadIndirectBuffer(boundsDispatch);
+        return [this](vk::RenderContext &context) {
+            if (!m_framePending)
+                return;
+            if (m_bounds)
+                m_bounds->RecordReduce(context.GetComputeCommandEncoder());
             m_lastConsumedFrame = m_request.frameIndex;
             m_hasConsumedFrame = true;
             m_framePending = false;
         };
     });
 
-    m_outputs = {instances, renderIndices, indirect};
+    m_outputs = {instances, renderIndices, indirect, boundsBuffer};
     return m_outputs.IsValid();
 }
 

@@ -40,6 +40,7 @@ struct GpuParticleCullerDesc
     uint32_t capacity = 0;
     rhi::BufferHandle instances;
     rhi::BufferHandle sourceIndirectArguments;
+    rhi::BufferHandle bounds;
     GpuParticleCullProgram program;
 };
 
@@ -84,6 +85,10 @@ class ParticleGpuCuller
     {
         return m_sourceIndirectArguments;
     }
+    [[nodiscard]] rhi::BufferHandle BoundsBuffer() const noexcept
+    {
+        return m_bounds;
+    }
     [[nodiscard]] rhi::BufferHandle VisibleIndexBuffer() const noexcept
     {
         return m_visibleIndices;
@@ -97,7 +102,8 @@ class ParticleGpuCuller
         return m_sortDispatchArguments;
     }
 
-    void RecordReset(const rhi::ComputeCommandEncoder &encoder) const;
+    void RecordReset(const rhi::ComputeCommandEncoder &encoder,
+                     const std::array<float, PlaneCount * 4> &frustumPlanes) const;
     void RecordCull(const rhi::ComputeCommandEncoder &encoder,
                     const std::array<float, PlaneCount * 4> &frustumPlanes) const;
     void RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const;
@@ -110,6 +116,7 @@ class ParticleGpuCuller
     uint32_t m_capacity = 0;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_sourceIndirectArguments;
+    rhi::BufferHandle m_bounds;
     rhi::BufferHandle m_visibleIndices;
     rhi::BufferHandle m_drawIndirectArguments;
     rhi::BufferHandle m_sortDispatchArguments;

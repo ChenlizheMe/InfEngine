@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ParticleGpuBounds.h"
 #include "ParticleGpuRuntime.h"
 
 #include <function/renderer/vk/RenderGraph.h>
@@ -28,10 +29,11 @@ struct GpuParticleGraphOutputs
     vk::ResourceHandle instances;
     vk::ResourceHandle renderIndices;
     vk::ResourceHandle indirectArguments;
+    vk::ResourceHandle bounds;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return instances.IsValid() && renderIndices.IsValid() && indirectArguments.IsValid();
+        return instances.IsValid() && renderIndices.IsValid() && indirectArguments.IsValid() && bounds.IsValid();
     }
 };
 
@@ -51,7 +53,8 @@ class ParticleRenderGraph
     ParticleRenderGraph(ParticleRenderGraph &&) = delete;
     ParticleRenderGraph &operator=(ParticleRenderGraph &&) = delete;
 
-    [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, const std::string &namePrefix);
+    [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
+                              const std::string &namePrefix);
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
     void Reset() noexcept
     {
@@ -80,6 +83,7 @@ class ParticleRenderGraph
 
   private:
     ParticleGpuRuntime *m_runtime = nullptr;
+    ParticleGpuBounds *m_bounds = nullptr;
     GpuParticleFrameRequest m_request{};
     GpuParticleGraphOutputs m_outputs{};
     bool m_bootstrapPending = true;

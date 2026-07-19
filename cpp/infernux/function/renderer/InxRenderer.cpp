@@ -19,6 +19,7 @@
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUISemantics.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "particle/ParticleGpuBounds.h"
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
@@ -88,6 +89,19 @@ struct CompiledParticleCullProgram
     }
 };
 
+struct CompiledParticleBoundsProgram
+{
+    std::array<std::vector<uint32_t>, 2> shaders;
+
+    [[nodiscard]] particle::GpuParticleBoundsProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+        };
+    }
+};
+
 CompiledParticleSortProgram CompileParticleSortProgram()
 {
     InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
@@ -117,6 +131,24 @@ CompiledParticleCullProgram CompileParticleCullProgram()
         {particle::GpuParticleCullShaderSources::Finalize(), "Infernux/ParticleCullFinalize.comp"},
     }};
     CompiledParticleCullProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleBoundsProgram CompileParticleBoundsProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 2> sources = {{
+        {particle::GpuParticleBoundsShaderSources::Reset(), "Infernux/ParticleBoundsReset.comp"},
+        {particle::GpuParticleBoundsShaderSources::Reduce(), "Infernux/ParticleBoundsReduce.comp"},
+    }};
+    CompiledParticleBoundsProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
         const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
         if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
@@ -371,10 +403,14 @@ void InxRenderer::PreparePipeline()
         const auto particleCullProgram = CompileParticleCullProgram();
         if (!particleCullProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle view-culling kernels");
+        const auto particleBoundsProgram = CompileParticleBoundsProgram();
+        if (!particleBoundsProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle bounds kernels");
         if (!m_particleGpuSystemManager->Initialize(
                 m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetDeletionQueue(),
                 *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
-                std::move(particleTextureVersionResolver), particleSortProgram.View(), particleCullProgram.View())) {
+                std::move(particleTextureVersionResolver), particleSortProgram.View(), particleCullProgram.View(),
+                particleBoundsProgram.View())) {
             m_particleGpuSystemManager.reset();
             INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         }
