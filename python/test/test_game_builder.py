@@ -522,7 +522,10 @@ def test_game_data_includes_particle_artifacts(tmp_path):
         / "smoke.inxparticle"
     )
     artifact.parent.mkdir(parents=True)
-    artifact.write_text('{"$schema":"infernux.particle_artifact"}', encoding="utf-8")
+    artifact.write_text(
+        '{"$schema":"infernux.particle_artifact","kernel_ir":{"emitters":[]}}',
+        encoding="utf-8",
+    )
     final_dir = tmp_path / "dist"
 
     builder._copy_game_data(str(final_dir))
@@ -539,6 +542,77 @@ def test_game_data_includes_particle_artifacts(tmp_path):
     builder._pack_content_archive(str(final_dir))
     with zipfile.ZipFile(final_dir / "Data" / builder._CONTENT_ARCHIVE_FILENAME) as archive:
         assert "Library/Artifacts/Particle/smoke.inxparticle" in archive.namelist()
+
+
+def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    particle_artifact = (
+        project / "Library" / "Artifacts" / "Particle" / "interfaces.inxparticle"
+    )
+    particle_artifact.parent.mkdir(parents=True)
+
+    def sample(opcode: str, stable_id: str) -> dict:
+        return {"opcode": opcode, "immediates": [["interface", stable_id]]}
+
+    particle_artifact.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_artifact",
+                "kernel_ir": {
+                    "emitters": [
+                        {
+                            "data_interfaces": [
+                                {
+                                    "kind": "point_cache",
+                                    "stable_id": "points",
+                                    "cache": {"guid": "point-guid", "path_hint": ""},
+                                },
+                                {
+                                    "kind": "vector_field",
+                                    "stable_id": "wind",
+                                    "texture": {"guid": "field-guid", "path_hint": ""},
+                                },
+                                {
+                                    "kind": "vector_field",
+                                    "stable_id": "unused",
+                                    "texture": {"guid": "unused-guid", "path_hint": ""},
+                                },
+                            ],
+                            "init": {"instructions": [sample("sample_point_cache", "points")]},
+                            "update": {"instructions": [sample("sample_vector_field", "wind")]},
+                            "rendering": {"instructions": []},
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    point_artifact = (
+        project / "Library" / "Artifacts" / "PointCache" / "point-guid.inxpcache"
+    )
+    texture_artifact = (
+        project / "Library" / "Artifacts" / "Texture" / "field-guid.inxtex"
+    )
+    unused_artifact = (
+        project / "Library" / "Artifacts" / "Texture" / "unused-guid.inxtex"
+    )
+    for path, payload in (
+        (point_artifact, b"point-cache"),
+        (texture_artifact, b"vector-field"),
+        (unused_artifact, b"unused"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    final_dir = tmp_path / "dist"
+    builder._copy_game_data(str(final_dir))
+
+    shipped = final_dir / "Data" / "Library" / "Artifacts"
+    assert (shipped / "PointCache" / point_artifact.name).read_bytes() == b"point-cache"
+    assert (shipped / "Texture" / texture_artifact.name).read_bytes() == b"vector-field"
+    assert not (shipped / "Texture" / unused_artifact.name).exists()
 
 
 def test_payload_manifest_allows_project_asset_metadata(tmp_path):

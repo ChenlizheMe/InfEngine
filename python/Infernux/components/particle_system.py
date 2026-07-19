@@ -10,6 +10,7 @@ import numpy as np
 
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.debug import Debug
+from Infernux.graph import AssetReference
 from Infernux.particle import (
     ExecutionTarget,
     GpuParticleEmitterController,
@@ -63,6 +64,7 @@ class ParticleSystem(InxComponent):
     _gpu_transform_buffers: dict[bool, np.ndarray]
     _batch_id: int = 0
     _submitted_batch_ids: set[int]
+    _data_interface_overrides: dict[str, AssetReference]
     _playing: bool = False
     def awake(self):
         self._runtimes = []
@@ -82,6 +84,7 @@ class ParticleSystem(InxComponent):
         self._emitter_to_world_cache = None
         self._gpu_transform_buffers = {}
         self._submitted_batch_ids = set()
+        self._data_interface_overrides = {}
         self._batch_id = (int(self.game_object.id) << 16) ^ int(self.component_id)
         if self._batch_id == 0:
             self._batch_id = int(self.component_id) or 1
@@ -200,6 +203,66 @@ class ParticleSystem(InxComponent):
             if 0 <= emitter_index < len(compatibility)
             else None
         )
+
+    def set_data_interface_asset(
+        self,
+        stable_id: str,
+        *,
+        guid: str = "",
+        path_hint: str = "",
+    ) -> bool:
+        """Override one Data Interface asset for this ParticleSystem instance."""
+        if type(stable_id) is not str or not stable_id.strip():
+            return False
+        try:
+            reference = AssetReference(guid, path_hint)
+        except (TypeError, ValueError):
+            return False
+        if not reference.guid and not reference.path_hint:
+            return False
+
+        stable_id = stable_id.strip()
+        metadata = getattr(self, "_particle_metadata", None)
+        if metadata is not None and not any(
+            interface.stable_id == stable_id
+            for emitter in metadata.emitters
+            for interface in emitter.data_interfaces
+        ):
+            return False
+        overrides = getattr(self, "_data_interface_overrides", None)
+        if overrides is None:
+            overrides = {}
+            self._data_interface_overrides = overrides
+        marker = object()
+        previous = overrides.get(stable_id, marker)
+        overrides[stable_id] = reference
+        if self._has_runtime() and not self._compile_asset():
+            if previous is marker:
+                overrides.pop(stable_id, None)
+            else:
+                overrides[stable_id] = previous
+            return False
+        return True
+
+    def clear_data_interface_asset(self, stable_id: str) -> bool:
+        """Restore the ParticleGraph asset used by one Data Interface."""
+        if type(stable_id) is not str:
+            return False
+        stable_id = stable_id.strip()
+        overrides = getattr(self, "_data_interface_overrides", None)
+        if not stable_id or not overrides or stable_id not in overrides:
+            return False
+        previous = overrides.pop(stable_id)
+        if self._has_runtime() and not self._compile_asset():
+            overrides[stable_id] = previous
+            return False
+        return True
+
+    def data_interface_asset(self, stable_id: str) -> AssetReference | None:
+        """Return this instance's override, or ``None`` when it uses the graph default."""
+        if type(stable_id) is not str:
+            return None
+        return getattr(self, "_data_interface_overrides", {}).get(stable_id.strip())
 
     def update(self, delta_time: float):
         if not self._has_runtime() and not self._compile_asset():
@@ -324,6 +387,8 @@ class ParticleSystem(InxComponent):
                     hir,
                     kernel,
                     emitter_ids=cpu_emitter_ids,
+                    point_cache_resolver=self._resolve_point_cache,
+                    vector_field_resolver=self._resolve_vector_field,
                 )
                 runtimes = []
                 for emitter_index, emitter in zip(cpu_indices, program.emitters):
@@ -763,8 +828,7 @@ class ParticleSystem(InxComponent):
             pass
         return state
 
-    @staticmethod
-    def _gpu_data_interface_layout(emitter, glsl_emitter) -> dict[str, object]:
+    def _gpu_data_interface_layout(self, emitter, glsl_emitter) -> dict[str, object]:
         layout = glsl_emitter.get("data_interface_layout")
         if type(layout) is not dict:
             raise RuntimeError("ParticleGraph GPU data interface layout is missing")
@@ -795,7 +859,7 @@ class ParticleSystem(InxComponent):
                 raise RuntimeError(
                     f"ParticleGraph GPU Point Cache interface {stable_id!r} is missing"
                 )
-            reference = interface.cache
+            reference = self._data_interface_reference(interface)
             native = (
                 registry.load_point_cache_by_guid(reference.guid)
                 if reference.guid
@@ -864,7 +928,7 @@ class ParticleSystem(InxComponent):
                 raise RuntimeError(
                     f"ParticleGraph GPU Vector Field interface {stable_id!r} is missing"
                 )
-            reference = interface.texture
+            reference = self._data_interface_reference(interface)
             if not reference.guid:
                 identity = reference.path_hint or "<empty reference>"
                 raise RuntimeError(
@@ -894,6 +958,62 @@ class ParticleSystem(InxComponent):
             decoded_vector_fields.append(decoded)
         result["vector_fields"] = decoded_vector_fields
         return result
+
+    def _data_interface_reference(self, interface) -> AssetReference:
+        override = getattr(self, "_data_interface_overrides", {}).get(
+            interface.stable_id
+        )
+        if override is not None:
+            return override
+        return interface.cache if isinstance(interface, PointCache) else interface.texture
+
+    def _resolve_point_cache(self, interface: PointCache):
+        from Infernux.lib import AssetRegistry
+
+        reference = self._data_interface_reference(interface)
+        registry = AssetRegistry.instance()
+        native = (
+            registry.load_point_cache_by_guid(reference.guid)
+            if reference.guid
+            else None
+        )
+        path = self._absolute_project_path(reference.path_hint)
+        if native is None and path:
+            native = registry.load_point_cache(path)
+        if native is None:
+            identity = reference.guid or reference.path_hint or "<empty reference>"
+            raise RuntimeError(
+                f"ParticleGraph Point Cache {interface.stable_id!r} cannot load {identity!r}"
+            )
+        return native
+
+    def _resolve_vector_field(self, interface: VectorField):
+        from Infernux.lib import AssetRegistry
+
+        reference = self._data_interface_reference(interface)
+        if not reference.guid:
+            identity = reference.path_hint or "<empty reference>"
+            raise RuntimeError(
+                f"ParticleGraph Vector Field {interface.stable_id!r} requires an imported texture GUID; got {identity!r}"
+            )
+        native = AssetRegistry.instance().load_texture_by_guid(reference.guid)
+        if native is None or native.dimension != "3d" or native.semantic != "vector_field":
+            raise RuntimeError(
+                f"ParticleGraph Vector Field {interface.stable_id!r} cannot load a VectorField Texture3D from {reference.guid!r}"
+            )
+        return native
+
+    @staticmethod
+    def _absolute_project_path(path: str) -> str:
+        if not path or os.path.isabs(path):
+            return path
+        try:
+            from Infernux.engine.project_context import get_project_root
+
+            project_root = get_project_root()
+            return os.path.join(project_root, path) if project_root else path
+        except (AttributeError, RuntimeError):
+            return path
 
     @staticmethod
     def _output_material_guid(material) -> str:

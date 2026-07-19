@@ -571,6 +571,19 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
     assert imported.guid
     assert engine.get_asset_database().contains_path(str(point_cache_source))
     assert AssetRegistry.instance().load_point_cache_by_guid(imported.guid) is not None
+    override_source = tmp_path / "OverridePoints.pointcache"
+    override_document = json.loads(point_cache_source.read_text(encoding="utf-8"))
+    override_document["stable_id"] = "gpu-override-points"
+    override_document["name"] = "GPU Override Points"
+    override_document["channels"][0]["data"] = [
+        [10.0, 20.0, 30.0],
+        [40.0, 50.0, 60.0],
+    ]
+    override_source.write_text(json.dumps(override_document), encoding="utf-8")
+    override_imported = AssetManager.import_asset(
+        str(override_source), database=engine.get_asset_database()
+    )
+    assert override_imported, override_imported.error
 
     base_init = ParticleEmitterAsset().init
     init = GraphDocument(
@@ -640,8 +653,37 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
 
     component.awake()
+    assert component.set_data_interface_asset(
+        "spawn-points",
+        guid=override_imported.guid,
+        path_hint=str(override_source),
+    )
+    assert component.data_interface_asset("spawn-points") == AssetReference(
+        override_imported.guid, str(override_source)
+    )
     component.start()
     component.update(0.0)
+
+    active_layout = component._gpu_data_interface_layout(
+        component._particle_kernel.emitters[0], component._particle_gpu_layouts[0]
+    )
+    assert active_layout["point_caches"][0]["native"].guid == override_imported.guid
+    assert (
+        component._resolve_point_cache(
+            component._particle_kernel.emitters[0].data_interfaces[0]
+        ).guid
+        == override_imported.guid
+    )
+    assert component.clear_data_interface_asset("spawn-points")
+    assert component.data_interface_asset("spawn-points") is None
+    default_layout = component._gpu_data_interface_layout(
+        component._particle_kernel.emitters[0], component._particle_gpu_layouts[0]
+    )
+    assert default_layout["point_caches"][0]["native"].guid == imported.guid
+    assert not component.set_data_interface_asset(
+        "spawn-points", guid="missing-point-cache-guid"
+    )
+    assert component.data_interface_asset("spawn-points") is None
 
     emitter_id = component._gpu_emitter_ids[0]
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
@@ -649,6 +691,25 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
     initial_artifact_revision = component._artifact_revision
     initial_generation = engine._gpu_particle_point_cache_generation(emitter_id, 0)
     assert initial_generation > 0
+    assert not component.set_data_interface_asset(
+        "missing-interface", guid=override_imported.guid
+    )
+
+    stress_step = component._gpu_controllers[0].simulation_step
+    for index in range(12):
+        if index % 2 == 0:
+            assert component.set_data_interface_asset(
+                "spawn-points",
+                guid=override_imported.guid,
+                path_hint=str(override_source),
+            )
+        else:
+            assert component.clear_data_interface_asset("spawn-points")
+        component.update(0.0)
+        stress_step += 1
+        assert component._gpu_controllers[0].simulation_step == stress_step
+        assert component._artifact_revision == initial_artifact_revision
+        assert engine._gpu_particle_point_cache_generation(emitter_id, 0) > 0
 
     updated_cache = json.loads(point_cache_source.read_text(encoding="utf-8"))
     updated_cache["channels"][0]["data"][0] = [9.0, 8.0, 7.0]
@@ -660,7 +721,7 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
     component.update(0.0)
 
     assert component._artifact_revision == initial_artifact_revision
-    assert component._gpu_controllers[0].simulation_step == 2
+    assert component._gpu_controllers[0].simulation_step == stress_step + 1
     assert (
         engine._gpu_particle_point_cache_generation(emitter_id, 0)
         == initial_generation + 1

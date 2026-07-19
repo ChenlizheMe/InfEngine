@@ -467,12 +467,15 @@ struct ParticleGpuSystemManager::Impl
         const bool replacementCreated =
             descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
         if (!replacementCreated || !deletionQueue || !emitter.runtime->AdoptCompatibleRevision(*replacement)) {
+            const bool uploadPending = error == "GPU particle Point Cache upload is pending" ||
+                                       error == "GPU particle Vector Field texture upload is pending";
             if (error != "GPU particle Point Cache upload is pending")
                 emitter.observedPointCacheGenerations = std::move(currentPointCacheGenerations);
             if (error != "GPU particle Vector Field texture upload is pending")
                 emitter.observedVectorFieldGenerations = std::move(currentVectorFieldGenerations);
-            INXLOG_WARN("GPU particle data-interface refresh kept last-known-good emitter '", emitter.stableId,
-                        "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
+            if (!uploadPending)
+                INXLOG_WARN("GPU particle data-interface refresh kept last-known-good emitter '", emitter.stableId,
+                            "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
             return false;
         }
 

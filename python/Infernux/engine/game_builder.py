@@ -999,7 +999,79 @@ finally:
                     dirs_exist_ok=True,
                 )
 
+        self._copy_particle_data_interface_artifacts(data_dir)
+
         self._filter_shipped_requirements(data_dir)
+
+    def _copy_particle_data_interface_artifacts(self, data_dir: str) -> None:
+        """Copy the imported payloads referenced by sampled particle interfaces."""
+        particle_root = os.path.join(data_dir, "Library", "Artifacts", "Particle")
+        if not os.path.isdir(particle_root):
+            return
+
+        dependencies: set[tuple[str, str]] = set()
+        for root, _dirs, filenames in os.walk(particle_root):
+            for filename in filenames:
+                if not filename.endswith(".inxparticle"):
+                    continue
+                artifact_path = os.path.join(root, filename)
+                try:
+                    with open(artifact_path, "r", encoding="utf-8") as artifact_file:
+                        artifact = json.load(artifact_file)
+                    for emitter in artifact["kernel_ir"]["emitters"]:
+                        interfaces = {
+                            item["stable_id"]: item
+                            for item in emitter["data_interfaces"]
+                            if type(item) is dict and type(item.get("stable_id")) is str
+                        }
+                        sampled = set()
+                        for stage_name in ("init", "update", "rendering"):
+                            for instruction in emitter[stage_name]["instructions"]:
+                                if instruction.get("opcode") not in {
+                                    "sample_point_cache",
+                                    "sample_vector_field",
+                                }:
+                                    continue
+                                immediates = dict(instruction.get("immediates", ()))
+                                sampled.add(immediates.get("interface"))
+                        for stable_id in sampled:
+                            interface = interfaces.get(stable_id)
+                            if interface is None:
+                                raise RuntimeError(
+                                    f"Particle artifact {filename!r} references missing Data Interface {stable_id!r}"
+                                )
+                            if interface.get("kind") == "point_cache":
+                                reference = interface.get("cache")
+                                kind, extension = "PointCache", ".inxpcache"
+                            elif interface.get("kind") == "vector_field":
+                                reference = interface.get("texture")
+                                kind, extension = "Texture", ".inxtex"
+                            else:
+                                continue
+                            guid = reference.get("guid") if type(reference) is dict else ""
+                            if type(guid) is not str or not guid:
+                                raise RuntimeError(
+                                    f"Particle Data Interface {stable_id!r} must reference an imported asset GUID before building"
+                                )
+                            dependencies.add((kind, guid + extension))
+                except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"Particle artifact is not a valid current build input: {artifact_path}"
+                    ) from exc
+
+        for kind, filename in sorted(dependencies):
+            source = os.path.join(
+                self.project_path, "Library", "Artifacts", kind, filename
+            )
+            if not os.path.isfile(source):
+                raise RuntimeError(
+                    f"Particle build dependency is missing: Library/Artifacts/{kind}/{filename}"
+                )
+            destination = os.path.join(
+                data_dir, "Library", "Artifacts", kind, filename
+            )
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            shutil.copy2(source, destination)
 
     def _filter_shipped_requirements(self, data_dir: str) -> None:
         req_file = os.path.join(data_dir, "ProjectSettings", "requirements.txt")
