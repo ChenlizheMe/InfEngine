@@ -29,6 +29,8 @@ from Infernux.engine.i18n import t
 from Infernux.core.asset_types import (
     FilterMode,
     SpriteFrame,
+    TextureCompression,
+    TextureCompressionQuality,
     TextureType,
     TextureImportSettings,
     WrapMode,
@@ -213,7 +215,8 @@ def _ensure_categories():
                      [("asset.tex_default", TextureType.DEFAULT),
                       ("asset.tex_normalmap", TextureType.NORMAL_MAP),
                       ("asset.tex_ui", TextureType.UI),
-                      ("asset.tex_sprite", TextureType.SPRITE)]),
+                      ("asset.tex_sprite", TextureType.SPRITE),
+                      ("asset.tex_data", TextureType.DATA)]),
             FieldDef("srgb", "asset.srgb", WidgetType.CHECKBOX),
             FieldDef("filter_mode", "asset.filter_mode", WidgetType.COMBO,
                      [("asset.filter_point", FilterMode.POINT),
@@ -223,6 +226,17 @@ def _ensure_categories():
                      [("asset.wrap_repeat", WrapMode.REPEAT),
                       ("asset.wrap_clamp", WrapMode.CLAMP),
                       ("asset.wrap_mirror", WrapMode.MIRROR)]),
+            FieldDef("compression", "asset.texture_compression", WidgetType.COMBO,
+                     [("asset.compression_auto", TextureCompression.AUTO),
+                      ("asset.compression_none", TextureCompression.NONE),
+                      ("BC1", TextureCompression.BC1),
+                      ("BC3", TextureCompression.BC3),
+                      ("BC4", TextureCompression.BC4),
+                      ("BC5", TextureCompression.BC5)]),
+            FieldDef("compression_quality", "asset.texture_compression_quality", WidgetType.COMBO,
+                     [("asset.quality_fast", TextureCompressionQuality.FAST),
+                      ("asset.quality_normal", TextureCompressionQuality.NORMAL),
+                      ("asset.quality_high", TextureCompressionQuality.HIGH)]),
             FieldDef("max_size", "asset.max_size", WidgetType.COMBO,
                      [(str(s), s) for s in
                       (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)]),
@@ -1566,7 +1580,9 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                 # Disable sRGB when texture_type is NORMAL_MAP
                 disabled = (fdef.key == "srgb"
                             and hasattr(state.settings, "texture_type")
-                            and state.settings.texture_type == TextureType.NORMAL_MAP)
+                            and state.settings.texture_type in {
+                                TextureType.NORMAL_MAP, TextureType.DATA,
+                            })
                 if disabled:
                     ctx.begin_disabled(True)
                 new_val = render_inspector_checkbox(ctx, t(fdef.label), cur)

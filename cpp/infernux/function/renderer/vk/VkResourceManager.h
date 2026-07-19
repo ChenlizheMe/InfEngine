@@ -113,7 +113,9 @@ class TextureUploadTicket final
     std::shared_ptr<VkTexture> m_texture;
     AsyncSubmissionHandle m_upload;
     VkFormat m_format = VK_FORMAT_UNDEFINED;
-    VkFilter m_filter = VK_FILTER_LINEAR;
+    VkFilter m_minFilter = VK_FILTER_LINEAR;
+    VkFilter m_magFilter = VK_FILTER_LINEAR;
+    VkSamplerMipmapMode m_mipFilter = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     VkSamplerAddressMode m_addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     int m_aniso = -1;
     uint32_t m_mipLevels = 0;
@@ -318,9 +320,9 @@ class VkResourceManager
     [[nodiscard]] bool TryPublishBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket);
     void DrainBufferUploads() noexcept;
 
-    [[nodiscard]] std::shared_ptr<TextureUploadTicket> BeginTextureUpload(const TextureCpuData &cpuData,
-                                                                          VkFormat format, VkFilter filter,
-                                                                          VkSamplerAddressMode addressMode, int aniso);
+    [[nodiscard]] std::shared_ptr<TextureUploadTicket>
+    BeginTextureUpload(const TextureCpuData &cpuData, VkFormat format, VkFilter minFilter, VkFilter magFilter,
+                       VkSamplerMipmapMode mipFilter, VkSamplerAddressMode addressMode, int aniso);
     [[nodiscard]] bool TryPublishTextureUpload(const std::shared_ptr<TextureUploadTicket> &ticket);
     void PollGpuUploads();
 

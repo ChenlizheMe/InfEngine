@@ -30,6 +30,47 @@ class TextureType(IntEnum):
     NORMAL_MAP = 1
     UI = 2
     SPRITE = 3
+    DATA = 4
+
+
+class TextureCompression(IntEnum):
+    NONE = 0
+    AUTO = 1
+    BC1 = 2
+    BC3 = 3
+    BC4 = 4
+    BC5 = 5
+
+    @classmethod
+    def from_string(cls, value: str) -> "TextureCompression":
+        return {
+            "none": cls.NONE,
+            "auto": cls.AUTO,
+            "bc1": cls.BC1,
+            "bc3": cls.BC3,
+            "bc4": cls.BC4,
+            "bc5": cls.BC5,
+        }.get(str(value).lower(), cls.AUTO)
+
+    def to_string(self) -> str:
+        return ("none", "auto", "bc1", "bc3", "bc4", "bc5")[self.value]
+
+
+class TextureCompressionQuality(IntEnum):
+    FAST = 0
+    NORMAL = 1
+    HIGH = 2
+
+    @classmethod
+    def from_string(cls, value: str) -> "TextureCompressionQuality":
+        return {
+            "fast": cls.FAST,
+            "normal": cls.NORMAL,
+            "high": cls.HIGH,
+        }.get(str(value).lower(), cls.NORMAL)
+
+    def to_string(self) -> str:
+        return ("fast", "normal", "high")[self.value]
 
 
 class WrapMode(IntEnum):
@@ -110,6 +151,8 @@ class TextureImportSettings:
     srgb: bool = True
     max_size: int = 2048
     aniso_level: int = 1
+    compression: TextureCompression = TextureCompression.AUTO
+    compression_quality: TextureCompressionQuality = TextureCompressionQuality.NORMAL
     sprite_frames: List[SpriteFrame] = field(default_factory=list)
 
     def _sync_derived_fields(self):
@@ -119,7 +162,7 @@ class TextureImportSettings:
         SPRITE forces point filtering, clamp wrapping, no mipmaps.
         Other modes leave the current values unchanged.
         """
-        if self.texture_type == TextureType.NORMAL_MAP:
+        if self.texture_type in {TextureType.NORMAL_MAP, TextureType.DATA}:
             self.srgb = False
         elif self.texture_type == TextureType.SPRITE:
             self.filter_mode = FilterMode.POINT
@@ -138,6 +181,8 @@ class TextureImportSettings:
             "srgb": self.srgb,
             "max_size": self.max_size,
             "aniso_level": self.aniso_level,
+            "texture_compression": self.compression.to_string(),
+            "texture_compression_quality": self.compression_quality.to_string(),
         }
         if self.sprite_frames:
             d["sprite_frames"] = [f.to_dict() for f in self.sprite_frames]
@@ -146,7 +191,13 @@ class TextureImportSettings:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TextureImportSettings":
         tt_str = d.get("texture_type", "default")
-        tt_map = {"default": TextureType.DEFAULT, "normal_map": TextureType.NORMAL_MAP, "ui": TextureType.UI, "sprite": TextureType.SPRITE}
+        tt_map = {
+            "default": TextureType.DEFAULT,
+            "normal_map": TextureType.NORMAL_MAP,
+            "ui": TextureType.UI,
+            "sprite": TextureType.SPRITE,
+            "data": TextureType.DATA,
+        }
         tt = tt_map.get(tt_str, TextureType.DEFAULT)
         raw_frames = d.get("sprite_frames", [])
         # raw_frames may be a JSON string if C++ round-tripped the .meta
@@ -165,6 +216,10 @@ class TextureImportSettings:
             srgb=bool(d.get("srgb", tt != TextureType.NORMAL_MAP)),
             max_size=int(d.get("max_size", 2048)),
             aniso_level=int(d.get("aniso_level", 1)),
+            compression=TextureCompression.from_string(d.get("texture_compression", "auto")),
+            compression_quality=TextureCompressionQuality.from_string(
+                d.get("texture_compression_quality", "normal")
+            ),
             sprite_frames=frames,
         )
 
@@ -178,6 +233,8 @@ class TextureImportSettings:
             srgb=self.srgb,
             max_size=self.max_size,
             aniso_level=self.aniso_level,
+            compression=self.compression,
+            compression_quality=self.compression_quality,
             sprite_frames=[SpriteFrame(**f.__dict__) for f in self.sprite_frames],
         )
 
@@ -191,6 +248,8 @@ class TextureImportSettings:
                 and self.srgb == other.srgb
                 and self.max_size == other.max_size
                 and self.aniso_level == other.aniso_level
+                and self.compression == other.compression
+                and self.compression_quality == other.compression_quality
                 and self.sprite_frames == other.sprite_frames)
 
 

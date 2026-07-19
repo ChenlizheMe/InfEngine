@@ -804,6 +804,8 @@ def test_texture_import_fields_publish_stable_semantics(monkeypatch):
         "asset.texture.import.srgb",
         "asset.texture.import.filter_mode",
         "asset.texture.import.wrap_mode",
+        "asset.texture.import.compression",
+        "asset.texture.import.compression_quality",
         "asset.texture.import.max_size",
     }
     assert by_id["asset.texture.import.srgb"][4] is True

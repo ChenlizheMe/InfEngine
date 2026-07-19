@@ -85,10 +85,13 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
         throw std::runtime_error("TextureImporter failed to build the runtime texture artifact");
     artifact.metadata.AddMetadata("artifact_width", static_cast<int>(cpuData->mipLevels.front().width));
     artifact.metadata.AddMetadata("artifact_height", static_cast<int>(cpuData->mipLevels.front().height));
+    artifact.metadata.AddMetadata("artifact_depth", static_cast<int>(cpuData->mipLevels.front().depth));
     artifact.metadata.AddMetadata("artifact_mip_count", static_cast<int>(cpuData->mipLevels.size()));
-    artifact.metadata.AddMetadata(
-        "artifact_pixel_storage",
-        std::string(cpuData->storage == TexturePixelStorage::Rgba8 ? "rgba8" : "rgba32_float"));
+    artifact.metadata.AddMetadata("texture_artifact_version", static_cast<int>(TextureArtifact::FormatVersion));
+    artifact.metadata.AddMetadata("artifact_dimension",
+                                  std::string(cpuData->dimension == TextureDimension::Texture3D ? "3d" : "2d"));
+    artifact.metadata.AddMetadata("artifact_srgb", TextureFormatIsSrgb(cpuData->format));
+    artifact.metadata.AddMetadata("artifact_format", std::string(TextureFormatName(cpuData->format)));
     artifact.runtimeCpuArtifacts.push_back(ImportArtifact::RuntimeCpuArtifact{
         ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::Texture, TextureArtifact::FormatVersion,
         TextureArtifact::Serialize(*cpuData, artifact.metadata.GetDataAs<std::string>("content_hash"))});

@@ -2,6 +2,7 @@
 
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
+#include <function/resources/InxTexture/TextureArtifact.h>
 
 #include <core/log/InxLog.h>
 #include <platform/filesystem/DocumentStore.h>
@@ -63,6 +64,10 @@ bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
     if (expected.empty())
         return entry.artifactPath.empty();
     if (entry.artifactPath != expected)
+        return false;
+    if (type == ResourceType::Texture &&
+        (!entry.metadata.HasKey("texture_artifact_version") ||
+         entry.metadata.GetDataAs<int>("texture_artifact_version") != static_cast<int>(TextureArtifact::FormatVersion)))
         return false;
     std::error_code error;
     if (!std::filesystem::is_regular_file(projectRoot / std::filesystem::u8path(expected), error) || error)

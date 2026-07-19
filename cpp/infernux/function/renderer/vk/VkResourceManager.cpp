@@ -426,31 +426,85 @@ void VkResourceManager::DrainBufferUploads() noexcept
 }
 
 std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const TextureCpuData &cpuData,
-                                                                           VkFormat format, VkFilter filter,
+                                                                           VkFormat format, VkFilter minFilter,
+                                                                           VkFilter magFilter,
+                                                                           VkSamplerMipmapMode mipFilter,
                                                                            VkSamplerAddressMode addressMode, int aniso)
 {
     if (m_device == VK_NULL_HANDLE || m_vmaAllocator == VK_NULL_HANDLE)
         throw std::logic_error("GPU texture upload requires an initialized resource manager");
     if (!cpuData.IsValid() || cpuData.mipLevels.size() > std::numeric_limits<uint32_t>::max())
         throw std::invalid_argument("GPU texture upload requires a valid CPU mip payload");
-    const bool rgba8 = cpuData.storage == TexturePixelStorage::Rgba8;
-    const bool rgba32Float = cpuData.storage == TexturePixelStorage::Rgba32Float;
-    if ((rgba8 && format != VK_FORMAT_R8G8B8A8_SRGB && format != VK_FORMAT_R8G8B8A8_UNORM) ||
-        (rgba32Float && format != VK_FORMAT_R32G32B32A32_SFLOAT) || (!rgba8 && !rgba32Float))
+    if (cpuData.dimension != TextureDimension::Texture2D)
+        throw std::invalid_argument("legacy GPU texture upload currently accepts Texture2D only");
+    const auto expectedFormat = [](TextureFormat textureFormat) {
+        switch (textureFormat) {
+        case TextureFormat::Rgba8UNorm:
+            return VK_FORMAT_R8G8B8A8_UNORM;
+        case TextureFormat::Rgba8Srgb:
+            return VK_FORMAT_R8G8B8A8_SRGB;
+        case TextureFormat::Rgba32Float:
+            return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case TextureFormat::BC1RgbaUNorm:
+            return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case TextureFormat::BC1RgbaSrgb:
+            return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+        case TextureFormat::BC3UNorm:
+            return VK_FORMAT_BC3_UNORM_BLOCK;
+        case TextureFormat::BC3Srgb:
+            return VK_FORMAT_BC3_SRGB_BLOCK;
+        case TextureFormat::BC4UNorm:
+            return VK_FORMAT_BC4_UNORM_BLOCK;
+        case TextureFormat::BC5UNorm:
+            return VK_FORMAT_BC5_UNORM_BLOCK;
+        case TextureFormat::BC6HUFloat:
+            return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+        case TextureFormat::BC7UNorm:
+            return VK_FORMAT_BC7_UNORM_BLOCK;
+        case TextureFormat::BC7Srgb:
+            return VK_FORMAT_BC7_SRGB_BLOCK;
+        }
+        return VK_FORMAT_UNDEFINED;
+    };
+    if (format != expectedFormat(cpuData.format))
         throw std::invalid_argument("GPU texture format does not match the CPU pixel storage");
 
-    const uint64_t bytesPerPixel = rgba8 ? 4ULL : 16ULL;
+    const VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    VkImageFormatProperties formatProperties{};
+    if (vkGetPhysicalDeviceImageFormatProperties(m_physicalDevice, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                 usage, 0, &formatProperties) != VK_SUCCESS)
+        throw std::runtime_error(std::string("GPU does not support sampled texture format '") +
+                                 TextureFormatName(cpuData.format) + "'");
+    const auto &baseMip = cpuData.mipLevels.front();
+    if (baseMip.width > formatProperties.maxExtent.width || baseMip.height > formatProperties.maxExtent.height ||
+        cpuData.mipLevels.size() > formatProperties.maxMipLevels)
+        throw std::runtime_error("GPU texture dimensions or mip count exceed device limits");
+
     for (const auto &mip : cpuData.mipLevels) {
-        const uint64_t expectedSize = static_cast<uint64_t>(mip.width) * mip.height * bytesPerPixel;
-        if (mip.width == 0 || mip.height == 0 || mip.byteSize != expectedSize ||
-            mip.byteOffset > cpuData.bytes.size() || mip.byteSize > cpuData.bytes.size() - mip.byteOffset)
+        const uint32_t bytesPerTexel = TextureFormatBytesPerTexel(cpuData.format);
+        const uint32_t blockBytes = TextureFormatBlockBytes(cpuData.format);
+        const uint64_t expectedRow = bytesPerTexel != 0
+                                         ? static_cast<uint64_t>(mip.width) * bytesPerTexel
+                                         : static_cast<uint64_t>((std::max)(1U, (mip.width + 3U) / 4U)) * blockBytes;
+        const uint64_t expectedRows = bytesPerTexel != 0 ? mip.height : (std::max)(1U, (mip.height + 3U) / 4U);
+        const uint64_t expectedSlice = expectedRow * expectedRows;
+        const uint64_t expectedSize = expectedSlice * mip.depth;
+        if (mip.width == 0 || mip.height == 0 || mip.depth != 1 || mip.rowPitch != expectedRow ||
+            mip.slicePitch != expectedSlice || mip.byteSize != expectedSize || mip.byteOffset > cpuData.bytes.size() ||
+            mip.byteSize > cpuData.bytes.size() - mip.byteOffset)
             throw std::invalid_argument("GPU texture upload contains an invalid mip byte range");
     }
 
     auto ticket = std::make_shared<TextureUploadTicket>();
     ticket->m_manager = this;
     ticket->m_format = format;
-    ticket->m_filter = filter;
+    if ((minFilter != VK_FILTER_LINEAR && minFilter != VK_FILTER_NEAREST) ||
+        (magFilter != VK_FILTER_LINEAR && magFilter != VK_FILTER_NEAREST) ||
+        (mipFilter != VK_SAMPLER_MIPMAP_MODE_LINEAR && mipFilter != VK_SAMPLER_MIPMAP_MODE_NEAREST))
+        throw std::invalid_argument("GPU texture upload has an invalid sampler filter");
+    ticket->m_minFilter = minFilter;
+    ticket->m_magFilter = magFilter;
+    ticket->m_mipFilter = mipFilter;
     ticket->m_addressMode = addressMode;
     ticket->m_aniso = aniso;
     ticket->m_mipLevels = static_cast<uint32_t>(cpuData.mipLevels.size());
@@ -461,9 +515,7 @@ std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const
     ticket->m_staging->CopyFrom(cpuData.bytes.data(), cpuData.bytes.size(), 0);
     ticket->m_texture = std::make_shared<VkTexture>();
 
-    const auto &baseMip = cpuData.mipLevels.front();
     const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable();
-    const VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     bool created = false;
     if (canSubmitAsync) {
         created = ticket->m_texture->m_image.CreateConcurrent(
@@ -621,8 +673,9 @@ void VkResourceManager::FinalizeTextureUpload(TextureUploadTicket &ticket)
 {
     if (!ticket.m_texture ||
         !ticket.m_texture->m_image.CreateView(ticket.m_format, VK_IMAGE_ASPECT_COLOR_BIT, ticket.m_mipLevels) ||
-        !ticket.m_texture->m_sampler.Create(m_device, m_physicalDevice, ticket.m_filter, ticket.m_addressMode,
-                                            ticket.m_mipLevels, ticket.m_aniso))
+        !ticket.m_texture->m_sampler.Create(m_device, m_physicalDevice, ticket.m_minFilter, ticket.m_magFilter,
+                                            ticket.m_mipFilter, ticket.m_addressMode, ticket.m_mipLevels,
+                                            ticket.m_aniso))
         throw std::runtime_error("failed to finalize GPU texture view or sampler");
     ticket.m_texture->m_residentBytes = ticket.m_residentBytes;
 }

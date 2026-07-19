@@ -210,16 +210,32 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                                    const auto &cpu = self.GetCpuData();
                                    return cpu && !cpu->mipLevels.empty() ? cpu->mipLevels.front().height : 0U;
                                })
+        .def_property_readonly("pixel_depth",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu && !cpu->mipLevels.empty() ? cpu->mipLevels.front().depth : 0U;
+                               })
         .def_property_readonly("cpu_byte_size",
                                [](const InxTexture &self) {
                                    const auto &cpu = self.GetCpuData();
                                    return cpu ? cpu->bytes.size() : size_t{0};
                                })
+        .def_property_readonly(
+            "dimension",
+            [](const InxTexture &self) { return self.GetDimension() == TextureDimension::Texture3D ? "3d" : "2d"; })
+        .def_property_readonly("srgb", &InxTexture::IsSrgb)
+        .def_property_readonly("pixel_format",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? std::string(TextureFormatName(cpu->format)) : std::string{};
+                               })
         .def_property_readonly("pixel_storage", [](const InxTexture &self) {
             const auto &cpu = self.GetCpuData();
             if (!cpu)
                 return std::string{};
-            return std::string(cpu->storage == TexturePixelStorage::Rgba8 ? "rgba8" : "rgba32_float");
+            if (cpu->format == TextureFormat::Rgba32Float)
+                return std::string("rgba32_float");
+            return TextureFormatIsBlockCompressed(cpu->format) ? std::string("block_compressed") : std::string("rgba8");
         });
 
     py::class_<InxPointCache, std::shared_ptr<InxPointCache>>(m, "InxPointCache")
@@ -267,12 +283,13 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             py::arg("name"))
         .def("channel_array", &PointCacheChannelArray, py::arg("name"),
              "Return a zero-copy, read-only NumPy view of one channel generation")
-        .def("lookup_index",
-             [](const InxPointCache &self, uint32_t stableId) {
-                 const auto &cpu = self.GetCpuData();
-                 return cpu ? cpu->FindPointIndex(stableId) : UINT32_MAX;
-             },
-             py::arg("stable_id"))
+        .def(
+            "lookup_index",
+            [](const InxPointCache &self, uint32_t stableId) {
+                const auto &cpu = self.GetCpuData();
+                return cpu ? cpu->FindPointIndex(stableId) : UINT32_MAX;
+            },
+            py::arg("stable_id"))
         .def("lookup_indices", &PointCacheLookupIndices, py::arg("stable_ids"), py::arg("point_indices"),
              "Map a contiguous uint32 stable-ID array to point indices in one native batch");
 

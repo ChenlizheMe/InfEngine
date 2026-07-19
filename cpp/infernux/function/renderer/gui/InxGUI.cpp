@@ -656,8 +656,10 @@ uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned c
 
     const auto cpuData = TextureDecoder::CreateRgba8(pixels, byteCount, static_cast<uint32_t>(width),
                                                      static_cast<uint32_t>(height), filter != VK_FILTER_NEAREST);
-    auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(*cpuData, VK_FORMAT_R8G8B8A8_UNORM, filter,
-                                                                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0);
+    auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(
+        *cpuData, VK_FORMAT_R8G8B8A8_UNORM, filter, filter,
+        filter == VK_FILTER_NEAREST ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0);
     const uint64_t pendingBytes = ticket->GetResidentBytes();
     if (pendingBytes > std::numeric_limits<uint64_t>::max() - m_pendingTextureUploadBytes)
         throw std::overflow_error("pending ImGui texture byte counter overflow");

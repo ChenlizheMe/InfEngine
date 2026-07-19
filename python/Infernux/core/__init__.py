@@ -49,7 +49,8 @@ from .parallel_backend import (
     ParallelTaskState,
 )
 from .asset_types import (
-    TextureImportSettings, TextureType, WrapMode, FilterMode, SpriteFrame,
+    TextureCompression, TextureCompressionQuality, TextureImportSettings,
+    TextureType, WrapMode, FilterMode, SpriteFrame,
     ShaderAssetInfo, FontAssetInfo, asset_category_from_extension,
     AudioImportSettings, AudioCompressionFormat,
     MeshImportSettings,
@@ -94,6 +95,8 @@ __all__ = [
     "ParallelCapabilities",
     "ParallelTaskState",
     "TextureImportSettings",
+    "TextureCompression",
+    "TextureCompressionQuality",
     "TextureType",
     "WrapMode",
     "FilterMode",

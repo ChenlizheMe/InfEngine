@@ -456,6 +456,8 @@ class VkSamplerHandle
     bool Create(VkDevice device, VkPhysicalDevice physicalDevice, VkFilter filter = VK_FILTER_LINEAR,
                 VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT, uint32_t mipLevels = 1,
                 int aniso = -1);
+    bool Create(VkDevice device, VkPhysicalDevice physicalDevice, VkFilter minFilter, VkFilter magFilter,
+                VkSamplerMipmapMode mipFilter, VkSamplerAddressMode addressMode, uint32_t mipLevels, int aniso);
 
     /**
      * @brief Destroy the sampler

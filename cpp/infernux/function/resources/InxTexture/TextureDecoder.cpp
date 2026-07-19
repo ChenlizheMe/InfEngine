@@ -1,4 +1,5 @@
 #include "TextureDecoder.h"
+#include "TextureProcessor.h"
 
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -35,6 +36,65 @@ bool ReadGenerateMipmaps(const InxResourceMeta &metadata)
     return metadata.HasKey("generate_mipmaps") ? metadata.GetDataAs<bool>("generate_mipmaps") : true;
 }
 
+TextureCompression ReadCompression(const InxResourceMeta &metadata)
+{
+    const std::string value =
+        metadata.HasKey("texture_compression") ? metadata.GetDataAs<std::string>("texture_compression") : "auto";
+    if (value == "none")
+        return TextureCompression::None;
+    if (value == "auto")
+        return TextureCompression::Automatic;
+    if (value == "bc1")
+        return TextureCompression::BC1;
+    if (value == "bc3")
+        return TextureCompression::BC3;
+    if (value == "bc4")
+        return TextureCompression::BC4;
+    if (value == "bc5")
+        return TextureCompression::BC5;
+    throw std::invalid_argument("texture_compression has an unsupported value: " + value);
+}
+
+TextureCompressionQuality ReadCompressionQuality(const InxResourceMeta &metadata)
+{
+    const std::string value = metadata.HasKey("texture_compression_quality")
+                                  ? metadata.GetDataAs<std::string>("texture_compression_quality")
+                                  : "normal";
+    if (value == "fast")
+        return TextureCompressionQuality::Fast;
+    if (value == "normal")
+        return TextureCompressionQuality::Normal;
+    if (value == "high")
+        return TextureCompressionQuality::High;
+    throw std::invalid_argument("texture_compression_quality has an unsupported value: " + value);
+}
+
+bool ReadSrgb(const InxResourceMeta &metadata)
+{
+    return metadata.HasKey("srgb") ? metadata.GetDataAs<bool>("srgb") : true;
+}
+
+TextureSemantic ReadSemantic(const InxResourceMeta &metadata)
+{
+    const std::string type =
+        metadata.HasKey("texture_type") ? metadata.GetDataAs<std::string>("texture_type") : "default";
+    if (type == "default" || type.empty())
+        return TextureSemantic::Color;
+    if (type == "normal_map")
+        return TextureSemantic::Normal;
+    if (type == "data")
+        return TextureSemantic::Data;
+    if (type == "ui")
+        return TextureSemantic::UserInterface;
+    if (type == "sprite")
+        return TextureSemantic::Sprite;
+    if (type == "vector_field")
+        return TextureSemantic::VectorField;
+    if (type == "sdf")
+        return TextureSemantic::SignedDistanceField;
+    throw std::invalid_argument("texture_type has an unsupported value: " + type);
+}
+
 std::vector<unsigned char> ReadSourceBytes(const std::string &path)
 {
     std::ifstream file(ToFsPath(path), std::ios::binary | std::ios::ate);
@@ -51,9 +111,11 @@ std::vector<unsigned char> ReadSourceBytes(const std::string &path)
     return bytes;
 }
 
-uint64_t LevelByteSize(uint32_t width, uint32_t height, TexturePixelStorage storage)
+uint64_t LevelByteSize(uint32_t width, uint32_t height, TextureFormat format)
 {
-    const uint64_t bytesPerPixel = storage == TexturePixelStorage::Rgba8 ? 4ULL : 16ULL;
+    const uint64_t bytesPerPixel = TextureFormatBytesPerTexel(format);
+    if (bytesPerPixel == 0)
+        throw std::invalid_argument("decoded texture requires an uncompressed working format");
     const uint64_t pixels = static_cast<uint64_t>(width) * height;
     if (pixels == 0 || pixels > MaximumDecodedBytes / bytesPerPixel)
         throw std::overflow_error("decoded texture exceeds the CPU artifact size limit");
@@ -62,45 +124,22 @@ uint64_t LevelByteSize(uint32_t width, uint32_t height, TexturePixelStorage stor
 
 void AppendLevel(TextureCpuData &texture, uint32_t width, uint32_t height, const void *pixels, uint64_t byteSize)
 {
-    if (!pixels || byteSize != LevelByteSize(width, height, texture.storage) ||
+    if (!pixels || byteSize != LevelByteSize(width, height, texture.format) ||
         byteSize > MaximumDecodedBytes - texture.bytes.size())
         throw std::invalid_argument("decoded texture level has an invalid payload");
     TextureMipLevel level;
     level.width = width;
     level.height = height;
+    level.depth = 1;
     level.byteOffset = texture.bytes.size();
     level.byteSize = byteSize;
+    level.rowPitch = static_cast<uint64_t>(width) * TextureFormatBytesPerTexel(texture.format);
+    level.slicePitch = level.rowPitch * height;
     const auto *begin = static_cast<const uint8_t *>(pixels);
     texture.bytes.insert(texture.bytes.end(), begin, begin + static_cast<size_t>(byteSize));
     texture.mipLevels.push_back(level);
 }
 
-void GenerateMipChain(TextureCpuData &texture, bool generateMipmaps)
-{
-    if (!generateMipmaps)
-        return;
-    while (texture.mipLevels.back().width > 1 || texture.mipLevels.back().height > 1) {
-        const TextureMipLevel previous = texture.mipLevels.back();
-        const uint32_t width = (std::max)(1U, previous.width / 2U);
-        const uint32_t height = (std::max)(1U, previous.height / 2U);
-        const uint64_t byteSize = LevelByteSize(width, height, texture.storage);
-        std::vector<uint8_t> resized(static_cast<size_t>(byteSize));
-        const uint8_t *source = texture.bytes.data() + previous.byteOffset;
-        if (texture.storage == TexturePixelStorage::Rgba8) {
-            if (!stbir_resize_uint8_linear(source, static_cast<int>(previous.width), static_cast<int>(previous.height),
-                                           0, resized.data(), static_cast<int>(width), static_cast<int>(height), 0,
-                                           STBIR_RGBA))
-                throw std::runtime_error("failed to generate an RGBA8 texture mip level");
-        } else {
-            if (!stbir_resize_float_linear(reinterpret_cast<const float *>(source), static_cast<int>(previous.width),
-                                           static_cast<int>(previous.height), 0,
-                                           reinterpret_cast<float *>(resized.data()), static_cast<int>(width),
-                                           static_cast<int>(height), 0, STBIR_RGBA))
-                throw std::runtime_error("failed to generate an RGBA32F texture mip level");
-        }
-        AppendLevel(texture, width, height, resized.data(), byteSize);
-    }
-}
 } // namespace
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &sourcePath,
@@ -108,14 +147,15 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
 {
     const auto source = ReadSourceBytes(sourcePath);
     const uint32_t maxSize = ReadMaxSize(metadata);
-    const bool generateMipmaps = ReadGenerateMipmaps(metadata);
     int sourceWidth = 0;
     int sourceHeight = 0;
     int sourceChannels = 0;
 
     auto texture = std::make_shared<TextureCpuData>();
+    texture->dimension = TextureDimension::Texture2D;
+    texture->semantic = ReadSemantic(metadata);
     if (stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
-        texture->storage = TexturePixelStorage::Rgba32Float;
+        texture->format = TextureFormat::Rgba32Float;
         float *decoded = stbi_loadf_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
                                                 &sourceHeight, &sourceChannels, STBI_rgb_alpha);
         if (!decoded)
@@ -136,7 +176,7 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
             AppendLevel(*texture, width, height, decoded, static_cast<uint64_t>(width) * height * 4 * sizeof(float));
         }
     } else {
-        texture->storage = TexturePixelStorage::Rgba8;
+        texture->format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
         stbi_uc *decoded = stbi_load_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
                                                  &sourceHeight, &sourceChannels, STBI_rgb_alpha);
         std::vector<unsigned char> pnmPixels;
@@ -157,8 +197,18 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
                                              : static_cast<uint32_t>(sourceHeight);
         if (width != static_cast<uint32_t>(sourceWidth) || height != static_cast<uint32_t>(sourceHeight)) {
             std::vector<uint8_t> resized(static_cast<size_t>(width) * height * 4);
-            if (!stbir_resize_uint8_linear(base, sourceWidth, sourceHeight, 0, resized.data(), static_cast<int>(width),
-                                           static_cast<int>(height), 0, STBIR_RGBA))
+            const bool colorSrgb =
+                TextureFormatIsSrgb(texture->format) &&
+                (texture->semantic == TextureSemantic::Color || texture->semantic == TextureSemantic::UserInterface ||
+                 texture->semantic == TextureSemantic::Sprite);
+            const bool resizedOk = colorSrgb
+                                       ? stbir_resize_uint8_srgb(base, sourceWidth, sourceHeight, 0, resized.data(),
+                                                                 static_cast<int>(width), static_cast<int>(height), 0,
+                                                                 STBIR_RGBA) != nullptr
+                                       : stbir_resize_uint8_linear(base, sourceWidth, sourceHeight, 0, resized.data(),
+                                                                   static_cast<int>(width), static_cast<int>(height), 0,
+                                                                   STBIR_RGBA) != nullptr;
+            if (!resizedOk)
                 throw std::runtime_error("failed to resize texture: " + sourcePath);
             AppendLevel(*texture, width, height, resized.data(), resized.size());
         } else {
@@ -166,8 +216,9 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
         }
     }
 
-    GenerateMipChain(*texture, generateMipmaps);
-    return texture;
+    return TextureProcessor::Process(std::move(*texture),
+                                     TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
+                                                           ReadCompressionQuality(metadata)});
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::CreateRgba8(const uint8_t *pixels, size_t byteCount,
@@ -175,15 +226,18 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::CreateRgba8(const uint8_t 
 {
     if (!pixels)
         throw std::invalid_argument("RGBA8 texture payload has no pixels");
-    const uint64_t expectedSize = LevelByteSize(width, height, TexturePixelStorage::Rgba8);
+    const uint64_t expectedSize = LevelByteSize(width, height, TextureFormat::Rgba8UNorm);
     if (expectedSize != byteCount)
         throw std::invalid_argument("RGBA8 texture payload byte count does not match its dimensions");
 
     auto texture = std::make_shared<TextureCpuData>();
-    texture->storage = TexturePixelStorage::Rgba8;
+    texture->dimension = TextureDimension::Texture2D;
+    texture->semantic = TextureSemantic::Data;
+    texture->format = TextureFormat::Rgba8UNorm;
     AppendLevel(*texture, width, height, pixels, expectedSize);
-    GenerateMipChain(*texture, generateMipmaps);
-    return texture;
+    return TextureProcessor::Process(
+        std::move(*texture),
+        TextureProcessOptions{generateMipmaps, TextureCompression::None, TextureCompressionQuality::Normal});
 }
 
 } // namespace infernux

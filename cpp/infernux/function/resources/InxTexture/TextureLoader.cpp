@@ -94,7 +94,8 @@ RuntimeAssetPayload TextureLoader::Load(const std::string &filePath, const std::
             artifactFile.read(bytes.data(), artifactSize);
             if (!artifactFile)
                 throw std::runtime_error("failed to read texture artifact");
-            cpuData = TextureArtifact::Deserialize(bytes, sourceHash);
+            const bool legacySrgb = metadata->HasKey("srgb") ? metadata->GetDataAs<bool>("srgb") : true;
+            cpuData = TextureArtifact::Deserialize(bytes, sourceHash, legacySrgb);
         } catch (const std::exception &exception) {
             INXLOG_WARN("TextureLoader: rejected derived artifact for '", filePath, "': ", exception.what(),
                         "; falling back to source decode");

@@ -54,6 +54,37 @@ void HashCombine(size_t &seed, uint64_t value)
     seed ^= hash + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
 }
 
+VkFormat ToVulkanTextureFormat(TextureFormat format)
+{
+    switch (format) {
+    case TextureFormat::Rgba8UNorm:
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    case TextureFormat::Rgba8Srgb:
+        return VK_FORMAT_R8G8B8A8_SRGB;
+    case TextureFormat::Rgba32Float:
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    case TextureFormat::BC1RgbaUNorm:
+        return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    case TextureFormat::BC1RgbaSrgb:
+        return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+    case TextureFormat::BC3UNorm:
+        return VK_FORMAT_BC3_UNORM_BLOCK;
+    case TextureFormat::BC3Srgb:
+        return VK_FORMAT_BC3_SRGB_BLOCK;
+    case TextureFormat::BC4UNorm:
+        return VK_FORMAT_BC4_UNORM_BLOCK;
+    case TextureFormat::BC5UNorm:
+        return VK_FORMAT_BC5_UNORM_BLOCK;
+    case TextureFormat::BC6HUFloat:
+        return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+    case TextureFormat::BC7UNorm:
+        return VK_FORMAT_BC7_UNORM_BLOCK;
+    case TextureFormat::BC7Srgb:
+        return VK_FORMAT_BC7_SRGB_BLOCK;
+    }
+    throw std::invalid_argument("TextureResolver received an unsupported concrete texture format");
+}
+
 } // namespace
 
 // ============================================================================
@@ -146,8 +177,12 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
         INXLOG_ERROR("TextureResolver: texture asset has no decoded CPU payload: ", textureGuid);
         return {TextureResolveStatus::Failed, {}};
     }
+    if (infTex->GetDimension() != TextureDimension::Texture2D) {
+        INXLOG_ERROR("TextureResolver: material Texture2D binding '", bindingName,
+                     "' cannot consume a non-2D texture asset: ", textureGuid);
+        return {TextureResolveStatus::Failed, {}};
+    }
 
-    const bool isLinearTexture = infTex->IsLinear();
     const uint64_t runtimeVersion = registry.GetAssetVersion(textureGuid);
     if (runtimeVersion == 0)
         throw std::logic_error("TextureResolver resolved a payload without a published runtime version");
@@ -155,14 +190,21 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
     const std::string &filterMode = infTex->GetFilterMode();
     const std::string &wrapMode = infTex->GetWrapMode();
     const int anisoLevel = infTex->GetAnisoLevel();
-    const VkFormat format = infTex->GetCpuData()->storage == TexturePixelStorage::Rgba32Float
-                                ? VK_FORMAT_R32G32B32A32_SFLOAT
-                                : (isLinearTexture ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB);
+    const VkFormat format = ToVulkanTextureFormat(infTex->GetFormat());
 
     // Map string settings to Vulkan enums
-    VkFilter vkFilter = VK_FILTER_LINEAR;
-    if (filterMode == "point")
-        vkFilter = VK_FILTER_NEAREST;
+    VkFilter minFilter = VK_FILTER_LINEAR;
+    VkFilter magFilter = VK_FILTER_LINEAR;
+    VkSamplerMipmapMode mipFilter = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    if (filterMode == "point") {
+        minFilter = VK_FILTER_NEAREST;
+        magFilter = VK_FILTER_NEAREST;
+    } else if (filterMode == "trilinear") {
+        mipFilter = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    } else if (filterMode != "linear" && filterMode != "bilinear") {
+        INXLOG_ERROR("TextureResolver: unsupported filter mode '", filterMode, "' for texture ", textureGuid);
+        return {TextureResolveStatus::Failed, {}};
+    }
 
     VkSamplerAddressMode vkAddressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     if (wrapMode == "clamp")
@@ -171,7 +213,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
         vkAddressMode = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
 
     // Cache key uses GUID so that a renamed file still shares its cache entry
-    std::string cacheKey = textureGuid + (isLinearTexture ? "::unorm" : "::srgb") +
+    std::string cacheKey = textureGuid + "::format" + std::to_string(static_cast<uint32_t>(infTex->GetFormat())) +
                            (normalMapMode ? "::normalmap" : "::raw") + "::" + filterMode + "::" + wrapMode + "::aniso" +
                            std::to_string(anisoLevel);
 
@@ -186,8 +228,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
     auto pendingGpu = m_pendingTextureGpuUploads.find(cacheKey);
     if (pendingGpu == m_pendingTextureGpuUploads.end()) {
         try {
-            auto ticket = m_resourceManager.BeginTextureUpload(*infTex->GetCpuData(), format, vkFilter, vkAddressMode,
-                                                               anisoLevel);
+            auto ticket = m_resourceManager.BeginTextureUpload(*infTex->GetCpuData(), format, minFilter, magFilter,
+                                                               mipFilter, vkAddressMode, anisoLevel);
             ++m_submittedTextureUploadCount;
             if (ticket->IsAsync())
                 ++m_asyncTextureUploadCount;

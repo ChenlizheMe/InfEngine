@@ -254,8 +254,9 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         assert texture.pixel_width == 4
         assert texture.pixel_height == 2
         assert texture.mip_count == 3
-        assert texture.cpu_byte_size == 44
-        assert texture.pixel_storage == "rgba8"
+        assert texture.cpu_byte_size == 24
+        assert texture.pixel_storage == "block_compressed"
+        assert texture.pixel_format == "bc1_rgba_srgb"
 
         registry.invalidate_asset(guid)
         source.write_bytes(source_bytes)
@@ -265,7 +266,7 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         while time.monotonic() < deadline and not registry.try_commit_asset_load(fallback):
             time.sleep(0.001)
         assert fallback.committed is True
-        assert registry.get_texture_asset(guid).cpu_byte_size == 44
+        assert registry.get_texture_asset(guid).cpu_byte_size == 24
     finally:
         registry.invalidate_asset(guid)
         if asset_database.contains_path(str(source)):
@@ -300,7 +301,8 @@ def test_asset_registry_cpu_residency_budget_respects_live_and_explicit_pins(eng
     assert asset_database.reimport_asset(str(sources[0]))
     assert registry.reload_asset(guids[0]) is True
     updated_first_record = registry.get_asset_residency(guids[0])
-    assert first.cpu_byte_size == 44
+    assert first.cpu_byte_size == 24
+    assert first.pixel_format == "bc1_rgba_srgb"
     assert updated_first_record.runtime_version == first_record.runtime_version + 1
     assert updated_first_record.cpu_bytes > first_record.cpu_bytes
     first_record = updated_first_record

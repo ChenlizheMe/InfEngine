@@ -15,6 +15,8 @@ from Infernux.core.asset_types import (
     MeshImportSettings,
     ShaderAssetInfo,
     TextureImportSettings,
+    TextureCompression,
+    TextureCompressionQuality,
     TextureType,
     WrapMode,
     _python_type_to_meta_tag,
@@ -38,6 +40,16 @@ class TestTextureType:
         assert int(TextureType.DEFAULT) == 0
         assert int(TextureType.NORMAL_MAP) == 1
         assert int(TextureType.UI) == 2
+        assert int(TextureType.SPRITE) == 3
+        assert int(TextureType.DATA) == 4
+
+
+class TestTextureCompression:
+    def test_round_trip(self):
+        for mode in TextureCompression:
+            assert TextureCompression.from_string(mode.to_string()) == mode
+        for quality in TextureCompressionQuality:
+            assert TextureCompressionQuality.from_string(quality.to_string()) == quality
 
 
 class TestWrapMode:
@@ -89,6 +101,8 @@ class TestTextureImportSettings:
         assert s.srgb is True
         assert s.max_size == 2048
         assert s.aniso_level == 1
+        assert s.compression == TextureCompression.AUTO
+        assert s.compression_quality == TextureCompressionQuality.NORMAL
 
     def test_to_dict_round_trip(self):
         s = TextureImportSettings(
@@ -99,6 +113,8 @@ class TestTextureImportSettings:
             srgb=False,
             max_size=1024,
             aniso_level=4,
+            compression=TextureCompression.BC5,
+            compression_quality=TextureCompressionQuality.HIGH,
         )
         d = s.to_dict()
         s2 = TextureImportSettings.from_dict(d)

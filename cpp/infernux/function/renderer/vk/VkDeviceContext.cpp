@@ -799,6 +799,7 @@ void VkDeviceContext::BuildCapabilities()
 
     const auto &limits = m_deviceProperties.limits;
     capabilities.limits.maxTextureDimension2D = limits.maxImageDimension2D;
+    capabilities.limits.maxTextureDimension3D = limits.maxImageDimension3D;
     capabilities.limits.maxTextureArrayLayers = limits.maxImageArrayLayers;
     capabilities.limits.maxColorAttachments = limits.maxColorAttachments;
     capabilities.limits.maxPushConstantBytes = limits.maxPushConstantsSize;

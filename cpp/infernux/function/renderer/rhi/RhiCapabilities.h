@@ -104,6 +104,7 @@ struct FormatCapabilities
 struct DeviceLimits
 {
     uint32_t maxTextureDimension2D = 0;
+    uint32_t maxTextureDimension3D = 0;
     uint32_t maxTextureArrayLayers = 0;
     uint32_t maxColorAttachments = 0;
     uint32_t maxPushConstantBytes = 0;

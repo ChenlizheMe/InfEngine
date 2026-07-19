@@ -1,6 +1,8 @@
 #include "TextureArtifact.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -37,6 +39,14 @@ void AppendU64(std::string &out, uint64_t value)
         out.push_back(static_cast<char>((value >> shift) & 0xffU));
 }
 
+void AppendFloat(std::string &out, float value)
+{
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    AppendU32(out, bits);
+}
+
 void AppendString(std::string &out, std::string_view value)
 {
     if (value.empty() || value.size() > MaximumHashBytes)
@@ -67,6 +77,15 @@ class Reader final
         uint64_t value = 0;
         for (unsigned shift = 0; shift < 64; shift += 8)
             value |= static_cast<uint64_t>(static_cast<unsigned char>(m_bytes[m_cursor++])) << shift;
+        return value;
+    }
+
+    float ReadFloat()
+    {
+        const uint32_t bits = ReadU32();
+        float value = 0.0f;
+        static_assert(sizeof(bits) == sizeof(value));
+        std::memcpy(&value, &bits, sizeof(value));
         return value;
     }
 
@@ -107,39 +126,91 @@ class Reader final
     size_t m_cursor = 0;
 };
 
-uint32_t BytesPerPixel(TexturePixelStorage storage)
+bool IsValidDimension(TextureDimension dimension)
 {
-    switch (storage) {
-    case TexturePixelStorage::Rgba8:
-        return 4;
-    case TexturePixelStorage::Rgba32Float:
-        return 16;
+    return dimension == TextureDimension::Texture2D || dimension == TextureDimension::Texture3D;
+}
+
+bool IsValidSemantic(TextureSemantic semantic)
+{
+    return semantic >= TextureSemantic::Color && semantic <= TextureSemantic::SignedDistanceField;
+}
+
+bool IsValidFormat(TextureFormat format)
+{
+    return format >= TextureFormat::Rgba8UNorm && format <= TextureFormat::BC7Srgb;
+}
+
+struct MipLayout
+{
+    uint64_t rowPitch = 0;
+    uint64_t slicePitch = 0;
+    uint64_t byteSize = 0;
+};
+
+MipLayout ComputeMipLayout(uint32_t width, uint32_t height, uint32_t depth, TextureFormat format)
+{
+    const uint32_t bytesPerTexel = TextureFormatBytesPerTexel(format);
+    const uint32_t blockBytes = TextureFormatBlockBytes(format);
+    uint64_t rowPitch = 0;
+    uint64_t rows = 0;
+    if (bytesPerTexel != 0) {
+        rowPitch = static_cast<uint64_t>(width) * bytesPerTexel;
+        rows = height;
+    } else if (blockBytes != 0) {
+        rowPitch = static_cast<uint64_t>((std::max)(1U, (width + 3U) / 4U)) * blockBytes;
+        rows = (std::max)(1U, (height + 3U) / 4U);
+    } else {
+        throw std::invalid_argument("texture artifact has an unsupported concrete format");
     }
-    throw std::invalid_argument("texture artifact has an unsupported pixel storage");
+    if (rows != 0 && rowPitch > MaximumPayloadBytes / rows)
+        throw std::invalid_argument("texture artifact mip row layout exceeds the payload limit");
+    const uint64_t slicePitch = rowPitch * rows;
+    if (depth != 0 && slicePitch > MaximumPayloadBytes / depth)
+        throw std::invalid_argument("texture artifact mip volume exceeds the payload limit");
+    return {rowPitch, slicePitch, slicePitch * depth};
 }
 
 void ValidateTexture(const TextureCpuData &texture)
 {
-    if (!texture.IsValid() || texture.mipLevels.size() > MaximumMipLevels || texture.bytes.size() > MaximumPayloadBytes)
+    if (!texture.IsValid() || !IsValidDimension(texture.dimension) || !IsValidSemantic(texture.semantic) ||
+        !IsValidFormat(texture.format) || texture.mipLevels.size() > MaximumMipLevels ||
+        texture.bytes.size() > MaximumPayloadBytes)
         throw std::invalid_argument("texture artifact has invalid payload dimensions");
-    const uint32_t bytesPerPixel = BytesPerPixel(texture.storage);
+    if (!std::all_of(texture.bakeBasis.begin(), texture.bakeBasis.end(),
+                     [](float value) { return std::isfinite(value); }) ||
+        !std::all_of(texture.valueMin.begin(), texture.valueMin.end(),
+                     [](float value) { return std::isfinite(value); }) ||
+        !std::all_of(texture.valueMax.begin(), texture.valueMax.end(),
+                     [](float value) { return std::isfinite(value); }))
+        throw std::invalid_argument("texture artifact metadata must contain finite values");
+    for (size_t channel = 0; channel < texture.valueMin.size(); ++channel) {
+        if (texture.valueMin[channel] > texture.valueMax[channel])
+            throw std::invalid_argument("texture artifact value range is inverted");
+    }
     uint64_t expectedOffset = 0;
     uint32_t previousWidth = 0;
     uint32_t previousHeight = 0;
+    uint32_t previousDepth = 0;
     for (size_t index = 0; index < texture.mipLevels.size(); ++index) {
         const auto &mip = texture.mipLevels[index];
-        if (mip.width == 0 || mip.height == 0 || mip.width > MaximumDimension || mip.height > MaximumDimension)
+        if (mip.width == 0 || mip.height == 0 || mip.depth == 0 || mip.width > MaximumDimension ||
+            mip.height > MaximumDimension || mip.depth > MaximumDimension ||
+            (texture.dimension == TextureDimension::Texture2D && mip.depth != 1))
             throw std::invalid_argument("texture artifact has an invalid mip dimension");
         if (index > 0 &&
-            (mip.width != (std::max)(1U, previousWidth / 2U) || mip.height != (std::max)(1U, previousHeight / 2U)))
+            (mip.width != (std::max)(1U, previousWidth / 2U) || mip.height != (std::max)(1U, previousHeight / 2U) ||
+             mip.depth != (texture.dimension == TextureDimension::Texture3D ? (std::max)(1U, previousDepth / 2U) : 1U)))
             throw std::invalid_argument("texture artifact has a non-contiguous mip chain");
-        const uint64_t expectedSize = static_cast<uint64_t>(mip.width) * mip.height * bytesPerPixel;
-        if (mip.byteOffset != expectedOffset || mip.byteSize != expectedSize ||
-            expectedSize > MaximumPayloadBytes - expectedOffset)
+        const MipLayout expected = ComputeMipLayout(mip.width, mip.height, mip.depth, texture.format);
+        if (mip.byteOffset != expectedOffset || mip.byteSize != expected.byteSize ||
+            mip.rowPitch != expected.rowPitch || mip.slicePitch != expected.slicePitch ||
+            expected.byteSize > MaximumPayloadBytes - expectedOffset)
             throw std::invalid_argument("texture artifact has an invalid mip byte range");
-        expectedOffset += expectedSize;
+        expectedOffset += expected.byteSize;
         previousWidth = mip.width;
         previousHeight = mip.height;
+        previousDepth = mip.depth;
     }
     if (expectedOffset != texture.bytes.size())
         throw std::invalid_argument("texture artifact payload size does not match its mip chain");
@@ -153,12 +224,23 @@ std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::strin
     AppendU32(bytes, FormatVersion);
     AppendU32(bytes, EndianMarker);
     AppendString(bytes, sourceContentHash);
-    AppendU32(bytes, static_cast<uint32_t>(texture.storage));
+    AppendU32(bytes, static_cast<uint32_t>(texture.dimension));
+    AppendU32(bytes, static_cast<uint32_t>(texture.semantic));
+    AppendU32(bytes, static_cast<uint32_t>(texture.format));
+    for (float value : texture.bakeBasis)
+        AppendFloat(bytes, value);
+    for (float value : texture.valueMin)
+        AppendFloat(bytes, value);
+    for (float value : texture.valueMax)
+        AppendFloat(bytes, value);
     AppendU32(bytes, static_cast<uint32_t>(texture.mipLevels.size()));
     for (const auto &mip : texture.mipLevels) {
         AppendU32(bytes, mip.width);
         AppendU32(bytes, mip.height);
+        AppendU32(bytes, mip.depth);
         AppendU64(bytes, mip.byteSize);
+        AppendU64(bytes, mip.rowPitch);
+        AppendU64(bytes, mip.slicePitch);
     }
     AppendU64(bytes, texture.bytes.size());
     bytes.append(reinterpret_cast<const char *>(texture.bytes.data()), texture.bytes.size());
@@ -166,8 +248,8 @@ std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::strin
     return bytes;
 }
 
-std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_view bytes,
-                                                                   std::string_view expectedSourceContentHash)
+std::shared_ptr<const TextureCpuData>
+TextureArtifact::Deserialize(std::string_view bytes, std::string_view expectedSourceContentHash, bool legacySrgb)
 {
     if (bytes.size() < Magic.size() + sizeof(uint32_t) * 4 + sizeof(uint64_t) * 2 ||
         bytes.substr(0, Magic.size()) != Magic)
@@ -178,7 +260,8 @@ std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_v
         throw std::invalid_argument("texture artifact checksum mismatch");
 
     Reader reader(bytes.substr(Magic.size(), checksumOffset - Magic.size()));
-    if (reader.ReadU32() != FormatVersion)
+    const uint32_t formatVersion = reader.ReadU32();
+    if (formatVersion != 1 && formatVersion != FormatVersion)
         throw std::invalid_argument("texture artifact uses an unsupported format version");
     if (reader.ReadU32() != EndianMarker)
         throw std::invalid_argument("texture artifact has an invalid endian marker");
@@ -186,8 +269,27 @@ std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_v
         throw std::invalid_argument("texture artifact does not match the imported source content");
 
     auto texture = std::make_shared<TextureCpuData>();
-    texture->storage = static_cast<TexturePixelStorage>(reader.ReadU32());
-    (void)BytesPerPixel(texture->storage);
+    if (formatVersion == 1) {
+        const uint32_t legacyStorage = reader.ReadU32();
+        if (legacyStorage == 1)
+            texture->format = legacySrgb ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
+        else if (legacyStorage == 2)
+            texture->format = TextureFormat::Rgba32Float;
+        else
+            throw std::invalid_argument("texture artifact has an unsupported legacy pixel storage");
+    } else {
+        texture->dimension = static_cast<TextureDimension>(reader.ReadU32());
+        texture->semantic = static_cast<TextureSemantic>(reader.ReadU32());
+        texture->format = static_cast<TextureFormat>(reader.ReadU32());
+        for (float &value : texture->bakeBasis)
+            value = reader.ReadFloat();
+        for (float &value : texture->valueMin)
+            value = reader.ReadFloat();
+        for (float &value : texture->valueMax)
+            value = reader.ReadFloat();
+    }
+    if (!IsValidFormat(texture->format))
+        throw std::invalid_argument("texture artifact has an unsupported concrete format");
     const uint32_t mipCount = reader.ReadU32();
     if (mipCount == 0 || mipCount > MaximumMipLevels)
         throw std::invalid_argument("texture artifact has an invalid mip count");
@@ -197,8 +299,18 @@ std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_v
         TextureMipLevel mip;
         mip.width = reader.ReadU32();
         mip.height = reader.ReadU32();
+        if (formatVersion >= 2)
+            mip.depth = reader.ReadU32();
         mip.byteOffset = offset;
         mip.byteSize = reader.ReadU64();
+        if (formatVersion >= 2) {
+            mip.rowPitch = reader.ReadU64();
+            mip.slicePitch = reader.ReadU64();
+        } else {
+            const MipLayout layout = ComputeMipLayout(mip.width, mip.height, 1, texture->format);
+            mip.rowPitch = layout.rowPitch;
+            mip.slicePitch = layout.slicePitch;
+        }
         if (mip.byteSize > MaximumPayloadBytes - offset)
             throw std::invalid_argument("texture artifact mip payload exceeds the format limit");
         offset += mip.byteSize;

@@ -33,6 +33,8 @@ class TextureImporter final : public AssetImporter
 
     void EnsureDefaultSettings(InxResourceMeta &meta) const override
     {
+        if (!meta.HasKey("texture_type"))
+            meta.AddMetadata("texture_type", std::string("default"));
         if (!meta.HasKey("wrap_mode"))
             meta.AddMetadata("wrap_mode", std::string("repeat"));
         if (!meta.HasKey("filter_mode"))
@@ -43,6 +45,16 @@ class TextureImporter final : public AssetImporter
             meta.AddMetadata("srgb", true);
         if (!meta.HasKey("max_size"))
             meta.AddMetadata("max_size", 2048);
+        if (!meta.HasKey("aniso_level"))
+            meta.AddMetadata("aniso_level", 1);
+        if (!meta.HasKey("texture_compression"))
+            meta.AddMetadata("texture_compression", std::string("auto"));
+        if (!meta.HasKey("texture_compression_quality"))
+            meta.AddMetadata("texture_compression_quality", std::string("normal"));
+        const std::string textureType = meta.GetDataAs<std::string>("texture_type");
+        if (textureType == "normal_map" || textureType == "data" || textureType == "vector_field" ||
+            textureType == "sdf")
+            meta.AddMetadata("srgb", false);
     }
 };
 

@@ -423,6 +423,15 @@ VkSamplerHandle &VkSamplerHandle::operator=(VkSamplerHandle &&other) noexcept
 bool VkSamplerHandle::Create(VkDevice device, VkPhysicalDevice physicalDevice, VkFilter filter,
                              VkSamplerAddressMode addressMode, uint32_t mipLevels, int aniso)
 {
+    return Create(device, physicalDevice, filter, filter,
+                  filter == VK_FILTER_NEAREST ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR,
+                  addressMode, mipLevels, aniso);
+}
+
+bool VkSamplerHandle::Create(VkDevice device, VkPhysicalDevice physicalDevice, VkFilter minFilter, VkFilter magFilter,
+                             VkSamplerMipmapMode mipFilter, VkSamplerAddressMode addressMode, uint32_t mipLevels,
+                             int aniso)
+{
     Destroy();
 
     m_device = device;
@@ -431,8 +440,9 @@ bool VkSamplerHandle::Create(VkDevice device, VkPhysicalDevice physicalDevice, V
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physicalDevice, &properties);
 
-    // Determine effective anisotropy: -1 = device max, 0 = disabled, 1..16 = explicit
-    bool anisoEnabled = (aniso != 0);
+    // -1 selects the device maximum; 0/1 disable anisotropy because a factor
+    // of one is equivalent to ordinary filtering.
+    bool anisoEnabled = aniso < 0 || aniso > 1;
     float maxAniso = 1.0f;
     if (anisoEnabled) {
         float requested = (aniso < 0) ? properties.limits.maxSamplerAnisotropy : static_cast<float>(aniso);
@@ -441,8 +451,8 @@ bool VkSamplerHandle::Create(VkDevice device, VkPhysicalDevice physicalDevice, V
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = filter;
-    samplerInfo.minFilter = filter;
+    samplerInfo.magFilter = magFilter;
+    samplerInfo.minFilter = minFilter;
     samplerInfo.addressModeU = addressMode;
     samplerInfo.addressModeV = addressMode;
     samplerInfo.addressModeW = addressMode;
@@ -452,10 +462,9 @@ bool VkSamplerHandle::Create(VkDevice device, VkPhysicalDevice physicalDevice, V
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = VK_FALSE;
     samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.mipmapMode =
-        (filter == VK_FILTER_NEAREST) ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipmapMode = mipFilter;
     samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = static_cast<float>(mipLevels);
+    samplerInfo.maxLod = static_cast<float>(mipLevels > 0 ? mipLevels - 1U : 0U);
 
     if (vkCreateSampler(device, &samplerInfo, nullptr, &m_sampler) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to create sampler");
