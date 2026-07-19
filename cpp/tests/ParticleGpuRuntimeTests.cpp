@@ -23,6 +23,9 @@ using namespace infernux;
 struct FakeDevice final : rhi::Device
 {
     std::vector<rhi::BufferDesc> buffers;
+    std::vector<rhi::TextureDesc> textures;
+    std::vector<rhi::TextureViewDesc> textureViews;
+    std::vector<rhi::SamplerDesc> samplers;
     uint32_t shaderCreates = 0;
     std::vector<rhi::BindingLayoutDesc> layouts;
     std::vector<rhi::BindGroupDesc> bindGroups;
@@ -55,6 +58,24 @@ struct FakeDevice final : rhi::Device
         initialBufferBytes.emplace_back();
         if (begin && desc.initialDataBytes)
             initialBufferBytes.back().assign(begin, begin + desc.initialDataBytes);
+        return {nextIndex++, 1};
+    }
+
+    rhi::TextureHandle CreateTexture(const rhi::TextureDesc &desc) override
+    {
+        textures.push_back(desc);
+        return {nextIndex++, 1};
+    }
+
+    rhi::TextureViewHandle CreateTextureView(const rhi::TextureViewDesc &desc) override
+    {
+        textureViews.push_back(desc);
+        return {nextIndex++, 1};
+    }
+
+    rhi::SamplerHandle CreateSampler(const rhi::SamplerDesc &desc) override
+    {
+        samplers.push_back(desc);
         return {nextIndex++, 1};
     }
 
@@ -112,6 +133,10 @@ struct FakeDevice final : rhi::Device
     void Release(rhi::BufferHandle handle) noexcept override
     {
         bufferReleases += handle.IsValid() ? 1u : 0u;
+    }
+    void Release(rhi::TextureHandle handle) noexcept override
+    {
+        textureReleases += handle.IsValid() ? 1u : 0u;
     }
     void Release(rhi::TextureViewHandle handle) noexcept override
     {

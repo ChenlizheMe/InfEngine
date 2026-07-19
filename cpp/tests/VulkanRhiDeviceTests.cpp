@@ -32,6 +32,25 @@ int main()
     vk::VulkanRhiDevice device;
     assert(!device.CreateGraphicsPipeline({}).IsValid());
     assert(!device.CreateComputePipeline({}).IsValid());
+    rhi::TextureDesc nullTextureDesc;
+    nullTextureDesc.format = rhi::PixelFormat::RGBA8UNorm;
+    assert(!device.CreateTexture(nullTextureDesc).IsValid());
+    assert(!device.CreateTextureView({}).IsValid());
+    assert(!device.CreateSampler({}).IsValid());
+
+    const VkImage nativeTexture = FakeHandle<VkImage>(0x91);
+    const auto texture = device.RegisterTexture(nativeTexture);
+    assert(texture.IsValid());
+    assert(device.Resolve(texture) == nativeTexture);
+    device.Release(texture);
+    assert(device.Resolve(texture) == VK_NULL_HANDLE);
+
+    const VkSampler nativeSampler = FakeHandle<VkSampler>(0x92);
+    const auto sampler = device.RegisterSampler(nativeSampler);
+    assert(sampler.IsValid());
+    assert(device.Resolve(sampler) == nativeSampler);
+    device.Release(sampler);
+    assert(device.Resolve(sampler) == VK_NULL_HANDLE);
 
     const VkImageView firstNative = FakeHandle<VkImageView>(0x101);
     const auto first = device.RegisterTextureView(firstNative);

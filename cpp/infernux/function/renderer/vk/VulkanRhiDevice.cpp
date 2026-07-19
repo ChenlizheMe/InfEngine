@@ -3,7 +3,9 @@
 #include "DescriptorBindTrace.h"
 #include "RhiVulkanTypes.h"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 
 namespace infernux::vk
@@ -30,6 +32,132 @@ VkBufferUsageFlags ToVkBufferUsage(rhi::BufferUsageFlags usage)
     if (rhi::HasBufferUsage(usage, rhi::BufferUsageFlags::TransferDestination))
         result |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     return result;
+}
+
+VkImageUsageFlags ToVkTextureUsage(rhi::TextureUsageFlags usage)
+{
+    VkImageUsageFlags result = 0;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::Sampled))
+        result |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::Storage))
+        result |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::ColorAttachment))
+        result |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::DepthStencilAttachment))
+        result |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::TransferSource))
+        result |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::TransferDestination))
+        result |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    return result;
+}
+
+rhi::FormatFeature RequiredFormatFeatures(rhi::TextureUsageFlags usage)
+{
+    rhi::FormatFeature required = rhi::FormatFeature::None;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::Sampled))
+        required |= rhi::FormatFeature::Sampled;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::Storage))
+        required |= rhi::FormatFeature::Storage;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::ColorAttachment))
+        required |= rhi::FormatFeature::ColorAttachment;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::DepthStencilAttachment))
+        required |= rhi::FormatFeature::DepthStencilAttachment;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::TransferSource))
+        required |= rhi::FormatFeature::TransferSource;
+    if (rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::TransferDestination))
+        required |= rhi::FormatFeature::TransferDestination;
+    return required;
+}
+
+VkImageType ToVkImageType(rhi::TextureDimension dimension)
+{
+    switch (dimension) {
+    case rhi::TextureDimension::Texture1D:
+        return VK_IMAGE_TYPE_1D;
+    case rhi::TextureDimension::Texture2D:
+        return VK_IMAGE_TYPE_2D;
+    case rhi::TextureDimension::Texture3D:
+        return VK_IMAGE_TYPE_3D;
+    }
+    return VK_IMAGE_TYPE_MAX_ENUM;
+}
+
+VkImageViewType ToVkImageViewType(rhi::TextureViewDimension dimension)
+{
+    switch (dimension) {
+    case rhi::TextureViewDimension::Texture1D:
+        return VK_IMAGE_VIEW_TYPE_1D;
+    case rhi::TextureViewDimension::Texture1DArray:
+        return VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+    case rhi::TextureViewDimension::Texture2D:
+        return VK_IMAGE_VIEW_TYPE_2D;
+    case rhi::TextureViewDimension::Texture2DArray:
+        return VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    case rhi::TextureViewDimension::Texture3D:
+        return VK_IMAGE_VIEW_TYPE_3D;
+    case rhi::TextureViewDimension::Cube:
+        return VK_IMAGE_VIEW_TYPE_CUBE;
+    case rhi::TextureViewDimension::CubeArray:
+        return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+    }
+    return VK_IMAGE_VIEW_TYPE_MAX_ENUM;
+}
+
+VkImageAspectFlags ToVkImageAspect(rhi::TextureAspect aspect)
+{
+    switch (aspect) {
+    case rhi::TextureAspect::Color:
+        return VK_IMAGE_ASPECT_COLOR_BIT;
+    case rhi::TextureAspect::Depth:
+        return VK_IMAGE_ASPECT_DEPTH_BIT;
+    case rhi::TextureAspect::Stencil:
+        return VK_IMAGE_ASPECT_STENCIL_BIT;
+    case rhi::TextureAspect::DepthStencil:
+        return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+    return 0;
+}
+
+VkFilter ToVkFilter(rhi::FilterMode filter)
+{
+    return filter == rhi::FilterMode::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+}
+
+VkSamplerMipmapMode ToVkMipFilter(rhi::FilterMode filter)
+{
+    return filter == rhi::FilterMode::Nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+}
+
+VkSamplerAddressMode ToVkAddressMode(rhi::AddressMode address)
+{
+    switch (address) {
+    case rhi::AddressMode::Repeat:
+        return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    case rhi::AddressMode::MirroredRepeat:
+        return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    case rhi::AddressMode::ClampToEdge:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    }
+    return VK_SAMPLER_ADDRESS_MODE_MAX_ENUM;
+}
+
+bool IsValidTextureDesc(const rhi::TextureDesc &desc)
+{
+    if (!rhi::IsValidPixelFormat(desc.format) || desc.width == 0 || desc.height == 0 || desc.depthOrLayers == 0 ||
+        desc.mipLevels == 0 || desc.mipLevels > 32 || desc.usage == rhi::TextureUsageFlags::None)
+        return false;
+    if (desc.dimension == rhi::TextureDimension::Texture1D && desc.height != 1)
+        return false;
+    if (desc.samples != rhi::SampleCount::One &&
+        (desc.dimension != rhi::TextureDimension::Texture2D || desc.mipLevels != 1 || desc.cubeCompatible))
+        return false;
+    if (desc.cubeCompatible &&
+        (desc.dimension != rhi::TextureDimension::Texture2D || desc.depthOrLayers < 6 || desc.depthOrLayers % 6 != 0))
+        return false;
+    if (rhi::IsDepthFormat(desc.format))
+        return !rhi::HasTextureUsage(desc.usage, rhi::TextureUsageFlags::ColorAttachment);
+    return !rhi::HasTextureUsage(desc.usage, rhi::TextureUsageFlags::DepthStencilAttachment);
 }
 
 VkDescriptorType ToVkDescriptorType(rhi::BindingType type)
@@ -125,11 +253,13 @@ VulkanRhiDevice::~VulkanRhiDevice()
     DestroyOwnedResources();
 }
 
-void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator) noexcept
+void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator,
+                            const rhi::DeviceCapabilities &capabilities) noexcept
 {
     DestroyOwnedResources();
     m_device = device;
     m_allocator = allocator;
+    m_capabilities = capabilities;
     ResetSlots(m_buffers, m_freeBuffer);
     ResetSlots(m_textures, m_freeTexture);
     ResetSlots(m_textureViews, m_freeTextureView);
@@ -152,7 +282,7 @@ rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byte
 rhi::TextureHandle VulkanRhiDevice::RegisterTexture(VkImage image)
 {
     return image == VK_NULL_HANDLE ? rhi::TextureHandle{}
-                                   : Register<rhi::TextureHandle>(m_textures, m_freeTexture, image);
+                                   : Register<rhi::TextureHandle>(m_textures, m_freeTexture, TexturePayload{image});
 }
 
 template <typename HandleType, typename Payload>
@@ -219,14 +349,15 @@ const Payload *VulkanRhiDevice::Resolve(const std::vector<Slot<Payload>> &slots,
 
 rhi::TextureViewHandle VulkanRhiDevice::RegisterTextureView(VkImageView view)
 {
-    return view == VK_NULL_HANDLE ? rhi::TextureViewHandle{}
-                                  : Register<rhi::TextureViewHandle>(m_textureViews, m_freeTextureView, view);
+    return view == VK_NULL_HANDLE
+               ? rhi::TextureViewHandle{}
+               : Register<rhi::TextureViewHandle>(m_textureViews, m_freeTextureView, TextureViewPayload{view});
 }
 
 rhi::SamplerHandle VulkanRhiDevice::RegisterSampler(VkSampler sampler)
 {
     return sampler == VK_NULL_HANDLE ? rhi::SamplerHandle{}
-                                     : Register<rhi::SamplerHandle>(m_samplers, m_freeSampler, sampler);
+                                     : Register<rhi::SamplerHandle>(m_samplers, m_freeSampler, SamplerPayload{sampler});
 }
 
 rhi::ShaderModuleHandle VulkanRhiDevice::RegisterShaderModule(VkShaderModule module)
@@ -296,6 +427,150 @@ rhi::BufferHandle VulkanRhiDevice::CreateBuffer(const rhi::BufferDesc &desc)
 
     return Register<rhi::BufferHandle>(m_buffers, m_freeBuffer,
                                        BufferPayload{buffer, allocation, resultInfo.pMappedData, desc.byteSize, true});
+}
+
+rhi::TextureHandle VulkanRhiDevice::CreateTexture(const rhi::TextureDesc &desc)
+{
+    if (m_device == VK_NULL_HANDLE || m_allocator == VK_NULL_HANDLE || !IsValidTextureDesc(desc))
+        return {};
+
+    if (m_capabilities.backend != rhi::BackendType::Unknown) {
+        const auto &limits = m_capabilities.limits;
+        const bool dimensionsSupported =
+            (desc.dimension == rhi::TextureDimension::Texture1D && desc.width <= limits.maxTextureDimension1D &&
+             desc.depthOrLayers <= limits.maxTextureArrayLayers) ||
+            (desc.dimension == rhi::TextureDimension::Texture2D && desc.width <= limits.maxTextureDimension2D &&
+             desc.height <= limits.maxTextureDimension2D && desc.depthOrLayers <= limits.maxTextureArrayLayers) ||
+            (desc.dimension == rhi::TextureDimension::Texture3D && desc.width <= limits.maxTextureDimension3D &&
+             desc.height <= limits.maxTextureDimension3D && desc.depthOrLayers <= limits.maxTextureDimension3D);
+        if (!dimensionsSupported ||
+            !m_capabilities.CheckFormat(desc.format, RequiredFormatFeatures(desc.usage)).IsSupported() ||
+            !m_capabilities.CheckSampleCount(desc.format, desc.samples).IsSupported())
+            return {};
+    }
+
+    const VkFormat format = rhi::ToVkFormat(desc.format);
+    const VkImageUsageFlags usage = ToVkTextureUsage(desc.usage);
+    const VkImageType imageType = ToVkImageType(desc.dimension);
+    if (format == VK_FORMAT_UNDEFINED || usage == 0 || imageType == VK_IMAGE_TYPE_MAX_ENUM)
+        return {};
+
+    VkImageCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    createInfo.flags = desc.cubeCompatible ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+    createInfo.imageType = imageType;
+    createInfo.format = format;
+    createInfo.extent = {desc.width, desc.height,
+                         desc.dimension == rhi::TextureDimension::Texture3D ? desc.depthOrLayers : 1U};
+    createInfo.mipLevels = desc.mipLevels;
+    createInfo.arrayLayers = desc.dimension == rhi::TextureDimension::Texture3D ? 1U : desc.depthOrLayers;
+    createInfo.samples = rhi::ToVkSampleCount(desc.samples);
+    createInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    createInfo.usage = usage;
+    createInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    createInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    if (vmaCreateImage(m_allocator, &createInfo, &allocationInfo, &image, &allocation, nullptr) != VK_SUCCESS)
+        return {};
+    return Register<rhi::TextureHandle>(m_textures, m_freeTexture, TexturePayload{image, allocation, desc, true});
+}
+
+rhi::TextureViewHandle VulkanRhiDevice::CreateTextureView(const rhi::TextureViewDesc &desc)
+{
+    const TexturePayload *texture = Resolve(m_textures, desc.texture);
+    if (m_device == VK_NULL_HANDLE || !texture || texture->image == VK_NULL_HANDLE || desc.mipCount == 0 ||
+        desc.layerCount == 0 || desc.baseMip >= texture->desc.mipLevels ||
+        desc.mipCount > texture->desc.mipLevels - desc.baseMip)
+        return {};
+
+    const rhi::PixelFormat format = desc.format == rhi::PixelFormat::Undefined ? texture->desc.format : desc.format;
+    if (format != texture->desc.format)
+        return {};
+    const bool depth = rhi::IsDepthFormat(format);
+    if ((!depth && desc.aspect != rhi::TextureAspect::Color) || (depth && desc.aspect == rhi::TextureAspect::Color) ||
+        (format == rhi::PixelFormat::D32SFloat &&
+         (desc.aspect == rhi::TextureAspect::Stencil || desc.aspect == rhi::TextureAspect::DepthStencil)))
+        return {};
+
+    const uint32_t availableLayers =
+        texture->desc.dimension == rhi::TextureDimension::Texture3D ? 1U : texture->desc.depthOrLayers;
+    if (desc.baseLayer >= availableLayers || desc.layerCount > availableLayers - desc.baseLayer)
+        return {};
+
+    bool dimensionValid = false;
+    switch (desc.dimension) {
+    case rhi::TextureViewDimension::Texture1D:
+        dimensionValid = texture->desc.dimension == rhi::TextureDimension::Texture1D && desc.layerCount == 1;
+        break;
+    case rhi::TextureViewDimension::Texture1DArray:
+        dimensionValid = texture->desc.dimension == rhi::TextureDimension::Texture1D;
+        break;
+    case rhi::TextureViewDimension::Texture2D:
+        dimensionValid = texture->desc.dimension == rhi::TextureDimension::Texture2D && desc.layerCount == 1;
+        break;
+    case rhi::TextureViewDimension::Texture2DArray:
+        dimensionValid = texture->desc.dimension == rhi::TextureDimension::Texture2D;
+        break;
+    case rhi::TextureViewDimension::Texture3D:
+        dimensionValid =
+            texture->desc.dimension == rhi::TextureDimension::Texture3D && desc.baseLayer == 0 && desc.layerCount == 1;
+        break;
+    case rhi::TextureViewDimension::Cube:
+        dimensionValid = texture->desc.cubeCompatible && desc.layerCount == 6 && desc.baseLayer % 6 == 0;
+        break;
+    case rhi::TextureViewDimension::CubeArray:
+        dimensionValid =
+            texture->desc.cubeCompatible && desc.layerCount >= 6 && desc.layerCount % 6 == 0 && desc.baseLayer % 6 == 0;
+        break;
+    }
+    if (!dimensionValid)
+        return {};
+
+    VkImageViewCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    createInfo.image = texture->image;
+    createInfo.viewType = ToVkImageViewType(desc.dimension);
+    createInfo.format = rhi::ToVkFormat(format);
+    createInfo.subresourceRange = {ToVkImageAspect(desc.aspect), desc.baseMip, desc.mipCount, desc.baseLayer,
+                                   desc.layerCount};
+    VkImageView view = VK_NULL_HANDLE;
+    if (createInfo.viewType == VK_IMAGE_VIEW_TYPE_MAX_ENUM || createInfo.subresourceRange.aspectMask == 0 ||
+        vkCreateImageView(m_device, &createInfo, nullptr, &view) != VK_SUCCESS)
+        return {};
+    return Register<rhi::TextureViewHandle>(m_textureViews, m_freeTextureView, TextureViewPayload{view, true});
+}
+
+rhi::SamplerHandle VulkanRhiDevice::CreateSampler(const rhi::SamplerDesc &desc)
+{
+    if (m_device == VK_NULL_HANDLE || !std::isfinite(desc.minLod) || !std::isfinite(desc.maxLod) ||
+        !std::isfinite(desc.maxAnisotropy) || desc.minLod < 0.0f || desc.maxLod < desc.minLod ||
+        desc.maxAnisotropy < 1.0f)
+        return {};
+    if (desc.maxAnisotropy > 1.0f &&
+        (!m_capabilities.features.samplerAnisotropy || desc.maxAnisotropy > m_capabilities.limits.maxSamplerAnisotropy))
+        return {};
+    VkSamplerCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    createInfo.magFilter = ToVkFilter(desc.magFilter);
+    createInfo.minFilter = ToVkFilter(desc.minFilter);
+    createInfo.mipmapMode = ToVkMipFilter(desc.mipFilter);
+    createInfo.addressModeU = ToVkAddressMode(desc.addressU);
+    createInfo.addressModeV = ToVkAddressMode(desc.addressV);
+    createInfo.addressModeW = ToVkAddressMode(desc.addressW);
+    createInfo.anisotropyEnable = desc.maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
+    createInfo.maxAnisotropy = desc.maxAnisotropy;
+    createInfo.compareEnable = VK_FALSE;
+    createInfo.minLod = desc.minLod;
+    createInfo.maxLod = desc.maxLod;
+    createInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    VkSampler sampler = VK_NULL_HANDLE;
+    if (vkCreateSampler(m_device, &createInfo, nullptr, &sampler) != VK_SUCCESS)
+        return {};
+    return Register<rhi::SamplerHandle>(m_samplers, m_freeSampler, SamplerPayload{sampler, true});
 }
 
 rhi::ShaderModuleHandle VulkanRhiDevice::CreateShaderModule(const rhi::ShaderModuleDesc &desc)
@@ -628,6 +903,9 @@ rhi::RenderTargetLayoutHandle VulkanRhiDevice::RegisterRenderTargetLayout(VkRend
 
 void VulkanRhiDevice::Release(rhi::TextureViewHandle handle) noexcept
 {
+    const auto *payload = Resolve(m_textureViews, handle);
+    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->view != VK_NULL_HANDLE)
+        vkDestroyImageView(m_device, payload->view, nullptr);
     Release(m_textureViews, m_freeTextureView, handle);
 }
 void VulkanRhiDevice::Release(rhi::BufferHandle handle) noexcept
@@ -640,10 +918,16 @@ void VulkanRhiDevice::Release(rhi::BufferHandle handle) noexcept
 
 void VulkanRhiDevice::Release(rhi::TextureHandle handle) noexcept
 {
+    const auto *payload = Resolve(m_textures, handle);
+    if (payload && payload->owned && m_allocator != VK_NULL_HANDLE && payload->image != VK_NULL_HANDLE)
+        vmaDestroyImage(m_allocator, payload->image, payload->allocation);
     Release(m_textures, m_freeTexture, handle);
 }
 void VulkanRhiDevice::Release(rhi::SamplerHandle handle) noexcept
 {
+    const auto *payload = Resolve(m_samplers, handle);
+    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->sampler != VK_NULL_HANDLE)
+        vkDestroySampler(m_device, payload->sampler, nullptr);
     Release(m_samplers, m_freeSampler, handle);
 }
 void VulkanRhiDevice::Release(rhi::ShaderModuleHandle handle) noexcept
@@ -698,7 +982,7 @@ void VulkanRhiDevice::Release(rhi::RenderTargetLayoutHandle handle) noexcept
 VkImageView VulkanRhiDevice::Resolve(rhi::TextureViewHandle handle) const noexcept
 {
     const auto *payload = Resolve(m_textureViews, handle);
-    return payload ? *payload : VK_NULL_HANDLE;
+    return payload ? payload->view : VK_NULL_HANDLE;
 }
 VkBuffer VulkanRhiDevice::Resolve(rhi::BufferHandle handle) const noexcept
 {
@@ -708,13 +992,13 @@ VkBuffer VulkanRhiDevice::Resolve(rhi::BufferHandle handle) const noexcept
 
 VkImage VulkanRhiDevice::Resolve(rhi::TextureHandle handle) const noexcept
 {
-    const auto *image = Resolve(m_textures, handle);
-    return image ? *image : VK_NULL_HANDLE;
+    const auto *payload = Resolve(m_textures, handle);
+    return payload ? payload->image : VK_NULL_HANDLE;
 }
 VkSampler VulkanRhiDevice::Resolve(rhi::SamplerHandle handle) const noexcept
 {
     const auto *payload = Resolve(m_samplers, handle);
-    return payload ? *payload : VK_NULL_HANDLE;
+    return payload ? payload->sampler : VK_NULL_HANDLE;
 }
 VkShaderModule VulkanRhiDevice::Resolve(rhi::ShaderModuleHandle handle) const noexcept
 {
@@ -801,6 +1085,16 @@ void VulkanRhiDevice::DestroyOwnedResources() noexcept
 {
     if (m_device == VK_NULL_HANDLE)
         return;
+    for (auto &slot : m_textureViews) {
+        if (slot.occupied && slot.payload.owned && slot.payload.view != VK_NULL_HANDLE)
+            vkDestroyImageView(m_device, slot.payload.view, nullptr);
+        slot.payload.owned = false;
+    }
+    for (auto &slot : m_samplers) {
+        if (slot.occupied && slot.payload.owned && slot.payload.sampler != VK_NULL_HANDLE)
+            vkDestroySampler(m_device, slot.payload.sampler, nullptr);
+        slot.payload.owned = false;
+    }
     for (auto &slot : m_graphicsPipelines) {
         if (!slot.occupied)
             continue;
@@ -838,6 +1132,11 @@ void VulkanRhiDevice::DestroyOwnedResources() noexcept
         slot.payload.owned = false;
     }
     if (m_allocator != VK_NULL_HANDLE) {
+        for (auto &slot : m_textures) {
+            if (slot.occupied && slot.payload.owned && slot.payload.image != VK_NULL_HANDLE)
+                vmaDestroyImage(m_allocator, slot.payload.image, slot.payload.allocation);
+            slot.payload.owned = false;
+        }
         for (auto &slot : m_buffers) {
             if (slot.occupied && slot.payload.owned && slot.payload.buffer != VK_NULL_HANDLE)
                 vmaDestroyBuffer(m_allocator, slot.payload.buffer, slot.payload.allocation);

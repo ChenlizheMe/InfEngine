@@ -125,14 +125,6 @@ class ComputeCommandEncoder
     const DispatchTable *m_dispatch = nullptr;
 };
 
-enum class TextureAspect : uint8_t
-{
-    Color,
-    Depth,
-    Stencil,
-    DepthStencil,
-};
-
 struct BufferCopyRegion
 {
     uint64_t sourceOffset = 0;

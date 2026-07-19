@@ -319,7 +319,7 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
         INXLOG_ERROR("Failed to create VMA allocator");
         return false;
     }
-    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator);
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator, m_capabilities);
 
     INXLOG_INFO("Vulkan device context initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -385,7 +385,7 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
         INXLOG_ERROR("Failed to create VMA allocator");
         return false;
     }
-    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator);
+    m_rhiDevice = std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator, m_capabilities);
 
     INXLOG_INFO("Vulkan device initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -798,6 +798,7 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.apiVersionPatch = VK_VERSION_PATCH(m_deviceProperties.apiVersion);
 
     const auto &limits = m_deviceProperties.limits;
+    capabilities.limits.maxTextureDimension1D = limits.maxImageDimension1D;
     capabilities.limits.maxTextureDimension2D = limits.maxImageDimension2D;
     capabilities.limits.maxTextureDimension3D = limits.maxImageDimension3D;
     capabilities.limits.maxTextureArrayLayers = limits.maxImageArrayLayers;
@@ -805,6 +806,7 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.limits.maxPushConstantBytes = limits.maxPushConstantsSize;
     capabilities.limits.maxSampledTexturesPerStage = limits.maxPerStageDescriptorSampledImages;
     capabilities.limits.maxStorageBuffersPerStage = limits.maxPerStageDescriptorStorageBuffers;
+    capabilities.limits.maxSamplerAnisotropy = limits.maxSamplerAnisotropy;
     std::copy_n(limits.maxComputeWorkGroupCount, 3, capabilities.limits.maxComputeWorkgroupCount);
     std::copy_n(limits.maxComputeWorkGroupSize, 3, capabilities.limits.maxComputeWorkgroupSize);
     capabilities.limits.maxComputeWorkgroupInvocations = limits.maxComputeWorkGroupInvocations;

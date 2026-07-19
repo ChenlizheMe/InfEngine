@@ -118,6 +118,11 @@ int main()
     static_assert(HasAny(storageAccess, Access::ShaderWrite));
     static_assert(!HasAny(storageAccess, Access::TransferWrite));
 
+    constexpr auto textureUsage = TextureUsageFlags::Sampled | TextureUsageFlags::TransferDestination;
+    static_assert(HasTextureUsage(textureUsage, TextureUsageFlags::Sampled));
+    static_assert(HasTextureUsage(textureUsage, TextureUsageFlags::TransferDestination));
+    static_assert(!HasTextureUsage(textureUsage, TextureUsageFlags::Storage));
+
     const GraphicsPipelineHandle pipeline{4, 2};
     const ComputePipelineHandle computePipeline{5, 2};
     const BindGroupHandle group{7, 3};
@@ -196,6 +201,29 @@ int main()
     computeDesc.bindingLayouts[0] = {10, 1};
     computeDesc.bindingLayoutCount = 1;
     assert(computeDesc.computeShader.IsValid());
+
+    TextureDesc textureDesc;
+    textureDesc.dimension = TextureDimension::Texture3D;
+    textureDesc.width = 32;
+    textureDesc.height = 16;
+    textureDesc.depthOrLayers = 8;
+    textureDesc.mipLevels = 4;
+    textureDesc.format = PixelFormat::RGBA16SFloat;
+    textureDesc.usage = textureUsage;
+    assert(textureDesc.dimension == TextureDimension::Texture3D);
+    assert(textureDesc.depthOrLayers == 8);
+
+    TextureViewDesc viewDesc;
+    viewDesc.texture = {19, 1};
+    viewDesc.dimension = TextureViewDimension::Texture3D;
+    viewDesc.mipCount = 4;
+    assert(viewDesc.texture.IsValid());
+
+    SamplerDesc samplerDesc;
+    samplerDesc.addressW = AddressMode::ClampToEdge;
+    samplerDesc.maxLod = 3.0f;
+    samplerDesc.maxAnisotropy = 4.0f;
+    assert(samplerDesc.maxLod == 3.0f);
 
     BindGroupDesc groupDesc;
     groupDesc.layout = {15, 1};

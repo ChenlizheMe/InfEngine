@@ -1288,6 +1288,51 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     deviceApi.Release(residentBuffer);
     deviceApi.Release(uploadBuffer);
 
+    infernux::rhi::TextureDesc texture2DDesc;
+    texture2DDesc.width = 16;
+    texture2DDesc.height = 8;
+    texture2DDesc.mipLevels = 5;
+    texture2DDesc.format = infernux::rhi::PixelFormat::RGBA8UNorm;
+    texture2DDesc.usage =
+        infernux::rhi::TextureUsageFlags::Sampled | infernux::rhi::TextureUsageFlags::TransferDestination;
+    const auto texture2D = deviceApi.CreateTexture(texture2DDesc);
+    infernux::rhi::TextureViewDesc texture2DViewDesc;
+    texture2DViewDesc.texture = texture2D;
+    texture2DViewDesc.mipCount = texture2DDesc.mipLevels;
+    const auto texture2DView = deviceApi.CreateTextureView(texture2DViewDesc);
+
+    infernux::rhi::TextureDesc texture3DDesc;
+    texture3DDesc.dimension = infernux::rhi::TextureDimension::Texture3D;
+    texture3DDesc.width = 8;
+    texture3DDesc.height = 4;
+    texture3DDesc.depthOrLayers = 4;
+    texture3DDesc.mipLevels = 3;
+    texture3DDesc.format = infernux::rhi::PixelFormat::RGBA16SFloat;
+    texture3DDesc.usage =
+        infernux::rhi::TextureUsageFlags::Sampled | infernux::rhi::TextureUsageFlags::TransferDestination;
+    const auto texture3D = deviceApi.CreateTexture(texture3DDesc);
+    infernux::rhi::TextureViewDesc texture3DViewDesc;
+    texture3DViewDesc.texture = texture3D;
+    texture3DViewDesc.dimension = infernux::rhi::TextureViewDimension::Texture3D;
+    texture3DViewDesc.mipCount = texture3DDesc.mipLevels;
+    const auto texture3DView = deviceApi.CreateTextureView(texture3DViewDesc);
+
+    infernux::rhi::SamplerDesc textureSamplerDesc;
+    textureSamplerDesc.addressU = infernux::rhi::AddressMode::ClampToEdge;
+    textureSamplerDesc.addressV = infernux::rhi::AddressMode::ClampToEdge;
+    textureSamplerDesc.addressW = infernux::rhi::AddressMode::ClampToEdge;
+    textureSamplerDesc.maxLod = 4.0f;
+    const auto textureSampler = deviceApi.CreateSampler(textureSamplerDesc);
+    if (!Require(texture2D.IsValid() && texture2DView.IsValid() && texture3D.IsValid() && texture3DView.IsValid() &&
+                     textureSampler.IsValid(),
+                 "RHI Texture2D/Texture3D/view/sampler creation failed"))
+        return false;
+    deviceApi.Release(textureSampler);
+    deviceApi.Release(texture3DView);
+    deviceApi.Release(texture3D);
+    deviceApi.Release(texture2DView);
+    deviceApi.Release(texture2D);
+
     resources.computeShader = rhi.CreateShaderModule({computeCode.data(), computeCode.size()});
     infernux::rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, infernux::rhi::BindingType::StorageBuffer, infernux::rhi::ShaderStage::Compute, 1};

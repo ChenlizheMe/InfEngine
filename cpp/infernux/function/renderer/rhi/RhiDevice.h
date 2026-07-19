@@ -15,6 +15,9 @@ class Device
     virtual ~Device() = default;
 
     [[nodiscard]] virtual BufferHandle CreateBuffer(const BufferDesc &desc) = 0;
+    [[nodiscard]] virtual TextureHandle CreateTexture(const TextureDesc &desc) = 0;
+    [[nodiscard]] virtual TextureViewHandle CreateTextureView(const TextureViewDesc &desc) = 0;
+    [[nodiscard]] virtual SamplerHandle CreateSampler(const SamplerDesc &desc) = 0;
     [[nodiscard]] virtual ShaderModuleHandle CreateShaderModule(const ShaderModuleDesc &desc) = 0;
     [[nodiscard]] virtual BindingLayoutHandle CreateBindingLayout(const BindingLayoutDesc &desc) = 0;
     [[nodiscard]] virtual BindGroupHandle CreateBindGroup(const BindGroupDesc &desc) = 0;
@@ -24,6 +27,7 @@ class Device
     virtual bool WriteBuffer(BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) = 0;
 
     virtual void Release(BufferHandle handle) noexcept = 0;
+    virtual void Release(TextureHandle handle) noexcept = 0;
     virtual void Release(TextureViewHandle handle) noexcept = 0;
     virtual void Release(SamplerHandle handle) noexcept = 0;
     virtual void Release(ShaderModuleHandle handle) noexcept = 0;

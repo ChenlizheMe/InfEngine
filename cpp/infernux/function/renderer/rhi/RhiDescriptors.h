@@ -73,6 +73,32 @@ enum class AddressMode : uint8_t
     ClampToEdge,
 };
 
+enum class TextureDimension : uint8_t
+{
+    Texture1D,
+    Texture2D,
+    Texture3D,
+};
+
+enum class TextureViewDimension : uint8_t
+{
+    Texture1D,
+    Texture1DArray,
+    Texture2D,
+    Texture2DArray,
+    Texture3D,
+    Cube,
+    CubeArray,
+};
+
+enum class TextureAspect : uint8_t
+{
+    Color,
+    Depth,
+    Stencil,
+    DepthStencil,
+};
+
 enum class BindingType : uint8_t
 {
     UniformBuffer,
@@ -100,6 +126,27 @@ enum class BufferUsageFlags : uint16_t
     return static_cast<BufferUsageFlags>(static_cast<uint16_t>(lhs) | static_cast<uint16_t>(rhs));
 }
 
+enum class TextureUsageFlags : uint16_t
+{
+    None = 0,
+    Sampled = 1u << 0,
+    Storage = 1u << 1,
+    ColorAttachment = 1u << 2,
+    DepthStencilAttachment = 1u << 3,
+    TransferSource = 1u << 4,
+    TransferDestination = 1u << 5,
+};
+
+[[nodiscard]] constexpr TextureUsageFlags operator|(TextureUsageFlags lhs, TextureUsageFlags rhs) noexcept
+{
+    return static_cast<TextureUsageFlags>(static_cast<uint16_t>(lhs) | static_cast<uint16_t>(rhs));
+}
+
+[[nodiscard]] constexpr bool HasTextureUsage(TextureUsageFlags available, TextureUsageFlags required) noexcept
+{
+    return (static_cast<uint16_t>(available) & static_cast<uint16_t>(required)) == static_cast<uint16_t>(required);
+}
+
 [[nodiscard]] constexpr bool HasBufferUsage(BufferUsageFlags available, BufferUsageFlags required) noexcept
 {
     return (static_cast<uint16_t>(available) & static_cast<uint16_t>(required)) == static_cast<uint16_t>(required);
@@ -119,6 +166,32 @@ struct BufferDesc
     BufferMemory memory = BufferMemory::DeviceLocal;
     const void *initialData = nullptr;
     uint64_t initialDataBytes = 0;
+};
+
+struct TextureDesc
+{
+    TextureDimension dimension = TextureDimension::Texture2D;
+    uint32_t width = 1;
+    uint32_t height = 1;
+    /// Depth for Texture3D, otherwise array layer count.
+    uint32_t depthOrLayers = 1;
+    uint32_t mipLevels = 1;
+    PixelFormat format = PixelFormat::Undefined;
+    TextureUsageFlags usage = TextureUsageFlags::Sampled;
+    SampleCount samples = SampleCount::One;
+    bool cubeCompatible = false;
+};
+
+struct TextureViewDesc
+{
+    TextureHandle texture;
+    TextureViewDimension dimension = TextureViewDimension::Texture2D;
+    PixelFormat format = PixelFormat::Undefined;
+    TextureAspect aspect = TextureAspect::Color;
+    uint32_t baseMip = 0;
+    uint32_t mipCount = 1;
+    uint32_t baseLayer = 0;
+    uint32_t layerCount = 1;
 };
 
 struct ShaderModuleDesc

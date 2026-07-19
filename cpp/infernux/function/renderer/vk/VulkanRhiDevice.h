@@ -1,5 +1,6 @@
 #pragma once
 
+#include <function/renderer/rhi/RhiCapabilities.h>
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
 
@@ -37,8 +38,9 @@ class VulkanRhiDevice final : public rhi::Device
 {
   public:
     VulkanRhiDevice() = default;
-    explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE) noexcept
-        : m_device(device), m_allocator(allocator)
+    explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
+                             const rhi::DeviceCapabilities &capabilities = {}) noexcept
+        : m_device(device), m_allocator(allocator), m_capabilities(capabilities)
     {
     }
 
@@ -49,7 +51,8 @@ class VulkanRhiDevice final : public rhi::Device
 
     ~VulkanRhiDevice();
 
-    void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE) noexcept;
+    void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
+               const rhi::DeviceCapabilities &capabilities = {}) noexcept;
 
     [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0);
     [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
@@ -63,6 +66,9 @@ class VulkanRhiDevice final : public rhi::Device
     /// Create a compute pipeline from backend-neutral RHI handles. The
     /// returned pipeline and its layout are owned by this adapter.
     [[nodiscard]] rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override;
+    [[nodiscard]] rhi::TextureHandle CreateTexture(const rhi::TextureDesc &desc) override;
+    [[nodiscard]] rhi::TextureViewHandle CreateTextureView(const rhi::TextureViewDesc &desc) override;
+    [[nodiscard]] rhi::SamplerHandle CreateSampler(const rhi::SamplerDesc &desc) override;
     [[nodiscard]] rhi::ShaderModuleHandle CreateShaderModule(const rhi::ShaderModuleDesc &desc) override;
     [[nodiscard]] rhi::BindingLayoutHandle CreateBindingLayout(const rhi::BindingLayoutDesc &desc) override;
     [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const rhi::BindGroupDesc &desc) override;
@@ -72,7 +78,7 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
     void Release(rhi::BufferHandle handle) noexcept override;
-    void Release(rhi::TextureHandle handle) noexcept;
+    void Release(rhi::TextureHandle handle) noexcept override;
     void Release(rhi::TextureViewHandle handle) noexcept override;
     void Release(rhi::SamplerHandle handle) noexcept override;
     void Release(rhi::ShaderModuleHandle handle) noexcept override;
@@ -105,6 +111,26 @@ class VulkanRhiDevice final : public rhi::Device
         VmaAllocation allocation = VK_NULL_HANDLE;
         void *mappedData = nullptr;
         uint64_t byteSize = 0;
+        bool owned = false;
+    };
+
+    struct TexturePayload
+    {
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        rhi::TextureDesc desc{};
+        bool owned = false;
+    };
+
+    struct TextureViewPayload
+    {
+        VkImageView view = VK_NULL_HANDLE;
+        bool owned = false;
+    };
+
+    struct SamplerPayload
+    {
+        VkSampler sampler = VK_NULL_HANDLE;
         bool owned = false;
     };
 
@@ -187,10 +213,11 @@ class VulkanRhiDevice final : public rhi::Device
 
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
+    rhi::DeviceCapabilities m_capabilities{};
     std::vector<Slot<BufferPayload>> m_buffers;
-    std::vector<Slot<VkImage>> m_textures;
-    std::vector<Slot<VkImageView>> m_textureViews;
-    std::vector<Slot<VkSampler>> m_samplers;
+    std::vector<Slot<TexturePayload>> m_textures;
+    std::vector<Slot<TextureViewPayload>> m_textureViews;
+    std::vector<Slot<SamplerPayload>> m_samplers;
     std::vector<Slot<ShaderModulePayload>> m_shaderModules;
     std::vector<Slot<BindingLayoutPayload>> m_bindingLayouts;
     std::vector<Slot<BindGroupPayload>> m_bindGroups;
