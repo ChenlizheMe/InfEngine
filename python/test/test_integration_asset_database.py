@@ -386,6 +386,77 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
             asset_db.delete_asset(str(source))
 
 
+def test_vector_field_import_exposes_immutable_volume_generations(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "Wind.inxvfield"
+
+    def document(vectors):
+        return {
+            "$schema": "infernux.vector_field",
+            "$version": 1,
+            "dimensions": [2, 1, 1],
+            "storage_order": "x_fastest",
+            "bake_basis": [
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            "vectors": vectors,
+        }
+
+    source.write_text(json.dumps(document([[1, 2, 3], [-4, 5.5, 6]])), encoding="utf-8")
+    registry = AssetRegistry.instance()
+
+    try:
+        result = AssetManager.import_asset(str(source), database=asset_db)
+        assert result, result.error
+        assert result.resource_type == ResourceType.Texture
+
+        texture = registry.load_texture_by_guid(result.guid)
+        assert texture is not None
+        assert texture.dimension == "3d"
+        assert texture.pixel_format == "rgba16_float"
+        assert texture.pixel_depth == 1
+        initial_generation = texture.generation
+        assert initial_generation > 0
+        assert tuple(texture.bake_basis) == tuple(document([])["bake_basis"])
+        np.testing.assert_allclose(texture.value_min[:3], (-4.0, 2.0, 3.0))
+        np.testing.assert_allclose(texture.value_max[:3], (1.0, 5.5, 6.0))
+
+        original = texture.volume_array()
+        assert original.shape == (1, 1, 2, 4)
+        assert original.dtype == np.dtype(np.float16)
+        assert not original.flags.writeable
+        np.testing.assert_allclose(original[0, 0], [[1, 2, 3, 0], [-4, 5.5, 6, 0]])
+
+        source.write_text(json.dumps(document([[7, 8, 9], [10, 11, 12]])), encoding="utf-8")
+        reimported = AssetManager.reimport_asset(str(source), database=asset_db)
+        assert reimported, reimported.error
+
+        current = texture.volume_array()
+        assert texture.generation == initial_generation + 1
+        np.testing.assert_allclose(current[0, 0], [[7, 8, 9, 0], [10, 11, 12, 0]])
+        np.testing.assert_allclose(original[0, 0], [[1, 2, 3, 0], [-4, 5.5, 6, 0]])
+    finally:
+        if "result" in locals() and result.guid:
+            registry.remove_asset(result.guid)
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+
+
 def test_asset_database_never_indexes_python_bytecode_or_cache_paths(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "python-bytecode-ignore-fixture"

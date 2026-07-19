@@ -534,7 +534,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuDrawRegistry particleDrawRegistry;
     infernux::particle::ParticleGpuSystemManager particleSystems;
     if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, particleDeletionQueue,
-                                            particleDrawRegistry, {}, {}, sortProgram, cullProgram, boundsProgram,
+                                            particleDrawRegistry, {}, {}, {}, sortProgram, cullProgram, boundsProgram,
                                             migrationProgram),
                  "GPU particle system manager initialization failed"))
         return false;

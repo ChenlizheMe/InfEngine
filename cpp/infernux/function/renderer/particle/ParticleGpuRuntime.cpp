@@ -136,6 +136,26 @@ struct ParticleGpuRuntime::DataInterfaceState
     uint32_t sampleStrideWords = 0;
 };
 
+struct ParticleGpuRuntime::VectorFieldState
+{
+    ~VectorFieldState()
+    {
+        if (!device)
+            return;
+        device->Release(group);
+        device->Release(layout);
+        device->Release(metadataBuffer);
+    }
+
+    rhi::Device *device = nullptr;
+    rhi::BindingLayoutHandle layout;
+    rhi::BindGroupHandle group;
+    rhi::BufferHandle metadataBuffer;
+    std::vector<GpuVectorFieldDesc> vectorFields;
+    std::vector<uint32_t> metadataWords;
+    uint32_t interfaceStrideWords = 0;
+};
+
 ParticleGpuRuntime::ParticleGpuRuntime() = default;
 
 ParticleGpuRuntime::~ParticleGpuRuntime()
@@ -166,6 +186,9 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_layout, replacement.m_layout);
     std::swap(m_group, replacement.m_group);
     std::swap(m_dataInterfaces, replacement.m_dataInterfaces);
+    std::swap(m_vectorFields, replacement.m_vectorFields);
+    std::swap(m_emptyDataInterfaceLayout, replacement.m_emptyDataInterfaceLayout);
+    std::swap(m_emptyDataInterfaceGroup, replacement.m_emptyDataInterfaceGroup);
     std::swap(m_pipelines, replacement.m_pipelines);
     return true;
 }
@@ -427,6 +450,94 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         return false;
     }
 
+    const auto &vectorFieldLayout = desc.vectorFields;
+    if (!vectorFieldLayout.vectorFields.empty()) {
+        if (vectorFieldLayout.metadataBinding != 0 || vectorFieldLayout.interfaceStrideWords < 32 ||
+            vectorFieldLayout.vectorFields.size() > 15) {
+            Destroy();
+            return false;
+        }
+        const uint64_t metadataWordCount =
+            static_cast<uint64_t>(vectorFieldLayout.vectorFields.size()) * vectorFieldLayout.interfaceStrideWords;
+        if (metadataWordCount == 0 || metadataWordCount > std::numeric_limits<uint32_t>::max()) {
+            Destroy();
+            return false;
+        }
+
+        auto vectorFields = std::make_unique<VectorFieldState>();
+        vectorFields->device = &device;
+        vectorFields->vectorFields = vectorFieldLayout.vectorFields;
+        vectorFields->interfaceStrideWords = vectorFieldLayout.interfaceStrideWords;
+        vectorFields->metadataWords.assign(static_cast<size_t>(metadataWordCount), 0);
+
+        std::array<bool, rhi::BindingLayoutDesc::MaxEntries> usedBindings{};
+        usedBindings[vectorFieldLayout.metadataBinding] = true;
+        rhi::BindingLayoutDesc layoutDesc;
+        layoutDesc.entries[0] = {vectorFieldLayout.metadataBinding, rhi::BindingType::StorageBuffer,
+                                 rhi::ShaderStage::Compute, 1};
+        layoutDesc.entryCount = 1;
+        rhi::BindGroupDesc groupDesc;
+        groupDesc.bufferCount = 1;
+        groupDesc.buffers[0].binding = vectorFieldLayout.metadataBinding;
+        groupDesc.buffers[0].type = rhi::BindingType::StorageBuffer;
+
+        for (size_t index = 0; index < vectorFieldLayout.vectorFields.size(); ++index) {
+            const auto &field = vectorFieldLayout.vectorFields[index];
+            if (field.interfaceIndex != index || field.textureBinding >= usedBindings.size() ||
+                usedBindings[field.textureBinding] || !field.texture.IsValid() || !field.sampler.IsValid() ||
+                !field.keepAlive || !std::isfinite(field.vectorScale) ||
+                !IsFinite(RowMajorMatrix(field.fieldToSpace))) {
+                Destroy();
+                return false;
+            }
+            usedBindings[field.textureBinding] = true;
+            const size_t base = index * vectorFieldLayout.interfaceStrideWords;
+            StoreMatrix(vectorFields->metadataWords, base, glm::mat4(1.0f));
+            StoreNormalMatrix(vectorFields->metadataWords, base + 16, glm::mat3(1.0f));
+            vectorFields->metadataWords[base + 28] = FloatBits(field.vectorScale);
+            layoutDesc.entries[layoutDesc.entryCount++] = {
+                field.textureBinding, rhi::BindingType::CombinedTextureSampler, rhi::ShaderStage::Compute, 1};
+            groupDesc.textures[groupDesc.textureCount++] = {
+                field.textureBinding, rhi::BindingType::CombinedTextureSampler, field.texture, field.sampler};
+        }
+
+        rhi::BufferDesc metadataDesc;
+        metadataDesc.byteSize = vectorFields->metadataWords.size() * sizeof(uint32_t);
+        metadataDesc.usage = rhi::BufferUsageFlags::Storage;
+        metadataDesc.memory = rhi::BufferMemory::Upload;
+        metadataDesc.initialData = vectorFields->metadataWords.data();
+        metadataDesc.initialDataBytes = metadataDesc.byteSize;
+        vectorFields->metadataBuffer = device.CreateBuffer(metadataDesc);
+        if (!vectorFields->metadataBuffer.IsValid()) {
+            Destroy();
+            return false;
+        }
+        groupDesc.buffers[0].buffer = vectorFields->metadataBuffer;
+        vectorFields->layout = device.CreateBindingLayout(layoutDesc);
+        if (!vectorFields->layout.IsValid()) {
+            Destroy();
+            return false;
+        }
+        groupDesc.layout = vectorFields->layout;
+        vectorFields->group = device.CreateBindGroup(groupDesc);
+        if (!vectorFields->group.IsValid()) {
+            Destroy();
+            return false;
+        }
+        m_vectorFields = std::move(vectorFields);
+
+        if (!m_dataInterfaces) {
+            m_emptyDataInterfaceLayout = device.CreateBindingLayout({});
+            rhi::BindGroupDesc emptyGroupDesc;
+            emptyGroupDesc.layout = m_emptyDataInterfaceLayout;
+            m_emptyDataInterfaceGroup = device.CreateBindGroup(emptyGroupDesc);
+            if (!m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid()) {
+                Destroy();
+                return false;
+            }
+        }
+    }
+
     for (size_t index = 0; index < desc.kernels.size(); ++index) {
         const auto shader = device.CreateShaderModule({desc.kernels[index].words, desc.kernels[index].wordCount});
         if (!shader.IsValid()) {
@@ -440,6 +551,11 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         if (m_dataInterfaces) {
             pipelineDesc.bindingLayouts[1] = m_dataInterfaces->layout;
             pipelineDesc.bindingLayoutCount = 2;
+        }
+        if (m_vectorFields) {
+            pipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
+            pipelineDesc.bindingLayouts[2] = m_vectorFields->layout;
+            pipelineDesc.bindingLayoutCount = 3;
         }
         pipelineDesc.pushConstantBytes = sizeof(GpuParticlePushConstants);
         m_pipelines[index] = device.CreateComputePipeline(pipelineDesc);
@@ -459,14 +575,19 @@ void ParticleGpuRuntime::Destroy() noexcept
             m_device->Release(pipeline);
         m_device->Release(m_group);
         m_device->Release(m_layout);
+        m_device->Release(m_emptyDataInterfaceGroup);
+        m_device->Release(m_emptyDataInterfaceLayout);
     }
     m_dataInterfaces.reset();
+    m_vectorFields.reset();
     m_residentState.reset();
     m_device = nullptr;
     m_capacity = 0;
     m_stateStride = 0;
     m_layout = {};
     m_group = {};
+    m_emptyDataInterfaceLayout = {};
+    m_emptyDataInterfaceGroup = {};
     m_pipelines.fill({});
 }
 
@@ -476,6 +597,12 @@ bool ParticleGpuRuntime::IsValid() const noexcept
         return false;
     if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
                              !m_dataInterfaces->metadataBuffer.IsValid()))
+        return false;
+    if (m_vectorFields && (!m_vectorFields->layout.IsValid() || !m_vectorFields->group.IsValid() ||
+                           !m_vectorFields->metadataBuffer.IsValid()))
+        return false;
+    if (m_vectorFields && !m_dataInterfaces &&
+        (!m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid()))
         return false;
     for (auto pipeline : m_pipelines) {
         if (!pipeline.IsValid())
@@ -510,7 +637,7 @@ bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transform
 {
     if (!m_device || !m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
         return false;
-    return UpdatePointCacheMetadata(transforms);
+    return UpdatePointCacheMetadata(transforms) && UpdateVectorFieldMetadata(transforms);
 }
 
 bool ParticleGpuRuntime::UpdatePointCacheMetadata(const GpuParticleTransforms &transforms)
@@ -543,6 +670,34 @@ bool ParticleGpuRuntime::UpdatePointCacheMetadata(const GpuParticleTransforms &t
     }
     return m_device->WriteBuffer(m_dataInterfaces->metadataBuffer, 0, m_dataInterfaces->metadataWords.data(),
                                  m_dataInterfaces->metadataWords.size() * sizeof(uint32_t));
+}
+
+bool ParticleGpuRuntime::UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms)
+{
+    if (!m_vectorFields)
+        return true;
+    const glm::mat4 emitterToWorld = glm::make_mat4(transforms.emitterToWorld.data());
+    const glm::mat4 worldToSimulation = glm::make_mat4(transforms.worldToSimulation.data());
+    if (!IsFinite(emitterToWorld) || !IsFinite(worldToSimulation))
+        return false;
+    for (size_t index = 0; index < m_vectorFields->vectorFields.size(); ++index) {
+        const auto &field = m_vectorFields->vectorFields[index];
+        const glm::mat4 sourceToWorld = field.worldSpace ? glm::mat4(1.0f) : emitterToWorld;
+        const glm::mat4 fieldToSimulation = worldToSimulation * sourceToWorld * RowMajorMatrix(field.fieldToSpace);
+        const float determinant = glm::determinant(fieldToSimulation);
+        if (!IsFinite(fieldToSimulation) || !std::isfinite(determinant) || std::abs(determinant) <= 1.0e-8f)
+            return false;
+        const glm::mat4 simulationToField = glm::inverse(fieldToSimulation);
+        const glm::mat3 vectorToSimulation(fieldToSimulation);
+        if (!IsFinite(simulationToField) || !IsFinite(vectorToSimulation))
+            return false;
+        const size_t base = index * m_vectorFields->interfaceStrideWords;
+        StoreMatrix(m_vectorFields->metadataWords, base, simulationToField);
+        StoreNormalMatrix(m_vectorFields->metadataWords, base + 16, vectorToSimulation);
+        m_vectorFields->metadataWords[base + 28] = FloatBits(field.vectorScale);
+    }
+    return m_device->WriteBuffer(m_vectorFields->metadataBuffer, 0, m_vectorFields->metadataWords.data(),
+                                 m_vectorFields->metadataWords.size() * sizeof(uint32_t));
 }
 
 rhi::BufferHandle ParticleGpuRuntime::StateBuffer() const noexcept
@@ -648,6 +803,10 @@ void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKe
     encoder.BindGroup(pipeline, 0, m_group);
     if (m_dataInterfaces)
         encoder.BindGroup(pipeline, 1, m_dataInterfaces->group);
+    else if (m_vectorFields)
+        encoder.BindGroup(pipeline, 1, m_emptyDataInterfaceGroup);
+    if (m_vectorFields)
+        encoder.BindGroup(pipeline, 2, m_vectorFields->group);
     encoder.PushConstants(pipeline, sizeof(constants), &constants);
     encoder.Dispatch(GroupCount(invocationCount), 1, 1);
 }

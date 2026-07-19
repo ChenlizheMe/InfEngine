@@ -60,12 +60,34 @@ struct GpuPointCacheLayoutDesc
     std::vector<GpuPointCacheDesc> pointCaches;
 };
 
+struct GpuVectorFieldDesc
+{
+    uint32_t interfaceIndex = 0;
+    uint32_t textureBinding = 0;
+    bool worldSpace = true;
+    std::array<float, 16> fieldToSpace = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    float vectorScale = 1.0f;
+    rhi::TextureViewHandle texture;
+    rhi::SamplerHandle sampler;
+    std::shared_ptr<void> keepAlive;
+};
+
+struct GpuVectorFieldLayoutDesc
+{
+    uint32_t metadataBinding = 0;
+    uint32_t interfaceStrideWords = 32;
+    std::vector<GpuVectorFieldDesc> vectorFields;
+};
+
 struct GpuEmitterDesc
 {
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
     GpuPointCacheLayoutDesc pointCaches;
+    GpuVectorFieldLayoutDesc vectorFields;
 };
 
 struct alignas(16) GpuParticleTransforms
@@ -148,10 +170,12 @@ class ParticleGpuRuntime
   private:
     struct ResidentState;
     struct DataInterfaceState;
+    struct VectorFieldState;
 
     [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
                                       std::shared_ptr<ResidentState> residentState);
     [[nodiscard]] bool UpdatePointCacheMetadata(const GpuParticleTransforms &transforms);
+    [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
     void Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount) const;
     [[nodiscard]] static uint32_t GroupCount(uint32_t invocationCount) noexcept;
@@ -161,6 +185,9 @@ class ParticleGpuRuntime
     uint32_t m_stateStride = 0;
     std::shared_ptr<ResidentState> m_residentState;
     std::unique_ptr<DataInterfaceState> m_dataInterfaces;
+    std::unique_ptr<VectorFieldState> m_vectorFields;
+    rhi::BindingLayoutHandle m_emptyDataInterfaceLayout;
+    rhi::BindGroupHandle m_emptyDataInterfaceGroup;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};

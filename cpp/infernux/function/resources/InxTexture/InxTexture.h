@@ -309,9 +309,14 @@ class InxTexture
     {
         return m_cpuData;
     }
+    [[nodiscard]] uint64_t GetGeneration() const noexcept
+    {
+        return m_generation;
+    }
     void SetCpuData(std::shared_ptr<const TextureCpuData> cpuData)
     {
         m_cpuData = std::move(cpuData);
+        ++m_generation;
     }
 
     // ── Clone (Unity-style Object.Instantiate) ─────────────────────────────
@@ -337,6 +342,7 @@ class InxTexture
     std::string m_wrapMode = "repeat";     // "repeat", "clamp", "mirror"
     int m_anisoLevel = -1;                 // -1 = device max, 0 = off, 1-16 = explicit
     std::shared_ptr<const TextureCpuData> m_cpuData;
+    uint64_t m_generation = 0;
 };
 
 } // namespace infernux

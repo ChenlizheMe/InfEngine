@@ -12,7 +12,12 @@ import numpy as np
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
 from .asset import EmitterSettings, ExecutionTarget
-from .data_interface import PointCache
+from .data_interface import (
+    PointCache,
+    VectorField,
+    VectorFieldBoundary,
+    VectorFieldFilter,
+)
 from .hir import ParticleOutputDescriptor, ParticleProgramHIR
 from .kernel_ir import (
     KernelCompileError,
@@ -135,6 +140,101 @@ def _default_point_cache_resolver(interface: PointCache):
     return asset
 
 
+class _NumpyVectorFieldBinding:
+    def __init__(self, interface: VectorField, asset: Any) -> None:
+        if asset is None or not hasattr(asset, "volume_array"):
+            raise NumpyParticleBackendError(
+                f"vector field interface {interface.stable_id!r} did not resolve to a Texture3D"
+            )
+        self.interface = interface
+        self.asset = asset
+        self._generation = -1
+        self._volume = np.empty((0, 0, 0, 4), dtype=np.float32)
+        self._field_to_space = np.asarray(
+            interface.field_to_space, dtype=np.float32
+        ).reshape(4, 4)
+        if not np.isfinite(self._field_to_space).all():
+            raise NumpyParticleBackendError(
+                f"vector field interface {interface.stable_id!r} transform is not finite"
+            )
+        self._space_to_field = np.empty((4, 4), dtype=np.float32)
+        self._vector_to_space = np.empty((3, 3), dtype=np.float32)
+        self.refresh()
+
+    @property
+    def volume(self) -> np.ndarray:
+        self.refresh()
+        return self._volume
+
+    def refresh(self) -> None:
+        generation = int(self.asset.generation)
+        if generation == self._generation:
+            return
+        try:
+            source = np.asarray(self.asset.volume_array())
+            bake_basis = np.asarray(self.asset.bake_basis, dtype=np.float32).reshape(4, 4)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise NumpyParticleBackendError(
+                f"vector field interface {self.interface.stable_id!r} has no usable volume generation"
+            ) from exc
+        if (
+            source.ndim != 4
+            or source.shape[3] != 4
+            or source.dtype not in {np.dtype(np.float16), np.dtype(np.float32)}
+            or min(source.shape[:3], default=0) <= 0
+            or not np.isfinite(source).all()
+            or not np.isfinite(bake_basis).all()
+        ):
+            raise NumpyParticleBackendError(
+                f"vector field interface {self.interface.stable_id!r} volume is invalid"
+            )
+        source_to_space = self._field_to_space @ bake_basis
+        try:
+            self._space_to_field = np.linalg.inv(source_to_space).astype(np.float32)
+        except np.linalg.LinAlgError as exc:
+            raise NumpyParticleBackendError(
+                f"vector field interface {self.interface.stable_id!r} transform is singular"
+            ) from exc
+        self._vector_to_space = np.ascontiguousarray(
+            source_to_space[:3, :3] * np.float32(self.interface.vector_scale)
+        )
+        # CPU execution keeps one optimized immutable copy per published asset
+        # generation. Sampling never converts or decodes the full volume per frame.
+        self._volume = np.ascontiguousarray(source, dtype=np.float32)
+        self._generation = generation
+
+    def sampling_matrices(self, context: "_RuntimeContext") -> tuple[np.ndarray, np.ndarray]:
+        simulation_to_space = context.conversion(
+            CoordinateSpace.SIMULATION.value,
+            self.interface.space.value,
+        )
+        space_to_simulation = context.conversion(
+            self.interface.space.value,
+            CoordinateSpace.SIMULATION.value,
+        )
+        return (
+            self._space_to_field @ simulation_to_space,
+            space_to_simulation[:3, :3] @ self._vector_to_space,
+        )
+
+
+def _default_vector_field_resolver(interface: VectorField):
+    from Infernux.lib import AssetRegistry
+
+    reference = interface.texture
+    if not reference.guid:
+        identity = reference.path_hint or "<empty reference>"
+        raise NumpyParticleBackendError(
+            f"vector field interface {interface.stable_id!r} requires an imported texture GUID; got {identity!r}"
+        )
+    asset = AssetRegistry.instance().load_texture_by_guid(reference.guid)
+    if asset is None:
+        raise NumpyParticleBackendError(
+            f"vector field interface {interface.stable_id!r} cannot load {reference.guid!r}"
+        )
+    return asset
+
+
 class _RuntimeContext:
     def __init__(self, system_seed: int) -> None:
         if type(system_seed) is not int or not 0 <= system_seed <= 0xFFFFFFFF:
@@ -197,6 +297,16 @@ class _StageWorkspace:
         self.sample_indices = np.empty(capacity, dtype=np.uint32)
         self.sample_valid = np.empty(capacity, dtype=np.bool_)
         self.sample_vector = np.empty((capacity, 3), dtype=np.float32)
+        self.field_coordinates = np.empty((capacity, 3), dtype=np.float32)
+        self.field_base = np.empty((capacity, 3), dtype=np.int64)
+        self.field_next = np.empty((capacity, 3), dtype=np.int64)
+        self.field_corner = np.empty((capacity, 3), dtype=np.int64)
+        self.field_fraction = np.empty((capacity, 3), dtype=np.float32)
+        self.field_linear_index = np.empty(capacity, dtype=np.int64)
+        self.field_texel = np.empty((capacity, 4), dtype=np.float32)
+        self.field_weight = np.empty(capacity, dtype=np.float32)
+        self.field_valid = np.empty(capacity, dtype=np.bool_)
+        self.field_component_valid = np.empty((capacity, 3), dtype=np.bool_)
         self.random_float = tuple(
             np.empty(capacity, dtype=np.float32) for _index in range(6)
         )
@@ -223,6 +333,7 @@ class NumpyParticleEmitterProgram:
     rendering: NumpyStageExecutable
     outputs: tuple[ParticleOutputDescriptor, ...]
     point_caches: tuple[tuple[str, _NumpyPointCacheBinding], ...] = ()
+    vector_fields: tuple[tuple[str, _NumpyVectorFieldBinding], ...] = ()
 
     def create_runtime(self, *, system_seed: int = 0) -> "NumpyParticleEmitterRuntime":
         return NumpyParticleEmitterRuntime(self, system_seed=system_seed)
@@ -254,6 +365,7 @@ class NumpyParticleCompiler:
         *,
         emitter_ids: Collection[str] | None = None,
         point_cache_resolver: Callable[[PointCache], Any] | None = None,
+        vector_field_resolver: Callable[[VectorField], Any] | None = None,
     ) -> NumpyParticleProgram:
         try:
             metadata = decode_particle_runtime_metadata(hir)
@@ -306,16 +418,36 @@ class NumpyParticleCompiler:
                 )
                 for stable_id in sorted(referenced_point_caches)
             }
+            referenced_vector_fields = {
+                instruction.immediate_dict()["interface"]
+                for function in (emitter.init, emitter.update, emitter.rendering)
+                for instruction in function.instructions
+                if instruction.opcode == "sample_vector_field"
+            }
+            vector_field_by_id = {
+                interface.stable_id: interface
+                for interface in emitter.data_interfaces
+                if isinstance(interface, VectorField)
+            }
+            field_resolver = vector_field_resolver or _default_vector_field_resolver
+            vector_fields = {
+                stable_id: _NumpyVectorFieldBinding(
+                    vector_field_by_id[stable_id],
+                    field_resolver(vector_field_by_id[stable_id]),
+                )
+                for stable_id in sorted(referenced_vector_fields)
+            }
             programs.append(
                 NumpyParticleEmitterProgram(
                     emitter.stable_id,
                     settings,
                     emitter,
-                    _compile_stage(emitter.init, emitter.random_seed, point_caches),
-                    _compile_stage(emitter.update, emitter.random_seed, point_caches),
-                    _compile_stage(emitter.rendering, emitter.random_seed, point_caches),
+                    _compile_stage(emitter.init, emitter.random_seed, point_caches, vector_fields),
+                    _compile_stage(emitter.update, emitter.random_seed, point_caches, vector_fields),
+                    _compile_stage(emitter.rendering, emitter.random_seed, point_caches, vector_fields),
                     outputs,
                     tuple(point_caches.items()),
+                    tuple(vector_fields.items()),
                 )
             )
         return NumpyParticleProgram(kernel.kernel_hash, tuple(programs))
@@ -546,6 +678,8 @@ class NumpyParticleEmitterRuntime:
     def _refresh_data_interfaces(self) -> None:
         for _stable_id, binding in self.program.point_caches:
             binding.refresh()
+        for _stable_id, binding in self.program.vector_fields:
+            binding.refresh()
 
     def _scheduled_spawn_count(self, previous: float, current: float, delta_time: float) -> int:
         self._spawn_accumulator += self.settings.spawn_rate * delta_time
@@ -665,6 +799,7 @@ def _compile_stage(
     function: ParticleKernelFunction,
     emitter_seed: int,
     point_caches: Mapping[str, _NumpyPointCacheBinding],
+    vector_fields: Mapping[str, _NumpyVectorFieldBinding],
 ) -> NumpyStageExecutable:
     constants: list[Any] = []
     attributes: list[str] = []
@@ -673,6 +808,7 @@ def _compile_stage(
     point_cache_samples: list[
         tuple[_NumpyPointCacheBinding, str, TypeRef, str, str]
     ] = []
+    vector_field_samples: list[_NumpyVectorFieldBinding] = []
     scratch_types: list[TypeRef] = []
     export_types: list[tuple[str, TypeRef]] = []
     export_aliases: list[tuple[str, str]] = []
@@ -768,6 +904,20 @@ def _compile_stage(
                 f"    _sample_point_cache({output}, {index_or_id}, "
                 f"_point_cache_samples[{len(point_cache_samples) - 1}], context, workspace)"
             )
+        elif opcode == "sample_vector_field":
+            position = operand_names(instruction)[0]
+            output = result_buffer(instruction)
+            try:
+                binding = vector_fields[immediates["interface"]]
+            except KeyError as exc:
+                raise NumpyParticleBackendError(
+                    f"NumPy backend has no vector field binding {immediates['interface']!r}"
+                ) from exc
+            vector_field_samples.append(binding)
+            lines.append(
+                f"    _sample_vector_field({output}, {position}, "
+                f"_vector_field_samples[{len(vector_field_samples) - 1}], context, workspace)"
+            )
         elif opcode == "convert_space":
             source = operand_names(instruction)[0]
             output = result_buffer(instruction)
@@ -808,11 +958,13 @@ def _compile_stage(
         "_shape_parameters": tuple(shape_parameters),
         "_conversions": tuple(conversions),
         "_point_cache_samples": tuple(point_cache_samples),
+        "_vector_field_samples": tuple(vector_field_samples),
         "_convert_space": _convert_space,
         "_normalize": _normalize,
         "_random_range": _random_range,
         "_sample_shape": _sample_shape,
         "_sample_point_cache": _sample_point_cache,
+        "_sample_vector_field": _sample_vector_field,
     }
     exec(compile(source, f"<particle-numpy-{function.stage.value}>", "exec"), namespace)
     return NumpyStageExecutable(
@@ -1015,6 +1167,118 @@ def _sample_point_cache(output, index_or_id, sample, context, workspace) -> None
     if semantic == "position":
         np.add(transformed, matrix[:3, 3], out=transformed)
     np.copyto(output, transformed)
+
+
+def _sample_vector_field(output, position, binding, context, workspace) -> None:
+    volume = binding.volume
+    depth, height, width, _components = volume.shape
+    count = output.shape[0]
+    coordinates = workspace.field_coordinates[:count]
+    field_from_simulation, simulation_from_vector = binding.sampling_matrices(context)
+    np.matmul(position, field_from_simulation[:3, :3].T, out=coordinates)
+    np.add(coordinates, field_from_simulation[:3, 3], out=coordinates)
+
+    boundary = binding.interface.boundary
+    valid = workspace.field_valid[:count]
+    if boundary is VectorFieldBoundary.ZERO:
+        component_valid = workspace.field_component_valid[:count]
+        np.greater_equal(coordinates, np.float32(0.0), out=component_valid)
+        np.all(component_valid, axis=1, out=valid)
+        np.less_equal(coordinates, np.float32(1.0), out=component_valid)
+        np.logical_and(valid, np.all(component_valid, axis=1), out=valid)
+        np.clip(coordinates, np.float32(0.0), np.float32(1.0), out=coordinates)
+    elif boundary is VectorFieldBoundary.CLAMP:
+        valid.fill(True)
+        np.clip(coordinates, np.float32(0.0), np.float32(1.0), out=coordinates)
+    else:
+        valid.fill(True)
+        np.mod(coordinates, np.float32(1.0), out=coordinates)
+
+    dimensions = np.asarray((width, height, depth), dtype=np.float32)
+    integer_dimensions = np.asarray((width, height, depth), dtype=np.int64)
+    base = workspace.field_base[:count]
+    next_index = workspace.field_next[:count]
+    fraction = workspace.field_fraction[:count]
+    flat = volume.reshape(-1, 4)
+    linear_index = workspace.field_linear_index[:count]
+    texel = workspace.field_texel[:count]
+
+    if binding.interface.filtering is VectorFieldFilter.NEAREST:
+        np.multiply(coordinates, dimensions, out=fraction)
+        np.floor(fraction, out=fraction)
+        np.copyto(base, fraction, casting="unsafe")
+        if boundary is VectorFieldBoundary.REPEAT:
+            np.mod(base, integer_dimensions, out=base)
+        else:
+            np.minimum(base, integer_dimensions - 1, out=base)
+        _field_linear_indices(linear_index, base, width, height)
+        np.take(flat, linear_index, axis=0, out=texel)
+        np.copyto(output, texel[:, :3])
+    else:
+        np.multiply(coordinates, dimensions, out=fraction)
+        np.subtract(fraction, np.float32(0.5), out=fraction)
+        np.floor(fraction, out=base, casting="unsafe")
+        np.subtract(fraction, base, out=fraction)
+        np.add(base, 1, out=next_index)
+        if boundary is VectorFieldBoundary.REPEAT:
+            np.mod(base, integer_dimensions, out=base)
+            np.mod(next_index, integer_dimensions, out=next_index)
+        else:
+            np.clip(base, 0, integer_dimensions - 1, out=base)
+            np.clip(next_index, 0, integer_dimensions - 1, out=next_index)
+        output.fill(0.0)
+        weight = workspace.field_weight[:count]
+        z_weight = workspace.random_float[0][:count]
+        y_weight = workspace.random_float[1][:count]
+        x_weight = workspace.random_float[2][:count]
+        corner_weight = workspace.random_float[3][:count]
+        corner = workspace.field_corner[:count]
+        for z_choice in (0, 1):
+            if z_choice:
+                np.copyto(z_weight, fraction[:, 2])
+                z_indices = next_index[:, 2]
+            else:
+                np.subtract(np.float32(1.0), fraction[:, 2], out=z_weight)
+                z_indices = base[:, 2]
+            for y_choice in (0, 1):
+                if y_choice:
+                    np.copyto(y_weight, fraction[:, 1])
+                    y_indices = next_index[:, 1]
+                else:
+                    np.subtract(np.float32(1.0), fraction[:, 1], out=y_weight)
+                    y_indices = base[:, 1]
+                np.multiply(z_weight, y_weight, out=weight)
+                for x_choice in (0, 1):
+                    if x_choice:
+                        np.copyto(x_weight, fraction[:, 0])
+                        x_indices = next_index[:, 0]
+                    else:
+                        np.subtract(np.float32(1.0), fraction[:, 0], out=x_weight)
+                        x_indices = base[:, 0]
+                    np.multiply(weight, x_weight, out=corner_weight)
+                    corner[:, 0] = x_indices
+                    corner[:, 1] = y_indices
+                    corner[:, 2] = z_indices
+                    _field_linear_indices(linear_index, corner, width, height)
+                    np.take(flat, linear_index, axis=0, out=texel)
+                    np.multiply(
+                        texel[:, :3],
+                        corner_weight[:, None],
+                        out=workspace.sample_vector[:count],
+                    )
+                    np.add(output, workspace.sample_vector[:count], out=output)
+
+    np.multiply(output, valid[:, None], out=output)
+    transformed = workspace.sample_vector[:count]
+    np.matmul(output, simulation_from_vector.T, out=transformed)
+    np.copyto(output, transformed)
+
+
+def _field_linear_indices(output, indices, width: int, height: int) -> None:
+    np.multiply(indices[:, 2], height, out=output)
+    np.add(output, indices[:, 1], out=output)
+    np.multiply(output, width, out=output)
+    np.add(output, indices[:, 0], out=output)
 
 
 def _convert_space(output, source, parameters, context) -> None:

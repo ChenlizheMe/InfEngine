@@ -17,6 +17,7 @@ from Infernux.particle import (
     ParticleGraphCompiler,
     ParticleKernelLowerer,
     PointCache,
+    VectorField,
     build_gpu_particle_migration,
     compile_gpu_particle_spirv,
     standard_particle_attributes,
@@ -74,6 +75,45 @@ def _point_cache_gpu_source():
     )
     hir = ParticleGraphCompiler().compile(
         ParticleGraphAsset(stable_id="point-cache-gpu", emitters=(emitter,))
+    )
+    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+
+
+def _vector_field_gpu_source(*, boundary="zero", filtering="linear"):
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord(
+                "sample",
+                "particle.vector_field.sample",
+                properties={"interface": "wind"},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "acceleration", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord("position", "position", "value", "sample", "position"),
+            GraphLinkRecord("value", "sample", "value", "acceleration", "value"),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="vector-field-emitter",
+        update=update,
+        data_interfaces=(
+            VectorField(
+                stable_id="wind",
+                texture=AssetReference(guid="wind-texture-guid"),
+                boundary=boundary,
+                filtering=filtering,
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id="vector-field-gpu", emitters=(emitter,))
     )
     return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
 
@@ -199,6 +239,42 @@ def test_gpu_point_cache_lowering_emits_stable_set_one_layout_and_valid_spirv():
         emitter.stages(), "particle-point-cache-test"
     )
     assert set(compiled) == set(emitter.stages())
+
+
+def test_gpu_vector_field_lowering_emits_rhi_set_two_layout_and_valid_spirv():
+    emitter = _vector_field_gpu_source().emitters[0]
+    layout = emitter.data_interface_layout
+
+    assert layout["vector_field_metadata_binding"] == 0
+    assert layout["vector_field_stride_words"] == 32
+    assert layout["vector_fields"] == [
+        {
+            "stable_id": "wind",
+            "interface_index": 0,
+            "texture_binding": 1,
+            "boundary": "zero",
+            "filtering": "linear",
+        }
+    ]
+    assert "set = 2, binding = 0" in emitter.update
+    assert "set = 2, binding = 1" in emitter.update
+    assert "uniform sampler3D inx_vf_texture_0" in emitter.update
+    assert "any(lessThan(uvw" in emitter.update
+    assert "inx_sample_vector_field_0" in emitter.update
+
+    compiled = native._compile_compute_glsl_batch(
+        emitter.stages(), "particle-vector-field-test"
+    )
+    assert set(compiled) == set(emitter.stages())
+
+
+def test_gpu_vector_field_repeat_nearest_policy_is_preserved_for_rhi_sampler():
+    emitter = _vector_field_gpu_source(boundary="repeat", filtering="nearest").emitters[0]
+    interface = emitter.data_interface_layout["vector_fields"][0]
+
+    assert interface["boundary"] == "repeat"
+    assert interface["filtering"] == "nearest"
+    assert "any(lessThan(uvw" not in emitter.update
 
 
 def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):

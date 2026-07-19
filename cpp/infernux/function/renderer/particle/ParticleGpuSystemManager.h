@@ -10,6 +10,7 @@
 
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/resources/InxPointCache/InxPointCache.h>
+#include <function/resources/InxTexture/InxTexture.h>
 
 #include <array>
 #include <cstddef>
@@ -67,6 +68,29 @@ struct GpuParticlePointCacheLayoutProgram
     std::vector<GpuParticlePointCacheProgram> pointCaches;
 };
 
+struct GpuParticleVectorFieldProgram
+{
+    std::string stableId;
+    uint32_t interfaceIndex = 0;
+    uint32_t textureBinding = 0;
+    bool worldSpace = true;
+    bool linearFiltering = true;
+    bool repeat = false;
+    std::array<float, 16> fieldToSpace{};
+    float vectorScale = 1.0f;
+    std::shared_ptr<InxTexture> texture;
+};
+
+struct GpuParticleVectorFieldLayoutProgram
+{
+    uint32_t metadataBinding = 0;
+    uint32_t interfaceStrideWords = 32;
+    std::vector<GpuParticleVectorFieldProgram> vectorFields;
+};
+
+using GpuParticleVectorFieldTextureResolver =
+    std::function<GpuBillboardTextureLease(const std::string &textureGuid, bool linearFiltering, bool repeat)>;
+
 struct GpuParticleEmitterProgram
 {
     uint64_t id = 0;
@@ -85,6 +109,7 @@ struct GpuParticleEmitterProgram
     std::optional<StateMigration> migration;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
     GpuParticlePointCacheLayoutProgram pointCaches;
+    GpuParticleVectorFieldLayoutProgram vectorFields;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;
@@ -107,6 +132,7 @@ class ParticleGpuSystemManager
                                   FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
                                   GpuBillboardTextureResolver textureResolver = {},
                                   GpuBillboardTextureVersionResolver textureVersionResolver = {},
+                                  GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
                                   const GpuParticleSortProgram &sortProgram = {},
                                   const GpuParticleCullProgram &cullProgram = {},
                                   const GpuParticleBoundsProgram &boundsProgram = {},
@@ -143,6 +169,7 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool ActiveStateWasPreserved(uint64_t id) const;
     [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;
     [[nodiscard]] uint64_t ActivePointCacheGeneration(uint64_t id, uint32_t interfaceIndex) const;
+    [[nodiscard]] uint64_t ActiveVectorFieldGeneration(uint64_t id, uint32_t interfaceIndex) const;
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
                                                                                uint64_t outputId) const;

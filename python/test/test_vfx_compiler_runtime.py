@@ -21,6 +21,7 @@ from Infernux.particle import (
     ParticleGraphAsset,
     ParticleRuntimeCompatibility,
     PointCache,
+    VectorField,
 )
 from Infernux.lib import AssetRegistry
 
@@ -665,6 +666,136 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
         engine._gpu_particle_point_cache_generation(emitter_id, 0)
         == initial_generation + 1
     )
+    component._remove_native_batch()
+    assert engine._gpu_particle_artifact_revision(emitter_id) == 0
+
+
+def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
+    scene, engine, monkeypatch, tmp_path
+):
+    vector_field_source = tmp_path / "Wind.inxvfield"
+
+    def document(vectors):
+        return {
+            "$schema": "infernux.vector_field",
+            "$version": 1,
+            "dimensions": [2, 1, 1],
+            "storage_order": "x_fastest",
+            "bake_basis": [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ],
+            "vectors": vectors,
+        }
+
+    vector_field_source.write_text(
+        json.dumps(document([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]])),
+        encoding="utf-8",
+    )
+    imported = AssetManager.import_asset(
+        str(vector_field_source), database=engine.get_asset_database()
+    )
+    assert imported, imported.error
+    texture = AssetRegistry.instance().load_texture_by_guid(imported.guid)
+    assert texture is not None
+    assert texture.dimension == "3d"
+    assert texture.semantic == "vector_field"
+
+    update = GraphDocument(
+        "particle.update",
+        (
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord(
+                "sample.wind",
+                "particle.vector_field.sample",
+                properties={"interface": "wind"},
+            ),
+        ),
+        (
+            GraphLinkRecord(
+                "root-to-acceleration",
+                "root.update",
+                "out",
+                "acceleration",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "position-to-sample",
+                "position",
+                "value",
+                "sample.wind",
+                "position",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "sample-to-acceleration",
+                "sample.wind",
+                "value",
+                "acceleration",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    source = tmp_path / "GpuVectorField.particlegraph"
+    ParticleGraphAsset(
+        stable_id="gpu-vector-field-system",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="gpu-vector-field-emitter",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=32,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 2),),
+                ),
+                data_interfaces=(
+                    VectorField(
+                        stable_id="wind",
+                        texture=AssetReference(imported.guid, str(vector_field_source)),
+                    ),
+                ),
+                update=update,
+            ),
+        ),
+    ).save(str(source))
+
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("GpuVectorFieldProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+
+    emitter_id = component._gpu_emitter_ids[0]
+    initial_artifact_revision = component._artifact_revision
+    initial_generation = engine._gpu_particle_vector_field_generation(emitter_id, 0)
+    assert initial_generation > 0
+    assert component._gpu_controllers[0].simulation_step == 1
+
+    vector_field_source.write_text(
+        json.dumps(document([[3.0, 4.0, 5.0], [6.0, 7.0, 8.0]])),
+        encoding="utf-8",
+    )
+    reimported = AssetManager.reimport_asset(
+        str(vector_field_source), database=engine.get_asset_database()
+    )
+    assert reimported, reimported.error
+    for _ in range(4):
+        component.update(0.0)
+        if engine._gpu_particle_vector_field_generation(emitter_id, 0) > initial_generation:
+            break
+
+    assert component._artifact_revision == initial_artifact_revision
+    assert engine._gpu_particle_vector_field_generation(emitter_id, 0) == initial_generation + 1
     component._remove_native_batch()
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 

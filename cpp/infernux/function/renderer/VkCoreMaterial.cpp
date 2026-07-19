@@ -103,9 +103,23 @@ void InxVkCoreModular::PumpPendingTextureLoads()
 TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::string &textureRef,
                                                                  const std::string &bindingName)
 {
+    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr);
+}
+
+TextureResolveResult InxVkCoreModular::ResolveTextureForVectorField(const std::string &textureGuid,
+                                                                    bool linearFiltering, bool repeat)
+{
+    return ResolveTextureAsset(textureGuid, "ParticleVectorField", TextureDimension::Texture3D,
+                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp");
+}
+
+TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &textureGuid,
+                                                           const std::string &bindingName,
+                                                           TextureDimension expectedDimension,
+                                                           const char *filterOverride, const char *wrapOverride)
+{
     // Material texture properties store asset GUIDs. Path normalization belongs
     // at the public material/asset boundary, never in the renderer.
-    const std::string &textureGuid = textureRef;
     std::string texturePath;
     auto &registry = AssetRegistry::Instance();
     auto *adb = registry.GetAssetDatabase();
@@ -113,7 +127,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
         texturePath = adb->GetPathFromGuid(textureGuid);
 
     if (texturePath.empty()) {
-        INXLOG_WARN("TextureResolver: texture reference '", textureRef, "' is not a resolvable asset GUID (binding='",
+        INXLOG_WARN("TextureResolver: texture reference '", textureGuid, "' is not a resolvable asset GUID (binding='",
                     bindingName, "'). Texture properties must hold GUIDs.");
         return {TextureResolveStatus::Failed, {}};
     }
@@ -147,9 +161,10 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
         INXLOG_ERROR("TextureResolver: texture asset has no decoded CPU payload: ", textureGuid);
         return {TextureResolveStatus::Failed, {}};
     }
-    if (infTex->GetDimension() != TextureDimension::Texture2D) {
-        INXLOG_ERROR("TextureResolver: material Texture2D binding '", bindingName,
-                     "' cannot consume a non-2D texture asset: ", textureGuid);
+    if (infTex->GetDimension() != expectedDimension) {
+        INXLOG_ERROR("TextureResolver: binding '", bindingName, "' expected texture dimension ",
+                     static_cast<uint32_t>(expectedDimension), " but asset uses ",
+                     static_cast<uint32_t>(infTex->GetDimension()), ": ", textureGuid);
         return {TextureResolveStatus::Failed, {}};
     }
 
@@ -157,8 +172,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
     if (runtimeVersion == 0)
         throw std::logic_error("TextureResolver resolved a payload without a published runtime version");
     const bool normalMapMode = infTex->IsNormalMapMode();
-    const std::string &filterMode = infTex->GetFilterMode();
-    const std::string &wrapMode = infTex->GetWrapMode();
+    const std::string filterMode = filterOverride ? filterOverride : infTex->GetFilterMode();
+    const std::string wrapMode = wrapOverride ? wrapOverride : infTex->GetWrapMode();
     const int anisoLevel = infTex->GetAnisoLevel();
     rhi::SamplerDesc sampler;
     sampler.maxLod = static_cast<float>(infTex->GetCpuData()->mipLevels.size() - 1);
@@ -181,7 +196,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
         sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::MirroredRepeat;
 
     // Cache key uses GUID so that a renamed file still shares its cache entry
-    std::string cacheKey = textureGuid + "::format" + std::to_string(static_cast<uint32_t>(infTex->GetFormat())) +
+    std::string cacheKey = textureGuid + "::dim" + std::to_string(static_cast<uint32_t>(expectedDimension)) +
+                           "::format" + std::to_string(static_cast<uint32_t>(infTex->GetFormat())) +
                            (normalMapMode ? "::normalmap" : "::raw") + "::" + filterMode + "::" + wrapMode + "::aniso" +
                            std::to_string(anisoLevel);
 

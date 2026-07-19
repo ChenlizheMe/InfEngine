@@ -25,6 +25,9 @@ from Infernux.particle import (
     PointCache,
     ParticleRuntimeCompatibility,
     ScalarRange,
+    VectorField,
+    VectorFieldBoundary,
+    VectorFieldFilter,
     decode_particle_runtime_metadata,
     particle_random_f32,
 )
@@ -56,6 +59,40 @@ class _FakePointCache:
 
     def replace_positions(self, positions):
         self._positions = np.asarray(positions, dtype=np.float32)
+        self.generation += 1
+
+
+class _FakeVectorField:
+    def __init__(self, volume, *, bake_basis=None):
+        self.generation = 1
+        self._volume = np.asarray(volume)
+        self.bake_basis = tuple(
+            bake_basis
+            or (
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            )
+        )
+
+    def volume_array(self):
+        return self._volume
+
+    def replace_volume(self, volume):
+        self._volume = np.asarray(volume)
         self.generation += 1
 
 
@@ -270,6 +307,177 @@ def test_numpy_point_cache_sampling_uses_typed_interface_and_refreshes_generatio
         runtime.attributes["builtin.velocity"][:3],
         [[12, 3, 4], [15, 6, 7], [18, 9, 10]],
     )
+
+
+def _vector_field_runtime(
+    fake,
+    *,
+    boundary=VectorFieldBoundary.CLAMP,
+    filtering=VectorFieldFilter.NEAREST,
+    field_to_space=None,
+    vector_scale=1.0,
+):
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord(
+                "position",
+                "particle.attribute.read_vec3",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord(
+                "sample",
+                "particle.vector_field.sample",
+                properties={"interface": "wind"},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "acceleration",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord("position", "position", "value", "sample", "position"),
+            GraphLinkRecord("value", "sample", "value", "acceleration", "value"),
+        ),
+    )
+    interface = VectorField(
+        stable_id="wind",
+        texture=AssetReference(guid="fake-vector-field"),
+        field_to_space=field_to_space
+        or (
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ),
+        vector_scale=vector_scale,
+        boundary=boundary,
+        filtering=filtering,
+    )
+    settings = EmitterSettings(
+        capacity=1,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+        lifetime=ScalarRange(10.0, 10.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="vector-field-emitter",
+                settings=settings,
+                update=update,
+                data_interfaces=(interface,),
+            ),
+        )
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    kernel = ParticleKernelLowerer().lower(hir)
+    program = NumpyParticleCompiler().compile(
+        hir,
+        kernel,
+        vector_field_resolver=lambda _interface: fake,
+    )
+    runtime = program.create_runtime()
+    runtime.tick(0.0)
+    return kernel, runtime
+
+
+def _sample_vector_field(runtime, position):
+    runtime.attributes["builtin.position"][0] = position
+    runtime.attributes["builtin.velocity"][0] = 0.0
+    runtime.tick(1.0)
+    return runtime.attributes["builtin.velocity"][0].copy()
+
+
+def test_numpy_vector_field_sampling_supports_nearest_boundaries_and_generation_refresh():
+    volume = np.zeros((1, 1, 2, 4), dtype=np.float16)
+    volume[0, 0, 0, :3] = (1.0, 2.0, 3.0)
+    volume[0, 0, 1, :3] = (4.0, 5.0, 6.0)
+    fake = _FakeVectorField(volume)
+    kernel, runtime = _vector_field_runtime(fake)
+
+    instruction = next(
+        item
+        for item in kernel.emitters[0].update.instructions
+        if item.opcode == "sample_vector_field"
+    )
+    assert instruction.immediate_dict() == {"interface": "wind"}
+    np.testing.assert_array_equal(_sample_vector_field(runtime, (0.75, 0.0, 0.0)), (4, 5, 6))
+
+    zero_fake = _FakeVectorField(volume)
+    _kernel, zero_runtime = _vector_field_runtime(
+        zero_fake,
+        boundary=VectorFieldBoundary.ZERO,
+    )
+    np.testing.assert_array_equal(_sample_vector_field(zero_runtime, (1.25, 0.0, 0.0)), (0, 0, 0))
+
+    repeat_fake = _FakeVectorField(volume)
+    _kernel, repeat_runtime = _vector_field_runtime(
+        repeat_fake,
+        boundary=VectorFieldBoundary.REPEAT,
+    )
+    np.testing.assert_array_equal(_sample_vector_field(repeat_runtime, (1.25, 0.0, 0.0)), (1, 2, 3))
+
+    replacement = volume.copy()
+    replacement[0, 0, 1, :3] = (7.0, 8.0, 9.0)
+    fake.replace_volume(replacement)
+    runtime.reset()
+    runtime.tick(0.0)
+    np.testing.assert_array_equal(_sample_vector_field(runtime, (0.75, 0.0, 0.0)), (7, 8, 9))
+
+
+def test_numpy_vector_field_linear_sampling_composes_asset_and_interface_transforms():
+    volume = np.zeros((1, 1, 2, 4), dtype=np.float32)
+    volume[0, 0, 0, :3] = (0.0, 2.0, 0.0)
+    volume[0, 0, 1, :3] = (2.0, 4.0, 0.0)
+    field_to_space = (
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+    _kernel, runtime = _vector_field_runtime(
+        _FakeVectorField(volume),
+        filtering=VectorFieldFilter.LINEAR,
+        field_to_space=field_to_space,
+        vector_scale=0.5,
+    )
+
+    # World x=1 maps to field x=0.5. The two texels interpolate to (1, 3, 0),
+    # while the 2x basis and 0.5 vector scale cancel each other.
+    np.testing.assert_allclose(_sample_vector_field(runtime, (1.0, 0.0, 0.0)), (1, 3, 0))
 
 
 def test_numpy_sphere_sampling_is_bounded_and_repeatable_after_reset():

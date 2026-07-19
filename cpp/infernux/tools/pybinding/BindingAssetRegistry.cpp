@@ -67,6 +67,51 @@ py::array PointCacheChannelArray(const std::shared_ptr<InxPointCache> &pointCach
     return result;
 }
 
+py::array VectorFieldVolumeArray(const std::shared_ptr<InxTexture> &texture)
+{
+    if (!texture)
+        throw std::invalid_argument("texture is null");
+    const auto cpuData = texture->GetCpuData();
+    if (!cpuData || !cpuData->IsValid())
+        throw std::runtime_error("texture has no valid CPU data");
+    if (cpuData->dimension != TextureDimension::Texture3D || cpuData->semantic != TextureSemantic::VectorField)
+        throw std::runtime_error("texture is not a VectorField Texture3D");
+    if (cpuData->format != TextureFormat::Rgba16Float && cpuData->format != TextureFormat::Rgba32Float)
+        throw std::runtime_error("vector field volume requires rgba16_float or rgba32_float storage");
+
+    const TextureMipLevel &mip = cpuData->mipLevels.front();
+    const uint64_t texelBytes = TextureFormatBytesPerTexel(cpuData->format);
+    const uint64_t scalarBytes = cpuData->format == TextureFormat::Rgba16Float ? 2U : 4U;
+    const uint64_t minimumRowPitch = static_cast<uint64_t>(mip.width) * texelBytes;
+    const uint64_t minimumSlicePitch = static_cast<uint64_t>(mip.height) * mip.rowPitch;
+    const uint64_t requiredBytes = static_cast<uint64_t>(mip.depth) * mip.slicePitch;
+    if (mip.width == 0 || mip.height == 0 || mip.depth == 0 || mip.rowPitch < minimumRowPitch ||
+        mip.slicePitch < minimumSlicePitch || mip.byteOffset > cpuData->bytes.size() ||
+        requiredBytes > cpuData->bytes.size() - mip.byteOffset || requiredBytes > mip.byteSize)
+        throw std::runtime_error("vector field base mip has invalid dimensions or pitches");
+
+    std::vector<py::ssize_t> shape{
+        static_cast<py::ssize_t>(mip.depth),
+        static_cast<py::ssize_t>(mip.height),
+        static_cast<py::ssize_t>(mip.width),
+        4,
+    };
+    std::vector<py::ssize_t> strides{
+        static_cast<py::ssize_t>(mip.slicePitch),
+        static_cast<py::ssize_t>(mip.rowPitch),
+        static_cast<py::ssize_t>(texelBytes),
+        static_cast<py::ssize_t>(scalarBytes),
+    };
+    auto *generation = new std::shared_ptr<const TextureCpuData>(cpuData);
+    py::capsule owner(generation,
+                      [](void *value) { delete static_cast<std::shared_ptr<const TextureCpuData> *>(value); });
+    const py::dtype dtype =
+        cpuData->format == TextureFormat::Rgba16Float ? py::dtype("float16") : py::dtype::of<float>();
+    py::array result(dtype, shape, strides, cpuData->bytes.data() + mip.byteOffset, owner);
+    result.attr("setflags")(false);
+    return result;
+}
+
 void PointCacheLookupIndices(const std::shared_ptr<InxPointCache> &pointCache,
                              const py::array_t<uint32_t, py::array::c_style> &stableIds,
                              py::array_t<uint32_t, py::array::c_style> pointIndices)
@@ -195,6 +240,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly("name", &InxTexture::GetName)
         .def_property_readonly("guid", &InxTexture::GetGuid)
         .def_property_readonly("file_path", &InxTexture::GetFilePath)
+        .def_property_readonly("generation", &InxTexture::GetGeneration)
         .def_property_readonly("mip_count",
                                [](const InxTexture &self) {
                                    const auto &cpu = self.GetCpuData();
@@ -223,26 +269,65 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def_property_readonly(
             "dimension",
             [](const InxTexture &self) { return self.GetDimension() == TextureDimension::Texture3D ? "3d" : "2d"; })
+        .def_property_readonly("semantic",
+                               [](const InxTexture &self) {
+                                   switch (self.GetSemantic()) {
+                                   case TextureSemantic::Color:
+                                       return "color";
+                                   case TextureSemantic::Normal:
+                                       return "normal";
+                                   case TextureSemantic::Data:
+                                       return "data";
+                                   case TextureSemantic::UserInterface:
+                                       return "user_interface";
+                                   case TextureSemantic::Sprite:
+                                       return "sprite";
+                                   case TextureSemantic::VectorField:
+                                       return "vector_field";
+                                   case TextureSemantic::SignedDistanceField:
+                                       return "signed_distance_field";
+                                   }
+                                   return "unknown";
+                               })
         .def_property_readonly("srgb", &InxTexture::IsSrgb)
         .def_property_readonly("pixel_format",
                                [](const InxTexture &self) {
                                    const auto &cpu = self.GetCpuData();
                                    return cpu ? std::string(TextureFormatName(cpu->format)) : std::string{};
                                })
-        .def_property_readonly("pixel_storage", [](const InxTexture &self) {
-            const auto &cpu = self.GetCpuData();
-            if (!cpu)
-                return std::string{};
-            if (cpu->format == TextureFormat::Rgba32Float)
-                return std::string("rgba32_float");
-            if (cpu->format == TextureFormat::Rgba4UNormPack16)
-                return std::string("rgba4_unorm_pack16");
-            if (cpu->format == TextureFormat::Rgba16UNorm)
-                return std::string("rgba16_unorm");
-            if (cpu->format == TextureFormat::Rgba16Float)
-                return std::string("rgba16_float");
-            return TextureFormatIsBlockCompressed(cpu->format) ? std::string("block_compressed") : std::string("rgba8");
-        });
+        .def_property_readonly("pixel_storage",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   if (!cpu)
+                                       return std::string{};
+                                   if (cpu->format == TextureFormat::Rgba32Float)
+                                       return std::string("rgba32_float");
+                                   if (cpu->format == TextureFormat::Rgba4UNormPack16)
+                                       return std::string("rgba4_unorm_pack16");
+                                   if (cpu->format == TextureFormat::Rgba16UNorm)
+                                       return std::string("rgba16_unorm");
+                                   if (cpu->format == TextureFormat::Rgba16Float)
+                                       return std::string("rgba16_float");
+                                   return TextureFormatIsBlockCompressed(cpu->format) ? std::string("block_compressed")
+                                                                                      : std::string("rgba8");
+                               })
+        .def_property_readonly("bake_basis",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? cpu->bakeBasis : TextureCpuData{}.bakeBasis;
+                               })
+        .def_property_readonly("value_min",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? cpu->valueMin : TextureCpuData{}.valueMin;
+                               })
+        .def_property_readonly("value_max",
+                               [](const InxTexture &self) {
+                                   const auto &cpu = self.GetCpuData();
+                                   return cpu ? cpu->valueMax : TextureCpuData{}.valueMax;
+                               })
+        .def("volume_array", &VectorFieldVolumeArray,
+             "Return a zero-copy, read-only (depth, height, width, 4) NumPy view of one VectorField generation");
 
     py::class_<InxPointCache, std::shared_ptr<InxPointCache>>(m, "InxPointCache")
         .def_property_readonly("name", &InxPointCache::GetName)

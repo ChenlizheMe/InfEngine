@@ -196,6 +196,56 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             }
             program.pointCaches.pointCaches.push_back(std::move(decoded));
         }
+
+        for (const char *field : {"vector_field_metadata_binding", "vector_field_stride_words", "vector_fields"}) {
+            if (!layout.contains(field))
+                throw std::invalid_argument(std::string("GPU Vector Field layout is missing ") + field);
+        }
+        program.vectorFields.metadataBinding = py::cast<uint32_t>(layout["vector_field_metadata_binding"]);
+        program.vectorFields.interfaceStrideWords = py::cast<uint32_t>(layout["vector_field_stride_words"]);
+        const py::sequence vectorFields = py::cast<py::sequence>(layout["vector_fields"]);
+        program.vectorFields.vectorFields.reserve(vectorFields.size());
+        for (const py::handle item : vectorFields) {
+            if (!py::isinstance<py::dict>(item))
+                throw std::invalid_argument("GPU Vector Field layout must contain dictionaries");
+            const py::dict field = py::reinterpret_borrow<py::dict>(item);
+            for (const char *name : {"stable_id", "interface_index", "texture_binding", "texture_guid", "space",
+                                     "field_to_space", "vector_scale", "boundary", "filtering", "native"}) {
+                if (!field.contains(name))
+                    throw std::invalid_argument(std::string("GPU Vector Field binding is missing ") + name);
+            }
+            particle::GpuParticleVectorFieldProgram decoded;
+            decoded.stableId = py::cast<std::string>(field["stable_id"]);
+            decoded.interfaceIndex = py::cast<uint32_t>(field["interface_index"]);
+            decoded.textureBinding = py::cast<uint32_t>(field["texture_binding"]);
+            const std::string textureGuid = py::cast<std::string>(field["texture_guid"]);
+            const std::string space = py::cast<std::string>(field["space"]);
+            const std::string boundary = py::cast<std::string>(field["boundary"]);
+            const std::string filtering = py::cast<std::string>(field["filtering"]);
+            if (space != "world" && space != "emitter_local")
+                throw std::invalid_argument("GPU Vector Field space must be world or emitter_local");
+            if (boundary != "zero" && boundary != "clamp" && boundary != "repeat")
+                throw std::invalid_argument("GPU Vector Field boundary must be zero, clamp, or repeat");
+            if (filtering != "nearest" && filtering != "linear")
+                throw std::invalid_argument("GPU Vector Field filtering must be nearest or linear");
+            decoded.worldSpace = space == "world";
+            decoded.repeat = boundary == "repeat";
+            decoded.linearFiltering = filtering == "linear";
+            decoded.vectorScale = py::cast<float>(field["vector_scale"]);
+            const auto fieldToSpace = py::cast<std::vector<float>>(field["field_to_space"]);
+            if (textureGuid.empty() || fieldToSpace.size() != decoded.fieldToSpace.size() ||
+                !std::isfinite(decoded.vectorScale) ||
+                !std::all_of(fieldToSpace.begin(), fieldToSpace.end(),
+                             [](float value) { return std::isfinite(value); }))
+                throw std::invalid_argument("GPU Vector Field identity, scale, and transform must be valid");
+            std::copy(fieldToSpace.begin(), fieldToSpace.end(), decoded.fieldToSpace.begin());
+            if (field["native"].is_none())
+                throw std::invalid_argument("GPU Vector Field native texture is missing");
+            decoded.texture = py::cast<std::shared_ptr<InxTexture>>(field["native"]);
+            if (!decoded.texture || decoded.texture->GetGuid() != textureGuid)
+                throw std::invalid_argument("GPU Vector Field native texture identity does not match its GUID");
+            program.vectorFields.vectorFields.push_back(std::move(decoded));
+        }
     }
 
     const py::dict stages = py::cast<py::dict>(value["stages"]);
@@ -2049,6 +2099,15 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("emitter_id"), py::arg("interface_index"),
             "Return the active GPU Point Cache generation for validation")
+        .def(
+            "_gpu_particle_vector_field_generation",
+            [](Infernux &self, uint64_t emitterId, uint32_t interfaceIndex) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->ActiveVectorFieldGeneration(emitterId, interfaceIndex) : uint64_t{0};
+            },
+            py::arg("emitter_id"), py::arg("interface_index"),
+            "Return the active GPU Vector Field generation for validation")
         .def(
             "_gpu_particle_output_render_queue",
             [](Infernux &self, uint64_t emitterId, uint64_t outputId) {

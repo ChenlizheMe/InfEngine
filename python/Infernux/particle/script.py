@@ -31,19 +31,25 @@ class ParticleEmitter:
     """Marker base for one emitter declaration nested in ParticleScript."""
 
 
-class InitContext:
+class _ParticleStageContext:
+    def sample_vector_field(self, interface: str, position): ...
+
+
+class InitContext(_ParticleStageContext):
     pass
 
 
-class UpdateContext:
+class UpdateContext(_ParticleStageContext):
     pass
 
 
-class RenderingContext:
+class RenderingContext(_ParticleStageContext):
     pass
 
 
 class ParticleStream:
+    position: tuple[float, float, float]
+
     def set_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
     def acceleration(self, value) -> None: ...
@@ -172,11 +178,13 @@ class ParticleScriptCompiler:
         if len(method.args.args) != 3:
             raise self._error(source_name, method, f"{stage} requires (self, ctx, particles)")
         stream_name = method.args.args[2].arg
+        context_name = method.args.args[1].arg
         root = default_stage_graph(stage)
         nodes = [root.nodes[0]]
         links = []
         previous_uid = root.nodes[0].uid
         operation_index = 0
+        expression_index = 0
         for statement in method.body:
             if isinstance(statement, ast.Pass):
                 continue
@@ -189,13 +197,45 @@ class ParticleScriptCompiler:
             if operation is None:
                 raise self._error(source_name, call, f"unsupported {stage} operation {call.func.attr!r}")
             type_id, positional_property = operation
-            properties = self._call_properties(
-                call,
-                positional_property=positional_property,
-                source_name=source_name,
-            )
+            properties = {}
+            value_source = None
+            if positional_property:
+                if len(call.args) != 1:
+                    raise self._error(source_name, call, "particle operation requires exactly one value")
+                argument = call.args[0]
+                if self._is_particle_expression(argument, context_name, stream_name):
+                    value_source, expression_index = self._parse_expression(
+                        argument,
+                        stage=stage,
+                        context_name=context_name,
+                        stream_name=stream_name,
+                        source_name=source_name,
+                        expression_index=expression_index,
+                        nodes=nodes,
+                        links=links,
+                    )
+                else:
+                    properties[positional_property] = self._value(argument)
+            elif call.args:
+                raise self._error(source_name, call, "particle output arguments must be named")
+            for keyword in call.keywords:
+                if keyword.arg is None or keyword.arg in properties:
+                    raise self._error(source_name, keyword, "invalid or duplicate particle operation argument")
+                properties[keyword.arg] = self._value(keyword.value)
             uid = f"{stage}.{operation_index}.{call.func.attr}"
             nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
+            if value_source is not None:
+                source_uid, source_port = value_source
+                links.append(
+                    GraphLinkRecord(
+                        f"{stage}.value.{operation_index}",
+                        source_uid,
+                        source_port,
+                        uid,
+                        positional_property,
+                        PortKind.VALUE,
+                    )
+                )
             links.append(
                 GraphLinkRecord(
                     f"{stage}.link.{operation_index}",
@@ -212,19 +252,93 @@ class ParticleScriptCompiler:
             raise self._error(source_name, method, "rendering requires at least one output operation")
         return GraphDocument(root.domain, tuple(nodes), tuple(links))
 
-    def _call_properties(self, call, *, positional_property: str, source_name: str) -> dict[str, Any]:
-        properties = {}
-        if positional_property:
-            if len(call.args) != 1:
-                raise self._error(source_name, call, "particle operation requires exactly one value")
-            properties[positional_property] = self._value(call.args[0])
-        elif call.args:
-            raise self._error(source_name, call, "particle output arguments must be named")
-        for keyword in call.keywords:
-            if keyword.arg is None or keyword.arg in properties:
-                raise self._error(source_name, keyword, "invalid or duplicate particle operation argument")
-            properties[keyword.arg] = self._value(keyword.value)
-        return properties
+    @staticmethod
+    def _is_particle_expression(node: ast.AST, context_name: str, stream_name: str) -> bool:
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            return node.value.id == stream_name
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == context_name
+        )
+
+    def _parse_expression(
+        self,
+        node: ast.AST,
+        *,
+        stage: str,
+        context_name: str,
+        stream_name: str,
+        source_name: str,
+        expression_index: int,
+        nodes: list[GraphNodeRecord],
+        links: list[GraphLinkRecord],
+    ) -> tuple[tuple[str, str], int]:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == stream_name
+        ):
+            if node.attr != "position":
+                raise self._error(source_name, node, f"unsupported particle attribute {node.attr!r}")
+            uid = f"{stage}.expr.{expression_index}.position"
+            nodes.append(
+                GraphNodeRecord(
+                    uid,
+                    "particle.attribute.read_vec3",
+                    properties={"attribute": "builtin.position"},
+                )
+            )
+            return (uid, "value"), expression_index + 1
+
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == context_name
+        ):
+            raise self._error(source_name, node, "unsupported particle expression")
+        if node.func.attr != "sample_vector_field":
+            raise self._error(source_name, node, f"unsupported particle context expression {node.func.attr!r}")
+        if len(node.args) != 2 or node.keywords:
+            raise self._error(
+                source_name,
+                node,
+                "sample_vector_field requires an interface name and particle position",
+            )
+        interface = self._literal(node.args[0])
+        if type(interface) is not str or not interface.strip():
+            raise self._error(source_name, node.args[0], "vector field interface must be a non-empty string")
+        position_source, expression_index = self._parse_expression(
+            node.args[1],
+            stage=stage,
+            context_name=context_name,
+            stream_name=stream_name,
+            source_name=source_name,
+            expression_index=expression_index,
+            nodes=nodes,
+            links=links,
+        )
+        uid = f"{stage}.expr.{expression_index}.sample_vector_field"
+        nodes.append(
+            GraphNodeRecord(
+                uid,
+                "particle.vector_field.sample",
+                properties={"interface": interface.strip()},
+            )
+        )
+        links.append(
+            GraphLinkRecord(
+                f"{stage}.expr.link.{expression_index}",
+                position_source[0],
+                position_source[1],
+                uid,
+                "position",
+                PortKind.VALUE,
+            )
+        )
+        return (uid, "value"), expression_index + 1
 
     def _constructor(self, node: ast.AST, expected_name: str):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != expected_name:

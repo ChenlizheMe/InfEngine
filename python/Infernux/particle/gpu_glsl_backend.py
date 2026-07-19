@@ -12,7 +12,7 @@ import zlib
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
-from .data_interface import PointCache
+from .data_interface import PointCache, VectorField
 from .kernel_ir import (
     KernelCompileError,
     KernelInstruction,
@@ -170,7 +170,7 @@ class GpuParticleGlslLowerer:
     ) -> GpuParticleEmitterSource:
         fields = _attribute_fields(emitter)
         attribute_layout, state_stride = _std430_attribute_layout(fields)
-        data_interface_layout = _point_cache_layout(emitter)
+        data_interface_layout = _data_interface_layout(emitter)
         prelude = _shader_prelude(fields, emitter.random_seed, data_interface_layout)
         bootstrap = prelude + _bootstrap_main()
         init_body, _ = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.init)
@@ -433,6 +433,10 @@ class _StageCompiler:
             for interface in data_interface_layout.get("point_caches", ())
             for sample in interface["samples"]
         }
+        self._vector_field_samples = {
+            interface["stable_id"]: interface["interface_index"]
+            for interface in data_interface_layout.get("vector_fields", ())
+        }
 
     def compile(self, function: ParticleKernelFunction) -> tuple[str, dict[str, str]]:
         for instruction in function.instructions:
@@ -504,6 +508,15 @@ class _StageCompiler:
                     f"GPU point cache sample layout is missing {key!r}"
                 ) from exc
             expression = f"inx_sample_point_cache_{sample_index}({operands[0]})"
+        elif opcode == "sample_vector_field":
+            stable_id = immediate["interface"]
+            try:
+                sample_index = self._vector_field_samples[stable_id]
+            except KeyError as exc:
+                raise GpuParticleCompileError(
+                    f"GPU vector field sample layout is missing {stable_id!r}"
+                ) from exc
+            expression = f"inx_sample_vector_field_{sample_index}({operands[0]})"
         elif opcode == "convert_space":
             expression = _space_conversion(operands[0], result_type, immediate)
         elif opcode == "store_attribute":
@@ -536,6 +549,12 @@ class _StageCompiler:
             raise GpuParticleCompileError(
                 f"GPU kernel references unknown attribute {stable_id!r}"
             ) from exc
+
+
+def _data_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
+    layout = _point_cache_layout(emitter)
+    layout.update(_vector_field_layout(emitter))
+    return layout
 
 
 def _point_cache_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
@@ -600,6 +619,43 @@ def _point_cache_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
         "sample_stride_words": 4,
         "sample_count": sample_index,
         "point_caches": point_caches,
+    }
+
+
+def _vector_field_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
+    interfaces = {
+        interface.stable_id: interface
+        for interface in emitter.data_interfaces
+        if isinstance(interface, VectorField)
+    }
+    sampled: set[str] = set()
+    for function in (emitter.init, emitter.update, emitter.rendering):
+        for instruction in function.instructions:
+            if instruction.opcode != "sample_vector_field":
+                continue
+            stable_id = instruction.immediate_dict()["interface"]
+            if stable_id not in interfaces:
+                raise GpuParticleCompileError(
+                    f"GPU kernel references unknown vector field interface {stable_id!r}"
+                )
+            sampled.add(stable_id)
+    if len(sampled) > 15:
+        raise GpuParticleCompileError(
+            "GPU particle emitters currently support at most fifteen sampled VectorField interfaces"
+        )
+    return {
+        "vector_field_metadata_binding": 0,
+        "vector_field_stride_words": 32,
+        "vector_fields": [
+            {
+                "stable_id": stable_id,
+                "interface_index": index,
+                "texture_binding": index + 1,
+                "boundary": interfaces[stable_id].boundary.value,
+                "filtering": interfaces[stable_id].filtering.value,
+            }
+            for index, stable_id in enumerate(sorted(sampled))
+        ],
     }
 
 
@@ -931,6 +987,65 @@ def _point_cache_glsl(layout: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _vector_field_glsl(layout: dict[str, Any]) -> str:
+    vector_fields = layout.get("vector_fields", ())
+    if not vector_fields:
+        return ""
+    stride = int(layout["vector_field_stride_words"])
+    lines = [
+        "layout(std430, set = 2, binding = 0) readonly buffer InxVectorFieldMetadata { uint inx_vf_meta[]; };"
+    ]
+    for interface in vector_fields:
+        index = int(interface["interface_index"])
+        base = index * stride
+        lines.extend(
+            (
+                f"layout(set = 2, binding = {int(interface['texture_binding'])}) uniform sampler3D inx_vf_texture_{index};",
+                f"mat4 inx_vf_simulation_to_field_{index}() {{",
+                "    return mat4(",
+                *(
+                    "        vec4("
+                    + ", ".join(
+                        f"uintBitsToFloat(inx_vf_meta[{base + column * 4 + row}u])"
+                        for row in range(4)
+                    )
+                    + (")," if column < 3 else ")")
+                    for column in range(4)
+                ),
+                "    );",
+                "}",
+                f"mat3 inx_vf_field_to_simulation_{index}() {{",
+                "    return mat3(",
+                *(
+                    "        vec3("
+                    + ", ".join(
+                        f"uintBitsToFloat(inx_vf_meta[{base + 16 + column * 4 + row}u])"
+                        for row in range(3)
+                    )
+                    + (")," if column < 2 else ")")
+                    for column in range(3)
+                ),
+                "    );",
+                "}",
+                f"vec3 inx_sample_vector_field_{index}(vec3 simulation_position) {{",
+                f"    vec3 uvw = (inx_vf_simulation_to_field_{index}() * vec4(simulation_position, 1.0)).xyz;",
+            )
+        )
+        if interface["boundary"] == "zero":
+            lines.append(
+                "    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return vec3(0.0);"
+            )
+        lines.extend(
+            (
+                f"    vec3 value = texture(inx_vf_texture_{index}, uvw).xyz;",
+                f"    float scale = uintBitsToFloat(inx_vf_meta[{base + 28}u]);",
+                f"    return inx_vf_field_to_simulation_{index}() * value * scale;",
+                "}",
+            )
+        )
+    return "\n".join(lines)
+
+
 def _shader_prelude(
     fields: tuple[tuple[str, TypeRef, str], ...],
     emitter_seed: int,
@@ -940,7 +1055,14 @@ def _shader_prelude(
         f"    {_storage_type(value_type)} {field};"
         for _stable_id, value_type, field in fields
     )
-    data_interface_glsl = _point_cache_glsl(data_interface_layout)
+    data_interface_glsl = "\n".join(
+        part
+        for part in (
+            _point_cache_glsl(data_interface_layout),
+            _vector_field_glsl(data_interface_layout),
+        )
+        if part
+    )
     return f"""#version 450
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;

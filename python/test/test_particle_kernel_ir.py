@@ -147,6 +147,79 @@ def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
     )
 
 
+def test_vector_field_graph_lowers_to_typed_data_interface_access():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord(
+                "sample",
+                "particle.vector_field.sample",
+                properties={"interface": "wind"},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "acceleration",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord("position", "position", "value", "sample", "position"),
+            GraphLinkRecord("value", "sample", "value", "acceleration", "value"),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="vector-field-kernel",
+        update=update,
+        data_interfaces=(
+            VectorField(
+                stable_id="wind",
+                texture=AssetReference(guid="wind-texture"),
+            ),
+        ),
+    )
+
+    kernel = _lower(ParticleGraphAsset(emitters=(emitter,))).emitters[0]
+    sample = next(
+        instruction
+        for instruction in kernel.update.instructions
+        if instruction.opcode == "sample_vector_field"
+    )
+    simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    assert sample.immediate_dict() == {"interface": "wind"}
+    assert sample.operands[0].value_type == simulation_vector
+    assert sample.result_type == simulation_vector
+
+    with pytest.raises(KernelCompileError, match="unknown data interface"):
+        _lower(
+            ParticleGraphAsset(
+                emitters=(replace(emitter, data_interfaces=()),),
+            )
+        )
+
+    with pytest.raises(KernelCompileError, match="not a VectorField"):
+        _lower(
+            ParticleGraphAsset(
+                emitters=(
+                    replace(
+                        emitter,
+                        data_interfaces=(
+                            PointCache(
+                                stable_id="wind",
+                                cache=AssetReference(guid="wrong-resource"),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+
 def test_kernel_random_slots_are_unique_and_source_uid_independent():
     emitter = ParticleEmitterAsset(stable_id="random-emitter")
     settings = replace(

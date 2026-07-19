@@ -70,6 +70,7 @@ class GPUMeshPreview;
 class InxMaterial;
 class InxMesh;
 class SceneRenderTarget;
+enum class TextureDimension : uint32_t;
 struct RenderState;
 
 /**
@@ -1136,6 +1137,11 @@ class InxVkCoreModular
     /// @brief Shared texture resolution logic (used by TextureResolver lambda).
     /// Resolves an asset GUID to a GPU image using GUID-based cache keys.
     TextureResolveResult ResolveTextureForMaterial(const std::string &textureRef, const std::string &bindingName);
+    TextureResolveResult ResolveTextureForVectorField(const std::string &textureGuid, bool linearFiltering,
+                                                      bool repeat);
+    TextureResolveResult ResolveTextureAsset(const std::string &textureGuid, const std::string &bindingName,
+                                             TextureDimension expectedDimension, const char *filterOverride,
+                                             const char *wrapOverride);
 
     // ========================================================================
     // Per-object GPU buffers

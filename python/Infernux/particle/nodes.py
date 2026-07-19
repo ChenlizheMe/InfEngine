@@ -72,6 +72,28 @@ def _point_cache_sample(
     )
 
 
+def _vector_field_sample() -> NodeDef:
+    return NodeDef(
+        "particle.vector_field.sample",
+        "Sample Vector Field",
+        (
+            PortDef(
+                "position",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                required=True,
+            ),
+            PortDef(
+                "value",
+                PortDirection.OUTPUT,
+                value_type=TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+            ),
+        ),
+        (PropertyDef("interface", TypeRef(ValueType.STRING), ""),),
+        {"expression": "sample_vector_field"},
+    )
+
+
 def _attribute_read(type_id: str, label: str, result_type: TypeRef, attribute: str) -> NodeDef:
     return NodeDef(
         type_id,
@@ -195,6 +217,7 @@ PARTICLE_NODE_DEFINITIONS = (
         channel="velocity",
         semantic="vector",
     ),
+    _vector_field_sample(),
     _attribute_read(
         "particle.attribute.read_f32",
         "Read Float Attribute",

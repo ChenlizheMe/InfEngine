@@ -61,6 +61,9 @@ struct ParticleGpuSystemManager::Impl
         std::vector<std::shared_ptr<InxPointCache>> pointCaches;
         std::vector<uint64_t> pointCacheGenerations;
         std::vector<uint64_t> observedPointCacheGenerations;
+        std::vector<std::shared_ptr<InxTexture>> vectorFields;
+        std::vector<uint64_t> vectorFieldGenerations;
+        std::vector<uint64_t> observedVectorFieldGenerations;
         std::vector<uint32_t> billboardVertexShader;
         std::vector<uint32_t> billboardFragmentShader;
         std::vector<Output> outputs;
@@ -81,6 +84,7 @@ struct ParticleGpuSystemManager::Impl
     ParticleGpuDrawRegistry *drawRegistry = nullptr;
     GpuBillboardTextureResolver textureResolver;
     GpuBillboardTextureVersionResolver textureVersionResolver;
+    GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver;
     std::shared_ptr<const GpuParticleCullProgramStorage> cullProgram;
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     std::shared_ptr<const GpuParticleBoundsProgramStorage> boundsProgram;
@@ -90,7 +94,9 @@ struct ParticleGpuSystemManager::Impl
 
     [[nodiscard]] bool BuildRuntimeDesc(const GpuParticleEmitterProgram &program, GpuEmitterDesc &runtimeDesc,
                                         std::vector<std::shared_ptr<InxPointCache>> &pointCaches,
-                                        std::vector<uint64_t> &generations, std::string *error) const
+                                        std::vector<uint64_t> &pointCacheGenerations,
+                                        std::vector<std::shared_ptr<InxTexture>> &vectorFields,
+                                        std::vector<uint64_t> &vectorFieldGenerations, std::string *error) const
     {
         runtimeDesc.capacity = program.capacity;
         runtimeDesc.stateStride = program.stateStride;
@@ -102,7 +108,7 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.pointCaches.sampleCount = program.pointCaches.sampleCount;
         runtimeDesc.pointCaches.pointCaches.reserve(program.pointCaches.pointCaches.size());
         pointCaches.reserve(program.pointCaches.pointCaches.size());
-        generations.reserve(program.pointCaches.pointCaches.size());
+        pointCacheGenerations.reserve(program.pointCaches.pointCaches.size());
         std::unordered_set<std::string> stableIds;
         for (const auto &pointCache : program.pointCaches.pointCaches) {
             if (pointCache.stableId.empty() || !stableIds.insert(pointCache.stableId).second || !pointCache.cache ||
@@ -120,7 +126,45 @@ struct ParticleGpuSystemManager::Impl
             runtimePointCache.samples = pointCache.samples;
             runtimeDesc.pointCaches.pointCaches.push_back(std::move(runtimePointCache));
             pointCaches.push_back(pointCache.cache);
-            generations.push_back(pointCache.cache->GetGeneration());
+            pointCacheGenerations.push_back(pointCache.cache->GetGeneration());
+        }
+
+        runtimeDesc.vectorFields.metadataBinding = program.vectorFields.metadataBinding;
+        runtimeDesc.vectorFields.interfaceStrideWords = program.vectorFields.interfaceStrideWords;
+        runtimeDesc.vectorFields.vectorFields.reserve(program.vectorFields.vectorFields.size());
+        vectorFields.reserve(program.vectorFields.vectorFields.size());
+        vectorFieldGenerations.reserve(program.vectorFields.vectorFields.size());
+        stableIds.clear();
+        for (const auto &field : program.vectorFields.vectorFields) {
+            const auto cpuData = field.texture ? field.texture->GetCpuData() : nullptr;
+            if (field.stableId.empty() || !stableIds.insert(field.stableId).second || !field.texture || !cpuData ||
+                !cpuData->IsValid() || cpuData->dimension != TextureDimension::Texture3D ||
+                cpuData->semantic != TextureSemantic::VectorField || field.texture->GetGuid().empty() ||
+                !vectorFieldTextureResolver) {
+                SetError(error, "GPU particle Vector Field bindings require unique identities and loaded VectorField "
+                                "Texture3D assets");
+                return false;
+            }
+            auto lease = vectorFieldTextureResolver(field.texture->GetGuid(), field.linearFiltering, field.repeat);
+            if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
+                !lease.sampler.IsValid() || !lease.keepAlive) {
+                SetError(error, lease.status == GpuBillboardTextureStatus::Pending
+                                    ? "GPU particle Vector Field texture upload is pending"
+                                    : "GPU particle Vector Field texture upload failed");
+                return false;
+            }
+            GpuVectorFieldDesc runtimeField;
+            runtimeField.interfaceIndex = field.interfaceIndex;
+            runtimeField.textureBinding = field.textureBinding;
+            runtimeField.worldSpace = field.worldSpace;
+            runtimeField.fieldToSpace = field.fieldToSpace;
+            runtimeField.vectorScale = field.vectorScale;
+            runtimeField.texture = lease.texture;
+            runtimeField.sampler = lease.sampler;
+            runtimeField.keepAlive = std::move(lease.keepAlive);
+            runtimeDesc.vectorFields.vectorFields.push_back(std::move(runtimeField));
+            vectorFields.push_back(field.texture);
+            vectorFieldGenerations.push_back(field.texture->GetGeneration());
         }
         return true;
     }
@@ -183,9 +227,11 @@ struct ParticleGpuSystemManager::Impl
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
-        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->pointCaches, emitter->pointCacheGenerations, error))
+        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->pointCaches, emitter->pointCacheGenerations,
+                              emitter->vectorFields, emitter->vectorFieldGenerations, error))
             return {};
         emitter->observedPointCacheGenerations = emitter->pointCacheGenerations;
+        emitter->observedVectorFieldGenerations = emitter->vectorFieldGenerations;
         emitter->sourceProgram = program;
         auto &device = context->GetRhiDevice();
         if (program.preserveState &&
@@ -289,17 +335,24 @@ struct ParticleGpuSystemManager::Impl
         return emitter;
     }
 
-    [[nodiscard]] bool RefreshPointCaches(Emitter &emitter)
+    [[nodiscard]] bool RefreshDataInterfaces(Emitter &emitter)
     {
-        if (emitter.pointCaches.empty())
+        if (emitter.pointCaches.empty() && emitter.vectorFields.empty())
             return true;
-        std::vector<uint64_t> currentGenerations;
-        currentGenerations.reserve(emitter.pointCaches.size());
+        std::vector<uint64_t> currentPointCacheGenerations;
+        currentPointCacheGenerations.reserve(emitter.pointCaches.size());
+        std::vector<uint64_t> currentVectorFieldGenerations;
+        currentVectorFieldGenerations.reserve(emitter.vectorFields.size());
         bool changed = false;
         for (size_t index = 0; index < emitter.pointCaches.size(); ++index) {
             const uint64_t generation = emitter.pointCaches[index] ? emitter.pointCaches[index]->GetGeneration() : 0;
-            currentGenerations.push_back(generation);
+            currentPointCacheGenerations.push_back(generation);
             changed = changed || generation != emitter.observedPointCacheGenerations[index];
+        }
+        for (size_t index = 0; index < emitter.vectorFields.size(); ++index) {
+            const uint64_t generation = emitter.vectorFields[index] ? emitter.vectorFields[index]->GetGeneration() : 0;
+            currentVectorFieldGenerations.push_back(generation);
+            changed = changed || generation != emitter.observedVectorFieldGenerations[index];
         }
         if (!changed)
             return true;
@@ -307,22 +360,30 @@ struct ParticleGpuSystemManager::Impl
         std::string error;
         GpuEmitterDesc runtimeDesc;
         std::vector<std::shared_ptr<InxPointCache>> pointCaches;
-        std::vector<uint64_t> generations;
+        std::vector<uint64_t> pointCacheGenerations;
+        std::vector<std::shared_ptr<InxTexture>> vectorFields;
+        std::vector<uint64_t> vectorFieldGenerations;
         auto replacement = std::make_unique<ParticleGpuRuntime>();
         const bool descriptorValid =
-            BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, pointCaches, generations, &error);
+            BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, pointCaches, pointCacheGenerations, vectorFields,
+                             vectorFieldGenerations, &error);
         const bool replacementCreated =
             descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
         if (!replacementCreated || !deletionQueue || !emitter.runtime->AdoptCompatibleRevision(*replacement)) {
-            emitter.observedPointCacheGenerations = std::move(currentGenerations);
-            INXLOG_WARN("GPU particle Point Cache refresh kept last-known-good emitter '", emitter.stableId,
+            emitter.observedPointCacheGenerations = std::move(currentPointCacheGenerations);
+            if (error != "GPU particle Vector Field texture upload is pending")
+                emitter.observedVectorFieldGenerations = std::move(currentVectorFieldGenerations);
+            INXLOG_WARN("GPU particle data-interface refresh kept last-known-good emitter '", emitter.stableId,
                         "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
             return false;
         }
 
         emitter.pointCaches = std::move(pointCaches);
-        emitter.pointCacheGenerations = generations;
-        emitter.observedPointCacheGenerations = std::move(generations);
+        emitter.pointCacheGenerations = pointCacheGenerations;
+        emitter.observedPointCacheGenerations = std::move(pointCacheGenerations);
+        emitter.vectorFields = std::move(vectorFields);
+        emitter.vectorFieldGenerations = vectorFieldGenerations;
+        emitter.observedVectorFieldGenerations = std::move(vectorFieldGenerations);
         auto retired = std::shared_ptr<ParticleGpuRuntime>(std::move(replacement));
         deletionQueue->Push([retired = std::move(retired)]() mutable { retired.reset(); });
         return true;
@@ -462,6 +523,7 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
                                           FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
                                           GpuBillboardTextureResolver textureResolver,
                                           GpuBillboardTextureVersionResolver textureVersionResolver,
+                                          GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver,
                                           const GpuParticleSortProgram &sortProgram,
                                           const GpuParticleCullProgram &cullProgram,
                                           const GpuParticleBoundsProgram &boundsProgram,
@@ -475,6 +537,7 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
     m_impl->drawRegistry = &drawRegistry;
     m_impl->textureResolver = std::move(textureResolver);
     m_impl->textureVersionResolver = std::move(textureVersionResolver);
+    m_impl->vectorFieldTextureResolver = std::move(vectorFieldTextureResolver);
     auto boundsStorage = std::make_shared<GpuParticleBoundsProgramStorage>();
     if (!boundsStorage->Assign(boundsProgram)) {
         Shutdown();
@@ -721,7 +784,7 @@ bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameReq
     const auto scheduler = m_impl->graphState->schedulerById.find(id);
     if (emitter == m_impl->emitters.end() || scheduler == m_impl->graphState->schedulerById.end())
         return false;
-    (void)m_impl->RefreshPointCaches(*emitter->second);
+    (void)m_impl->RefreshDataInterfaces(*emitter->second);
     if (!emitter->second->runtime->UpdateTransforms(transforms))
         return false;
     return scheduler->second->BeginFrame(request);
@@ -792,6 +855,16 @@ uint64_t ParticleGpuSystemManager::ActivePointCacheGeneration(uint64_t id, uint3
     if (found == m_impl->emitters.end() || interfaceIndex >= found->second->pointCacheGenerations.size())
         return 0;
     return found->second->pointCacheGenerations[interfaceIndex];
+}
+
+uint64_t ParticleGpuSystemManager::ActiveVectorFieldGeneration(uint64_t id, uint32_t interfaceIndex) const
+{
+    if (!m_impl)
+        return 0;
+    const auto found = m_impl->emitters.find(id);
+    if (found == m_impl->emitters.end() || interfaceIndex >= found->second->vectorFieldGenerations.size())
+        return 0;
+    return found->second->vectorFieldGenerations[interfaceIndex];
 }
 
 int32_t ParticleGpuSystemManager::ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const

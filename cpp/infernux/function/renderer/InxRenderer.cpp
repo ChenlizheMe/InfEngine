@@ -420,6 +420,24 @@ void InxRenderer::PreparePipeline()
                 return 1;
             return AssetRegistry::Instance().GetAssetVersion(textureGuid);
         };
+        auto particleVectorFieldTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
+                                                                          bool linearFiltering, bool repeat) {
+            particle::GpuBillboardTextureLease lease;
+            auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat);
+            if (resolved.status == TextureResolveStatus::Pending) {
+                lease.status = particle::GpuBillboardTextureStatus::Pending;
+                return lease;
+            }
+            if (resolved.status != TextureResolveStatus::Ready || !resolved.binding.keepAlive) {
+                lease.status = particle::GpuBillboardTextureStatus::Failed;
+                return lease;
+            }
+            lease.texture = resolved.binding.keepAlive->GetView();
+            lease.sampler = resolved.binding.keepAlive->GetSampler();
+            lease.keepAlive = std::move(resolved.binding.keepAlive);
+            lease.status = particle::GpuBillboardTextureStatus::Ready;
+            return lease;
+        };
         const auto particleSortProgram = CompileParticleSortProgram();
         if (!particleSortProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle sorting kernels");
@@ -435,8 +453,9 @@ void InxRenderer::PreparePipeline()
         if (!m_particleGpuSystemManager->Initialize(
                 m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetDeletionQueue(),
                 *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
-                std::move(particleTextureVersionResolver), particleSortProgram.View(), particleCullProgram.View(),
-                particleBoundsProgram.View(), particleMigrationProgram.View())) {
+                std::move(particleTextureVersionResolver), std::move(particleVectorFieldTextureResolver),
+                particleSortProgram.View(), particleCullProgram.View(), particleBoundsProgram.View(),
+                particleMigrationProgram.View())) {
             m_particleGpuSystemManager.reset();
             INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         }

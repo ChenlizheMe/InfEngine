@@ -8,12 +8,14 @@ from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, Port
 from Infernux.particle import (
     EmitterSettings,
     ExecutionTarget,
+    KernelCompileError,
     ParticleCompileError,
     ParticleEmitterAsset,
     ParticleAttribute,
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleGraphSchemaError,
+    ParticleKernelLowerer,
     ParticleStage,
     ParticleScriptCompiler,
     ParticleScriptError,
@@ -401,6 +403,69 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
         "morph-points",
     ]
     assert program.behavior_hash == ParticleGraphCompiler().compile(asset).behavior_hash
+
+
+def test_particle_script_vector_field_expression_matches_graph_kernel_contract():
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        'particles.acceleration(ctx.sample_vector_field("wind-field", particles.position))',
+    )
+    asset = ParticleScriptCompiler().parse(source, source_name="Wind.particle.py")
+    update = asset.emitters[0].update
+
+    assert [node.type_id for node in update.nodes] == [
+        "particle.root.update",
+        "particle.attribute.read_vec3",
+        "particle.vector_field.sample",
+        "particle.update.acceleration",
+    ]
+    assert any(
+        link.source_node.endswith("sample_vector_field")
+        and link.target_node.endswith("acceleration")
+        and link.kind is PortKind.VALUE
+        for link in update.links
+    )
+
+    hir = ParticleGraphCompiler().compile(asset)
+    kernel = ParticleKernelLowerer().lower(hir)
+    sample = next(
+        instruction
+        for instruction in kernel.emitters[0].update.instructions
+        if instruction.opcode == "sample_vector_field"
+    )
+    assert sample.immediate_dict() == {"interface": "wind-field"}
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    [
+        (
+            'ctx.sample_vector_field("missing", particles.position)',
+            "unknown data interface",
+        ),
+        (
+            'ctx.read_internal_wheel(particles.position)',
+            "unsupported particle context expression",
+        ),
+        (
+            'ctx.sample_vector_field("wind-field", particles.private_state)',
+            "unsupported particle attribute",
+        ),
+    ],
+)
+def test_particle_script_vector_field_expression_rejects_unknown_or_private_access(replacement, message):
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        f"particles.acceleration({replacement})",
+    )
+
+    if message == "unknown data interface":
+        asset = ParticleScriptCompiler().parse(source, source_name="InvalidWind.particle.py")
+        with pytest.raises(KernelCompileError, match=message):
+            ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    else:
+        with pytest.raises(ParticleScriptError, match=message):
+            ParticleScriptCompiler().parse(source, source_name="InvalidWind.particle.py")
 
 
 @pytest.mark.parametrize(

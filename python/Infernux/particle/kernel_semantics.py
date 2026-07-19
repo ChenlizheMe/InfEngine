@@ -60,6 +60,12 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         frozenset({"interface", "channel", "lookup", "semantic"}),
         _ALL_STAGES,
     ),
+    "sample_vector_field": KernelOpcodeSpec(
+        True,
+        1,
+        frozenset({"interface"}),
+        _ALL_STAGES,
+    ),
     "less_than": KernelOpcodeSpec(True, 2),
     "set_alive": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
     "export_attribute": KernelOpcodeSpec(
@@ -329,6 +335,14 @@ def _validate_opcode_types(
             raise KernelSemanticError(
                 "transformed point cache samples must produce a simulation-space vec3"
             )
+    elif opcode == "sample_vector_field":
+        simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if operands != (simulation_vector,) or result_type != simulation_vector:
+            raise KernelSemanticError(
+                "vector field sampling requires and produces a simulation-space vec3"
+            )
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("vector field interface cannot be empty")
     elif opcode == "less_than":
         if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
             ValueType.I32,

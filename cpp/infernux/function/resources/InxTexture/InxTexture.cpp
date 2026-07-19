@@ -70,6 +70,7 @@ std::shared_ptr<InxTexture> InxTexture::Clone() const
     clone->m_wrapMode = m_wrapMode;
     clone->m_anisoLevel = m_anisoLevel;
     clone->m_cpuData = m_cpuData;
+    clone->m_generation = m_generation;
 
     return clone;
 }

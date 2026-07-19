@@ -304,17 +304,18 @@ class ParticleEmitterKernelIR:
     def _validate_data_interface_access(self, function: ParticleKernelFunction) -> None:
         interfaces = {interface.stable_id: interface for interface in self.data_interfaces}
         for instruction in function.instructions:
-            if instruction.opcode != "sample_point_cache":
+            if instruction.opcode not in {"sample_point_cache", "sample_vector_field"}:
                 continue
             stable_id = instruction.immediate_dict()["interface"]
             interface = interfaces.get(stable_id)
             if interface is None:
                 raise KernelCompileError(
-                    f"kernel references unknown point cache interface {stable_id!r}"
+                    f"kernel references unknown data interface {stable_id!r}"
                 )
-            if not isinstance(interface, PointCache):
+            expected_type = PointCache if instruction.opcode == "sample_point_cache" else VectorField
+            if not isinstance(interface, expected_type):
                 raise KernelCompileError(
-                    f"kernel data interface {stable_id!r} is not a PointCache"
+                    f"kernel data interface {stable_id!r} is not a {expected_type.__name__}"
                 )
 
     def _validate_attribute_access(self, function: ParticleKernelFunction) -> None:
