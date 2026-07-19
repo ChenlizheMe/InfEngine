@@ -25,6 +25,38 @@
 
 namespace infernux
 {
+namespace
+{
+
+class ImGuiBuildFrameGuard
+{
+  public:
+    ImGuiBuildFrameGuard() = default;
+    ImGuiBuildFrameGuard(const ImGuiBuildFrameGuard &) = delete;
+    ImGuiBuildFrameGuard &operator=(const ImGuiBuildFrameGuard &) = delete;
+
+    ~ImGuiBuildFrameGuard()
+    {
+        if (!m_active)
+            return;
+
+        InxGUISemantics::AbortFrame();
+        ImGuiContext *context = ImGui::GetCurrentContext();
+        if (context != nullptr && context->WithinFrameScope)
+            ImGui::EndFrame();
+    }
+
+    void Complete()
+    {
+        InxGUISemantics::EndFrame();
+        m_active = false;
+    }
+
+  private:
+    bool m_active = true;
+};
+
+} // namespace
 
 InxGUI::InxGUI(InxVkCoreModular *vkCore) : m_vkCore_ptr(vkCore)
 {
@@ -53,7 +85,12 @@ void InxGUI::Init(SDL_Window *window)
     m_imguiContext_ptr = ImGui::CreateContext();
     ImGui::SetCurrentContext(m_imguiContext_ptr);
     m_imguiContext_ptr->ErrorCallback = [](ImGuiContext *, void *, const char *message) {
+        static thread_local bool handlingError = false;
+        if (handlingError)
+            return;
+        handlingError = true;
         INXLOG_ERROR("[ImGui] ", message ? message : "unknown recoverable error");
+        handlingError = false;
     };
     ImGui::StyleColorsDark();
 
@@ -115,6 +152,13 @@ void InxGUI::Init(SDL_Window *window)
     }
 
     ImGuiIO &io = ImGui::GetIO();
+    // Python panel callbacks may throw through an unfinished ImGui window.
+    // Recover the stack and report through the engine console without opening
+    // ImGui's own error tooltip, which can recursively fail on the same stack.
+    io.ConfigErrorRecovery = true;
+    io.ConfigErrorRecoveryEnableAssert = false;
+    io.ConfigErrorRecoveryEnableDebugLog = false;
+    io.ConfigErrorRecoveryEnableTooltip = false;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // Enable Docking
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport (optional, can cause issues)
@@ -384,6 +428,7 @@ void InxGUI::BuildFrame()
     }
     ImGui::NewFrame();
     InxGUISemantics::BeginFrame(m_guiFrameCounter);
+    ImGuiBuildFrameGuard frameGuard;
 
     // When the cursor is locked (game mode), suppress all mouse input from
     // reaching ImGui so editor panels (Inspector, Hierarchy, etc.) don't
@@ -525,7 +570,7 @@ void InxGUI::BuildFrame()
     }
 
     ApplyPendingDockTabSelections();
-    InxGUISemantics::EndFrame();
+    frameGuard.Complete();
 }
 
 void InxGUI::QueueDockTabSelection(const std::string &windowId)

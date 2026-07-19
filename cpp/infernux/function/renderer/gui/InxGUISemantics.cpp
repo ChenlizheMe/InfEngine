@@ -310,6 +310,14 @@ void InxGUISemantics::EndFrame()
     g_captureEnabled.store(false, std::memory_order_release);
 }
 
+void InxGUISemantics::AbortFrame() noexcept
+{
+    g_workingSnapshot.targets.clear();
+    g_workingTargetSources.clear();
+    g_workingRequestSequence = 0;
+    g_captureEnabled.store(false, std::memory_order_release);
+}
+
 void InxGUISemantics::RecordLastItem(const std::string &kind, const std::string &label, bool enabled,
                                      const std::string &semanticId, std::optional<bool> boolValue,
                                      std::optional<double> numericValue, std::optional<std::string> stringValue)
