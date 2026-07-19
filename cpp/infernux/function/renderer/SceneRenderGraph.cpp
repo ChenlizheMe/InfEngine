@@ -81,56 +81,6 @@ bool CommandListEquals(const std::vector<GraphCommandDesc> &a, const std::vector
            });
 }
 
-GraphCommandDesc LegacyCommand(const GraphPassDesc &pass)
-{
-    GraphCommandDesc command;
-    switch (pass.action) {
-    case GraphPassActionType::DrawRenderers:
-        command.type = GraphCommandType::DrawRenderers;
-        break;
-    case GraphPassActionType::DrawSkybox:
-        command.type = GraphCommandType::DrawSkybox;
-        break;
-    case GraphPassActionType::DrawShadowCasters:
-        command.type = GraphCommandType::DrawShadowCasters;
-        break;
-    case GraphPassActionType::DrawScreenUI:
-        command.type = GraphCommandType::DrawScreenUI;
-        break;
-    case GraphPassActionType::FullscreenQuad:
-        command.type = GraphCommandType::FullscreenQuad;
-        break;
-    default:
-        return {};
-    }
-    command.shaderTarget = pass.shaderTarget;
-    command.queueMin = pass.queueMin;
-    command.queueMax = pass.queueMax;
-    command.sortMode = pass.sortMode;
-    command.passTag = pass.passTag;
-    command.overrideMaterial = pass.overrideMaterial;
-    command.lightIndex = pass.lightIndex;
-    command.screenUIList = pass.screenUIList;
-    command.shaderName = pass.shaderName;
-    command.parameterBlock.clear();
-    command.pushConstants = pass.pushConstants;
-    command.inputBindings = pass.inputBindings;
-    return command;
-}
-
-RenderGraphDescription NormalizeGraphCommands(const RenderGraphDescription &source)
-{
-    RenderGraphDescription normalized = source;
-    for (auto &pass : normalized.passes) {
-        if (!pass.commands.empty() || pass.action == GraphPassActionType::None ||
-            pass.action == GraphPassActionType::Custom) {
-            continue;
-        }
-        pass.commands.push_back(LegacyCommand(pass));
-    }
-    return normalized;
-}
-
 const GraphCommandDesc *PrimaryCommand(const GraphPassDesc &pass)
 {
     return pass.commands.empty() ? nullptr : &pass.commands.front();
@@ -650,7 +600,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return;
     }
 
-    RenderGraphDescription normalizedDesc = NormalizeGraphCommands(desc);
+    RenderGraphDescription normalizedDesc = desc;
     const VkSampleCountFlagBits callbackSamples = m_vkCore->GetMaterialPipelineManager().GetSampleCount();
     const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(normalizedDesc, m_pythonGraphDesc);
     const bool callbackContractChanged = m_pythonCallbackSamples != callbackSamples;

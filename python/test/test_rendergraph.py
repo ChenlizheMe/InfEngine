@@ -9,7 +9,7 @@ from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
     GraphBufferAccessType, GraphBufferUsage, GraphCommandType,
-    GraphPassActionType, GraphPassType,
+    GraphPassType,
     MaterialPassType, PixelFormat, SampleCount,
 )
 from Infernux.rendergraph.graph import BufferHandle, RenderGraph, Format, TextureHandle
@@ -252,7 +252,6 @@ class TestRenderPassBuilder:
             p.draw_renderers(material_pass="gbuffer")
         graph.set_output("g0")
         description = graph.build()
-        assert description.passes[0].action == GraphPassActionType.NONE
         assert description.passes[0].commands[0].type == GraphCommandType.DRAW_RENDERERS
         assert description.passes[0].commands[0].material_pass == MaterialPassType.GBUFFER
 

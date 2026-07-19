@@ -122,16 +122,6 @@ class LightShadows(IntEnum):
     Soft: int
 
 
-class GraphPassActionType(IntEnum):
-    NONE: int
-    DRAW_RENDERERS: int
-    DRAW_SKYBOX: int
-    CUSTOM: int
-    DRAW_SHADOW_CASTERS: int
-    DRAW_SCREEN_UI: int
-    FULLSCREEN_QUAD: int
-
-
 class GraphCommandType(IntEnum):
     DRAW_RENDERERS: int
     DRAW_SKYBOX: int
@@ -1936,18 +1926,6 @@ class GraphPassDesc:
     clear_color_a: float
     clear_depth_value: float
     commands: List[GraphCommandDesc]
-    action: GraphPassActionType
-    material_pass: MaterialPassType
-    queue_min: int
-    queue_max: int
-    sort_mode: str
-    pass_tag: str
-    override_material: str
-    input_bindings: List[Tuple[str, str]]
-    light_index: int
-    screen_ui_list: int
-    shader_name: str
-    push_constants: List[Tuple[str, float]]
 
     def __init__(self) -> None: ...
 

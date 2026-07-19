@@ -33,19 +33,6 @@ void RegisterRenderGraphBindings(py::module_ &m)
     // RenderGraph topology binding types
     // ========================================================================
 
-    // GraphPassActionType enum
-    py::enum_<GraphPassActionType>(m, "GraphPassActionType", "The rendering action a graph pass should perform")
-        .value("NONE", GraphPassActionType::None, "No rendering (resource-only pass)")
-        .value("DRAW_RENDERERS", GraphPassActionType::DrawRenderers, "Draw scene renderers filtered by queue range")
-        .value("DRAW_SKYBOX", GraphPassActionType::DrawSkybox, "Draw the procedural skybox")
-        .value("CUSTOM", GraphPassActionType::Custom, "Reserved for future Python callback support")
-        .value("DRAW_SHADOW_CASTERS", GraphPassActionType::DrawShadowCasters,
-               "Draw shadow casters into a depth-only shadow map")
-        .value("DRAW_SCREEN_UI", GraphPassActionType::DrawScreenUI, "Draw screen-space UI (Camera or Overlay list)")
-        .value("FULLSCREEN_QUAD", GraphPassActionType::FullscreenQuad,
-               "Draw a fullscreen triangle with a named shader (post-process)")
-        .export_values();
-
     py::enum_<ShaderCompileTarget>(m, "MaterialPassType", "Material shader program selected by a render pass")
         .value("FORWARD", ShaderCompileTarget::Forward)
         .value("GBUFFER", ShaderCompileTarget::GBuffer)
@@ -152,23 +139,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("clear_color_b", &GraphPassDesc::clearColorB, "Clear color blue")
         .def_readwrite("clear_color_a", &GraphPassDesc::clearColorA, "Clear color alpha")
         .def_readwrite("clear_depth_value", &GraphPassDesc::clearDepthValue, "Depth clear value")
-        .def_readwrite("commands", &GraphPassDesc::commands, "Typed commands recorded by this pass")
-        .def_readwrite("action", &GraphPassDesc::action, "Deprecated render action compatibility field")
-        .def_readwrite("material_pass", &GraphPassDesc::shaderTarget, "Material shader program for DrawRenderers")
-        .def_readwrite("queue_min", &GraphPassDesc::queueMin, "Minimum render queue (inclusive)")
-        .def_readwrite("queue_max", &GraphPassDesc::queueMax, "Maximum render queue (inclusive)")
-        .def_readwrite("sort_mode", &GraphPassDesc::sortMode, "Sort mode: 'front_to_back', 'back_to_front', 'none'")
-        .def_readwrite("pass_tag", &GraphPassDesc::passTag, "Filter draw calls by shader pass tag (empty = no filter)")
-        .def_readwrite("override_material", &GraphPassDesc::overrideMaterial,
-                       "Force all objects to use this material name (empty = per-object)")
-        .def_readwrite("input_bindings", &GraphPassDesc::inputBindings,
-                       "Shader input bindings: list of (sampler_name, texture_name) pairs")
-        .def_readwrite("light_index", &GraphPassDesc::lightIndex, "Shadow-casting light index (0 = first directional)")
-        .def_readwrite("screen_ui_list", &GraphPassDesc::screenUIList,
-                       "Screen UI list: 0 = Camera (before post-process), 1 = Overlay (after post-process)")
-        .def_readwrite("shader_name", &GraphPassDesc::shaderName, "Shader id for FullscreenQuad action")
-        .def_readwrite("push_constants", &GraphPassDesc::pushConstants,
-                       "Push-constant values: list of (name, float) pairs");
+        .def_readwrite("commands", &GraphPassDesc::commands, "Typed commands recorded by this pass");
 
     // RenderGraphDescription struct
     py::class_<RenderGraphDescription>(m, "RenderGraphDescription", "Complete render graph topology defined by Python")

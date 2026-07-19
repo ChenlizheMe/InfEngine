@@ -26,32 +26,11 @@
 namespace infernux
 {
 
-// ============================================================================
-// Pass Action Types
-// ============================================================================
-
-/**
- * @brief The rendering action a graph pass should perform
- */
-enum class GraphPassActionType
-{
-    None,              ///< No rendering (resource-only pass)
-    DrawRenderers,     ///< Draw scene renderers filtered by queue range
-    DrawSkybox,        ///< Draw the procedural skybox
-    Custom,            ///< Reserved for future Python callback support
-    DrawShadowCasters, ///< Draw shadow casters into a depth-only shadow map
-    DrawScreenUI,      ///< Draw screen-space UI (Camera or Overlay list)
-    FullscreenQuad     ///< Draw a fullscreen triangle with a named shader (post-process)
-};
-
 /**
  * @brief Backend-neutral command recorded by a graph pass.
  *
- * This replaces the legacy one-action-per-pass
- * contract. Commands deliberately
- * describe engine rendering operations rather than Vulkan calls so the same
- * graph
- * artifact can be compiled by another RHI backend later.
+ * Commands describe engine rendering operations rather than Vulkan calls so
+ * the same graph artifact can be compiled by another RHI backend later.
  */
 enum class GraphCommandType
 {
@@ -197,35 +176,6 @@ struct GraphPassDesc
     // one command while the IR is intentionally a list for the upcoming
     // raster/compute/copy command-list executor.
     std::vector<GraphCommandDesc> commands;
-
-    // === Legacy render action (input compatibility only) ===
-    // New graph builders populate commands instead. SceneRenderGraph
-    // normalizes old descriptions at its C++ boundary before validation.
-    GraphPassActionType action = GraphPassActionType::None;
-    ShaderCompileTarget shaderTarget = ShaderCompileTarget::Forward; ///< Material program used by DrawRenderers
-
-    // DrawRenderers parameters
-    int queueMin = 0;             ///< Minimum render queue (inclusive)
-    int queueMax = 5000;          ///< Maximum render queue (inclusive)
-    std::string sortMode;         ///< "front_to_back", "back_to_front", "none"
-    std::string passTag;          ///< Filter draw calls by shader pass tag (empty = no filter)
-    std::string overrideMaterial; ///< Force all objects to use this material name (empty = per-object)
-
-    // DrawShadowCasters parameters
-    int32_t lightIndex = 0; ///< Index of the shadow-casting light (0 = first directional)
-
-    // DrawScreenUI parameters
-    int screenUIList = 0; ///< 0 = Camera list (before post-process), 1 = Overlay list (after post-process)
-
-    // FullscreenQuad parameters
-    std::string shaderName; ///< Shader id for FullscreenQuad action (e.g. "bloom_prefilter")
-    /// Named push-constant values (name → float) passed to the fragment shader
-    std::vector<std::pair<std::string, float>> pushConstants;
-
-    // === Input bindings (sampled texture inputs) ===
-    /// Maps sampler name → texture name for textures sampled by this pass
-    /// (e.g. shadow map bound as a sampled texture in a lighting pass).
-    std::vector<std::pair<std::string, std::string>> inputBindings;
 };
 
 // ============================================================================
