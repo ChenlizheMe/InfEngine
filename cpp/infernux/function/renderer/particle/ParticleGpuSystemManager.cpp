@@ -56,6 +56,7 @@ struct ParticleGpuSystemManager::Impl
         std::unique_ptr<ParticleGpuBounds> bounds;
         std::shared_ptr<ParticleGpuMigrator> migration;
         std::shared_ptr<Emitter> migrationSource;
+        std::vector<std::shared_ptr<InxPointCache>> pointCaches;
         std::vector<uint32_t> billboardVertexShader;
         std::vector<uint32_t> billboardFragmentShader;
         std::vector<Output> outputs;
@@ -145,6 +146,30 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.stateStride = program.stateStride;
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
+        runtimeDesc.pointCaches.metadataBinding = program.pointCaches.metadataBinding;
+        runtimeDesc.pointCaches.interfaceStrideWords = program.pointCaches.interfaceStrideWords;
+        runtimeDesc.pointCaches.sampleStrideWords = program.pointCaches.sampleStrideWords;
+        runtimeDesc.pointCaches.sampleCount = program.pointCaches.sampleCount;
+        runtimeDesc.pointCaches.pointCaches.reserve(program.pointCaches.pointCaches.size());
+        emitter->pointCaches.reserve(program.pointCaches.pointCaches.size());
+        std::unordered_set<std::string> pointCacheStableIds;
+        for (const auto &pointCache : program.pointCaches.pointCaches) {
+            if (pointCache.stableId.empty() || !pointCacheStableIds.insert(pointCache.stableId).second ||
+                !pointCache.cache || !pointCache.cache->GetCpuData()) {
+                SetError(error, "GPU particle Point Cache bindings must have unique identities and loaded data");
+                return {};
+            }
+            GpuPointCacheDesc runtimePointCache;
+            runtimePointCache.interfaceIndex = pointCache.interfaceIndex;
+            runtimePointCache.dataBinding = pointCache.dataBinding;
+            runtimePointCache.lookupBinding = pointCache.lookupBinding;
+            runtimePointCache.worldSpace = pointCache.worldSpace;
+            runtimePointCache.cacheToSpace = pointCache.cacheToSpace;
+            runtimePointCache.data = pointCache.cache->GetCpuData();
+            runtimePointCache.samples = pointCache.samples;
+            runtimeDesc.pointCaches.pointCaches.push_back(std::move(runtimePointCache));
+            emitter->pointCaches.push_back(pointCache.cache);
+        }
         auto &device = context->GetRhiDevice();
         if (program.preserveState &&
             (!previous || previous->id != program.id || previous->stableId != program.stableId)) {

@@ -1,6 +1,12 @@
 #include "ParticleGpuRuntime.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <limits>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 namespace infernux::particle
 {
@@ -17,6 +23,62 @@ bool CheckedBufferSize(uint32_t capacity, uint32_t stride, uint64_t &result) noe
 {
     result = static_cast<uint64_t>(capacity) * stride;
     return capacity > 0 && stride > 0 && result <= std::numeric_limits<uint64_t>::max();
+}
+
+uint32_t FloatBits(float value) noexcept
+{
+    uint32_t result = 0;
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
+glm::mat4 RowMajorMatrix(const std::array<float, 16> &values) noexcept
+{
+    glm::mat4 result(1.0f);
+    for (uint32_t row = 0; row < 4; ++row) {
+        for (uint32_t column = 0; column < 4; ++column)
+            result[column][row] = values[row * 4 + column];
+    }
+    return result;
+}
+
+bool IsFinite(const glm::mat4 &value) noexcept
+{
+    for (uint32_t column = 0; column < 4; ++column) {
+        for (uint32_t row = 0; row < 4; ++row) {
+            if (!std::isfinite(value[column][row]))
+                return false;
+        }
+    }
+    return true;
+}
+
+bool IsFinite(const glm::mat3 &value) noexcept
+{
+    for (uint32_t column = 0; column < 3; ++column) {
+        for (uint32_t row = 0; row < 3; ++row) {
+            if (!std::isfinite(value[column][row]))
+                return false;
+        }
+    }
+    return true;
+}
+
+void StoreMatrix(std::vector<uint32_t> &words, size_t base, const glm::mat4 &matrix)
+{
+    for (uint32_t column = 0; column < 4; ++column) {
+        for (uint32_t row = 0; row < 4; ++row)
+            words[base + column * 4 + row] = FloatBits(matrix[column][row]);
+    }
+}
+
+void StoreNormalMatrix(std::vector<uint32_t> &words, size_t base, const glm::mat3 &matrix)
+{
+    for (uint32_t column = 0; column < 3; ++column) {
+        for (uint32_t row = 0; row < 3; ++row)
+            words[base + column * 4 + row] = FloatBits(matrix[column][row]);
+        words[base + column * 4 + 3] = 0;
+    }
 }
 
 } // namespace
@@ -46,6 +108,35 @@ struct ParticleGpuRuntime::ResidentState
     rhi::BufferHandle transforms;
     bool bootstrapRecorded = false;
 };
+
+struct ParticleGpuRuntime::DataInterfaceState
+{
+    ~DataInterfaceState()
+    {
+        if (!device)
+            return;
+        device->Release(group);
+        device->Release(layout);
+        for (auto buffer : lookupBuffers)
+            device->Release(buffer);
+        for (auto buffer : dataBuffers)
+            device->Release(buffer);
+        device->Release(metadataBuffer);
+    }
+
+    rhi::Device *device = nullptr;
+    rhi::BindingLayoutHandle layout;
+    rhi::BindGroupHandle group;
+    rhi::BufferHandle metadataBuffer;
+    std::vector<rhi::BufferHandle> dataBuffers;
+    std::vector<rhi::BufferHandle> lookupBuffers;
+    std::vector<GpuPointCacheDesc> pointCaches;
+    std::vector<uint32_t> metadataWords;
+    uint32_t interfaceStrideWords = 0;
+    uint32_t sampleStrideWords = 0;
+};
+
+ParticleGpuRuntime::ParticleGpuRuntime() = default;
 
 ParticleGpuRuntime::~ParticleGpuRuntime()
 {
@@ -145,6 +236,184 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         return false;
     }
 
+    const auto &pointCacheLayout = desc.pointCaches;
+    if (!pointCacheLayout.pointCaches.empty()) {
+        if (pointCacheLayout.metadataBinding != 0 || pointCacheLayout.interfaceStrideWords < 32 ||
+            pointCacheLayout.sampleStrideWords < 4 || pointCacheLayout.sampleCount == 0 ||
+            pointCacheLayout.pointCaches.size() > 7) {
+            Destroy();
+            return false;
+        }
+        const uint64_t metadataWordCount =
+            static_cast<uint64_t>(pointCacheLayout.pointCaches.size()) * pointCacheLayout.interfaceStrideWords +
+            static_cast<uint64_t>(pointCacheLayout.sampleCount) * pointCacheLayout.sampleStrideWords;
+        if (metadataWordCount == 0 || metadataWordCount > std::numeric_limits<uint32_t>::max()) {
+            Destroy();
+            return false;
+        }
+
+        auto dataInterfaces = std::make_unique<DataInterfaceState>();
+        dataInterfaces->device = &device;
+        dataInterfaces->pointCaches = pointCacheLayout.pointCaches;
+        dataInterfaces->interfaceStrideWords = pointCacheLayout.interfaceStrideWords;
+        dataInterfaces->sampleStrideWords = pointCacheLayout.sampleStrideWords;
+        dataInterfaces->metadataWords.assign(static_cast<size_t>(metadataWordCount), 0);
+        dataInterfaces->dataBuffers.reserve(pointCacheLayout.pointCaches.size());
+        dataInterfaces->lookupBuffers.reserve(pointCacheLayout.pointCaches.size());
+
+        std::array<bool, rhi::BindingLayoutDesc::MaxEntries> usedBindings{};
+        usedBindings[pointCacheLayout.metadataBinding] = true;
+        std::vector<bool> usedSamples(pointCacheLayout.sampleCount, false);
+        rhi::BindingLayoutDesc dataLayoutDesc;
+        dataLayoutDesc.entries[0] = {pointCacheLayout.metadataBinding, rhi::BindingType::StorageBuffer,
+                                     rhi::ShaderStage::Compute, 1};
+        dataLayoutDesc.entryCount = 1;
+
+        rhi::BindGroupDesc dataGroupDesc;
+        dataGroupDesc.bufferCount = 1;
+        dataGroupDesc.buffers[0].binding = pointCacheLayout.metadataBinding;
+        dataGroupDesc.buffers[0].type = rhi::BindingType::StorageBuffer;
+
+        for (size_t index = 0; index < pointCacheLayout.pointCaches.size(); ++index) {
+            const auto &pointCache = pointCacheLayout.pointCaches[index];
+            if (pointCache.interfaceIndex != index || pointCache.dataBinding >= usedBindings.size() ||
+                pointCache.lookupBinding >= usedBindings.size() || usedBindings[pointCache.dataBinding] ||
+                usedBindings[pointCache.lookupBinding] || !pointCache.data || !pointCache.data->IsValid() ||
+                pointCache.data->bytes.empty() || pointCache.data->bytes.size() % sizeof(uint32_t) != 0) {
+                Destroy();
+                return false;
+            }
+            usedBindings[pointCache.dataBinding] = true;
+            usedBindings[pointCache.lookupBinding] = true;
+            const size_t interfaceBase = index * pointCacheLayout.interfaceStrideWords;
+            const glm::mat4 cacheToSpace = RowMajorMatrix(pointCache.cacheToSpace);
+            if (!IsFinite(cacheToSpace)) {
+                Destroy();
+                return false;
+            }
+            StoreMatrix(dataInterfaces->metadataWords, interfaceBase, cacheToSpace);
+            const bool requiresNormal =
+                std::any_of(pointCache.samples.begin(), pointCache.samples.end(),
+                            [](const GpuPointCacheSampleDesc &sample) { return sample.requiresNormalTransform; });
+            const glm::mat3 linear(cacheToSpace);
+            const float determinant = glm::determinant(linear);
+            if (requiresNormal && (!std::isfinite(determinant) || std::abs(determinant) <= 1.0e-8f)) {
+                Destroy();
+                return false;
+            }
+            const glm::mat3 normal = requiresNormal ? glm::transpose(glm::inverse(linear)) : glm::mat3(1.0f);
+            if (!IsFinite(normal)) {
+                Destroy();
+                return false;
+            }
+            StoreNormalMatrix(dataInterfaces->metadataWords, interfaceBase + 16, normal);
+            dataInterfaces->metadataWords[interfaceBase + 28] = pointCache.data->pointCount;
+            dataInterfaces->metadataWords[interfaceBase + 29] =
+                pointCache.data->idLookupMode == PointCacheIdLookupMode::Hash
+                    ? static_cast<uint32_t>(pointCache.data->idLookup.size() - 1)
+                    : 0;
+            dataInterfaces->metadataWords[interfaceBase + 30] =
+                pointCache.data->idLookupMode == PointCacheIdLookupMode::Hash ? 1u : 0u;
+
+            for (const auto &sample : pointCache.samples) {
+                const auto *channel = pointCache.data->FindChannel(sample.channel);
+                if (sample.sampleIndex >= usedSamples.size() || usedSamples[sample.sampleIndex] || !channel ||
+                    channel->type != sample.expectedType || channel->byteOffset % sizeof(uint32_t) != 0 ||
+                    channel->elementStride % sizeof(uint32_t) != 0 ||
+                    channel->byteOffset / sizeof(uint32_t) > std::numeric_limits<uint32_t>::max()) {
+                    Destroy();
+                    return false;
+                }
+                usedSamples[sample.sampleIndex] = true;
+                const size_t sampleBase = pointCacheLayout.pointCaches.size() * pointCacheLayout.interfaceStrideWords +
+                                          sample.sampleIndex * pointCacheLayout.sampleStrideWords;
+                dataInterfaces->metadataWords[sampleBase] =
+                    static_cast<uint32_t>(channel->byteOffset / sizeof(uint32_t));
+                dataInterfaces->metadataWords[sampleBase + 1] = channel->elementStride / sizeof(uint32_t);
+                dataInterfaces->metadataWords[sampleBase + 2] = static_cast<uint32_t>(channel->type);
+                dataInterfaces->metadataWords[sampleBase + 3] = pointCache.interfaceIndex;
+            }
+
+            rhi::BufferDesc dataBufferDesc;
+            dataBufferDesc.byteSize = pointCache.data->bytes.size();
+            dataBufferDesc.usage = rhi::BufferUsageFlags::Storage;
+            dataBufferDesc.memory = rhi::BufferMemory::Upload;
+            dataBufferDesc.initialData = pointCache.data->bytes.data();
+            dataBufferDesc.initialDataBytes = pointCache.data->bytes.size();
+            const auto dataBuffer = device.CreateBuffer(dataBufferDesc);
+
+            const PointCacheIdLookupEntry identityLookup = {0, UINT32_MAX};
+            const bool hashedLookup = pointCache.data->idLookupMode == PointCacheIdLookupMode::Hash;
+            if (hashedLookup && (pointCache.data->idLookup.empty() ||
+                                 (pointCache.data->idLookup.size() & (pointCache.data->idLookup.size() - 1)) != 0)) {
+                Destroy();
+                return false;
+            }
+            rhi::BufferDesc lookupBufferDesc;
+            lookupBufferDesc.byteSize = hashedLookup
+                                            ? pointCache.data->idLookup.size() * sizeof(PointCacheIdLookupEntry)
+                                            : sizeof(identityLookup);
+            lookupBufferDesc.usage = rhi::BufferUsageFlags::Storage;
+            lookupBufferDesc.memory = rhi::BufferMemory::Upload;
+            lookupBufferDesc.initialData =
+                hashedLookup ? static_cast<const void *>(pointCache.data->idLookup.data()) : &identityLookup;
+            lookupBufferDesc.initialDataBytes = lookupBufferDesc.byteSize;
+            const auto lookupBuffer = device.CreateBuffer(lookupBufferDesc);
+            if (!dataBuffer.IsValid() || !lookupBuffer.IsValid()) {
+                device.Release(dataBuffer);
+                device.Release(lookupBuffer);
+                Destroy();
+                return false;
+            }
+            dataInterfaces->dataBuffers.push_back(dataBuffer);
+            dataInterfaces->lookupBuffers.push_back(lookupBuffer);
+
+            const uint32_t layoutOffset = dataLayoutDesc.entryCount;
+            dataLayoutDesc.entries[layoutOffset] = {pointCache.dataBinding, rhi::BindingType::StorageBuffer,
+                                                    rhi::ShaderStage::Compute, 1};
+            dataLayoutDesc.entries[layoutOffset + 1] = {pointCache.lookupBinding, rhi::BindingType::StorageBuffer,
+                                                        rhi::ShaderStage::Compute, 1};
+            dataLayoutDesc.entryCount += 2;
+            const uint32_t groupOffset = dataGroupDesc.bufferCount;
+            dataGroupDesc.buffers[groupOffset] = {pointCache.dataBinding, rhi::BindingType::StorageBuffer, dataBuffer};
+            dataGroupDesc.buffers[groupOffset + 1] = {pointCache.lookupBinding, rhi::BindingType::StorageBuffer,
+                                                      lookupBuffer};
+            dataGroupDesc.bufferCount += 2;
+        }
+        if (std::find(usedSamples.begin(), usedSamples.end(), false) != usedSamples.end()) {
+            Destroy();
+            return false;
+        }
+
+        rhi::BufferDesc metadataBufferDesc;
+        metadataBufferDesc.byteSize = dataInterfaces->metadataWords.size() * sizeof(uint32_t);
+        metadataBufferDesc.usage = rhi::BufferUsageFlags::Storage;
+        metadataBufferDesc.memory = rhi::BufferMemory::Upload;
+        metadataBufferDesc.initialData = dataInterfaces->metadataWords.data();
+        metadataBufferDesc.initialDataBytes = metadataBufferDesc.byteSize;
+        dataInterfaces->metadataBuffer = device.CreateBuffer(metadataBufferDesc);
+        if (!dataInterfaces->metadataBuffer.IsValid()) {
+            Destroy();
+            return false;
+        }
+        dataGroupDesc.buffers[0].buffer = dataInterfaces->metadataBuffer;
+        dataInterfaces->layout = device.CreateBindingLayout(dataLayoutDesc);
+        if (!dataInterfaces->layout.IsValid()) {
+            Destroy();
+            return false;
+        }
+        dataGroupDesc.layout = dataInterfaces->layout;
+        dataInterfaces->group = device.CreateBindGroup(dataGroupDesc);
+        if (!dataInterfaces->group.IsValid()) {
+            Destroy();
+            return false;
+        }
+        m_dataInterfaces = std::move(dataInterfaces);
+    } else if (pointCacheLayout.sampleCount != 0) {
+        Destroy();
+        return false;
+    }
+
     for (size_t index = 0; index < desc.kernels.size(); ++index) {
         const auto shader = device.CreateShaderModule({desc.kernels[index].words, desc.kernels[index].wordCount});
         if (!shader.IsValid()) {
@@ -155,6 +424,10 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         pipelineDesc.computeShader = shader;
         pipelineDesc.bindingLayouts[0] = m_layout;
         pipelineDesc.bindingLayoutCount = 1;
+        if (m_dataInterfaces) {
+            pipelineDesc.bindingLayouts[1] = m_dataInterfaces->layout;
+            pipelineDesc.bindingLayoutCount = 2;
+        }
         pipelineDesc.pushConstantBytes = sizeof(GpuParticlePushConstants);
         m_pipelines[index] = device.CreateComputePipeline(pipelineDesc);
         device.Release(shader);
@@ -174,6 +447,7 @@ void ParticleGpuRuntime::Destroy() noexcept
         m_device->Release(m_group);
         m_device->Release(m_layout);
     }
+    m_dataInterfaces.reset();
     m_residentState.reset();
     m_device = nullptr;
     m_capacity = 0;
@@ -186,6 +460,9 @@ void ParticleGpuRuntime::Destroy() noexcept
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
     if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid())
+        return false;
+    if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
+                             !m_dataInterfaces->metadataBuffer.IsValid()))
         return false;
     for (auto pipeline : m_pipelines) {
         if (!pipeline.IsValid())
@@ -218,7 +495,41 @@ void ParticleGpuRuntime::MarkStateInitialized() noexcept
 
 bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
 {
-    return m_device && m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms));
+    if (!m_device || !m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
+        return false;
+    return UpdatePointCacheMetadata(transforms);
+}
+
+bool ParticleGpuRuntime::UpdatePointCacheMetadata(const GpuParticleTransforms &transforms)
+{
+    if (!m_dataInterfaces)
+        return true;
+    const glm::mat4 emitterToWorld = glm::make_mat4(transforms.emitterToWorld.data());
+    const glm::mat4 worldToSimulation = glm::make_mat4(transforms.worldToSimulation.data());
+    if (!IsFinite(emitterToWorld) || !IsFinite(worldToSimulation))
+        return false;
+    for (size_t index = 0; index < m_dataInterfaces->pointCaches.size(); ++index) {
+        const auto &pointCache = m_dataInterfaces->pointCaches[index];
+        const glm::mat4 sourceToWorld = pointCache.worldSpace ? glm::mat4(1.0f) : emitterToWorld;
+        const glm::mat4 cacheToSimulation = worldToSimulation * sourceToWorld * RowMajorMatrix(pointCache.cacheToSpace);
+        if (!IsFinite(cacheToSimulation))
+            return false;
+        const bool requiresNormal =
+            std::any_of(pointCache.samples.begin(), pointCache.samples.end(),
+                        [](const GpuPointCacheSampleDesc &sample) { return sample.requiresNormalTransform; });
+        const glm::mat3 linear(cacheToSimulation);
+        const float determinant = glm::determinant(linear);
+        if (requiresNormal && (!std::isfinite(determinant) || std::abs(determinant) <= 1.0e-8f))
+            return false;
+        const glm::mat3 normal = requiresNormal ? glm::transpose(glm::inverse(linear)) : glm::mat3(1.0f);
+        if (!IsFinite(normal))
+            return false;
+        const size_t interfaceBase = index * m_dataInterfaces->interfaceStrideWords;
+        StoreMatrix(m_dataInterfaces->metadataWords, interfaceBase, cacheToSimulation);
+        StoreNormalMatrix(m_dataInterfaces->metadataWords, interfaceBase + 16, normal);
+    }
+    return m_device->WriteBuffer(m_dataInterfaces->metadataBuffer, 0, m_dataInterfaces->metadataWords.data(),
+                                 m_dataInterfaces->metadataWords.size() * sizeof(uint32_t));
 }
 
 rhi::BufferHandle ParticleGpuRuntime::StateBuffer() const noexcept
@@ -322,6 +633,8 @@ void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKe
     const auto pipeline = m_pipelines[StageIndex(stage)];
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, m_group);
+    if (m_dataInterfaces)
+        encoder.BindGroup(pipeline, 1, m_dataInterfaces->group);
     encoder.PushConstants(pipeline, sizeof(constants), &constants);
     encoder.Dispatch(GroupCount(invocationCount), 1, 1);
 }

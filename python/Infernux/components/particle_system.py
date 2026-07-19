@@ -22,6 +22,7 @@ from Infernux.particle import (
     ParticleKernelLowerer,
     ParticleKernelProgram,
     ParticleRuntimeCompatibility,
+    PointCache,
     build_gpu_particle_migration,
     classify_emitter_update,
     decode_gpu_particle_spirv,
@@ -581,6 +582,9 @@ class ParticleSystem(InxComponent):
                     "state_stride": glsl_emitter["state_stride"],
                     "preserve_state": preserve_state,
                     "migration": migration,
+                    "data_interface_layout": self._gpu_data_interface_layout(
+                        kernel.emitters[index], glsl_emitter
+                    ),
                     "stages": decoded["stages"],
                     "billboard": decoded["billboard"],
                     "outputs": [
@@ -858,6 +862,91 @@ class ParticleSystem(InxComponent):
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             pass
         return state
+
+    @staticmethod
+    def _gpu_data_interface_layout(emitter, glsl_emitter) -> dict[str, object]:
+        layout = glsl_emitter.get("data_interface_layout")
+        if type(layout) is not dict:
+            raise RuntimeError("ParticleGraph GPU data interface layout is missing")
+        point_cache_layouts = layout.get("point_caches")
+        if type(point_cache_layouts) is not list:
+            raise RuntimeError("ParticleGraph GPU Point Cache layout is invalid")
+        if not point_cache_layouts:
+            return dict(layout)
+
+        interfaces = {
+            interface.stable_id: interface
+            for interface in emitter.data_interfaces
+            if isinstance(interface, PointCache)
+        }
+        from Infernux.lib import AssetRegistry
+
+        registry = AssetRegistry.instance()
+        decoded_point_caches = []
+        for encoded in point_cache_layouts:
+            if type(encoded) is not dict:
+                raise RuntimeError("ParticleGraph GPU Point Cache layout is invalid")
+            stable_id = encoded.get("stable_id")
+            interface = interfaces.get(stable_id)
+            if interface is None:
+                raise RuntimeError(
+                    f"ParticleGraph GPU Point Cache interface {stable_id!r} is missing"
+                )
+            reference = interface.cache
+            native = (
+                registry.load_point_cache_by_guid(reference.guid)
+                if reference.guid
+                else None
+            )
+            path = reference.path_hint
+            if native is None and path:
+                if not os.path.isabs(path):
+                    try:
+                        from Infernux.engine.project_context import get_project_root
+
+                        project_root = get_project_root()
+                        if project_root:
+                            path = os.path.join(project_root, path)
+                    except (AttributeError, RuntimeError):
+                        pass
+                native = registry.load_point_cache(path)
+            if native is None:
+                identity = reference.guid or reference.path_hint or "<empty reference>"
+                raise RuntimeError(
+                    f"ParticleGraph GPU Point Cache {stable_id!r} cannot load {identity!r}"
+                )
+
+            aliases = {
+                "$position": interface.position_channel,
+                "$normal": interface.normal_channel,
+                "$color": interface.color_channel,
+                "$id": interface.id_channel,
+            }
+            samples = []
+            for sample in encoded.get("samples", ()):
+                if type(sample) is not dict:
+                    raise RuntimeError("ParticleGraph GPU Point Cache sample is invalid")
+                decoded_sample = dict(sample)
+                decoded_sample["channel"] = aliases.get(
+                    decoded_sample.get("channel"), decoded_sample.get("channel")
+                )
+                if not decoded_sample["channel"]:
+                    raise RuntimeError(
+                        f"ParticleGraph GPU Point Cache {stable_id!r} resolves an empty channel"
+                    )
+                samples.append(decoded_sample)
+            decoded = dict(encoded)
+            decoded.update(
+                space=interface.space.value,
+                cache_to_space=list(interface.cache_to_space),
+                native=native,
+                samples=samples,
+            )
+            decoded_point_caches.append(decoded)
+
+        result = dict(layout)
+        result["point_caches"] = decoded_point_caches
+        return result
 
     @staticmethod
     def _output_material_guid(material) -> str:

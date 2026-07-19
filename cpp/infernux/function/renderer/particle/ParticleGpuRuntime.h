@@ -2,11 +2,14 @@
 
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
+#include <function/resources/InxPointCache/PointCacheArtifact.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace infernux::particle
 {
@@ -27,11 +30,42 @@ struct ShaderBytecode
     size_t wordCount = 0;
 };
 
+struct GpuPointCacheSampleDesc
+{
+    uint32_t sampleIndex = 0;
+    std::string channel;
+    PointCacheChannelType expectedType = PointCacheChannelType::Float;
+    bool requiresNormalTransform = false;
+};
+
+struct GpuPointCacheDesc
+{
+    uint32_t interfaceIndex = 0;
+    uint32_t dataBinding = 0;
+    uint32_t lookupBinding = 0;
+    bool worldSpace = true;
+    std::array<float, 16> cacheToSpace = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    std::shared_ptr<const PointCacheCpuData> data;
+    std::vector<GpuPointCacheSampleDesc> samples;
+};
+
+struct GpuPointCacheLayoutDesc
+{
+    uint32_t metadataBinding = 0;
+    uint32_t interfaceStrideWords = 32;
+    uint32_t sampleStrideWords = 4;
+    uint32_t sampleCount = 0;
+    std::vector<GpuPointCacheDesc> pointCaches;
+};
+
 struct GpuEmitterDesc
 {
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
+    GpuPointCacheLayoutDesc pointCaches;
 };
 
 struct alignas(16) GpuParticleTransforms
@@ -60,7 +94,7 @@ class ParticleGpuRuntime
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t RenderInstanceStride = 48;
 
-    ParticleGpuRuntime() = default;
+    ParticleGpuRuntime();
     ~ParticleGpuRuntime();
 
     ParticleGpuRuntime(const ParticleGpuRuntime &) = delete;
@@ -108,9 +142,11 @@ class ParticleGpuRuntime
 
   private:
     struct ResidentState;
+    struct DataInterfaceState;
 
     [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
                                       std::shared_ptr<ResidentState> residentState);
+    [[nodiscard]] bool UpdatePointCacheMetadata(const GpuParticleTransforms &transforms);
     void Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount) const;
     [[nodiscard]] static uint32_t GroupCount(uint32_t invocationCount) noexcept;
@@ -119,6 +155,7 @@ class ParticleGpuRuntime
     uint32_t m_capacity = 0;
     uint32_t m_stateStride = 0;
     std::shared_ptr<ResidentState> m_residentState;
+    std::unique_ptr<DataInterfaceState> m_dataInterfaces;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};

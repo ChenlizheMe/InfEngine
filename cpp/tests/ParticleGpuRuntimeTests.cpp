@@ -30,6 +30,8 @@ struct FakeDevice final : rhi::Device
     std::vector<uint32_t> groupBufferCounts;
     std::vector<uint32_t> groupTextureCounts;
     std::vector<rhi::GraphicsPipelineDesc> graphicsPipelineDescs;
+    std::vector<rhi::ComputePipelineDesc> computePipelineDescs;
+    std::vector<std::vector<uint8_t>> initialBufferBytes;
     uint32_t layoutCreates = 0;
     uint32_t groupCreates = 0;
     uint32_t graphicsPipelineCreates = 0;
@@ -49,6 +51,10 @@ struct FakeDevice final : rhi::Device
     rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override
     {
         buffers.push_back(desc);
+        const auto *begin = static_cast<const uint8_t *>(desc.initialData);
+        initialBufferBytes.emplace_back();
+        if (begin && desc.initialDataBytes)
+            initialBufferBytes.back().assign(begin, begin + desc.initialDataBytes);
         return {nextIndex++, 1};
     }
 
@@ -79,9 +85,10 @@ struct FakeDevice final : rhi::Device
 
     rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override
     {
-        assert(desc.computeShader.IsValid() && desc.bindingLayoutCount == 1 &&
+        assert(desc.computeShader.IsValid() && (desc.bindingLayoutCount == 1 || desc.bindingLayoutCount == 2) &&
                (desc.pushConstantBytes == 16 || desc.pushConstantBytes == 32 || desc.pushConstantBytes == 80 ||
                 desc.pushConstantBytes == 112));
+        computePipelineDescs.push_back(desc);
         ++pipelineCreates;
         return {nextIndex++, 1};
     }
@@ -140,6 +147,7 @@ struct CommandTrace
 {
     std::vector<rhi::ComputePipelineHandle> pipelines;
     std::vector<rhi::BindGroupHandle> groups;
+    std::vector<uint32_t> groupSets;
     std::vector<particle::GpuParticlePushConstants> constants;
     std::vector<uint32_t> dispatches;
 
@@ -149,8 +157,10 @@ struct CommandTrace
     }
     static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
     {
-        assert(setIndex == 0);
-        static_cast<CommandTrace *>(context)->groups.push_back(group);
+        assert(setIndex <= 1);
+        auto &trace = *static_cast<CommandTrace *>(context);
+        trace.groups.push_back(group);
+        trace.groupSets.push_back(setIndex);
     }
     static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
     {
@@ -448,6 +458,98 @@ int main()
         compatible.Destroy();
         assert(sharingDevice.bufferReleases == 7 && sharingDevice.pipelineReleases == 10 &&
                sharingDevice.groupReleases == 2 && sharingDevice.layoutReleases == 2);
+    }
+
+    {
+        FakeDevice pointCacheDevice;
+        std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> pointCacheWords{};
+        particle::GpuEmitterDesc pointCacheDesc;
+        pointCacheDesc.capacity = 64;
+        pointCacheDesc.stateStride = 48;
+        for (size_t index = 0; index < pointCacheWords.size(); ++index) {
+            pointCacheWords[index][0] = 0x07230203;
+            pointCacheDesc.kernels[index] = {pointCacheWords[index].data(), pointCacheWords[index].size()};
+        }
+
+        auto cache = std::make_shared<PointCacheCpuData>();
+        cache->stableId = "runtime-points";
+        cache->name = "Runtime Points";
+        cache->bakeBasis = "right_handed_y_up";
+        cache->pointCount = 2;
+        cache->channels = {
+            {"position", PointCacheChannelType::Float3, PointCacheChannelSemantic::Position, 0, 12},
+            {"id", PointCacheChannelType::UInt, PointCacheChannelSemantic::Id, 32, 4},
+        };
+        cache->bytes.resize(40);
+        const std::array<float, 6> positions = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+        const std::array<uint32_t, 2> ids = {7, 42};
+        std::memcpy(cache->bytes.data(), positions.data(), sizeof(positions));
+        std::memcpy(cache->bytes.data() + 32, ids.data(), sizeof(ids));
+        cache->RebuildIdLookup();
+        assert(cache->IsValid() && cache->idLookupMode == PointCacheIdLookupMode::Hash);
+
+        particle::GpuPointCacheDesc pointCache;
+        pointCache.interfaceIndex = 0;
+        pointCache.dataBinding = 1;
+        pointCache.lookupBinding = 2;
+        pointCache.worldSpace = false;
+        pointCache.cacheToSpace = {
+            1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+        };
+        pointCache.data = cache;
+        pointCache.samples.push_back({0, "position", PointCacheChannelType::Float3, false});
+        pointCacheDesc.pointCaches.sampleCount = 1;
+        pointCacheDesc.pointCaches.pointCaches.push_back(pointCache);
+
+        particle::ParticleGpuRuntime pointCacheRuntime;
+        assert(pointCacheRuntime.Create(pointCacheDevice, pointCacheDesc));
+        assert(pointCacheRuntime.IsValid());
+        assert(pointCacheDevice.buffers.size() == 10);
+        assert(pointCacheDevice.layouts.size() == 2 && pointCacheDevice.layouts[1].entryCount == 3);
+        assert(pointCacheDevice.bindGroups.size() == 2 && pointCacheDevice.bindGroups[1].bufferCount == 3);
+        assert(pointCacheDevice.computePipelineDescs.size() == 5 &&
+               pointCacheDevice.computePipelineDescs[0].bindingLayoutCount == 2);
+        assert(pointCacheDevice.buffers[7].memory == rhi::BufferMemory::Upload &&
+               pointCacheDevice.buffers[7].usage == rhi::BufferUsageFlags::Storage);
+        assert(pointCacheDevice.initialBufferBytes[7] == cache->bytes);
+        assert(pointCacheDevice.initialBufferBytes[8].size() ==
+               cache->idLookup.size() * sizeof(PointCacheIdLookupEntry));
+        const auto readWord = [](const std::vector<uint8_t> &bytes, size_t index) {
+            uint32_t result = 0;
+            std::memcpy(&result, bytes.data() + index * sizeof(result), sizeof(result));
+            return result;
+        };
+        assert(readWord(pointCacheDevice.initialBufferBytes[9], 28) == 2 &&
+               readWord(pointCacheDevice.initialBufferBytes[9], 29) == 3 &&
+               readWord(pointCacheDevice.initialBufferBytes[9], 30) == 1);
+        assert(readWord(pointCacheDevice.initialBufferBytes[9], 32) == 0 &&
+               readWord(pointCacheDevice.initialBufferBytes[9], 33) == 3);
+
+        particle::GpuParticleTransforms pointCacheTransforms;
+        for (uint32_t index = 0; index < 4; ++index) {
+            pointCacheTransforms.emitterToWorld[index * 5] = 1.0f;
+            pointCacheTransforms.worldToEmitter[index * 5] = 1.0f;
+            pointCacheTransforms.simulationToWorld[index * 5] = 1.0f;
+            pointCacheTransforms.worldToSimulation[index * 5] = 1.0f;
+        }
+        pointCacheTransforms.emitterToWorld[12] = 10.0f;
+        assert(pointCacheRuntime.UpdateTransforms(pointCacheTransforms));
+        assert(pointCacheDevice.writes == 2 && pointCacheDevice.writtenBytes[1].size() == 36 * sizeof(uint32_t));
+        const uint32_t translatedBits = readWord(pointCacheDevice.writtenBytes[1], 12);
+        float translatedX = 0.0f;
+        std::memcpy(&translatedX, &translatedBits, sizeof(translatedX));
+        assert(translatedX == 12.0f);
+
+        CommandTrace pointCacheTrace;
+        const rhi::ComputeCommandEncoder::DispatchTable pointCacheDispatch = {
+            &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
+            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect};
+        const rhi::ComputeCommandEncoder pointCacheEncoder(&pointCacheTrace, &pointCacheDispatch);
+        pointCacheRuntime.RecordUpdate(pointCacheEncoder, 11, 3, 1.0f / 60.0f);
+        assert(pointCacheTrace.groups.size() == 2 && pointCacheTrace.groupSets == std::vector<uint32_t>({0, 1}));
+        pointCacheRuntime.Destroy();
+        assert(pointCacheDevice.bufferReleases == 10 && pointCacheDevice.layoutReleases == 2 &&
+               pointCacheDevice.groupReleases == 2 && pointCacheDevice.pipelineReleases == 5);
     }
 
     FakeDevice device;

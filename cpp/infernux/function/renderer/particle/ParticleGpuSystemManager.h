@@ -9,6 +9,7 @@
 #include "ParticleRenderGraph.h"
 
 #include <core/types/ShaderProgramArtifact.h>
+#include <function/resources/InxPointCache/InxPointCache.h>
 
 #include <array>
 #include <cstddef>
@@ -45,6 +46,27 @@ struct GpuParticleOutputProgram
     ParticleOutputSemantics semantics;
 };
 
+struct GpuParticlePointCacheProgram
+{
+    std::string stableId;
+    uint32_t interfaceIndex = 0;
+    uint32_t dataBinding = 0;
+    uint32_t lookupBinding = 0;
+    bool worldSpace = true;
+    std::array<float, 16> cacheToSpace{};
+    std::shared_ptr<InxPointCache> cache;
+    std::vector<GpuPointCacheSampleDesc> samples;
+};
+
+struct GpuParticlePointCacheLayoutProgram
+{
+    uint32_t metadataBinding = 0;
+    uint32_t interfaceStrideWords = 32;
+    uint32_t sampleStrideWords = 4;
+    uint32_t sampleCount = 0;
+    std::vector<GpuParticlePointCacheProgram> pointCaches;
+};
+
 struct GpuParticleEmitterProgram
 {
     uint64_t id = 0;
@@ -62,6 +84,7 @@ struct GpuParticleEmitterProgram
     };
     std::optional<StateMigration> migration;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
+    GpuParticlePointCacheLayoutProgram pointCaches;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;

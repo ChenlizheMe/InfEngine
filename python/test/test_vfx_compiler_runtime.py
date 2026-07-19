@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -7,6 +9,7 @@ from Infernux.core.vfx_system import VfxEmitter
 from Infernux.core.vfx_system import VfxSystem
 from Infernux.components.particle_system import ParticleSystem
 from Infernux.core.asset_ref import ParticleGraphRef, VfxSystemRef
+from Infernux.core.assets import AssetManager
 from Infernux.core.material import Material
 from Infernux.graph import (
     AssetReference,
@@ -22,8 +25,9 @@ from Infernux.particle import (
     ParticleEmitterAsset,
     ParticleGraphAsset,
     ParticleRuntimeCompatibility,
+    PointCache,
 )
-from Infernux.lib import SceneManager
+from Infernux.lib import AssetRegistry, SceneManager
 from Infernux.vfx import CpuParticleRuntime, VfxCompileError, VfxGraphCompiler
 
 
@@ -686,6 +690,123 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     component._remove_native_batch()
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
     assert engine._gpu_particle_output_count(emitter_id) == 0
+
+
+def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
+    scene, engine, monkeypatch, tmp_path
+):
+    point_cache_source = tmp_path / "SpawnPoints.pointcache"
+    point_cache_source.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.point_cache",
+                "$version": 1,
+                "stable_id": "gpu-spawn-points",
+                "name": "GPU Spawn Points",
+                "bake_basis": "right_handed_y_up",
+                "point_count": 2,
+                "channels": [
+                    {
+                        "name": "position",
+                        "semantic": "position",
+                        "type": "vec3",
+                        "data": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                    },
+                    {
+                        "name": "id",
+                        "semantic": "id",
+                        "type": "u32",
+                        "data": [0, 1],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    imported = AssetManager.import_asset(
+        str(point_cache_source), database=engine.get_asset_database()
+    )
+    assert imported, imported.error
+    assert imported.guid
+    assert engine.get_asset_database().contains_path(str(point_cache_source))
+    assert AssetRegistry.instance().load_point_cache_by_guid(imported.guid) is not None
+
+    base_init = ParticleEmitterAsset().init
+    init = GraphDocument(
+        base_init.domain,
+        (
+            *base_init.nodes,
+            GraphNodeRecord(
+                "sample.spawn.position",
+                "particle.point_cache.sample_position",
+                (40.0, 120.0),
+                {"interface": "spawn-points", "lookup": "index"},
+            ),
+            GraphNodeRecord(
+                "set.spawn.velocity",
+                "particle.init.set_velocity",
+                (300.0, 0.0),
+                {},
+            ),
+        ),
+        (
+            GraphLinkRecord(
+                "root-to-set-velocity",
+                "root.init",
+                "out",
+                "set.spawn.velocity",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "sample-to-velocity",
+                "sample.spawn.position",
+                "value",
+                "set.spawn.velocity",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+        base_init.metadata,
+    )
+    source = tmp_path / "GpuPointCache.particlegraph"
+    ParticleGraphAsset(
+        stable_id="gpu-point-cache-system",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="gpu-point-cache-emitter",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=32,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 2),),
+                ),
+                data_interfaces=(
+                    PointCache(
+                        stable_id="spawn-points",
+                        cache=AssetReference(imported.guid, str(point_cache_source)),
+                    ),
+                ),
+                init=init,
+            ),
+        ),
+    ).save(str(source))
+
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("GpuPointCacheProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+
+    emitter_id = component._gpu_emitter_ids[0]
+    assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
+    assert component._gpu_controllers[0].simulation_step == 1
+    component._remove_native_batch()
+    assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 
 
 def test_particle_system_simulation_does_not_depend_on_a_graphical_renderer(

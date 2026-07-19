@@ -1,6 +1,7 @@
 #include "Infernux.h"
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <core/config/EngineConfig.h>
@@ -69,6 +70,21 @@ const char *ParticleSortModeName(particle::ParticleSortMode value)
     return "none";
 }
 
+PointCacheChannelType DecodePointCacheChannelType(const std::string &value)
+{
+    if (value == "f32")
+        return PointCacheChannelType::Float;
+    if (value == "vec2")
+        return PointCacheChannelType::Float2;
+    if (value == "vec3")
+        return PointCacheChannelType::Float3;
+    if (value == "vec4" || value == "color")
+        return PointCacheChannelType::Float4;
+    if (value == "u32")
+        return PointCacheChannelType::UInt;
+    throw std::invalid_argument("GPU Point Cache sample has an unsupported value_type");
+}
+
 particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &value)
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
@@ -117,6 +133,69 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
                                           byteSize / sizeof(uint32_t), 0});
         }
         program.migration = std::move(decoded);
+    }
+
+    if (value.contains("data_interface_layout") && !value["data_interface_layout"].is_none()) {
+        const py::dict layout = py::cast<py::dict>(value["data_interface_layout"]);
+        for (const char *field : {"version", "metadata_binding", "interface_stride_words", "sample_stride_words",
+                                  "sample_count", "point_caches"}) {
+            if (!layout.contains(field))
+                throw std::invalid_argument(std::string("GPU data interface layout is missing ") + field);
+        }
+        if (py::cast<uint32_t>(layout["version"]) != 1)
+            throw std::invalid_argument("GPU data interface layout version is unsupported");
+        program.pointCaches.metadataBinding = py::cast<uint32_t>(layout["metadata_binding"]);
+        program.pointCaches.interfaceStrideWords = py::cast<uint32_t>(layout["interface_stride_words"]);
+        program.pointCaches.sampleStrideWords = py::cast<uint32_t>(layout["sample_stride_words"]);
+        program.pointCaches.sampleCount = py::cast<uint32_t>(layout["sample_count"]);
+        const py::sequence pointCaches = py::cast<py::sequence>(layout["point_caches"]);
+        program.pointCaches.pointCaches.reserve(pointCaches.size());
+        for (const py::handle item : pointCaches) {
+            if (!py::isinstance<py::dict>(item))
+                throw std::invalid_argument("GPU Point Cache layout must contain dictionaries");
+            const py::dict pointCache = py::reinterpret_borrow<py::dict>(item);
+            for (const char *field : {"stable_id", "interface_index", "data_binding", "lookup_binding", "space",
+                                      "cache_to_space", "native", "samples"}) {
+                if (!pointCache.contains(field))
+                    throw std::invalid_argument(std::string("GPU Point Cache binding is missing ") + field);
+            }
+            particle::GpuParticlePointCacheProgram decoded;
+            decoded.stableId = py::cast<std::string>(pointCache["stable_id"]);
+            decoded.interfaceIndex = py::cast<uint32_t>(pointCache["interface_index"]);
+            decoded.dataBinding = py::cast<uint32_t>(pointCache["data_binding"]);
+            decoded.lookupBinding = py::cast<uint32_t>(pointCache["lookup_binding"]);
+            const std::string space = py::cast<std::string>(pointCache["space"]);
+            if (space != "world" && space != "emitter_local")
+                throw std::invalid_argument("GPU Point Cache space must be world or emitter_local");
+            decoded.worldSpace = space == "world";
+            const auto cacheToSpace = py::cast<std::vector<float>>(pointCache["cache_to_space"]);
+            if (cacheToSpace.size() != decoded.cacheToSpace.size() ||
+                !std::all_of(cacheToSpace.begin(), cacheToSpace.end(), [](float item) { return std::isfinite(item); }))
+                throw std::invalid_argument("GPU Point Cache cache_to_space must contain 16 finite floats");
+            std::copy(cacheToSpace.begin(), cacheToSpace.end(), decoded.cacheToSpace.begin());
+            if (pointCache["native"].is_none())
+                throw std::invalid_argument("GPU Point Cache native asset is missing");
+            decoded.cache = py::cast<std::shared_ptr<InxPointCache>>(pointCache["native"]);
+
+            const py::sequence samples = py::cast<py::sequence>(pointCache["samples"]);
+            decoded.samples.reserve(samples.size());
+            for (const py::handle sampleItem : samples) {
+                if (!py::isinstance<py::dict>(sampleItem))
+                    throw std::invalid_argument("GPU Point Cache samples must contain dictionaries");
+                const py::dict sample = py::reinterpret_borrow<py::dict>(sampleItem);
+                for (const char *field : {"sample_index", "channel", "value_type", "semantic"}) {
+                    if (!sample.contains(field))
+                        throw std::invalid_argument(std::string("GPU Point Cache sample is missing ") + field);
+                }
+                particle::GpuPointCacheSampleDesc sampleDesc;
+                sampleDesc.sampleIndex = py::cast<uint32_t>(sample["sample_index"]);
+                sampleDesc.channel = py::cast<std::string>(sample["channel"]);
+                sampleDesc.expectedType = DecodePointCacheChannelType(py::cast<std::string>(sample["value_type"]));
+                sampleDesc.requiresNormalTransform = py::cast<std::string>(sample["semantic"]) == "normal";
+                decoded.samples.push_back(std::move(sampleDesc));
+            }
+            program.pointCaches.pointCaches.push_back(std::move(decoded));
+        }
     }
 
     const py::dict stages = py::cast<py::dict>(value["stages"]);
