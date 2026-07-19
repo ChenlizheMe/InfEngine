@@ -85,6 +85,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     program.stableId = py::cast<std::string>(value["stable_id"]);
     program.capacity = py::cast<uint32_t>(value["capacity"]);
     program.stateStride = py::cast<uint32_t>(value["state_stride"]);
+    if (value.contains("preserve_state"))
+        program.preserveState = py::cast<bool>(value["preserve_state"]);
 
     const py::dict stages = py::cast<py::dict>(value["stages"]);
     for (size_t index = 0; index < StageNames.size(); ++index) {
@@ -1911,6 +1913,14 @@ PYBIND11_MODULE(_Infernux, m)
                 return manager ? manager->ActiveArtifactRevision(emitterId) : uint64_t{0};
             },
             py::arg("emitter_id"), "Return the active GPU particle artifact revision")
+        .def(
+            "_gpu_particle_state_was_preserved",
+            [](Infernux &self, uint64_t emitterId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager && manager->ActiveStateWasPreserved(emitterId);
+            },
+            py::arg("emitter_id"), "Return whether the latest GPU particle revision retained resident state")
         .def(
             "_gpu_particle_output_count",
             [](Infernux &self, uint64_t emitterId) {

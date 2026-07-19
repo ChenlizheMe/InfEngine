@@ -51,6 +51,7 @@ struct ParticleGpuSystemManager::Impl
         uint64_t id = 0;
         uint64_t artifactRevision = 0;
         std::string stableId;
+        bool statePreservedOnPublish = false;
         std::unique_ptr<ParticleGpuRuntime> runtime;
         std::unique_ptr<ParticleGpuBounds> bounds;
         std::vector<uint32_t> billboardVertexShader;
@@ -100,6 +101,7 @@ struct ParticleGpuSystemManager::Impl
     }
 
     [[nodiscard]] std::shared_ptr<Emitter> CreateEmitter(const GpuParticleEmitterProgram &program,
+                                                         const std::shared_ptr<Emitter> &previous,
                                                          std::string *error) const
     {
         if (program.id == 0 || program.stableId.empty() || program.artifactRevision == 0 || program.capacity == 0 ||
@@ -130,6 +132,7 @@ struct ParticleGpuSystemManager::Impl
         emitter->id = program.id;
         emitter->artifactRevision = program.artifactRevision;
         emitter->stableId = program.stableId;
+        emitter->statePreservedOnPublish = program.preserveState;
         emitter->billboardVertexShader = program.billboardVertexShader;
         emitter->billboardFragmentShader = program.billboardFragmentShader;
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
@@ -140,8 +143,18 @@ struct ParticleGpuSystemManager::Impl
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
         auto &device = context->GetRhiDevice();
-        if (!emitter->runtime->Create(device, runtimeDesc)) {
-            SetError(error, "failed to create GPU particle simulation runtime");
+        if (program.preserveState &&
+            (!previous || previous->id != program.id || previous->stableId != program.stableId)) {
+            SetError(error, "GPU particle state preservation requires the same live emitter identity");
+            return {};
+        }
+        const bool runtimeCreated = program.preserveState
+                                        ? emitter->runtime->CreateCompatible(device, runtimeDesc, *previous->runtime)
+                                        : emitter->runtime->Create(device, runtimeDesc);
+        if (!runtimeCreated) {
+            SetError(error, program.preserveState
+                                ? "GPU particle state ABI is incompatible with the requested hot reload"
+                                : "failed to create GPU particle simulation runtime");
             return {};
         }
         if (!boundsProgram || !boundsProgram->IsValid()) {
@@ -381,7 +394,9 @@ bool ParticleGpuSystemManager::ApplyBatch(const std::vector<GpuParticleEmitterPr
             SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
             return false;
         }
-        auto emitter = m_impl->CreateEmitter(program, error);
+        const auto previous = m_impl->emitters.find(program.id);
+        auto emitter = m_impl->CreateEmitter(
+            program, previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error);
         if (!emitter)
             return false;
         candidates[program.id] = std::move(emitter);
@@ -570,6 +585,14 @@ uint64_t ParticleGpuSystemManager::ActiveArtifactRevision(uint64_t id) const
         return 0;
     const auto found = m_impl->emitters.find(id);
     return found != m_impl->emitters.end() ? found->second->artifactRevision : 0;
+}
+
+bool ParticleGpuSystemManager::ActiveStateWasPreserved(uint64_t id) const
+{
+    if (!m_impl)
+        return false;
+    const auto found = m_impl->emitters.find(id);
+    return found != m_impl->emitters.end() && found->second->statePreservedOnPublish;
 }
 
 size_t ParticleGpuSystemManager::ActiveOutputCount(uint64_t id) const

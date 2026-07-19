@@ -465,3 +465,35 @@ def test_gpu_controller_caps_dispatch_work_and_resets_deterministically():
     controller.play()
     restarted = controller.tick(0.0)
     assert (restarted.spawn_count, restarted.spawn_base_id, restarted.simulation_step) == (4, 0, 0)
+
+
+def test_gpu_controller_compatible_migration_preserves_schedule_and_pause():
+    settings = EmitterSettings(
+        capacity=16,
+        spawn_rate=2.0,
+        bursts=(ParticleBurst(0.0, 2),),
+    )
+    controller = GpuParticleEmitterController(settings)
+    first = controller.tick(0.25)
+    controller.pause()
+
+    migrated = controller.migrate_to(replace(settings, spawn_rate=6.0))
+
+    assert migrated.is_playing is False
+    assert migrated.simulation_step == 1
+    paused = migrated.tick(0.25)
+    assert (paused.spawn_count, paused.spawn_base_id, paused.simulation_step) == (
+        0,
+        first.spawn_count,
+        1,
+    )
+    migrated.play()
+    resumed = migrated.tick(0.25)
+    assert (resumed.spawn_count, resumed.spawn_base_id, resumed.simulation_step) == (
+        2,
+        first.spawn_count,
+        1,
+    )
+
+    with pytest.raises(ValueError, match="emitter restart"):
+        migrated.migrate_to(replace(settings, capacity=32))

@@ -63,6 +63,25 @@ class GpuParticleEmitterController:
             for burst in self.settings.bursts
         ]
 
+    def migrate_to(self, settings: EmitterSettings) -> "GpuParticleEmitterController":
+        """Apply compatible settings without resetting emitter-level scheduling."""
+        if not isinstance(settings, EmitterSettings):
+            raise TypeError("GPU particle controller migration requires EmitterSettings")
+        if (
+            settings.capacity != self.settings.capacity
+            or settings.simulation_space != self.settings.simulation_space
+            or settings.bursts != self.settings.bursts
+        ):
+            raise ValueError("GPU particle controller settings require an emitter restart")
+        migrated = GpuParticleEmitterController(settings, playing=self._playing)
+        migrated._spawn_accumulator = self._spawn_accumulator
+        migrated._elapsed = self._elapsed
+        migrated._simulation_step = self._simulation_step
+        migrated._next_particle_id = self._next_particle_id
+        migrated._spawn_generation = self._spawn_generation
+        migrated._burst_states = [list(state) for state in self._burst_states]
+        return migrated
+
     def tick(self, delta_time: float) -> GpuParticleFrameSchedule:
         delta_time = float(delta_time)
         if not math.isfinite(delta_time) or delta_time < 0.0:

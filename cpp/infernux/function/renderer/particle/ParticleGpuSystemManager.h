@@ -51,6 +51,7 @@ struct GpuParticleEmitterProgram
     std::string stableId;
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
+    bool preserveState = false;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
@@ -106,6 +107,7 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool Contains(uint64_t id) const;
     [[nodiscard]] size_t Size() const;
     [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
+    [[nodiscard]] bool ActiveStateWasPreserved(uint64_t id) const;
     [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,

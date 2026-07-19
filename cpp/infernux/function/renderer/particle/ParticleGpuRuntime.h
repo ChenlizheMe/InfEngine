@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace infernux::particle
 {
@@ -68,12 +69,19 @@ class ParticleGpuRuntime
     ParticleGpuRuntime &operator=(ParticleGpuRuntime &&) = delete;
 
     [[nodiscard]] bool Create(rhi::Device &device, const GpuEmitterDesc &desc);
+    /// Build a new kernel/pipeline revision over the same GPU-resident state.
+    /// Capacity and state ABI must match exactly.
+    [[nodiscard]] bool CreateCompatible(rhi::Device &device, const GpuEmitterDesc &desc,
+                                        const ParticleGpuRuntime &previous);
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] bool SharesStateWith(const ParticleGpuRuntime &other) const noexcept;
+    [[nodiscard]] bool NeedsBootstrap() const noexcept;
+    void RequestBootstrap() noexcept;
     [[nodiscard]] bool UpdateTransforms(const GpuParticleTransforms &transforms);
 
-    void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed) const;
+    void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed);
     void RecordInit(const rhi::ComputeCommandEncoder &encoder, uint32_t spawnCount, uint32_t spawnBaseId,
                     uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime) const;
     void RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
@@ -89,36 +97,19 @@ class ParticleGpuRuntime
     {
         return m_stateStride;
     }
-    [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept
-    {
-        return m_states;
-    }
-    [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept
-    {
-        return m_freeList;
-    }
-    [[nodiscard]] rhi::BufferHandle CounterBuffer() const noexcept
-    {
-        return m_counters;
-    }
-    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
-    {
-        return m_instances;
-    }
-    [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept
-    {
-        return m_indirect;
-    }
-    [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept
-    {
-        return m_renderIndices;
-    }
-    [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept
-    {
-        return m_transforms;
-    }
+    [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle CounterBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept;
 
   private:
+    struct ResidentState;
+
+    [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
+                                      std::shared_ptr<ResidentState> residentState);
     void Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount) const;
     [[nodiscard]] static uint32_t GroupCount(uint32_t invocationCount) noexcept;
@@ -126,13 +117,7 @@ class ParticleGpuRuntime
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
     uint32_t m_stateStride = 0;
-    rhi::BufferHandle m_states;
-    rhi::BufferHandle m_freeList;
-    rhi::BufferHandle m_counters;
-    rhi::BufferHandle m_instances;
-    rhi::BufferHandle m_indirect;
-    rhi::BufferHandle m_renderIndices;
-    rhi::BufferHandle m_transforms;
+    std::shared_ptr<ResidentState> m_residentState;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};

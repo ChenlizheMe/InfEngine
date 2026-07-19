@@ -593,6 +593,34 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     assert component.pause_emitter(0) is True
     component.update(1.0)
     assert component._gpu_controllers[0].simulation_step == 1
+
+    compatible_graph = ParticleGraphAsset(
+        stable_id="gpu-smoke-component",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=32,
+                    spawn_rate=4.0,
+                    bursts=(ParticleBurst(0.0, 4),),
+                ),
+                rendering=_two_output_rendering_graph(material_ref),
+            ),
+        ),
+    )
+    compatible_revision = component._artifact_revision
+    compatible_graph.save(str(source))
+    component.update(0.0)
+    assert component._artifact_revision > compatible_revision
+    assert component._gpu_controllers[0].is_playing is False
+    assert component._gpu_controllers[0].simulation_step == 1
+    assert (
+        component.emitter_reload_compatibility(0)
+        is ParticleRuntimeCompatibility.PARAMETER_ONLY
+    )
+    assert engine._gpu_particle_state_was_preserved(emitter_id) is True
+
     previous_revision = component._artifact_revision
     revised_graph = ParticleGraphAsset(
         stable_id="gpu-smoke-component",
@@ -613,6 +641,12 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     component.update(0.0)
     assert component._artifact_revision > previous_revision
     assert component._gpu_controllers[0].is_playing is False
+    assert component._gpu_controllers[0].simulation_step == 0
+    assert (
+        component.emitter_reload_compatibility(0)
+        is ParticleRuntimeCompatibility.EMITTER_RESTART
+    )
+    assert engine._gpu_particle_state_was_preserved(emitter_id) is False
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
     assert engine._gpu_particle_output_count(emitter_id) == 2
     assert (

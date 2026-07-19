@@ -21,12 +21,53 @@ bool CheckedBufferSize(uint32_t capacity, uint32_t stride, uint64_t &result) noe
 
 } // namespace
 
+struct ParticleGpuRuntime::ResidentState
+{
+    ~ResidentState()
+    {
+        if (!device)
+            return;
+        device->Release(transforms);
+        device->Release(renderIndices);
+        device->Release(indirect);
+        device->Release(instances);
+        device->Release(counters);
+        device->Release(freeList);
+        device->Release(states);
+    }
+
+    rhi::Device *device = nullptr;
+    rhi::BufferHandle states;
+    rhi::BufferHandle freeList;
+    rhi::BufferHandle counters;
+    rhi::BufferHandle instances;
+    rhi::BufferHandle indirect;
+    rhi::BufferHandle renderIndices;
+    rhi::BufferHandle transforms;
+    bool bootstrapRecorded = false;
+};
+
 ParticleGpuRuntime::~ParticleGpuRuntime()
 {
     Destroy();
 }
 
 bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
+{
+    return CreateInternal(device, desc, {});
+}
+
+bool ParticleGpuRuntime::CreateCompatible(rhi::Device &device, const GpuEmitterDesc &desc,
+                                          const ParticleGpuRuntime &previous)
+{
+    if (!previous.IsValid() || previous.m_device != &device || previous.Capacity() != desc.capacity ||
+        previous.StateStride() != desc.stateStride)
+        return false;
+    return CreateInternal(device, desc, previous.m_residentState);
+}
+
+bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
+                                        std::shared_ptr<ResidentState> residentState)
 {
     Destroy();
     uint64_t stateBytes = 0;
@@ -42,22 +83,35 @@ bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
     m_device = &device;
     m_capacity = desc.capacity;
     m_stateStride = desc.stateStride;
-    const auto storage = rhi::BufferUsageFlags::Storage;
-    m_states = device.CreateBuffer({stateBytes, storage});
-    m_freeList = device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
-    m_counters = device.CreateBuffer({16, storage});
-    m_instances = device.CreateBuffer({instanceBytes, storage});
-    m_indirect = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect});
-    m_renderIndices = device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
-    rhi::BufferDesc transformDesc;
-    transformDesc.byteSize = sizeof(GpuParticleTransforms);
-    transformDesc.usage = rhi::BufferUsageFlags::Uniform;
-    transformDesc.memory = rhi::BufferMemory::Upload;
-    m_transforms = device.CreateBuffer(transformDesc);
-    if (!m_states.IsValid() || !m_freeList.IsValid() || !m_counters.IsValid() || !m_instances.IsValid() ||
-        !m_indirect.IsValid() || !m_renderIndices.IsValid() || !m_transforms.IsValid()) {
-        Destroy();
-        return false;
+    if (residentState) {
+        if (residentState->device != &device) {
+            Destroy();
+            return false;
+        }
+        m_residentState = std::move(residentState);
+    } else {
+        m_residentState = std::make_shared<ResidentState>();
+        m_residentState->device = &device;
+        const auto storage = rhi::BufferUsageFlags::Storage;
+        m_residentState->states = device.CreateBuffer({stateBytes, storage});
+        m_residentState->freeList =
+            device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
+        m_residentState->counters = device.CreateBuffer({16, storage});
+        m_residentState->instances = device.CreateBuffer({instanceBytes, storage});
+        m_residentState->indirect = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect});
+        m_residentState->renderIndices =
+            device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
+        rhi::BufferDesc transformDesc;
+        transformDesc.byteSize = sizeof(GpuParticleTransforms);
+        transformDesc.usage = rhi::BufferUsageFlags::Uniform;
+        transformDesc.memory = rhi::BufferMemory::Upload;
+        m_residentState->transforms = device.CreateBuffer(transformDesc);
+        if (!StateBuffer().IsValid() || !FreeListBuffer().IsValid() || !CounterBuffer().IsValid() ||
+            !InstanceBuffer().IsValid() || !IndirectBuffer().IsValid() || !RenderIndexBuffer().IsValid() ||
+            !TransformBuffer().IsValid()) {
+            Destroy();
+            return false;
+        }
     }
 
     rhi::BindingLayoutDesc layoutDesc;
@@ -74,8 +128,10 @@ bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 7> buffers = {m_states,   m_freeList,   m_counters,     m_instances,
-                                                      m_indirect, m_transforms, m_renderIndices};
+    const std::array<rhi::BufferHandle, 7> buffers = {
+        StateBuffer(),    FreeListBuffer(),  CounterBuffer(),     InstanceBuffer(),
+        IndirectBuffer(), TransformBuffer(), RenderIndexBuffer(),
+    };
     for (uint32_t binding = 0; binding < buffers.size(); ++binding) {
         groupDesc.buffers[binding].binding = binding;
         groupDesc.buffers[binding].type =
@@ -117,24 +173,11 @@ void ParticleGpuRuntime::Destroy() noexcept
             m_device->Release(pipeline);
         m_device->Release(m_group);
         m_device->Release(m_layout);
-        m_device->Release(m_transforms);
-        m_device->Release(m_renderIndices);
-        m_device->Release(m_indirect);
-        m_device->Release(m_instances);
-        m_device->Release(m_counters);
-        m_device->Release(m_freeList);
-        m_device->Release(m_states);
     }
+    m_residentState.reset();
     m_device = nullptr;
     m_capacity = 0;
     m_stateStride = 0;
-    m_states = {};
-    m_freeList = {};
-    m_counters = {};
-    m_instances = {};
-    m_indirect = {};
-    m_renderIndices = {};
-    m_transforms = {};
     m_layout = {};
     m_group = {};
     m_pipelines.fill({});
@@ -142,7 +185,7 @@ void ParticleGpuRuntime::Destroy() noexcept
 
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
-    if (!m_device || m_capacity == 0 || !m_group.IsValid())
+    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid())
         return false;
     for (auto pipeline : m_pipelines) {
         if (!pipeline.IsValid())
@@ -151,18 +194,72 @@ bool ParticleGpuRuntime::IsValid() const noexcept
     return true;
 }
 
-bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
+bool ParticleGpuRuntime::SharesStateWith(const ParticleGpuRuntime &other) const noexcept
 {
-    return m_device && m_device->WriteBuffer(m_transforms, 0, &transforms, sizeof(transforms));
+    return m_residentState && m_residentState == other.m_residentState;
 }
 
-void ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed) const
+bool ParticleGpuRuntime::NeedsBootstrap() const noexcept
 {
+    return !m_residentState || !m_residentState->bootstrapRecorded;
+}
+
+void ParticleGpuRuntime::RequestBootstrap() noexcept
+{
+    if (m_residentState)
+        m_residentState->bootstrapRecorded = false;
+}
+
+bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
+{
+    return m_device && m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms));
+}
+
+rhi::BufferHandle ParticleGpuRuntime::StateBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->states : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::FreeListBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->freeList : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::CounterBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->counters : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::InstanceBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->instances : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::IndirectBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->indirect : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::RenderIndexBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->renderIndices : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::TransformBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->transforms : rhi::BufferHandle{};
+}
+
+void ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed)
+{
+    if (!IsValid() || !encoder.IsValid())
+        return;
     GpuParticlePushConstants constants;
     constants.capacity = m_capacity;
     constants.invocationCount = m_capacity;
     constants.systemSeed = systemSeed;
     Record(encoder, GpuKernelStage::Bootstrap, constants, m_capacity);
+    m_residentState->bootstrapRecorded = true;
 }
 
 void ParticleGpuRuntime::RecordInit(const rhi::ComputeCommandEncoder &encoder, uint32_t spawnCount,

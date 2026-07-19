@@ -311,6 +311,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "GPU particle system was not published atomically"))
         return false;
+    const auto initialManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    if (!Require(initialManagedEntries.size() == 1 && !particleSystems.ActiveStateWasPreserved(managedProgram.id),
+                 "Initial GPU particle publication reported a preserved state"))
+        return false;
+    const auto initialManagedInstances = initialManagedEntries[0].instances;
+    const auto initialManagedIndirect = initialManagedEntries[0].indirectArguments;
     const auto primarySemantics = particleSystems.ActiveOutputSemantics(managedProgram.id, primaryOutput.id);
     if (!Require(primarySemantics && !primarySemantics->receiveSceneLighting && !primarySemantics->receiveShadows &&
                      primarySemantics->sortMode == infernux::particle::ParticleSortMode::FrontToBack,
@@ -375,6 +381,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     managedProgram.artifactRevision = 2;
+    managedProgram.preserveState = true;
     auto secondaryOutput = primaryOutput;
     secondaryOutput.id = 912;
     secondaryOutput.stableId = "managed-secondary";
@@ -394,8 +401,27 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     }
     if (!Require(managedReplacement && particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
                      particleSystems.ActiveOutputCount(managedProgram.id) == 2 && particleDrawRegistry.Size() == 2 &&
+                     particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
                      particleDeletionQueue.PendingCount() == 1,
                  "Valid GPU particle hot replacement was not published with deferred retirement"))
+        return false;
+    const auto preservedManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    if (!Require(preservedManagedEntries.size() == 2 &&
+                     preservedManagedEntries[0].instances == initialManagedInstances &&
+                     preservedManagedEntries[1].instances == initialManagedInstances &&
+                     preservedManagedEntries[0].indirectArguments == initialManagedIndirect &&
+                     preservedManagedEntries[1].indirectArguments == initialManagedIndirect,
+                 "Compatible GPU particle reload replaced resident simulation buffers"))
+        return false;
+
+    auto incompatiblePreservation = managedProgram;
+    incompatiblePreservation.artifactRevision = 3;
+    incompatiblePreservation.capacity *= 2;
+    if (!Require(!particleSystems.CreateOrReplace(incompatiblePreservation, &managedError) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
+                     particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
+                     particleDeletionQueue.PendingCount() == 1,
+                 "Incompatible GPU state preservation disturbed the last-known-good revision"))
         return false;
 
     auto duplicateOutputProgram = managedProgram;
@@ -411,6 +437,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     auto companionProgram = managedProgram;
     companionProgram.id = 92;
     companionProgram.stableId = "managed-companion";
+    companionProgram.preserveState = false;
     companionProgram.outputs.resize(1);
     companionProgram.outputs[0].id = 921;
     companionProgram.outputs[0].stableId = "companion-primary";

@@ -28,6 +28,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     m_runtime = &runtime;
     m_bounds = &bounds;
+    m_bootstrapPending = runtime.NeedsBootstrap();
     vk::ResourceHandle states;
     vk::ResourceHandle freeList;
     vk::ResourceHandle counters;
@@ -178,6 +179,16 @@ bool ParticleRenderGraph::BeginFrame(const GpuParticleFrameRequest &request) noe
     m_request = request;
     m_framePending = true;
     return true;
+}
+
+void ParticleRenderGraph::Reset() noexcept
+{
+    if (m_runtime)
+        m_runtime->RequestBootstrap();
+    m_bootstrapPending = true;
+    m_framePending = false;
+    m_hasConsumedFrame = false;
+    m_lastConsumedFrame = 0;
 }
 
 } // namespace infernux::particle

@@ -22,6 +22,7 @@ from Infernux.particle import (
     ParticleKernelLowerer,
     ParticleKernelProgram,
     ParticleRuntimeCompatibility,
+    classify_emitter_update,
     decode_gpu_particle_spirv,
     decode_particle_runtime_metadata,
 )
@@ -56,6 +57,7 @@ class ParticleSystem(InxComponent):
     _emitter_reload_compatibility: tuple[ParticleRuntimeCompatibility | None, ...]
     _runtime_target: ExecutionTarget | None = None
     _particle_program = None
+    _particle_kernel = None
     _particle_metadata = None
     _artifact_revision: int = 0
     _artifact_source_key: str = ""
@@ -88,6 +90,7 @@ class ParticleSystem(InxComponent):
         self._emitter_reload_compatibility = ()
         self._runtime_target = None
         self._particle_program = None
+        self._particle_kernel = None
         self._particle_metadata = None
         self._artifact_revision = 0
         self._artifact_source_key = ""
@@ -315,6 +318,8 @@ class ParticleSystem(InxComponent):
             targets = self._select_runtime_targets(metadata, artifact)
             previous_metadata = getattr(self, "_particle_metadata", None)
             previous_program = getattr(self, "_particle_program", None)
+            previous_kernel = getattr(self, "_particle_kernel", None)
+            previous_targets = getattr(self, "_emitter_runtime_targets", ())
             previous_cpu = (
                 {
                     emitter.stable_id: runtime
@@ -326,12 +331,42 @@ class ParticleSystem(InxComponent):
                 if previous_program is not None
                 else {}
             )
-            previous_ids = (
-                set(previous_metadata.schedule)
-                if previous_metadata is not None
-                else set()
-            )
             reload_compatibility = [None] * len(metadata.emitters)
+            if previous_metadata is not None and previous_kernel is not None:
+                previous_emitters = {
+                    emitter.stable_id: (
+                        emitter,
+                        kernel_emitter,
+                        previous_targets[index]
+                        if index < len(previous_targets)
+                        else None,
+                    )
+                    for index, (emitter, kernel_emitter) in enumerate(
+                        zip(previous_metadata.emitters, previous_kernel.emitters)
+                    )
+                }
+                for emitter_index, (emitter, kernel_emitter) in enumerate(
+                    zip(metadata.emitters, kernel.emitters)
+                ):
+                    previous = previous_emitters.get(emitter.stable_id)
+                    if previous is None:
+                        continue
+                    previous_emitter, previous_kernel_emitter, previous_target = previous
+                    compatibility = classify_emitter_update(
+                        previous_kernel_emitter,
+                        kernel_emitter,
+                        previous_emitter.settings,
+                        emitter.settings,
+                    )
+                    if previous_target is not targets[emitter_index]:
+                        compatibility = ParticleRuntimeCompatibility.EMITTER_RESTART
+                    elif (
+                        targets[emitter_index] is ExecutionTarget.GPU
+                        and compatibility
+                        is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+                    ):
+                        compatibility = ParticleRuntimeCompatibility.EMITTER_RESTART
+                    reload_compatibility[emitter_index] = compatibility
             cpu_indices = [
                 index
                 for index, target in enumerate(targets)
@@ -364,16 +399,13 @@ class ParticleSystem(InxComponent):
             else:
                 program = None
                 runtimes = []
-            for emitter_index, emitter in enumerate(metadata.emitters):
-                if (
-                    targets[emitter_index] is ExecutionTarget.GPU
-                    and emitter.stable_id in previous_ids
-                ):
-                    reload_compatibility[emitter_index] = (
-                        ParticleRuntimeCompatibility.EMITTER_RESTART
-                    )
             if any(target is ExecutionTarget.GPU for target in targets):
-                self._publish_gpu_particle_graph(artifact, metadata, targets)
+                self._publish_gpu_particle_graph(
+                    artifact,
+                    metadata,
+                    targets,
+                    reload_compatibility,
+                )
             else:
                 self._remove_gpu_emitters()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -383,6 +415,7 @@ class ParticleSystem(InxComponent):
         self._remove_cpu_batches()
         self._runtime = None
         self._particle_program = program
+        self._particle_kernel = kernel
         self._runtimes = runtimes
         self._cpu_emitter_indices = cpu_indices
         self._particle_metadata = metadata
@@ -418,6 +451,7 @@ class ParticleSystem(InxComponent):
         self._runtimes = []
         self._cpu_emitter_indices = []
         self._particle_program = None
+        self._particle_kernel = None
         self._particle_metadata = None
         self._material_guid = emitter.renderer.material
         self._emitter_runtime_targets = ()
@@ -457,7 +491,9 @@ class ParticleSystem(InxComponent):
             targets.append(target)
         return tuple(targets)
 
-    def _publish_gpu_particle_graph(self, artifact, metadata, targets) -> None:
+    def _publish_gpu_particle_graph(
+        self, artifact, metadata, targets, reload_compatibility
+    ) -> None:
         if artifact is None:
             raise RuntimeError("GPU ParticleGraph execution requires an AOT artifact")
         native = self._native_engine()
@@ -472,11 +508,11 @@ class ParticleSystem(InxComponent):
         controllers = []
         emitter_ids = []
         emitter_indices = []
-        previous_playing = {}
+        previous_controllers = {}
         previous_metadata = getattr(self, "_particle_metadata", None)
         if previous_metadata is not None:
-            previous_playing = {
-                previous_metadata.emitters[emitter_index].stable_id: controller.is_playing
+            previous_controllers = {
+                previous_metadata.emitters[emitter_index].stable_id: controller
                 for emitter_index, controller in zip(
                     getattr(self, "_gpu_emitter_indices", ()),
                     getattr(self, "_gpu_controllers", ()),
@@ -498,6 +534,15 @@ class ParticleSystem(InxComponent):
                 raise RuntimeError("ParticleGraph GPU layout does not match its runtime schedule")
             decoded = decode_gpu_particle_spirv(artifact.gpu_spirv, index)
             emitter_id = self._gpu_emitter_id(emitter.stable_id)
+            previous_controller = previous_controllers.get(emitter.stable_id)
+            preserve_state = (
+                previous_controller is not None
+                and reload_compatibility[index]
+                in {
+                    ParticleRuntimeCompatibility.PARAMETER_ONLY,
+                    ParticleRuntimeCompatibility.KERNEL_COMPATIBLE,
+                }
+            )
             programs.append(
                 {
                     "id": emitter_id,
@@ -505,6 +550,7 @@ class ParticleSystem(InxComponent):
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
+                    "preserve_state": preserve_state,
                     "stages": decoded["stages"],
                     "billboard": decoded["billboard"],
                     "outputs": [
@@ -520,12 +566,18 @@ class ParticleSystem(InxComponent):
                     ],
                 }
             )
-            controllers.append(
-                GpuParticleEmitterController(
+            if preserve_state:
+                controller = previous_controller.migrate_to(emitter.settings)
+            else:
+                controller = GpuParticleEmitterController(
                     emitter.settings,
-                    playing=previous_playing.get(emitter.stable_id, self._playing),
+                    playing=(
+                        previous_controller.is_playing
+                        if previous_controller is not None
+                        else self._playing
+                    ),
                 )
-            )
+            controllers.append(controller)
             emitter_ids.append(emitter_id)
             emitter_indices.append(index)
 
@@ -861,6 +913,7 @@ class ParticleSystem(InxComponent):
         self._emitter_reload_compatibility = ()
         self._runtime_target = None
         self._particle_program = None
+        self._particle_kernel = None
         self._particle_metadata = None
         self._artifact_revision = 0
         self._artifact_source_key = ""

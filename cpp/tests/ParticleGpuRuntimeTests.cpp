@@ -316,6 +316,46 @@ struct BoundsTrace
 
 int main()
 {
+    {
+        FakeDevice sharingDevice;
+        std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> sharingWords{};
+        particle::GpuEmitterDesc sharingDesc;
+        sharingDesc.capacity = 128;
+        sharingDesc.stateStride = 32;
+        for (size_t index = 0; index < sharingWords.size(); ++index) {
+            sharingWords[index][0] = 0x07230203;
+            sharingDesc.kernels[index] = {sharingWords[index].data(), sharingWords[index].size()};
+        }
+
+        particle::ParticleGpuRuntime previous;
+        particle::ParticleGpuRuntime compatible;
+        assert(previous.Create(sharingDevice, sharingDesc));
+        assert(previous.NeedsBootstrap());
+        CommandTrace sharingTrace;
+        const rhi::ComputeCommandEncoder::DispatchTable sharingDispatch = {
+            &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
+            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect};
+        const rhi::ComputeCommandEncoder sharingEncoder(&sharingTrace, &sharingDispatch);
+        previous.RecordBootstrap(sharingEncoder, 13);
+        assert(!previous.NeedsBootstrap());
+        const auto state = previous.StateBuffer();
+        const auto counters = previous.CounterBuffer();
+        assert(compatible.CreateCompatible(sharingDevice, sharingDesc, previous));
+        assert(compatible.SharesStateWith(previous));
+        assert(!compatible.NeedsBootstrap());
+        assert(compatible.StateBuffer() == state && compatible.CounterBuffer() == counters);
+        assert(sharingDevice.buffers.size() == 7);
+        compatible.RequestBootstrap();
+        assert(previous.NeedsBootstrap() && compatible.NeedsBootstrap());
+        compatible.RecordBootstrap(sharingEncoder, 13);
+        assert(!previous.NeedsBootstrap() && !compatible.NeedsBootstrap());
+        previous.Destroy();
+        assert(compatible.IsValid() && sharingDevice.bufferReleases == 0);
+        compatible.Destroy();
+        assert(sharingDevice.bufferReleases == 7 && sharingDevice.pipelineReleases == 10 &&
+               sharingDevice.groupReleases == 2 && sharingDevice.layoutReleases == 2);
+    }
+
     FakeDevice device;
     FrameDeletionQueue deletionQueue;
     deletionQueue.Initialize(2);
