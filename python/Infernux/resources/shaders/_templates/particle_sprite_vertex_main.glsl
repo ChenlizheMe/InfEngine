@@ -9,7 +9,7 @@ const vec2 _inxParticleUvs[6] = vec2[](
 );
 
 void main() {
-    ParticleInstance instance = instances[gl_InstanceIndex];
+    ParticleInstance instance = instances[draw_indices[gl_InstanceIndex]];
     vec2 corner = _inxParticleCorners[gl_VertexIndex % 6];
     float cosine = cos(instance.rotation_custom.x);
     float sine = sin(instance.rotation_custom.x);

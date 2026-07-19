@@ -8,6 +8,10 @@ layout(set = 0, binding = 0, std430) readonly buffer ParticleInstances {
     ParticleInstance instances[];
 };
 
+layout(set = 0, binding = 1, std430) readonly buffer ParticleDrawIndices {
+    uint draw_indices[];
+};
+
 layout(push_constant) uniform ParticleViewConstants {
     mat4 view_projection;
     vec4 camera_right;

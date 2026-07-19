@@ -48,13 +48,14 @@ bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
     m_counters = device.CreateBuffer({16, storage});
     m_instances = device.CreateBuffer({instanceBytes, storage});
     m_indirect = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect});
+    m_renderIndices = device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
     rhi::BufferDesc transformDesc;
     transformDesc.byteSize = sizeof(GpuParticleTransforms);
     transformDesc.usage = rhi::BufferUsageFlags::Uniform;
     transformDesc.memory = rhi::BufferMemory::Upload;
     m_transforms = device.CreateBuffer(transformDesc);
     if (!m_states.IsValid() || !m_freeList.IsValid() || !m_counters.IsValid() || !m_instances.IsValid() ||
-        !m_indirect.IsValid() || !m_transforms.IsValid()) {
+        !m_indirect.IsValid() || !m_renderIndices.IsValid() || !m_transforms.IsValid()) {
         Destroy();
         return false;
     }
@@ -63,7 +64,8 @@ bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
     for (uint32_t binding = 0; binding < 5; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     layoutDesc.entries[5] = {5, rhi::BindingType::UniformBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 6;
+    layoutDesc.entries[6] = {6, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entryCount = 7;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
@@ -72,8 +74,8 @@ bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 6> buffers = {m_states,    m_freeList, m_counters,
-                                                      m_instances, m_indirect, m_transforms};
+    const std::array<rhi::BufferHandle, 7> buffers = {m_states,   m_freeList,   m_counters,     m_instances,
+                                                      m_indirect, m_transforms, m_renderIndices};
     for (uint32_t binding = 0; binding < buffers.size(); ++binding) {
         groupDesc.buffers[binding].binding = binding;
         groupDesc.buffers[binding].type =
@@ -116,6 +118,7 @@ void ParticleGpuRuntime::Destroy() noexcept
         m_device->Release(m_group);
         m_device->Release(m_layout);
         m_device->Release(m_transforms);
+        m_device->Release(m_renderIndices);
         m_device->Release(m_indirect);
         m_device->Release(m_instances);
         m_device->Release(m_counters);
@@ -130,6 +133,7 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_counters = {};
     m_instances = {};
     m_indirect = {};
+    m_renderIndices = {};
     m_transforms = {};
     m_layout = {};
     m_group = {};

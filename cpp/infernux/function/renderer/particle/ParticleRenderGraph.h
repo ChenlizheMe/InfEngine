@@ -26,11 +26,12 @@ struct GpuParticleFrameRequest
 struct GpuParticleGraphOutputs
 {
     vk::ResourceHandle instances;
+    vk::ResourceHandle renderIndices;
     vk::ResourceHandle indirectArguments;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return instances.IsValid() && indirectArguments.IsValid();
+        return instances.IsValid() && renderIndices.IsValid() && indirectArguments.IsValid();
     }
 };
 

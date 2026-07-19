@@ -596,6 +596,7 @@ layout(std140, set = 0, binding = 5) uniform ParticleTransforms {{
     mat4 simulation_to_world;
     mat4 world_to_simulation;
 }} transforms;
+layout(std430, set = 0, binding = 6) buffer ParticleRenderIndices {{ uint render_indices[]; }};
 layout(push_constant) uniform ParticlePushConstants {{
     uint capacity;
     uint invocation_count;
@@ -801,6 +802,7 @@ void main() {{
     instances[output_index].position_size = vec4({position}, {size});
     instances[output_index].color = {color};
     instances[output_index].rotation_custom = vec4(0.0);
+    render_indices[output_index] = output_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}
 """

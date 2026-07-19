@@ -28,6 +28,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle freeList;
     vk::ResourceHandle counters;
     vk::ResourceHandle instances;
+    vk::ResourceHandle renderIndices;
     vk::ResourceHandle indirect;
     vk::ResourceHandle transforms;
 
@@ -40,12 +41,14 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         counters = builder.ImportBuffer(StageName(namePrefix, "Counters"), runtime.CounterBuffer(), CounterBufferBytes);
         instances = builder.ImportBuffer(StageName(namePrefix, "Instances"), runtime.InstanceBuffer(),
                                          capacity * ParticleGpuRuntime::RenderInstanceStride);
+        renderIndices = builder.ImportBuffer(StageName(namePrefix, "RenderIndices"), runtime.RenderIndexBuffer(),
+                                             capacity * sizeof(uint32_t));
         indirect =
             builder.ImportBuffer(StageName(namePrefix, "Indirect"), runtime.IndirectBuffer(), IndirectBufferBytes);
         transforms = builder.ImportBuffer(StageName(namePrefix, "Transforms"), runtime.TransformBuffer(),
                                           sizeof(GpuParticleTransforms));
         if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
-            !indirect.IsValid() || !transforms.IsValid())
+            !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid())
             return vk::PassExecuteCallback{};
 
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
@@ -61,7 +64,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     });
 
     if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
-        !indirect.IsValid() || !transforms.IsValid()) {
+        !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid()) {
         m_runtime = nullptr;
         return false;
     }
@@ -108,6 +111,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
         counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
         instances = builder.ReadWrite(instances, rhi::PipelineStage::ComputeShader);
+        renderIndices = builder.ReadWrite(renderIndices, rhi::PipelineStage::ComputeShader);
         indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
         return [this](vk::RenderContext &context) {
@@ -123,7 +127,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         };
     });
 
-    m_outputs = {instances, indirect};
+    m_outputs = {instances, renderIndices, indirect};
     return m_outputs.IsValid();
 }
 

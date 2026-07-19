@@ -1993,6 +1993,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 {
                     std::shared_ptr<particle::ParticleGpuBillboardRenderer> renderer;
                     vk::ResourceHandle instances;
+                    vk::ResourceHandle renderIndices;
                     vk::ResourceHandle indirectArguments;
                 };
                 std::vector<ParticlePacket> particlePackets;
@@ -2002,17 +2003,23 @@ void SceneRenderGraph::BuildRenderGraph()
                     const auto instances = builder.ImportBuffer(prefix + "/Instances", entry.instances,
                                                                 static_cast<uint64_t>(entry.capacity) *
                                                                     particle::ParticleGpuRuntime::RenderInstanceStride);
+                    const auto renderIndices =
+                        builder.ImportBuffer(prefix + "/RenderIndices", entry.renderIndices,
+                                             static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t));
                     const auto indirectArguments =
                         builder.ImportBuffer(prefix + "/Indirect", entry.indirectArguments, 16);
-                    if (!instances.IsValid() || !indirectArguments.IsValid())
+                    if (!instances.IsValid() || !renderIndices.IsValid() || !indirectArguments.IsValid())
                         continue;
                     m_renderGraph->SetResourceInitialState(instances, rhi::TextureLayout::Undefined,
                                                            rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
                     m_renderGraph->SetResourceInitialState(indirectArguments, rhi::TextureLayout::Undefined,
                                                            rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                    m_renderGraph->SetResourceInitialState(renderIndices, rhi::TextureLayout::Undefined,
+                                                           rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
                     builder.ReadStorageBuffer(instances, rhi::PipelineStage::VertexShader);
+                    builder.ReadStorageBuffer(renderIndices, rhi::PipelineStage::VertexShader);
                     builder.ReadIndirectBuffer(indirectArguments);
-                    particlePackets.push_back({entry.renderer, instances, indirectArguments});
+                    particlePackets.push_back({entry.renderer, instances, renderIndices, indirectArguments});
                 }
 
                 if (rendererListHandle.IsValid()) {

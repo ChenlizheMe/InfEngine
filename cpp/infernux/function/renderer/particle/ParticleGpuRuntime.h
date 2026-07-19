@@ -109,6 +109,10 @@ class ParticleGpuRuntime
     {
         return m_indirect;
     }
+    [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept
+    {
+        return m_renderIndices;
+    }
     [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept
     {
         return m_transforms;
@@ -127,6 +131,7 @@ class ParticleGpuRuntime
     rhi::BufferHandle m_counters;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_indirect;
+    rhi::BufferHandle m_renderIndices;
     rhi::BufferHandle m_transforms;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;

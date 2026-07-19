@@ -129,7 +129,8 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     std::vector<uint32_t> linkedVertexWords;
     std::vector<uint32_t> linkedFragmentWords;
     if (desc.shaderProgram) {
-        if (!desc.shaderProgram->IsValid() || desc.shaderProgram->domain != ShaderProgramDomain::ParticleSprite)
+        if (!desc.renderIndices.IsValid() || !desc.shaderProgram->IsValid() ||
+            desc.shaderProgram->domain != ShaderProgramDomain::ParticleSprite)
             return false;
         linkedVariant = desc.shaderProgram->FindVariant(ShaderCompileTarget::Forward);
         if (!linkedVariant)
@@ -151,6 +152,7 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_textureVersionResolver = desc.textureVersionResolver;
     m_deletionQueue = desc.deletionQueue;
     m_instances = desc.instances;
+    m_renderIndices = desc.renderIndices;
     m_vertexShader = linkedVariant ? device.CreateShaderModule({linkedVertexWords.data(), linkedVertexWords.size()})
                                    : device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
     m_fragmentShader = linkedVariant
@@ -164,6 +166,7 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[layoutDesc.entryCount++] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     if (UsesLinkedProgram()) {
+        layoutDesc.entries[layoutDesc.entryCount++] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
         for (const auto &property : m_shaderProgram->properties) {
             if (!property.textureSlot)
                 continue;
@@ -239,6 +242,7 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_textureVersionResolver = {};
     m_deletionQueue = nullptr;
     m_instances = {};
+    m_renderIndices = {};
     m_vertexShader = {};
     m_fragmentShader = {};
     m_layout = {};
@@ -253,8 +257,8 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
 
 bool ParticleGpuBillboardRenderer::IsValid() const noexcept
 {
-    return m_device && m_instances.IsValid() && m_vertexShader.IsValid() && m_fragmentShader.IsValid() &&
-           m_layout.IsValid() && m_group.IsValid();
+    return m_device && m_instances.IsValid() && (!UsesLinkedProgram() || m_renderIndices.IsValid()) &&
+           m_vertexShader.IsValid() && m_fragmentShader.IsValid() && m_layout.IsValid() && m_group.IsValid();
 }
 
 int32_t ParticleGpuBillboardRenderer::RenderQueue() const noexcept
@@ -366,6 +370,8 @@ ParticleGpuBillboardRenderer::CreateBindGroup(const std::vector<TextureBindingSt
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
     groupDesc.buffers[groupDesc.bufferCount++] = {0, rhi::BindingType::StorageBuffer, m_instances, 0, 0};
+    if (UsesLinkedProgram())
+        groupDesc.buffers[groupDesc.bufferCount++] = {1, rhi::BindingType::StorageBuffer, m_renderIndices, 0, 0};
     if (m_materialBuffer.IsValid()) {
         groupDesc.buffers[groupDesc.bufferCount++] = {14, rhi::BindingType::UniformBuffer, m_materialBuffer, 0,
                                                       m_shaderProgram ? m_shaderProgram->materialBufferSize : 0};

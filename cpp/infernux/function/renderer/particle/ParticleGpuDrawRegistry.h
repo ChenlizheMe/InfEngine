@@ -16,6 +16,7 @@ struct GpuParticleDrawEntry
     uint64_t id = 0;
     uint32_t capacity = 0;
     rhi::BufferHandle instances;
+    rhi::BufferHandle renderIndices;
     rhi::BufferHandle indirectArguments;
     std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
     ParticleOutputSemantics semantics;

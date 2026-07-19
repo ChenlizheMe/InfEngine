@@ -217,11 +217,12 @@ int main()
     particle::ParticleGpuRuntime runtime;
     assert(runtime.Create(device, desc));
     assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64);
-    assert(device.buffers.size() == 6);
+    assert(device.buffers.size() == 7);
     assert(device.buffers[0].byteSize == 64000);
     assert(device.buffers[3].byteSize == 48000);
     assert(rhi::HasBufferUsage(device.buffers[4].usage, rhi::BufferUsageFlags::Indirect));
     assert(device.buffers[5].memory == rhi::BufferMemory::Upload);
+    assert(device.buffers[6].byteSize == 4000 && device.buffers[6].usage == rhi::BufferUsageFlags::Storage);
     assert(device.shaderCreates == 5 && device.shaderReleases == 5);
     assert(device.layoutCreates == 1 && device.groupCreates == 1 && device.pipelineCreates == 5);
 
@@ -245,6 +246,7 @@ int main()
     assert(trace.constants[2].simulationStep == 9);
 
     const auto instanceBuffer = runtime.InstanceBuffer();
+    const auto renderIndexBuffer = runtime.RenderIndexBuffer();
     const auto indirectBuffer = runtime.IndirectBuffer();
     std::array<uint32_t, 4> billboardVertex = {0x07230203};
     std::array<uint32_t, 4> billboardFragment = {0x07230203};
@@ -385,6 +387,7 @@ int main()
     particle::GpuBillboardRendererDesc linkedDesc;
     linkedDesc.shaderProgram = linkedArtifact;
     linkedDesc.instances = instanceBuffer;
+    linkedDesc.renderIndices = renderIndexBuffer;
     linkedDesc.material = std::make_shared<InxMaterial>("linked-particle-material");
     linkedDesc.material->SetColor("baseColor", glm::vec4(0.2f, 0.4f, 0.6f, 0.8f));
     linkedDesc.material->SetFloat("intensity", 3.5f);
@@ -410,11 +413,15 @@ int main()
     assert(linkedDevice.shaderCreates == 2 && linkedDevice.buffers.size() == 1);
     assert(linkedDevice.buffers[0].byteSize == 32 && linkedDevice.buffers[0].usage == rhi::BufferUsageFlags::Uniform &&
            linkedDevice.buffers[0].memory == rhi::BufferMemory::Upload);
-    assert(linkedDevice.layouts.size() == 1 && linkedDevice.layouts[0].entryCount == 4);
-    assert(linkedDevice.layouts[0].entries[0].binding == 0 && linkedDevice.layouts[0].entries[1].binding == 2 &&
-           linkedDevice.layouts[0].entries[2].binding == 3 && linkedDevice.layouts[0].entries[3].binding == 14);
-    assert(linkedDevice.bindGroups.size() == 1 && linkedDevice.bindGroups[0].bufferCount == 2 &&
+    assert(linkedDevice.layouts.size() == 1 && linkedDevice.layouts[0].entryCount == 5);
+    assert(linkedDevice.layouts[0].entries[0].binding == 0 && linkedDevice.layouts[0].entries[1].binding == 1 &&
+           linkedDevice.layouts[0].entries[2].binding == 2 && linkedDevice.layouts[0].entries[3].binding == 3 &&
+           linkedDevice.layouts[0].entries[4].binding == 14);
+    assert(linkedDevice.bindGroups.size() == 1 && linkedDevice.bindGroups[0].bufferCount == 3 &&
            linkedDevice.bindGroups[0].textureCount == 2);
+    assert(linkedDevice.bindGroups[0].buffers[0].binding == 0 && linkedDevice.bindGroups[0].buffers[1].binding == 1 &&
+           linkedDevice.bindGroups[0].buffers[1].buffer == renderIndexBuffer &&
+           linkedDevice.bindGroups[0].buffers[2].binding == 14);
     assert(linkedDevice.bindGroups[0].textures[0].binding == 2 && linkedDevice.bindGroups[0].textures[1].binding == 3);
     assert(linkedTextureResolves == 2 && linkedDevice.writes == 1 && linkedDevice.writtenBytes[0].size() == 32);
     glm::vec4 packedColor{};

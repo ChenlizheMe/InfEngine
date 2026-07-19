@@ -54,6 +54,7 @@ struct GpuBillboardRendererDesc
     ShaderBytecode fragmentShader;
     std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     rhi::BufferHandle instances;
+    rhi::BufferHandle renderIndices;
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
     GpuBillboardTextureResolver textureResolver;
@@ -88,6 +89,10 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
     {
         return m_instances;
+    }
+    [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept
+    {
+        return m_renderIndices;
     }
 
     [[nodiscard]] bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
@@ -140,6 +145,7 @@ class ParticleGpuBillboardRenderer
     GpuBillboardTextureVersionResolver m_textureVersionResolver;
     FrameDeletionQueue *m_deletionQueue = nullptr;
     rhi::BufferHandle m_instances;
+    rhi::BufferHandle m_renderIndices;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::BindingLayoutHandle m_layout;

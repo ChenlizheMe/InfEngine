@@ -10,8 +10,10 @@ namespace
 
 bool IsValidEntry(const GpuParticleDrawEntry &entry)
 {
-    return entry.id != 0 && entry.capacity != 0 && entry.instances.IsValid() && entry.indirectArguments.IsValid() &&
-           entry.renderer && entry.renderer->IsValid() && entry.renderer->InstanceBuffer() == entry.instances;
+    return entry.id != 0 && entry.capacity != 0 && entry.instances.IsValid() && entry.renderIndices.IsValid() &&
+           entry.indirectArguments.IsValid() && entry.renderer && entry.renderer->IsValid() &&
+           entry.renderer->InstanceBuffer() == entry.instances &&
+           entry.renderer->RenderIndexBuffer() == entry.renderIndices;
 }
 
 } // namespace
@@ -36,8 +38,7 @@ bool ParticleGpuDrawRegistry::Replace(std::vector<GpuParticleDrawEntry> entries)
 {
     if (!std::all_of(entries.begin(), entries.end(), IsValidEntry))
         return false;
-    std::sort(entries.begin(), entries.end(),
-              [](const auto &left, const auto &right) { return left.id < right.id; });
+    std::sort(entries.begin(), entries.end(), [](const auto &left, const auto &right) { return left.id < right.id; });
     if (std::adjacent_find(entries.begin(), entries.end(),
                            [](const auto &left, const auto &right) { return left.id == right.id; }) != entries.end())
         return false;

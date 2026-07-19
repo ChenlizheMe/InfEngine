@@ -86,6 +86,7 @@ struct ParticleGpuSystemManager::Impl
         rendererDesc.fragmentShader = {emitter.billboardFragmentShader.data(), emitter.billboardFragmentShader.size()};
         rendererDesc.shaderProgram = shaderProgram;
         rendererDesc.instances = emitter.runtime->InstanceBuffer();
+        rendererDesc.renderIndices = emitter.runtime->RenderIndexBuffer();
         rendererDesc.material = material;
         rendererDesc.fallbackMaterial = fallbackMaterial;
         rendererDesc.textureResolver = textureResolver;
@@ -206,7 +207,8 @@ struct ParticleGpuSystemManager::Impl
             (void)id;
             for (const auto &output : emitter->outputs) {
                 entries.push_back({output.id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
-                                   emitter->runtime->IndirectBuffer(), output.renderer, output.semantics});
+                                   emitter->runtime->RenderIndexBuffer(), emitter->runtime->IndirectBuffer(),
+                                   output.renderer, output.semantics});
             }
         }
         return entries;
