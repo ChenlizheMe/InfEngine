@@ -101,6 +101,7 @@ class EditorCameraController
 
   private:
     void UpdateFlyMode(float deltaTime);
+    void SyncAnglesFromTransform();
 
     Camera *m_camera = nullptr;
 
