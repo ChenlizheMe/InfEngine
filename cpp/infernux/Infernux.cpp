@@ -34,6 +34,7 @@
 #include <function/resources/InxMaterial/MaterialLoader.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxPointCache/PointCacheLoader.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/PhysicMaterial/PhysicMaterialLoader.h>
@@ -2307,8 +2308,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
                                 std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
         registry.RegisterLoader(ResourceType::ParticleGraph,
                                 std::make_unique<InxDefaultTextLoader>(ResourceType::ParticleGraph));
-        registry.RegisterLoader(ResourceType::PointCache,
-                                std::make_unique<InxDefaultTextLoader>(ResourceType::PointCache));
+        registry.RegisterLoader(ResourceType::PointCache, std::make_unique<PointCacheLoader>());
         registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
 
         // Populate AssetDatabase's meta-loader table from registered loaders
@@ -2521,7 +2521,7 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
                             std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
     registry.RegisterLoader(ResourceType::ParticleGraph,
                             std::make_unique<InxDefaultTextLoader>(ResourceType::ParticleGraph));
-    registry.RegisterLoader(ResourceType::PointCache, std::make_unique<InxDefaultTextLoader>(ResourceType::PointCache));
+    registry.RegisterLoader(ResourceType::PointCache, std::make_unique<PointCacheLoader>());
     registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
     registry.PopulateAssetDatabaseLoaders();
     if (!builtinResourcePath.empty()) {

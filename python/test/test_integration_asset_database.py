@@ -6,9 +6,10 @@ import shutil
 import time
 import threading
 
+import numpy as np
 import pytest
 
-from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, ResourceType
+from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, ResourceType
 from Infernux.core.assets import AssetManager
 from Infernux.particle import (
     AssetReference,
@@ -314,6 +315,54 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
         published_artifact = artifact.read_bytes()
         assert published_artifact.startswith(b"INXPOINT")
 
+        registry = AssetRegistry.instance()
+        ticket = registry.begin_load_point_cache_by_guid(result.guid)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not registry.try_commit_asset_load(ticket):
+            time.sleep(0.001)
+        assert ticket.committed is True
+        assert ticket.produced_on_worker is True
+        runtime = registry.get_point_cache(result.guid)
+        assert runtime is not None
+        assert runtime.guid == result.guid
+        assert runtime.file_path == str(source)
+        assert runtime.name == "Morph Cache"
+        assert runtime.stable_id == "morph-cache"
+        assert runtime.bake_basis == "right_handed_y_up"
+        assert runtime.point_count == 2
+        assert runtime.channel_names == ["position", "stable_id", "temperature"]
+        assert runtime.has_channel("position")
+        assert not runtime.has_channel("missing")
+        assert runtime.cpu_byte_size > 0
+
+        original_positions = runtime.channel_array("position")
+        stable_ids = runtime.channel_array("stable_id")
+        temperatures = runtime.channel_array("temperature")
+        assert original_positions.shape == (2, 3)
+        assert original_positions.dtype == np.dtype(np.float32)
+        assert stable_ids.shape == (2,)
+        assert stable_ids.dtype == np.dtype(np.uint32)
+        assert temperatures.shape == (2,)
+        assert temperatures.dtype == np.dtype(np.float32)
+        assert not original_positions.flags.writeable
+        assert not stable_ids.flags.writeable
+        np.testing.assert_array_equal(original_positions, [[1.0, 2.0, 3.0], [-4.0, 5.5, 6.0]])
+        np.testing.assert_array_equal(stable_ids, [7, 42])
+        np.testing.assert_array_equal(temperatures, [0.25, 0.75])
+        with pytest.raises(KeyError, match="channel does not exist"):
+            runtime.channel_array("missing")
+
+        updated = json.loads(source.read_text(encoding="utf-8"))
+        updated["channels"][0]["data"][0] = [9.0, 8.0, 7.0]
+        source.write_text(json.dumps(updated), encoding="utf-8")
+        reimported = AssetManager.reimport_asset(str(source), database=asset_db)
+        assert reimported, reimported.error
+
+        current_positions = runtime.channel_array("position")
+        np.testing.assert_array_equal(current_positions, [[9.0, 8.0, 7.0], [-4.0, 5.5, 6.0]])
+        np.testing.assert_array_equal(original_positions, [[1.0, 2.0, 3.0], [-4.0, 5.5, 6.0]])
+        published_artifact = artifact.read_bytes()
+
         invalid = json.loads(source.read_text(encoding="utf-8"))
         invalid["channels"][1]["data"] = [7, 7]
         source.write_text(json.dumps(invalid), encoding="utf-8")
@@ -323,7 +372,10 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
         assert failed.guid == result.guid
         assert "stable point IDs must be unique" in failed.error
         assert artifact.read_bytes() == published_artifact
+        np.testing.assert_array_equal(runtime.channel_array("position"), current_positions)
     finally:
+        if "result" in locals() and result.guid:
+            AssetRegistry.instance().remove_asset(result.guid)
         if asset_db.contains_path(str(source)):
             asset_db.delete_asset(str(source))
 
