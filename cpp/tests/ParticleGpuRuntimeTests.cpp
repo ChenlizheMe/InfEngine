@@ -830,7 +830,8 @@ int main()
         return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Ready,
                                                   {400u + identity, 1},
                                                   {500u + identity, 1},
-                                                  std::make_shared<uint32_t>(identity)};
+                                                  std::make_shared<uint32_t>(identity),
+                                                  true};
     };
     billboardDesc.textureVersionResolver = [](const std::string &textureGuid) {
         return textureGuid == "normal" ? uint64_t{2} : uint64_t{1};
@@ -957,7 +958,8 @@ int main()
         return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Ready,
                                                   {600u + identity, 1},
                                                   {700u + identity, 1},
-                                                  std::make_shared<uint32_t>(identity)};
+                                                  std::make_shared<uint32_t>(identity),
+                                                  true};
     };
     linkedDesc.textureVersionResolver = [](const std::string &guid) {
         return guid == "black" ? uint64_t{2} : uint64_t{1};

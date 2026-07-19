@@ -10,6 +10,7 @@
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
+#include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -51,6 +52,7 @@ struct TestResources
 {
     SDL_Window *window = nullptr;
     VkDeviceContext context;
+    infernux::vk::VkResourceManager resources;
     VkPipelineManager pipelines;
     RenderGraph graph;
 
@@ -88,6 +90,7 @@ struct TestResources
                 vkDestroyCommandPool(device, commandPool, nullptr);
 
             pipelines.Destroy();
+            resources.Destroy();
             context.Destroy();
         }
         if (window)
@@ -421,6 +424,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     deviceConfig.appName = "Infernux RenderGraph Compute Indirect Test";
     deviceConfig.enableValidationLayers = true;
     if (!Require(resources.context.Initialize(resources.window, deviceConfig), "Vulkan device initialization failed"))
+        return false;
+    if (!Require(resources.resources.Initialize(resources.context), "Vulkan resource manager initialization failed"))
         return false;
 
     const VkDevice device = resources.context.GetDevice();
@@ -1333,6 +1338,41 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     deviceApi.Release(texture2DView);
     deviceApi.Release(texture2D);
 
+    const std::array<uint8_t, 4 * 4 * 4> upload2DBytes{};
+    const infernux::rhi::TextureSubresourceUpload upload2DRegion = {
+        upload2DBytes.data(), upload2DBytes.size(), 0, 0, 1, 4, 4, 1, 16, 64};
+    infernux::rhi::TextureUploadRequest upload2DRequest;
+    upload2DRequest.texture.width = 4;
+    upload2DRequest.texture.height = 4;
+    upload2DRequest.texture.format = infernux::rhi::PixelFormat::RGBA8UNorm;
+    upload2DRequest.texture.usage =
+        infernux::rhi::TextureUsageFlags::Sampled | infernux::rhi::TextureUsageFlags::TransferDestination;
+    upload2DRequest.subresources = &upload2DRegion;
+    upload2DRequest.subresourceCount = 1;
+    const auto upload2DTicket = resources.resources.BeginTextureUpload(upload2DRequest);
+
+    const std::array<uint8_t, 2 * 2 * 2 * 8> upload3DBytes{};
+    const infernux::rhi::TextureSubresourceUpload upload3DRegion = {
+        upload3DBytes.data(), upload3DBytes.size(), 0, 0, 1, 2, 2, 2, 16, 32};
+    infernux::rhi::TextureUploadRequest upload3DRequest;
+    upload3DRequest.texture.dimension = infernux::rhi::TextureDimension::Texture3D;
+    upload3DRequest.texture.width = 2;
+    upload3DRequest.texture.height = 2;
+    upload3DRequest.texture.depthOrLayers = 2;
+    upload3DRequest.texture.format = infernux::rhi::PixelFormat::RGBA16SFloat;
+    upload3DRequest.texture.usage =
+        infernux::rhi::TextureUsageFlags::Sampled | infernux::rhi::TextureUsageFlags::TransferDestination;
+    upload3DRequest.view.dimension = infernux::rhi::TextureViewDimension::Texture3D;
+    upload3DRequest.subresources = &upload3DRegion;
+    upload3DRequest.subresourceCount = 1;
+    const auto upload3DTicket = resources.resources.BeginTextureUpload(upload3DRequest);
+    if (!Require(upload2DTicket->IsPublished() && upload2DTicket->GetTexture()->IsValid() &&
+                     upload3DTicket->IsPublished() && upload3DTicket->GetTexture()->IsValid() &&
+                     rhi.Resolve(upload2DTicket->GetTexture()->GetTexture()) != VK_NULL_HANDLE &&
+                     rhi.Resolve(upload3DTicket->GetTexture()->GetTexture()) != VK_NULL_HANDLE,
+                 "RHI Texture2D/Texture3D staging uploads failed"))
+        return false;
+
     resources.computeShader = rhi.CreateShaderModule({computeCode.data(), computeCode.size()});
     infernux::rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, infernux::rhi::BindingType::StorageBuffer, infernux::rhi::ShaderStage::Compute, 1};
@@ -1372,7 +1412,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         const auto texture = rhi.RegisterTextureView(resources.graph.ResolveTextureView(particleTexture));
         const auto sampler = rhi.RegisterSampler(resources.sampledTextureSampler);
         return infernux::particle::GpuBillboardTextureLease{infernux::particle::GpuBillboardTextureStatus::Ready,
-                                                            texture, sampler, std::make_shared<uint32_t>(1)};
+                                                            texture, sampler, std::make_shared<uint32_t>(1), true};
     };
     billboardDesc.textureVersionResolver = [](const std::string &) { return uint64_t{1}; };
     billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");

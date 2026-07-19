@@ -318,8 +318,7 @@ void InxVkCoreModular::PreparePipeline()
     m_textureCache.CreateDefaultWhiteTexture("white", m_resourceManager);
 
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
-    m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, VK_FORMAT_R8G8B8A8_UNORM,
-                                           m_resourceManager);
+    m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
     INXLOG_INFO("Created default flat normal texture: _default_normal");
 
     // Initialize material system (default material + pipelines)
@@ -342,19 +341,9 @@ void InxVkCoreModular::PreparePipeline()
 // Texture Management (delegates to VkTextureCache)
 // ============================================================================
 
-void InxVkCoreModular::CreateTextureImage(std::string name, std::string path)
-{
-    m_textureCache.CreateTextureImage(name, path, m_resourceManager);
-}
-
 void InxVkCoreModular::CreateDefaultWhiteTexture(std::string name)
 {
     m_textureCache.CreateDefaultWhiteTexture(name, m_resourceManager);
-}
-
-void InxVkCoreModular::LoadTexture(const std::string &name, const std::string &path)
-{
-    m_textureCache.CreateTextureImage(name, path, m_resourceManager);
 }
 
 // ============================================================================

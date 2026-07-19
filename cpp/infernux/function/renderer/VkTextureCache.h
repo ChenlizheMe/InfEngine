@@ -2,14 +2,15 @@
  * @file VkTextureCache.h
  * @brief Extracted GPU texture cache from InxVkCoreModular.
  *
- * Owns the `name → VkTexture` map and its mutex.  Simple CRUD
- * operations live here; complex resolution logic (GUID lookup,
- * import-setting parsing) remains on InxVkCoreModular.
+ * Owns the `name -> RHI TextureResource` map and its mutex. Simple CRUD
+ * operations live here; complex resolution
+ * logic (GUID lookup, import-setting parsing) remains on InxVkCoreModular.
  */
 
 #pragma once
 
 #include "GpuResidency.h"
+#include "rhi/RhiTexture.h"
 #include <memory>
 #include <mutex>
 #include <string>
@@ -22,7 +23,6 @@ namespace infernux
 
 namespace vk
 {
-class VkTexture;
 class VkResourceManager;
 } // namespace vk
 
@@ -40,27 +40,25 @@ class VkTextureCache
 
     // ── Simple Loaders ─────────────────────────────────────────────────────
 
-    /// Load a texture from disk and store under @p name.
-    void CreateTextureImage(const std::string &name, const std::string &path, vk::VkResourceManager &rm);
-
     /// Create a 1×1 white texture and store under @p name.
     void CreateDefaultWhiteTexture(const std::string &name, vk::VkResourceManager &rm);
 
     /// Create a 1×1 solid-color texture (arbitrary RGBA + format).
-    void CreateSolidColorTexture(const std::string &name, uint8_t r, uint8_t g, uint8_t b, uint8_t a, VkFormat format,
+    void CreateSolidColorTexture(const std::string &name, uint8_t r, uint8_t g, uint8_t b, uint8_t a,
                                  vk::VkResourceManager &rm);
 
     // ── Cache Operations ───────────────────────────────────────────────────
 
     /// Insert a pre-loaded texture into the cache (thread-safe, shares ownership).
-    [[nodiscard]] std::shared_ptr<vk::VkTexture> Insert(const std::string &key, std::shared_ptr<vk::VkTexture> texture,
-                                                        uint64_t lastUsedFrame, bool permanentlyPinned,
-                                                        std::string assetGuid, uint64_t runtimeVersion);
+    [[nodiscard]] std::shared_ptr<rhi::TextureResource> Insert(const std::string &key,
+                                                               std::shared_ptr<rhi::TextureResource> texture,
+                                                               uint64_t lastUsedFrame, bool permanentlyPinned,
+                                                               std::string assetGuid, uint64_t runtimeVersion);
 
     /// Look up and lease a cached texture; returns nullptr if not found.
-    [[nodiscard]] std::shared_ptr<vk::VkTexture> Find(const std::string &key, uint64_t frame = 0);
-    [[nodiscard]] std::shared_ptr<vk::VkTexture> FindAsset(const std::string &key, const std::string &assetGuid,
-                                                           uint64_t runtimeVersion, uint64_t frame);
+    [[nodiscard]] std::shared_ptr<rhi::TextureResource> Find(const std::string &key, uint64_t frame = 0);
+    [[nodiscard]] std::shared_ptr<rhi::TextureResource> FindAsset(const std::string &key, const std::string &assetGuid,
+                                                                  uint64_t runtimeVersion, uint64_t frame);
 
     /// Remove all cache entries whose key starts with @p prefix (thread-safe).
     /// Returns the number of entries removed.
@@ -89,7 +87,7 @@ class VkTextureCache
   private:
     struct Entry
     {
-        std::shared_ptr<vk::VkTexture> texture;
+        std::shared_ptr<rhi::TextureResource> texture;
         uint64_t residentBytes = 0;
         uint64_t lastUsedFrame = 0;
         bool permanentlyPinned = false;
@@ -99,7 +97,7 @@ class VkTextureCache
 
     struct RetiredLease
     {
-        std::weak_ptr<vk::VkTexture> texture;
+        std::weak_ptr<rhi::TextureResource> texture;
         uint64_t residentBytes = 0;
     };
 

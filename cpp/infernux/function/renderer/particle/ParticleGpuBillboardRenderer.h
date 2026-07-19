@@ -42,6 +42,7 @@ struct GpuBillboardTextureLease
     rhi::TextureViewHandle texture;
     rhi::SamplerHandle sampler;
     std::shared_ptr<void> keepAlive;
+    bool releaseHandles = false;
 };
 
 using GpuBillboardTextureResolver =
@@ -122,6 +123,7 @@ class ParticleGpuBillboardRenderer
         rhi::TextureViewHandle texture;
         rhi::SamplerHandle sampler;
         std::shared_ptr<void> keepAlive;
+        bool releaseHandles = false;
         bool pending = false;
         bool fallback = false;
     };
@@ -138,7 +140,8 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] bool RebuildBindGroup();
     void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
-    void RetireTexture(rhi::TextureViewHandle texture, rhi::SamplerHandle sampler, std::shared_ptr<void> keepAlive);
+    void RetireTexture(rhi::TextureViewHandle texture, rhi::SamplerHandle sampler, std::shared_ptr<void> keepAlive,
+                       bool releaseHandles);
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<InxMaterial> m_material;

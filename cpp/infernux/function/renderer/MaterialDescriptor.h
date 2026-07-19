@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FrameDeletionQueue.h"
+#include "rhi/RhiTexture.h"
 #include "shader/ShaderProgram.h"
 #include <atomic>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -16,11 +17,6 @@
 
 namespace infernux
 {
-namespace vk
-{
-class VkTexture;
-}
-
 // Forward declaration
 class InxVkResourceManager;
 
@@ -132,7 +128,7 @@ struct MaterialDescriptorSet
     {
         VkImageView imageView = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
-        std::shared_ptr<vk::VkTexture> keepAlive;
+        std::shared_ptr<rhi::TextureResource> keepAlive;
     };
     std::unordered_map<uint32_t, TextureBinding> textureBindings;
 

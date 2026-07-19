@@ -253,13 +253,15 @@ VulkanRhiDevice::~VulkanRhiDevice()
     DestroyOwnedResources();
 }
 
-void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator,
-                            const rhi::DeviceCapabilities &capabilities) noexcept
+void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCapabilities &capabilities,
+                            uint32_t graphicsQueueFamily, uint32_t transferQueueFamily) noexcept
 {
     DestroyOwnedResources();
     m_device = device;
     m_allocator = allocator;
     m_capabilities = capabilities;
+    m_graphicsQueueFamily = graphicsQueueFamily;
+    m_transferQueueFamily = transferQueueFamily;
     ResetSlots(m_buffers, m_freeBuffer);
     ResetSlots(m_textures, m_freeTexture);
     ResetSlots(m_textureViews, m_freeTextureView);
@@ -467,7 +469,12 @@ rhi::TextureHandle VulkanRhiDevice::CreateTexture(const rhi::TextureDesc &desc)
     createInfo.samples = rhi::ToVkSampleCount(desc.samples);
     createInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     createInfo.usage = usage;
-    createInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    const uint32_t queueFamilies[] = {m_graphicsQueueFamily, m_transferQueueFamily};
+    const bool sharedWithTransfer = HasTextureUsage(desc.usage, rhi::TextureUsageFlags::TransferDestination) &&
+                                    m_graphicsQueueFamily != m_transferQueueFamily;
+    createInfo.sharingMode = sharedWithTransfer ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+    createInfo.queueFamilyIndexCount = sharedWithTransfer ? 2U : 0U;
+    createInfo.pQueueFamilyIndices = sharedWithTransfer ? queueFamilies : nullptr;
     createInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VmaAllocationCreateInfo allocationInfo{};

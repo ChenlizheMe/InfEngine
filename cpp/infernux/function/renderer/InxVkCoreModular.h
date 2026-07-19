@@ -178,9 +178,7 @@ class InxVkCoreModular
     // Texture Management
     // ========================================================================
 
-    void CreateTextureImage(std::string name, std::string path);
     void CreateDefaultWhiteTexture(std::string name);
-    void LoadTexture(const std::string &name, const std::string &path);
 
     // ========================================================================
     // Shader and Pipeline Management
@@ -1358,7 +1356,7 @@ class InxVkCoreModular
         size_t resourceSignature = 0;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         VkDescriptorPool ownerPool = VK_NULL_HANDLE;
-        std::vector<std::shared_ptr<vk::VkTexture>> textureKeepAlive;
+        std::vector<std::shared_ptr<rhi::TextureResource>> textureKeepAlive;
     };
 
     struct ShadowDescriptorAllocation

@@ -39,8 +39,10 @@ class VulkanRhiDevice final : public rhi::Device
   public:
     VulkanRhiDevice() = default;
     explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
-                             const rhi::DeviceCapabilities &capabilities = {}) noexcept
-        : m_device(device), m_allocator(allocator), m_capabilities(capabilities)
+                             const rhi::DeviceCapabilities &capabilities = {}, uint32_t graphicsQueueFamily = 0,
+                             uint32_t transferQueueFamily = 0) noexcept
+        : m_device(device), m_allocator(allocator), m_capabilities(capabilities),
+          m_graphicsQueueFamily(graphicsQueueFamily), m_transferQueueFamily(transferQueueFamily)
     {
     }
 
@@ -52,7 +54,8 @@ class VulkanRhiDevice final : public rhi::Device
     ~VulkanRhiDevice();
 
     void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
-               const rhi::DeviceCapabilities &capabilities = {}) noexcept;
+               const rhi::DeviceCapabilities &capabilities = {}, uint32_t graphicsQueueFamily = 0,
+               uint32_t transferQueueFamily = 0) noexcept;
 
     [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0);
     [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
@@ -214,6 +217,8 @@ class VulkanRhiDevice final : public rhi::Device
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     rhi::DeviceCapabilities m_capabilities{};
+    uint32_t m_graphicsQueueFamily = 0;
+    uint32_t m_transferQueueFamily = 0;
     std::vector<Slot<BufferPayload>> m_buffers;
     std::vector<Slot<TexturePayload>> m_textures;
     std::vector<Slot<TextureViewPayload>> m_textureViews;

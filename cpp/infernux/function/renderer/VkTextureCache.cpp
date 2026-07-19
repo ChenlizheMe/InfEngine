@@ -5,8 +5,10 @@
 
 #include "VkTextureCache.h"
 #include "InxError.h"
-#include "vk/VkHandle.h"
+#include "TextureUploadBuilder.h"
 #include "vk/VkResourceManager.h"
+
+#include <function/resources/InxTexture/TextureDecoder.h>
 
 #include <limits>
 #include <stdexcept>
@@ -18,39 +20,36 @@ namespace infernux
 // Simple Loaders
 // ============================================================================
 
-void VkTextureCache::CreateTextureImage(const std::string &name, const std::string &path, vk::VkResourceManager &rm)
-{
-    auto texture = rm.LoadTexture(path);
-    if (texture) {
-        (void)Insert(name, std::shared_ptr<vk::VkTexture>(std::move(texture)), 0, true, {}, 0);
-        INXLOG_INFO("VkTextureCache: loaded texture: ", name);
-    }
-}
-
 void VkTextureCache::CreateDefaultWhiteTexture(const std::string &name, vk::VkResourceManager &rm)
 {
-    auto texture = rm.CreateSolidColorTexture(1, 1, 255, 255, 255, 255);
-    if (texture) {
-        (void)Insert(name, std::shared_ptr<vk::VkTexture>(std::move(texture)), 0, true, {}, 0);
-        INXLOG_INFO("VkTextureCache: created default white texture: ", name);
-    }
+    CreateSolidColorTexture(name, 255, 255, 255, 255, rm);
+    INXLOG_INFO("VkTextureCache: created default white texture: ", name);
 }
 
 void VkTextureCache::CreateSolidColorTexture(const std::string &name, uint8_t r, uint8_t g, uint8_t b, uint8_t a,
-                                             VkFormat format, vk::VkResourceManager &rm)
+                                             vk::VkResourceManager &rm)
 {
-    auto texture = rm.CreateSolidColorTexture(1, 1, r, g, b, a, format);
-    if (texture)
-        (void)Insert(name, std::shared_ptr<vk::VkTexture>(std::move(texture)), 0, true, {}, 0);
+    const uint8_t pixel[] = {r, g, b, a};
+    const auto cpuData = TextureDecoder::CreateRgba8(pixel, sizeof(pixel), 1, 1, false);
+    rhi::SamplerDesc sampler;
+    TextureUploadBatch upload(*cpuData, sampler);
+    auto ticket = rm.BeginTextureUpload(upload.GetRequest());
+    if (!rm.TryPublishTextureUpload(ticket)) {
+        rm.DrainBufferUploads();
+        if (!rm.TryPublishTextureUpload(ticket))
+            throw std::runtime_error("bootstrap RHI texture upload did not complete");
+    }
+    (void)Insert(name, ticket->GetTexture(), 0, true, {}, 0);
 }
 
 // ============================================================================
 // Cache Operations
 // ============================================================================
 
-std::shared_ptr<vk::VkTexture> VkTextureCache::Insert(const std::string &key, std::shared_ptr<vk::VkTexture> texture,
-                                                      uint64_t lastUsedFrame, bool permanentlyPinned,
-                                                      std::string assetGuid, uint64_t runtimeVersion)
+std::shared_ptr<rhi::TextureResource> VkTextureCache::Insert(const std::string &key,
+                                                             std::shared_ptr<rhi::TextureResource> texture,
+                                                             uint64_t lastUsedFrame, bool permanentlyPinned,
+                                                             std::string assetGuid, uint64_t runtimeVersion)
 {
     if (key.empty() || !texture || !texture->IsValid() || texture->GetResidentBytes() == 0)
         throw std::invalid_argument("VkTextureCache requires a valid keyed texture with resident bytes");
@@ -77,8 +76,8 @@ std::shared_ptr<vk::VkTexture> VkTextureCache::Insert(const std::string &key, st
     return sharedTexture;
 }
 
-std::shared_ptr<vk::VkTexture> VkTextureCache::FindAsset(const std::string &key, const std::string &assetGuid,
-                                                         uint64_t runtimeVersion, uint64_t frame)
+std::shared_ptr<rhi::TextureResource> VkTextureCache::FindAsset(const std::string &key, const std::string &assetGuid,
+                                                                uint64_t runtimeVersion, uint64_t frame)
 {
     if (assetGuid.empty() || runtimeVersion == 0)
         throw std::invalid_argument("GPU texture lookup requires a published asset identity");
@@ -97,7 +96,7 @@ std::shared_ptr<vk::VkTexture> VkTextureCache::FindAsset(const std::string &key,
     return entry->second.texture;
 }
 
-std::shared_ptr<vk::VkTexture> VkTextureCache::Find(const std::string &key, uint64_t frame)
+std::shared_ptr<rhi::TextureResource> VkTextureCache::Find(const std::string &key, uint64_t frame)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_textures.find(key);

@@ -4,6 +4,7 @@
 #include "InxGUISemantics.h"
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
+#include <function/renderer/TextureUploadBuilder.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
@@ -301,8 +302,11 @@ void InxGUI::PumpTextureUploads()
             m_failedTextureUploadVersions[pending.name] = pending.generation;
             continue;
         }
-        const VkDescriptorSet descriptor = ImGui_ImplVulkan_AddTexture(texture->GetSampler(), texture->GetView(),
-                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        auto &rhiDevice = m_vkCore_ptr->GetDeviceContext().GetRhiDevice();
+        const VkSampler sampler = rhiDevice.Resolve(texture->GetSampler());
+        const VkImageView view = rhiDevice.Resolve(texture->GetView());
+        const VkDescriptorSet descriptor =
+            ImGui_ImplVulkan_AddTexture(sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         if (descriptor == VK_NULL_HANDLE) {
             INXLOG_ERROR("Failed to allocate ImGui texture descriptor for '", pending.name, "'");
             m_failedTextureUploadVersions[pending.name] = pending.generation;
@@ -656,10 +660,13 @@ uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned c
 
     const auto cpuData = TextureDecoder::CreateRgba8(pixels, byteCount, static_cast<uint32_t>(width),
                                                      static_cast<uint32_t>(height), filter != VK_FILTER_NEAREST);
-    auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(
-        *cpuData, VK_FORMAT_R8G8B8A8_UNORM, filter, filter,
-        filter == VK_FILTER_NEAREST ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0);
+    rhi::SamplerDesc sampler;
+    sampler.minFilter = sampler.magFilter = sampler.mipFilter =
+        filter == VK_FILTER_NEAREST ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear;
+    sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
+    sampler.maxLod = static_cast<float>(cpuData->mipLevels.size() - 1);
+    TextureUploadBatch upload(*cpuData, sampler);
+    auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(upload.GetRequest());
     const uint64_t pendingBytes = ticket->GetResidentBytes();
     if (pendingBytes > std::numeric_limits<uint64_t>::max() - m_pendingTextureUploadBytes)
         throw std::overflow_error("pending ImGui texture byte counter overflow");

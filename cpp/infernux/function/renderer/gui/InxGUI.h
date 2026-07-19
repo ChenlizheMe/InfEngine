@@ -21,7 +21,6 @@ namespace infernux
 namespace vk
 {
 class TextureUploadTicket;
-class VkTexture;
 } // namespace vk
 
 class InxGUI
@@ -144,7 +143,7 @@ class InxGUI
   private:
     struct ImGuiTextureResource
     {
-        std::shared_ptr<vk::VkTexture> texture;
+        std::shared_ptr<rhi::TextureResource> texture;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         uint64_t residentBytes = 0;
         uint64_t lastUsedFrame = 0;

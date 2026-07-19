@@ -7,14 +7,9 @@
 #include "AsyncTransferContext.h"
 #include "RhiVulkanTypes.h"
 #include "VkDeviceContext.h"
+#include "VulkanRhiDevice.h"
 #include <SDL3/SDL.h>
 #include <core/error/InxError.h>
-#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
-#include <platform/filesystem/InxPath.h>
-
-#include <stb_image.h>
-
-#include <stb_image_resize2.h>
 
 #include <algorithm>
 #include <cmath>
@@ -48,6 +43,50 @@ struct ReadbackFormatInfo
     uint32_t bytesPerPixel;
     const char *elementType;
 };
+
+struct TextureFormatLayout
+{
+    uint32_t blockWidth = 1;
+    uint32_t blockHeight = 1;
+    uint32_t bytesPerBlock = 0;
+};
+
+TextureFormatLayout GetTextureFormatLayout(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_R8G8B8A8_SRGB:
+        return {1, 1, 4};
+    case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
+        return {1, 1, 2};
+    case VK_FORMAT_R16G16B16A16_UNORM:
+    case VK_FORMAT_R16G16B16A16_SFLOAT:
+        return {1, 1, 8};
+    case VK_FORMAT_R32G32B32A32_SFLOAT:
+        return {1, 1, 16};
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+    case VK_FORMAT_BC4_UNORM_BLOCK:
+        return {4, 4, 8};
+    case VK_FORMAT_BC3_UNORM_BLOCK:
+    case VK_FORMAT_BC3_SRGB_BLOCK:
+    case VK_FORMAT_BC5_UNORM_BLOCK:
+    case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+    case VK_FORMAT_BC7_UNORM_BLOCK:
+    case VK_FORMAT_BC7_SRGB_BLOCK:
+        return {4, 4, 16};
+    default:
+        throw std::invalid_argument("RHI texture upload format has no supported byte layout");
+    }
+}
+
+VkDeviceSize AlignUploadOffset(VkDeviceSize value)
+{
+    constexpr VkDeviceSize Alignment = 16;
+    if (value > std::numeric_limits<VkDeviceSize>::max() - (Alignment - 1))
+        throw std::overflow_error("RHI texture upload staging size overflow");
+    return (value + Alignment - 1) & ~(Alignment - 1);
+}
 
 ReadbackFormatInfo GetReadbackFormatInfo(VkFormat format)
 {
@@ -104,7 +143,7 @@ const std::shared_ptr<VkBufferHandle> &BufferUploadTicket::GetBuffer() const
     return m_destination;
 }
 
-const std::shared_ptr<VkTexture> &TextureUploadTicket::GetTexture() const
+const std::shared_ptr<rhi::TextureResource> &TextureUploadTicket::GetTexture() const
 {
     if (!m_published || !m_texture)
         throw std::logic_error("GPU texture upload has not been published");
@@ -169,13 +208,14 @@ void GraphicsImageReadbackRecorder::Reset() noexcept
 // Initialization
 // ============================================================================
 
-bool VkResourceManager::Initialize(const VkDeviceContext &context)
+bool VkResourceManager::Initialize(VkDeviceContext &context)
 {
     m_ownerThread = std::this_thread::get_id();
     m_device = context.GetDevice();
     m_physicalDevice = context.GetPhysicalDevice();
     m_vmaAllocator = context.GetVmaAllocator();
     m_graphicsQueue = context.GetGraphicsQueue();
+    m_rhiDevice = &context.GetRhiDevice();
 
     // Create command pool
     VkCommandPoolCreateInfo poolInfo{};
@@ -249,6 +289,7 @@ void VkResourceManager::Destroy() noexcept
     m_device = VK_NULL_HANDLE;
     m_physicalDevice = VK_NULL_HANDLE;
     m_graphicsQueue = VK_NULL_HANDLE;
+    m_rhiDevice = nullptr;
     m_asyncTransfer = nullptr;
     m_asyncReadback = nullptr;
 }
@@ -425,120 +466,121 @@ void VkResourceManager::DrainBufferUploads() noexcept
     m_pendingTextureUploads.clear();
 }
 
-std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const TextureCpuData &cpuData,
-                                                                           VkFormat format, VkFilter minFilter,
-                                                                           VkFilter magFilter,
-                                                                           VkSamplerMipmapMode mipFilter,
-                                                                           VkSamplerAddressMode addressMode, int aniso)
+std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const rhi::TextureUploadRequest &request)
 {
-    if (m_device == VK_NULL_HANDLE || m_vmaAllocator == VK_NULL_HANDLE)
-        throw std::logic_error("GPU texture upload requires an initialized resource manager");
-    if (!cpuData.IsValid() || cpuData.mipLevels.size() > std::numeric_limits<uint32_t>::max())
-        throw std::invalid_argument("GPU texture upload requires a valid CPU mip payload");
-    if (cpuData.dimension != TextureDimension::Texture2D)
-        throw std::invalid_argument("legacy GPU texture upload currently accepts Texture2D only");
-    const auto expectedFormat = [](TextureFormat textureFormat) {
-        switch (textureFormat) {
-        case TextureFormat::Rgba8UNorm:
-            return VK_FORMAT_R8G8B8A8_UNORM;
-        case TextureFormat::Rgba8Srgb:
-            return VK_FORMAT_R8G8B8A8_SRGB;
-        case TextureFormat::Rgba32Float:
-            return VK_FORMAT_R32G32B32A32_SFLOAT;
-        case TextureFormat::BC1RgbaUNorm:
-            return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-        case TextureFormat::BC1RgbaSrgb:
-            return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
-        case TextureFormat::BC3UNorm:
-            return VK_FORMAT_BC3_UNORM_BLOCK;
-        case TextureFormat::BC3Srgb:
-            return VK_FORMAT_BC3_SRGB_BLOCK;
-        case TextureFormat::BC4UNorm:
-            return VK_FORMAT_BC4_UNORM_BLOCK;
-        case TextureFormat::BC5UNorm:
-            return VK_FORMAT_BC5_UNORM_BLOCK;
-        case TextureFormat::BC6HUFloat:
-            return VK_FORMAT_BC6H_UFLOAT_BLOCK;
-        case TextureFormat::BC7UNorm:
-            return VK_FORMAT_BC7_UNORM_BLOCK;
-        case TextureFormat::BC7Srgb:
-            return VK_FORMAT_BC7_SRGB_BLOCK;
-        case TextureFormat::Rgba4UNormPack16:
-            return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
-        case TextureFormat::Rgba16UNorm:
-            return VK_FORMAT_R16G16B16A16_UNORM;
-        case TextureFormat::Rgba16Float:
-            return VK_FORMAT_R16G16B16A16_SFLOAT;
+    if (m_device == VK_NULL_HANDLE || !m_rhiDevice)
+        throw std::logic_error("RHI texture upload requires an initialized resource manager");
+    if (!rhi::HasTextureUsage(request.texture.usage, rhi::TextureUsageFlags::Sampled) ||
+        !rhi::HasTextureUsage(request.texture.usage, rhi::TextureUsageFlags::TransferDestination) ||
+        request.texture.samples != rhi::SampleCount::One)
+        throw std::invalid_argument("RHI texture upload requires a single-sample sampled transfer destination");
+    if (!request.subresources || request.subresourceCount == 0 || request.view.texture.IsValid())
+        throw std::invalid_argument("RHI texture upload requires source subresources and an unbound view descriptor");
+
+    const VkFormat format = rhi::ToVkFormat(request.texture.format);
+    const TextureFormatLayout layout = GetTextureFormatLayout(format);
+    const uint32_t arrayLayers =
+        request.texture.dimension == rhi::TextureDimension::Texture3D ? 1U : request.texture.depthOrLayers;
+    if (arrayLayers == 0 || request.texture.mipLevels == 0)
+        throw std::invalid_argument("RHI texture upload dimensions are empty");
+
+    std::vector<bool> uploaded(static_cast<size_t>(request.texture.mipLevels) * arrayLayers, false);
+    std::vector<VkBufferImageCopy> regions;
+    regions.reserve(request.subresourceCount);
+    std::vector<VkDeviceSize> stagingOffsets;
+    stagingOffsets.reserve(request.subresourceCount);
+    VkDeviceSize stagingBytes = 0;
+    VkDeviceSize residentBytes = 0;
+
+    for (uint32_t index = 0; index < request.subresourceCount; ++index) {
+        const auto &source = request.subresources[index];
+        if (!source.data || source.byteSize == 0 || source.mipLevel >= request.texture.mipLevels ||
+            source.layerCount == 0)
+            throw std::invalid_argument("RHI texture upload contains an empty or out-of-range subresource");
+
+        const uint32_t mipWidth = (std::max)(1U, request.texture.width >> source.mipLevel);
+        const uint32_t mipHeight = request.texture.dimension == rhi::TextureDimension::Texture1D
+                                       ? 1U
+                                       : (std::max)(1U, request.texture.height >> source.mipLevel);
+        const uint32_t mipDepth = request.texture.dimension == rhi::TextureDimension::Texture3D
+                                      ? (std::max)(1U, request.texture.depthOrLayers >> source.mipLevel)
+                                      : 1U;
+        if (source.width != mipWidth || source.height != mipHeight || source.depth != mipDepth)
+            throw std::invalid_argument("RHI texture upload subresource extent does not match its mip level");
+        if (request.texture.dimension == rhi::TextureDimension::Texture3D) {
+            if (source.baseLayer != 0 || source.layerCount != 1)
+                throw std::invalid_argument("RHI Texture3D uploads cannot address array layers");
+        } else if (source.baseLayer >= arrayLayers || source.layerCount > arrayLayers - source.baseLayer) {
+            throw std::invalid_argument("RHI texture upload array layer range is out of bounds");
         }
-        return VK_FORMAT_UNDEFINED;
-    };
-    if (format != expectedFormat(cpuData.format))
-        throw std::invalid_argument("GPU texture format does not match the CPU pixel storage");
 
-    const VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    VkImageFormatProperties formatProperties{};
-    if (vkGetPhysicalDeviceImageFormatProperties(m_physicalDevice, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-                                                 usage, 0, &formatProperties) != VK_SUCCESS)
-        throw std::runtime_error(std::string("GPU does not support sampled texture format '") +
-                                 TextureFormatName(cpuData.format) + "'");
-    const auto &baseMip = cpuData.mipLevels.front();
-    if (baseMip.width > formatProperties.maxExtent.width || baseMip.height > formatProperties.maxExtent.height ||
-        cpuData.mipLevels.size() > formatProperties.maxMipLevels)
-        throw std::runtime_error("GPU texture dimensions or mip count exceed device limits");
+        const uint64_t blockColumns = (mipWidth + layout.blockWidth - 1) / layout.blockWidth;
+        const uint64_t blockRows = (mipHeight + layout.blockHeight - 1) / layout.blockHeight;
+        const uint64_t rowPitch = blockColumns * layout.bytesPerBlock;
+        const uint64_t slicePitch = rowPitch * blockRows;
+        const uint64_t expectedBytes = slicePitch * mipDepth * source.layerCount;
+        if (source.rowPitch != rowPitch || source.slicePitch != slicePitch || source.byteSize != expectedBytes)
+            throw std::invalid_argument("RHI texture upload subresource byte layout is not tightly packed");
 
-    for (const auto &mip : cpuData.mipLevels) {
-        const uint32_t bytesPerTexel = TextureFormatBytesPerTexel(cpuData.format);
-        const uint32_t blockBytes = TextureFormatBlockBytes(cpuData.format);
-        const uint64_t expectedRow = bytesPerTexel != 0
-                                         ? static_cast<uint64_t>(mip.width) * bytesPerTexel
-                                         : static_cast<uint64_t>((std::max)(1U, (mip.width + 3U) / 4U)) * blockBytes;
-        const uint64_t expectedRows = bytesPerTexel != 0 ? mip.height : (std::max)(1U, (mip.height + 3U) / 4U);
-        const uint64_t expectedSlice = expectedRow * expectedRows;
-        const uint64_t expectedSize = expectedSlice * mip.depth;
-        if (mip.width == 0 || mip.height == 0 || mip.depth != 1 || mip.rowPitch != expectedRow ||
-            mip.slicePitch != expectedSlice || mip.byteSize != expectedSize || mip.byteOffset > cpuData.bytes.size() ||
-            mip.byteSize > cpuData.bytes.size() - mip.byteOffset)
-            throw std::invalid_argument("GPU texture upload contains an invalid mip byte range");
+        for (uint32_t layer = 0; layer < source.layerCount; ++layer) {
+            const size_t coverage = static_cast<size_t>(source.mipLevel) * arrayLayers + source.baseLayer + layer;
+            if (uploaded[coverage])
+                throw std::invalid_argument("RHI texture upload contains overlapping subresources");
+            uploaded[coverage] = true;
+        }
+
+        stagingBytes = AlignUploadOffset(stagingBytes);
+        stagingOffsets.push_back(stagingBytes);
+        if (source.byteSize > std::numeric_limits<VkDeviceSize>::max() - stagingBytes ||
+            source.byteSize > std::numeric_limits<VkDeviceSize>::max() - residentBytes)
+            throw std::overflow_error("RHI texture upload byte size overflow");
+        stagingBytes += source.byteSize;
+        residentBytes += source.byteSize;
+
+        VkBufferImageCopy region{};
+        region.bufferOffset = stagingOffsets.back();
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, source.mipLevel, source.baseLayer, source.layerCount};
+        region.imageExtent = {source.width, source.height, source.depth};
+        regions.push_back(region);
     }
+    if (std::find(uploaded.begin(), uploaded.end(), false) != uploaded.end())
+        throw std::invalid_argument("RHI texture upload must initialize every mip and array layer");
 
     auto ticket = std::make_shared<TextureUploadTicket>();
     ticket->m_manager = this;
-    ticket->m_format = format;
-    if ((minFilter != VK_FILTER_LINEAR && minFilter != VK_FILTER_NEAREST) ||
-        (magFilter != VK_FILTER_LINEAR && magFilter != VK_FILTER_NEAREST) ||
-        (mipFilter != VK_SAMPLER_MIPMAP_MODE_LINEAR && mipFilter != VK_SAMPLER_MIPMAP_MODE_NEAREST))
-        throw std::invalid_argument("GPU texture upload has an invalid sampler filter");
-    ticket->m_minFilter = minFilter;
-    ticket->m_magFilter = magFilter;
-    ticket->m_mipFilter = mipFilter;
-    ticket->m_addressMode = addressMode;
-    ticket->m_aniso = aniso;
-    ticket->m_mipLevels = static_cast<uint32_t>(cpuData.mipLevels.size());
-    ticket->m_residentBytes = cpuData.bytes.size();
-    ticket->m_staging = AcquireStagingBuffer(cpuData.bytes.size());
+    ticket->m_residentBytes = residentBytes;
+    ticket->m_staging = AcquireStagingBuffer(stagingBytes);
     if (!ticket->m_staging)
-        throw std::runtime_error("failed to allocate GPU texture staging buffer");
-    ticket->m_staging->CopyFrom(cpuData.bytes.data(), cpuData.bytes.size(), 0);
-    ticket->m_texture = std::make_shared<VkTexture>();
+        throw std::runtime_error("failed to allocate RHI texture staging buffer");
+    for (uint32_t index = 0; index < request.subresourceCount; ++index)
+        ticket->m_staging->CopyFrom(request.subresources[index].data, request.subresources[index].byteSize,
+                                    stagingOffsets[index]);
+
+    const rhi::TextureHandle texture = m_rhiDevice->CreateTexture(request.texture);
+    if (!texture.IsValid())
+        throw std::runtime_error("failed to allocate RHI texture");
+    rhi::TextureViewDesc viewDesc = request.view;
+    viewDesc.texture = texture;
+    const rhi::TextureViewHandle view = m_rhiDevice->CreateTextureView(viewDesc);
+    if (!view.IsValid()) {
+        m_rhiDevice->Release(texture);
+        throw std::runtime_error("failed to allocate RHI texture view");
+    }
+    const rhi::SamplerHandle sampler = m_rhiDevice->CreateSampler(request.sampler);
+    if (!sampler.IsValid()) {
+        m_rhiDevice->Release(view);
+        m_rhiDevice->Release(texture);
+        throw std::runtime_error("failed to allocate RHI texture sampler");
+    }
+    ticket->m_texture = std::make_shared<rhi::TextureResource>(*m_rhiDevice, texture, view, sampler, residentBytes);
 
     const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable();
-    bool created = false;
-    if (canSubmitAsync) {
-        created = ticket->m_texture->m_image.CreateConcurrent(
-            m_vmaAllocator, m_device, baseMip.width, baseMip.height, format, VK_IMAGE_TILING_OPTIMAL, usage,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, {m_graphicsQueueFamily, m_asyncTransfer->GetQueueFamily()},
-            VK_SAMPLE_COUNT_1_BIT, ticket->m_mipLevels);
-    } else {
-        created = ticket->m_texture->m_image.Create(m_vmaAllocator, m_device, baseMip.width, baseMip.height, format,
-                                                    VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                                    VK_SAMPLE_COUNT_1_BIT, ticket->m_mipLevels);
-    }
-    if (!created)
-        throw std::runtime_error("failed to allocate GPU texture image");
-
     VkCommandBuffer commandBuffer = canSubmitAsync ? m_asyncTransfer->Begin() : BeginSingleTimeCommands();
     if (commandBuffer == VK_NULL_HANDLE)
-        throw std::runtime_error("failed to begin GPU texture upload");
+        throw std::runtime_error("failed to begin RHI texture upload");
+    const VkImage image = m_rhiDevice->Resolve(texture);
+    if (image == VK_NULL_HANDLE)
+        throw std::logic_error("RHI texture upload lost its Vulkan image");
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -546,51 +588,32 @@ std::shared_ptr<TextureUploadTicket> VkResourceManager::BeginTextureUpload(const
     barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = ticket->m_texture->m_image.GetImage();
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = ticket->m_mipLevels;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = 0;
+    barrier.image = image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, request.texture.mipLevels, 0, arrayLayers};
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
                          nullptr, 0, nullptr, 1, &barrier);
-
-    std::vector<VkBufferImageCopy> regions;
-    regions.reserve(cpuData.mipLevels.size());
-    for (uint32_t level = 0; level < ticket->m_mipLevels; ++level) {
-        const auto &mip = cpuData.mipLevels[level];
-        VkBufferImageCopy region{};
-        region.bufferOffset = mip.byteOffset;
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.mipLevel = level;
-        region.imageSubresource.baseArrayLayer = 0;
-        region.imageSubresource.layerCount = 1;
-        region.imageExtent = {mip.width, mip.height, 1};
-        regions.push_back(region);
-    }
-    vkCmdCopyBufferToImage(commandBuffer, ticket->m_staging->GetBuffer(), ticket->m_texture->m_image.GetImage(),
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(regions.size()), regions.data());
+    vkCmdCopyBufferToImage(commandBuffer, ticket->m_staging->GetBuffer(), image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<uint32_t>(regions.size()), regions.data());
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = canSubmitAsync ? 0 : VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         canSubmitAsync ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
-                         nullptr, 0, nullptr, 1, &barrier);
+                         canSubmitAsync ? VK_PIPELINE_STAGE_TRANSFER_BIT
+                                        : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
 
     if (canSubmitAsync) {
         ticket->m_upload = m_asyncTransfer->EndAsync(commandBuffer);
         if (!ticket->m_upload.IsValid())
-            throw std::runtime_error("failed to submit asynchronous GPU texture upload");
+            throw std::runtime_error("failed to submit asynchronous RHI texture upload");
         ticket->m_async = true;
         m_pendingTextureUploads.push_back(ticket);
     } else {
         EndSingleTimeCommands(commandBuffer);
         RecycleStagingBuffer(std::move(ticket->m_staging));
-        FinalizeTextureUpload(*ticket);
         ticket->m_complete = true;
         ticket->m_published = true;
     }
@@ -604,14 +627,12 @@ bool VkResourceManager::TryPublishTextureUpload(const std::shared_ptr<TextureUpl
     if (ticket->m_published)
         return true;
     if (ticket->m_complete) {
-        FinalizeTextureUpload(*ticket);
         ticket->m_published = true;
         return true;
     }
     if (!ticket->m_upload.IsValid() || !m_asyncTransfer)
         throw std::logic_error("GPU texture upload ticket has no live transfer submission");
     if (ticket->m_upload.timelineValue != 0 && m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE) {
-        FinalizeTextureUpload(*ticket);
         m_requiredUploadTimelineValue = std::max(m_requiredUploadTimelineValue, ticket->m_upload.timelineValue);
         ++m_timelineUploadPublicationCount;
         ticket->m_published = true;
@@ -623,14 +644,8 @@ bool VkResourceManager::TryPublishTextureUpload(const std::shared_ptr<TextureUpl
     RecycleStagingBuffer(std::move(ticket->m_staging));
     m_pendingTextureUploads.erase(std::remove(m_pendingTextureUploads.begin(), m_pendingTextureUploads.end(), ticket),
                                   m_pendingTextureUploads.end());
-    try {
-        FinalizeTextureUpload(*ticket);
-        ticket->m_complete = true;
-        ticket->m_published = true;
-    } catch (...) {
-        ticket->m_texture.reset();
-        throw;
-    }
+    ticket->m_complete = true;
+    ticket->m_published = true;
     return true;
 }
 
@@ -673,17 +688,6 @@ void VkResourceManager::PollGpuUploads()
 VkSemaphore VkResourceManager::GetUploadTimelineSemaphore() const noexcept
 {
     return m_asyncTransfer ? m_asyncTransfer->GetTimelineSemaphore() : VK_NULL_HANDLE;
-}
-
-void VkResourceManager::FinalizeTextureUpload(TextureUploadTicket &ticket)
-{
-    if (!ticket.m_texture ||
-        !ticket.m_texture->m_image.CreateView(ticket.m_format, VK_IMAGE_ASPECT_COLOR_BIT, ticket.m_mipLevels) ||
-        !ticket.m_texture->m_sampler.Create(m_device, m_physicalDevice, ticket.m_minFilter, ticket.m_magFilter,
-                                            ticket.m_mipFilter, ticket.m_addressMode, ticket.m_mipLevels,
-                                            ticket.m_aniso))
-        throw std::runtime_error("failed to finalize GPU texture view or sampler");
-    ticket.m_texture->m_residentBytes = ticket.m_residentBytes;
 }
 
 std::shared_ptr<ImageReadbackTicket> VkResourceManager::BeginImageReadback(VkImage image, VkImageLayout layout,
@@ -1046,123 +1050,6 @@ std::unique_ptr<VkImageHandle> VkResourceManager::CreateDepthBuffer(uint32_t wid
     }
 
     return depthImage;
-}
-
-std::unique_ptr<VkTexture> VkResourceManager::LoadTexture(const std::string &filePath, bool generateMipmaps,
-                                                          VkFormat format, int maxSize, bool normalMapMode,
-                                                          VkFilter filter, VkSamplerAddressMode addressMode, int aniso)
-{
-    int texWidth, texHeight, texChannels;
-    // Read file bytes first to support Unicode paths on Windows
-    std::vector<unsigned char> fileBytes;
-    if (!ReadFileBytes(filePath, fileBytes) || fileBytes.empty()) {
-        INXLOG_ERROR("Failed to read texture file: ", filePath);
-        return nullptr;
-    }
-
-    // Detect HDR images (stbi_is_hdr_from_memory checks file header)
-    bool isHdr = stbi_is_hdr_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size())) != 0;
-
-    if (isHdr) {
-        // HDR path: load as float data → VK_FORMAT_R32G32B32A32_SFLOAT
-        float *floatPixels = stbi_loadf_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()), &texWidth,
-                                                    &texHeight, &texChannels, STBI_rgb_alpha);
-        if (!floatPixels) {
-            INXLOG_ERROR("Failed to load HDR texture: ", filePath);
-            return nullptr;
-        }
-
-        VkFormat hdrFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
-        auto texture = std::make_unique<VkTexture>();
-        if (!texture->CreateFromPixelsImmediate(m_vmaAllocator, m_device, m_physicalDevice, m_commandPool,
-                                                m_graphicsQueue, reinterpret_cast<const unsigned char *>(floatPixels),
-                                                texWidth, texHeight, hdrFormat, generateMipmaps, filter, addressMode,
-                                                aniso)) {
-            stbi_image_free(floatPixels);
-            return nullptr;
-        }
-        stbi_image_free(floatPixels);
-        return texture;
-    }
-
-    // LDR path: load as 8-bit RGBA
-    stbi_uc *pixels = stbi_load_from_memory(fileBytes.data(), static_cast<int>(fileBytes.size()), &texWidth, &texHeight,
-                                            &texChannels, STBI_rgb_alpha);
-    InxTextureData pnmFallback;
-
-    if (!pixels) {
-        pnmFallback = InxTextureLoader::LoadFromMemory(fileBytes.data(), fileBytes.size(), filePath);
-        if (!pnmFallback.IsValid()) {
-            INXLOG_ERROR("Failed to load texture: ", filePath);
-            return nullptr;
-        }
-        texWidth = pnmFallback.width;
-        texHeight = pnmFallback.height;
-        texChannels = pnmFallback.channels;
-    }
-
-    // Apply max_size clamping: downscale if either dimension exceeds maxSize
-    uint32_t finalW = static_cast<uint32_t>(texWidth);
-    uint32_t finalH = static_cast<uint32_t>(texHeight);
-    std::vector<unsigned char> resizedBuf;
-    const unsigned char *basePixels = pixels ? pixels : pnmFallback.pixels.data();
-
-    if (normalMapMode) {
-        INXLOG_INFO("LoadTexture: preserving authored tangent-space normal map '", filePath, "'");
-    }
-
-    if (maxSize > 0 && (texWidth > maxSize || texHeight > maxSize)) {
-        float scale = static_cast<float>(maxSize) / static_cast<float>((std::max)(texWidth, texHeight));
-        finalW = (std::max)(1u, static_cast<uint32_t>(texWidth * scale));
-        finalH = (std::max)(1u, static_cast<uint32_t>(texHeight * scale));
-
-        resizedBuf.resize(finalW * finalH * 4);
-        stbir_resize_uint8_linear(basePixels, texWidth, texHeight, texWidth * 4, resizedBuf.data(),
-                                  static_cast<int>(finalW), static_cast<int>(finalH), static_cast<int>(finalW * 4),
-                                  STBIR_RGBA);
-
-        INXLOG_INFO("LoadTexture: resized '", filePath, "' from ", texWidth, "x", texHeight, " to ", finalW, "x",
-                    finalH, " (maxSize=", maxSize, ")");
-    }
-
-    const unsigned char *srcPixels = resizedBuf.empty() ? basePixels : resizedBuf.data();
-    auto texture = CreateTextureFromPixelsImmediate(srcPixels, finalW, finalH, format, generateMipmaps, filter,
-                                                    addressMode, aniso);
-
-    if (pixels) {
-        stbi_image_free(pixels);
-    }
-
-    return texture;
-}
-
-std::unique_ptr<VkTexture>
-VkResourceManager::CreateTextureFromPixelsImmediate(const unsigned char *pixels, uint32_t width, uint32_t height,
-                                                    VkFormat format, bool generateMipmaps, VkFilter filter,
-                                                    VkSamplerAddressMode addressMode, int aniso)
-{
-    auto texture = std::make_unique<VkTexture>();
-
-    if (!texture->CreateFromPixelsImmediate(m_vmaAllocator, m_device, m_physicalDevice, m_commandPool, m_graphicsQueue,
-                                            pixels, width, height, format, generateMipmaps, filter, addressMode,
-                                            aniso)) {
-        return nullptr;
-    }
-
-    return texture;
-}
-
-std::unique_ptr<VkTexture> VkResourceManager::CreateSolidColorTexture(uint32_t width, uint32_t height, uint8_t r,
-                                                                      uint8_t g, uint8_t b, uint8_t a, VkFormat format)
-{
-    auto texture = std::make_unique<VkTexture>();
-
-    if (!texture->CreateSolidColor(m_vmaAllocator, m_device, m_physicalDevice, m_commandPool, m_graphicsQueue, width,
-                                   height, r, g, b, a, format)) {
-        return nullptr;
-    }
-
-    return texture;
 }
 
 void VkResourceManager::TransitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout,

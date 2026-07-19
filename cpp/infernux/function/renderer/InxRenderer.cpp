@@ -396,7 +396,7 @@ void InxRenderer::PreparePipeline()
                     return lease;
                 }
                 resolved.status = TextureResolveStatus::Ready;
-                resolved.binding = {resident->GetView(), resident->GetSampler(), std::move(resident)};
+                resolved.binding.keepAlive = std::move(resident);
             } else {
                 resolved = core->ResolveTextureForMaterial(textureGuid, bindingName);
             }
@@ -409,17 +409,8 @@ void InxRenderer::PreparePipeline()
                 lease.status = particle::GpuBillboardTextureStatus::Failed;
                 return lease;
             }
-            auto &rhi = core->GetDeviceContext().GetRhiDevice();
-            lease.texture = rhi.RegisterTextureView(resolved.binding.imageView);
-            lease.sampler = rhi.RegisterSampler(resolved.binding.sampler);
-            if (!lease.texture.IsValid() || !lease.sampler.IsValid()) {
-                rhi.Release(lease.texture);
-                rhi.Release(lease.sampler);
-                lease.texture = {};
-                lease.sampler = {};
-                lease.status = particle::GpuBillboardTextureStatus::Failed;
-                return lease;
-            }
+            lease.texture = resolved.binding.keepAlive->GetView();
+            lease.sampler = resolved.binding.keepAlive->GetSampler();
             lease.keepAlive = std::move(resolved.binding.keepAlive);
             lease.status = particle::GpuBillboardTextureStatus::Ready;
             return lease;

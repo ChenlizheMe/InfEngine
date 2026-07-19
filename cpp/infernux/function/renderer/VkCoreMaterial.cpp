@@ -12,6 +12,7 @@
 #include "InxError.h"
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
+#include "TextureUploadBuilder.h"
 #include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
@@ -52,43 +53,6 @@ void HashCombine(size_t &seed, uint64_t value)
 {
     const size_t hash = std::hash<uint64_t>{}(value);
     seed ^= hash + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
-}
-
-VkFormat ToVulkanTextureFormat(TextureFormat format)
-{
-    switch (format) {
-    case TextureFormat::Rgba8UNorm:
-        return VK_FORMAT_R8G8B8A8_UNORM;
-    case TextureFormat::Rgba8Srgb:
-        return VK_FORMAT_R8G8B8A8_SRGB;
-    case TextureFormat::Rgba32Float:
-        return VK_FORMAT_R32G32B32A32_SFLOAT;
-    case TextureFormat::BC1RgbaUNorm:
-        return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-    case TextureFormat::BC1RgbaSrgb:
-        return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
-    case TextureFormat::BC3UNorm:
-        return VK_FORMAT_BC3_UNORM_BLOCK;
-    case TextureFormat::BC3Srgb:
-        return VK_FORMAT_BC3_SRGB_BLOCK;
-    case TextureFormat::BC4UNorm:
-        return VK_FORMAT_BC4_UNORM_BLOCK;
-    case TextureFormat::BC5UNorm:
-        return VK_FORMAT_BC5_UNORM_BLOCK;
-    case TextureFormat::BC6HUFloat:
-        return VK_FORMAT_BC6H_UFLOAT_BLOCK;
-    case TextureFormat::BC7UNorm:
-        return VK_FORMAT_BC7_UNORM_BLOCK;
-    case TextureFormat::BC7Srgb:
-        return VK_FORMAT_BC7_SRGB_BLOCK;
-    case TextureFormat::Rgba4UNormPack16:
-        return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
-    case TextureFormat::Rgba16UNorm:
-        return VK_FORMAT_R16G16B16A16_UNORM;
-    case TextureFormat::Rgba16Float:
-        return VK_FORMAT_R16G16B16A16_SFLOAT;
-    }
-    throw std::invalid_argument("TextureResolver received an unsupported concrete texture format");
 }
 
 } // namespace
@@ -196,27 +160,25 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
     const std::string &filterMode = infTex->GetFilterMode();
     const std::string &wrapMode = infTex->GetWrapMode();
     const int anisoLevel = infTex->GetAnisoLevel();
-    const VkFormat format = ToVulkanTextureFormat(infTex->GetFormat());
-
-    // Map string settings to Vulkan enums
-    VkFilter minFilter = VK_FILTER_LINEAR;
-    VkFilter magFilter = VK_FILTER_LINEAR;
-    VkSamplerMipmapMode mipFilter = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    rhi::SamplerDesc sampler;
+    sampler.maxLod = static_cast<float>(infTex->GetCpuData()->mipLevels.size() - 1);
+    sampler.maxAnisotropy = (std::min)(static_cast<float>((std::max)(1, anisoLevel)),
+                                       m_deviceContext.GetCapabilities().limits.maxSamplerAnisotropy);
     if (filterMode == "point") {
-        minFilter = VK_FILTER_NEAREST;
-        magFilter = VK_FILTER_NEAREST;
+        sampler.minFilter = rhi::FilterMode::Nearest;
+        sampler.magFilter = rhi::FilterMode::Nearest;
+        sampler.mipFilter = rhi::FilterMode::Nearest;
     } else if (filterMode == "trilinear") {
-        mipFilter = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sampler.mipFilter = rhi::FilterMode::Linear;
     } else if (filterMode != "linear" && filterMode != "bilinear") {
         INXLOG_ERROR("TextureResolver: unsupported filter mode '", filterMode, "' for texture ", textureGuid);
         return {TextureResolveStatus::Failed, {}};
     }
 
-    VkSamplerAddressMode vkAddressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     if (wrapMode == "clamp")
-        vkAddressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
     else if (wrapMode == "mirror")
-        vkAddressMode = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::MirroredRepeat;
 
     // Cache key uses GUID so that a renamed file still shares its cache entry
     std::string cacheKey = textureGuid + "::format" + std::to_string(static_cast<uint32_t>(infTex->GetFormat())) +
@@ -227,15 +189,17 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
     {
         auto cached = m_textureCache.FindAsset(cacheKey, textureGuid, runtimeVersion, m_ensureFrameCounter);
         if (cached) {
-            return {TextureResolveStatus::Ready, {cached->GetView(), cached->GetSampler(), std::move(cached)}};
+            auto &rhiDevice = m_deviceContext.GetRhiDevice();
+            return {TextureResolveStatus::Ready,
+                    {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()), std::move(cached)}};
         }
     }
 
     auto pendingGpu = m_pendingTextureGpuUploads.find(cacheKey);
     if (pendingGpu == m_pendingTextureGpuUploads.end()) {
         try {
-            auto ticket = m_resourceManager.BeginTextureUpload(*infTex->GetCpuData(), format, minFilter, magFilter,
-                                                               mipFilter, vkAddressMode, anisoLevel);
+            TextureUploadBatch upload(*infTex->GetCpuData(), sampler);
+            auto ticket = m_resourceManager.BeginTextureUpload(upload.GetRequest());
             ++m_submittedTextureUploadCount;
             if (ticket->IsAsync())
                 ++m_asyncTextureUploadCount;
@@ -251,8 +215,9 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
         if (!m_resourceManager.TryPublishTextureUpload(pendingGpu->second.ticket))
             return {TextureResolveStatus::Pending, {}};
         auto texture = pendingGpu->second.ticket->GetTexture();
-        const VkImageView view = texture->GetView();
-        const VkSampler sampler = texture->GetSampler();
+        auto &rhiDevice = m_deviceContext.GetRhiDevice();
+        const VkImageView view = rhiDevice.Resolve(texture->GetView());
+        const VkSampler nativeSampler = rhiDevice.Resolve(texture->GetSampler());
         if (!registry.IsLoaded(textureGuid) ||
             registry.GetAssetVersion(textureGuid) != pendingGpu->second.runtimeVersion) {
             m_pendingTextureGpuUploads.erase(pendingGpu);
@@ -262,7 +227,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::stri
                                               pendingGpu->second.runtimeVersion);
         m_pendingTextureGpuUploads.erase(pendingGpu);
         ++m_completedTextureUploadCount;
-        return {TextureResolveStatus::Ready, {view, sampler, std::move(resident)}};
+        return {TextureResolveStatus::Ready, {view, nativeSampler, std::move(resident)}};
     } catch (const std::exception &exception) {
         INXLOG_ERROR("TextureResolver: GPU upload failed for '", textureGuid, "': ", exception.what());
         m_pendingTextureGpuUploads.erase(pendingGpu);
@@ -513,12 +478,16 @@ void InxVkCoreModular::InitializeMaterialSystem()
 
         auto whiteTex = m_textureCache.Find("white", m_ensureFrameCounter);
         if (whiteTex) {
-            m_materialPipelineManager.SetDefaultTexture(whiteTex->GetView(), whiteTex->GetSampler());
+            auto &rhiDevice = m_deviceContext.GetRhiDevice();
+            m_materialPipelineManager.SetDefaultTexture(rhiDevice.Resolve(whiteTex->GetView()),
+                                                        rhiDevice.Resolve(whiteTex->GetSampler()));
         }
 
         auto normalTex = m_textureCache.Find("_default_normal", m_ensureFrameCounter);
         if (normalTex) {
-            m_materialPipelineManager.SetDefaultNormalTexture(normalTex->GetView(), normalTex->GetSampler());
+            auto &rhiDevice = m_deviceContext.GetRhiDevice();
+            m_materialPipelineManager.SetDefaultNormalTexture(rhiDevice.Resolve(normalTex->GetView()),
+                                                              rhiDevice.Resolve(normalTex->GetSampler()));
         }
 
         // Set up texture resolver for material Texture2D properties
@@ -603,11 +572,15 @@ void InxVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSa
     // Restore default textures
     auto whiteTex = m_textureCache.Find("white", m_ensureFrameCounter);
     if (whiteTex) {
-        m_materialPipelineManager.SetDefaultTexture(whiteTex->GetView(), whiteTex->GetSampler());
+        auto &rhiDevice = m_deviceContext.GetRhiDevice();
+        m_materialPipelineManager.SetDefaultTexture(rhiDevice.Resolve(whiteTex->GetView()),
+                                                    rhiDevice.Resolve(whiteTex->GetSampler()));
     }
     auto normalTex = m_textureCache.Find("_default_normal", m_ensureFrameCounter);
     if (normalTex) {
-        m_materialPipelineManager.SetDefaultNormalTexture(normalTex->GetView(), normalTex->GetSampler());
+        auto &rhiDevice = m_deviceContext.GetRhiDevice();
+        m_materialPipelineManager.SetDefaultNormalTexture(rhiDevice.Resolve(normalTex->GetView()),
+                                                          rhiDevice.Resolve(normalTex->GetSampler()));
     }
 
     // Restore texture resolver
@@ -1011,7 +984,12 @@ bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
     if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE)
         return false;
     auto defaultTex = m_textureCache.Find("white", m_ensureFrameCounter);
-    if (!defaultTex || defaultTex->GetView() == VK_NULL_HANDLE || defaultTex->GetSampler() == VK_NULL_HANDLE)
+    if (!defaultTex)
+        return false;
+    auto &rhiDevice = m_deviceContext.GetRhiDevice();
+    const VkImageView defaultView = rhiDevice.Resolve(defaultTex->GetView());
+    const VkSampler defaultSampler = rhiDevice.Resolve(defaultTex->GetSampler());
+    if (defaultView == VK_NULL_HANDLE || defaultSampler == VK_NULL_HANDLE)
         return false;
     if (!m_sceneUbo)
         return false;
@@ -1024,8 +1002,8 @@ bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
     writes.reserve(kMaxShadowMaterialTextures + 2);
     for (uint32_t i = 0; i < kMaxShadowMaterialTextures; ++i) {
         imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfos[i].imageView = defaultTex->GetView();
-        imageInfos[i].sampler = defaultTex->GetSampler();
+        imageInfos[i].imageView = defaultView;
+        imageInfos[i].sampler = defaultSampler;
         VkWriteDescriptorSet w{};
         w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w.dstSet = set;
@@ -1143,10 +1121,14 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     }
 
     auto defaultTex = m_textureCache.Find("white", m_ensureFrameCounter);
-    if (!defaultTex || defaultTex->GetView() == VK_NULL_HANDLE || defaultTex->GetSampler() == VK_NULL_HANDLE ||
-        !m_sceneUbo) {
+    if (!defaultTex || !m_sceneUbo) {
         return VK_NULL_HANDLE;
     }
+    auto &rhiDevice = m_deviceContext.GetRhiDevice();
+    const VkImageView defaultView = rhiDevice.Resolve(defaultTex->GetView());
+    const VkSampler defaultSampler = rhiDevice.Resolve(defaultTex->GetSampler());
+    if (defaultView == VK_NULL_HANDLE || defaultSampler == VK_NULL_HANDLE)
+        return VK_NULL_HANDLE;
 
     std::vector<std::pair<uint32_t, MaterialDescriptorSet::TextureBinding>> sortedTextures;
     if (hasAlphaClip || hasVertexMaterialTextures) {
@@ -1166,8 +1148,8 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     HashCombine(resourceSignature, hasVertexMaterialTextures ? 1u : 0u);
     HashCombine(resourceSignature, hasAlphaClip ? 1u : 0u);
     HashCombine(resourceSignature, VulkanHandleBits(forwardMaterialDesc->descriptorSet));
-    HashCombine(resourceSignature, VulkanHandleBits(defaultTex->GetView()));
-    HashCombine(resourceSignature, VulkanHandleBits(defaultTex->GetSampler()));
+    HashCombine(resourceSignature, VulkanHandleBits(defaultView));
+    HashCombine(resourceSignature, VulkanHandleBits(defaultSampler));
     if (forwardMaterialDesc->materialUBO) {
         HashCombine(resourceSignature, VulkanHandleBits(forwardMaterialDesc->materialUBO->GetBuffer()));
         HashCombine(resourceSignature, forwardMaterialDesc->materialUBO->GetSize());
@@ -1203,8 +1185,8 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     std::vector<VkDescriptorImageInfo> imageInfos(kMaxShadowMaterialTextures);
     for (auto &imageInfo : imageInfos) {
         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = defaultTex->GetView();
-        imageInfo.sampler = defaultTex->GetSampler();
+        imageInfo.imageView = defaultView;
+        imageInfo.sampler = defaultSampler;
     }
     for (size_t index = 0; index < sortedTextures.size(); ++index) {
         const auto &texture = sortedTextures[index].second;

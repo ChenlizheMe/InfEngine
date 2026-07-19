@@ -229,8 +229,10 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
         for (const auto &entry : m_viewGroups)
             m_device->Release(entry.group);
         for (const auto &binding : m_textures) {
-            m_device->Release(binding.texture);
-            m_device->Release(binding.sampler);
+            if (binding.releaseHandles) {
+                m_device->Release(binding.texture);
+                m_device->Release(binding.sampler);
+            }
         }
         m_device->Release(m_materialBuffer);
         m_device->Release(m_layout);
@@ -319,13 +321,15 @@ void ParticleGpuBillboardRenderer::RetireBindGroup(rhi::BindGroupHandle group)
 }
 
 void ParticleGpuBillboardRenderer::RetireTexture(rhi::TextureViewHandle texture, rhi::SamplerHandle sampler,
-                                                 std::shared_ptr<void> keepAlive)
+                                                 std::shared_ptr<void> keepAlive, bool releaseHandles)
 {
     if (!m_device || (!texture.IsValid() && !sampler.IsValid() && !keepAlive))
         return;
-    auto release = [device = m_device, texture, sampler, keepAlive = std::move(keepAlive)]() mutable {
-        device->Release(texture);
-        device->Release(sampler);
+    auto release = [device = m_device, texture, sampler, keepAlive = std::move(keepAlive), releaseHandles]() mutable {
+        if (releaseHandles) {
+            device->Release(texture);
+            device->Release(sampler);
+        }
         keepAlive.reset();
     };
     if (m_deletionQueue)
@@ -485,6 +489,7 @@ bool ParticleGpuBillboardRenderer::RefreshTextureBindings(bool force)
         binding.texture = lease.texture;
         binding.sampler = lease.sampler;
         binding.keepAlive = std::move(lease.keepAlive);
+        binding.releaseHandles = lease.releaseHandles;
         binding.requestedGuid = textureGuid;
         binding.requestedVersion = textureVersion;
         binding.pending = pending;
@@ -507,7 +512,7 @@ bool ParticleGpuBillboardRenderer::RefreshTextureBindings(bool force)
     RetireViewBindGroups();
     for (const size_t index : changed) {
         auto &previous = m_textures[index];
-        RetireTexture(previous.texture, previous.sampler, std::move(previous.keepAlive));
+        RetireTexture(previous.texture, previous.sampler, std::move(previous.keepAlive), previous.releaseHandles);
     }
     m_group = group;
     m_textures = std::move(candidate);
