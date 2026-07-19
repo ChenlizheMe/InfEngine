@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import base64
 import hashlib
 import re
+import struct
 from typing import Any
 import zlib
 
@@ -98,7 +99,7 @@ void main() {
 class GpuParticleEmitterSource:
     stable_id: str
     kernel_hash: str
-    attribute_fields: tuple[tuple[str, str, str], ...]
+    attribute_fields: tuple[tuple[str, str, str, int, int], ...]
     state_stride: int
     bootstrap: str
     init: str
@@ -120,8 +121,14 @@ class GpuParticleEmitterSource:
             "stable_id": self.stable_id,
             "kernel_hash": self.kernel_hash,
             "attribute_fields": [
-                {"stable_id": stable_id, "field": field, "glsl_type": glsl_type}
-                for stable_id, field, glsl_type in self.attribute_fields
+                {
+                    "stable_id": stable_id,
+                    "field": field,
+                    "glsl_type": glsl_type,
+                    "offset": offset,
+                    "byte_size": byte_size,
+                }
+                for stable_id, field, glsl_type, offset, byte_size in self.attribute_fields
             ],
             "state_stride": self.state_stride,
             "stages": self.stages(),
@@ -136,7 +143,7 @@ class GpuParticleProgramSource:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": "infernux.particle_gpu_glsl",
-            "$version": 1,
+            "$version": 2,
             "kernel_hash": self.kernel_hash,
             "emitters": [emitter.to_dict() for emitter in self.emitters],
         }
@@ -157,6 +164,7 @@ class GpuParticleGlslLowerer:
         self, kernel_hash: str, emitter: ParticleEmitterKernelIR
     ) -> GpuParticleEmitterSource:
         fields = _attribute_fields(emitter)
+        attribute_layout, state_stride = _std430_attribute_layout(fields)
         prelude = _shader_prelude(fields, emitter.random_seed)
         bootstrap = prelude + _bootstrap_main()
         init_body, _ = _StageCompiler(emitter, fields).compile(emitter.init)
@@ -174,10 +182,10 @@ class GpuParticleGlslLowerer:
             emitter.stable_id,
             kernel_hash,
             tuple(
-                (stable_id, field, _glsl_type(value_type))
-                for stable_id, value_type, field in fields
+                (stable_id, field, _glsl_type(value_type), offset, byte_size)
+                for stable_id, value_type, field, offset, byte_size in attribute_layout
             ),
-            _std430_state_stride(fields),
+            state_stride,
             bootstrap,
             prelude + _init_main(init_body, emitter, fields),
             prelude + _update_main(update_body, emitter, fields),
@@ -519,37 +527,188 @@ def _attribute_fields(
     return tuple(result)
 
 
-def _std430_state_stride(
+_STD430_STORAGE_LAYOUT = {
+    ValueType.BOOL: (4, 4),
+    ValueType.I32: (4, 4),
+    ValueType.U32: (4, 4),
+    ValueType.F32: (4, 4),
+    ValueType.VEC2: (8, 8),
+    ValueType.VEC3: (16, 12),
+    ValueType.VEC4: (16, 16),
+    ValueType.COLOR: (16, 16),
+    ValueType.MAT3: (16, 48),
+    ValueType.MAT4: (16, 64),
+}
+
+
+def _std430_attribute_layout(
     fields: tuple[tuple[str, TypeRef, str], ...],
-) -> int:
+) -> tuple[tuple[tuple[str, TypeRef, str, int, int], ...], int]:
     offset = 8  # alive + spawn_generation
     struct_alignment = 4
-    layout = {
-        ValueType.BOOL: (4, 4),
-        ValueType.I32: (4, 4),
-        ValueType.U32: (4, 4),
-        ValueType.F32: (4, 4),
-        ValueType.VEC2: (8, 8),
-        ValueType.VEC3: (16, 12),
-        ValueType.VEC4: (16, 16),
-        ValueType.COLOR: (16, 16),
-        ValueType.MAT3: (16, 48),
-        ValueType.MAT4: (16, 64),
-    }
-    for stable_id, value_type, _field in fields:
+    result = []
+    for stable_id, value_type, field in fields:
         try:
-            alignment, byte_size = layout[value_type.value_type]
+            alignment, byte_size = _STD430_STORAGE_LAYOUT[value_type.value_type]
         except KeyError as exc:
             raise GpuParticleCompileError(
                 f"attribute {stable_id!r} has no std430 storage layout"
             ) from exc
-        offset = _align_up(offset, alignment) + byte_size
+        offset = _align_up(offset, alignment)
+        result.append((stable_id, value_type, field, offset, byte_size))
+        offset += byte_size
         struct_alignment = max(struct_alignment, alignment)
-    return _align_up(offset, struct_alignment)
+    return tuple(result), _align_up(offset, struct_alignment)
+
+
+def _std430_state_stride(fields: tuple[tuple[str, TypeRef, str], ...]) -> int:
+    return _std430_attribute_layout(fields)[1]
 
 
 def _align_up(value: int, alignment: int) -> int:
     return (value + alignment - 1) // alignment * alignment
+
+
+def build_gpu_particle_migration(
+    previous_layout: dict[str, Any],
+    next_layout: dict[str, Any],
+    next_kernel: ParticleEmitterKernelIR,
+) -> dict[str, Any]:
+    """Build raw-word copy ranges and defaults for one layout migration."""
+    if not isinstance(previous_layout, dict) or not isinstance(next_layout, dict):
+        raise GpuParticleCompileError("GPU particle migration requires two layout documents")
+    if previous_layout.get("stable_id") != next_layout.get("stable_id"):
+        raise GpuParticleCompileError("GPU particle migration emitter identity changed")
+    old_stride = previous_layout.get("state_stride")
+    new_stride = next_layout.get("state_stride")
+    if (
+        type(old_stride) is not int
+        or old_stride <= 0
+        or old_stride % 4
+        or type(new_stride) is not int
+        or new_stride <= 0
+        or new_stride % 4
+    ):
+        raise GpuParticleCompileError("GPU particle migration state strides are invalid")
+
+    previous_fields = _decode_attribute_layout(previous_layout)
+    next_fields = _decode_attribute_layout(next_layout)
+    kernel_schema = {
+        stable_id: (value_type, default)
+        for stable_id, value_type, default in next_kernel.attributes
+    }
+    if set(next_fields) != set(kernel_schema):
+        raise GpuParticleCompileError("GPU particle migration layout does not match Kernel IR")
+
+    defaults = bytearray(new_stride)
+    for stable_id, (value_type, default) in kernel_schema.items():
+        _glsl_type_name, offset, _byte_size = next_fields[stable_id]
+        _pack_std430_default(defaults, offset, value_type, default)
+
+    copy_ranges = []
+    for stable_id, (new_type, new_offset, new_size) in next_fields.items():
+        previous = previous_fields.get(stable_id)
+        if previous is None:
+            continue
+        old_type, old_offset, old_size = previous
+        if old_type != new_type or old_size != new_size:
+            raise GpuParticleCompileError(
+                f"GPU particle attribute {stable_id!r} changed storage type"
+            )
+        copy_ranges.append(
+            {
+                "source_offset": old_offset,
+                "destination_offset": new_offset,
+                "byte_size": new_size,
+            }
+        )
+    copy_ranges.sort(key=lambda item: item["destination_offset"])
+    return {
+        "source_stride": old_stride,
+        "destination_stride": new_stride,
+        "copy_ranges": copy_ranges,
+        "default_state_words": list(struct.unpack(f"<{new_stride // 4}I", defaults)),
+    }
+
+
+def _decode_attribute_layout(
+    layout: dict[str, Any],
+) -> dict[str, tuple[str, int, int]]:
+    fields = layout.get("attribute_fields")
+    stride = layout.get("state_stride")
+    if type(fields) is not list or type(stride) is not int:
+        raise GpuParticleCompileError("GPU particle attribute layout is incomplete")
+    result = {}
+    expected_keys = {
+        "stable_id",
+        "field",
+        "glsl_type",
+        "offset",
+        "byte_size",
+    }
+    for field in fields:
+        if type(field) is not dict or set(field) != expected_keys:
+            raise GpuParticleCompileError("GPU particle attribute layout entry is invalid")
+        stable_id = field["stable_id"]
+        glsl_type = field["glsl_type"]
+        offset = field["offset"]
+        byte_size = field["byte_size"]
+        if (
+            type(stable_id) is not str
+            or not stable_id
+            or stable_id in result
+            or type(glsl_type) is not str
+            or type(offset) is not int
+            or offset < 8
+            or offset % 4
+            or type(byte_size) is not int
+            or byte_size <= 0
+            or byte_size % 4
+            or offset + byte_size > stride
+        ):
+            raise GpuParticleCompileError("GPU particle attribute layout entry is invalid")
+        result[stable_id] = (glsl_type, offset, byte_size)
+    return result
+
+
+def _pack_std430_default(
+    destination: bytearray,
+    offset: int,
+    value_type: TypeRef,
+    value: Any,
+) -> None:
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        struct.pack_into("<I", destination, offset, 1 if value else 0)
+    elif kind is ValueType.I32:
+        struct.pack_into("<i", destination, offset, int(value))
+    elif kind is ValueType.U32:
+        struct.pack_into("<I", destination, offset, int(value))
+    elif kind is ValueType.F32:
+        struct.pack_into("<f", destination, offset, float(value))
+    elif kind in {ValueType.VEC2, ValueType.VEC3, ValueType.VEC4, ValueType.COLOR}:
+        count = {
+            ValueType.VEC2: 2,
+            ValueType.VEC3: 3,
+            ValueType.VEC4: 4,
+            ValueType.COLOR: 4,
+        }[kind]
+        struct.pack_into(f"<{count}f", destination, offset, *(float(item) for item in value))
+    elif kind is ValueType.MAT3:
+        values = [float(item) for item in value]
+        for column in range(3):
+            struct.pack_into(
+                "<3f",
+                destination,
+                offset + column * 16,
+                *values[column * 3 : column * 3 + 3],
+            )
+    elif kind is ValueType.MAT4:
+        struct.pack_into("<16f", destination, offset, *(float(item) for item in value))
+    else:
+        raise GpuParticleCompileError(
+            f"GPU particle default for {kind.value!r} has no std430 encoding"
+        )
 
 
 def _shader_prelude(
@@ -936,6 +1095,7 @@ __all__ = [
     "GpuParticleEmitterSource",
     "GpuParticleGlslLowerer",
     "GpuParticleProgramSource",
+    "build_gpu_particle_migration",
     "compile_gpu_particle_spirv",
     "decode_gpu_particle_spirv",
     "validate_gpu_particle_spirv",
