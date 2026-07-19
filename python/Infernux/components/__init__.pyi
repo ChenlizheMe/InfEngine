@@ -73,6 +73,7 @@ from .script_loader import (
 from .spirit_animator import SpiritAnimator as SpiritAnimator
 from .skeletal_animator import SkeletalAnimator as SkeletalAnimator
 from .timeline_action import TimelineAction as TimelineAction
+from .particle_system import ParticleSystem as ParticleSystem
 from .registry import (
     get_type as get_type,
     get_all_types as get_all_types,
@@ -170,4 +171,5 @@ __all__ = [
     "SpiritAnimator",
     "SkeletalAnimator",
     "TimelineAction",
+    "ParticleSystem",
 ]

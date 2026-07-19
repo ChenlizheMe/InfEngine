@@ -6,7 +6,7 @@ import pytest
 from Infernux.core.vfx_system import VfxEmitter
 from Infernux.core.vfx_system import VfxSystem
 from Infernux.components.particle_system import ParticleSystem
-from Infernux.core.asset_ref import ParticleGraphRef
+from Infernux.core.asset_ref import ParticleGraphRef, VfxSystemRef
 from Infernux.core.material import Material
 from Infernux.graph import (
     AssetReference,
@@ -240,6 +240,124 @@ def test_particle_system_runs_multi_emitter_graph_and_controls_each_emitter(
     component._remove_native_batch()
 
 
+class _MixedParticleNative:
+    def __init__(self):
+        self.program_batches = []
+        self.frames = []
+        self.removed_batches = []
+        self.reset_emitters = []
+
+    def _replace_gpu_particle_emitters(self, programs, removed):
+        self.program_batches.append((programs, removed))
+        return ""
+
+    def _begin_gpu_particle_frame(self, emitter_id, *request):
+        self.frames.append((emitter_id, request))
+        return True
+
+    def _reset_gpu_particle_emitter(self, emitter_id):
+        self.reset_emitters.append(emitter_id)
+        return True
+
+    def _remove_gpu_particle_emitter(self, emitter_id):
+        return True
+
+    def submit_particle_instances(self, batch_id, *args, **kwargs):
+        return None
+
+    def remove_particle_batch(self, batch_id):
+        self.removed_batches.append(batch_id)
+
+
+def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
+    scene, monkeypatch, tmp_path
+):
+    source = tmp_path / "MixedTargets.particlegraph"
+    graph = ParticleGraphAsset(
+        stable_id="mixed-target-component",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="cpu-smoke",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.CPU,
+                    capacity=8,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 1),),
+                ),
+            ),
+            ParticleEmitterAsset(
+                stable_id="gpu-sparks",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=8,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 2),),
+                ),
+            ),
+        ),
+    )
+    graph.save(str(source))
+    native = _MixedParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("MixedParticleGraphProbe")
+    game_object.add_py_component(component)
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+
+    assert component._runtime_target is ExecutionTarget.AUTO
+    assert component._cpu_emitter_indices == [0]
+    assert component._gpu_emitter_indices == [1]
+    assert component.emitter_runtime_target(0) is ExecutionTarget.CPU
+    assert component.emitter_runtime_target(1) is ExecutionTarget.GPU
+    assert component.emitter_runtime_target(-1) is None
+    assert component.emitter_runtime_target(True) is None
+    assert component._runtimes[0].particle_count == 1
+    assert component._gpu_controllers[0].simulation_step == 1
+    assert len(native.program_batches[-1][0]) == 1
+
+    cpu_step = component._runtimes[0].simulation_step
+    gpu_step = component._gpu_controllers[0].simulation_step
+    assert component.pause_emitter(1) is True
+    assert component.pause_emitter(99) is False
+    component.update(0.25)
+    assert component._runtimes[0].simulation_step == cpu_step + 1
+    assert component._gpu_controllers[0].simulation_step == gpu_step
+
+    assert component.terminate_emitter(0) is True
+    assert component._runtimes[0].particle_count == 0
+    assert component.terminate_emitter(1) is True
+    assert native.reset_emitters == [component._gpu_emitter_ids[0]]
+    assert component.start_emitter(1) is True
+    component.update(0.0)
+    assert component._gpu_controllers[0].simulation_step == 1
+    component._remove_native_batch()
+
+
+def test_particle_system_only_persists_emitter_index_for_legacy_vfx_assets():
+    modern = ParticleSystem()
+    modern.graph = ParticleGraphRef(path_hint="Assets/Smoke.particlegraph")
+    modern.emitter_index = 7
+
+    modern_document = modern._serialize_fields_document()
+
+    assert "emitter_index" not in modern_document
+
+    legacy = ParticleSystem()
+    legacy.system = VfxSystemRef(path_hint="Assets/Smoke.vfxsystem")
+    legacy.emitter_index = 3
+    legacy_document = legacy._serialize_fields_document()
+
+    assert legacy_document["emitter_index"] == 3
+    restored = ParticleSystem()
+    restored._deserialize_fields_document(legacy_document)
+    assert restored.emitter_index == 3
+    assert "emitter_index" in restored._serialize_fields_document()
+
+
 def test_particle_system_hot_switches_to_new_published_artifact_revision(
     scene, engine, monkeypatch, tmp_path
 ):
@@ -298,6 +416,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     source = tmp_path / "GpuSmoke.particlegraph"
     material_path = tmp_path / "GpuSmoke.mat"
     material = Material.create_unlit("Gpu Smoke")
+    material.vert_shader_name = "particle_sprite"
     material.render_queue = 3075
     material.blend_enable = True
     material.depth_write_enable = False

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 import numpy as np
 
@@ -143,6 +143,8 @@ class NumpyParticleCompiler:
         self,
         hir: ParticleProgramHIR | Mapping[str, Any],
         kernel: ParticleKernelProgram,
+        *,
+        emitter_ids: Collection[str] | None = None,
     ) -> NumpyParticleProgram:
         try:
             metadata = decode_particle_runtime_metadata(hir)
@@ -153,9 +155,23 @@ class NumpyParticleCompiler:
         kernel_ids = tuple(emitter.stable_id for emitter in kernel.emitters)
         if metadata.schedule != kernel_ids:
             raise NumpyParticleBackendError("Particle HIR and Kernel IR emitter schedules differ")
+        selected_ids = None
+        if emitter_ids is not None:
+            selected_ids = frozenset(emitter_ids)
+            if any(type(stable_id) is not str or not stable_id for stable_id in selected_ids):
+                raise NumpyParticleBackendError(
+                    "selected particle emitter ids must be non-empty strings"
+                )
+            unknown = selected_ids.difference(kernel_ids)
+            if unknown:
+                raise NumpyParticleBackendError(
+                    f"selected particle emitter ids are unknown: {sorted(unknown)}"
+                )
         emitter_inputs = {emitter.stable_id: emitter for emitter in metadata.emitters}
         programs = []
         for emitter in kernel.emitters:
+            if selected_ids is not None and emitter.stable_id not in selected_ids:
+                continue
             runtime_metadata = emitter_inputs[emitter.stable_id]
             settings = runtime_metadata.settings
             outputs = runtime_metadata.outputs

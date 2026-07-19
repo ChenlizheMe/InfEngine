@@ -234,6 +234,34 @@ def test_numpy_compiler_rejects_mismatched_hir_and_kernel_programs():
         NumpyParticleCompiler().compile(first, ParticleKernelLowerer().lower(second))
 
 
+def test_numpy_compiler_selects_cpu_emitters_from_mixed_target_program():
+    asset = ParticleGraphAsset(
+        stable_id="mixed-backend-program",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="cpu-smoke",
+                settings=EmitterSettings(target=ExecutionTarget.CPU),
+            ),
+            ParticleEmitterAsset(
+                stable_id="gpu-sparks",
+                settings=EmitterSettings(target=ExecutionTarget.GPU),
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    kernel = ParticleKernelLowerer().lower(hir)
+
+    program = NumpyParticleCompiler().compile(
+        hir,
+        kernel,
+        emitter_ids={"cpu-smoke"},
+    )
+
+    assert [emitter.stable_id for emitter in program.emitters] == ["cpu-smoke"]
+    with pytest.raises(NumpyParticleBackendError, match="unknown"):
+        NumpyParticleCompiler().compile(hir, kernel, emitter_ids={"removed-emitter"})
+
+
 def test_numpy_compiler_loads_save_time_particle_artifact_without_source_graph_compile(tmp_path):
     asset = ParticleGraphAsset(
         stable_id="artifact-runtime",
