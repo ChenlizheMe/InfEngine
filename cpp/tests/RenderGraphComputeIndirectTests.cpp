@@ -11,6 +11,7 @@
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
+#include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -405,6 +407,263 @@ bool VerifyGpuParticleMigration(TestResources &resources,
         "GPU particle migration did not preserve fields, apply defaults, rebuild free slots, or count drops");
 }
 
+bool VerifyVectorFieldSampling(TestResources &resources, infernux::InxShaderLoader &compiler)
+{
+    constexpr uint32_t sampleCount = 5;
+    constexpr VkDeviceSize outputBytes = sampleCount * 4 * sizeof(float);
+    const std::array<float, 2 * 2 * 2 * 4> texels = {
+        1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0,
+        13, 14, 15, 0, 16, 17, 18, 0, 19, 20, 21, 0, 22, 23, 24, 0,
+    };
+    const std::string source = R"(#version 450
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) writeonly buffer OutputBuffer { vec4 values[]; } output_buffer;
+layout(set = 0, binding = 1) uniform sampler3D linear_clamp_field;
+layout(set = 0, binding = 2) uniform sampler3D nearest_clamp_field;
+layout(set = 0, binding = 3) uniform sampler3D nearest_repeat_field;
+
+vec3 simulation_to_field(vec3 position) {
+    return vec3(position.x * 0.5 + 0.25, position.y, position.z);
+}
+
+vec3 field_to_simulation(vec3 value) {
+    return mat3(vec3(0.0, 2.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 0.0, 0.5)) * value * 1.5;
+}
+
+vec3 sample_zero_linear(vec3 position) {
+    vec3 uvw = simulation_to_field(position);
+    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return vec3(0.0);
+    return field_to_simulation(texture(linear_clamp_field, uvw).xyz);
+}
+
+void main() {
+    output_buffer.values[0] = vec4(sample_zero_linear(vec3(0.5, 0.5, 0.5)), 1.0);
+    output_buffer.values[1] = vec4(sample_zero_linear(vec3(-1.0, 0.5, 0.5)), 1.0);
+    output_buffer.values[2] = vec4(field_to_simulation(texture(nearest_clamp_field, vec3(1.25, 0.25, 0.75)).xyz), 1.0);
+    output_buffer.values[3] = vec4(field_to_simulation(texture(nearest_repeat_field, vec3(1.25, 0.25, 0.75)).xyz), 1.0);
+    output_buffer.values[4] = vec4(sample_zero_linear(vec3(0.0, 0.25, 0.75)), 1.0);
+}
+)";
+    const auto shaderWords = SpirvWords(compiler.CompileComputeGlsl(source, "Tests/VectorFieldSampling.comp"));
+    if (!Require(!shaderWords.empty(), "Failed to compile Vector Field sampling fixture"))
+        return false;
+
+    auto &rhi = resources.context.GetRhiDevice();
+    const infernux::rhi::TextureSubresourceUpload uploadRegion = {
+        texels.data(), sizeof(texels), 0, 0, 1, 2, 2, 2, 2 * 4 * sizeof(float), 2 * 2 * 4 * sizeof(float)};
+    infernux::rhi::TextureUploadRequest uploadRequest;
+    uploadRequest.texture.dimension = infernux::rhi::TextureDimension::Texture3D;
+    uploadRequest.texture.width = 2;
+    uploadRequest.texture.height = 2;
+    uploadRequest.texture.depthOrLayers = 2;
+    uploadRequest.texture.format = infernux::rhi::PixelFormat::RGBA32SFloat;
+    uploadRequest.texture.usage =
+        infernux::rhi::TextureUsageFlags::Sampled | infernux::rhi::TextureUsageFlags::TransferDestination;
+    uploadRequest.view.dimension = infernux::rhi::TextureViewDimension::Texture3D;
+    uploadRequest.subresources = &uploadRegion;
+    uploadRequest.subresourceCount = 1;
+    const auto upload = resources.resources.BeginTextureUpload(uploadRequest);
+    if (!Require(upload && upload->IsPublished() && upload->GetTexture() && upload->GetTexture()->IsValid(),
+                 "Vector Field Texture3D upload failed"))
+        return false;
+
+    infernux::rhi::BufferDesc outputDesc;
+    outputDesc.byteSize = outputBytes;
+    outputDesc.usage =
+        infernux::rhi::BufferUsageFlags::Storage | infernux::rhi::BufferUsageFlags::TransferSource;
+    const auto output = rhi.CreateBuffer(outputDesc);
+    infernux::rhi::SamplerDesc linearClampDesc;
+    linearClampDesc.addressU = infernux::rhi::AddressMode::ClampToEdge;
+    linearClampDesc.addressV = infernux::rhi::AddressMode::ClampToEdge;
+    linearClampDesc.addressW = infernux::rhi::AddressMode::ClampToEdge;
+    const auto linearClamp = rhi.CreateSampler(linearClampDesc);
+    auto nearestClampDesc = linearClampDesc;
+    nearestClampDesc.minFilter = infernux::rhi::FilterMode::Nearest;
+    nearestClampDesc.magFilter = infernux::rhi::FilterMode::Nearest;
+    nearestClampDesc.mipFilter = infernux::rhi::FilterMode::Nearest;
+    const auto nearestClamp = rhi.CreateSampler(nearestClampDesc);
+    auto nearestRepeatDesc = nearestClampDesc;
+    nearestRepeatDesc.addressU = infernux::rhi::AddressMode::Repeat;
+    nearestRepeatDesc.addressV = infernux::rhi::AddressMode::Repeat;
+    nearestRepeatDesc.addressW = infernux::rhi::AddressMode::Repeat;
+    const auto nearestRepeat = rhi.CreateSampler(nearestRepeatDesc);
+
+    infernux::rhi::BindingLayoutDesc layoutDesc;
+    layoutDesc.entries[0] = {0, infernux::rhi::BindingType::StorageBuffer, infernux::rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[1] = {
+        1, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[2] = {
+        2, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[3] = {
+        3, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute, 1};
+    layoutDesc.entryCount = 4;
+    const auto layout = rhi.CreateBindingLayout(layoutDesc);
+    const auto shader = rhi.CreateShaderModule({shaderWords.data(), shaderWords.size()});
+    infernux::rhi::ComputePipelineDesc pipelineDesc;
+    pipelineDesc.computeShader = shader;
+    pipelineDesc.bindingLayouts[0] = layout;
+    pipelineDesc.bindingLayoutCount = 1;
+    const auto pipeline = rhi.CreateComputePipeline(pipelineDesc);
+
+    infernux::rhi::BindGroupDesc groupDesc;
+    groupDesc.layout = layout;
+    groupDesc.buffers[0] = {0, infernux::rhi::BindingType::StorageBuffer, output, 0, outputBytes};
+    groupDesc.bufferCount = 1;
+    const auto view = upload->GetTexture()->GetView();
+    groupDesc.textures[0] = {1, infernux::rhi::BindingType::CombinedTextureSampler, view, linearClamp};
+    groupDesc.textures[1] = {2, infernux::rhi::BindingType::CombinedTextureSampler, view, nearestClamp};
+    groupDesc.textures[2] = {3, infernux::rhi::BindingType::CombinedTextureSampler, view, nearestRepeat};
+    groupDesc.textureCount = 3;
+    const auto group = rhi.CreateBindGroup(groupDesc);
+    if (!Require(output.IsValid() && linearClamp.IsValid() && nearestClamp.IsValid() && nearestRepeat.IsValid() &&
+                     layout.IsValid() && shader.IsValid() && pipeline.IsValid() && group.IsValid(),
+                 "Vector Field RHI sampling resources are invalid"))
+        return false;
+
+    BufferReadback readback;
+    if (!Require(readback.Create(resources.context.GetVmaAllocator(), outputBytes),
+                 "Vector Field readback creation failed"))
+        return false;
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = resources.context.GetQueueIndices().graphicsFamily.value();
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    if (!Require(vkCreateCommandPool(resources.context.GetDevice(), &poolInfo, nullptr, &commandPool) == VK_SUCCESS,
+                 "Vector Field command pool creation failed"))
+        return false;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    if (!Require(vkAllocateCommandBuffers(resources.context.GetDevice(), &allocateInfo, &commandBuffer) == VK_SUCCESS,
+                 "Vector Field command allocation failed")) {
+        vkDestroyCommandPool(resources.context.GetDevice(), commandPool, nullptr);
+        return false;
+    }
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (!Require(vkBeginCommandBuffer(commandBuffer, &beginInfo) == VK_SUCCESS,
+                 "Vector Field command begin failed")) {
+        vkDestroyCommandPool(resources.context.GetDevice(), commandPool, nullptr);
+        return false;
+    }
+    infernux::vk::VulkanComputeCommandContext computeContext;
+    auto encoder = rhi.MakeComputeCommandEncoder(computeContext, commandBuffer);
+    encoder.BindPipeline(pipeline);
+    encoder.BindGroup(pipeline, 0, group);
+    encoder.Dispatch(1, 1, 1);
+    VkBufferMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = rhi.Resolve(output);
+    barrier.size = outputBytes;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                         nullptr, 1, &barrier, 0, nullptr);
+    const VkBufferCopy copy{0, 0, outputBytes};
+    vkCmdCopyBuffer(commandBuffer, barrier.buffer, readback.buffer, 1, &copy);
+    const bool recorded = vkEndCommandBuffer(commandBuffer) == VK_SUCCESS;
+    VkFence fence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    const bool fenceCreated =
+        recorded && vkCreateFence(resources.context.GetDevice(), &fenceInfo, nullptr, &fence) == VK_SUCCESS;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitted = fenceCreated
+                                   ? vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &submitInfo, fence)
+                                   : VK_ERROR_INITIALIZATION_FAILED;
+    const VkResult waited = submitted == VK_SUCCESS
+                                ? vkWaitForFences(resources.context.GetDevice(), 1, &fence, VK_TRUE, UINT64_MAX)
+                                : submitted;
+    if (fence != VK_NULL_HANDLE)
+        vkDestroyFence(resources.context.GetDevice(), fence, nullptr);
+    vkDestroyCommandPool(resources.context.GetDevice(), commandPool, nullptr);
+    if (!Require(submitted == VK_SUCCESS && waited == VK_SUCCESS &&
+                     vmaInvalidateAllocation(readback.allocator, readback.allocation, 0, outputBytes) == VK_SUCCESS,
+                 "Vector Field compute submission or readback failed"))
+        return false;
+
+    using Vec3 = std::array<float, 3>;
+    const auto texel = [&](int x, int y, int z) {
+        const size_t base = static_cast<size_t>(((z * 2 + y) * 2 + x) * 4);
+        return Vec3{texels[base], texels[base + 1], texels[base + 2]};
+    };
+    const auto transform = [](Vec3 value) {
+        return Vec3{-1.5f * value[1], 3.0f * value[0], 0.75f * value[2]};
+    };
+    const auto nearest = [&](Vec3 uvw, bool repeat) {
+        std::array<int, 3> index{};
+        for (size_t axis = 0; axis < 3; ++axis) {
+            float coordinate = uvw[axis];
+            if (repeat)
+                coordinate -= std::floor(coordinate);
+            else
+                coordinate = std::clamp(coordinate, 0.0f, 1.0f);
+            index[axis] = std::min(static_cast<int>(std::floor(coordinate * 2.0f)), 1);
+        }
+        return texel(index[0], index[1], index[2]);
+    };
+    const auto linear = [&](Vec3 uvw) {
+        std::array<int, 3> base{};
+        std::array<int, 3> next{};
+        Vec3 fraction{};
+        for (size_t axis = 0; axis < 3; ++axis) {
+            const float coordinate = std::clamp(uvw[axis], 0.0f, 1.0f) * 2.0f - 0.5f;
+            base[axis] = std::clamp(static_cast<int>(std::floor(coordinate)), 0, 1);
+            next[axis] = std::clamp(static_cast<int>(std::floor(coordinate)) + 1, 0, 1);
+            fraction[axis] = coordinate - std::floor(coordinate);
+        }
+        Vec3 result{};
+        for (int z = 0; z < 2; ++z) {
+            for (int y = 0; y < 2; ++y) {
+                for (int x = 0; x < 2; ++x) {
+                    const float weight = (x ? fraction[0] : 1.0f - fraction[0]) *
+                                         (y ? fraction[1] : 1.0f - fraction[1]) *
+                                         (z ? fraction[2] : 1.0f - fraction[2]);
+                    const auto value = texel(x ? next[0] : base[0], y ? next[1] : base[1], z ? next[2] : base[2]);
+                    for (size_t axis = 0; axis < 3; ++axis)
+                        result[axis] += value[axis] * weight;
+                }
+            }
+        }
+        return result;
+    };
+    const std::array<Vec3, sampleCount> expected = {
+        transform(linear({0.5f, 0.5f, 0.5f})),
+        Vec3{0.0f, 0.0f, 0.0f},
+        transform(nearest({1.25f, 0.25f, 0.75f}, false)),
+        transform(nearest({1.25f, 0.25f, 0.75f}, true)),
+        transform(linear({0.25f, 0.25f, 0.75f})),
+    };
+    std::array<float, sampleCount * 4> actual{};
+    std::memcpy(actual.data(), readback.mapped, outputBytes);
+    bool matches = true;
+    for (size_t sample = 0; sample < sampleCount; ++sample) {
+        for (size_t axis = 0; axis < 3; ++axis)
+            matches = matches && std::abs(actual[sample * 4 + axis] - expected[sample][axis]) <= 1.0e-4f;
+        matches = matches && std::abs(actual[sample * 4 + 3] - 1.0f) <= 1.0e-6f;
+    }
+
+    rhi.Release(group);
+    rhi.Release(pipeline);
+    rhi.Release(shader);
+    rhi.Release(layout);
+    rhi.Release(nearestRepeat);
+    rhi.Release(nearestClamp);
+    rhi.Release(linearClamp);
+    rhi.Release(output);
+    return Require(matches, "Vector Field GPU samples diverged from the CPU sampling contract");
+}
+
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
          const std::filesystem::path &particleComputePath, const std::filesystem::path &particleVertexPath,
@@ -448,6 +707,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     infernux::InxShaderLoader sortCompiler(false, true, false, true, false, true, false, false, false, false);
+    if (!VerifyVectorFieldSampling(resources, sortCompiler))
+        return false;
     const std::array<std::string_view, 4> sortSources = {
         infernux::particle::GpuParticleSortShaderSources::Generate(),
         infernux::particle::GpuParticleSortShaderSources::Histogram(),
