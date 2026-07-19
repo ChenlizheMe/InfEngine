@@ -12,6 +12,7 @@
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
 #include "particle/ParticleGpuDrawRegistry.h"
+#include "particle/ParticleGpuSorter.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -23,7 +24,9 @@
 #include <cstring>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Camera.h>
+#include <limits>
 #include <memory>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -573,6 +576,7 @@ void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
 
 void SceneRenderGraph::Destroy()
 {
+    m_particleSorters.clear();
     m_fullscreenRenderer.Destroy();
     m_transientResources.clear();
     m_parameterBlocks.clear();
@@ -1324,6 +1328,59 @@ void SceneRenderGraph::BuildRenderGraph()
     m_visibleRendererList = {};
     m_shadowRendererList = {};
 
+    const auto retireSorter = [this](std::shared_ptr<particle::ParticleGpuSorter> sorter) {
+        if (!sorter)
+            return;
+        m_vkCore->GetDeletionQueue().Push([sorter = std::move(sorter)]() mutable { sorter.reset(); });
+    };
+    const auto particleSnapshot =
+        m_particleDrawRegistry
+            ? m_particleDrawRegistry->Snapshot(std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max())
+            : std::vector<particle::GpuParticleDrawEntry>{};
+    std::unordered_set<uint64_t> activeSorters;
+    activeSorters.reserve(particleSnapshot.size());
+    for (const auto &entry : particleSnapshot) {
+        if (entry.semantics.sortMode == particle::ParticleSortMode::None)
+            continue;
+        if (!entry.sortProgram || !entry.sortProgram->IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: sorted GPU particle output ", entry.id, " has no valid sorting program");
+            continue;
+        }
+        activeSorters.insert(entry.id);
+        auto existing = m_particleSorters.find(entry.id);
+        if (existing != m_particleSorters.end() && existing->second && existing->second->Capacity() == entry.capacity &&
+            existing->second->InstanceBuffer() == entry.instances &&
+            existing->second->IndirectBuffer() == entry.indirectArguments) {
+            continue;
+        }
+
+        auto sorter = std::make_shared<particle::ParticleGpuSorter>();
+        particle::GpuParticleSorterDesc desc;
+        desc.capacity = entry.capacity;
+        desc.instances = entry.instances;
+        desc.indirectArguments = entry.indirectArguments;
+        desc.program = entry.sortProgram->View();
+        if (!sorter->Create(m_vkCore->GetDeviceContext().GetRhiDevice(), desc)) {
+            INXLOG_ERROR("SceneRenderGraph: failed to create per-view sorter for GPU particle output ", entry.id);
+            activeSorters.erase(entry.id);
+            continue;
+        }
+        if (existing != m_particleSorters.end()) {
+            retireSorter(std::move(existing->second));
+            existing->second = std::move(sorter);
+        } else {
+            m_particleSorters.emplace(entry.id, std::move(sorter));
+        }
+    }
+    for (auto it = m_particleSorters.begin(); it != m_particleSorters.end();) {
+        if (activeSorters.find(it->first) != activeSorters.end()) {
+            ++it;
+            continue;
+        }
+        retireSorter(std::move(it->second));
+        it = m_particleSorters.erase(it);
+    }
+
     if (!m_hasPythonGraph) {
         INXLOG_DEBUG("SceneRenderGraph::BuildRenderGraph - No Python graph configured");
         return;
@@ -1367,6 +1424,123 @@ void SceneRenderGraph::BuildRenderGraph()
         for (const auto &buffer : m_pythonGraphDesc.buffers) {
             bufferHandles[buffer.name] =
                 m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+        }
+
+        struct ParticleGraphResources
+        {
+            vk::ResourceHandle instances;
+            vk::ResourceHandle renderIndices;
+            vk::ResourceHandle indirectArguments;
+            std::array<vk::ResourceHandle, 2> keys;
+            std::array<vk::ResourceHandle, 2> indices;
+            vk::ResourceHandle histogram;
+            vk::ResourceHandle blockOffsets;
+            vk::ResourceHandle globalOffsets;
+            rhi::BufferHandle drawRenderIndices;
+        };
+        std::unordered_map<uint64_t, ParticleGraphResources> particleGraphResources;
+        particleGraphResources.reserve(m_particleSorters.size());
+        for (const auto &entry : particleSnapshot) {
+            if (entry.semantics.sortMode == particle::ParticleSortMode::None)
+                continue;
+            const auto sorterIt = m_particleSorters.find(entry.id);
+            if (sorterIt == m_particleSorters.end() || !sorterIt->second || !sorterIt->second->IsValid())
+                continue;
+
+            auto sorter = sorterIt->second;
+            ParticleGraphResources resources;
+            resources.drawRenderIndices = sorter->SortedIndices();
+            const std::string prefix = "GpuParticleSort/" + std::to_string(entry.id);
+            m_renderGraph->AddComputePass(prefix + "/Generate", [&, sorter, entry, prefix](vk::PassBuilder &builder) {
+                const uint64_t elementBytes = static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t);
+                const uint64_t blockBytes =
+                    static_cast<uint64_t>(sorter->BlockCount()) * particle::ParticleGpuSorter::Radix * sizeof(uint32_t);
+                resources.instances = builder.ImportBuffer(prefix + "/Instances", entry.instances,
+                                                           static_cast<uint64_t>(entry.capacity) *
+                                                               particle::ParticleGpuRuntime::RenderInstanceStride);
+                resources.indirectArguments = builder.ImportBuffer(prefix + "/Indirect", entry.indirectArguments, 16);
+                resources.keys = {
+                    builder.ImportBuffer(prefix + "/Keys0", sorter->KeyBuffer(0), elementBytes),
+                    builder.ImportBuffer(prefix + "/Keys1", sorter->KeyBuffer(1), elementBytes),
+                };
+                resources.indices = {
+                    builder.ImportBuffer(prefix + "/Indices0", sorter->IndexBuffer(0), elementBytes),
+                    builder.ImportBuffer(prefix + "/Indices1", sorter->IndexBuffer(1), elementBytes),
+                };
+                resources.histogram =
+                    builder.ImportBuffer(prefix + "/Histogram", sorter->HistogramBuffer(), blockBytes);
+                resources.blockOffsets =
+                    builder.ImportBuffer(prefix + "/BlockOffsets", sorter->BlockOffsetBuffer(), blockBytes);
+                resources.globalOffsets = builder.ImportBuffer(prefix + "/GlobalOffsets", sorter->GlobalOffsetBuffer(),
+                                                               particle::ParticleGpuSorter::Radix * sizeof(uint32_t));
+
+                const auto setComputeWriteInitialState = [&](vk::ResourceHandle handle) {
+                    m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined,
+                                                           rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                };
+                setComputeWriteInitialState(resources.instances);
+                setComputeWriteInitialState(resources.indirectArguments);
+                for (const auto handle : resources.keys)
+                    setComputeWriteInitialState(handle);
+                m_renderGraph->SetResourceInitialState(resources.indices[0], rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderRead, rhi::PipelineStage::VertexShader);
+                setComputeWriteInitialState(resources.indices[1]);
+                setComputeWriteInitialState(resources.histogram);
+                setComputeWriteInitialState(resources.blockOffsets);
+                setComputeWriteInitialState(resources.globalOffsets);
+
+                builder.ReadStorageBuffer(resources.instances);
+                builder.ReadStorageBuffer(resources.indirectArguments);
+                resources.keys[0] = builder.WriteStorageBuffer(resources.keys[0]);
+                resources.indices[0] = builder.WriteStorageBuffer(resources.indices[0]);
+
+                const auto mode = entry.semantics.sortMode;
+                return [this, sorter, mode](vk::RenderContext &ctx) {
+                    std::array<float, 16> view{};
+                    std::memcpy(view.data(), &m_cachedView[0][0], sizeof(m_cachedView));
+                    sorter->RecordGenerate(ctx.GetComputeCommandEncoder(), view, mode);
+                };
+            });
+            for (uint32_t passIndex = 0; passIndex < particle::ParticleGpuSorter::PassCount; ++passIndex) {
+                const uint32_t input = passIndex % 2u;
+                const uint32_t output = 1u - input;
+                const std::string radixPrefix = prefix + "/Radix" + std::to_string(passIndex);
+                m_renderGraph->AddComputePass(
+                    radixPrefix + "/Histogram", [&, sorter, passIndex, input](vk::PassBuilder &builder) {
+                        builder.ReadStorageBuffer(resources.indirectArguments);
+                        builder.ReadStorageBuffer(resources.keys[input]);
+                        resources.histogram = builder.WriteStorageBuffer(resources.histogram);
+                        return [sorter, passIndex](vk::RenderContext &ctx) {
+                            sorter->RecordHistogram(ctx.GetComputeCommandEncoder(), passIndex);
+                        };
+                    });
+                m_renderGraph->AddComputePass(radixPrefix + "/Scan", [&, sorter, passIndex](vk::PassBuilder &builder) {
+                    builder.ReadStorageBuffer(resources.histogram);
+                    resources.blockOffsets = builder.WriteStorageBuffer(resources.blockOffsets);
+                    resources.globalOffsets = builder.WriteStorageBuffer(resources.globalOffsets);
+                    return [sorter, passIndex](vk::RenderContext &ctx) {
+                        sorter->RecordScan(ctx.GetComputeCommandEncoder(), passIndex);
+                    };
+                });
+                m_renderGraph->AddComputePass(
+                    radixPrefix + "/Scatter", [&, sorter, passIndex, input, output](vk::PassBuilder &builder) {
+                        builder.ReadStorageBuffer(resources.indirectArguments);
+                        builder.ReadStorageBuffer(resources.keys[input]);
+                        builder.ReadStorageBuffer(resources.indices[input]);
+                        builder.ReadStorageBuffer(resources.blockOffsets);
+                        builder.ReadStorageBuffer(resources.globalOffsets);
+                        resources.keys[output] = builder.WriteStorageBuffer(resources.keys[output]);
+                        resources.indices[output] = builder.WriteStorageBuffer(resources.indices[output]);
+                        return [sorter, passIndex](vk::RenderContext &ctx) {
+                            sorter->RecordScatter(ctx.GetComputeCommandEncoder(), passIndex);
+                        };
+                    });
+            }
+            resources.renderIndices = resources.indices[0];
+            if (resources.instances.IsValid() && resources.renderIndices.IsValid() &&
+                resources.indirectArguments.IsValid()) {
+                particleGraphResources.emplace(entry.id, resources);
+            }
         }
 
         auto publishResourceVersion = [&](vk::ResourceHandle handle) {
@@ -1423,6 +1597,13 @@ void SceneRenderGraph::BuildRenderGraph()
                     particlePass = particlePassIt->second;
                 else
                     particleEntries.clear();
+                particleEntries.erase(
+                    std::remove_if(particleEntries.begin(), particleEntries.end(),
+                                   [&](const auto &entry) {
+                                       return entry.semantics.sortMode != particle::ParticleSortMode::None &&
+                                              particleGraphResources.find(entry.id) == particleGraphResources.end();
+                                   }),
+                    particleEntries.end());
             }
 
             auto resolveTextureHandle = [&](const std::string &name) -> vk::ResourceHandle {
@@ -1995,31 +2176,46 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle instances;
                     vk::ResourceHandle renderIndices;
                     vk::ResourceHandle indirectArguments;
+                    rhi::BufferHandle drawRenderIndices;
                 };
                 std::vector<ParticlePacket> particlePackets;
                 particlePackets.reserve(particleEntries.size());
                 for (const auto &entry : particleEntries) {
-                    const std::string prefix = "GpuParticle/" + std::to_string(entry.id);
-                    const auto instances = builder.ImportBuffer(prefix + "/Instances", entry.instances,
-                                                                static_cast<uint64_t>(entry.capacity) *
-                                                                    particle::ParticleGpuRuntime::RenderInstanceStride);
-                    const auto renderIndices =
-                        builder.ImportBuffer(prefix + "/RenderIndices", entry.renderIndices,
-                                             static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t));
-                    const auto indirectArguments =
-                        builder.ImportBuffer(prefix + "/Indirect", entry.indirectArguments, 16);
+                    vk::ResourceHandle instances;
+                    vk::ResourceHandle renderIndices;
+                    vk::ResourceHandle indirectArguments;
+                    rhi::BufferHandle drawRenderIndices = entry.renderIndices;
+                    const auto sorted = particleGraphResources.find(entry.id);
+                    if (sorted != particleGraphResources.end()) {
+                        instances = sorted->second.instances;
+                        renderIndices = sorted->second.renderIndices;
+                        indirectArguments = sorted->second.indirectArguments;
+                        drawRenderIndices = sorted->second.drawRenderIndices;
+                    } else {
+                        const std::string prefix = "GpuParticle/" + std::to_string(entry.id);
+                        instances = builder.ImportBuffer(prefix + "/Instances", entry.instances,
+                                                         static_cast<uint64_t>(entry.capacity) *
+                                                             particle::ParticleGpuRuntime::RenderInstanceStride);
+                        renderIndices = builder.ImportBuffer(prefix + "/RenderIndices", entry.renderIndices,
+                                                             static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t));
+                        indirectArguments = builder.ImportBuffer(prefix + "/Indirect", entry.indirectArguments, 16);
+                        m_renderGraph->SetResourceInitialState(instances, rhi::TextureLayout::Undefined,
+                                                               rhi::Access::ShaderWrite,
+                                                               rhi::PipelineStage::ComputeShader);
+                        m_renderGraph->SetResourceInitialState(indirectArguments, rhi::TextureLayout::Undefined,
+                                                               rhi::Access::ShaderWrite,
+                                                               rhi::PipelineStage::ComputeShader);
+                        m_renderGraph->SetResourceInitialState(renderIndices, rhi::TextureLayout::Undefined,
+                                                               rhi::Access::ShaderWrite,
+                                                               rhi::PipelineStage::ComputeShader);
+                    }
                     if (!instances.IsValid() || !renderIndices.IsValid() || !indirectArguments.IsValid())
                         continue;
-                    m_renderGraph->SetResourceInitialState(instances, rhi::TextureLayout::Undefined,
-                                                           rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
-                    m_renderGraph->SetResourceInitialState(indirectArguments, rhi::TextureLayout::Undefined,
-                                                           rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
-                    m_renderGraph->SetResourceInitialState(renderIndices, rhi::TextureLayout::Undefined,
-                                                           rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
                     builder.ReadStorageBuffer(instances, rhi::PipelineStage::VertexShader);
                     builder.ReadStorageBuffer(renderIndices, rhi::PipelineStage::VertexShader);
                     builder.ReadIndirectBuffer(indirectArguments);
-                    particlePackets.push_back({entry.renderer, instances, renderIndices, indirectArguments});
+                    particlePackets.push_back(
+                        {entry.renderer, instances, renderIndices, indirectArguments, drawRenderIndices});
                 }
 
                 if (rendererListHandle.IsValid()) {
@@ -2179,9 +2375,9 @@ void SceneRenderGraph::BuildRenderGraph()
                         const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         for (const auto &packet : particlePackets) {
-                            [[maybe_unused]] const bool recorded =
-                                packet.renderer->RecordDraw(encoder, renderTargetLayout, particlePass,
-                                                            ctx.GetBufferHandle(packet.indirectArguments), view);
+                            [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
+                                encoder, renderTargetLayout, particlePass,
+                                ctx.GetBufferHandle(packet.indirectArguments), view, packet.drawRenderIndices);
                         }
                     }
                 };

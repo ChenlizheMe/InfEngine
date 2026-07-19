@@ -41,7 +41,8 @@ class SceneRenderTarget;
 namespace particle
 {
 class ParticleGpuDrawRegistry;
-}
+class ParticleGpuSorter;
+} // namespace particle
 
 // Forward-declare from Camera.h
 enum class CameraClearFlags;
@@ -560,6 +561,7 @@ class SceneRenderGraph
 
     particle::ParticleGpuDrawRegistry *m_particleDrawRegistry = nullptr;
     uint64_t m_particleDrawRegistryRevision = 0;
+    std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuSorter>> m_particleSorters;
 
     // The underlying render graph (now fully utilized)
     std::unique_ptr<vk::RenderGraph> m_renderGraph;

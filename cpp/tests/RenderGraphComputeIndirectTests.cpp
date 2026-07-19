@@ -7,6 +7,7 @@
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
+#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <SDL3/SDL.h>
@@ -115,6 +116,15 @@ std::vector<char> SpirvBytes(const std::vector<uint32_t> &words)
     return bytes;
 }
 
+std::vector<uint32_t> SpirvWords(const std::vector<char> &bytes)
+{
+    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+        return {};
+    std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
+    std::memcpy(words.data(), bytes.data(), bytes.size());
+    return words;
+}
+
 bool Require(bool condition, const char *message)
 {
     if (!condition)
@@ -162,12 +172,45 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Failed to read generated SPIR-V test shaders"))
         return false;
 
+    infernux::InxShaderLoader sortCompiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::string_view, 4> sortSources = {
+        infernux::particle::GpuParticleSortShaderSources::Generate(),
+        infernux::particle::GpuParticleSortShaderSources::Histogram(),
+        infernux::particle::GpuParticleSortShaderSources::Scan(),
+        infernux::particle::GpuParticleSortShaderSources::Scatter(),
+    };
+    std::array<std::vector<uint32_t>, 4> sortCode;
+    for (size_t index = 0; index < sortSources.size(); ++index) {
+        sortCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
+            std::string(sortSources[index]), "Tests/ParticleSort" + std::to_string(index) + ".comp"));
+        if (!Require(!sortCode[index].empty(), "Failed to compile GPU particle sort fixture"))
+            return false;
+    }
+    const infernux::particle::GpuParticleSortProgram sortProgram = {
+        {sortCode[0].data(), sortCode[0].size()},
+        {sortCode[1].data(), sortCode[1].size()},
+        {sortCode[2].data(), sortCode[2].size()},
+        {sortCode[3].data(), sortCode[3].size()},
+    };
+
+    auto initialLinkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
+    initialLinkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 10};
+    initialLinkedParticleProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
+    initialLinkedParticleProgram->compatibilitySignature = 41;
+    infernux::ShaderProgramArtifact::PassVariant initialLinkedParticleForward;
+    initialLinkedParticleForward.compatibilitySignature = initialLinkedParticleProgram->compatibilitySignature;
+    initialLinkedParticleForward.vertexSpirv = SpirvBytes(particleVertexCode);
+    initialLinkedParticleForward.fragmentSpirv = SpirvBytes(particleFragmentCode);
+    initialLinkedParticleProgram->variants.push_back(std::move(initialLinkedParticleForward));
+    if (!Require(initialLinkedParticleProgram->IsValid(), "Initial linked particle test artifact is invalid"))
+        return false;
+
     infernux::FrameDeletionQueue particleDeletionQueue;
     particleDeletionQueue.Initialize(2);
     infernux::particle::ParticleGpuDrawRegistry particleDrawRegistry;
     infernux::particle::ParticleGpuSystemManager particleSystems;
     if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, particleDeletionQueue,
-                                            particleDrawRegistry),
+                                            particleDrawRegistry, {}, {}, sortProgram),
                  "GPU particle system manager initialization failed"))
         return false;
 
@@ -185,6 +228,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
     primaryOutput.semantics.sortMode = infernux::particle::ParticleSortMode::FrontToBack;
+    primaryOutput.shaderProgram = initialLinkedParticleProgram;
     primaryOutput.material = std::make_shared<infernux::InxMaterial>("managed-primary-material");
     auto primaryMaterialState = primaryOutput.material->GetRenderState();
     primaryMaterialState.renderQueue = 3050;
@@ -252,7 +296,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     auto invalidManagedProgram = managedProgram;
     invalidManagedProgram.artifactRevision = 2;
-    invalidManagedProgram.billboardFragmentShader.clear();
+    auto invalidLinkedParticleProgram =
+        std::make_shared<infernux::ShaderProgramArtifact>(*initialLinkedParticleProgram);
+    invalidLinkedParticleProgram->variants.clear();
+    invalidManagedProgram.outputs[0].shaderProgram = std::move(invalidLinkedParticleProgram);
     if (!Require(!particleSystems.CreateOrReplace(invalidManagedProgram, &managedError) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "Invalid GPU particle replacement disturbed the active revision"))
@@ -309,7 +356,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     auto invalidCompanion = companionProgram;
     invalidCompanion.artifactRevision = 3;
-    invalidCompanion.billboardFragmentShader.clear();
+    auto invalidCompanionShader = std::make_shared<infernux::ShaderProgramArtifact>(*initialLinkedParticleProgram);
+    invalidCompanionShader->variants.clear();
+    invalidCompanion.outputs[0].shaderProgram = std::move(invalidCompanionShader);
     auto candidateManagedProgram = managedProgram;
     candidateManagedProgram.artifactRevision = 3;
     if (!Require(!particleSystems.CreateOrReplaceBatch({candidateManagedProgram, invalidCompanion}, &managedError) &&
@@ -355,7 +404,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      managedEntries[1].renderer->RenderQueue() == 3075 &&
                      managedEntries[0].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
                      managedEntries[1].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
+                     managedEntries[0].sortProgram && managedEntries[0].sortProgram == managedEntries[1].sortProgram &&
                      managedEntries[0].instances == managedEntries[1].instances &&
+                     managedEntries[0].renderIndices == managedEntries[1].renderIndices &&
                      managedEntries[0].indirectArguments == managedEntries[1].indirectArguments,
                  "GPU particle outputs did not share one simulated stream across ordered draw queues"))
         return false;

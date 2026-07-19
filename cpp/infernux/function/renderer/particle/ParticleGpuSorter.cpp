@@ -177,6 +177,33 @@ bool GpuParticleSortProgram::IsValid() const noexcept
            IsShaderBytecodeValid(scatter);
 }
 
+bool GpuParticleSortProgramStorage::Assign(const GpuParticleSortProgram &program)
+{
+    if (!program.IsValid())
+        return false;
+    const std::array<ShaderBytecode, 4> sources = {program.generate, program.histogram, program.scan, program.scatter};
+    std::array<std::vector<uint32_t>, 4> candidate;
+    for (size_t index = 0; index < sources.size(); ++index)
+        candidate[index].assign(sources[index].words, sources[index].words + sources[index].wordCount);
+    shaders = std::move(candidate);
+    return true;
+}
+
+bool GpuParticleSortProgramStorage::IsValid() const noexcept
+{
+    return View().IsValid();
+}
+
+GpuParticleSortProgram GpuParticleSortProgramStorage::View() const noexcept
+{
+    return {
+        {shaders[0].data(), shaders[0].size()},
+        {shaders[1].data(), shaders[1].size()},
+        {shaders[2].data(), shaders[2].size()},
+        {shaders[3].data(), shaders[3].size()},
+    };
+}
+
 ParticleGpuSorter::~ParticleGpuSorter()
 {
     Destroy();

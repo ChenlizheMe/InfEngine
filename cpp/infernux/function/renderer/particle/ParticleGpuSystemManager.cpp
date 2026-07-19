@@ -72,6 +72,7 @@ struct ParticleGpuSystemManager::Impl
     ParticleGpuDrawRegistry *drawRegistry = nullptr;
     GpuBillboardTextureResolver textureResolver;
     GpuBillboardTextureVersionResolver textureVersionResolver;
+    std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
 
@@ -157,6 +158,15 @@ struct ParticleGpuSystemManager::Impl
                                     "' cannot receive shadows while scene lighting is disabled");
                 return {};
             }
+            if (output.semantics.sortMode != ParticleSortMode::None && !output.shaderProgram) {
+                SetError(error, "GPU particle output '" + output.stableId +
+                                    "' sorting requires a linked ParticleSprite material");
+                return {};
+            }
+            if (output.semantics.sortMode != ParticleSortMode::None && (!sortProgram || !sortProgram->IsValid())) {
+                SetError(error, "GPU particle sorting kernels are unavailable");
+                return {};
+            }
             auto renderer =
                 CreateOutputRenderer(*emitter, output.material, output.fallbackMaterial, output.shaderProgram);
             if (!renderer) {
@@ -194,7 +204,7 @@ struct ParticleGpuSystemManager::Impl
         return state;
     }
 
-    [[nodiscard]] static std::vector<GpuParticleDrawEntry> BuildDrawEntries(const EmitterMap &candidateEmitters)
+    [[nodiscard]] std::vector<GpuParticleDrawEntry> BuildDrawEntries(const EmitterMap &candidateEmitters) const
     {
         std::vector<GpuParticleDrawEntry> entries;
         size_t outputCount = 0;
@@ -206,9 +216,10 @@ struct ParticleGpuSystemManager::Impl
         for (const auto &[id, emitter] : candidateEmitters) {
             (void)id;
             for (const auto &output : emitter->outputs) {
-                entries.push_back({output.id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
-                                   emitter->runtime->RenderIndexBuffer(), emitter->runtime->IndirectBuffer(),
-                                   output.renderer, output.semantics});
+                entries.push_back(
+                    {output.id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
+                     output.renderer->RenderIndexBuffer(), emitter->runtime->IndirectBuffer(), output.renderer,
+                     output.semantics.sortMode == ParticleSortMode::None ? nullptr : sortProgram, output.semantics});
             }
         }
         return entries;
@@ -239,7 +250,8 @@ ParticleGpuSystemManager::~ParticleGpuSystemManager()
 bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
                                           FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
                                           GpuBillboardTextureResolver textureResolver,
-                                          GpuBillboardTextureVersionResolver textureVersionResolver)
+                                          GpuBillboardTextureVersionResolver textureVersionResolver,
+                                          const GpuParticleSortProgram &sortProgram)
 {
     if (!m_impl || m_impl->context || !context.IsValid())
         return false;
@@ -249,6 +261,14 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
     m_impl->drawRegistry = &drawRegistry;
     m_impl->textureResolver = std::move(textureResolver);
     m_impl->textureVersionResolver = std::move(textureVersionResolver);
+    if (sortProgram.IsValid()) {
+        auto storage = std::make_shared<GpuParticleSortProgramStorage>();
+        if (!storage->Assign(sortProgram)) {
+            Shutdown();
+            return false;
+        }
+        m_impl->sortProgram = std::move(storage);
+    }
     m_impl->graphState = m_impl->BuildGraph({}, nullptr);
     if (!m_impl->graphState) {
         Shutdown();
@@ -268,6 +288,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->drawRegistry = nullptr;
     m_impl->textureResolver = {};
     m_impl->textureVersionResolver = {};
+    m_impl->sortProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;
     m_impl->context = nullptr;
@@ -321,7 +342,7 @@ bool ParticleGpuSystemManager::ApplyBatch(const std::vector<GpuParticleEmitterPr
     auto candidateGraph = m_impl->BuildGraph(candidates, error);
     if (!candidateGraph)
         return false;
-    if (!m_impl->drawRegistry->Replace(Impl::BuildDrawEntries(candidates))) {
+    if (!m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(candidates))) {
         SetError(error, "failed to publish GPU particle draw entries");
         return false;
     }
@@ -377,6 +398,11 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
                 (output.shaderProgram && shaderProgram && output.shaderProgram->key == shaderProgram->key);
             if (sameProgram)
                 continue;
+            if (output.semantics.sortMode != ParticleSortMode::None && !shaderProgram) {
+                SetError(error,
+                         "GPU particle sorted output '" + output.stableId + "' cannot use a legacy billboard material");
+                return false;
+            }
             auto renderer = m_impl->CreateOutputRenderer(*emitter, material, output.fallbackMaterial, shaderProgram);
             if (!renderer) {
                 SetError(error, "failed to refresh GPU particle material for output '" + output.stableId + "'");
@@ -392,7 +418,7 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
         replacement.output->shaderProgram = shaderProgram;
         replacement.output->renderer = replacement.nextRenderer;
     }
-    if (!m_impl->drawRegistry->Replace(Impl::BuildDrawEntries(m_impl->emitters))) {
+    if (!m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(m_impl->emitters))) {
         for (auto &replacement : replacements) {
             replacement.output->shaderProgram = std::move(replacement.previousProgram);
             replacement.output->renderer = std::move(replacement.previousRenderer);
@@ -420,7 +446,7 @@ bool ParticleGpuSystemManager::Remove(uint64_t id)
     auto candidateGraph = m_impl->BuildGraph(candidates, nullptr);
     if (!candidateGraph)
         return false;
-    if (m_impl->drawRegistry && !m_impl->drawRegistry->Replace(Impl::BuildDrawEntries(candidates)))
+    if (m_impl->drawRegistry && !m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(candidates)))
         return false;
 
     auto oldGraph = std::move(m_impl->graphState);

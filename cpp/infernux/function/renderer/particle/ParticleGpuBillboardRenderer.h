@@ -98,7 +98,7 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                   rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
-                                  const GpuBillboardViewConstants &view);
+                                  const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {});
 
   private:
     struct PipelineEntry
@@ -132,8 +132,11 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] std::string ResolveMaterialTextureGuid(const TextureBindingState &binding) const;
     [[nodiscard]] bool RefreshMaterialBuffer(bool force);
     [[nodiscard]] bool RefreshTextureBindings(bool force);
-    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures) const;
+    [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures,
+                                                       rhi::BufferHandle renderIndices) const;
+    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices);
     [[nodiscard]] bool RebuildBindGroup();
+    void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
     void RetireTexture(rhi::TextureViewHandle texture, rhi::SamplerHandle sampler, std::shared_ptr<void> keepAlive);
 
@@ -150,6 +153,12 @@ class ParticleGpuBillboardRenderer
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
+    struct ViewBindGroup
+    {
+        rhi::BufferHandle renderIndices;
+        rhi::BindGroupHandle group;
+    };
+    std::vector<ViewBindGroup> m_viewGroups;
     rhi::BufferHandle m_materialBuffer;
     std::vector<TextureBindingState> m_textures;
     uint64_t m_materialVersion = 0;

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 namespace infernux::particle
 {
@@ -18,6 +19,17 @@ struct GpuParticleSortProgram
     ShaderBytecode scatter;
 
     [[nodiscard]] bool IsValid() const noexcept;
+};
+
+/// Shared, owning representation of the four sort kernels. View render graphs
+/// keep only this immutable program while allocating independent workspaces.
+struct GpuParticleSortProgramStorage
+{
+    std::array<std::vector<uint32_t>, 4> shaders;
+
+    [[nodiscard]] bool Assign(const GpuParticleSortProgram &program);
+    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] GpuParticleSortProgram View() const noexcept;
 };
 
 struct GpuParticleSortShaderSources
@@ -73,6 +85,14 @@ class ParticleGpuSorter
     [[nodiscard]] uint32_t BlockCount() const noexcept
     {
         return m_blockCount;
+    }
+    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
+    {
+        return m_instances;
+    }
+    [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept
+    {
+        return m_indirectArguments;
     }
     [[nodiscard]] rhi::BufferHandle SortedIndices() const noexcept
     {

@@ -294,17 +294,24 @@ int main()
         {sortWords[2].data(), sortWords[2].size()},
         {sortWords[3].data(), sortWords[3].size()},
     };
+    particle::GpuParticleSortProgramStorage sortProgramStorage;
+    assert(sortProgramStorage.Assign(sorterDesc.program) && sortProgramStorage.IsValid());
+    assert(sortProgramStorage.View().generate.words != sorterDesc.program.generate.words &&
+           sortProgramStorage.View().generate.wordCount == sorterDesc.program.generate.wordCount);
     particle::ParticleGpuSorter sorter;
     assert(sorter.Create(sortDevice, sorterDesc));
+    particle::ParticleGpuSorter gameViewSorter;
+    assert(gameViewSorter.Create(sortDevice, sorterDesc));
     assert(sorter.IsValid() && sorter.Capacity() == 1000 && sorter.BlockCount() == 4 &&
-           sorter.SortedIndices() == sorter.IndexBuffer(0));
-    assert(sortDevice.buffers.size() == 7 && sortDevice.buffers[0].byteSize == 4000 &&
+           sorter.SortedIndices() == sorter.IndexBuffer(0) && gameViewSorter.IsValid() &&
+           gameViewSorter.SortedIndices() != sorter.SortedIndices());
+    assert(sortDevice.buffers.size() == 14 && sortDevice.buffers[0].byteSize == 4000 &&
            sortDevice.buffers[4].byteSize == 256 && sortDevice.buffers[5].byteSize == 256 &&
            sortDevice.buffers[6].byteSize == 64);
-    assert(sortDevice.layouts.size() == 1 && sortDevice.layouts[0].entryCount == 9 &&
-           sortDevice.bindGroups.size() == 2 && sortDevice.bindGroups[0].bufferCount == 9 &&
+    assert(sortDevice.layouts.size() == 2 && sortDevice.layouts[0].entryCount == 9 &&
+           sortDevice.bindGroups.size() == 4 && sortDevice.bindGroups[0].bufferCount == 9 &&
            sortDevice.bindGroups[1].bufferCount == 9);
-    assert(sortDevice.shaderCreates == 4 && sortDevice.shaderReleases == 4 && sortDevice.pipelineCreates == 4);
+    assert(sortDevice.shaderCreates == 8 && sortDevice.shaderReleases == 8 && sortDevice.pipelineCreates == 8);
 
     SortTrace sortTrace;
     const rhi::ComputeCommandEncoder::DispatchTable sortDispatch = {&SortTrace::BindPipeline, &SortTrace::BindGroup,
@@ -325,9 +332,18 @@ int main()
            sortTrace.constants[4].digitShift == 4);
     assert(sortTrace.groups[0] == sortTrace.groups[1] && sortTrace.groups[1] == sortTrace.groups[2] &&
            sortTrace.groups[2] == sortTrace.groups[3] && sortTrace.groups[4] != sortTrace.groups[3]);
+
+    SortTrace gameSortTrace;
+    const rhi::ComputeCommandEncoder gameSortEncoder(&gameSortTrace, &sortDispatch);
+    auto gameSortView = sortView;
+    gameSortView[12] = 12.0f;
+    gameViewSorter.RecordGenerate(gameSortEncoder, gameSortView, particle::ParticleSortMode::FrontToBack);
+    assert(gameSortTrace.constants.size() == 1 && gameSortTrace.constants[0].view == gameSortView &&
+           gameSortTrace.constants[0].descending == 0 && gameSortTrace.groups[0] != sortTrace.groups[0]);
     sorter.Destroy();
-    assert(!sorter.IsValid() && sortDevice.bufferReleases == 7 && sortDevice.groupReleases == 2 &&
-           sortDevice.layoutReleases == 1 && sortDevice.pipelineReleases == 4);
+    gameViewSorter.Destroy();
+    assert(!sorter.IsValid() && !gameViewSorter.IsValid() && sortDevice.bufferReleases == 14 &&
+           sortDevice.groupReleases == 4 && sortDevice.layoutReleases == 2 && sortDevice.pipelineReleases == 8);
 
     const auto instanceBuffer = runtime.InstanceBuffer();
     const auto renderIndexBuffer = runtime.RenderIndexBuffer();
@@ -522,30 +538,42 @@ int main()
            linkedTextureResolves == 2);
     assert(linkedGraphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
 
+    const rhi::BufferHandle sceneViewIndices{901, 1};
+    const rhi::BufferHandle gameViewIndices{902, 1};
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view,
+                                      sceneViewIndices));
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view,
+                                      sceneViewIndices));
+    assert(linkedDevice.groupCreates == 2 && linkedDevice.bindGroups.back().buffers[1].buffer == sceneViewIndices);
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view,
+                                      gameViewIndices));
+    assert(linkedDevice.groupCreates == 3 && linkedDevice.bindGroups.back().buffers[1].buffer == gameViewIndices);
+
     linkedDesc.material->SetFloat("intensity", 8.0f);
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
-    assert(linkedDevice.writes == 2 && linkedDevice.groupCreates == 1 && linkedDevice.graphicsPipelineCreates == 1 &&
+    assert(linkedDevice.writes == 2 && linkedDevice.groupCreates == 3 && linkedDevice.graphicsPipelineCreates == 1 &&
            linkedTextureResolves == 2);
     std::memcpy(&packedIntensity, linkedDevice.writtenBytes.back().data() + 16, sizeof(packedIntensity));
     assert(packedIntensity == 8.0f);
 
     linkedDesc.material->SetTextureGuid("albedo", "black");
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
-    assert(linkedDevice.writes == 3 && linkedDevice.groupCreates == 2 && linkedDevice.graphicsPipelineCreates == 1 &&
+    assert(linkedDevice.writes == 3 && linkedDevice.groupCreates == 4 && linkedDevice.graphicsPipelineCreates == 1 &&
            linkedTextureResolves == 3);
     linkedDeletionQueue.Tick();
     linkedDeletionQueue.Tick();
     linkedDeletionQueue.Tick();
-    assert(linkedDevice.groupReleases == 1 && linkedDevice.textureReleases == 1 && linkedDevice.samplerReleases == 1);
+    assert(linkedDevice.groupReleases == 3 && linkedDevice.textureReleases == 1 && linkedDevice.samplerReleases == 1);
     linkedBillboard.Destroy();
-    assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 2 && linkedDevice.textureReleases == 3 &&
+    assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 4 && linkedDevice.textureReleases == 3 &&
            linkedDevice.samplerReleases == 3);
 
     auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
     assert(registeredBillboard->Create(device, billboardDesc));
     particle::ParticleGpuDrawRegistry registry;
     const uint64_t initialRevision = registry.Revision();
-    assert(registry.Set({77, runtime.Capacity(), instanceBuffer, indirectBuffer, registeredBillboard}));
+    assert(registry.Set(
+        {77, runtime.Capacity(), instanceBuffer, renderIndexBuffer, indirectBuffer, registeredBillboard, nullptr, {}}));
     assert(registry.Revision() == initialRevision + 1 && registry.Size() == 1);
     const auto visibleEntries = registry.Snapshot(3000, 3200);
     assert(visibleEntries.size() == 1 && visibleEntries[0].id == 77);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuBillboardRenderer.h"
+#include "ParticleGpuSorter.h"
 #include "ParticleOutputSemantics.h"
 #include "ParticleRenderGraph.h"
 
@@ -70,7 +71,8 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
                                   FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
                                   GpuBillboardTextureResolver textureResolver = {},
-                                  GpuBillboardTextureVersionResolver textureVersionResolver = {});
+                                  GpuBillboardTextureVersionResolver textureVersionResolver = {},
+                                  const GpuParticleSortProgram &sortProgram = {});
     void Shutdown() noexcept;
 
     /// Compile-then-publish replacement. The active emitter remains untouched

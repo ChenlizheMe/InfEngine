@@ -11,6 +11,8 @@
 namespace infernux::particle
 {
 
+struct GpuParticleSortProgramStorage;
+
 struct GpuParticleDrawEntry
 {
     uint64_t id = 0;
@@ -19,6 +21,7 @@ struct GpuParticleDrawEntry
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle indirectArguments;
     std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
+    std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     ParticleOutputSemantics semantics;
 };
 

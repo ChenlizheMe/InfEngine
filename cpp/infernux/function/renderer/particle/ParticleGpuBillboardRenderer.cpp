@@ -4,6 +4,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstring>
 
 namespace infernux::particle
@@ -225,6 +226,8 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
         for (const auto &entry : m_pipelines)
             m_device->Release(entry.pipeline);
         m_device->Release(m_group);
+        for (const auto &entry : m_viewGroups)
+            m_device->Release(entry.group);
         for (const auto &binding : m_textures) {
             m_device->Release(binding.texture);
             m_device->Release(binding.sampler);
@@ -247,6 +250,7 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_fragmentShader = {};
     m_layout = {};
     m_group = {};
+    m_viewGroups.clear();
     m_materialBuffer = {};
     m_textures.clear();
     m_materialVersion = 0;
@@ -362,16 +366,19 @@ bool ParticleGpuBillboardRenderer::RefreshMaterialBuffer(bool force)
     return true;
 }
 
-rhi::BindGroupHandle
-ParticleGpuBillboardRenderer::CreateBindGroup(const std::vector<TextureBindingState> &textures) const
+rhi::BindGroupHandle ParticleGpuBillboardRenderer::CreateBindGroup(const std::vector<TextureBindingState> &textures,
+                                                                   rhi::BufferHandle renderIndices) const
 {
     if (!m_device || !m_layout.IsValid())
         return {};
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
     groupDesc.buffers[groupDesc.bufferCount++] = {0, rhi::BindingType::StorageBuffer, m_instances, 0, 0};
-    if (UsesLinkedProgram())
-        groupDesc.buffers[groupDesc.bufferCount++] = {1, rhi::BindingType::StorageBuffer, m_renderIndices, 0, 0};
+    if (UsesLinkedProgram()) {
+        if (!renderIndices.IsValid())
+            return {};
+        groupDesc.buffers[groupDesc.bufferCount++] = {1, rhi::BindingType::StorageBuffer, renderIndices, 0, 0};
+    }
     if (m_materialBuffer.IsValid()) {
         groupDesc.buffers[groupDesc.bufferCount++] = {14, rhi::BindingType::UniformBuffer, m_materialBuffer, 0,
                                                       m_shaderProgram ? m_shaderProgram->materialBufferSize : 0};
@@ -389,12 +396,34 @@ ParticleGpuBillboardRenderer::CreateBindGroup(const std::vector<TextureBindingSt
 
 bool ParticleGpuBillboardRenderer::RebuildBindGroup()
 {
-    const auto group = CreateBindGroup(m_textures);
+    const auto group = CreateBindGroup(m_textures, m_renderIndices);
     if (!group.IsValid())
         return false;
     RetireBindGroup(m_group);
+    RetireViewBindGroups();
     m_group = group;
     return true;
+}
+
+void ParticleGpuBillboardRenderer::RetireViewBindGroups()
+{
+    for (const auto &entry : m_viewGroups)
+        RetireBindGroup(entry.group);
+    m_viewGroups.clear();
+}
+
+rhi::BindGroupHandle ParticleGpuBillboardRenderer::ResolveBindGroup(rhi::BufferHandle renderIndices)
+{
+    if (!UsesLinkedProgram() || !renderIndices.IsValid() || renderIndices == m_renderIndices)
+        return m_group;
+    const auto existing = std::find_if(m_viewGroups.begin(), m_viewGroups.end(),
+                                       [&](const auto &entry) { return entry.renderIndices == renderIndices; });
+    if (existing != m_viewGroups.end())
+        return existing->group;
+    const auto group = CreateBindGroup(m_textures, renderIndices);
+    if (group.IsValid())
+        m_viewGroups.push_back({renderIndices, group});
+    return group;
 }
 
 bool ParticleGpuBillboardRenderer::RefreshTextureBindings(bool force)
@@ -465,7 +494,7 @@ bool ParticleGpuBillboardRenderer::RefreshTextureBindings(bool force)
 
     if (changed.empty())
         return m_group.IsValid();
-    const auto group = CreateBindGroup(candidate);
+    const auto group = CreateBindGroup(candidate, m_renderIndices);
     if (!group.IsValid()) {
         for (const size_t index : changed) {
             m_device->Release(candidate[index].texture);
@@ -475,6 +504,7 @@ bool ParticleGpuBillboardRenderer::RefreshTextureBindings(bool force)
     }
 
     RetireBindGroup(m_group);
+    RetireViewBindGroups();
     for (const size_t index : changed) {
         auto &previous = m_textures[index];
         RetireTexture(previous.texture, previous.sampler, std::move(previous.keepAlive));
@@ -488,7 +518,7 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
                                               rhi::RenderTargetLayoutHandle renderTargetLayout,
                                               const MaterialPassPipelineDescriptor &pass,
                                               rhi::BufferHandle indirectArguments,
-                                              const GpuBillboardViewConstants &view)
+                                              const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices)
 {
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || !RefreshMaterialBuffer(false) ||
         !RefreshTextureBindings(false))
@@ -496,10 +526,13 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
     if (!pipeline.IsValid())
         return false;
+    const auto group = ResolveBindGroup(renderIndices);
+    if (!group.IsValid())
+        return false;
     auto constants = view;
     constants.materialTint = UsesLinkedProgram() ? std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f} : ResolveMaterialTint();
     encoder.BindPipeline(pipeline);
-    encoder.BindGroup(pipeline, 0, m_group);
+    encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
                           &constants);
     encoder.DrawIndirect(indirectArguments);
