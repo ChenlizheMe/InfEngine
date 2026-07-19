@@ -107,6 +107,11 @@ class ParticleGpuRuntime
     /// Capacity and state ABI must match exactly.
     [[nodiscard]] bool CreateCompatible(rhi::Device &device, const GpuEmitterDesc &desc,
                                         const ParticleGpuRuntime &previous);
+    /// Atomically install a compatible pipeline/data-interface revision while
+    /// leaving this runtime object and its GPU-resident particle state stable.
+    /// The replacement receives the retired resources and must remain alive
+    /// until all in-flight frames that referenced them have completed.
+    [[nodiscard]] bool AdoptCompatibleRevision(ParticleGpuRuntime &replacement) noexcept;
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept;

@@ -142,6 +142,7 @@ class ParticleGpuSystemManager
     [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
     [[nodiscard]] bool ActiveStateWasPreserved(uint64_t id) const;
     [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;
+    [[nodiscard]] uint64_t ActivePointCacheGeneration(uint64_t id, uint32_t interfaceIndex) const;
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
                                                                                uint64_t outputId) const;

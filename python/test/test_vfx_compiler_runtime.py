@@ -805,6 +805,25 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
     emitter_id = component._gpu_emitter_ids[0]
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
     assert component._gpu_controllers[0].simulation_step == 1
+    initial_artifact_revision = component._artifact_revision
+    initial_generation = engine._gpu_particle_point_cache_generation(emitter_id, 0)
+    assert initial_generation > 0
+
+    updated_cache = json.loads(point_cache_source.read_text(encoding="utf-8"))
+    updated_cache["channels"][0]["data"][0] = [9.0, 8.0, 7.0]
+    point_cache_source.write_text(json.dumps(updated_cache), encoding="utf-8")
+    reimported = AssetManager.reimport_asset(
+        str(point_cache_source), database=engine.get_asset_database()
+    )
+    assert reimported, reimported.error
+    component.update(0.0)
+
+    assert component._artifact_revision == initial_artifact_revision
+    assert component._gpu_controllers[0].simulation_step == 2
+    assert (
+        engine._gpu_particle_point_cache_generation(emitter_id, 0)
+        == initial_generation + 1
+    )
     component._remove_native_batch()
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 

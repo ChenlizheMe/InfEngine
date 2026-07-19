@@ -157,6 +157,19 @@ bool ParticleGpuRuntime::CreateCompatible(rhi::Device &device, const GpuEmitterD
     return CreateInternal(device, desc, previous.m_residentState);
 }
 
+bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement) noexcept
+{
+    if (!IsValid() || !replacement.IsValid() || m_device != replacement.m_device ||
+        m_capacity != replacement.m_capacity || m_stateStride != replacement.m_stateStride ||
+        m_residentState != replacement.m_residentState)
+        return false;
+    std::swap(m_layout, replacement.m_layout);
+    std::swap(m_group, replacement.m_group);
+    std::swap(m_dataInterfaces, replacement.m_dataInterfaces);
+    std::swap(m_pipelines, replacement.m_pipelines);
+    return true;
+}
+
 bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
                                         std::shared_ptr<ResidentState> residentState)
 {

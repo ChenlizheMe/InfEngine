@@ -449,6 +449,8 @@ int main()
         assert(!compatible.NeedsBootstrap());
         assert(compatible.StateBuffer() == state && compatible.CounterBuffer() == counters);
         assert(sharingDevice.buffers.size() == 7);
+        assert(previous.AdoptCompatibleRevision(compatible));
+        assert(previous.IsValid() && compatible.IsValid() && previous.SharesStateWith(compatible));
         compatible.RequestBootstrap();
         assert(previous.NeedsBootstrap() && compatible.NeedsBootstrap());
         compatible.RecordBootstrap(sharingEncoder, 13);

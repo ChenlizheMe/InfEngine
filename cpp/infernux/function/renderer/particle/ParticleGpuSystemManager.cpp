@@ -2,6 +2,7 @@
 
 #include "ParticleGpuDrawRegistry.h"
 
+#include <core/log/InxLog.h>
 #include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
@@ -56,7 +57,10 @@ struct ParticleGpuSystemManager::Impl
         std::unique_ptr<ParticleGpuBounds> bounds;
         std::shared_ptr<ParticleGpuMigrator> migration;
         std::shared_ptr<Emitter> migrationSource;
+        GpuParticleEmitterProgram sourceProgram;
         std::vector<std::shared_ptr<InxPointCache>> pointCaches;
+        std::vector<uint64_t> pointCacheGenerations;
+        std::vector<uint64_t> observedPointCacheGenerations;
         std::vector<uint32_t> billboardVertexShader;
         std::vector<uint32_t> billboardFragmentShader;
         std::vector<Output> outputs;
@@ -83,6 +87,43 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleMigrationProgramStorage> migrationProgram;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
+
+    [[nodiscard]] bool BuildRuntimeDesc(const GpuParticleEmitterProgram &program, GpuEmitterDesc &runtimeDesc,
+                                        std::vector<std::shared_ptr<InxPointCache>> &pointCaches,
+                                        std::vector<uint64_t> &generations, std::string *error) const
+    {
+        runtimeDesc.capacity = program.capacity;
+        runtimeDesc.stateStride = program.stateStride;
+        for (size_t index = 0; index < program.kernels.size(); ++index)
+            runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
+        runtimeDesc.pointCaches.metadataBinding = program.pointCaches.metadataBinding;
+        runtimeDesc.pointCaches.interfaceStrideWords = program.pointCaches.interfaceStrideWords;
+        runtimeDesc.pointCaches.sampleStrideWords = program.pointCaches.sampleStrideWords;
+        runtimeDesc.pointCaches.sampleCount = program.pointCaches.sampleCount;
+        runtimeDesc.pointCaches.pointCaches.reserve(program.pointCaches.pointCaches.size());
+        pointCaches.reserve(program.pointCaches.pointCaches.size());
+        generations.reserve(program.pointCaches.pointCaches.size());
+        std::unordered_set<std::string> stableIds;
+        for (const auto &pointCache : program.pointCaches.pointCaches) {
+            if (pointCache.stableId.empty() || !stableIds.insert(pointCache.stableId).second || !pointCache.cache ||
+                !pointCache.cache->GetCpuData()) {
+                SetError(error, "GPU particle Point Cache bindings must have unique identities and loaded data");
+                return false;
+            }
+            GpuPointCacheDesc runtimePointCache;
+            runtimePointCache.interfaceIndex = pointCache.interfaceIndex;
+            runtimePointCache.dataBinding = pointCache.dataBinding;
+            runtimePointCache.lookupBinding = pointCache.lookupBinding;
+            runtimePointCache.worldSpace = pointCache.worldSpace;
+            runtimePointCache.cacheToSpace = pointCache.cacheToSpace;
+            runtimePointCache.data = pointCache.cache->GetCpuData();
+            runtimePointCache.samples = pointCache.samples;
+            runtimeDesc.pointCaches.pointCaches.push_back(std::move(runtimePointCache));
+            pointCaches.push_back(pointCache.cache);
+            generations.push_back(pointCache.cache->GetGeneration());
+        }
+        return true;
+    }
 
     [[nodiscard]] std::shared_ptr<ParticleGpuBillboardRenderer>
     CreateOutputRenderer(const Emitter &emitter, const std::shared_ptr<InxMaterial> &material,
@@ -142,34 +183,10 @@ struct ParticleGpuSystemManager::Impl
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
-        runtimeDesc.capacity = program.capacity;
-        runtimeDesc.stateStride = program.stateStride;
-        for (size_t index = 0; index < program.kernels.size(); ++index)
-            runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
-        runtimeDesc.pointCaches.metadataBinding = program.pointCaches.metadataBinding;
-        runtimeDesc.pointCaches.interfaceStrideWords = program.pointCaches.interfaceStrideWords;
-        runtimeDesc.pointCaches.sampleStrideWords = program.pointCaches.sampleStrideWords;
-        runtimeDesc.pointCaches.sampleCount = program.pointCaches.sampleCount;
-        runtimeDesc.pointCaches.pointCaches.reserve(program.pointCaches.pointCaches.size());
-        emitter->pointCaches.reserve(program.pointCaches.pointCaches.size());
-        std::unordered_set<std::string> pointCacheStableIds;
-        for (const auto &pointCache : program.pointCaches.pointCaches) {
-            if (pointCache.stableId.empty() || !pointCacheStableIds.insert(pointCache.stableId).second ||
-                !pointCache.cache || !pointCache.cache->GetCpuData()) {
-                SetError(error, "GPU particle Point Cache bindings must have unique identities and loaded data");
-                return {};
-            }
-            GpuPointCacheDesc runtimePointCache;
-            runtimePointCache.interfaceIndex = pointCache.interfaceIndex;
-            runtimePointCache.dataBinding = pointCache.dataBinding;
-            runtimePointCache.lookupBinding = pointCache.lookupBinding;
-            runtimePointCache.worldSpace = pointCache.worldSpace;
-            runtimePointCache.cacheToSpace = pointCache.cacheToSpace;
-            runtimePointCache.data = pointCache.cache->GetCpuData();
-            runtimePointCache.samples = pointCache.samples;
-            runtimeDesc.pointCaches.pointCaches.push_back(std::move(runtimePointCache));
-            emitter->pointCaches.push_back(pointCache.cache);
-        }
+        if (!BuildRuntimeDesc(program, runtimeDesc, emitter->pointCaches, emitter->pointCacheGenerations, error))
+            return {};
+        emitter->observedPointCacheGenerations = emitter->pointCacheGenerations;
+        emitter->sourceProgram = program;
         auto &device = context->GetRhiDevice();
         if (program.preserveState &&
             (!previous || previous->id != program.id || previous->stableId != program.stableId)) {
@@ -270,6 +287,45 @@ struct ParticleGpuSystemManager::Impl
                                         output.fallbackMaterial, output.semantics, std::move(renderer)});
         }
         return emitter;
+    }
+
+    [[nodiscard]] bool RefreshPointCaches(Emitter &emitter)
+    {
+        if (emitter.pointCaches.empty())
+            return true;
+        std::vector<uint64_t> currentGenerations;
+        currentGenerations.reserve(emitter.pointCaches.size());
+        bool changed = false;
+        for (size_t index = 0; index < emitter.pointCaches.size(); ++index) {
+            const uint64_t generation = emitter.pointCaches[index] ? emitter.pointCaches[index]->GetGeneration() : 0;
+            currentGenerations.push_back(generation);
+            changed = changed || generation != emitter.observedPointCacheGenerations[index];
+        }
+        if (!changed)
+            return true;
+
+        std::string error;
+        GpuEmitterDesc runtimeDesc;
+        std::vector<std::shared_ptr<InxPointCache>> pointCaches;
+        std::vector<uint64_t> generations;
+        auto replacement = std::make_unique<ParticleGpuRuntime>();
+        const bool descriptorValid =
+            BuildRuntimeDesc(emitter.sourceProgram, runtimeDesc, pointCaches, generations, &error);
+        const bool replacementCreated =
+            descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
+        if (!replacementCreated || !deletionQueue || !emitter.runtime->AdoptCompatibleRevision(*replacement)) {
+            emitter.observedPointCacheGenerations = std::move(currentGenerations);
+            INXLOG_WARN("GPU particle Point Cache refresh kept last-known-good emitter '", emitter.stableId,
+                        "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
+            return false;
+        }
+
+        emitter.pointCaches = std::move(pointCaches);
+        emitter.pointCacheGenerations = generations;
+        emitter.observedPointCacheGenerations = std::move(generations);
+        auto retired = std::shared_ptr<ParticleGpuRuntime>(std::move(replacement));
+        deletionQueue->Push([retired = std::move(retired)]() mutable { retired.reset(); });
+        return true;
     }
 
     [[nodiscard]] std::shared_ptr<GraphState> BuildGraph(const EmitterMap &candidateEmitters, std::string *error) const
@@ -663,8 +719,10 @@ bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameReq
         return false;
     const auto emitter = m_impl->emitters.find(id);
     const auto scheduler = m_impl->graphState->schedulerById.find(id);
-    if (emitter == m_impl->emitters.end() || scheduler == m_impl->graphState->schedulerById.end() ||
-        !emitter->second->runtime->UpdateTransforms(transforms))
+    if (emitter == m_impl->emitters.end() || scheduler == m_impl->graphState->schedulerById.end())
+        return false;
+    (void)m_impl->RefreshPointCaches(*emitter->second);
+    if (!emitter->second->runtime->UpdateTransforms(transforms))
         return false;
     return scheduler->second->BeginFrame(request);
 }
@@ -724,6 +782,16 @@ size_t ParticleGpuSystemManager::ActiveOutputCount(uint64_t id) const
         return 0;
     const auto found = m_impl->emitters.find(id);
     return found != m_impl->emitters.end() ? found->second->outputs.size() : 0;
+}
+
+uint64_t ParticleGpuSystemManager::ActivePointCacheGeneration(uint64_t id, uint32_t interfaceIndex) const
+{
+    if (!m_impl)
+        return 0;
+    const auto found = m_impl->emitters.find(id);
+    if (found == m_impl->emitters.end() || interfaceIndex >= found->second->pointCacheGenerations.size())
+        return 0;
+    return found->second->pointCacheGenerations[interfaceIndex];
 }
 
 int32_t ParticleGpuSystemManager::ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const

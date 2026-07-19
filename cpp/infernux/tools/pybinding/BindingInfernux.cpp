@@ -2040,6 +2040,15 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("emitter_id"), "Return the active GPU particle rendering output count")
         .def(
+            "_gpu_particle_point_cache_generation",
+            [](Infernux &self, uint64_t emitterId, uint32_t interfaceIndex) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->ActivePointCacheGeneration(emitterId, interfaceIndex) : uint64_t{0};
+            },
+            py::arg("emitter_id"), py::arg("interface_index"),
+            "Return the active GPU Point Cache generation for validation")
+        .def(
             "_gpu_particle_output_render_queue",
             [](Infernux &self, uint64_t emitterId, uint64_t outputId) {
                 auto *renderer = self.GetRenderer();
