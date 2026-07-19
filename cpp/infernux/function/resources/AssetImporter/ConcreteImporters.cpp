@@ -78,6 +78,20 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
 {
     ImportArtifact artifact(request.metadata);
     EnsureDefaultSettings(artifact.metadata);
+    std::string extension = FromFsPath(ToFsPath(request.sourcePath).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+    if (extension == ".inxvfield") {
+        artifact.metadata.AddMetadata("texture_type", std::string("vector_field"));
+        artifact.metadata.AddMetadata("srgb", false);
+        artifact.metadata.AddMetadata("texture_compression", std::string("none"));
+        const std::string format = artifact.metadata.GetDataAs<std::string>("texture_format");
+        if (format == "auto")
+            artifact.metadata.AddMetadata("texture_format", std::string("rgba16_float"));
+        else if (format != "rgba16_float" && format != "rgba32_float")
+            throw std::invalid_argument("VectorField textures require rgba16_float or rgba32_float storage");
+    } else if (artifact.metadata.GetDataAs<std::string>("texture_type") == "vector_field") {
+        throw std::invalid_argument("VectorField textures must use the versioned .inxvfield source format");
+    }
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");
     const auto cpuData = TextureDecoder::Decode(request.sourcePath, artifact.metadata);

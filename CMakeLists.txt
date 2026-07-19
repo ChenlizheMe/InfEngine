@@ -710,6 +710,32 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.texture_processor COMMAND infernux_texture_processor_tests)
 
+    add_executable(infernux_vector_field_source_tests
+        cpp/tests/VectorFieldSourceTests.cpp
+        cpp/infernux/function/resources/InxTexture/VectorFieldSource.cpp
+    )
+    target_include_directories(infernux_vector_field_source_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    if(MSVC)
+        target_compile_options(infernux_vector_field_source_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.vector_field_source COMMAND infernux_vector_field_source_tests)
+
+    add_executable(infernux_vector_field_importer_tests
+        cpp/tests/VectorFieldImporterTests.cpp
+    )
+    target_include_directories(infernux_vector_field_importer_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_vector_field_importer_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_vector_field_importer_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.vector_field_importer COMMAND infernux_vector_field_importer_tests)
+
     add_executable(infernux_point_cache_artifact_tests
         cpp/tests/PointCacheArtifactTests.cpp
         cpp/infernux/function/resources/InxPointCache/PointCacheArtifact.cpp

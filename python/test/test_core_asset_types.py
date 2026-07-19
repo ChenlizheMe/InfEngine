@@ -29,6 +29,7 @@ from Infernux.core.asset_types import (
     FONT_EXTENSIONS,
     MESH_EXTENSIONS,
     PREFAB_EXTENSIONS,
+    read_texture_import_settings,
 )
 
 
@@ -43,6 +44,7 @@ class TestTextureType:
         assert int(TextureType.UI) == 2
         assert int(TextureType.SPRITE) == 3
         assert int(TextureType.DATA) == 4
+        assert int(TextureType.VECTOR_FIELD) == 5
 
 
 class TestTextureCompression:
@@ -148,6 +150,24 @@ class TestTextureImportSettings:
         s = TextureImportSettings(srgb=True, texture_type=TextureType.DEFAULT)
         s._sync_derived_fields()
         assert s.srgb is True
+
+    def test_vector_field_round_trip_forces_linear_data(self):
+        settings = TextureImportSettings.from_dict({
+            "texture_type": "vector_field",
+            "srgb": False,
+            "texture_format": "rgba16_float",
+        })
+        assert settings.texture_type == TextureType.VECTOR_FIELD
+        assert settings.srgb is False
+        assert TextureImportSettings.from_dict(settings.to_dict()) == settings
+
+    def test_vector_field_extension_uses_canonical_import_settings(self, tmp_path):
+        path = str(tmp_path / "wind.inxvfield")
+        settings = read_texture_import_settings(path)
+        assert settings.texture_type == TextureType.VECTOR_FIELD
+        assert settings.srgb is False
+        assert settings.format == TextureFormat.RGBA16_FLOAT
+        assert settings.compression == TextureCompression.NONE
 
     def test_equality_false_for_different(self):
         s1 = TextureImportSettings()

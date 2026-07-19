@@ -26,7 +26,8 @@ class TextureImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm"};
+        return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif",      ".psd",
+                ".hdr", ".pic", ".pnm",  ".pgm", ".ppm", ".inxvfield"};
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;

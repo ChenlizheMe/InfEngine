@@ -1,5 +1,6 @@
 #include "TextureDecoder.h"
 #include "TextureProcessor.h"
+#include "VectorFieldSource.h"
 
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -166,6 +167,20 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
 {
     const auto source = ReadSourceBytes(sourcePath);
     const uint32_t maxSize = ReadMaxSize(metadata);
+
+    std::string extension = FromFsPath(ToFsPath(sourcePath).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+    if (extension == ".inxvfield") {
+        TextureCpuData volume =
+            VectorFieldSource::Decode(std::string_view(reinterpret_cast<const char *>(source.data()), source.size()));
+        const auto &base = volume.mipLevels.front();
+        if (base.width > maxSize || base.height > maxSize || base.depth > maxSize)
+            throw std::invalid_argument("vector field dimensions exceed texture max_size");
+        return TextureProcessor::Process(
+            std::move(volume), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
+                                                     ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
+    }
+
     int sourceWidth = 0;
     int sourceHeight = 0;
     int sourceChannels = 0;
@@ -173,6 +188,8 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
     auto texture = std::make_shared<TextureCpuData>();
     texture->dimension = TextureDimension::Texture2D;
     texture->semantic = ReadSemantic(metadata);
+    if (texture->semantic == TextureSemantic::VectorField)
+        throw std::invalid_argument("VectorField textures must use the versioned .inxvfield source format");
     if (stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
         texture->format = TextureFormat::Rgba32Float;
         float *decoded = stbi_loadf_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,

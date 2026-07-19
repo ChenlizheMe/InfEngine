@@ -52,12 +52,23 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
     metaData.AddMetadata("file_extension", extension);
 
     static const std::unordered_map<std::string, std::string> formatMap = {
-        {".png", "PNG"}, {".jpg", "JPEG"}, {".jpeg", "JPEG"}, {".bmp", "BMP"}, {".tga", "TGA"}, {".gif", "GIF"},
-        {".psd", "PSD"}, {".hdr", "HDR"},  {".pic", "PIC"},   {".pnm", "PNM"}, {".pgm", "PGM"}, {".ppm", "PPM"},
+        {".png", "PNG"},
+        {".jpg", "JPEG"},
+        {".jpeg", "JPEG"},
+        {".bmp", "BMP"},
+        {".tga", "TGA"},
+        {".gif", "GIF"},
+        {".psd", "PSD"},
+        {".hdr", "HDR"},
+        {".pic", "PIC"},
+        {".pnm", "PNM"},
+        {".pgm", "PGM"},
+        {".ppm", "PPM"},
+        {".inxvfield", "Infernux Vector Field"},
     };
     auto fmtIt = formatMap.find(extension);
     metaData.AddMetadata("source_container", fmtIt != formatMap.end() ? fmtIt->second : std::string("Unknown"));
-    metaData.AddMetadata("is_binary", true);
+    metaData.AddMetadata("is_binary", extension != ".inxvfield");
 
     metaData.AddMetadata("file_size", contentSize);
 }

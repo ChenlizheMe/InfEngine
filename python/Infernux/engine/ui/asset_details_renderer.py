@@ -217,7 +217,8 @@ def _ensure_categories():
                       ("asset.tex_normalmap", TextureType.NORMAL_MAP),
                       ("asset.tex_ui", TextureType.UI),
                       ("asset.tex_sprite", TextureType.SPRITE),
-                      ("asset.tex_data", TextureType.DATA)]),
+                      ("asset.tex_data", TextureType.DATA),
+                      ("Vector Field", TextureType.VECTOR_FIELD)]),
             FieldDef("srgb", "asset.srgb", WidgetType.CHECKBOX),
             FieldDef("filter_mode", "asset.filter_mode", WidgetType.COMBO,
                      [("asset.filter_point", FilterMode.POINT),
@@ -1597,7 +1598,7 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                 disabled = (fdef.key == "srgb"
                             and hasattr(state.settings, "texture_type")
                             and state.settings.texture_type in {
-                                TextureType.NORMAL_MAP, TextureType.DATA,
+                                TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD,
                             })
                 if disabled:
                     ctx.begin_disabled(True)

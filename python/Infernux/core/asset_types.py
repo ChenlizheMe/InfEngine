@@ -31,6 +31,7 @@ class TextureType(IntEnum):
     UI = 2
     SPRITE = 3
     DATA = 4
+    VECTOR_FIELD = 5
 
 
 class TextureCompression(IntEnum):
@@ -188,7 +189,7 @@ class TextureImportSettings:
         UI and SPRITE default to clamp wrapping with no mipmaps; sprites also use point filtering.
         Other modes leave the current values unchanged.
         """
-        if self.texture_type in {TextureType.NORMAL_MAP, TextureType.DATA}:
+        if self.texture_type in {TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD}:
             self.srgb = False
         elif self.texture_type in {TextureType.UI, TextureType.SPRITE}:
             if self.texture_type == TextureType.SPRITE:
@@ -227,6 +228,7 @@ class TextureImportSettings:
             "ui": TextureType.UI,
             "sprite": TextureType.SPRITE,
             "data": TextureType.DATA,
+            "vector_field": TextureType.VECTOR_FIELD,
         }
         tt = tt_map.get(tt_str, TextureType.DEFAULT)
         raw_frames = d.get("sprite_frames", [])
@@ -243,7 +245,7 @@ class TextureImportSettings:
             wrap_mode=WrapMode.from_string(d.get("wrap_mode", "repeat")),
             filter_mode=FilterMode.from_string(d.get("filter_mode", "linear")),
             generate_mipmaps=bool(d.get("generate_mipmaps", True)),
-            srgb=bool(d.get("srgb", tt not in {TextureType.NORMAL_MAP, TextureType.DATA})),
+            srgb=bool(d.get("srgb", tt not in {TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD})),
             max_size=int(d.get("max_size", 2048)),
             aniso_level=int(d.get("aniso_level", 1)),
             format=TextureFormat.from_string(d.get("texture_format", "auto")),
@@ -513,14 +515,26 @@ def read_texture_import_settings(asset_path: str) -> TextureImportSettings:
     Missing keys are back-filled with defaults (matching TextureImporter C++ defaults).
     """
     meta = read_meta_file(asset_path)
-    if meta is None:
-        return TextureImportSettings()
-    return TextureImportSettings.from_dict(meta)
+    settings = TextureImportSettings() if meta is None else TextureImportSettings.from_dict(meta)
+    if os.path.splitext(asset_path)[1].lower() == ".inxvfield":
+        settings.texture_type = TextureType.VECTOR_FIELD
+        settings.srgb = False
+        settings.compression = TextureCompression.NONE
+        if settings.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            settings.format = TextureFormat.RGBA16_FLOAT
+    return settings
 
 
 def write_texture_import_settings(asset_path: str, settings: TextureImportSettings) -> bool:
     """Write texture import settings back to the .meta file."""
-    return write_meta_fields(asset_path, settings.to_dict())
+    canonical = settings.copy()
+    if os.path.splitext(asset_path)[1].lower() == ".inxvfield":
+        canonical.texture_type = TextureType.VECTOR_FIELD
+        canonical.srgb = False
+        canonical.compression = TextureCompression.NONE
+        if canonical.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            canonical.format = TextureFormat.RGBA16_FLOAT
+    return write_meta_fields(asset_path, canonical.to_dict())
 
 
 def read_audio_import_settings(asset_path: str) -> AudioImportSettings:
@@ -626,6 +640,7 @@ def write_mesh_import_settings(asset_path: str, settings: MeshImportSettings) ->
 # Image extensions supported by InxTextureLoader / stb_image
 IMAGE_EXTENSIONS = frozenset({
     ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
+    ".inxvfield",
 })
 
 # Shader extensions supported by ShaderImporter
