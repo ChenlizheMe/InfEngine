@@ -1485,9 +1485,9 @@ class InxVkCoreModular
     void ResetPerFrameGpuStreamOffsets();
 
   public:
-    /// @brief Pre-allocate the instance SSBO for the current frame and update
-    /// its descriptor set.  Must be called BEFORE any draws that bind the
-    /// globals descriptor set (i.e. before the render-graph executor runs).
+    /// @brief Pre-allocate all instance streams for the current frame and
+    /// update their descriptor bindings. Must be called before command-buffer
+    /// recording begins.
     void PreallocateInstances(size_t totalDrawCalls);
 
     /// @brief Write a single instance matrix into the frame's instance SSBO.

@@ -454,12 +454,12 @@ void InxVkCoreModular::ResetPerFrameGpuStreamOffsets()
 
 void InxVkCoreModular::PreallocateInstances(size_t totalDrawCalls)
 {
-    if (totalDrawCalls == 0)
-        return;
-
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
 
     ResetPerFrameGpuStreamOffsets();
+
+    if (totalDrawCalls == 0)
+        return;
 
     // Upper bound: every draw call can appear once in an opaque pass and
     // once per shadow cascade.  Pre-allocating here guarantees the buffer
@@ -467,10 +467,12 @@ void InxVkCoreModular::PreallocateInstances(size_t totalDrawCalls)
     const size_t maxInstances = totalDrawCalls * (1 + NUM_SHADOW_CASCADES);
     EnsureInstanceBufferCapacity(frameIndex, maxInstances);
     EnsureSkinBuffersCapacity(frameIndex, maxInstances, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY);
+    EnsureInstanceAuxBufferCapacity(frameIndex, maxInstances);
 
     // Safe to update the descriptor now — no draws have been recorded yet.
     UpdateInstanceBufferDescriptor(frameIndex);
     UpdateSkinBufferDescriptors(frameIndex);
+    UpdateInstanceAuxBufferDescriptor(frameIndex);
 }
 
 bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix)

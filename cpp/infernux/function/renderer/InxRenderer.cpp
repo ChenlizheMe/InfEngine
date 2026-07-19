@@ -457,21 +457,6 @@ void InxRenderer::PreparePipeline()
                                           m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
                                           m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
 
-            // Pre-allocate instance SSBO for all graphs so the buffer (and its
-            // descriptor binding) never changes mid-recording.
-            {
-                size_t totalDC = 0;
-                if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
-                    totalDC += m_sceneRenderGraph->GetCachedDrawCalls().size();
-                if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls())
-                    totalDC += m_sceneRenderGraph->GetCachedShadowDrawCalls().size();
-                if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
-                    totalDC += m_gameRenderGraph->GetCachedDrawCalls().size();
-                if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedShadowDrawCalls())
-                    totalDC += m_gameRenderGraph->GetCachedShadowDrawCalls().size();
-                m_vkCore->PreallocateInstances(totalDC);
-            }
-
 #if INFERNUX_FRAME_PROFILE
             using ExClock = std::chrono::high_resolution_clock;
             auto exT0 = ExClock::now();
@@ -1009,6 +994,22 @@ void InxRenderer::DrawFrame()
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [9] after Outline+GraphBuild+UBO staging
 #endif
+
+    // Descriptor set 2 is shared by every render graph recorded this frame.
+    // Grow all instance streams before vkBeginCommandBuffer so a picking or
+    // motion pass cannot rewrite an already-bound descriptor set.
+    {
+        size_t totalDrawCalls = 0;
+        if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
+            totalDrawCalls += m_sceneRenderGraph->GetCachedDrawCalls().size();
+        if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls())
+            totalDrawCalls += m_sceneRenderGraph->GetCachedShadowDrawCalls().size();
+        if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
+            totalDrawCalls += m_gameRenderGraph->GetCachedDrawCalls().size();
+        if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedShadowDrawCalls())
+            totalDrawCalls += m_gameRenderGraph->GetCachedShadowDrawCalls().size();
+        m_vkCore->PreallocateInstances(totalDrawCalls);
+    }
 
     // Render frame with scene camera
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
@@ -2570,12 +2571,14 @@ bool InxRenderer::CancelCapture(uint64_t captureId)
 
 uint64_t InxRenderer::RequestScenePick(float x, float y, float viewportWidth, float viewportHeight)
 {
-    if (!m_scenePickingService)
-        return 0;
-    const uint64_t requestId = m_scenePickingService->Request(x, y, viewportWidth, viewportHeight);
-    if (requestId != 0)
-        RequestFullSpeedFrame();
-    return requestId;
+    // Scene View selection is resolved synchronously by the CPU picker. Keep
+    // this legacy entry point fail-closed so older Python panels take their
+    // existing CPU fallback instead of recording the unstable GPU pick pass.
+    (void)x;
+    (void)y;
+    (void)viewportWidth;
+    (void)viewportHeight;
+    return 0;
 }
 
 ScenePickSnapshot InxRenderer::QueryScenePick(uint64_t requestId) const

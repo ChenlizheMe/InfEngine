@@ -725,6 +725,44 @@ class TestPanelFocusEvents:
         ]
 
 
+class TestSceneViewPicking:
+    def test_scene_click_uses_immediate_cpu_pick(self):
+        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+
+        class Context:
+            @staticmethod
+            def is_mouse_button_clicked(_button):
+                return True
+
+            @staticmethod
+            def is_key_down(_key):
+                return False
+
+        class Engine:
+            @staticmethod
+            def request_scene_object_pick(*_args):
+                raise AssertionError("scene clicks must not enqueue GPU picking")
+
+        class PickingProbe(SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._box_select_active = False
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+            @staticmethod
+            def _pick_scene_object(_ctx, _viewport):
+                return 42
+
+        probe = PickingProbe()
+        probe._handle_picking_and_selection(
+            Context(), object(), gizmo_consumed=False, overlay_hovered=False,
+            is_scene_hovered=True, play_border_clr=None,
+        )
+
+        assert probe.picked == [(42, False)]
+
+
 class TestEditorPanelVisibilityLifecycle:
     def test_hidden_hook_runs_only_on_visibility_transitions(self):
         from Infernux.engine.ui.editor_panel import EditorPanel

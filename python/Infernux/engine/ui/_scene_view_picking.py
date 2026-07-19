@@ -38,32 +38,14 @@ class SceneViewPickingMixin:
     def _handle_picking_and_selection(self, ctx, vp, gizmo_consumed, overlay_hovered,
                                       is_scene_hovered, play_border_clr):
         """Handle object picking, box-select, and play-mode border drawing."""
-        self._poll_scene_object_pick()
-
         if (is_scene_hovered and not gizmo_consumed
                 and not overlay_hovered
                 and ctx.is_mouse_button_clicked(0)
                 and not self._box_select_active):
             ctrl = ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
-            local_x, local_y = vp.mouse_local(ctx)
-            request_id = 0
-            if (0 <= local_x <= vp.width and 0 <= local_y <= vp.height and self._engine):
-                request_id = self._engine.request_scene_object_pick(
-                    local_x, local_y, vp.width, vp.height
-                )
-            if request_id:
-                self._pending_scene_pick = {
-                    "request_id": request_id,
-                    "x": local_x,
-                    "y": local_y,
-                    "width": vp.width,
-                    "height": vp.height,
-                    "ctrl": ctrl,
-                }
-            else:
-                picked_id = self._pick_scene_object(ctx, vp)
-                if self._on_object_picked:
-                    self._on_object_picked(picked_id, ctrl)
+            picked_id = self._pick_scene_object(ctx, vp)
+            if self._on_object_picked:
+                self._on_object_picked(picked_id, ctrl)
 
         # Box-select
         if self._box_select_active:
