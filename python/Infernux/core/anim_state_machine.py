@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import os
 import operator
 from dataclasses import dataclass, field
@@ -104,6 +105,24 @@ _ANIM_COND_AST_CACHE_LIMIT = 1024
 _CACHE_MISS = object()
 
 
+def _require_exact_fields(value: object, expected: set[str], location: str) -> dict:
+    if type(value) is not dict:
+        raise TypeError(f"{location} must be an object")
+    actual = set(value)
+    if actual != expected:
+        raise ValueError(
+            f"{location} fields mismatch; "
+            f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+        )
+    return value
+
+
+def _finite_number(value: object, location: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise TypeError(f"{location} must be a finite number")
+    return float(value)
+
+
 def evaluate_anim_condition(expr: str, context: Dict[str, Any]) -> bool:
     """Safely evaluate an FSM transition condition string against ``context``.
 
@@ -155,47 +174,36 @@ class AnimParameter:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AnimParameter":
-        raw_kind = str(d.get("kind", d.get("param_type", "float")))
-        if raw_kind == "trigger":
-            kind = "bool"
-        else:
-            kind = raw_kind
-
-        def _as_float(v: Any, fallback: float) -> float:
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return fallback
-
-        def _as_int(v: Any, fallback: int) -> int:
-            try:
-                return int(v)
-            except (TypeError, ValueError):
-                return fallback
-
-        legacy_default = d.get("default")
-
-        bool_v = d.get("default_bool", None)
-        if bool_v is None and isinstance(legacy_default, bool):
-            bool_v = legacy_default
-        if bool_v is None:
-            bool_v = False
-
-        float_v = d.get("default_float", None)
-        if float_v is None and isinstance(legacy_default, (int, float)) and not isinstance(legacy_default, bool):
-            float_v = legacy_default
-
-        int_v = d.get("default_int", None)
-        if int_v is None and isinstance(legacy_default, int) and not isinstance(legacy_default, bool):
-            int_v = legacy_default
-
-        return cls(
-            name=str(d.get("name", "NewVar")),
-            kind=kind,
-            default_bool=bool(bool_v),
-            default_float=_as_float(float_v, 0.0),
-            default_int=_as_int(int_v, 0),
-        )
+        if type(d) is not dict:
+            raise TypeError("animation parameter must be an object")
+        kind = d.get("kind")
+        default_key = {
+            "bool": "default_bool",
+            "float": "default_float",
+            "int": "default_int",
+        }.get(kind)
+        if default_key is None:
+            raise ValueError("animation parameter kind must be bool, float, or int")
+        expected = {"name", "kind", default_key}
+        if set(d) != expected:
+            raise ValueError(
+                f"animation parameter fields mismatch; "
+                f"missing={sorted(expected - set(d))}, unknown={sorted(set(d) - expected)}"
+            )
+        if type(d["name"]) is not str or not d["name"]:
+            raise ValueError("animation parameter name must be a non-empty string")
+        if kind == "bool":
+            if type(d[default_key]) is not bool:
+                raise TypeError("animation bool default must be a bool")
+            return cls(name=d["name"], kind=kind, default_bool=d[default_key])
+        if kind == "int":
+            if type(d[default_key]) is not int:
+                raise TypeError("animation int default must be an integer")
+            return cls(name=d["name"], kind=kind, default_int=d[default_key])
+        value = d[default_key]
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise TypeError("animation float default must be numeric")
+        return cls(name=d["name"], kind=kind, default_float=float(value))
 
 
 @dataclass
@@ -215,10 +223,16 @@ class AnimTransition:
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimTransition:
+        _require_exact_fields(d, {"target_state", "condition", "duration"}, "animation transition")
+        if type(d["target_state"]) is not str or type(d["condition"]) is not str:
+            raise TypeError("animation transition target_state and condition must be strings")
+        duration = _finite_number(d["duration"], "animation transition duration")
+        if duration < 0.0:
+            raise ValueError("animation transition duration must be non-negative")
         return cls(
-            target_state=str(d.get("target_state", "")),
-            condition=str(d.get("condition", "")),
-            duration=float(d.get("duration", 0.0)),
+            target_state=d["target_state"],
+            condition=d["condition"],
+            duration=duration,
         )
 
 
@@ -280,36 +294,55 @@ class AnimState:
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimState:
-        raw_header = d.get("header_color", [])
-        header_color: List[float] = []
-        if isinstance(raw_header, (list, tuple)) and len(raw_header) >= 3:
-            try:
-                header_color = [
-                    float(raw_header[0]),
-                    float(raw_header[1]),
-                    float(raw_header[2]),
-                    float(raw_header[3]) if len(raw_header) >= 4 else 1.0,
-                ]
-            except (TypeError, ValueError):
-                header_color = []
+        expected = {
+            "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
+            "blend_value", "timeline_guid", "timeline_path", "speed",
+            "exit_time_normalized", "loop", "restart_same_clip", "transitions",
+            "position", "header_color",
+        }
+        _require_exact_fields(d, expected, "animation state")
+        string_fields = (
+            "name", "kind", "clip_guid", "clip_path", "clip_b_guid", "clip_b_path",
+            "timeline_guid", "timeline_path",
+        )
+        if any(type(d[field]) is not str for field in string_fields):
+            raise TypeError("animation state identity and asset fields must be strings")
+        if d["kind"] not in {"clip", "blend", "timeline"}:
+            raise ValueError("animation state kind must be clip, blend, or timeline")
+        blend_value = _finite_number(d["blend_value"], "animation state blend_value")
+        exit_time = _finite_number(d["exit_time_normalized"], "animation state exit_time_normalized")
+        speed = _finite_number(d["speed"], "animation state speed")
+        if not 0.0 <= blend_value <= 1.0 or not 0.0 <= exit_time <= 1.0:
+            raise ValueError("animation state normalized values must be in [0, 1]")
+        if type(d["loop"]) is not bool or type(d["restart_same_clip"]) is not bool:
+            raise TypeError("animation state loop fields must be bools")
+        if type(d["transitions"]) is not list:
+            raise TypeError("animation state transitions must be an array")
+        if type(d["position"]) is not list or len(d["position"]) != 2:
+            raise TypeError("animation state position must contain two numbers")
+        position = [_finite_number(value, "animation state position") for value in d["position"]]
+        raw_header = d["header_color"]
+        if type(raw_header) is not list or len(raw_header) not in {0, 4}:
+            raise TypeError("animation state header_color must be empty or contain four numbers")
+        header_color = [_finite_number(value, "animation state header_color") for value in raw_header]
+        if any(value < 0.0 or value > 1.0 for value in header_color):
+            raise ValueError("animation state header_color values must be in [0, 1]")
         return cls(
-            name=str(d.get("name", "New State")),
-            kind=str(d.get("kind", "clip")),
-            clip_guid=str(d.get("clip_guid", "")),
-            clip_path=str(d.get("clip_path", "")),
-            clip_b_guid=str(d.get("clip_b_guid", "")),
-            clip_b_path=str(d.get("clip_b_path", "")),
-            blend_value=max(0.0, min(1.0, float(d.get("blend_value", 0.5)))),
-            timeline_guid=str(d.get("timeline_guid", "")),
-            timeline_path=str(d.get("timeline_path", "")),
-            speed=float(d.get("speed", 1.0)),
-            exit_time_normalized=max(
-                0.0, min(1.0, float(d.get("exit_time_normalized", 1.0)))
-            ),
-            loop=bool(d.get("loop", True)),
-            restart_same_clip=bool(d.get("restart_same_clip", False)),
-            transitions=[AnimTransition.from_dict(t) for t in d.get("transitions", [])],
-            position=list(d.get("position", [0.0, 0.0])),
+            name=d["name"],
+            kind=d["kind"],
+            clip_guid=d["clip_guid"],
+            clip_path=d["clip_path"],
+            clip_b_guid=d["clip_b_guid"],
+            clip_b_path=d["clip_b_path"],
+            blend_value=blend_value,
+            timeline_guid=d["timeline_guid"],
+            timeline_path=d["timeline_path"],
+            speed=speed,
+            exit_time_normalized=exit_time,
+            loop=d["loop"],
+            restart_same_clip=d["restart_same_clip"],
+            transitions=[AnimTransition.from_dict(t) for t in d["transitions"]],
+            position=position,
             header_color=header_color,
         )
 
@@ -338,17 +371,26 @@ class AnimStateMachine:
 
     @classmethod
     def from_dict(cls, d: dict) -> AnimStateMachine:
-        raw_params = d.get("parameters") or []
-        params: List[AnimParameter] = []
-        if isinstance(raw_params, list):
-            for item in raw_params:
-                if isinstance(item, dict):
-                    params.append(AnimParameter.from_dict(item))
+        _require_exact_fields(
+            d,
+            {"name", "default_state", "mode", "states", "parameters"},
+            "animation state machine",
+        )
+        if type(d["name"]) is not str or type(d["default_state"]) is not str or type(d["mode"]) is not str:
+            raise TypeError("animation state machine identity fields must be strings")
+        if d["mode"] not in {"2d", "3d", "timeline"}:
+            raise ValueError("animation state machine mode must be 2d, 3d, or timeline")
+        if type(d["states"]) is not list:
+            raise TypeError("animation state machine states must be an array")
+        raw_params = d["parameters"]
+        if type(raw_params) is not list:
+            raise TypeError("animation state machine parameters must be an array")
+        params = [AnimParameter.from_dict(item) for item in raw_params]
         return cls(
-            name=str(d.get("name", "New State Machine")),
-            default_state=str(d.get("default_state", "")),
-            mode=str(d.get("mode", "2d")),
-            states=[AnimState.from_dict(s) for s in d.get("states", [])],
+            name=d["name"],
+            default_state=d["default_state"],
+            mode=d["mode"],
+            states=[AnimState.from_dict(s) for s in d["states"]],
             parameters=params,
         )
 
@@ -384,7 +426,7 @@ class AnimStateMachine:
             fsm.file_path = path
             fsm.name = os.path.splitext(os.path.basename(path))[0]
             return fsm
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
     # ── Helpers ───────────────────────────────────────────────────────

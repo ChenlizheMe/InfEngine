@@ -27,6 +27,5 @@ from .expression_ir import (
     ExpressionOperand,
     ExpressionProgram,
 )
-from .legacy_adapter import apply_graph_document_to_legacy, graph_document_from_legacy
 
 __all__ = [name for name in globals() if not name.startswith("_")]

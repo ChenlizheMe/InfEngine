@@ -430,10 +430,9 @@ class EditorPanel(ClosablePanel):
         """Restore panel state from persisted data."""
         if not isinstance(data, dict):
             return
-        # Backward compatibility: if a panel previously stored a flat dict,
-        # still allow auto-apply when it is fully JSON-safe.
-        auto_state = data.get("__auto_state__") if isinstance(data.get("__auto_state__"), dict) else data
-        self._apply_auto_state(auto_state)
+        if set(data) != {"__auto_state__"} or not isinstance(data["__auto_state__"], dict):
+            raise ValueError("editor panel state requires the canonical __auto_state__ document")
+        self._apply_auto_state(data["__auto_state__"])
 
     # ------------------------------------------------------------------
     # Unified Render Frame

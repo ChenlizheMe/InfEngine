@@ -337,10 +337,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             target_dir = os.path.join(target_dir, f"{self.project_name}_Data")
         return os.path.join(target_dir, self.OUTPUT_MARKER_FILENAME)
 
-    def _legacy_output_marker_path(self, directory: Optional[str] = None) -> str:
-        target_dir = os.path.abspath(directory or self.output_dir)
-        return os.path.join(target_dir, self.OUTPUT_MARKER_FILENAME)
-
     def _validate_output_directory(self) -> None:
         if not self.output_dir:
             raise BuildOutputDirectoryError(
@@ -374,11 +370,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             if os.path.isdir(temp_dir) and not os.path.islink(temp_dir):
                 return
 
-        marker_paths = (
-            self._output_marker_path(self.output_dir),
-            self._legacy_output_marker_path(self.output_dir),
-        )
-        if any(os.path.isfile(path) for path in marker_paths):
+        if os.path.isfile(self._output_marker_path(self.output_dir)):
             return
 
         raise BuildOutputDirectoryError(
@@ -946,7 +938,7 @@ finally:
         shutil.copy2(launcher_path, game_executable)
         layout_manifest = {
             "schema_version": 3,
-            "layout": "infernux-windows-player-v3",
+            "layout": "infernux-windows-player",
             "launcher": os.path.basename(game_executable),
             "data_directory": data_name,
             "runtime_directory": "Runtime",
@@ -1413,11 +1405,11 @@ finally:
             pass
 
         payload = {
-            "schema_version": 3 if self._player_launcher_path() else 2,
+            "schema_version": 3,
             "layout": (
-                "infernux-windows-player-v3"
+                "infernux-windows-player"
                 if self._player_launcher_path()
-                else "infernux-player-directory-v2"
+                else "infernux-player-directory"
             ),
             "code_protection": {
                 "engine": "nuitka-native",

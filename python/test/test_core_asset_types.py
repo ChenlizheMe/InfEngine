@@ -134,10 +134,9 @@ class TestTextureImportSettings:
         assert s.max_size == 512
 
     def test_explicit_format_disables_compression_when_loading(self):
-        settings = TextureImportSettings.from_dict({
-            "texture_format": "rgba4444",
-            "texture_compression": "bc1",
-        })
+        document = TextureImportSettings().to_dict()
+        document.update(texture_format="rgba4444", texture_compression="bc1")
+        settings = TextureImportSettings.from_dict(document)
         assert settings.format == TextureFormat.RGBA4444
         assert settings.compression == TextureCompression.NONE
 
@@ -152,11 +151,12 @@ class TestTextureImportSettings:
         assert s.srgb is True
 
     def test_vector_field_round_trip_forces_linear_data(self):
-        settings = TextureImportSettings.from_dict({
-            "texture_type": "vector_field",
-            "srgb": False,
-            "texture_format": "rgba16_float",
-        })
+        document = TextureImportSettings().to_dict()
+        document.update(
+            texture_type="vector_field", srgb=False,
+            texture_format="rgba16_float", texture_compression="none",
+        )
+        settings = TextureImportSettings.from_dict(document)
         assert settings.texture_type == TextureType.VECTOR_FIELD
         assert settings.srgb is False
         assert TextureImportSettings.from_dict(settings.to_dict()) == settings
@@ -219,9 +219,9 @@ class TestMeshImportSettings:
         s2 = MeshImportSettings.from_dict(s.to_dict())
         assert s == s2
 
-    def test_old_importer_metadata_does_not_rewrite_uv_settings(self):
-        settings = MeshImportSettings.from_dict({"importer_version": 1, "flip_uvs": False})
-        assert settings.flip_uvs is False
+    def test_incomplete_importer_metadata_is_rejected(self):
+        with pytest.raises(ValueError):
+            MeshImportSettings.from_dict({"importer_version": 1, "flip_uvs": False})
 
     def test_copy(self):
         s = MeshImportSettings(optimize_mesh=False)

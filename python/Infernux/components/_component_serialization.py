@@ -43,7 +43,6 @@ class ComponentSerializationMixin:
     ) -> None:
         """Restore fields from a typed document, transactionally per component."""
         from .serialized_field import (
-            copy_serialized_field_default,
             get_raw_field_value,
             get_serialized_fields,
         )
@@ -66,19 +65,15 @@ class ComponentSerializationMixin:
             )
 
         fields = get_serialized_fields(self.__class__)
-        metadata_keys = {"__schema_version__", "__type_name__", "__component_id__"}
-        unknown_metadata = sorted(
-            key for key in data if key.startswith("__") and key not in metadata_keys
-        )
-        if unknown_metadata:
-            raise ValueError(
-                f"{self.__class__.__name__} field schema mismatch: "
-                f"unknown={unknown_metadata}"
-            )
-
-        from .serialized_field import resolve_serialized_field_sources
-        field_sources = resolve_serialized_field_sources(
-            data, fields, owner_name=self.__class__.__name__
+        metadata_keys = {"__schema_version__", "__type_name__"}
+        if "__component_id__" in data:
+            metadata_keys.add("__component_id__")
+        from .serialized_field import validate_serialized_field_document
+        validate_serialized_field_document(
+            data,
+            fields,
+            owner_name=self.__class__.__name__,
+            metadata_keys=metadata_keys,
         )
 
         saved_id = data.get("__component_id__")
@@ -87,18 +82,10 @@ class ComponentSerializationMixin:
 
         from .value_codec import VALUE_CODECS
         for name, meta in fields.items():
-            source_name = field_sources.get(name)
-            if source_name is not None:
-                VALUE_CODECS.validate(
-                    data[source_name], meta, f"{self.__class__.__name__}.{name}"
-                )
+            VALUE_CODECS.validate(data[name], meta, f"{self.__class__.__name__}.{name}")
 
         decoded = {
-            name: (
-                self._deserialize_value(data[field_sources[name]], meta)
-                if name in field_sources
-                else copy_serialized_field_default(meta)
-            )
+            name: self._deserialize_value(data[name], meta)
             for name, meta in fields.items()
         }
         previous_values = {

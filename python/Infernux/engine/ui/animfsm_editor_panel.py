@@ -141,7 +141,7 @@ def _encode_condition_model(terms: List[dict]) -> str:
     return expr
 
 
-def _legacy_condition_to_terms(cond: str) -> List[dict]:
+def _simple_condition_to_terms(cond: str) -> List[dict]:
     c = (cond or "").strip()
     if not c:
         return []
@@ -174,17 +174,17 @@ def parse_condition_string_to_model(cond: str) -> List[dict]:
         body = tree.body
         terms_ast = _flatten_and_only(body)
         if not terms_ast:
-            return _legacy_condition_to_terms(c)
+            return _simple_condition_to_terms(c)
         out: List[dict] = []
         for t in terms_ast:
             d = _compare_to_term(t)
             if not d:
-                return _legacy_condition_to_terms(c)
+                return _simple_condition_to_terms(c)
             out.append(d)
         return out
     except (SyntaxError, ValueError, TypeError):
         pass
-    return _legacy_condition_to_terms(c)
+    return _simple_condition_to_terms(c)
 
 
 def _replace_identifier_in_expr(expr: str, old: str, new: str) -> str:

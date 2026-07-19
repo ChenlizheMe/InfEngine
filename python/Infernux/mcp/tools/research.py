@@ -108,7 +108,7 @@ def register_research_tools(mcp, project_path: str) -> None:
     def mcp_research_profile() -> dict:
         """Return the research claims this MCP configuration is designed to support."""
         return ok({
-            "profile": capabilities.current_config().get("profile", "research_full"),
+            "profile": capabilities.profile_name(),
             "claims": [
                 "Self-describing tools reduce engine-specific hallucinations.",
                 "Executable contracts make long-horizon tool use easier to validate and repair.",

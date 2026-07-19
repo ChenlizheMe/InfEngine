@@ -66,10 +66,6 @@ class DragSpeed:
 class RequiredComponent:
     type_name: str
 
-@dataclass(frozen=True)
-class FormerlySerializedAs:
-    name: str
-
 class Multiline: ...
 class ReadOnly: ...
 class HideInInspector: ...
@@ -116,7 +112,6 @@ class FieldMetadata:
     getter: Optional[Callable] = ...
     setter: Optional[Callable] = ...
     hidden: bool = ...
-    formerly_serialized_as: Tuple[str, ...] = ...
 
 
 class SerializedFieldDescriptor:
@@ -185,7 +180,6 @@ def serialized_field(
     visible_when: Optional[Callable] = ...,
     hdr: bool = ...,
     hidden: bool = ...,
-    formerly_serialized_as: Optional[Union[str, Tuple[str, ...], List[str]]] = ...,
 ) -> Any:
     """Mark a field as serialized and inspector-visible.
 
@@ -211,7 +205,6 @@ def serialized_field(
         visible_when: ``fn(component) -> bool``; hides field when False.
         hdr: For COLOR fields only.  Allow HDR values (> 1.0).
         hidden: Serialize without showing the field in the Inspector.
-        formerly_serialized_as: Previous persisted field name(s) accepted on load.
 
     Example::
 
@@ -220,12 +213,13 @@ def serialized_field(
     """
     ...
 
-def resolve_serialized_field_sources(
+def validate_serialized_field_document(
     document: Dict[str, Any],
     fields: Dict[str, FieldMetadata],
     *,
     owner_name: str,
-) -> Dict[str, str]: ...
+    metadata_keys: set[str] | frozenset[str] = ...,
+) -> None: ...
 
 
 def hide_field(default: Any = ...) -> Any:

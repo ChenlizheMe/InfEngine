@@ -151,22 +151,19 @@ class TestSerialization:
         with pytest.raises(ValueError, match=error):
             SerializableObject._deserialize(data)
 
-    def test_removed_field_is_ignored_and_renamed_field_is_restored(self):
+    def test_noncanonical_fields_are_rejected(self):
         class EvolvingStats(SerializableObject):
-            health: int = serialized_field(default=100, formerly_serialized_as="hp")
+            health: int = serialized_field(default=100)
 
         data = EvolvingStats()._serialize()
         data["fields"] = {"hp": 42, "removed_debug_value": True}
 
-        restored = EvolvingStats._deserialize(data)
+        with pytest.raises(ValueError, match="serialized fields mismatch"):
+            EvolvingStats._deserialize(data)
 
-        assert restored.health == 42
-        assert restored._serialize()["fields"] == {"health": 42}
-
-    def test_stable_type_id_and_former_type_alias_survive_a_rename(self):
+    def test_stable_type_id_rejects_an_old_type_name(self):
         class RenamedStats(SerializableObject):
             __serialized_type_id__ = "gameplay:CharacterStats"
-            __formerly_serialized_type_as__ = ("legacy.stats:Stats",)
 
             health: int = 100
 
@@ -174,13 +171,10 @@ class TestSerialization:
         assert data["type_id"] == "gameplay:CharacterStats"
         data["type_id"] = "legacy.stats:Stats"
 
-        restored = SerializableObject._deserialize(data)
+        with pytest.raises(ValueError, match="unknown SerializableObject type_id"):
+            SerializableObject._deserialize(data)
 
-        assert type(restored) is RenamedStats
-        assert restored.health == 42
-        assert restored._serialize()["type_id"] == "gameplay:CharacterStats"
-
-    def test_missing_additive_field_uses_an_independent_declared_default(self):
+    def test_missing_current_field_is_rejected(self):
         class AdditiveDefaults(SerializableObject):
             hp: int = serialized_field(default=100)
             tags: list = serialized_field(
@@ -192,12 +186,8 @@ class TestSerialization:
         data = AdditiveDefaults(hp=42, tags=["saved"])._serialize()
         data["fields"].pop("tags")
 
-        restored = SerializableObject._deserialize(data)
-
-        assert restored.hp == 42
-        assert restored.tags == []
-        restored.tags.append("local")
-        assert AdditiveDefaults().tags == []
+        with pytest.raises(ValueError, match="serialized fields mismatch"):
+            SerializableObject._deserialize(data)
 
 
 # ══════════════════════════════════════════════════════════════════════

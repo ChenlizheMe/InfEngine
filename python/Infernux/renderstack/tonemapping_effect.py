@@ -73,7 +73,7 @@ class ToneMappingEffect(FullScreenEffect):
 
     def set_params_dict(self, params):
         super().set_params_dict(params)
-        self.mode = self._normalize_mode_value(params.get("mode", self.mode))
+        self.mode = self._normalize_mode_value(self.mode)
 
     # ------------------------------------------------------------------
     # FullScreenEffect interface

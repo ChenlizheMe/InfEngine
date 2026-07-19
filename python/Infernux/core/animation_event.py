@@ -16,6 +16,7 @@ Dispatch contract (per fired event):
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, List
 
 
@@ -38,30 +39,32 @@ class AnimationEvent:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AnimationEvent":
-        try:
-            t = float(d.get("time_normalized", d.get("time", 0.0)))
-        except (TypeError, ValueError):
-            t = 0.0
-        try:
-            num = float(d.get("number_arg", 0.0))
-        except (TypeError, ValueError):
-            num = 0.0
+        expected = {"time_normalized", "function", "string_arg", "number_arg"}
+        if type(d) is not dict or set(d) != expected:
+            raise ValueError("animation event must use the complete current field set")
+        t = d["time_normalized"]
+        num = d["number_arg"]
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t):
+            raise TypeError("animation event time_normalized must be finite numeric data")
+        if not 0.0 <= float(t) <= 1.0:
+            raise ValueError("animation event time_normalized must be in [0, 1]")
+        if isinstance(num, bool) or not isinstance(num, (int, float)) or not math.isfinite(num):
+            raise TypeError("animation event number_arg must be finite numeric data")
+        if type(d["function"]) is not str or type(d["string_arg"]) is not str:
+            raise TypeError("animation event function and string_arg must be strings")
         return cls(
-            time_normalized=max(0.0, min(1.0, t)),
-            function=str(d.get("function", "")),
-            string_arg=str(d.get("string_arg", "")),
-            number_arg=num,
+            time_normalized=float(t),
+            function=d["function"],
+            string_arg=d["string_arg"],
+            number_arg=float(num),
         )
 
 
 def events_from_list(raw: Any) -> List[AnimationEvent]:
-    """Build an event list from serialized data (tolerant of malformed entries)."""
-    out: List[AnimationEvent] = []
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict):
-                out.append(AnimationEvent.from_dict(item))
-    return out
+    """Build an event list from the current serialized representation."""
+    if type(raw) is not list:
+        raise TypeError("animation events must be an array")
+    return [AnimationEvent.from_dict(item) for item in raw]
 
 
 def collect_crossed_events(

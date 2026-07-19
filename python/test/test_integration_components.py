@@ -541,16 +541,15 @@ class TestComponentLifecycle:
             loaded_class = load_component_from_file(str(script_path))
             with temporary_script_import_paths(str(script_path)):
                 direct_module = importlib.import_module("a2")
-                legacy_module = importlib.import_module("Assets.a2")
+                with pytest.raises(ModuleNotFoundError):
+                    importlib.import_module("Assets.a2")
 
             go = scene.create_game_object("GO")
             go.add_component(loaded_class)
             components = go.get_components()
 
             assert loaded_class is direct_module.NewComponent1
-            assert loaded_class is legacy_module.NewComponent1
             assert any(isinstance(component, direct_module.NewComponent1) for component in components)
-            assert any(isinstance(component, legacy_module.NewComponent1) for component in components)
         finally:
             set_project_root(previous_root)
             for name in ("a2", "Assets.a2", "Assets"):

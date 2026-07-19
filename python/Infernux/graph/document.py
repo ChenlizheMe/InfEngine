@@ -1,4 +1,4 @@
-"""Strict GraphDocument v2 with canonical serialization and semantic identity."""
+"""Strict GraphDocument with canonical serialization and semantic identity."""
 
 from __future__ import annotations
 

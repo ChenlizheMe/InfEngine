@@ -68,7 +68,7 @@ def test_component_identity_distinguishes_same_named_classes():
     assert path is None
 
 
-def test_script_loader_executes_exact_pyc_and_registers_all_project_aliases(tmp_path, monkeypatch):
+def test_script_loader_executes_exact_pyc_with_canonical_project_module(tmp_path, monkeypatch):
     project = tmp_path / "project"
     package = project / "Assets" / "Gameplay"
     package.mkdir(parents=True)
@@ -85,15 +85,15 @@ def test_script_loader_executes_exact_pyc_and_registers_all_project_aliases(tmp_
     source.unlink()
 
     previous_root = get_project_root()
-    aliases = ("Gameplay.Controller", "Assets.Gameplay.Controller")
-    saved_modules = {name: sys.modules.get(name) for name in aliases}
-    for name in aliases:
+    module_names = ("Gameplay.Controller", "Assets.Gameplay.Controller")
+    saved_modules = {name: sys.modules.get(name) for name in module_names}
+    for name in module_names:
         sys.modules.pop(name, None)
     set_project_root(str(project))
     original_import_module = importlib.import_module
 
     def guarded_import_module(name, package=None):
-        if name in aliases:
+        if name in module_names:
             raise AssertionError("script loader must execute the GUID-resolved artifact directly")
         return original_import_module(name, package)
 
@@ -103,13 +103,15 @@ def test_script_loader_executes_exact_pyc_and_registers_all_project_aliases(tmp_
 
         assert loaded is not None
         assert loaded.update is not InxComponent.update
-        assert sys.modules[aliases[0]] is sys.modules[aliases[1]]
-        assert loaded is sys.modules[aliases[0]].Controller
+        assert loaded is sys.modules["Gameplay.Controller"].Controller
+        assert "Assets.Gameplay.Controller" not in sys.modules
+        with pytest.raises(ModuleNotFoundError):
+            original_import_module("Assets.Gameplay.Controller")
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module("Gameplay.NotPresent")
     finally:
         set_project_root(previous_root)
-        for name in aliases:
+        for name in module_names:
             sys.modules.pop(name, None)
         for name, module in saved_modules.items():
             if module is not None:

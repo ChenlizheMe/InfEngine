@@ -9,7 +9,7 @@ import threading
 import numpy as np
 import pytest
 
-from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, ResourceType
+from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, InxMaterial, ResourceType
 from Infernux.core.assets import AssetManager
 from Infernux.particle import (
     AssetReference,
@@ -20,7 +20,7 @@ from Infernux.particle import (
 )
 
 
-def test_audio_import_repairs_legacy_default_text_metadata(engine, tmp_path: Path):
+def test_audio_import_rejects_noncurrent_metadata(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "legacy_audio.wav"
     source.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
@@ -41,14 +41,9 @@ def test_audio_import_repairs_legacy_default_text_metadata(engine, tmp_path: Pat
     )
 
     try:
-        result = asset_db.import_asset(str(source))
-
-        assert result
-        assert result.guid == legacy_guid
-        assert result.resource_type == ResourceType.Audio
-        assert asset_db.get_meta_by_path(str(source)).get_resource_type() == ResourceType.Audio
-        persisted = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert persisted["metadata"]["resource_type"]["value"] == "Audio"
+        with pytest.raises(RuntimeError, match="current importer schema|resource_type"):
+            asset_db.import_asset(str(source))
+        assert not asset_db.contains_path(str(source))
     finally:
         if asset_db.contains_path(str(source)):
             asset_db.delete_asset(str(source))
@@ -565,14 +560,16 @@ def test_material_import_artifact_commits_metadata_and_dependencies_atomically(
     assert vertex_guid and fragment_guid
 
     def write_material(shader_paths: list[Path]) -> None:
-        shaders = {
-            "vertex": str(shader_paths[0]) if shader_paths else "",
-            "fragment": str(shader_paths[1]) if len(shader_paths) > 1 else "",
-        }
-        material.write_text(
-            json.dumps({"shaders": shaders, "properties": {}}),
-            encoding="utf-8",
-        )
+        document = json.loads(InxMaterial.create_default_lit().serialize())
+        if shader_paths:
+            document["shaders"]["vertex"] = {
+                "guid": "", "shader_id": "artifact-vertex", "path_hint": str(shader_paths[0]),
+            }
+        if len(shader_paths) > 1:
+            document["shaders"]["fragment"] = {
+                "guid": "", "shader_id": "artifact-fragment", "path_hint": str(shader_paths[1]),
+            }
+        material.write_text(json.dumps(document), encoding="utf-8")
 
     try:
         material.write_text("{ invalid first import", encoding="utf-8")
@@ -725,15 +722,12 @@ def test_refresh_builds_import_artifacts_only_on_workers(engine):
     model = fixture / "worker.obj"
     vertex.write_text("void main() {}", encoding="utf-8")
     fragment.write_text("void main() {}", encoding="utf-8")
-    material.write_text(
-        json.dumps(
-            {
-                "shaders": {"vertex": str(vertex), "fragment": str(fragment)},
-                "properties": {},
-            }
-        ),
-        encoding="utf-8",
-    )
+    material_document = json.loads(InxMaterial.create_default_lit().serialize())
+    material_document["shaders"] = {
+        "vertex": {"guid": "", "shader_id": "worker-vertex", "path_hint": str(vertex)},
+        "fragment": {"guid": "", "shader_id": "worker-fragment", "path_hint": str(fragment)},
+    }
+    material.write_text(json.dumps(material_document), encoding="utf-8")
     model.write_text(
         "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
         encoding="ascii",

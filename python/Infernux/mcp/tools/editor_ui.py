@@ -946,8 +946,7 @@ def _resolve_target(target_id: str, snapshot_id: str) -> dict[str, Any]:
             return {
                 "found": True,
                 **target,
-                # Keep the legacy field names for callers while routing the
-                # synthetic event through the native reachability-checked point.
+                # Internal tools consume the resolved reachability-checked point.
                 "center_x": click_x,
                 "center_y": click_y,
                 "click_x": click_x,

@@ -256,6 +256,21 @@ def test_render_stack_rejects_obsolete_json_binding_field():
         stack._deserialize_fields_document({"effect_stage_bindings_json": "{}"})
 
 
+@pytest.mark.parametrize(
+    "mounted_passes",
+    [
+        "{}",
+        '[{"class":"BloomEffect","enabled":true}]',
+        '[{"class":"BloomEffect","enabled":true,"order":0,"old":1}]',
+    ],
+)
+def test_render_stack_rejects_noncanonical_mounted_passes(mounted_passes):
+    stack = RenderStack()
+    stack.mounted_passes_json = mounted_passes
+    with pytest.raises((TypeError, ValueError)):
+        stack.on_after_deserialize()
+
+
 def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
     path = tmp_path / "Bloom.effect"
     path.write_text(

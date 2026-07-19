@@ -21,7 +21,6 @@ from Infernux.components import (
     InxComponent, serialized_field, FieldType, get_serialized_fields,
     Range, Tooltip, Header, Space, Group, InfoText, DragSpeed,
     Multiline, ReadOnly, HideInInspector, NonSerialized, HDR, Color,
-    FormerlySerializedAs,
     VALUE_CODECS,
 )
 from Infernux.components.serialized_field import (
@@ -93,13 +92,6 @@ class TestBuildField:
     def test_hide_in_inspector_serialized_but_hidden(self):
         meta = build_field_from_annotation(Annotated[int, HideInInspector], default=7)
         assert meta is not None and meta.hidden is True
-
-    def test_formerly_serialized_as_marker_collects_aliases(self):
-        meta = build_field_from_annotation(
-            Annotated[int, FormerlySerializedAs("hp"), FormerlySerializedAs("hit_points")],
-            default=7,
-        )
-        assert meta.formerly_serialized_as == ("hp", "hit_points")
 
     def test_non_serialized_returns_sentinel(self):
         from Infernux.components.serialized_field import NON_SERIALIZED_FIELD
@@ -303,7 +295,7 @@ class TestStrictSerializationFailures:
         assert target.health == 77
         assert target.title == "unchanged"
 
-    def test_missing_additive_field_uses_an_independent_declared_default(self):
+    def test_missing_current_field_is_rejected(self):
         import json
 
         class AdditiveFields(InxComponent):
@@ -319,48 +311,22 @@ class TestStrictSerializationFailures:
         document = json.loads(source._serialize_fields())
         document.pop("tags")
 
-        target = AdditiveFields()
-        target.tags = ["stale"]
-        target._deserialize_fields(json.dumps(document))
+        with pytest.raises(ValueError, match="serialized fields mismatch"):
+            AdditiveFields()._deserialize_fields(json.dumps(document))
 
-        assert target.health == 42
-        assert target.tags == []
-        target.tags.append("local")
-        assert AdditiveFields().tags == []
-
-    def test_removed_field_is_ignored_and_former_name_is_restored(self):
+    def test_removed_and_renamed_fields_are_rejected(self):
         import json
 
         class EvolvingFields(InxComponent):
-            health: int = serialized_field(default=10, formerly_serialized_as="hp")
+            health: int = serialized_field(default=10)
 
         document = json.loads(EvolvingFields()._serialize_fields())
         document.pop("health")
         document["hp"] = 42
         document["removed_debug_value"] = True
 
-        target = EvolvingFields()
-        target._deserialize_fields(json.dumps(document))
-
-        assert target.health == 42
-        saved = json.loads(target._serialize_fields())
-        assert saved["health"] == 42
-        assert "hp" not in saved
-        assert "removed_debug_value" not in saved
-
-    def test_annotation_marker_restores_former_name(self):
-        import json
-
-        class EvolvingFields(InxComponent):
-            health: Annotated[int, FormerlySerializedAs("hp")] = 10
-
-        document = json.loads(EvolvingFields()._serialize_fields())
-        document["hp"] = document.pop("health") + 5
-
-        target = EvolvingFields()
-        target._deserialize_fields(json.dumps(document))
-
-        assert target.health == 15
+        with pytest.raises(ValueError, match="serialized fields mismatch"):
+            EvolvingFields()._deserialize_fields(json.dumps(document))
 
     def test_runtime_schema_migration_hook_is_not_used(self):
         import json

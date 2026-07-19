@@ -258,6 +258,8 @@ class AudioImporter final : public AssetImporter
             meta.AddMetadata("load_in_background", false);
         if (!meta.HasKey("quality"))
             meta.AddMetadata("quality", 1.0f);
+        if (!meta.HasKey("compression_format"))
+            meta.AddMetadata("compression_format", std::string("pcm"));
     }
 };
 

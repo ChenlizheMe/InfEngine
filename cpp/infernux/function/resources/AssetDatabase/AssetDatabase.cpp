@@ -2154,27 +2154,12 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
             if (!metaFile.SaveToFile(metaFilePath))
                 throw std::runtime_error("Failed to persist asset metadata: " + metaFilePath);
         }
-    } else if (metaFile.GetResourceType() != type) {
-        // Older metadata could serialize newer ResourceType values as
-        // DefaultText. Rebuild from the extension-selected loader while
-        // preserving the stable GUID and importer-specific settings.
-        InxResourceMeta rebuilt;
-        m_loaders[type]->CreateMeta(contentPtr, content.size(), filePath, rebuilt);
-        const std::string existingGuid = metaFile.GetGuid();
-        for (const auto &[key, metaPair] : metaFile.GetMetadata()) {
-            if (key == "guid" || key == "resource_type")
-                continue;
-            if (!rebuilt.HasKey(key))
-                rebuilt.AddMetadata(key, metaPair.second);
-        }
-        if (!existingGuid.empty())
-            rebuilt.AddMetadata("guid", existingGuid);
-        if (readOnly) {
-            rebuilt.AddMetadata("read_only", true);
-        } else if (persistMetadata && !rebuilt.SaveToFile(metaFilePath)) {
-            throw std::runtime_error("Failed to repair asset metadata type: " + metaFilePath);
-        }
-        metaFile = std::move(rebuilt);
+    } else {
+        if (!metaFile.HasKey("importer_version") ||
+            metaFile.GetDataAs<int>("importer_version") != InxResourceMeta::ImporterVersion)
+            throw std::runtime_error("Asset metadata does not use the current importer schema: " + metaFilePath);
+        if (metaFile.GetResourceType() != type)
+            throw std::runtime_error("Asset metadata resource_type does not match its file extension: " + metaFilePath);
     }
 
     std::string guid = metaFile.GetGuid();

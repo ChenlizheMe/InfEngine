@@ -463,14 +463,9 @@ void AppendPrefabNodePreview(const json &nodeJson, const glm::mat4 &parentWorld,
             if (!componentJson.is_object())
                 continue;
 
-            // Current prefab documents wrap serialized component fields in
-            // `data` and identify native types with `type_id`. Keep accepting
-            // the legacy flat shape so existing prefabs continue to preview.
             auto dataIt = componentJson.find("data");
-            if (dataIt == componentJson.end() || !dataIt->is_object()) {
-                AppendPrefabMeshComponent(componentJson, worldMatrix, aggregate, defaultMat, errorMat);
+            if (dataIt == componentJson.end() || !dataIt->is_object())
                 continue;
-            }
 
             json normalized = *dataIt;
             normalized["enabled"] = componentJson.value("enabled", true);

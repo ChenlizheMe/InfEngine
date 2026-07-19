@@ -142,12 +142,6 @@ class RequiredComponent:
     type_name: str
 
 
-@dataclass(frozen=True)
-class FormerlySerializedAs:
-    """Accept a previous persisted field name while writing the current name."""
-    name: str
-
-
 class _MarkerSentinel:
     """Base for value-less markers usable as ``Marker`` or ``Marker()``."""
     def __init_subclass__(cls, **kw):
@@ -205,13 +199,10 @@ def rgba_equal(a: Any, b: Any) -> bool:
 
 
 def is_rgba_storage(value: Any) -> bool:
-    """True when *value* is canonical or legacy RGBA component storage."""
+    """True when *value* uses canonical RGBA component storage."""
     if isinstance(value, (str, bytes)):
         return False
     if type(value) is list and len(value) == 4:
-        return all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value)
-    # Legacy tuple-subclass Color instances from older engine builds.
-    if isinstance(value, tuple) and type(value) is not tuple and len(value) in (3, 4):
         return all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value)
     return False
 
@@ -285,7 +276,6 @@ class FieldMetadata:
     hdr: bool = False                            # For COLOR: allow HDR mode toggle
     asset_type: Optional[str] = None             # For ASSET: registered asset type name (e.g. "AudioClip", "AnimStateMachine")
     hidden: bool = False                         # Unity HideInInspector: serialized but not rendered
-    formerly_serialized_as: Tuple[str, ...] = () # Previous persisted field names, newest first
 
     # For internal use
     python_type: Optional[Type] = None
@@ -1093,7 +1083,7 @@ def resolve_annotation(annotation) -> Optional['FieldMetadata']:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Annotation-driven field construction (v2)
+#  Annotation-driven field construction
 #
 #  Single entry point used by InxComponent.__init_subclass__ to turn a type
 #  annotation (+ optional class-level default value) into a serialized field.
@@ -1166,9 +1156,6 @@ def _apply_markers(meta: 'FieldMetadata', markers: list) -> Optional['FieldMetad
             meta.drag_speed = m.speed
         elif isinstance(m, RequiredComponent):
             meta.required_component = m.type_name
-        elif isinstance(m, FormerlySerializedAs):
-            aliases = _normalize_serialized_aliases((*meta.formerly_serialized_as, m.name))
-            meta.formerly_serialized_as = aliases
         elif _is_marker(m, Multiline):
             meta.multiline = True
         elif _is_marker(m, ReadOnly):
@@ -1198,7 +1185,7 @@ def _coerce_default(meta: 'FieldMetadata', default: Any) -> Any:
 def build_field_from_annotation(annotation, default: Any = _UNSET) -> Optional['FieldMetadata']:
     """Build FieldMetadata from a type annotation plus optional default value.
 
-    This is the v2 entry point powering Unity-style declarations::
+    This entry point powers Unity-style declarations::
 
         health: int = 100
         speed: Annotated[float, Range(0, 20)] = 5.0
@@ -1312,7 +1299,6 @@ def serialized_field(
     visible_when: Optional[Callable] = None,
     hdr: bool = False,
     hidden: bool = False,
-    formerly_serialized_as: Optional[Union[str, Tuple[str, ...], List[str]]] = None,
 ) -> Any:
     """
     Decorator/descriptor for marking a field as serialized and inspector-visible.
@@ -1343,9 +1329,6 @@ def serialized_field(
         hdr: For COLOR fields only.  If True, allow HDR values (> 1.0)
             in the colour picker.
         hidden: Serialize the field without showing it in the Inspector.
-        formerly_serialized_as: Previous persisted names accepted while
-            loading older assets. Only the current field name is written.
-    
     Returns:
         A descriptor that manages the field value and metadata
     
@@ -1389,8 +1372,6 @@ def serialized_field(
     if isinstance(default, Enum):
         enum_type = type(default)
     
-    serialized_aliases = _normalize_serialized_aliases(formerly_serialized_as)
-
     metadata = FieldMetadata(
         name="",  # Will be set by __set_name__
         field_type=inferred_type,
@@ -1415,69 +1396,28 @@ def serialized_field(
         hdr=hdr,
         asset_type=asset_type,
         hidden=hidden,
-        formerly_serialized_as=serialized_aliases,
     )
     
     return SerializedFieldDescriptor(metadata)
 
 
-def _normalize_serialized_aliases(
-    aliases: Optional[Union[str, Tuple[str, ...], List[str]]],
-) -> Tuple[str, ...]:
-    """Validate and normalize persisted field aliases without reordering them."""
-    if aliases is None:
-        values: Tuple[str, ...] = ()
-    elif isinstance(aliases, str):
-        values = (aliases,)
-    else:
-        values = tuple(aliases)
-    if any(not isinstance(alias, str) or not alias or alias.startswith("__") for alias in values):
-        raise ValueError("formerly serialized names must be non-empty ordinary field names")
-    if len(values) != len(set(values)):
-        raise ValueError("formerly serialized names must be unique")
-    return values
-
-
-def resolve_serialized_field_sources(
+def validate_serialized_field_document(
     document: Dict[str, Any],
     fields: Dict[str, FieldMetadata],
     *,
     owner_name: str,
-) -> Dict[str, str]:
-    """Map current field names to persisted keys for Unity-style evolution.
-
-    Current names take precedence over aliases. Unknown ordinary fields are
-    intentionally ignored so removing a field does not invalidate an asset.
-    Type validation still runs against every selected value afterwards.
-    """
-    current_names = set(fields)
-    alias_owner: Dict[str, str] = {}
-    for field_name, metadata in fields.items():
-        for alias in metadata.formerly_serialized_as:
-            if alias == field_name:
-                continue
-            if alias in current_names and alias != field_name:
-                raise ValueError(
-                    f"{owner_name}: serialized alias {alias!r} conflicts with a current field"
-                )
-            previous = alias_owner.get(alias)
-            if previous is not None and previous != field_name:
-                raise ValueError(
-                    f"{owner_name}: serialized alias {alias!r} is shared by "
-                    f"{previous!r} and {field_name!r}"
-                )
-            alias_owner[alias] = field_name
-
-    sources: Dict[str, str] = {}
-    for field_name, metadata in fields.items():
-        if field_name in document:
-            sources[field_name] = field_name
-            continue
-        for alias in metadata.formerly_serialized_as:
-            if alias in document:
-                sources[field_name] = alias
-                break
-    return sources
+    metadata_keys: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """Require a serialized document to match the current field declaration."""
+    expected = set(fields).union(metadata_keys)
+    actual = set(document)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unknown = sorted(actual - expected)
+        raise ValueError(
+            f"{owner_name}: serialized fields mismatch; "
+            f"missing={missing}, unknown={unknown}"
+        )
 
 
 _SERIALIZED_FIELDS_CACHE: dict = {}  # component_class -> Dict[str, FieldMetadata]

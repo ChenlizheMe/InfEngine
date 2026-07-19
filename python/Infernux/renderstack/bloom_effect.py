@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.serialized_field import Color, serialized_field
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
@@ -52,9 +52,7 @@ class BloomEffect(FullScreenEffect):
     intensity: float = serialized_field(default=0.8, range=(0.0, 5.0), slider=False)
     scatter: float = serialized_field(default=0.7, range=(0.0, 1.0), slider=False)
     clamp: float = serialized_field(default=65472.0, range=(0.0, 65472.0), slider=False)
-    tint_r: float = serialized_field(default=1.0, range=(0.0, 1.0), slider=False)
-    tint_g: float = serialized_field(default=1.0, range=(0.0, 1.0), slider=False)
-    tint_b: float = serialized_field(default=1.0, range=(0.0, 1.0), slider=False)
+    tint: Color = Color(1.0, 1.0, 1.0, 1.0)
     max_iterations: int = serialized_field(default=5, range=(1, 8), slider=False)
 
     # ------------------------------------------------------------------
@@ -183,9 +181,9 @@ class BloomEffect(FullScreenEffect):
             p.set_texture("_SceneColor", scene_copy)
             p.write_color(color_out)
             p.set_param("intensity", self.intensity)
-            p.set_param("tintR", self.tint_r)
-            p.set_param("tintG", self.tint_g)
-            p.set_param("tintB", self.tint_b)
+            p.set_param("tintR", self.tint[0])
+            p.set_param("tintG", self.tint[1])
+            p.set_param("tintB", self.tint[2])
             p.fullscreen_quad("bloom_composite")
 
         # Update bus so subsequent effects read the bloom result

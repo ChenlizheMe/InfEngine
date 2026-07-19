@@ -418,7 +418,8 @@ def test_windows_launcher_layout_hides_runtime_payload(tmp_path, monkeypatch):
     assert (data_root / "Runtime" / "python312.dll").read_bytes() == b"python"
     assert (data_root / "RuntimeModules" / "core" / "core-module.zip").read_bytes() == b"core"
     layout = json.loads((data_root / "PlayerLayout.json").read_text(encoding="utf-8"))
-    assert layout["layout"] == "infernux-windows-player-v3"
+    assert layout["schema_version"] == 3
+    assert layout["layout"] == "infernux-windows-player"
 
 
 def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, monkeypatch):

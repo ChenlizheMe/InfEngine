@@ -198,7 +198,7 @@ def _resolve_texture_display(prop):
 
 
 def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw):
-    """Render a Texture2D material property (GUID-only v2). Returns True if changed."""
+    """Render a canonical GUID-backed Texture2D property. Returns True if changed."""
     changed = False
     display = _resolve_texture_display(prop)
     field_label(ctx, prop_name, plw)
@@ -661,7 +661,7 @@ def _apply_material_changes(panel, state, mat_data, native_mat,
         # only needed when material structure changed (shader sync/texture slots).
         if requires_deserialize:
             if not native_mat.deserialize_document(mat_data):
-                raise RuntimeError("material document was rejected by the native v3 schema")
+                raise RuntimeError("material document was rejected by the current native schema")
         if requires_pipeline_refresh:
             _refresh_pipeline(panel)
 

@@ -61,7 +61,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
     # Class-level storage for serialized field metadata
     _serialized_fields_: Dict[str, Any] = {}
 
-    # Schema version for serialization compatibility
+    # Exact schema identity for serialized component documents.
     __schema_version__ = 1
 
     # Active instance registry: go_id (int) → list of live InxComponent instances.
@@ -158,7 +158,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                     try:
                         resolved_hints[_k] = eval(_v, _globalns, dict(vars(cls)))  # noqa: S307
                     except Exception:
-                        pass  # keep raw string → legacy resolve_annotation path
+                        pass  # Keep raw strings for deferred annotation resolution.
                 else:
                     resolved_hints[_k] = _v
 

@@ -63,7 +63,6 @@ class SerializableObject:
 
     _serialized_fields_: Dict[str, "FieldMetadata"] = {}
     __serialized_type_id__ = ""
-    __formerly_serialized_type_as__: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------
     # Metaclass-style auto-registration
@@ -74,16 +73,10 @@ class SerializableObject:
 
         cls._serialized_fields_ = {}
         current_type_id = get_serializable_type_id(cls)
-        aliases = tuple(cls.__dict__.get("__formerly_serialized_type_as__", ()))
-        type_ids = (current_type_id, *aliases)
-        if any(not isinstance(type_id, str) or not type_id for type_id in type_ids):
-            raise ValueError("serialized type IDs and aliases must be non-empty strings")
-        if len(type_ids) != len(set(type_ids)):
-            raise ValueError("serialized type IDs and aliases must be unique")
-        for type_id in type_ids:
-            # Last definition wins so editor script hot-reload can replace a
-            # class while preserving the authored type identity.
-            _SERIALIZABLE_REGISTRY[type_id] = cls
+        if not isinstance(current_type_id, str) or not current_type_id:
+            raise ValueError("serialized type ID must be a non-empty string")
+        # Last definition wins so editor script hot-reload can replace a class.
+        _SERIALIZABLE_REGISTRY[current_type_id] = cls
 
         own_annotations = cls.__dict__.get('__annotations__', {})
 
@@ -225,16 +218,12 @@ class SerializableObject:
         if not isinstance(fields_document, dict):
             raise TypeError(f"{path}: SerializableObject fields must be an object")
 
-        from .serialized_field import resolve_serialized_field_sources
-        field_sources = resolve_serialized_field_sources(
-            fields_document, fields, owner_name=type_id
-        )
+        from .serialized_field import validate_serialized_field_document
+        validate_serialized_field_document(fields_document, fields, owner_name=type_id)
 
         from .value_codec import VALUE_CODECS
         for name, meta in fields.items():
-            source_name = field_sources.get(name)
-            if source_name is not None:
-                VALUE_CODECS.validate(fields_document[source_name], meta, f"{path}.{name}")
+            VALUE_CODECS.validate(fields_document[name], meta, f"{path}.{name}")
         return actual_cls, fields
 
     @classmethod
@@ -242,24 +231,12 @@ class SerializableObject:
         """Validate, decode, and construct one current-schema object."""
         actual_cls, fields = cls._validate_document(data)
 
-        from .serialized_field import copy_serialized_field_default
-
         fields_document = data["fields"]
-        from .serialized_field import resolve_serialized_field_sources
-        field_sources = resolve_serialized_field_sources(
-            fields_document,
-            fields,
-            owner_name=get_serializable_type_id(actual_cls),
-        )
         decoded = {
-            name: (
-                _deserialize_so_value(
-                    fields_document[field_sources[name]],
-                    meta,
-                    f"{get_serializable_type_id(actual_cls)}.{name}"
-                )
-                if name in field_sources
-                else copy_serialized_field_default(meta)
+            name: _deserialize_so_value(
+                fields_document[name],
+                meta,
+                f"{get_serializable_type_id(actual_cls)}.{name}"
             )
             for name, meta in fields.items()
         }

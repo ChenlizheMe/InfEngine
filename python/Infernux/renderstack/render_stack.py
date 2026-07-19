@@ -254,12 +254,8 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             if isinstance(e.render_pass, FullScreenEffect):
                 entry_data["params"] = e.render_pass.get_params_dict()
             entries.append(entry_data)
-        # Only overwrite when we actually have runtime entries; when
-        # _pass_entries is empty (e.g. discover_passes() failed) preserve the
-        # existing serialised data so the play-mode snapshot keeps the values.
-        if entries:
-            self.mounted_passes_json = _json.dumps(entries)
-        self.pipeline_params_json = _json.dumps(self._pipeline_param_store) if self._pipeline_param_store else ""
+        self.mounted_passes_json = _json.dumps(entries)
+        self.pipeline_params_json = _json.dumps(self._pipeline_param_store)
 
     def _deserialize_fields_document(
         self, data: dict, *, _skip_on_after_deserialize: bool = False
@@ -297,12 +293,10 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         self._normalize_effect_slots()
 
         if self.pipeline_params_json:
-            try:
-                data = _json.loads(self.pipeline_params_json)
-                if isinstance(data, dict):
-                    self._pipeline_param_store = data
-            except (ValueError, _json.JSONDecodeError):
-                self._pipeline_param_store = {}
+            data = _json.loads(self.pipeline_params_json)
+            if type(data) is not dict:
+                raise TypeError("RenderStack pipeline parameters must be an object")
+            self._pipeline_param_store = data
 
         # Deserialization may be repeated on an existing editor component.
         # Recreate the selected pipeline only after its parameter store exists.
@@ -316,9 +310,21 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
         all_passes = discover_passes()
         items = _json.loads(self.mounted_passes_json)
+        if type(items) is not list:
+            raise TypeError("RenderStack mounted passes must be an array")
         restored_keys = set()
-        for item in items:
-            cls_name = item.get("class", "")
+        for index, item in enumerate(items):
+            if type(item) is not dict or not {"class", "enabled", "order"}.issubset(item):
+                raise ValueError(f"RenderStack mounted pass {index} is missing current fields")
+            if set(item) - {"class", "enabled", "order", "params"}:
+                raise ValueError(f"RenderStack mounted pass {index} has unknown fields")
+            cls_name = item["class"]
+            if type(cls_name) is not str or not cls_name:
+                raise TypeError(f"RenderStack mounted pass {index} requires a class name")
+            if type(item["enabled"]) is not bool:
+                raise TypeError(f"RenderStack mounted pass {index} enabled must be a bool")
+            if type(item["order"]) is not int:
+                raise TypeError(f"RenderStack mounted pass {index} order must be an integer")
             cls = all_passes.get(cls_name)
             if cls is None:
                 # Also try name→class mapping by class __name__
@@ -327,26 +333,25 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
                         cls = pcls
                         break
             if cls is None:
-                print(
-                    f"[RenderStack] Cannot restore pass '{cls_name}' "
-                    f"— class not found.",
-                    file=sys.stderr,
-                )
-                continue
+                raise ValueError(f"RenderStack mounted pass class '{cls_name}' is not available")
             inst = cls()
             # FullScreenEffect: restore tuneable parameters
             from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-            if isinstance(inst, FullScreenEffect) and "params" in item:
+            if isinstance(inst, FullScreenEffect):
+                if "params" not in item:
+                    raise ValueError(f"RenderStack fullscreen effect '{cls_name}' requires params")
                 inst.set_params_dict(item["params"])
+            elif "params" in item:
+                raise ValueError(f"RenderStack pass '{cls_name}' cannot contain effect params")
             entry = PassEntry(
                 render_pass=inst,
-                enabled=item.get("enabled", True),
-                order=item.get("order", 0),
+                enabled=item["enabled"],
+                order=item["order"],
             )
             inst.enabled = entry.enabled
             key = (inst.injection_point, inst.name)
             if key in restored_keys:
-                continue
+                raise ValueError(f"RenderStack mounted pass '{cls_name}' is duplicated")
             restored_keys.add(key)
             self._pass_entries.append(entry)
 

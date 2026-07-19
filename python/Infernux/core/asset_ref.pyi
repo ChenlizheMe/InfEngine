@@ -33,7 +33,7 @@ class AssetRefBase:
         """Serialize the reference to a dictionary."""
         ...
     @classmethod
-    def from_dict(cls, d: Optional[dict]) -> AssetRefBase:
+    def from_dict(cls, d: dict) -> AssetRefBase:
         """Create an asset reference from a serialized dictionary."""
         ...
     @property

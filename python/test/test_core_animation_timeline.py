@@ -150,29 +150,36 @@ def test_keyframe_round_trip():
     assert k2.interp == INTERP_EASE_IN
 
 
-def test_keyframe_from_dict_invalid_interp_falls_back():
-    k = TimelineKeyframe.from_dict({"interp": "bogus"})
-    assert k.interp == INTERP_LINEAR
+def test_keyframe_from_dict_invalid_interp_is_rejected():
+    document = TimelineKeyframe().to_dict()
+    document["interp"] = "bogus"
+    with pytest.raises(ValueError, match="interpolation"):
+        TimelineKeyframe.from_dict(document)
 
 
-def test_keyframe_from_dict_missing_fields_defaults():
-    k = TimelineKeyframe.from_dict({})
-    assert k.time == 0.0
-    assert k.scale == [1.0, 1.0, 1.0]
+def test_keyframe_from_dict_missing_fields_is_rejected():
+    with pytest.raises(ValueError, match="fields mismatch"):
+        TimelineKeyframe.from_dict({})
 
 
-def test_keyframe_from_dict_short_vector_uses_default():
-    k = TimelineKeyframe.from_dict({"position": [1, 2]})
-    assert k.position == [0.0, 0.0, 0.0]
+def test_keyframe_from_dict_short_vector_is_rejected():
+    document = TimelineKeyframe().to_dict()
+    document["position"] = [1, 2]
+    with pytest.raises(TypeError, match="three finite numbers"):
+        TimelineKeyframe.from_dict(document)
 
 
-def test_keyframe_from_dict_non_numeric_vector_uses_default():
-    k = TimelineKeyframe.from_dict({"scale": ["a", "b", "c"]})
-    assert k.scale == [1.0, 1.0, 1.0]
+def test_keyframe_from_dict_non_numeric_vector_is_rejected():
+    document = TimelineKeyframe().to_dict()
+    document["scale"] = ["a", "b", "c"]
+    with pytest.raises(TypeError, match="three finite numbers"):
+        TimelineKeyframe.from_dict(document)
 
 
 def test_keyframe_from_dict_coerces_ints_to_float():
-    k = TimelineKeyframe.from_dict({"position": [1, 2, 3]})
+    document = TimelineKeyframe().to_dict()
+    document["position"] = [1, 2, 3]
+    k = TimelineKeyframe.from_dict(document)
     assert all(isinstance(v, float) for v in k.position)
 
 
@@ -332,20 +339,23 @@ def test_timeline_round_trip():
     assert len(tl2.keyframes) == 2
 
 
-def test_timeline_from_dict_invalid_apply_mode():
-    tl = AnimationTimeline.from_dict({"apply_mode": "weird"})
-    assert tl.apply_mode == APPLY_ADDITIVE
+def test_timeline_from_dict_invalid_apply_mode_is_rejected():
+    document = AnimationTimeline().to_dict()
+    document["apply_mode"] = "weird"
+    with pytest.raises(ValueError, match="apply_mode"):
+        AnimationTimeline.from_dict(document)
 
 
-def test_timeline_from_dict_skips_non_dict_keyframes():
-    tl = AnimationTimeline.from_dict({"keyframes": [{"time": 1.0}, "bad", 42, None]})
-    assert len(tl.keyframes) == 1
+def test_timeline_from_dict_rejects_noncanonical_keyframes():
+    document = AnimationTimeline().to_dict()
+    document["keyframes"] = ["bad"]
+    with pytest.raises(ValueError, match="keyframe fields mismatch"):
+        AnimationTimeline.from_dict(document)
 
 
-def test_timeline_from_dict_defaults_on_empty():
-    tl = AnimationTimeline.from_dict({})
-    assert tl.duration == 2.0
-    assert tl.keyframes == []
+def test_timeline_from_dict_rejects_missing_schema():
+    with pytest.raises(ValueError, match="fields mismatch"):
+        AnimationTimeline.from_dict({})
 
 
 def test_timeline_save_load_round_trip(tmp_path):

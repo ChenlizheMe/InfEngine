@@ -12,10 +12,7 @@ from typing import Any
 CONFIG_REL_PATH = os.path.join("ProjectSettings", "mcp_capabilities.json")
 
 
-# Profiles are intentionally narrow. Legacy ``research_full`` remains available
-# for existing projects, while new remote sessions opt into a constrained mode.
 PROFILE_TOOL_GROUPS: dict[str, frozenset[str] | None] = {
-    "research_full": None,
     "developer_assist": frozenset({
         "docs",
         "api",
@@ -39,7 +36,6 @@ PROFILE_TOOL_GROUPS: dict[str, frozenset[str] | None] = {
 }
 
 PROFILE_DISABLED_TOOLS: dict[str, frozenset[str]] = {
-    "research_full": frozenset(),
     "developer_assist": frozenset(),
     # Validation observes state but never uses direct editor/scene mutation
     # shortcuts. Interactions must travel through synthetic SDL input.
@@ -232,7 +228,7 @@ def tool_enabled(name: str) -> bool:
 
 
 def profile_name() -> str:
-    """Return the active MCP mode/profile, preserving legacy configs."""
+    """Return the active current MCP mode/profile."""
     profile = str(_CURRENT_CONFIG.get("profile", "developer_assist") or "developer_assist")
     return profile if profile in PROFILE_TOOL_GROUPS else "developer_assist"
 

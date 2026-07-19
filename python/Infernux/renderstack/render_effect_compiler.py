@@ -251,14 +251,6 @@ class RenderEffectFeature:
         fields = get_serialized_fields(self.effect_class)
         parameters = dict(source.to_asset().parameters)
 
-        # Bloom assets may expose a compact color while the legacy effect
-        # implementation still stores scalar shader channels.
-        tint = parameters.pop("tint", None)
-        if tint is not None and self.type_id == "infernux.post.bloom":
-            if not isinstance(tint, (list, tuple)) or len(tint) < 3:
-                raise RenderEffectCompileError("bloom tint must contain at least three numbers")
-            parameters.update(tint_r=tint[0], tint_g=tint[1], tint_b=tint[2])
-
         unknown = sorted(set(parameters) - set(fields))
         if unknown:
             raise RenderEffectCompileError(

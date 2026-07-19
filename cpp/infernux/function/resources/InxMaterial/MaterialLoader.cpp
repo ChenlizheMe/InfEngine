@@ -172,8 +172,8 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
             deps.insert(*val);
     }
 
-    // Shader GUIDs. GUID is authoritative; path hint and shader ID are recovery
-    // paths for migrated v3 assets and a freshly rebuilt database.
+    // Shader GUIDs are authoritative. Path hints and shader IDs recover current
+    // assets while the database is being rebuilt.
     if (adb) {
         auto addShaderDep = [&](const ShaderAssetReference &reference, const char *stage) {
             std::string depGuid = reference.guid;

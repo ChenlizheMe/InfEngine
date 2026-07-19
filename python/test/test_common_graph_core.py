@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 
 import pytest
@@ -13,8 +12,6 @@ from Infernux.graph import (
     GraphNodeRecord,
     PortKind,
     ValueType,
-    apply_graph_document_to_legacy,
-    graph_document_from_legacy,
 )
 
 
@@ -117,33 +114,3 @@ def test_common_expression_compiler_rejects_bad_literal_and_input_type():
     )
     with pytest.raises(ExpressionCompileError, match="cannot connect"):
         ExpressionCompiler().compile(bad_input, outputs=(("normal", "result"),))
-
-
-def test_legacy_node_graph_adapter_preserves_canvas_and_links():
-    from Infernux.core.node_graph import NodeGraph, NodeTypeDef, PinCategory, PinDef, PinKind
-
-    legacy = NodeGraph()
-    legacy.register_type(
-        NodeTypeDef(
-            "legacy.source",
-            "Source",
-            pins=[PinDef("out", "Out", PinKind.OUTPUT, pin_category=PinCategory.DATA)],
-        )
-    )
-    legacy.register_type(
-        NodeTypeDef(
-            "legacy.target",
-            "Target",
-            pins=[PinDef("in", "In", PinKind.INPUT, pin_category=PinCategory.DATA)],
-        )
-    )
-    source = legacy.add_node("legacy.source", 12.0, 24.0, uid="source", value=1.0)
-    target = legacy.add_node("legacy.target", 40.0, 80.0, uid="target")
-    assert legacy.add_link(source.uid, "out", target.uid, "in", uid="link")
-
-    document = graph_document_from_legacy(legacy, domain="legacy.test")
-    restored = NodeGraph()
-    apply_graph_document_to_legacy(document, restored)
-
-    assert document.links[0].kind is PortKind.VALUE
-    assert restored.to_dict() == legacy.to_dict()

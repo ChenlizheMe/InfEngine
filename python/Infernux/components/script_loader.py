@@ -13,7 +13,7 @@ import inspect
 from typing import Type, List, Optional
 
 from Infernux.engine.project_context import (
-    get_script_module_aliases,
+    get_script_module_name,
     resolve_script_path,
     temporary_script_import_paths,
 )
@@ -93,28 +93,25 @@ def _record_script_error(file_path: str, exc: Exception) -> None:
         print(tb_str, file=sys.stderr)
 
 
-def _load_script_module(file_path: str, primary_module_name: str, module_aliases: List[str]):
+def _load_script_module(file_path: str, module_name: str):
     """Execute the exact script artifact resolved from its asset GUID.
 
     ``import_module`` performs a second path search. That is unnecessary for
     editor sources and unreliable for external sourceless modules in a Nuitka
-    standalone Player. Register aliases before execution so cyclic, absolute,
-    and legacy ``Assets.*`` imports still resolve to one module object.
+    standalone Player. Register the canonical name before execution so cyclic
+    imports resolve to the same module object.
     """
-    spec = importlib.util.spec_from_file_location(primary_module_name, file_path)
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
     if spec is None or spec.loader is None:
         raise ScriptLoadError(f"Failed to create module spec for {file_path}")
 
     module = importlib.util.module_from_spec(spec)
-    registered_names = list(dict.fromkeys([primary_module_name, *module_aliases]))
-    for name in registered_names:
-        sys.modules[name] = module
+    sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
     except Exception:
-        for name in registered_names:
-            if sys.modules.get(name) is module:
-                sys.modules.pop(name, None)
+        if sys.modules.get(module_name) is module:
+            sys.modules.pop(module_name, None)
         raise
     return module
 
@@ -219,20 +216,15 @@ def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
     if not file_path.endswith(('.py', '.pyc')):
         raise ScriptLoadError(f"Not a Python file: {file_path}")
     
-    module_aliases = get_script_module_aliases(file_path)
-    primary_module_name = module_aliases[0] if module_aliases else _unique_module_name_for_path(file_path)
-    modules_to_clear = list(module_aliases)
-    legacy_unique_name = _unique_module_name_for_path(file_path)
-    if legacy_unique_name not in modules_to_clear:
-        modules_to_clear.append(legacy_unique_name)
-    _clear_loaded_script_modules(modules_to_clear)
+    module_name = get_script_module_name(file_path) or _unique_module_name_for_path(file_path)
+    _clear_loaded_script_modules([module_name])
 
     importlib.invalidate_caches()
 
     # Execute the module — catch errors so a broken script never crashes the editor
     try:
         with temporary_script_import_paths(file_path):
-            module = _load_script_module(file_path, primary_module_name, module_aliases)
+            module = _load_script_module(file_path, module_name)
     except Exception as exc:
         # Track this script as having a load error
         _record_script_error(file_path, exc)
@@ -243,11 +235,8 @@ def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
     # If we get here the script loaded successfully — clear any prior error
     _clear_script_error(file_path)
 
-    # Register every supported import name to the same module object so
-    # direct imports and engine-created component instances share class identity.
-    sys.modules[primary_module_name] = module
-    for alias in module_aliases[1:]:
-        sys.modules[alias] = module
+    # Direct imports and engine-created component instances share class identity.
+    sys.modules[module_name] = module
 
     # Find all InxComponent subclasses in the module
     components = []
@@ -255,7 +244,7 @@ def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
         # Check if it's a subclass of InxComponent (but not InxComponent itself)
         if issubclass(obj, InxComponent) and obj is not InxComponent:
             # Ensure it's defined in this module (not imported)
-            if obj.__module__ == primary_module_name:
+            if obj.__module__ == module_name:
                 components.append(obj)
 
     return components

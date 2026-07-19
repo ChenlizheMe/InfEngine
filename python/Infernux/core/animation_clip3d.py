@@ -14,12 +14,16 @@ class simple and stable for Python workflows + AI tooling.
 from __future__ import annotations
 
 import json
+import math
 import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from Infernux.core.animation_event import AnimationEvent, events_from_list
+
+
+ANIMATION_CLIP3D_SCHEMA_VERSION = 1
 
 
 def is_asset_guid_string(s: str) -> bool:
@@ -84,7 +88,7 @@ class AnimationClip3D:
     """A single 3D animation clip — references a model + named take."""
 
     name: str = "New Animation Clip 3D"
-    schema_version: int = 1
+    schema_version: int = ANIMATION_CLIP3D_SCHEMA_VERSION
 
     # Source skeletal model (FBX/GLTF/etc.) — GUID is authoritative when present.
     source_model_guid: str = ""
@@ -121,18 +125,48 @@ class AnimationClip3D:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AnimationClip3D":
-        bones = d.get("bind_pose_bone_names", [])
-        if not isinstance(bones, list):
-            bones = []
+        expected = {
+            "schema_version",
+            "name",
+            "source_model_guid",
+            "source_model_path",
+            "take_name",
+            "bind_pose_bone_names",
+            "duration_hint",
+            "events",
+        }
+        if type(d) is not dict or set(d) != expected:
+            actual = set(d) if type(d) is dict else set()
+            raise ValueError(
+                f"animation clip 3D fields mismatch; "
+                f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
+            )
+        if d["schema_version"] != ANIMATION_CLIP3D_SCHEMA_VERSION:
+            raise ValueError(
+                f"animation clip 3D schema_version must be {ANIMATION_CLIP3D_SCHEMA_VERSION}"
+            )
+        string_fields = ("name", "source_model_guid", "source_model_path", "take_name")
+        if any(type(d[name]) is not str for name in string_fields):
+            raise TypeError("animation clip 3D identity fields must be strings")
+        bones = d["bind_pose_bone_names"]
+        if type(bones) is not list or any(type(value) is not str for value in bones):
+            raise TypeError("bind_pose_bone_names must be an array of strings")
+        if not isinstance(d["duration_hint"], (int, float)) or isinstance(d["duration_hint"], bool):
+            raise TypeError("duration_hint must be numeric")
+        duration_hint = float(d["duration_hint"])
+        if not math.isfinite(duration_hint) or duration_hint < 0.0:
+            raise ValueError("duration_hint must be finite and non-negative")
+        if type(d["events"]) is not list:
+            raise TypeError("events must be an array")
         return cls(
-            name=str(d.get("name", "New Animation Clip 3D")),
-            schema_version=int(d.get("schema_version", 1)),
-            source_model_guid=str(d.get("source_model_guid", "")),
-            source_model_path=str(d.get("source_model_path", "")),
-            take_name=str(d.get("take_name", "")),
-            bind_pose_bone_names=[str(x) for x in bones],
-            duration_hint=float(d.get("duration_hint", 0.0) or 0.0),
-            events=events_from_list(d.get("events", [])),
+            name=d["name"],
+            schema_version=d["schema_version"],
+            source_model_guid=d["source_model_guid"],
+            source_model_path=d["source_model_path"],
+            take_name=d["take_name"],
+            bind_pose_bone_names=list(bones),
+            duration_hint=duration_hint,
+            events=events_from_list(d["events"]),
         )
 
     def copy(self) -> "AnimationClip3D":
@@ -256,6 +290,6 @@ class AnimationClip3D:
 
 
 def _read_asset_guid_from_meta_sidecar(asset_path: str) -> str:
-    """Return GUID from a ``.meta`` sidecar (metadata map or legacy root field)."""
+    """Return the canonical GUID from a ``.meta`` sidecar."""
     from Infernux.core.asset_types import read_meta_guid
     return read_meta_guid(asset_path)

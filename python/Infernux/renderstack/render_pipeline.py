@@ -6,8 +6,8 @@ RenderPipelineAsset acts as a factory for pipeline instances.
 
 RenderStack integration:
     Subclasses implement ``define_topology(graph)`` to declare passes
-    and stable EffectStages inline on the ``RenderGraph``. Legacy injection
-    points remain available during migration. The system
+    and stable EffectStages inline on the ``RenderGraph``. Injection points
+    remain available for mounted RenderPass instances. The system
     auto-records the topology sequence. ScreenUI/post-process section is
     inserted explicitly by calling ``graph.screen_ui_section()``.
 

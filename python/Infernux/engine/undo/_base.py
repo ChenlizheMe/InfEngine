@@ -135,7 +135,7 @@ def _snapshot_value(val: Any) -> Any:
     if val is None or isinstance(val, (int, float, str, bool)):
         return val
 
-    # RGBA colour fields: material ptype-7 ``[r,g,b,a]`` lists (and legacy tuple Color).
+    # RGBA colour fields: material ptype-7 ``[r,g,b,a]`` lists.
     try:
         from Infernux.components.serialized_field import is_rgba_storage, snapshot_rgba
         if is_rgba_storage(val):

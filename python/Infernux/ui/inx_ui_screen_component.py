@@ -1,7 +1,6 @@
 """InxUIScreenComponent — base for 2D screen-space UI elements.
 
 Provides anchor-aware position, size, and appearance data for screen UI.
-Existing x/y/width/height scene data remains compatible.
 
 Hierarchy:
     InxComponent → InxUIComponent → InxUIScreenComponent

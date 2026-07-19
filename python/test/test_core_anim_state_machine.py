@@ -139,19 +139,17 @@ def test_parameter_to_dict_int():
     assert d["default_int"] == 7
 
 
-def test_parameter_trigger_maps_to_bool():
-    p = AnimParameter.from_dict({"name": "fire", "kind": "trigger"})
-    assert p.kind == "bool"
-
-
-def test_parameter_legacy_default_float():
-    p = AnimParameter.from_dict({"name": "s", "kind": "float", "default": 3.5})
-    assert p.default_float == 3.5
-
-
-def test_parameter_legacy_default_bool():
-    p = AnimParameter.from_dict({"name": "b", "kind": "bool", "default": True})
-    assert p.default_bool is True
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"name": "fire", "kind": "trigger", "default_bool": False},
+        {"name": "s", "kind": "float", "default": 3.5},
+        {"name": "b", "param_type": "bool", "default_bool": True},
+    ],
+)
+def test_parameter_rejects_noncanonical_documents(document):
+    with pytest.raises(ValueError):
+        AnimParameter.from_dict(document)
 
 
 def test_parameter_round_trip():
@@ -160,9 +158,9 @@ def test_parameter_round_trip():
     assert p2.name == "x" and p2.kind == "int" and p2.default_int == 4
 
 
-def test_parameter_invalid_float_default_falls_back():
-    p = AnimParameter.from_dict({"name": "s", "kind": "float", "default_float": "NaNN"})
-    assert p.default_float == 0.0
+def test_parameter_invalid_float_default_is_rejected():
+    with pytest.raises(TypeError):
+        AnimParameter.from_dict({"name": "s", "kind": "float", "default_float": "NaNN"})
 
 
 # ── AnimTransition ──────────────────────────────────────────────────────────
@@ -182,10 +180,9 @@ def test_transition_round_trip():
     assert t2.duration == 0.25
 
 
-def test_transition_from_dict_defaults():
-    t = AnimTransition.from_dict({})
-    assert t.target_state == ""
-    assert t.duration == 0.0
+def test_transition_incomplete_document_is_rejected():
+    with pytest.raises(ValueError):
+        AnimTransition.from_dict({})
 
 
 # ── AnimState ───────────────────────────────────────────────────────────────
@@ -207,17 +204,26 @@ def test_state_kinds_round_trip(kind):
     assert AnimState.from_dict(s.to_dict()).kind == kind
 
 
-def test_state_blend_value_clamped_high():
-    assert AnimState.from_dict({"blend_value": 5.0}).blend_value == 1.0
+def test_state_blend_value_above_range_is_rejected():
+    document = AnimState().to_dict()
+    document["blend_value"] = 5.0
+    with pytest.raises(ValueError):
+        AnimState.from_dict(document)
 
 
-def test_state_blend_value_clamped_low():
-    assert AnimState.from_dict({"blend_value": -2.0}).blend_value == 0.0
+def test_state_blend_value_below_range_is_rejected():
+    document = AnimState().to_dict()
+    document["blend_value"] = -2.0
+    with pytest.raises(ValueError):
+        AnimState.from_dict(document)
 
 
-def test_state_exit_time_clamped():
-    assert AnimState.from_dict({"exit_time_normalized": 2.0}).exit_time_normalized == 1.0
-    assert AnimState.from_dict({"exit_time_normalized": -1.0}).exit_time_normalized == 0.0
+@pytest.mark.parametrize("value", [-1.0, 2.0])
+def test_state_exit_time_out_of_range_is_rejected(value):
+    document = AnimState().to_dict()
+    document["exit_time_normalized"] = value
+    with pytest.raises(ValueError):
+        AnimState.from_dict(document)
 
 
 def test_state_timeline_reference_round_trip():
@@ -227,19 +233,26 @@ def test_state_timeline_reference_round_trip():
     assert s2.timeline_path == "x.animtimeline"
 
 
-def test_state_header_color_adds_alpha():
-    s = AnimState.from_dict({"header_color": [0.1, 0.2, 0.3]})
-    assert s.header_color == [0.1, 0.2, 0.3, 1.0]
+def test_state_three_channel_header_color_is_rejected():
+    document = AnimState().to_dict()
+    document["header_color"] = [0.1, 0.2, 0.3]
+    with pytest.raises(TypeError):
+        AnimState.from_dict(document)
 
 
 def test_state_header_color_keeps_alpha():
-    s = AnimState.from_dict({"header_color": [0.1, 0.2, 0.3, 0.5]})
+    document = AnimState().to_dict()
+    document["header_color"] = [0.1, 0.2, 0.3, 0.5]
+    s = AnimState.from_dict(document)
     assert s.header_color == [0.1, 0.2, 0.3, 0.5]
 
 
-def test_state_header_color_invalid_is_empty():
-    assert AnimState.from_dict({"header_color": [0.1]}).header_color == []
-    assert AnimState.from_dict({"header_color": "x"}).header_color == []
+@pytest.mark.parametrize("value", [[0.1], "x"])
+def test_state_invalid_header_color_is_rejected(value):
+    document = AnimState().to_dict()
+    document["header_color"] = value
+    with pytest.raises(TypeError):
+        AnimState.from_dict(document)
 
 
 def test_state_transitions_round_trip():
@@ -382,9 +395,11 @@ def test_fsm_inequality():
     assert a != b
 
 
-def test_fsm_from_dict_skips_bad_parameters():
-    fsm = AnimStateMachine.from_dict({"parameters": [{"name": "ok"}, "bad", 1, None]})
-    assert len(fsm.parameters) == 1
+def test_fsm_from_dict_rejects_bad_parameters():
+    document = AnimStateMachine().to_dict()
+    document["parameters"] = ["bad"]
+    with pytest.raises(TypeError, match="animation parameter"):
+        AnimStateMachine.from_dict(document)
 
 
 def test_fsm_save_load_round_trip(tmp_path):

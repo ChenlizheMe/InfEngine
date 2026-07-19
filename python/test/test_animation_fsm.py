@@ -295,9 +295,11 @@ class TestBlendStateModel:
         assert st2.clip_b_guid == "B-guid"
         assert st2.blend_value == 0.7
 
-    def test_blend_value_clamped(self):
-        st = AnimState.from_dict({"name": "x", "kind": "blend", "blend_value": 5.0})
-        assert st.blend_value == 1.0
+    def test_blend_value_out_of_range_is_rejected(self):
+        document = AnimState(name="x", kind="blend").to_dict()
+        document["blend_value"] = 5.0
+        with pytest.raises(ValueError):
+            AnimState.from_dict(document)
 
     def test_default_state_is_clip(self):
         st = AnimState(name="idle")

@@ -228,7 +228,7 @@ def get_shader_file_path(shader_id: str, ext: str) -> str:
 
 
 def shader_ref_id(value) -> str:
-    """Return the compiler shader ID from a v3 string or v4 reference."""
+    """Return the compiler shader ID from a catalog value or structured reference."""
     if isinstance(value, dict):
         shader_id = value.get("shader_id", "")
         return shader_id.strip() if isinstance(shader_id, str) else ""
@@ -236,7 +236,7 @@ def shader_ref_id(value) -> str:
 
 
 def make_shader_reference(value, ext: str) -> dict[str, str]:
-    """Build a canonical v4 material shader reference.
+    """Build a canonical material shader reference.
 
     ``value`` may be a catalog shader ID, an asset path, or an existing
     reference. GUID and path are enriched whenever imported metadata is

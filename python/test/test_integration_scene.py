@@ -1381,7 +1381,7 @@ class TestSceneSerialization:
         assert restored_component.value == 19
         assert scene.has_pending_py_components() is False
 
-    def test_scene_restore_backfills_missing_additive_python_field(self, scene):
+    def test_scene_restore_rejects_missing_python_field(self, scene):
         root = scene.create_game_object("AdditivePythonField")
         component = _AdditiveSceneComponent()
         component.value = 19
@@ -1390,11 +1390,8 @@ class TestSceneSerialization:
         document = json.loads(json.dumps(scene.serialize_document()))
         _python_records(document["objects"][0])[0]["data"].pop("label")
 
-        assert deserialize_scene_document_transactionally(scene, document) is True
-
-        restored = scene.find("AdditivePythonField").get_py_component(_AdditiveSceneComponent)
-        assert restored.value == 19
-        assert restored.label == "default"
+        with pytest.raises(PythonComponentRestoreError, match="serialized fields mismatch"):
+            deserialize_scene_document_transactionally(scene, document)
 
     def test_python_component_document_uses_stable_script_and_type_guids(self, scene):
         root = scene.create_game_object("StablePythonIdentity")

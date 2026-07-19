@@ -102,9 +102,11 @@ class AssetRefBase:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AssetRefBase":
-        if d is None:
-            return cls()
-        return cls(guid=d.get("guid", ""), path_hint=d.get("path_hint", ""))
+        if type(d) is not dict or set(d) != {"guid", "path_hint"}:
+            raise ValueError("asset reference must use the complete current field set")
+        if type(d["guid"]) is not str or type(d["path_hint"]) is not str:
+            raise TypeError("asset reference values must be strings")
+        return cls(guid=d["guid"], path_hint=d["path_hint"])
 
     # ── Display ────────────────────────────────────────────────────────
 
