@@ -1,5 +1,6 @@
 #include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
+#include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
@@ -77,7 +78,8 @@ struct FakeDevice final : rhi::Device
     rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override
     {
         assert(desc.computeShader.IsValid() && desc.bindingLayoutCount == 1 &&
-               (desc.pushConstantBytes == 32 || desc.pushConstantBytes == 80 || desc.pushConstantBytes == 112));
+               (desc.pushConstantBytes == 16 || desc.pushConstantBytes == 32 || desc.pushConstantBytes == 80 ||
+                desc.pushConstantBytes == 112));
         ++pipelineCreates;
         return {nextIndex++, 1};
     }
@@ -273,6 +275,42 @@ struct CullTrace
     }
 };
 
+struct BoundsTrace
+{
+    std::vector<rhi::ComputePipelineHandle> pipelines;
+    std::vector<rhi::BindGroupHandle> groups;
+    std::vector<particle::GpuParticleBoundsConstants> constants;
+    std::vector<uint32_t> dispatches;
+    std::vector<rhi::BufferHandle> indirectDispatches;
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<BoundsTrace *>(context)->pipelines.push_back(pipeline);
+    }
+    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0);
+        static_cast<BoundsTrace *>(context)->groups.push_back(group);
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == sizeof(particle::GpuParticleBoundsConstants));
+        particle::GpuParticleBoundsConstants value;
+        std::memcpy(&value, data, sizeof(value));
+        static_cast<BoundsTrace *>(context)->constants.push_back(value);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        assert(y == 1 && z == 1);
+        static_cast<BoundsTrace *>(context)->dispatches.push_back(x);
+    }
+    static void DispatchIndirect(void *context, rhi::BufferHandle buffer, uint64_t offset)
+    {
+        assert(offset == 0);
+        static_cast<BoundsTrace *>(context)->indirectDispatches.push_back(buffer);
+    }
+};
+
 } // namespace
 
 int main()
@@ -319,6 +357,51 @@ int main()
     assert(trace.dispatches == std::vector<uint32_t>({4, 2, 4, 1, 4}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[2].simulationStep == 9);
+
+    FakeDevice boundsDevice;
+    std::array<std::array<uint32_t, 5>, 2> boundsWords{};
+    for (auto &shader : boundsWords)
+        shader[0] = 0x07230203u;
+    particle::GpuParticleBoundsDesc boundsDesc;
+    boundsDesc.capacity = runtime.Capacity();
+    boundsDesc.instances = runtime.InstanceBuffer();
+    boundsDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+    boundsDesc.program = {
+        {boundsWords[0].data(), boundsWords[0].size()},
+        {boundsWords[1].data(), boundsWords[1].size()},
+    };
+    particle::GpuParticleBoundsProgramStorage boundsProgramStorage;
+    assert(boundsProgramStorage.Assign(boundsDesc.program) && boundsProgramStorage.IsValid());
+    assert(boundsProgramStorage.View().reset.words != boundsDesc.program.reset.words &&
+           boundsProgramStorage.View().reset.wordCount == boundsDesc.program.reset.wordCount);
+    particle::ParticleGpuBounds bounds;
+    assert(bounds.Create(boundsDevice, boundsDesc));
+    assert(bounds.IsValid() && bounds.Capacity() == 1000 && bounds.InstanceBuffer() == runtime.InstanceBuffer() &&
+           bounds.SourceIndirectBuffer() == runtime.IndirectBuffer());
+    assert(boundsDevice.buffers.size() == 2 &&
+           boundsDevice.buffers[0].byteSize == particle::ParticleGpuBounds::BoundsBufferBytes &&
+           boundsDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage &&
+           boundsDevice.buffers[1].byteSize == particle::ParticleGpuBounds::DispatchBufferBytes &&
+           rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Storage) &&
+           rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect));
+    assert(boundsDevice.layouts.size() == 1 && boundsDevice.layouts[0].entryCount == 4 &&
+           boundsDevice.bindGroups.size() == 1 && boundsDevice.bindGroups[0].bufferCount == 4 &&
+           boundsDevice.shaderCreates == 2 && boundsDevice.shaderReleases == 2 && boundsDevice.pipelineCreates == 2);
+
+    BoundsTrace boundsTrace;
+    const rhi::ComputeCommandEncoder::DispatchTable boundsDispatch = {
+        &BoundsTrace::BindPipeline, &BoundsTrace::BindGroup, &BoundsTrace::PushConstants, &BoundsTrace::Dispatch,
+        &BoundsTrace::DispatchIndirect};
+    const rhi::ComputeCommandEncoder boundsEncoder(&boundsTrace, &boundsDispatch);
+    bounds.RecordReset(boundsEncoder);
+    bounds.RecordReduce(boundsEncoder);
+    assert(boundsTrace.pipelines.size() == 2 && boundsTrace.groups.size() == 2 && boundsTrace.constants.size() == 2);
+    assert(boundsTrace.dispatches == std::vector<uint32_t>({1}));
+    assert(boundsTrace.indirectDispatches == std::vector<rhi::BufferHandle>({bounds.DispatchBuffer()}));
+    assert(boundsTrace.constants[0].capacity == 1000 && boundsTrace.constants[1].capacity == 1000);
+    bounds.Destroy();
+    assert(!bounds.IsValid() && boundsDevice.bufferReleases == 2 && boundsDevice.groupReleases == 1 &&
+           boundsDevice.layoutReleases == 1 && boundsDevice.pipelineReleases == 2);
 
     FakeDevice cullDevice;
     std::array<std::array<uint32_t, 5>, 3> cullWords{};
