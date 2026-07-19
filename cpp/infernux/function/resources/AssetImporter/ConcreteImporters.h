@@ -165,6 +165,26 @@ class ParticleGraphImporter final : public AssetImporter
 };
 
 // ==========================================================================
+// PointCacheImporter - bakes typed point channels into a runtime artifact
+// ==========================================================================
+
+class PointCacheImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::PointCache;
+    }
+
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".pointcache"};
+    }
+
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+};
+
+// ==========================================================================
 // ScriptImporter
 // ==========================================================================
 

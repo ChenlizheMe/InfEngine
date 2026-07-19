@@ -260,6 +260,74 @@ def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engin
         ParticleArtifactRegistry.clear()
 
 
+def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "Morph.pointcache"
+    source.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.point_cache",
+                "$version": 1,
+                "stable_id": "morph-cache",
+                "name": "Morph Cache",
+                "bake_basis": "right_handed_y_up",
+                "point_count": 2,
+                "channels": [
+                    {
+                        "name": "position",
+                        "semantic": "position",
+                        "type": "vec3",
+                        "data": [[1.0, 2.0, 3.0], [-4.0, 5.5, 6.0]],
+                    },
+                    {
+                        "name": "stable_id",
+                        "semantic": "id",
+                        "type": "u32",
+                        "data": [7, 42],
+                    },
+                    {
+                        "name": "temperature",
+                        "semantic": "custom",
+                        "type": "f32",
+                        "data": [0.25, 0.75],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        result = AssetManager.import_asset(str(source), database=asset_db)
+
+        artifact = Path(
+            asset_db.get_runtime_artifact_path(result.guid, ResourceType.PointCache)
+        )
+        assert result, result.error
+        assert result.resource_type == ResourceType.PointCache
+        metadata = asset_db.get_meta_by_path(str(source))
+        assert metadata.get_resource_type() == ResourceType.PointCache
+        assert metadata.get_int("artifact_point_count") == 2
+        assert metadata.get_int("artifact_channel_count") == 3
+        assert metadata.get_string("artifact_bake_basis") == "right_handed_y_up"
+        assert artifact.name == f"{result.guid}.inxpcache"
+        published_artifact = artifact.read_bytes()
+        assert published_artifact.startswith(b"INXPOINT")
+
+        invalid = json.loads(source.read_text(encoding="utf-8"))
+        invalid["channels"][1]["data"] = [7, 7]
+        source.write_text(json.dumps(invalid), encoding="utf-8")
+        failed = AssetManager.reimport_asset(str(source), database=asset_db)
+
+        assert not failed
+        assert failed.guid == result.guid
+        assert "stable point IDs must be unique" in failed.error
+        assert artifact.read_bytes() == published_artifact
+    finally:
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+
+
 def test_asset_database_never_indexes_python_bytecode_or_cache_paths(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "python-bytecode-ignore-fixture"

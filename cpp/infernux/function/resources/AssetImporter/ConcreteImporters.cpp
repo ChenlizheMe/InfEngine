@@ -3,12 +3,15 @@
 #include <core/log/InxLog.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxPointCache/PointCacheArtifact.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -18,6 +21,58 @@
 
 namespace infernux
 {
+
+namespace
+{
+PointCacheChannelType ParsePointCacheChannelType(const std::string &value)
+{
+    if (value == "f32")
+        return PointCacheChannelType::Float;
+    if (value == "vec2")
+        return PointCacheChannelType::Float2;
+    if (value == "vec3")
+        return PointCacheChannelType::Float3;
+    if (value == "vec4")
+        return PointCacheChannelType::Float4;
+    if (value == "u32")
+        return PointCacheChannelType::UInt;
+    throw std::runtime_error("point cache channel has unsupported type '" + value + "'");
+}
+
+PointCacheChannelSemantic ParsePointCacheChannelSemantic(const std::string &value)
+{
+    if (value == "custom")
+        return PointCacheChannelSemantic::Custom;
+    if (value == "position")
+        return PointCacheChannelSemantic::Position;
+    if (value == "normal")
+        return PointCacheChannelSemantic::Normal;
+    if (value == "color")
+        return PointCacheChannelSemantic::Color;
+    if (value == "id")
+        return PointCacheChannelSemantic::Id;
+    throw std::runtime_error("point cache channel has unsupported semantic '" + value + "'");
+}
+
+void AppendPointCacheU32(std::vector<uint8_t> &bytes, uint32_t value)
+{
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        bytes.push_back(static_cast<uint8_t>((value >> shift) & 0xffU));
+}
+
+void AppendPointCacheFloat(std::vector<uint8_t> &bytes, float value)
+{
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    std::memcpy(&bits, &value, sizeof(bits));
+    AppendPointCacheU32(bytes, bits);
+}
+
+uint64_t AlignPointCacheChannel(uint64_t value)
+{
+    return (value + 15U) & ~uint64_t{15U};
+}
+} // namespace
 
 ImportArtifact TextureImporter::Import(const ImportRequest &request) const
 {
@@ -342,6 +397,134 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
     std::vector<std::string> ordered(dependencies.begin(), dependencies.end());
     std::sort(ordered.begin(), ordered.end());
     return ordered;
+}
+
+ImportArtifact PointCacheImporter::Import(const ImportRequest &request) const
+{
+    nlohmann::json root;
+    try {
+        std::ifstream file(ToFsPath(request.sourcePath));
+        if (!file.is_open())
+            throw std::runtime_error("failed to open point cache document");
+        file >> root;
+    } catch (const std::exception &e) {
+        throw std::runtime_error("PointCacheImporter failed to parse '" + request.sourcePath + "': " + e.what());
+    }
+
+    const auto requireExactKeys = [](const nlohmann::json &value, std::initializer_list<const char *> expected,
+                                     const std::string &location) {
+        if (!value.is_object())
+            throw std::runtime_error(location + " must be an object");
+        std::unordered_set<std::string> keys;
+        for (const char *key : expected)
+            keys.emplace(key);
+        if (value.size() != keys.size())
+            throw std::runtime_error(location + " contains missing or unknown fields");
+        for (const auto &[key, ignored] : value.items()) {
+            (void)ignored;
+            if (keys.find(key) == keys.end())
+                throw std::runtime_error(location + " contains unknown field '" + key + "'");
+        }
+    };
+
+    requireExactKeys(root, {"$schema", "$version", "stable_id", "name", "bake_basis", "point_count", "channels"},
+                     "point cache");
+    if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.point_cache" ||
+        !root["$version"].is_number_integer() || root["$version"].get<int>() != 1)
+        throw std::runtime_error("point cache schema or version is unsupported");
+    if (!root["stable_id"].is_string() || root["stable_id"].get_ref<const std::string &>().empty() ||
+        !root["name"].is_string() || root["name"].get_ref<const std::string &>().empty() ||
+        !root["bake_basis"].is_string() || root["bake_basis"].get_ref<const std::string &>().empty())
+        throw std::runtime_error("point cache identity and bake_basis must be non-empty strings");
+    const std::string bakeBasis = root["bake_basis"].get<std::string>();
+    if (bakeBasis != "right_handed_y_up" && bakeBasis != "right_handed_z_up" && bakeBasis != "left_handed_y_up")
+        throw std::runtime_error("point cache bake_basis is unsupported");
+    if (!root["point_count"].is_number_unsigned() || root["point_count"].get<uint64_t>() == 0 ||
+        root["point_count"].get<uint64_t>() > std::numeric_limits<uint32_t>::max() || !root["channels"].is_array() ||
+        root["channels"].empty())
+        throw std::runtime_error("point cache point_count and channels are invalid");
+
+    struct SourceChannel
+    {
+        PointCacheChannel descriptor;
+        const nlohmann::json *data = nullptr;
+    };
+    const uint32_t pointCount = root["point_count"].get<uint32_t>();
+    std::vector<SourceChannel> channels;
+    channels.reserve(root["channels"].size());
+    for (size_t index = 0; index < root["channels"].size(); ++index) {
+        const auto &encoded = root["channels"][index];
+        const std::string location = "point cache.channels[" + std::to_string(index) + "]";
+        requireExactKeys(encoded, {"name", "semantic", "type", "data"}, location);
+        if (!encoded["name"].is_string() || encoded["name"].get_ref<const std::string &>().empty() ||
+            !encoded["semantic"].is_string() || !encoded["type"].is_string() || !encoded["data"].is_array() ||
+            encoded["data"].size() != pointCount)
+            throw std::runtime_error(location + " descriptor or data length is invalid");
+        PointCacheChannel descriptor;
+        descriptor.name = encoded["name"].get<std::string>();
+        descriptor.semantic = ParsePointCacheChannelSemantic(encoded["semantic"].get<std::string>());
+        descriptor.type = ParsePointCacheChannelType(encoded["type"].get<std::string>());
+        descriptor.elementStride = PointCacheChannelElementStride(descriptor.type);
+        channels.push_back({std::move(descriptor), &encoded["data"]});
+    }
+    std::sort(channels.begin(), channels.end(), [](const SourceChannel &left, const SourceChannel &right) {
+        return left.descriptor.name < right.descriptor.name;
+    });
+
+    PointCacheCpuData cache;
+    cache.stableId = root["stable_id"].get<std::string>();
+    cache.name = root["name"].get<std::string>();
+    cache.bakeBasis = bakeBasis;
+    cache.pointCount = pointCount;
+    for (auto &source : channels) {
+        const uint64_t aligned = AlignPointCacheChannel(cache.bytes.size());
+        if (aligned > std::numeric_limits<size_t>::max())
+            throw std::runtime_error("point cache payload exceeds addressable memory");
+        cache.bytes.resize(static_cast<size_t>(aligned), 0);
+        source.descriptor.byteOffset = aligned;
+        const uint32_t components = source.descriptor.elementStride / sizeof(uint32_t);
+        for (uint32_t point = 0; point < pointCount; ++point) {
+            const auto &encodedValue = (*source.data)[point];
+            if (source.descriptor.type == PointCacheChannelType::UInt) {
+                if (!encodedValue.is_number_unsigned() ||
+                    encodedValue.get<uint64_t>() > std::numeric_limits<uint32_t>::max())
+                    throw std::runtime_error("point cache uint channel contains an invalid value");
+                AppendPointCacheU32(cache.bytes, encodedValue.get<uint32_t>());
+                continue;
+            }
+            if (components == 1) {
+                if (!encodedValue.is_number())
+                    throw std::runtime_error("point cache float channel contains a non-numeric value");
+                const double value = encodedValue.get<double>();
+                if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+                    throw std::runtime_error("point cache float channel contains a non-finite value");
+                AppendPointCacheFloat(cache.bytes, static_cast<float>(value));
+                continue;
+            }
+            if (!encodedValue.is_array() || encodedValue.size() != components)
+                throw std::runtime_error("point cache vector channel has an invalid component count");
+            for (uint32_t component = 0; component < components; ++component) {
+                if (!encodedValue[component].is_number())
+                    throw std::runtime_error("point cache vector channel contains a non-numeric value");
+                const double value = encodedValue[component].get<double>();
+                if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
+                    throw std::runtime_error("point cache vector channel contains a non-finite value");
+                AppendPointCacheFloat(cache.bytes, static_cast<float>(value));
+            }
+        }
+        cache.channels.push_back(std::move(source.descriptor));
+    }
+
+    ImportArtifact artifact(request.metadata);
+    if (!artifact.metadata.HasKey("content_hash"))
+        throw std::logic_error("PointCacheImporter metadata has no source content hash");
+    artifact.metadata.AddMetadata("artifact_point_count", static_cast<int>(cache.pointCount));
+    artifact.metadata.AddMetadata("artifact_channel_count", static_cast<int>(cache.channels.size()));
+    artifact.metadata.AddMetadata("artifact_bake_basis", cache.bakeBasis);
+    artifact.runtimeCpuArtifacts.push_back(ImportArtifact::RuntimeCpuArtifact{
+        ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::PointCache, PointCacheArtifact::FormatVersion,
+        PointCacheArtifact::Serialize(cache, artifact.metadata.GetDataAs<std::string>("content_hash"))});
+    return artifact;
 }
 
 // ============================================================================

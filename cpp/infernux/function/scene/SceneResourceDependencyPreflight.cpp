@@ -43,6 +43,8 @@ const char *ResourceTypeName(ResourceType type)
         return "RenderEffect";
     case ResourceType::ParticleGraph:
         return "ParticleGraph";
+    case ResourceType::PointCache:
+        return "PointCache";
     }
     return "Unknown";
 }

@@ -31,7 +31,7 @@ std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
                             ImportArtifact::RuntimeArtifactKind kind = ImportArtifact::RuntimeArtifactKind::Primary)
 {
-    if (type != ResourceType::Mesh && type != ResourceType::Texture)
+    if (type != ResourceType::Mesh && type != ResourceType::Texture && type != ResourceType::PointCache)
         return {};
     if (guid.empty() || !std::all_of(guid.begin(), guid.end(), [](unsigned char character) {
             return std::isalnum(character) != 0 || character == '-' || character == '_';
@@ -46,12 +46,14 @@ RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
     }
     if (kind != ImportArtifact::RuntimeArtifactKind::Primary)
         throw std::invalid_argument("non-Mesh assets only support a primary runtime artifact");
-    return "Library/Artifacts/Texture/" + guid + ".inxtex";
+    if (type == ResourceType::Texture)
+        return "Library/Artifacts/Texture/" + guid + ".inxtex";
+    return "Library/Artifacts/PointCache/" + guid + ".inxpcache";
 }
 
 bool RequiresRuntimeCpuArtifact(ResourceType type)
 {
-    return type == ResourceType::Mesh || type == ResourceType::Texture;
+    return type == ResourceType::Mesh || type == ResourceType::Texture || type == ResourceType::PointCache;
 }
 
 bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
@@ -395,6 +397,7 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_importerRegistry.Register(std::make_unique<PhysicMaterialImporter>());
     m_importerRegistry.Register(std::make_unique<RenderEffectImporter>());
     m_importerRegistry.Register(std::make_unique<ParticleGraphImporter>());
+    m_importerRegistry.Register(std::make_unique<PointCacheImporter>());
     m_importerRegistry.Register(std::make_unique<ScriptImporter>());
     m_importerRegistry.Register(std::make_unique<AudioImporter>());
     m_importerRegistry.Register(std::make_unique<ModelImporter>());
@@ -1503,14 +1506,19 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
         result.error = "asset metadata could not be created or loaded";
         return result;
     }
+    result.guid = guid;
 
     UpdateMapping(guid, path);
     if (!RunImporter(guid, path, false)) {
+        const auto importResult = m_importResults.find(guid);
+        const std::string importError = importResult != m_importResults.end() && !importResult->second.error.empty()
+                                            ? importResult->second.error
+                                            : "asset importer failed";
         m_metas.erase(guid);
         RemoveMappingByGuid(guid);
         m_importResults.erase(guid);
         result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = "asset importer failed";
+        result.error = importError;
         return result;
     }
     UpdateCachedFileState(path, IsReadOnlyPath(NormalizePath(path)));
@@ -1519,7 +1527,6 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     result.succeeded = true;
     result.databaseCommitted = true;
     result.changed = true;
-    result.guid = std::move(guid);
     result.queryGeneration = GetQueryGeneration();
     return result;
 }
@@ -1579,9 +1586,13 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
     }
     UpdateMapping(guid, path);
     if (!RunImporter(guid, path, true)) {
+        const auto importResult = m_importResults.find(guid);
+        const std::string importError = importResult != m_importResults.end() && !importResult->second.error.empty()
+                                            ? importResult->second.error
+                                            : "asset importer failed";
         restoreMetadata();
         result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = "asset importer failed";
+        result.error = importError;
         return result;
     }
     UpdateCachedFileState(path, IsReadOnlyPath(NormalizePath(path)));
@@ -1946,8 +1957,17 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
                 (void)DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath, std::move(writes),
                                                   {m_assetIndexPath});
             } else {
-                for (auto &write : writes)
+                for (auto &write : writes) {
+                    const std::filesystem::path parent = ToFsPath(write.path).parent_path();
+                    if (!parent.empty()) {
+                        std::error_code directoryError;
+                        std::filesystem::create_directories(parent, directoryError);
+                        if (directoryError)
+                            throw std::runtime_error("Failed to create external import target directory: " +
+                                                     directoryError.message());
+                    }
                     (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content));
+                }
                 std::error_code indexError;
                 std::filesystem::remove(ToFsPath(m_assetIndexPath), indexError);
                 if (indexError)
@@ -2044,6 +2064,9 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     }
     if (ext == ".particlegraph") {
         return ResourceType::ParticleGraph;
+    }
+    if (ext == ".pointcache") {
+        return ResourceType::PointCache;
     }
     if (ext == ".meta") {
         return ResourceType::Meta;

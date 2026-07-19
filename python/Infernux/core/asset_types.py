@@ -543,6 +543,7 @@ MATERIAL_EXTENSIONS = frozenset({".mat"})
 PHYSIC_MATERIAL_EXTENSIONS = frozenset({".physicmaterial"})
 RENDER_EFFECT_EXTENSIONS = frozenset({".effect", ".effectgroup", ".effectstack"})
 PARTICLE_GRAPH_EXTENSIONS = frozenset({".particlegraph"})
+POINT_CACHE_EXTENSIONS = frozenset({".pointcache"})
 
 # Audio extensions supported by AudioImporter
 AUDIO_EXTENSIONS = frozenset({".wav"})
@@ -578,7 +579,7 @@ TIMELINEFSM_EXTENSIONS = frozenset({".timelinefsm"})
 
 
 def asset_category_from_extension(ext: str) -> Optional[str]:
-    """Return 'material' | 'texture' | 'shader' | 'audio' | 'font' | 'mesh' | 'prefab' | None for a file extension."""
+    """Return the editor asset category for a file extension."""
     ext = ext.lower()
     if ext in MATERIAL_EXTENSIONS:
         return "material"
@@ -588,6 +589,8 @@ def asset_category_from_extension(ext: str) -> Optional[str]:
         return "render_effect"
     if ext in PARTICLE_GRAPH_EXTENSIONS:
         return "particle_graph"
+    if ext in POINT_CACHE_EXTENSIONS:
+        return "point_cache"
     if ext in IMAGE_EXTENSIONS:
         return "texture"
     if ext in SHADER_EXTENSIONS:

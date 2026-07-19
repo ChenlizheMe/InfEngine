@@ -696,6 +696,18 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.texture_artifact COMMAND infernux_texture_artifact_tests)
 
+    add_executable(infernux_point_cache_artifact_tests
+        cpp/tests/PointCacheArtifactTests.cpp
+        cpp/infernux/function/resources/InxPointCache/PointCacheArtifact.cpp
+    )
+    target_include_directories(infernux_point_cache_artifact_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_point_cache_artifact_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.point_cache_artifact COMMAND infernux_point_cache_artifact_tests)
+
     add_executable(infernux_shader_asset_tests
         cpp/tests/ShaderAssetTests.cpp
     )

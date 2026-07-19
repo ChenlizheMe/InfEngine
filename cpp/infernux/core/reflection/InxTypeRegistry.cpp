@@ -118,6 +118,8 @@ void InxTypeRegistry::Build()
                 return std::string("RenderEffect");
             case ResourceType::ParticleGraph:
                 return std::string("ParticleGraph");
+            case ResourceType::PointCache:
+                return std::string("PointCache");
             default:
                 return std::string("Unknown");
             }
@@ -147,6 +149,8 @@ void InxTypeRegistry::Build()
                 return std::any{ResourceType::RenderEffect};
             if (s == "ParticleGraph")
                 return std::any{ResourceType::ParticleGraph};
+            if (s == "PointCache")
+                return std::any{ResourceType::PointCache};
             if (s == "Unknown")
                 return std::any{ResourceType::DefaultText};
             return std::any{ResourceType::DefaultText};
