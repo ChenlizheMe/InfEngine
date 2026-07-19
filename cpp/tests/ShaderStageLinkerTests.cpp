@@ -1,9 +1,11 @@
+#include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -641,6 +643,20 @@ void main() { }
     assert(changedCompilation.IsValid());
     assert(changedCompilation.CreateRuntimeArtifact().key.stages == runtimeArtifact.key.stages);
     assert(changedCompilation.CreateRuntimeArtifact().key.revision != runtimeArtifact.key.revision);
+
+    const std::array<std::pair<std::string_view, const char *>, 4> particleSortShaders = {{
+        {infernux::particle::GpuParticleSortShaderSources::Generate(), "ParticleSortGenerate.comp"},
+        {infernux::particle::GpuParticleSortShaderSources::Histogram(), "ParticleSortHistogram.comp"},
+        {infernux::particle::GpuParticleSortShaderSources::Scan(), "ParticleSortScan.comp"},
+        {infernux::particle::GpuParticleSortShaderSources::Scatter(), "ParticleSortScatter.comp"},
+    }};
+    for (const auto &[source, name] : particleSortShaders) {
+        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
+        assert(spirv.size() >= 5 * sizeof(uint32_t));
+        uint32_t magic = 0;
+        std::memcpy(&magic, spirv.data(), sizeof(magic));
+        assert(magic == 0x07230203u);
+    }
 
     std::cout << "Shader stage linker tests passed\n";
     return 0;

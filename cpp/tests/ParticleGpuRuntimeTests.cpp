@@ -2,6 +2,7 @@
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
+#include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <array>
@@ -74,7 +75,8 @@ struct FakeDevice final : rhi::Device
 
     rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override
     {
-        assert(desc.computeShader.IsValid() && desc.bindingLayoutCount == 1 && desc.pushConstantBytes == 32);
+        assert(desc.computeShader.IsValid() && desc.bindingLayoutCount == 1 &&
+               (desc.pushConstantBytes == 32 || desc.pushConstantBytes == 80));
         ++pipelineCreates;
         return {nextIndex++, 1};
     }
@@ -198,6 +200,39 @@ struct GraphicsTrace
     }
 };
 
+struct SortTrace
+{
+    std::vector<rhi::ComputePipelineHandle> pipelines;
+    std::vector<rhi::BindGroupHandle> groups;
+    std::vector<particle::GpuParticleSortConstants> constants;
+    std::vector<uint32_t> dispatches;
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<SortTrace *>(context)->pipelines.push_back(pipeline);
+    }
+    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0);
+        static_cast<SortTrace *>(context)->groups.push_back(group);
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == sizeof(particle::GpuParticleSortConstants));
+        particle::GpuParticleSortConstants value;
+        std::memcpy(&value, data, sizeof(value));
+        static_cast<SortTrace *>(context)->constants.push_back(value);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        assert(y == 1 && z == 1);
+        static_cast<SortTrace *>(context)->dispatches.push_back(x);
+    }
+    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    {
+    }
+};
+
 } // namespace
 
 int main()
@@ -244,6 +279,55 @@ int main()
     assert(trace.dispatches == std::vector<uint32_t>({4, 2, 4, 1, 4}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[2].simulationStep == 9);
+
+    FakeDevice sortDevice;
+    std::array<std::array<uint32_t, 5>, 4> sortWords{};
+    for (auto &shader : sortWords)
+        shader[0] = 0x07230203u;
+    particle::GpuParticleSorterDesc sorterDesc;
+    sorterDesc.capacity = runtime.Capacity();
+    sorterDesc.instances = runtime.InstanceBuffer();
+    sorterDesc.indirectArguments = runtime.IndirectBuffer();
+    sorterDesc.program = {
+        {sortWords[0].data(), sortWords[0].size()},
+        {sortWords[1].data(), sortWords[1].size()},
+        {sortWords[2].data(), sortWords[2].size()},
+        {sortWords[3].data(), sortWords[3].size()},
+    };
+    particle::ParticleGpuSorter sorter;
+    assert(sorter.Create(sortDevice, sorterDesc));
+    assert(sorter.IsValid() && sorter.Capacity() == 1000 && sorter.BlockCount() == 4 &&
+           sorter.SortedIndices() == sorter.IndexBuffer(0));
+    assert(sortDevice.buffers.size() == 7 && sortDevice.buffers[0].byteSize == 4000 &&
+           sortDevice.buffers[4].byteSize == 256 && sortDevice.buffers[5].byteSize == 256 &&
+           sortDevice.buffers[6].byteSize == 64);
+    assert(sortDevice.layouts.size() == 1 && sortDevice.layouts[0].entryCount == 9 &&
+           sortDevice.bindGroups.size() == 2 && sortDevice.bindGroups[0].bufferCount == 9 &&
+           sortDevice.bindGroups[1].bufferCount == 9);
+    assert(sortDevice.shaderCreates == 4 && sortDevice.shaderReleases == 4 && sortDevice.pipelineCreates == 4);
+
+    SortTrace sortTrace;
+    const rhi::ComputeCommandEncoder::DispatchTable sortDispatch = {&SortTrace::BindPipeline, &SortTrace::BindGroup,
+                                                                    &SortTrace::PushConstants, &SortTrace::Dispatch,
+                                                                    &SortTrace::DispatchIndirect};
+    const rhi::ComputeCommandEncoder sortEncoder(&sortTrace, &sortDispatch);
+    std::array<float, 16> sortView{};
+    sortView[0] = sortView[5] = sortView[10] = sortView[15] = 1.0f;
+    sorter.RecordGenerate(sortEncoder, sortView, particle::ParticleSortMode::BackToFront);
+    sorter.RecordHistogram(sortEncoder, 0);
+    sorter.RecordScan(sortEncoder, 0);
+    sorter.RecordScatter(sortEncoder, 0);
+    sorter.RecordHistogram(sortEncoder, 1);
+    assert(sortTrace.dispatches == std::vector<uint32_t>({4, 4, 1, 4, 4}));
+    assert(sortTrace.constants.size() == 5 && sortTrace.constants[0].view == sortView &&
+           sortTrace.constants[0].descending == 1 && sortTrace.constants[0].capacity == 1000 &&
+           sortTrace.constants[0].blockCount == 4 && sortTrace.constants[1].digitShift == 0 &&
+           sortTrace.constants[4].digitShift == 4);
+    assert(sortTrace.groups[0] == sortTrace.groups[1] && sortTrace.groups[1] == sortTrace.groups[2] &&
+           sortTrace.groups[2] == sortTrace.groups[3] && sortTrace.groups[4] != sortTrace.groups[3]);
+    sorter.Destroy();
+    assert(!sorter.IsValid() && sortDevice.bufferReleases == 7 && sortDevice.groupReleases == 2 &&
+           sortDevice.layoutReleases == 1 && sortDevice.pipelineReleases == 4);
 
     const auto instanceBuffer = runtime.InstanceBuffer();
     const auto renderIndexBuffer = runtime.RenderIndexBuffer();
