@@ -22,6 +22,7 @@ from Infernux.particle import (
     ParticleGraphCompiler,
     ParticleKernelLowerer,
     ParticleKernelProgram,
+    ParticleRuntimeCompatibility,
     ScalarRange,
     decode_particle_runtime_metadata,
     particle_random_f32,
@@ -37,6 +38,18 @@ def _compile_runtime(settings: EmitterSettings, *, system_seed: int = 0):
     kernel = ParticleKernelLowerer().lower(hir)
     program = NumpyParticleCompiler().compile(hir, kernel)
     return program, program.create_runtime(system_seed=system_seed)
+
+
+def _compile_emitter_program(settings: EmitterSettings, *, stable_id: str = "emitter"):
+    asset = ParticleGraphAsset(
+        stable_id="numpy-migration-test",
+        emitters=(ParticleEmitterAsset(stable_id=stable_id, settings=settings),),
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    return NumpyParticleCompiler().compile(
+        hir,
+        ParticleKernelLowerer().lower(hir),
+    ).emitters[0]
 
 
 def test_numpy_aot_runtime_uses_dense_contiguous_storage_and_stable_output_buffer():
@@ -216,6 +229,84 @@ def test_numpy_runtime_thread_ownership_can_only_move_while_paused():
     worker.join()
 
     assert errors == []
+
+
+def test_numpy_runtime_parameter_reload_preserves_clock_particles_and_pause_state():
+    _program, runtime = _compile_runtime(
+        EmitterSettings(capacity=8, spawn_rate=2.0),
+        system_seed=17,
+    )
+    runtime.tick(0.5)
+    runtime.pause()
+    particle_ids = runtime.attributes["builtin.id"][: runtime.particle_count].copy()
+
+    migrated, compatibility = runtime.migrate_to(
+        _compile_emitter_program(EmitterSettings(capacity=8, spawn_rate=6.0))
+    )
+
+    assert compatibility is ParticleRuntimeCompatibility.PARAMETER_ONLY
+    assert migrated is not None
+    assert migrated.is_playing is False
+    assert migrated.particle_count == 1
+    assert migrated.simulation_step == 1
+    np.testing.assert_array_equal(
+        migrated.attributes["builtin.id"][: migrated.particle_count],
+        particle_ids,
+    )
+    migrated.play()
+    migrated.tick(0.5)
+    assert migrated.particle_count == 4
+    assert migrated.simulation_step == 2
+
+
+def test_numpy_runtime_kernel_reload_preserves_live_attribute_state():
+    settings = EmitterSettings(
+        capacity=4,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+        gravity=(0.0, 0.0, 0.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+    )
+    _program, runtime = _compile_runtime(settings)
+    runtime.tick(0.0)
+    position = runtime.attributes["builtin.position"][0].copy()
+
+    migrated, compatibility = runtime.migrate_to(
+        _compile_emitter_program(replace(settings, gravity=(0.0, -2.0, 0.0)))
+    )
+
+    assert compatibility is ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
+    assert migrated is not None
+    np.testing.assert_array_equal(migrated.attributes["builtin.position"][0], position)
+    migrated.tick(0.5)
+    assert migrated.attributes["builtin.velocity"][0, 1] == pytest.approx(-1.0)
+
+
+def test_numpy_runtime_layout_reload_migrates_capacity_and_rejects_burst_change():
+    settings = EmitterSettings(
+        capacity=4,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 4),),
+    )
+    _program, runtime = _compile_runtime(settings)
+    runtime.tick(0.0)
+
+    migrated, compatibility = runtime.migrate_to(
+        _compile_emitter_program(replace(settings, capacity=2))
+    )
+
+    assert compatibility is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+    assert migrated is not None
+    assert migrated.particle_count == 2
+    np.testing.assert_array_equal(migrated.attributes["builtin.id"][:2], [0, 1])
+
+    restarted, compatibility = runtime.migrate_to(
+        _compile_emitter_program(
+            replace(settings, bursts=(ParticleBurst(0.0, 2),))
+        )
+    )
+    assert restarted is None
+    assert compatibility is ParticleRuntimeCompatibility.EMITTER_RESTART
 
 
 def test_numpy_compiler_rejects_mismatched_hir_and_kernel_programs():

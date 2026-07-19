@@ -11,5 +11,6 @@ from .numpy_backend import *
 from .gpu_glsl_backend import *
 from .gpu_control import *
 from .runtime_metadata import *
+from .runtime_compatibility import *
 
 __all__ = [name for name in globals() if not name.startswith("_")]

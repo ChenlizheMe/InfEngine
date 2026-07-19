@@ -21,6 +21,7 @@ from Infernux.particle import (
     ParticleBurst,
     ParticleEmitterAsset,
     ParticleGraphAsset,
+    ParticleRuntimeCompatibility,
 )
 from Infernux.lib import SceneManager
 from Infernux.vfx import CpuParticleRuntime, VfxCompileError, VfxGraphCompiler
@@ -407,6 +408,119 @@ def test_particle_system_hot_switches_to_new_published_artifact_revision(
 
     assert component._artifact_revision > first_revision
     assert component._runtimes[0].particle_count == 4
+    component._remove_native_batch()
+
+
+def test_particle_system_hot_reload_reorders_emitters_by_stable_id(
+    scene, engine, monkeypatch, tmp_path
+):
+    source = tmp_path / "Reordered.particlegraph"
+
+    def emitter(stable_id: str, count: int) -> ParticleEmitterAsset:
+        return ParticleEmitterAsset(
+            stable_id=stable_id,
+            settings=EmitterSettings(
+                capacity=8,
+                spawn_rate=0.0,
+                bursts=(ParticleBurst(0.0, count),),
+            ),
+        )
+
+    smoke = emitter("smoke", 1)
+    sparks = emitter("sparks", 2)
+    ParticleGraphAsset(
+        stable_id="reordered-system",
+        emitters=(smoke, sparks),
+    ).save(str(source))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.simulation_target = ExecutionTarget.CPU
+    game_object = scene.create_game_object("ReorderedParticleGraphProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+    assert component.pause_emitter(0) is True
+    assert [runtime.particle_count for runtime in component._runtimes] == [1, 2]
+    assert [runtime.simulation_step for runtime in component._runtimes] == [1, 1]
+
+    ParticleGraphAsset(
+        stable_id="reordered-system",
+        emitters=(sparks, smoke),
+    ).save(str(source))
+    component.update(0.0)
+
+    assert component._particle_metadata.schedule == ("sparks", "smoke")
+    assert [runtime.particle_count for runtime in component._runtimes] == [2, 1]
+    assert [runtime.simulation_step for runtime in component._runtimes] == [2, 1]
+    assert [runtime.is_playing for runtime in component._runtimes] == [True, False]
+    assert component.emitter_reload_compatibility(0) is ParticleRuntimeCompatibility.PARAMETER_ONLY
+    assert component.emitter_reload_compatibility(1) is ParticleRuntimeCompatibility.PARAMETER_ONLY
+    assert component.start_emitter(1) is True
+    component.update(0.0)
+    assert [runtime.simulation_step for runtime in component._runtimes] == [3, 2]
+    component._remove_native_batch()
+
+
+def test_particle_system_hot_reload_adds_and_removes_emitters_by_stable_id(
+    scene, engine, monkeypatch, tmp_path
+):
+    source = tmp_path / "ChangedEmitterSet.particlegraph"
+
+    def emitter(stable_id: str, count: int) -> ParticleEmitterAsset:
+        return ParticleEmitterAsset(
+            stable_id=stable_id,
+            settings=EmitterSettings(
+                capacity=8,
+                spawn_rate=0.0,
+                bursts=(ParticleBurst(0.0, count),),
+            ),
+        )
+
+    smoke = emitter("smoke", 1)
+    sparks = emitter("sparks", 2)
+    mist = emitter("mist", 3)
+    ParticleGraphAsset(
+        stable_id="changed-emitter-set",
+        emitters=(smoke, sparks),
+    ).save(str(source))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    component.simulation_target = ExecutionTarget.CPU
+    game_object = scene.create_game_object("ChangedEmitterSetProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+    assert component.pause_emitter(1) is True
+    assert [runtime.particle_count for runtime in component._runtimes] == [1, 2]
+
+    ParticleGraphAsset(
+        stable_id="changed-emitter-set",
+        emitters=(sparks, mist),
+    ).save(str(source))
+    component.update(0.0)
+
+    assert component._particle_metadata.schedule == ("sparks", "mist")
+    assert [runtime.program.stable_id for runtime in component._runtimes] == [
+        "sparks",
+        "mist",
+    ]
+    assert [runtime.particle_count for runtime in component._runtimes] == [2, 3]
+    assert [runtime.simulation_step for runtime in component._runtimes] == [1, 1]
+    assert [runtime.is_playing for runtime in component._runtimes] == [False, True]
+    assert (
+        component.emitter_reload_compatibility(0)
+        is ParticleRuntimeCompatibility.PARAMETER_ONLY
+    )
+    assert component.emitter_reload_compatibility(1) is None
+    assert component.start_emitter(0) is True
+    component.update(0.0)
+    assert [runtime.simulation_step for runtime in component._runtimes] == [2, 2]
     component._remove_native_batch()
 
 

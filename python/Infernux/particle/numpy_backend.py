@@ -23,6 +23,10 @@ from .runtime_metadata import (
     ParticleRuntimeMetadataError,
     decode_particle_runtime_metadata,
 )
+from .runtime_compatibility import (
+    ParticleRuntimeCompatibility,
+    classify_emitter_update,
+)
 
 
 PARTICLE_INSTANCE_FLOATS = 9
@@ -246,6 +250,10 @@ class NumpyParticleEmitterRuntime:
     def simulation_step(self) -> int:
         return self._context.simulation_step
 
+    @property
+    def is_playing(self) -> bool:
+        return self._playing
+
     def play(self) -> None:
         self._claim_thread()
         self._playing = True
@@ -277,6 +285,70 @@ class NumpyParticleEmitterRuntime:
             [float(burst.time), int(burst.cycles), int(burst.count), float(burst.interval)]
             for burst in self.settings.bursts
         ]
+
+    def migrate_to(
+        self, program: NumpyParticleEmitterProgram
+    ) -> tuple["NumpyParticleEmitterRuntime" | None, ParticleRuntimeCompatibility]:
+        """Create a compatible runtime revision while preserving live state."""
+        if not isinstance(program, NumpyParticleEmitterProgram):
+            raise TypeError("particle runtime migration requires an emitter program")
+        self._claim_thread()
+        compatibility = classify_emitter_update(
+            self.program.kernel,
+            program.kernel,
+            self.settings,
+            program.settings,
+        )
+        if compatibility in {
+            ParticleRuntimeCompatibility.EMITTER_RESTART,
+            ParticleRuntimeCompatibility.SYSTEM_RESTART_REQUIRED,
+        }:
+            return None, compatibility
+
+        migrated = NumpyParticleEmitterRuntime(
+            program,
+            system_seed=self._context.system_seed,
+        )
+        count = min(self._active_count, migrated.capacity)
+        previous_schema = {
+            stable_id: value_type
+            for stable_id, value_type, _default in self.program.kernel.attributes
+        }
+        next_schema = {
+            stable_id: value_type
+            for stable_id, value_type, _default in program.kernel.attributes
+        }
+        for stable_id, target in migrated.attributes.items():
+            if (
+                stable_id in self.attributes
+                and previous_schema.get(stable_id) == next_schema[stable_id]
+            ):
+                np.copyto(target[:count], self.attributes[stable_id][:count])
+            elif count:
+                np.copyto(
+                    target[:count],
+                    migrated._attribute_defaults[stable_id],
+                    casting="unsafe",
+                )
+        migrated.alive[:count] = True
+        np.copyto(
+            migrated.spawn_generation[:count],
+            self.spawn_generation[:count],
+        )
+        migrated._active_count = count
+        migrated._spawn_accumulator = self._spawn_accumulator
+        migrated._elapsed = self._elapsed
+        migrated._context.delta_time = self._context.delta_time
+        migrated._context.simulation_step = self._context.simulation_step
+        migrated._context._conversions = {
+            key: value.copy() for key, value in self._context._conversions.items()
+        }
+        migrated._next_particle_id = self._next_particle_id
+        migrated._spawn_epoch = self._spawn_epoch
+        migrated._burst_states = [list(state) for state in self._burst_states]
+        migrated._playing = self._playing
+        migrated._owner_thread = self._owner_thread
+        return migrated, compatibility
 
     def tick(self, delta_time: float) -> np.ndarray:
         self._claim_thread()
