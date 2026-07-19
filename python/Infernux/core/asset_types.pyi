@@ -192,7 +192,6 @@ MATERIAL_EXTENSIONS: FrozenSet[str]
 AUDIO_EXTENSIONS: FrozenSet[str]
 FONT_EXTENSIONS: FrozenSet[str]
 MESH_EXTENSIONS: FrozenSet[str]
-VFXSYSTEM_EXTENSIONS: FrozenSet[str]
 
 # ── Meta-file utilities ────────────────────────────────────────────────
 

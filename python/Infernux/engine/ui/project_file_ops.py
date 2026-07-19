@@ -157,30 +157,6 @@ ANIMFSM_TEMPLATE = '''{
 }
 '''
 
-VFXSYSTEM_TEMPLATE = '''{
-  "$format": "infernux.vfx_system",
-  "$version": 1,
-  "name": "{system_name}",
-  "emitters": [
-    {
-      "name": "Emitter",
-      "capacity": 1000,
-      "graph": {
-        "nodes": [],
-        "links": []
-      },
-      "renderer": {
-        "mode": "billboard",
-        "material": "",
-        "blend": "alpha"
-      },
-      "attributes": []
-    }
-  ],
-  "parameters": []
-}
-'''
-
 ANIMTIMELINE_TEMPLATE = '''{
   "schema_version": 1,
   "name": "{timeline_name}",
@@ -678,37 +654,6 @@ def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
         except Exception as exc:
             return False, str(exc)
 
-    return True, ""
-
-
-def create_vfxsystem(current_path: str, system_name: str, asset_database=None):
-    """Create a strict ``.vfxsystem`` authoring asset."""
-    if not system_name or not current_path:
-        return False, "Invalid VFX system name"
-
-    system_name = system_name.strip()
-    if not system_name:
-        return False, "VFX system name cannot be empty"
-    if system_name.lower().endswith(".vfxsystem"):
-        system_name = system_name[:-10]
-
-    file_name = system_name + ".vfxsystem"
-    file_path = os.path.join(current_path, file_name)
-    if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
-
-    from Infernux.core.vfx_system import VfxSystem
-
-    content = json.dumps(VfxSystem(name=system_name).to_dict(), indent=2, ensure_ascii=False) + "\n"
-    written, error = _write_new_text_asset(file_path, content)
-    if not written:
-        return False, error
-
-    if asset_database:
-        try:
-            _import_new_asset(file_path, asset_database)
-        except Exception as exc:
-            return False, str(exc)
     return True, ""
 
 

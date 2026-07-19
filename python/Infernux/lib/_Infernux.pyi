@@ -2740,7 +2740,6 @@ class ProjectPanel(EditorPanel):
     create_material: Any
     create_physic_material: Any
     create_scene: Any
-    create_vfxsystem: Any
     create_particlegraph: Any
     create_prefab_from_hierarchy: Any
     delete_items: Any
@@ -2752,7 +2751,6 @@ class ProjectPanel(EditorPanel):
     open_file: Any
     open_scene: Any
     open_prefab_mode: Any
-    open_vfx_system: Any
     open_particle_graph: Any
     reveal_in_explorer: Any
 

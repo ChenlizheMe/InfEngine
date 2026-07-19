@@ -23,12 +23,10 @@ def test_effect_stage_has_stable_identity_scope_and_contract():
             outputs={"color"},
             capabilities={"hdr", "isolated_target"},
         ),
-        aliases=("legacy.toon_finish",),
     )
 
     assert stage.display_name == "Opaque.Toon Finish"
-    assert stage.accepts_id("opaque.toon_finish")
-    assert stage.accepts_id("legacy.toon_finish")
+    assert stage.stable_id == "opaque.toon_finish"
     assert stage.contract.inputs == frozenset({"color", "depth"})
 
 

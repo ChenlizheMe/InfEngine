@@ -225,7 +225,7 @@ class RenderGraph:
         """Check if an injection point with the given name exists."""
         ...
     def has_effect_stage(self, stable_id: str) -> bool:
-        """Check for a declared stage or migration alias."""
+        """Check for an exact declared stage ID."""
         ...
     def injection_point(
         self,
@@ -245,7 +245,6 @@ class RenderGraph:
         inputs: Optional[set[str]] = ...,
         outputs: Optional[set[str]] = ...,
         capabilities: Optional[set[str]] = ...,
-        aliases: Tuple[str, ...] = ...,
     ) -> EffectStage:
         """Declare a stable user-facing RenderEffect attachment stage."""
         ...

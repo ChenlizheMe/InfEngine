@@ -41,7 +41,6 @@ from .anim_state_machine import (
     AnimParameter,
 )
 from .assets import AssetManager
-from .vfx_system import VfxAttribute, VfxEmitter, VfxRenderer, VfxSchemaError, VfxSystem
 from .parallel_backend import (
     ParallelBackend,
     ParallelBufferView,
@@ -67,7 +66,6 @@ from .asset_ref import (
     AnimationClip3DRef,
     AnimStateMachineRef,
     PhysicMaterialRef,
-    VfxSystemRef,
     ParticleGraphRef,
     RenderEffectRef,
 )
@@ -85,11 +83,6 @@ __all__ = [
     "AnimTransition",
     "AnimParameter",
     "AssetManager",
-    "VfxAttribute",
-    "VfxEmitter",
-    "VfxRenderer",
-    "VfxSchemaError",
-    "VfxSystem",
     "ParallelBackend",
     "ParallelBufferView",
     "ParallelCapabilities",
@@ -113,7 +106,6 @@ __all__ = [
     "AnimationClip3DRef",
     "AnimStateMachineRef",
     "PhysicMaterialRef",
-    "VfxSystemRef",
     "ParticleGraphRef",
     "RenderEffectRef",
 ]

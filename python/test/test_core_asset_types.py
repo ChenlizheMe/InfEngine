@@ -219,6 +219,10 @@ class TestMeshImportSettings:
         s2 = MeshImportSettings.from_dict(s.to_dict())
         assert s == s2
 
+    def test_old_importer_metadata_does_not_rewrite_uv_settings(self):
+        settings = MeshImportSettings.from_dict({"importer_version": 1, "flip_uvs": False})
+        assert settings.flip_uvs is False
+
     def test_copy(self):
         s = MeshImportSettings(optimize_mesh=False)
         c = s.copy()
@@ -289,8 +293,8 @@ class TestAssetCategory:
     def test_prefab(self):
         assert asset_category_from_extension(".prefab") == "prefab"
 
-    def test_vfx_system(self):
-        assert asset_category_from_extension(".vfxsystem") == "vfxsystem"
+    def test_particle_graph(self):
+        assert asset_category_from_extension(".particlegraph") == "particle_graph"
 
     def test_unknown(self):
         assert asset_category_from_extension(".xyz") is None

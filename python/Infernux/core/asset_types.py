@@ -584,17 +584,11 @@ class MeshImportSettings:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "MeshImportSettings":
-        importer_version = int(d.get("importer_version", 1) or 1)
-        flip_uvs = bool(d.get("flip_uvs", True))
-        # Migration: importer v1 defaulted to false, which breaks many Blender/DCC assets
-        # in our Vulkan path. v2 aligns to Unity-like import expectations.
-        if importer_version < 2:
-            flip_uvs = True
         return cls(
             scale_factor=float(d.get("scale_factor", 0.01)),
             generate_normals=bool(d.get("generate_normals", True)),
             generate_tangents=bool(d.get("generate_tangents", True)),
-            flip_uvs=flip_uvs,
+            flip_uvs=bool(d.get("flip_uvs", True)),
             swap_uv_channels=bool(d.get("swap_uv_channels", False)),
             optimize_mesh=bool(d.get("optimize_mesh", True)),
         )
@@ -651,7 +645,7 @@ SHADER_EXTENSIONS = frozenset({
 # Material extension
 MATERIAL_EXTENSIONS = frozenset({".mat"})
 PHYSIC_MATERIAL_EXTENSIONS = frozenset({".physicmaterial"})
-RENDER_EFFECT_EXTENSIONS = frozenset({".effect", ".effectgroup", ".effectstack"})
+RENDER_EFFECT_EXTENSIONS = frozenset({".effect", ".effectgroup"})
 PARTICLE_GRAPH_EXTENSIONS = frozenset({".particlegraph"})
 POINT_CACHE_EXTENSIONS = frozenset({".pointcache"})
 
@@ -677,9 +671,6 @@ ANIMCLIP3D_EXTENSIONS = frozenset({".animclip3d"})
 
 # Animation state machine extension
 ANIMFSM_EXTENSIONS = frozenset({".animfsm"})
-
-# VFX system authoring asset extension
-VFXSYSTEM_EXTENSIONS = frozenset({".vfxsystem"})
 
 # Transform timeline extension
 ANIMTIMELINE_EXTENSIONS = frozenset({".animtimeline"})
@@ -719,8 +710,6 @@ def asset_category_from_extension(ext: str) -> Optional[str]:
         return "animclip3d"
     if ext in ANIMFSM_EXTENSIONS:
         return "animfsm"
-    if ext in VFXSYSTEM_EXTENSIONS:
-        return "vfxsystem"
     if ext in ANIMTIMELINE_EXTENSIONS:
         return "animtimeline"
     if ext in TIMELINEFSM_EXTENSIONS:

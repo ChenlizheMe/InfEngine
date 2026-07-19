@@ -8,7 +8,4 @@ namespace infernux::material_document_validation
 
 void ValidateMaterialDocument(const nlohmann::json &document, std::string_view path = "Material");
 
-[[nodiscard]] nlohmann::json NormalizeMaterialDocument(const nlohmann::json &document,
-                                                       std::string_view path = "Material");
-
 } // namespace infernux::material_document_validation

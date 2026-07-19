@@ -373,15 +373,6 @@ def _ensure_categories():
         autosave_debounce=0.5,
     )
 
-    # ── VFX System (.vfxsystem) ────────────────────────────────────────
-    _categories["vfxsystem"] = AssetCategoryDef(
-        display_name="asset.display_vfxsystem",
-        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
-        load_fn=_load_vfxsystem,
-        custom_body_fn=_render_vfxsystem_body,
-        autosave_debounce=0.35,
-    )
-
     _categories["particle_graph"] = AssetCategoryDef(
         display_name="asset.display_particlegraph",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
@@ -1257,16 +1248,6 @@ def _load_animfsm(path: str):
     return fsm, {"fsm_path": path}
 
 
-def _load_vfxsystem(path: str):
-    from Infernux.core.vfx_system import VfxSchemaError, VfxSystem
-
-    try:
-        system = VfxSystem.load(path)
-    except (OSError, VfxSchemaError, ValueError, TypeError):
-        return None
-    return system, {"vfx_path": path}
-
-
 def _load_particlegraph(path: str):
     from Infernux.particle.asset import ParticleGraphAsset, ParticleGraphSchemaError
 
@@ -1316,47 +1297,6 @@ def _render_particlegraph_body(ctx: InxGUIContext, panel, state: _State):
                 pass
     except Exception as exc:
         Debug.log_suppressed("asset_details_renderer.open_particlegraph", exc)
-
-
-def _render_vfxsystem_body(ctx: InxGUIContext, panel, state: _State):
-    from Infernux.core.vfx_system import VfxSystem
-    from .inspector_utils import field_label
-
-    system = state.settings
-    if not isinstance(system, VfxSystem):
-        ctx.label(t("asset.failed_load").format(name=t("asset.display_vfxsystem")))
-        return
-
-    lw = 120.0
-    field_label(ctx, t("asset.display_vfxsystem"), lw)
-    ctx.same_line()
-    ctx.label(getattr(system, "name", "") or os.path.basename(state.file_path))
-    field_label(ctx, t("asset.vfx_emitters"), lw)
-    ctx.same_line()
-    emitters = getattr(system, "emitters", None) or []
-    ctx.label(str(len(emitters)))
-
-    ctx.dummy(0, 8)
-    if ctx.button(t("asset.vfx_open_editor")):
-        open_fn = getattr(panel, "open_vfx_system", None) if panel is not None else None
-        if callable(open_fn):
-            open_fn(state.file_path)
-        else:
-            try:
-                from Infernux.engine.ui.closable_panel import ClosablePanel
-                from Infernux.engine.ui.window_manager import WindowManager
-
-                wm = WindowManager.instance()
-                editor = wm.open_window("vfx_graph_editor") if wm is not None else None
-                if editor is not None and hasattr(editor, "_open_vfxsystem"):
-                    editor._open_vfxsystem(state.file_path)
-                    ClosablePanel.focus_panel_by_id("vfx_graph_editor")
-                    try:
-                        wm._engine.select_docked_window("vfx_graph_editor")
-                    except Exception:
-                        pass
-            except Exception as exc:
-                Debug.log_suppressed("asset_details_renderer.open_vfxsystem", exc)
 
 
 def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):

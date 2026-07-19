@@ -963,18 +963,14 @@ class TestComponentLifecycle:
         assert restored[0].slot_id == "empty-slot"
         assert restored[1].slot_id == "effect-slot"
         assert restored[1].effect_ref.guid == "missing-effect-guid"
-        assert stack.effect_stage_bindings_json == ""
+        assert not hasattr(stack, "effect_stage_bindings_json")
 
-    def test_renderstack_preserves_invalid_binding_source_for_recovery(self, scene):
+    def test_renderstack_rejects_obsolete_binding_source(self, scene):
         stack = scene.create_game_object("InvalidEffectBindingRenderStack").add_component(RenderStack)
-        invalid_source = '{"$schema":"broken"}'
-        stack.effect_stage_bindings_json = invalid_source
-
-        stack.on_after_deserialize()
-        stack.on_before_serialize()
-
-        assert stack.effect_binding_error
-        assert stack.effect_stage_bindings_json == invalid_source
+        with pytest.raises(ValueError, match="obsolete"):
+            stack._deserialize_fields_document(
+                {"effect_stage_bindings_json": '{"$schema":"broken"}'}
+            )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Collider properties

@@ -151,7 +151,7 @@ class RenderEffectImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".effect", ".effectgroup", ".effectstack"};
+        return {".effect", ".effectgroup"};
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;

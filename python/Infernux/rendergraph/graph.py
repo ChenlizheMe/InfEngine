@@ -761,8 +761,8 @@ class RenderGraph:
         return any(ip.name == name for ip in self._injection_points_list)
 
     def has_effect_stage(self, stable_id: str) -> bool:
-        """Return whether a stage or one of its migration aliases is declared."""
-        return any(stage.accepts_id(stable_id) for stage in self._effect_stages_list)
+        """Return whether an exact stage ID is declared."""
+        return any(stage.stable_id == stable_id for stage in self._effect_stages_list)
 
     # ---- Injection points ----
 
@@ -806,7 +806,6 @@ class RenderGraph:
         inputs=None,
         outputs=None,
         capabilities=None,
-        aliases=(),
     ):
         """Declare one stable user-facing RenderEffect attachment stage.
 
@@ -827,18 +826,11 @@ class RenderGraph:
                 outputs=frozenset(outputs or ()),
                 capabilities=frozenset(capabilities or ()),
             ),
-            aliases=tuple(aliases),
         )
-        claimed_ids = {
-            value
-            for existing in self._effect_stages_list
-            for value in (existing.stable_id, *existing.aliases)
-        }
-        stage_ids = {stage.stable_id, *stage.aliases}
-        conflict = sorted(claimed_ids.intersection(stage_ids))
-        if conflict:
+        if self.has_effect_stage(stage.stable_id):
             raise ValueError(
-                f"EffectStage IDs must be unique in graph '{self._name}': {conflict}"
+                f"EffectStage IDs must be unique in graph '{self._name}': "
+                f"{stage.stable_id!r}"
             )
 
         self._effect_stages_list.append(stage)

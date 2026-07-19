@@ -843,17 +843,6 @@ if(INFERNUX_BUILD_TESTS)
     )
 
     add_test(
-        NAME infernux.vfx_profile
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/vfx_profile_gate.py
-    )
-    set_tests_properties(infernux.vfx_profile PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
-        TIMEOUT 30
-        RUN_SERIAL TRUE
-        LABELS performance
-    )
-
-    add_test(
         NAME infernux.asset_scan_profile
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/asset_scan_profile_gate.py
     )

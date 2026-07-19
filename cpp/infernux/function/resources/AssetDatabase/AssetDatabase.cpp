@@ -2064,7 +2064,7 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     if (ext == ".physicmaterial") {
         return ResourceType::PhysicMaterial;
     }
-    if (ext == ".effect" || ext == ".effectgroup" || ext == ".effectstack") {
+    if (ext == ".effect" || ext == ".effectgroup") {
         return ResourceType::RenderEffect;
     }
     if (ext == ".particlegraph") {

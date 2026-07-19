@@ -858,7 +858,8 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
 bool InxMaterial::ApplyDocument(const nlohmann::json &document)
 {
     try {
-        const json j = material_document_validation::NormalizeMaterialDocument(document);
+        material_document_validation::ValidateMaterialDocument(document);
+        const json &j = document;
         m_name = j["name"].get<std::string>();
         m_builtin = j["builtin"].get<bool>();
 

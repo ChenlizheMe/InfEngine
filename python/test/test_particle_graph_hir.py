@@ -23,7 +23,6 @@ from Infernux.particle import (
     ScalarRange,
     SimulationSpace,
     VectorField,
-    migrate_vfx_system,
 )
 from Infernux.graph import AssetReference, TypeRef, ValueType
 
@@ -42,19 +41,13 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     assert restored.semantic_hash() == asset.semantic_hash()
 
 
-def test_particle_graph_v1_migrates_to_typed_empty_data_interfaces():
+def test_particle_graph_rejects_noncanonical_version():
     value = ParticleGraphAsset(stable_id="legacy-particle").to_dict()
     value["$version"] = 1
     for emitter in value["emitters"]:
         emitter.pop("data_interfaces")
 
-    migrated = ParticleGraphAsset.from_dict(value)
-
-    assert migrated.emitters[0].data_interfaces == ()
-    assert migrated.to_dict()["$version"] == 2
-
-    value["emitters"] = None
-    with pytest.raises(ParticleGraphSchemaError, match="must be arrays"):
+    with pytest.raises(ParticleGraphSchemaError, match="schema or version"):
         ParticleGraphAsset.from_dict(value)
 
 
@@ -334,37 +327,6 @@ def test_particle_material_reference_uses_strict_guid_and_path_hint_shape():
     restored = ParticleGraphAsset.from_dict(value)
     with pytest.raises(ParticleCompileError, match="guid and path_hint"):
         ParticleGraphCompiler().compile(restored)
-
-
-def test_v1_vfx_migration_preserves_emitter_settings_and_operations():
-    from Infernux.core.vfx_system import VfxEmitter, VfxSystem
-
-    emitter = VfxEmitter(name="Legacy Smoke", capacity=4096)
-    graph = emitter.graph
-    spawn = graph.add_node("vfx_spawn_rate", uid="spawn", rate=32.0)
-    velocity = graph.add_node("vfx_set_velocity", uid="velocity", value=[0.0, 3.0, 0.0])
-    lifetime = graph.add_node("vfx_set_lifetime", uid="lifetime", value=6.0)
-    gravity = graph.add_node("vfx_gravity", uid="gravity", strength=-2.0)
-    output = graph.add_node("vfx_billboard_output", uid="output")
-    assert graph.add_link(spawn.uid, "exec_out", velocity.uid, "exec_in")
-    assert graph.add_link(velocity.uid, "exec_out", lifetime.uid, "exec_in")
-    assert graph.add_link(lifetime.uid, "exec_out", gravity.uid, "exec_in")
-    assert graph.add_link(gravity.uid, "exec_out", output.uid, "exec_in")
-
-    migrated = migrate_vfx_system(
-        VfxSystem(name="Legacy", emitters=[emitter]),
-        source_guid="legacy-guid",
-    )
-    hir = ParticleGraphCompiler().compile(migrated).emitters[0]
-
-    assert hir.settings.capacity == 4096
-    assert hir.settings.spawn_rate == pytest.approx(32.0)
-    assert hir.settings.lifetime == ScalarRange(6.0, 6.0)
-    assert [operation.opcode for operation in hir.init.operations][1:] == [
-        "attribute.set_velocity",
-        "attribute.set_lifetime",
-    ]
-    assert hir.update.operations[-1].opcode == "integrate.acceleration"
 
 
 PARTICLE_SCRIPT_SOURCE = '''\

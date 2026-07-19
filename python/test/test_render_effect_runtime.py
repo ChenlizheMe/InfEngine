@@ -228,8 +228,7 @@ def test_render_stack_effect_slots_use_structured_serialized_list():
 
     assert isinstance(document["effect_slots"], list)
     assert document["effect_slots"][0]["$type"] == "serializable_object"
-    assert "effect_stage_bindings_json" in document
-    assert document["effect_stage_bindings_json"] == ""
+    assert "effect_stage_bindings_json" not in document
     assert slot.effect_ref.guid == "bloom-guid"
 
 
@@ -248,38 +247,13 @@ def test_render_stack_structured_slots_round_trip_without_hidden_json():
     assert len(slots) == 1
     assert slots[0].enabled is False
     assert slots[0].effect_ref.guid == "fog-guid"
-    assert restored.effect_stage_bindings_json == ""
+    assert not hasattr(restored, "effect_stage_bindings_json")
 
 
-def test_render_stack_migrates_legacy_json_binding_once():
+def test_render_stack_rejects_obsolete_json_binding_field():
     stack = RenderStack()
-    stack.effect_stage_bindings_json = json.dumps(
-        {
-            "$schema": "infernux.render_stack_effect_bindings",
-            "$version": 1,
-            "stages": {
-                "final": [
-                    {
-                        "slot_id": "legacy-slot",
-                        "asset": {
-                            "guid": "legacy-guid",
-                            "path_hint": "Assets/Effects/Legacy.effect",
-                        },
-                        "enabled": True,
-                        "overrides": {"intensity": 0.5},
-                    }
-                ]
-            },
-        }
-    )
-
-    stack.on_after_deserialize()
-
-    slots = stack.get_effect_stage_slots("final")
-    assert len(slots) == 1
-    assert slots[0].slot_id == "legacy-slot"
-    assert slots[0].effect_ref.guid == "legacy-guid"
-    assert stack.effect_stage_bindings_json == ""
+    with pytest.raises(ValueError, match="obsolete"):
+        stack._deserialize_fields_document({"effect_stage_bindings_json": "{}"})
 
 
 def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
@@ -334,30 +308,6 @@ def test_render_stack_rejects_undeclared_stage_but_preserves_orphan_slots():
     assert stack.effect_slots == [orphan]
 
 
-def test_render_stack_canonicalizes_declared_stage_aliases():
-    class RenamedStagePipeline(RenderPipeline):
-        name = "Renamed Stage"
-
-        def define_topology(self, graph):
-            graph.create_texture("color", camera_target=True)
-            with graph.add_pass("Opaque") as render_pass:
-                render_pass.write_color("color")
-                render_pass.draw_renderers()
-            graph.effects("final", aliases=("old_final",))
-            graph.set_output("color")
-
-    stack = RenderStack()
-    stack._pipeline = RenamedStagePipeline()
-    slot = EffectSlot(stage_id="old_final")
-    stack.effect_slots = [slot]
-
-    stack._canonicalize_effect_stage_aliases()
-
-    assert slot.stage_id == "final"
-    assert stack.get_effect_stage_slots("old_final") == (slot,)
-    assert stack.orphan_effect_slots == ()
-
-
 def test_render_stack_can_explicitly_remap_preserved_orphan_slots():
     stack = RenderStack()
     first = EffectSlot(stage_id="removed_stage")
@@ -390,7 +340,7 @@ def test_render_effect_picker_accepts_effect_groups():
     from Infernux.core.asset_ref import get_asset_type_config
 
     config = get_asset_type_config("RenderEffect")
-    assert config["extensions"] == ("*.effect", "*.effectgroup", "*.effectstack")
+    assert config["extensions"] == ("*.effect", "*.effectgroup")
 
 
 def test_render_stack_compiles_effect_stage_to_scoped_dynamic_blocks():

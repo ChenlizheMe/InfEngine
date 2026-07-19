@@ -535,25 +535,22 @@ class TestEffectStageDeclaration:
             inputs={"color"},
             outputs={"color"},
             capabilities={"fullscreen"},
-            aliases=("post_process",),
         )
 
         assert stage.scope is EffectScope.COMPOSITE
         assert stage.contract.inputs == frozenset({"color"})
         assert graph.effect_stages == [stage]
         assert graph.has_effect_stage("final")
-        assert graph.has_effect_stage("post_process")
+        assert not graph.has_effect_stage("post_process")
         assert ("effect_stage", "final") in graph.topology_sequence
         assert fired == [stage]
 
-    def test_effect_stage_rejects_duplicate_ids_and_aliases(self):
+    def test_effect_stage_rejects_duplicate_ids(self):
         graph = _make_graph()
-        graph.effects("final", aliases=("post_process",))
+        graph.effects("final")
 
         with pytest.raises(ValueError, match="must be unique"):
-            graph.effects("post_process")
-        with pytest.raises(ValueError, match="must be unique"):
-            graph.effects("other", aliases=("final",))
+            graph.effects("final")
 
     def test_effect_stage_before_first_pass_is_rejected(self):
         graph = _make_graph()

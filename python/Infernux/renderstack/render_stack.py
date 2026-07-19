@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
 from Infernux.components.component import InxComponent
-from Infernux.components.serialized_field import FieldType, list_field, serialized_field
+from Infernux.components.serialized_field import FieldType, list_field
 from Infernux.components.decorators import disallow_multiple, add_component_menu
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
@@ -116,10 +116,6 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         default=[],
         tooltip="Ordered Effect assets mounted into pipeline stages.",
     )
-    # Read-only migration source for scenes saved by the short-lived JSON
-    # binding prototype. New scenes always persist ``effect_slots``.
-    effect_stage_bindings_json: str = serialized_field(default="", hidden=True)
-
     # ---- Runtime state (not serialized) ----
     _pipeline = None  # Optional[RenderPipeline]
     _graph_desc = None  # cached RenderGraphDescription
@@ -130,7 +126,6 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     _pipeline_param_store: Dict[str, Dict[str, object]] = None
     _pipeline_catalog_signature: tuple = ()
     _topology_probe_cache = None
-    _effect_binding_error: str = ""
     _compiled_effect_bindings = None
     _effect_upload_revisions = None
     _effect_compile_errors: tuple[str, ...] = ()
@@ -246,7 +241,6 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
     def on_before_serialize(self) -> None:
         """Save pass_entries into mounted_passes_json."""
-        self._canonicalize_effect_stage_aliases()
         self._save_current_pipeline_params()
         entries = []
         for e in self._pass_entries:
@@ -266,8 +260,20 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         if entries:
             self.mounted_passes_json = _json.dumps(entries)
         self.pipeline_params_json = _json.dumps(self._pipeline_param_store) if self._pipeline_param_store else ""
-        if self.effect_slots and not self._effect_binding_error:
-            self.effect_stage_bindings_json = ""
+
+    def _deserialize_fields_document(
+        self, data: dict, *, _skip_on_after_deserialize: bool = False
+    ) -> None:
+        if not isinstance(data, dict):
+            raise TypeError("RenderStack fields document must be an object")
+        if "effect_stage_bindings_json" in data:
+            raise ValueError(
+                "RenderStack.effect_stage_bindings_json is obsolete; resave the scene with canonical effect_slots"
+            )
+        super()._deserialize_fields_document(
+            data,
+            _skip_on_after_deserialize=_skip_on_after_deserialize,
+        )
 
     def on_after_deserialize(self) -> None:
         """Recreate pass_entries from mounted_passes_json."""
@@ -288,12 +294,6 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
 
-        self._effect_binding_error = ""
-        if not self.effect_slots and self.effect_stage_bindings_json:
-            try:
-                self._migrate_legacy_effect_bindings()
-            except (TypeError, ValueError, _json.JSONDecodeError) as exc:
-                self._effect_binding_error = str(exc)
         self._normalize_effect_slots()
 
         if self.pipeline_params_json:
@@ -309,7 +309,6 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         self._pipeline = None
         self._topology_probe_cache = None
         self._cached_ips = None
-        self._canonicalize_effect_stage_aliases()
 
         if not self.mounted_passes_json:
             return
@@ -375,11 +374,6 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
     # ==================================================================
 
     @property
-    def effect_binding_error(self) -> str:
-        """Return a persistent parse diagnostic without discarding source data."""
-        return self._effect_binding_error
-
-    @property
     def effect_compile_errors(self) -> tuple[str, ...]:
         """Current non-destructive diagnostics for mounted Effect assets."""
         return self._effect_compile_errors
@@ -396,7 +390,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         return tuple(
             slot
             for slot in (self.effect_slots or ())
-            if not any(stage.accepts_id(slot.stage_id) for stage in stages)
+            if not any(stage.stable_id == slot.stage_id for stage in stages)
         )
 
     def _resolve_effect_stage(self, stage_id: str):
@@ -404,7 +398,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
 
         normalized_id = validate_effect_stage_id(stage_id)
         for stage in self.effect_stages:
-            if stage.accepts_id(normalized_id):
+            if stage.stable_id == normalized_id:
                 return stage
         valid = [stage.stable_id for stage in self.effect_stages]
         raise ValueError(
@@ -416,7 +410,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         """Return the ordered structured slots for one stable EffectStage."""
         stage = self._resolve_effect_stage(stage_id)
         return tuple(
-            slot for slot in (self.effect_slots or ()) if stage.accepts_id(slot.stage_id)
+            slot for slot in (self.effect_slots or ()) if stage.stable_id == slot.stage_id
         )
 
     def set_effect_stage_slots(self, stage_id: str, slots) -> None:
@@ -429,10 +423,9 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             slot.stage_id = stage.stable_id
             replacement.append(slot)
         self.effect_slots = [
-            slot for slot in self.effect_slots if not stage.accepts_id(slot.stage_id)
+            slot for slot in self.effect_slots if stage.stable_id != slot.stage_id
         ] + replacement
         self._normalize_effect_slots()
-        self._effect_binding_error = ""
         self.invalidate_graph()
 
     def add_effect_slot(self, stage_id: str, effect=None, *, enabled: bool = True) -> EffectSlot:
@@ -459,7 +452,7 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
         from Infernux.renderstack.effect_stage import validate_effect_stage_id
 
         old_id = validate_effect_stage_id(old_stage_id)
-        if any(stage.accepts_id(old_id) for stage in self.effect_stages):
+        if any(stage.stable_id == old_id for stage in self.effect_stages):
             raise ValueError(f"EffectStage {old_id!r} is declared and is not orphaned")
         target = self._resolve_effect_stage(new_stage_id)
         remapped = 0
@@ -469,33 +462,8 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
                 remapped += 1
         if remapped:
             self._normalize_effect_slots()
-            self._effect_binding_error = ""
             self.invalidate_graph()
         return remapped
-
-    def _migrate_legacy_effect_bindings(self) -> None:
-        from Infernux.core.asset_ref import RenderEffectRef
-        from Infernux.renderstack.effect_binding import parse_effect_binding_document
-
-        document = parse_effect_binding_document(self.effect_stage_bindings_json)
-        migrated = []
-        for stage_id, slots in document.stages.items():
-            for old_slot in slots:
-                reference = old_slot.asset
-                effect_ref = RenderEffectRef(
-                    guid=reference.guid if reference is not None else "",
-                    path_hint=reference.path_hint if reference is not None else "",
-                )
-                migrated.append(
-                    EffectSlot(
-                        slot_id=old_slot.slot_id,
-                        stage_id=stage_id,
-                        effect=effect_ref,
-                        enabled=old_slot.enabled,
-                    )
-                )
-        self.effect_slots = migrated
-        self.effect_stage_bindings_json = ""
 
     def _normalize_effect_slots(self) -> None:
         import uuid
@@ -511,20 +479,6 @@ class RenderStack(RenderPassManagementMixin, PipelineReloadMixin, InxComponent):
             if slot.slot_id in slot_ids:
                 raise ValueError(f"duplicate effect slot_id: {slot.slot_id!r}")
             slot_ids.add(slot.slot_id)
-
-    def _canonicalize_effect_stage_aliases(self) -> None:
-        """Rewrite known migration aliases while preserving true orphans."""
-        try:
-            stages = self.effect_stages
-        except (AttributeError, ImportError, RuntimeError, ValueError):
-            return
-        for slot in self.effect_slots or ():
-            for stage in stages:
-                if stage.accepts_id(slot.stage_id):
-                    slot.stage_id = stage.stable_id
-                    break
-
-    # ==================================================================
 
     @staticmethod
     def discover_pipelines() -> Dict[str, type]:

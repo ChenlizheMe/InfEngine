@@ -65,11 +65,6 @@ class AudioClipRef(AssetRefBase):
     ...
 
 
-class VfxSystemRef(AssetRefBase):
-    """Reference to a VFX system asset."""
-    ...
-
-
 class RenderEffectRef(AssetRefBase):
     """Reference to a mutable RenderEffect asset."""
     def __init__(self, effect: Any = ..., *, guid: str = ..., path_hint: str = ...) -> None: ...

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import FrozenSet, Iterable, Tuple
+from typing import FrozenSet, Iterable
 
 
 _STABLE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
@@ -46,7 +46,6 @@ class EffectStage:
     scope: EffectScope
     display_name: str = ""
     contract: EffectResourceContract = field(default_factory=EffectResourceContract)
-    aliases: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         stable_id = _validated_stable_id(self.stable_id, "stable_id")
@@ -55,16 +54,6 @@ class EffectStage:
             object.__setattr__(self, "scope", EffectScope(str(self.scope)))
         if not self.display_name:
             object.__setattr__(self, "display_name", stable_id.replace("_", " ").title())
-        aliases = tuple(_validated_stable_id(value, "alias") for value in self.aliases)
-        if stable_id in aliases:
-            raise ValueError("effect stage aliases cannot repeat stable_id")
-        if len(set(aliases)) != len(aliases):
-            raise ValueError("effect stage aliases must be unique")
-        object.__setattr__(self, "aliases", aliases)
-
-    def accepts_id(self, value: str) -> bool:
-        """Return whether *value* names this stage or one of its migrations."""
-        return value == self.stable_id or value in self.aliases
 
 
 def validate_effect_stage_id(value: str) -> str:

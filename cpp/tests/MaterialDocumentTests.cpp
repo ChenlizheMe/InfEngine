@@ -11,7 +11,7 @@ namespace
 using infernux::InxMaterial;
 using infernux::ShaderAssetReference;
 
-void VerifyLegacyMigration()
+void VerifyLegacyRejection()
 {
     InxMaterial material("Legacy", "lit");
     auto legacy = material.SerializeDocument();
@@ -19,12 +19,9 @@ void VerifyLegacyMigration()
     legacy["shaders"]["vertex"] = "standard";
     legacy["shaders"]["fragment"] = "lit";
 
-    assert(material.DeserializeDocument(legacy));
-    const auto migrated = material.SerializeDocument();
-    assert(migrated["material_version"].get<int>() == 4);
-    assert(migrated["shaders"]["vertex"]["guid"].get<std::string>().empty());
-    assert(migrated["shaders"]["vertex"]["shader_id"].get<std::string>() == "standard");
-    assert(migrated["shaders"]["fragment"]["shader_id"].get<std::string>() == "lit");
+    const auto before = material.SerializeDocument();
+    assert(!material.DeserializeDocument(legacy));
+    assert(material.SerializeDocument() == before);
 }
 
 void VerifyStableReferencesAndClone()
@@ -113,7 +110,7 @@ void VerifyShaderReferenceVersioning()
 
 int main()
 {
-    VerifyLegacyMigration();
+    VerifyLegacyRejection();
     VerifyStableReferencesAndClone();
     VerifyTransactionalFailure();
     VerifyRenderStateVersioning();

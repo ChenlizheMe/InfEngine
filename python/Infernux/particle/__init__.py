@@ -1,9 +1,8 @@
-"""ParticleGraph asset model, HIR compiler and v1 migration."""
+"""ParticleGraph asset model, compiler backends and runtime contracts."""
 
 from .asset import *
 from .data_interface import *
 from .hir import *
-from .migration import migrate_vfx_system
 from .script import *
 from .artifact import *
 from .kernel_ir import *

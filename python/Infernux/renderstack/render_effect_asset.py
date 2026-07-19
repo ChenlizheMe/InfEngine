@@ -10,7 +10,6 @@ from typing import Any, Mapping, Union
 
 RENDER_EFFECT_EXTENSION = ".effect"
 RENDER_EFFECT_GROUP_EXTENSION = ".effectgroup"
-LEGACY_RENDER_EFFECT_GROUP_EXTENSIONS = frozenset({".effectstack"})
 RENDER_EFFECT_SCHEMA = "infernux.render_effect"
 RENDER_EFFECT_GROUP_SCHEMA = "infernux.render_effect_group"
 RENDER_EFFECT_SCHEMA_VERSION = 1

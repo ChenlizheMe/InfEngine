@@ -258,12 +258,10 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
         {".animclip2d", "animclip2d"},
         {".animclip3d", "animclip3d"},
         {".animfsm", "animfsm"},
-        {".vfxsystem", "file"},
         {".particlegraph", "file"},
         {".pointcache", "file"},
         {".effect", "file"},
         {".effectgroup", "file"},
-        {".effectstack", "file"},
     };
     return map;
 }
@@ -301,12 +299,10 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
         {".animclip2d", {"ANIMCLIP_FILE", "2D AnimClip"}},
         {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
         {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
-        {".vfxsystem", {"VFXSYSTEM_FILE", "VFX System"}},
         {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
         {".pointcache", {"POINT_CACHE_FILE", "Point Cache"}},
         {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
         {".effectgroup", {"RENDER_EFFECT_GROUP_FILE", "Render Effect Group"}},
-        {".effectstack", {"RENDER_EFFECT_GROUP_FILE", "Render Effect Group"}},
         {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
         {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
     };
@@ -368,7 +364,7 @@ const char *ProjectPanel::GetFileTypeTag(const std::string &filename)
         return "[PMAT]";
     if (ext == ".effect")
         return "[FX]";
-    if (ext == ".effectgroup" || ext == ".effectstack")
+    if (ext == ".effectgroup")
         return "[FXG]";
     if (ext == ".vert" || ext == ".frag" || ext == ".glsl" || ext == ".hlsl")
         return "[SHDR]";
@@ -1684,9 +1680,6 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
         } else if (item.ext == ".animfsm") {
             if (openAnimFsm)
                 openAnimFsm(item.path);
-        } else if (item.ext == ".vfxsystem") {
-            if (openVfxSystem)
-                openVfxSystem(item.path);
         } else if (item.ext == ".particlegraph") {
             if (openParticleGraph)
                 openParticleGraph(item.path);
@@ -2907,13 +2900,6 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
             });
         }
         ctx->Separator();
-        if (ctx->Selectable(Tr("project.create_vfxsystem"), false)) {
-            CreateAndRename("NewVFXSystem", ".vfxsystem", [this](const std::string &name) {
-                if (createVfxSystem)
-                    return createVfxSystem(m_currentPath, name);
-                return std::make_pair(false, std::string("No callback"));
-            });
-        }
         if (ctx->Selectable(Tr("project.create_particlegraph"), false)) {
             CreateAndRename("NewParticleGraph", ".particlegraph", [this](const std::string &name) {
                 if (createParticleGraph)

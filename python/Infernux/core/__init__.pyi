@@ -8,13 +8,6 @@ from .shader import Shader as Shader
 from .audio_clip import AudioClip as AudioClip
 from .physic_material import PhysicMaterial as PhysicMaterial
 from .assets import AssetManager as AssetManager
-from .vfx_system import (
-    VfxAttribute as VfxAttribute,
-    VfxEmitter as VfxEmitter,
-    VfxRenderer as VfxRenderer,
-    VfxSchemaError as VfxSchemaError,
-    VfxSystem as VfxSystem,
-)
 from .parallel_backend import (
     ParallelBackend as ParallelBackend,
     ParallelBufferView as ParallelBufferView,
@@ -40,7 +33,6 @@ from .asset_ref import (
     ShaderRef as ShaderRef,
     AudioClipRef as AudioClipRef,
     PhysicMaterialRef as PhysicMaterialRef,
-    VfxSystemRef as VfxSystemRef,
     RenderEffectRef as RenderEffectRef,
 )
 
@@ -51,11 +43,6 @@ __all__ = [
     "AudioClip",
     "PhysicMaterial",
     "AssetManager",
-    "VfxAttribute",
-    "VfxEmitter",
-    "VfxRenderer",
-    "VfxSchemaError",
-    "VfxSystem",
     "ParallelBackend",
     "ParallelBufferView",
     "ParallelCapabilities",
@@ -76,6 +63,5 @@ __all__ = [
     "ShaderRef",
     "AudioClipRef",
     "PhysicMaterialRef",
-    "VfxSystemRef",
     "RenderEffectRef",
 ]

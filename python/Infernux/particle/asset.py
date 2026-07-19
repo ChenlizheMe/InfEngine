@@ -470,18 +470,7 @@ class ParticleGraphAsset:
             raise ParticleGraphSchemaError("unsupported particle graph schema or version")
         if type(value["emitters"]) is not list or type(value["parameters"]) is not list:
             raise ParticleGraphSchemaError("emitters and parameters must be arrays")
-        if value["$version"] == 1:
-            value = {
-                **value,
-                "$version": PARTICLE_GRAPH_VERSION,
-                "emitters": [
-                    {**emitter, "data_interfaces": []}
-                    if type(emitter) is dict
-                    else emitter
-                    for emitter in value["emitters"]
-                ],
-            }
-        elif value["$version"] != PARTICLE_GRAPH_VERSION:
+        if value["$version"] != PARTICLE_GRAPH_VERSION:
             raise ParticleGraphSchemaError("unsupported particle graph schema or version")
         return cls(
             stable_id=value["stable_id"],

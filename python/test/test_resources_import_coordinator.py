@@ -147,7 +147,7 @@ def test_asset_manager_delete_clears_live_python_references_after_database_commi
     database = _AssetDatabaseProbe()
     calls = []
     _patch_asset_manager(monkeypatch, calls)
-    asset = tmp_path / "RaceDust.vfxsystem"
+    asset = tmp_path / "RaceDust.particlegraph"
     asset.write_text("{}", encoding="utf-8")
     path = str(asset.resolve())
     database.guid_by_path[path] = "race-dust-guid"

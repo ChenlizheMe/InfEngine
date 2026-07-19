@@ -1,6 +1,7 @@
 #include "ConcreteImporters.h"
 
 #include <core/log/InxLog.h>
+#include <function/resources/InxMaterial/MaterialDocumentValidation.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxPointCache/PointCacheArtifact.h>
@@ -137,9 +138,13 @@ std::vector<std::string> MaterialImporter::ScanDependencies(const ImportRequest 
     } catch (...) {
         throw std::runtime_error("MaterialImporter failed to parse '" + request.sourcePath + "'");
     }
+    try {
+        material_document_validation::ValidateMaterialDocument(root, request.sourcePath);
+    } catch (const std::exception &e) {
+        throw std::runtime_error("MaterialImporter rejected '" + request.sourcePath + "': " + e.what());
+    }
 
-    // Shader dependencies. Material v4 stores stable GUID references while v3
-    // stored a path or shader ID string.
+    // Canonical shader references carry GUID plus stable compiler/path hints.
     auto shadersIt = root.find("shaders");
     if (shadersIt != root.end() && shadersIt->is_object()) {
         for (const auto &key : {"vertex", "fragment"}) {
@@ -147,17 +152,13 @@ std::vector<std::string> MaterialImporter::ScanDependencies(const ImportRequest 
             if (it == shadersIt->end())
                 continue;
             std::string depGuid;
-            if (it->is_object()) {
-                const auto guidIt = it->find("guid");
-                if (guidIt != it->end() && guidIt->is_string())
-                    depGuid = guidIt->get<std::string>();
-                if (depGuid.empty()) {
-                    const auto pathIt = it->find("path_hint");
-                    if (pathIt != it->end() && pathIt->is_string())
-                        depGuid = request.resolveAssetGuid(pathIt->get<std::string>());
-                }
-            } else if (it->is_string()) {
-                depGuid = request.resolveAssetGuid(it->get<std::string>());
+            const auto guidIt = it->find("guid");
+            if (guidIt != it->end() && guidIt->is_string())
+                depGuid = guidIt->get<std::string>();
+            if (depGuid.empty()) {
+                const auto pathIt = it->find("path_hint");
+                if (pathIt != it->end() && pathIt->is_string())
+                    depGuid = request.resolveAssetGuid(pathIt->get<std::string>());
             }
             if (!depGuid.empty())
                 deps.insert(depGuid);

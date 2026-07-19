@@ -1,4 +1,4 @@
-"""ParticleGraph runtime component with legacy VFX asset compatibility."""
+"""ParticleGraph runtime component."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from typing import Optional
 
 import numpy as np
 
-from Infernux.core.asset_ref import ParticleGraphRef, VfxSystemRef
-from Infernux.core.vfx_system import VfxSystem
+from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.debug import Debug
 from Infernux.particle import (
     ExecutionTarget,
@@ -28,8 +27,6 @@ from Infernux.particle import (
     decode_gpu_particle_spirv,
     decode_particle_runtime_metadata,
 )
-from Infernux.vfx import CpuParticleRuntime, VfxCompileError, VfxGraphCompiler
-
 from .component import InxComponent
 from .decorators import add_component_menu, disallow_multiple
 from .serialized_field import get_raw_field_value, serialized_field
@@ -43,13 +40,10 @@ class ParticleSystem(InxComponent):
         asset_type="ParticleGraph",
         tooltip="ParticleGraph or ParticleScript asset",
     )
-    # Kept only so scenes authored before ParticleGraph remain loadable.
-    system: VfxSystemRef = serialized_field(default=None, asset_type="VfxSystem", hidden=True)
     simulation_target: ExecutionTarget = serialized_field(default=ExecutionTarget.AUTO)
     simulation_speed: float = serialized_field(default=1.0, range=(0.0, 10.0))
     play_on_awake: bool = serialized_field(default=True)
 
-    _runtime: Optional[CpuParticleRuntime] = None
     _runtimes: list[NumpyParticleEmitterRuntime]
     _cpu_emitter_indices: list[int]
     _gpu_controllers: list[GpuParticleEmitterController]
@@ -69,21 +63,7 @@ class ParticleSystem(InxComponent):
     _batch_id: int = 0
     _submitted_batch_ids: set[int]
     _playing: bool = False
-    _legacy_emitter_index: int = 0
-
-    @property
-    def emitter_index(self) -> int:
-        """Legacy VfxSystem selector; ParticleGraph always owns all emitters."""
-        return int(getattr(self, "_legacy_emitter_index", 0))
-
-    @emitter_index.setter
-    def emitter_index(self, value: int) -> None:
-        if type(value) is not int or value < 0:
-            raise ValueError("legacy emitter_index must be a non-negative integer")
-        self._legacy_emitter_index = value
-
     def awake(self):
-        self._runtime = None
         self._runtimes = []
         self._cpu_emitter_indices = []
         self._gpu_controllers = []
@@ -105,34 +85,6 @@ class ParticleSystem(InxComponent):
         if self._batch_id == 0:
             self._batch_id = int(self.component_id) or 1
         self._playing = bool(self.play_on_awake)
-
-    def _serialize_fields_document(self) -> dict:
-        document = super()._serialize_fields_document()
-        graph_ref = get_raw_field_value(self, "graph")
-        legacy_ref = get_raw_field_value(self, "system")
-        has_graph = isinstance(graph_ref, ParticleGraphAsset) or bool(graph_ref) or bool(
-            getattr(graph_ref, "path_hint", "")
-        )
-        has_legacy = isinstance(legacy_ref, VfxSystem) or bool(legacy_ref) or bool(
-            getattr(legacy_ref, "path_hint", "")
-        )
-        if not has_graph and has_legacy:
-            document["emitter_index"] = self.emitter_index
-        return document
-
-    def _deserialize_fields_document(
-        self, data: dict, *, _skip_on_after_deserialize: bool = False
-    ) -> None:
-        if not isinstance(data, dict):
-            raise TypeError("Python component fields document must be an object")
-        legacy_index = data.get("emitter_index", 0)
-        if type(legacy_index) is not int or legacy_index < 0:
-            raise ValueError("legacy emitter_index must be a non-negative integer")
-        super()._deserialize_fields_document(
-            data,
-            _skip_on_after_deserialize=_skip_on_after_deserialize,
-        )
-        self._legacy_emitter_index = legacy_index
 
     def start(self):
         if not self._has_runtime():
@@ -185,10 +137,7 @@ class ParticleSystem(InxComponent):
             for runtime in getattr(self, "_gpu_controllers", ()):
                 runtime.reset(playing=False)
             self._reset_gpu_emitters()
-            if self._runtime is not None:
-                self._runtime.reset()
-                self._remove_native_batch()
-            return bool(self._runtimes or self._gpu_controllers or self._runtime)
+            return bool(self._runtimes or self._gpu_controllers)
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
@@ -210,9 +159,7 @@ class ParticleSystem(InxComponent):
             for runtime in getattr(self, "_gpu_controllers", ()):
                 runtime.reset(playing=True)
             self._reset_gpu_emitters()
-            if self._runtime is not None:
-                self._runtime.reset()
-            return bool(self._runtimes or self._gpu_controllers or self._runtime)
+            return bool(self._runtimes or self._gpu_controllers)
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
@@ -264,8 +211,6 @@ class ParticleSystem(InxComponent):
             self._update_gpu_particle_graph(scaled_delta_time)
         if self._runtimes:
             self._update_particle_graph(scaled_delta_time)
-        elif self._playing and self._runtime is not None:
-            self._update_legacy_vfx(scaled_delta_time)
 
     def on_disable(self):
         self._remove_native_batch()
@@ -291,7 +236,7 @@ class ParticleSystem(InxComponent):
             )
         ):
             return self._compile_particle_graph(graph_ref)
-        return self._compile_legacy_vfx()
+        return False
 
     def _compile_particle_graph(self, graph_ref: ParticleGraphRef) -> bool:
         try:
@@ -412,7 +357,6 @@ class ParticleSystem(InxComponent):
             return False
 
         self._remove_cpu_batches()
-        self._runtime = None
         self._particle_program = program
         self._particle_kernel = kernel
         self._particle_gpu_layouts = (
@@ -433,35 +377,6 @@ class ParticleSystem(InxComponent):
         self._artifact_revision = revision
         self._artifact_source_key = source_key
         self._emitter_to_world_cache = None
-        return True
-
-    def _compile_legacy_vfx(self) -> bool:
-        system = self.system
-        if system is None or not isinstance(system, VfxSystem):
-            return False
-        index = int(self.emitter_index)
-        if index < 0 or index >= len(system.emitters):
-            Debug.log_error(f"[ParticleSystem] Emitter index {index} is out of range")
-            return False
-        emitter = system.emitters[index]
-        try:
-            artifact = VfxGraphCompiler().compile(emitter)
-        except VfxCompileError as exc:
-            Debug.log_error(f"[ParticleSystem] VFX compile failed: {exc}")
-            return False
-        self._remove_gpu_emitters()
-        self._remove_cpu_batches()
-        self._runtime = CpuParticleRuntime(artifact)
-        self._runtimes = []
-        self._cpu_emitter_indices = []
-        self._particle_program = None
-        self._particle_kernel = None
-        self._particle_gpu_layouts = ()
-        self._particle_metadata = None
-        self._material_guid = emitter.renderer.material
-        self._emitter_runtime_targets = ()
-        self._emitter_reload_compatibility = ()
-        self._runtime_target = ExecutionTarget.CPU
         return True
 
     def _select_runtime_targets(self, metadata, artifact) -> tuple[ExecutionTarget, ...]:
@@ -691,22 +606,6 @@ class ParticleSystem(InxComponent):
                 )
                 self._submitted_batch_ids.add(batch_id)
 
-    def _update_legacy_vfx(self, delta_time: float) -> None:
-        instances = self._runtime.tick(delta_time)
-        native = self._native_engine()
-        if native is None:
-            return
-        position = self.transform.position
-        native.submit_particle_instances(
-            self._batch_id,
-            instances,
-            self._material_guid,
-            float(position.x),
-            float(position.y),
-            float(position.z),
-        )
-        self._submitted_batch_ids.add(self._batch_id)
-
     def _reload_published_artifact_if_needed(self) -> None:
         if not self._artifact_source_key:
             return
@@ -740,7 +639,7 @@ class ParticleSystem(InxComponent):
     def _has_runtime(self) -> bool:
         return bool(
             getattr(self, "_runtimes", ()) or getattr(self, "_gpu_controllers", ())
-        ) or self._runtime is not None
+        )
 
     def _emitter_matrix(self) -> np.ndarray:
         flat = self.transform.local_to_world_matrix()
@@ -1014,15 +913,12 @@ class ParticleSystem(InxComponent):
     def _remove_cpu_batches(self) -> None:
         native = self._native_engine()
         batch_ids = set(getattr(self, "_submitted_batch_ids", set()))
-        if self._batch_id:
-            batch_ids.add(self._batch_id)
         if native is not None:
             for batch_id in batch_ids:
                 native.remove_particle_batch(batch_id)
         self._submitted_batch_ids = set()
 
     def _clear_runtime_state(self) -> None:
-        self._runtime = None
         self._runtimes = []
         self._cpu_emitter_indices = []
         self._gpu_controllers = []

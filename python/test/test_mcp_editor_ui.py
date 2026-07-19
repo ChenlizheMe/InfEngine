@@ -163,7 +163,7 @@ def test_editor_ui_snapshot_explains_native_window_occlusion(tmp_path, monkeypat
             "window": "Timeline Editor",
             "window_id": "animtimeline_editor",
             "occluded_by_window": "VFX Graph Editor",
-            "occluded_by_window_id": "vfx_graph_editor",
+            "occluded_by_window_id": "particle_graph_editor",
             "item_id": 101,
             "rect": (299.0, 92.0, 38.0, 21.0),
             "enabled": False,
@@ -182,7 +182,7 @@ def test_editor_ui_snapshot_explains_native_window_occlusion(tmp_path, monkeypat
     assert response["ok"] is True
     target = response["data"]["targets"][0]
     assert target["occluded_by_window"] == "VFX Graph Editor"
-    assert target["occluded_by_window_id"] == "vfx_graph_editor"
+    assert target["occluded_by_window_id"] == "particle_graph_editor"
     assert target["actions"] == []
 
 
@@ -414,7 +414,7 @@ def test_editor_ui_wait_for_window_focus_accepts_a_focused_child_window(tmp_path
                 "frame": 42,
                 "snapshot_id": "42",
                 "focused_window": "VFX Graph Editor",
-                "focused_window_id": "vfx_graph_editor",
+                "focused_window_id": "particle_graph_editor",
             },
             {
                 "capture_enabled": True,
