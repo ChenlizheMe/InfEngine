@@ -984,21 +984,32 @@ static void DownsampleNearestRgba(const std::vector<unsigned char> &src, int src
     }
 }
 
-static void ApplySrgbPreviewInPlace(std::vector<unsigned char> &pixels)
+static void ApplyLinearToSrgbPreviewInPlace(std::vector<unsigned char> &pixels)
 {
     if (pixels.empty())
         return;
 
     uint8_t lut[256];
     for (int i = 0; i < 256; ++i) {
-        const float v = std::pow(static_cast<float>(i) / 255.0f, 1.0f / 2.2f);
-        lut[i] = static_cast<uint8_t>(std::clamp(static_cast<int>(v * 255.0f + 0.5f), 0, 255));
+        const float linear = static_cast<float>(i) / 255.0f;
+        const float encoded = linear <= 0.0031308f ? linear * 12.92f : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+        lut[i] = static_cast<uint8_t>(std::clamp(static_cast<int>(encoded * 255.0f + 0.5f), 0, 255));
     }
 
     for (size_t i = 0; i + 3 < pixels.size(); i += 4) {
         pixels[i + 0] = lut[pixels[i + 0]];
         pixels[i + 1] = lut[pixels[i + 1]];
         pixels[i + 2] = lut[pixels[i + 2]];
+    }
+}
+
+static void ApplyTextureFormatPreviewInPlace(std::vector<unsigned char> &pixels, const std::string &format)
+{
+    if (format != "rgba4444")
+        return;
+    for (unsigned char &value : pixels) {
+        const unsigned int nibble = (static_cast<unsigned int>(value) + 8U) / 17U;
+        value = static_cast<unsigned char>((std::min)(15U, nibble) * 17U);
     }
 }
 
@@ -1756,7 +1767,7 @@ std::vector<Infernux::PreviewTaskSnapshot> Infernux::GetPreviewTaskSnapshots() c
 uint64_t Infernux::GetTexturePreviewTextureId(const std::string &resourceKey) const
 {
     std::lock_guard<std::mutex> lock(m_previewResultMutex);
-    auto it = m_texturePreviewStates.find(resourceKey);
+    auto it = m_texturePreviewStates.find(CanonicalizePreviewKey(resourceKey));
     if (it == m_texturePreviewStates.end())
         return 0;
     return LiveImGuiTextureId(m_renderer.get(), it->second.textureName);
@@ -1765,7 +1776,7 @@ uint64_t Infernux::GetTexturePreviewTextureId(const std::string &resourceKey) co
 std::pair<int, int> Infernux::GetTexturePreviewSize(const std::string &resourceKey) const
 {
     std::lock_guard<std::mutex> lock(m_previewResultMutex);
-    auto it = m_texturePreviewStates.find(resourceKey);
+    auto it = m_texturePreviewStates.find(CanonicalizePreviewKey(resourceKey));
     if (it == m_texturePreviewStates.end())
         return {0, 0};
     return {it->second.readyWidth, it->second.readyHeight};
@@ -1793,27 +1804,43 @@ void Infernux::InvalidateTexturePreviewTask(const std::string &resourceKey)
     if (resourceKey.empty())
         return;
 
-    // Bump generation so next query re-renders.  Keep old textureId for
-    // stale-return anti-flicker.  Reset content stamp so next call re-evaluates.
-    std::lock_guard<std::mutex> lock(m_previewResultMutex);
-    auto it = m_texturePreviewStates.find(resourceKey);
-    if (it != m_texturePreviewStates.end()) {
-        it->second.generation++;
-        it->second.lastContentStamp = 0;
-        it->second.inFlight = false;
+    const std::string key = CanonicalizePreviewKey(resourceKey);
+    std::string releasedTextureName;
+    {
+        std::lock_guard<std::mutex> lock(m_previewResultMutex);
+        auto it = m_texturePreviewStates.find(key);
+        if (it == m_texturePreviewStates.end())
+            return;
+
+        // Inspector generations are transient. Dropping them makes ProjectPanel
+        // fall back to the imported asset after Apply, Revert, or selection changes.
+        if (key.compare(0, 8, "texedit|") == 0) {
+            releasedTextureName = std::move(it->second.textureName);
+            m_texturePreviewStates.erase(it);
+        } else {
+            // Keep the last imported preview visible while its replacement is prepared.
+            it->second.generation++;
+            it->second.lastContentStamp = 0;
+            it->second.inFlight = false;
+        }
     }
+    if (!releasedTextureName.empty() && m_renderer)
+        m_renderer->RemoveImGuiTexture(releasedTextureName);
 }
 
 std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey,
                                                                        const std::string &textureFilePath,
                                                                        uint64_t contentStampHint, bool nearest,
-                                                                       bool srgb, bool pump)
+                                                                       bool srgb, int maxSize,
+                                                                       const std::string &textureFormat, bool pump)
 {
     if (resourceKey.empty() || textureFilePath.empty())
         return {0, 0, 0};
 
     if (pump)
         PumpPreviewTasks();
+
+    const std::string key = CanonicalizePreviewKey(resourceKey);
 
     bool shouldEnqueue = false;
     TexturePreviewRequest req;
@@ -1822,7 +1849,7 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
 
     {
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
-        auto &state = m_texturePreviewStates[resourceKey];
+        auto &state = m_texturePreviewStates[key];
         if (state.textureName.empty())
             state.textureName = BuildTexturePreviewTextureName(resourceKey);
 
@@ -1832,12 +1859,16 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
             state.generation++;
         }
 
-        // Also bump generation if filter/srgb settings changed.
-        if (state.textureId != 0 && (nearest != state.nearest || srgb != state.srgb)) {
+        const int sanitizedMaxSize = std::clamp(maxSize, 1, 65'536);
+        // Also bump generation if a caller omitted these settings from its content stamp.
+        if (state.textureId != 0 && (nearest != state.nearest || srgb != state.srgb ||
+                                     sanitizedMaxSize != state.maxSize || textureFormat != state.textureFormat)) {
             state.generation++;
         }
         state.nearest = nearest;
         state.srgb = srgb;
+        state.maxSize = sanitizedMaxSize;
+        state.textureFormat = textureFormat;
 
         state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
         texId = state.textureId;
@@ -1853,7 +1884,8 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
         // Schedule render if not already in flight.
         if (!state.inFlight && state.readyGeneration < state.generation) {
             state.inFlight = true;
-            req = TexturePreviewRequest{resourceKey, textureFilePath, state.generation, nearest, srgb};
+            req = TexturePreviewRequest{key,  textureFilePath,  state.generation, nearest,
+                                        srgb, sanitizedMaxSize, textureFormat};
             shouldEnqueue = true;
         }
     }
@@ -1876,16 +1908,18 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
                     int outH = 0;
                     const bool spriteEditPreview =
                         !req.resourceKey.empty() && req.resourceKey.compare(0, 11, "spriteedit|") == 0;
+                    const int configuredMaxDim = std::clamp(req.maxSize, 1, kDefaultPreviewResolution);
                     const int maxDim =
                         spriteEditPreview
                             ? std::max(texData.width, texData.height)
                             : ((!req.resourceKey.empty() && req.resourceKey.compare(0, 9, "compicon|") == 0)
-                                   ? kComponentIconPreviewMaxDim
-                                   : kDefaultPreviewResolution);
+                                   ? (std::min)(kComponentIconPreviewMaxDim, configuredMaxDim)
+                                   : configuredMaxDim);
                     DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
                     if (!sampled.empty() && outW > 0 && outH > 0) {
-                        if (req.srgb)
-                            ApplySrgbPreviewInPlace(sampled);
+                        if (!req.srgb)
+                            ApplyLinearToSrgbPreviewInPlace(sampled);
+                        ApplyTextureFormatPreviewInPlace(sampled, req.textureFormat);
                         completed.width = outW;
                         completed.height = outH;
                         completed.success = true;

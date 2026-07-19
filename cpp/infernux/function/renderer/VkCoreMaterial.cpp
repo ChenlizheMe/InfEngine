@@ -81,6 +81,12 @@ VkFormat ToVulkanTextureFormat(TextureFormat format)
         return VK_FORMAT_BC7_UNORM_BLOCK;
     case TextureFormat::BC7Srgb:
         return VK_FORMAT_BC7_SRGB_BLOCK;
+    case TextureFormat::Rgba4UNormPack16:
+        return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
+    case TextureFormat::Rgba16UNorm:
+        return VK_FORMAT_R16G16B16A16_UNORM;
+    case TextureFormat::Rgba16Float:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
     }
     throw std::invalid_argument("TextureResolver received an unsupported concrete texture format");
 }

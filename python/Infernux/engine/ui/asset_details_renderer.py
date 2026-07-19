@@ -31,6 +31,7 @@ from Infernux.core.asset_types import (
     SpriteFrame,
     TextureCompression,
     TextureCompressionQuality,
+    TextureFormat,
     TextureType,
     TextureImportSettings,
     WrapMode,
@@ -226,6 +227,14 @@ def _ensure_categories():
                      [("asset.wrap_repeat", WrapMode.REPEAT),
                       ("asset.wrap_clamp", WrapMode.CLAMP),
                       ("asset.wrap_mirror", WrapMode.MIRROR)]),
+            FieldDef("generate_mipmaps", "asset.generate_mipmaps", WidgetType.CHECKBOX),
+            FieldDef("format", "asset.texture_format", WidgetType.COMBO,
+                     [("asset.format_auto", TextureFormat.AUTO),
+                      ("RGBA8 (32-bit)", TextureFormat.RGBA8),
+                      ("RGBA4444 (16-bit)", TextureFormat.RGBA4444),
+                      ("RGBA16 UNorm (64-bit)", TextureFormat.RGBA16_UNORM),
+                      ("RGBA16 Float (64-bit)", TextureFormat.RGBA16_FLOAT),
+                      ("RGBA32 Float (128-bit)", TextureFormat.RGBA32_FLOAT)]),
             FieldDef("compression", "asset.texture_compression", WidgetType.COMBO,
                      [("asset.compression_auto", TextureCompression.AUTO),
                       ("asset.compression_none", TextureCompression.NONE),
@@ -1048,7 +1057,8 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
 
         native.pump_preview_tasks()
         tex_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
-            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+            resource_key, norm_path, int(stamp), nearest=bool(use_nearest),
+            srgb=bool(use_srgb), pump=False)
         tex_id = int(tex_id)
         tex_w = int(tex_w)
         tex_h = int(tex_h)
@@ -1490,6 +1500,9 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
 
 def invalidate():
     """Reset all inspector state (called on selection change)."""
+    if _state.category == "texture" and _state.file_path:
+        from .asset_resource_preview import invalidate_live_texture_preview
+        invalidate_live_texture_preview(_state.file_path)
     _state.reset()
     _sprite_state.reset()
 
@@ -1503,6 +1516,9 @@ def invalidate_asset(path: str):
     if not _state.file_path or not path:
         return
     if os.path.normpath(_state.file_path) == os.path.normpath(path):
+        if _state.category == "texture":
+            from .asset_resource_preview import invalidate_live_texture_preview
+            invalidate_live_texture_preview(_state.file_path)
         _state.reset()
 
 
@@ -1612,6 +1628,10 @@ def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                     # Only sync derived fields when texture_type itself changes
                     if fdef.key == "texture_type" and hasattr(state.settings, '_sync_derived_fields'):
                         state.settings._sync_derived_fields()
+                    elif fdef.key == "format" and new_idx >= 0 and values[new_idx] != TextureFormat.AUTO:
+                        state.settings.compression = TextureCompression.NONE
+                    elif fdef.key == "compression" and new_idx >= 0 and values[new_idx] != TextureCompression.NONE:
+                        state.settings.format = TextureFormat.AUTO
 
             elif fdef.field_type == WidgetType.FLOAT:
                 field_label(ctx, t(fdef.label), lw)
@@ -1638,6 +1658,9 @@ def _on_apply():
 
 
 def _on_revert():
+    if _state.category == "texture" and _state.file_path:
+        from .asset_resource_preview import invalidate_live_texture_preview
+        invalidate_live_texture_preview(_state.file_path)
     _state.file_path = ""  # force full reload next frame
 
 

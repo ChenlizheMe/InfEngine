@@ -1202,9 +1202,16 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     if (filePath.empty() || !m_engine)
         return 0;
 
-    // Read import settings from .meta for nearest/srgb.
+    const std::string liveResourceKey = std::string("texedit|") + filePath;
+    const uint64_t liveTexture = m_engine->GetTexturePreviewTextureId(liveResourceKey);
+    if (liveTexture != 0)
+        return liveTexture;
+
+    // Read the complete preview-affecting import contract from .meta.
     bool nearest = false;
     bool srgb = false;
+    int maxSize = 2048;
+    std::string textureFormat = "auto";
     if (m_assetDatabase) {
         const auto meta = m_assetDatabase->GetMetaByPath(filePath);
         if (meta) {
@@ -1214,6 +1221,10 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
             }
             if (meta->HasKey("srgb"))
                 srgb = meta->GetDataAs<bool>("srgb");
+            if (meta->HasKey("max_size"))
+                maxSize = meta->GetDataAs<int>("max_size");
+            if (meta->HasKey("texture_format"))
+                textureFormat = meta->GetDataAs<std::string>("texture_format");
         }
     }
 
@@ -1230,7 +1241,8 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
 
     const std::string resourceKey = std::string("tex|") + filePath;
     // pump=false: PreRender already pumped once this frame.
-    auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb, false);
+    auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb,
+                                                                 maxSize, textureFormat, false);
     return texId;
 }
 
@@ -2625,7 +2637,10 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                     srcH = 256;
                 } else if (item.type == FileItem::File) {
                     if (IsImageExt(item.ext) && m_engine) {
-                        const std::string resourceKey = std::string("tex|") + item.path;
+                        const std::string liveResourceKey = std::string("texedit|") + item.path;
+                        const std::string resourceKey = m_engine->GetTexturePreviewTextureId(liveResourceKey) != 0
+                                                            ? liveResourceKey
+                                                            : std::string("tex|") + item.path;
                         auto [readyW, readyH] = m_engine->GetTexturePreviewSize(resourceKey);
                         srcW = readyW;
                         srcH = readyH;

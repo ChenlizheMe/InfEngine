@@ -56,7 +56,7 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
         {".psd", "PSD"}, {".hdr", "HDR"},  {".pic", "PIC"},   {".pnm", "PNM"}, {".pgm", "PGM"}, {".ppm", "PPM"},
     };
     auto fmtIt = formatMap.find(extension);
-    metaData.AddMetadata("texture_format", fmtIt != formatMap.end() ? fmtIt->second : std::string("Unknown"));
+    metaData.AddMetadata("source_container", fmtIt != formatMap.end() ? fmtIt->second : std::string("Unknown"));
     metaData.AddMetadata("is_binary", true);
 
     metaData.AddMetadata("file_size", contentSize);
@@ -94,8 +94,7 @@ RuntimeAssetPayload TextureLoader::Load(const std::string &filePath, const std::
             artifactFile.read(bytes.data(), artifactSize);
             if (!artifactFile)
                 throw std::runtime_error("failed to read texture artifact");
-            const bool legacySrgb = metadata->HasKey("srgb") ? metadata->GetDataAs<bool>("srgb") : true;
-            cpuData = TextureArtifact::Deserialize(bytes, sourceHash, legacySrgb);
+            cpuData = TextureArtifact::Deserialize(bytes, sourceHash);
         } catch (const std::exception &exception) {
             INXLOG_WARN("TextureLoader: rejected derived artifact for '", filePath, "': ", exception.what(),
                         "; falling back to source decode");

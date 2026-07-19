@@ -73,6 +73,31 @@ class TextureCompressionQuality(IntEnum):
         return ("fast", "normal", "high")[self.value]
 
 
+class TextureFormat(IntEnum):
+    AUTO = 0
+    RGBA8 = 1
+    RGBA4444 = 2
+    RGBA16_UNORM = 3
+    RGBA16_FLOAT = 4
+    RGBA32_FLOAT = 5
+
+    @classmethod
+    def from_string(cls, value: str) -> "TextureFormat":
+        return {
+            "auto": cls.AUTO,
+            "rgba8": cls.RGBA8,
+            "rgba4444": cls.RGBA4444,
+            "rgba16_unorm": cls.RGBA16_UNORM,
+            "rgba16_float": cls.RGBA16_FLOAT,
+            "rgba32_float": cls.RGBA32_FLOAT,
+        }.get(str(value).lower(), cls.AUTO)
+
+    def to_string(self) -> str:
+        return (
+            "auto", "rgba8", "rgba4444", "rgba16_unorm", "rgba16_float", "rgba32_float",
+        )[self.value]
+
+
 class WrapMode(IntEnum):
     REPEAT = 0
     CLAMP = 1
@@ -151,6 +176,7 @@ class TextureImportSettings:
     srgb: bool = True
     max_size: int = 2048
     aniso_level: int = 1
+    format: TextureFormat = TextureFormat.AUTO
     compression: TextureCompression = TextureCompression.AUTO
     compression_quality: TextureCompressionQuality = TextureCompressionQuality.NORMAL
     sprite_frames: List[SpriteFrame] = field(default_factory=list)
@@ -159,13 +185,16 @@ class TextureImportSettings:
         """Re-derive settings from texture_type. Call after mutating texture_type.
 
         NORMAL_MAP forces sRGB off.
-        SPRITE forces point filtering, clamp wrapping, no mipmaps.
+        UI and SPRITE default to clamp wrapping with no mipmaps; sprites also use point filtering.
         Other modes leave the current values unchanged.
         """
         if self.texture_type in {TextureType.NORMAL_MAP, TextureType.DATA}:
             self.srgb = False
-        elif self.texture_type == TextureType.SPRITE:
-            self.filter_mode = FilterMode.POINT
+        elif self.texture_type in {TextureType.UI, TextureType.SPRITE}:
+            if self.texture_type == TextureType.SPRITE:
+                self.filter_mode = FilterMode.POINT
+            else:
+                self.filter_mode = FilterMode.BILINEAR
             self.wrap_mode = WrapMode.CLAMP
             self.generate_mipmaps = False
             self.srgb = True
@@ -181,6 +210,7 @@ class TextureImportSettings:
             "srgb": self.srgb,
             "max_size": self.max_size,
             "aniso_level": self.aniso_level,
+            "texture_format": self.format.to_string(),
             "texture_compression": self.compression.to_string(),
             "texture_compression_quality": self.compression_quality.to_string(),
         }
@@ -208,20 +238,24 @@ class TextureImportSettings:
             except Exception:
                 raw_frames = []
         frames = [SpriteFrame.from_dict(f) for f in raw_frames] if raw_frames else []
-        return cls(
+        result = cls(
             texture_type=tt,
             wrap_mode=WrapMode.from_string(d.get("wrap_mode", "repeat")),
             filter_mode=FilterMode.from_string(d.get("filter_mode", "linear")),
             generate_mipmaps=bool(d.get("generate_mipmaps", True)),
-            srgb=bool(d.get("srgb", tt != TextureType.NORMAL_MAP)),
+            srgb=bool(d.get("srgb", tt not in {TextureType.NORMAL_MAP, TextureType.DATA})),
             max_size=int(d.get("max_size", 2048)),
             aniso_level=int(d.get("aniso_level", 1)),
+            format=TextureFormat.from_string(d.get("texture_format", "auto")),
             compression=TextureCompression.from_string(d.get("texture_compression", "auto")),
             compression_quality=TextureCompressionQuality.from_string(
                 d.get("texture_compression_quality", "normal")
             ),
             sprite_frames=frames,
         )
+        if result.format != TextureFormat.AUTO:
+            result.compression = TextureCompression.NONE
+        return result
 
     def copy(self) -> "TextureImportSettings":
         """Return a deep copy (sprite_frames are duplicated)."""
@@ -233,6 +267,7 @@ class TextureImportSettings:
             srgb=self.srgb,
             max_size=self.max_size,
             aniso_level=self.aniso_level,
+            format=self.format,
             compression=self.compression,
             compression_quality=self.compression_quality,
             sprite_frames=[SpriteFrame(**f.__dict__) for f in self.sprite_frames],
@@ -248,6 +283,7 @@ class TextureImportSettings:
                 and self.srgb == other.srgb
                 and self.max_size == other.max_size
                 and self.aniso_level == other.aniso_level
+                and self.format == other.format
                 and self.compression == other.compression
                 and self.compression_quality == other.compression_quality
                 and self.sprite_frames == other.sprite_frames)

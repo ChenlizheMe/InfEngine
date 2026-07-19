@@ -1,5 +1,8 @@
 #include <function/resources/InxTexture/TextureProcessor.h>
 
+#include <glm/gtc/packing.hpp>
+
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -47,6 +50,44 @@ int main()
         assert(processed->mipLevels.size() == 2);
         const auto &mip = processed->mipLevels[1];
         assert(processed->bytes[mip.byteOffset] == 85); // Odd dimensions must include the final source texel.
+    }
+
+    {
+        auto texture =
+            MakeRgba8(1, 1, infernux::TextureSemantic::Data, infernux::TextureFormat::Rgba8UNorm, {255, 128, 0, 17});
+        const auto processed = infernux::TextureProcessor::Process(
+            std::move(texture), {false, infernux::TextureCompression::None, infernux::TextureCompressionQuality::Normal,
+                                 infernux::TextureTargetFormat::Rgba4UNorm});
+        assert(processed->format == infernux::TextureFormat::Rgba4UNormPack16);
+        assert(processed->bytes.size() == 2);
+        uint16_t packed = 0;
+        std::memcpy(&packed, processed->bytes.data(), sizeof(packed));
+        assert(packed == 0xF801U);
+    }
+
+    {
+        auto texture =
+            MakeRgba8(1, 1, infernux::TextureSemantic::Data, infernux::TextureFormat::Rgba8UNorm, {255, 128, 0, 255});
+        const auto processed = infernux::TextureProcessor::Process(
+            std::move(texture), {false, infernux::TextureCompression::None, infernux::TextureCompressionQuality::Normal,
+                                 infernux::TextureTargetFormat::Rgba16UNorm});
+        assert(processed->format == infernux::TextureFormat::Rgba16UNorm);
+        assert(processed->bytes.size() == 8);
+        std::array<uint16_t, 4> value{};
+        std::memcpy(value.data(), processed->bytes.data(), sizeof(value));
+        assert(value[0] == 65535U && value[1] >= 32895U && value[1] <= 32897U && value[2] == 0U && value[3] == 65535U);
+    }
+
+    {
+        auto texture =
+            MakeRgba8(1, 1, infernux::TextureSemantic::Data, infernux::TextureFormat::Rgba8UNorm, {64, 128, 192, 255});
+        const auto processed = infernux::TextureProcessor::Process(
+            std::move(texture), {false, infernux::TextureCompression::None, infernux::TextureCompressionQuality::Normal,
+                                 infernux::TextureTargetFormat::Rgba16Float});
+        assert(processed->format == infernux::TextureFormat::Rgba16Float);
+        std::array<uint16_t, 4> value{};
+        std::memcpy(value.data(), processed->bytes.data(), sizeof(value));
+        assert(std::abs(glm::unpackHalf1x16(value[1]) - 128.0f / 255.0f) < 1.0e-3f);
     }
 
     {

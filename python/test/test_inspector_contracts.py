@@ -1,6 +1,7 @@
 """Stable semantic contracts for scene and asset Inspector surfaces."""
 
 import json
+import os
 from types import SimpleNamespace
 
 from Infernux.core.asset_types import TextureImportSettings, TextureType
@@ -593,6 +594,50 @@ def test_initial_material_preview_uses_the_in_memory_document(monkeypatch, tmp_p
     })]
 
 
+def test_texture_preview_uses_live_settings_generation(tmp_path):
+    from Infernux.engine.ui import asset_resource_preview
+
+    path = tmp_path / "Live.png"
+    path.write_bytes(b"preview-source")
+
+    class _Native:
+        def __init__(self):
+            self.calls = []
+
+        def query_or_schedule_texture_preview(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return 7, 64, 64
+
+    native = _Native()
+    settings = TextureImportSettings()
+    asset_resource_preview._try_get_cpp_texture_preview(native, str(path), settings)
+    settings.generate_mipmaps = False
+    asset_resource_preview._try_get_cpp_texture_preview(native, str(path), settings)
+
+    assert all(call[0][0].startswith("texedit|") for call in native.calls)
+    assert native.calls[0][0][2] != native.calls[1][0][2]
+    assert native.calls[0][1]["max_size"] == 2048
+    assert native.calls[0][1]["texture_format"] == "auto"
+
+
+def test_texture_live_preview_can_be_released(monkeypatch, tmp_path):
+    from Infernux.engine.ui import asset_resource_preview
+
+    class _Native:
+        def __init__(self):
+            self.invalidated = []
+
+        def invalidate_texture_preview_task(self, key):
+            self.invalidated.append(key)
+
+    native = _Native()
+    monkeypatch.setattr(asset_resource_preview, "_resolve_native_engine", lambda _panel: native)
+    path = tmp_path / "Released.png"
+    asset_resource_preview.invalidate_live_texture_preview(str(path))
+
+    assert native.invalidated == [f"texedit|{os.path.normpath(path)}"]
+
+
 def test_material_undo_snapshot_is_decoded_only_when_edit_occurs():
     import Infernux.engine.ui.inspector_material as module
 
@@ -804,6 +849,8 @@ def test_texture_import_fields_publish_stable_semantics(monkeypatch):
         "asset.texture.import.srgb",
         "asset.texture.import.filter_mode",
         "asset.texture.import.wrap_mode",
+        "asset.texture.import.generate_mipmaps",
+        "asset.texture.import.format",
         "asset.texture.import.compression",
         "asset.texture.import.compression_quality",
         "asset.texture.import.max_size",

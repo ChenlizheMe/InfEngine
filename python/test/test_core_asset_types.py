@@ -17,6 +17,7 @@ from Infernux.core.asset_types import (
     TextureImportSettings,
     TextureCompression,
     TextureCompressionQuality,
+    TextureFormat,
     TextureType,
     WrapMode,
     _python_type_to_meta_tag,
@@ -50,6 +51,8 @@ class TestTextureCompression:
             assert TextureCompression.from_string(mode.to_string()) == mode
         for quality in TextureCompressionQuality:
             assert TextureCompressionQuality.from_string(quality.to_string()) == quality
+        for texture_format in TextureFormat:
+            assert TextureFormat.from_string(texture_format.to_string()) == texture_format
 
 
 class TestWrapMode:
@@ -101,6 +104,7 @@ class TestTextureImportSettings:
         assert s.srgb is True
         assert s.max_size == 2048
         assert s.aniso_level == 1
+        assert s.format == TextureFormat.AUTO
         assert s.compression == TextureCompression.AUTO
         assert s.compression_quality == TextureCompressionQuality.NORMAL
 
@@ -126,6 +130,14 @@ class TestTextureImportSettings:
         assert s == c
         c.max_size = 256
         assert s.max_size == 512
+
+    def test_explicit_format_disables_compression_when_loading(self):
+        settings = TextureImportSettings.from_dict({
+            "texture_format": "rgba4444",
+            "texture_compression": "bc1",
+        })
+        assert settings.format == TextureFormat.RGBA4444
+        assert settings.compression == TextureCompression.NONE
 
     def test_sync_derived_fields_normal_map(self):
         s = TextureImportSettings(srgb=True, texture_type=TextureType.NORMAL_MAP)

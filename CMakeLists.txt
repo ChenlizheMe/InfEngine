@@ -703,6 +703,7 @@ if(INFERNUX_BUILD_TESTS)
     target_include_directories(infernux_texture_processor_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external/stb
+        ${CMAKE_SOURCE_DIR}/external/glm
     )
     if(MSVC)
         target_compile_options(infernux_texture_processor_tests PRIVATE /utf-8)

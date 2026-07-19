@@ -3,6 +3,8 @@
 #define STB_DXT_IMPLEMENTATION
 #include <stb_dxt.h>
 
+#include <glm/gtc/packing.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -156,8 +158,8 @@ void GenerateMipChain(TextureCpuData &texture)
                     std::array<float, 4> value{};
                     uint32_t sampleCount = 0;
                     const auto sourceRange = [](uint32_t outputIndex, uint32_t outputSize, uint32_t inputSize) {
-                        const uint32_t begin = static_cast<uint32_t>(static_cast<uint64_t>(outputIndex) * inputSize /
-                                                                     outputSize);
+                        const uint32_t begin =
+                            static_cast<uint32_t>(static_cast<uint64_t>(outputIndex) * inputSize / outputSize);
                         const uint32_t end = static_cast<uint32_t>(
                             (static_cast<uint64_t>(outputIndex + 1U) * inputSize + outputSize - 1U) / outputSize);
                         return std::pair{begin, (std::min)(inputSize, end)};
@@ -350,6 +352,102 @@ TextureCpuData CompressTexture(const TextureCpuData &source, TextureCompression 
     }
     return result;
 }
+
+TextureFormat ResolveTargetFormat(const TextureCpuData &source, TextureTargetFormat target)
+{
+    switch (target) {
+    case TextureTargetFormat::Automatic:
+        return source.format;
+    case TextureTargetFormat::Rgba8:
+        return TextureFormatIsSrgb(source.format) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
+    case TextureTargetFormat::Rgba4UNorm:
+        return TextureFormat::Rgba4UNormPack16;
+    case TextureTargetFormat::Rgba16UNorm:
+        return TextureFormat::Rgba16UNorm;
+    case TextureTargetFormat::Rgba16Float:
+        return TextureFormat::Rgba16Float;
+    case TextureTargetFormat::Rgba32Float:
+        return TextureFormat::Rgba32Float;
+    }
+    throw std::invalid_argument("texture target format is invalid");
+}
+
+TextureCpuData ConvertTexture(const TextureCpuData &source, TextureTargetFormat target)
+{
+    if (target == TextureTargetFormat::Automatic)
+        return source;
+
+    TextureCpuData result;
+    result.dimension = source.dimension;
+    result.semantic = source.semantic;
+    result.format = ResolveTargetFormat(source, target);
+    result.bakeBasis = source.bakeBasis;
+    result.valueMin = source.valueMin;
+    result.valueMax = source.valueMax;
+
+    for (const TextureMipLevel &sourceMip : source.mipLevels) {
+        const TextureMipLevel destinationMip =
+            MakeUncompressedMip(sourceMip.width, sourceMip.height, sourceMip.depth, result.bytes.size(), result.format);
+        result.bytes.resize(static_cast<size_t>(destinationMip.byteOffset + destinationMip.byteSize));
+        result.mipLevels.push_back(destinationMip);
+
+        for (uint32_t z = 0; z < sourceMip.depth; ++z) {
+            for (uint32_t y = 0; y < sourceMip.height; ++y) {
+                for (uint32_t x = 0; x < sourceMip.width; ++x) {
+                    const auto value = ReadTexel(source, sourceMip, x, y, z);
+                    uint8_t *destination = result.bytes.data() + destinationMip.byteOffset +
+                                           static_cast<uint64_t>(z) * destinationMip.slicePitch +
+                                           static_cast<uint64_t>(y) * destinationMip.rowPitch +
+                                           static_cast<uint64_t>(x) * TextureFormatBytesPerTexel(result.format);
+                    switch (result.format) {
+                    case TextureFormat::Rgba8UNorm:
+                    case TextureFormat::Rgba8Srgb: {
+                        std::array<float, 4> encoded = value;
+                        if (TextureFormatIsSrgb(result.format)) {
+                            encoded[0] = LinearToSrgb(encoded[0]);
+                            encoded[1] = LinearToSrgb(encoded[1]);
+                            encoded[2] = LinearToSrgb(encoded[2]);
+                        }
+                        for (size_t channel = 0; channel < encoded.size(); ++channel)
+                            destination[channel] = QuantizeUNorm(encoded[channel]);
+                        break;
+                    }
+                    case TextureFormat::Rgba4UNormPack16: {
+                        const uint16_t packed =
+                            static_cast<uint16_t>(std::lround(std::clamp(value[0], 0.0f, 1.0f) * 15.0f)) << 12U |
+                            static_cast<uint16_t>(std::lround(std::clamp(value[1], 0.0f, 1.0f) * 15.0f)) << 8U |
+                            static_cast<uint16_t>(std::lround(std::clamp(value[2], 0.0f, 1.0f) * 15.0f)) << 4U |
+                            static_cast<uint16_t>(std::lround(std::clamp(value[3], 0.0f, 1.0f) * 15.0f));
+                        std::memcpy(destination, &packed, sizeof(packed));
+                        break;
+                    }
+                    case TextureFormat::Rgba16UNorm: {
+                        std::array<uint16_t, 4> encoded{};
+                        for (size_t channel = 0; channel < encoded.size(); ++channel)
+                            encoded[channel] =
+                                static_cast<uint16_t>(std::lround(std::clamp(value[channel], 0.0f, 1.0f) * 65535.0f));
+                        std::memcpy(destination, encoded.data(), sizeof(encoded));
+                        break;
+                    }
+                    case TextureFormat::Rgba16Float: {
+                        std::array<uint16_t, 4> encoded{};
+                        for (size_t channel = 0; channel < encoded.size(); ++channel)
+                            encoded[channel] = glm::packHalf1x16(value[channel]);
+                        std::memcpy(destination, encoded.data(), sizeof(encoded));
+                        break;
+                    }
+                    case TextureFormat::Rgba32Float:
+                        std::memcpy(destination, value.data(), sizeof(value));
+                        break;
+                    default:
+                        throw std::logic_error("texture target conversion produced a compressed format");
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
 } // namespace
 
 std::shared_ptr<const TextureCpuData> TextureProcessor::Process(TextureCpuData source,
@@ -362,9 +460,13 @@ std::shared_ptr<const TextureCpuData> TextureProcessor::Process(TextureCpuData s
     ComputeValueRange(source);
     if (options.generateMipmaps)
         GenerateMipChain(source);
+    if (options.targetFormat != TextureTargetFormat::Automatic && options.compression != TextureCompression::None)
+        throw std::invalid_argument("explicit texture format requires texture compression to be disabled");
     const TextureCompression compression = ResolveCompression(source, options.compression);
     if (compression != TextureCompression::None)
         source = CompressTexture(source, compression, options.quality);
+    else if (options.targetFormat != TextureTargetFormat::Automatic)
+        source = ConvertTexture(source, options.targetFormat);
     return std::make_shared<const TextureCpuData>(std::move(source));
 }
 

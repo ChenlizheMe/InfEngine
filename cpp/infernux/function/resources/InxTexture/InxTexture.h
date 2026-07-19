@@ -45,6 +45,9 @@ enum class TextureFormat : uint32_t
     BC6HUFloat = 10,
     BC7UNorm = 11,
     BC7Srgb = 12,
+    Rgba4UNormPack16 = 13,
+    Rgba16UNorm = 14,
+    Rgba16Float = 15,
 };
 
 struct TextureMipLevel
@@ -115,6 +118,11 @@ struct TextureCpuData
         return 4;
     case TextureFormat::Rgba32Float:
         return 16;
+    case TextureFormat::Rgba4UNormPack16:
+        return 2;
+    case TextureFormat::Rgba16UNorm:
+    case TextureFormat::Rgba16Float:
+        return 8;
     default:
         return 0;
     }
@@ -147,6 +155,12 @@ struct TextureCpuData
         return "bc7_unorm";
     case TextureFormat::BC7Srgb:
         return "bc7_srgb";
+    case TextureFormat::Rgba4UNormPack16:
+        return "rgba4_unorm_pack16";
+    case TextureFormat::Rgba16UNorm:
+        return "rgba16_unorm";
+    case TextureFormat::Rgba16Float:
+        return "rgba16_float";
     }
     return "unknown";
 }

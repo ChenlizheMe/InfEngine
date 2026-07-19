@@ -539,6 +539,9 @@ def test_metadata_creation_uses_the_submitted_source_bytes(engine, tmp_path: Pat
         assert texture_meta.get_int("width") == 2
         assert texture_meta.get_int("height") == 1
         assert texture_meta.get_int("channels") == 3
+        assert texture_meta.get_string("source_container") == "PPM"
+        assert texture_meta.get_string("texture_format") == "auto"
+        assert texture_meta.get_int("texture_artifact_version") == 3
     finally:
         for path in (text, texture):
             if asset_db.contains_path(str(path)):

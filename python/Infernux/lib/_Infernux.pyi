@@ -3134,6 +3134,7 @@ class Infernux:
     def query_or_schedule_texture_preview(self, resource_key: str, texture_file_path: str,
                                           content_stamp_hint: int,
                                           nearest: bool = False, srgb: bool = False,
+                                          max_size: int = 2048, texture_format: str = "auto",
                                           pump: bool = True) -> Tuple[int, int, int]: ...
     def schedule_texture_preview_from_memory(self, resource_key: str, image_data: bytes, stamp: int,
                                              nearest: bool = False) -> bool: ...

@@ -284,6 +284,7 @@ class Infernux
     std::tuple<uint64_t, int, int> QueryOrScheduleTexturePreview(const std::string &resourceKey,
                                                                  const std::string &textureFilePath,
                                                                  uint64_t contentStampHint, bool nearest, bool srgb,
+                                                                 int maxSize, const std::string &textureFormat,
                                                                  bool pump);
 
     /// @brief Schedule texture preview from in-memory data (JPEG/PNG/etc.).
@@ -420,6 +421,8 @@ class Infernux
         uint64_t generation = 0;
         bool nearest = false;
         bool srgb = false;
+        int maxSize = 256;
+        std::string textureFormat = "auto";
     };
 
     struct MeshPreviewRequest
@@ -468,6 +471,8 @@ class Infernux
         uint64_t textureId = 0;
         bool nearest = false;
         bool srgb = false;
+        int maxSize = 256;
+        std::string textureFormat = "auto";
         uint64_t pixelGeneration = 0;
         uint64_t pixelHash = 0;
         uint32_t nonTransparentPixelCount = 0;

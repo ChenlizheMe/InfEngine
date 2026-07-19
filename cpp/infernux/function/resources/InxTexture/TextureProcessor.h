@@ -24,11 +24,22 @@ enum class TextureCompressionQuality : uint32_t
     High,
 };
 
+enum class TextureTargetFormat : uint32_t
+{
+    Automatic = 0,
+    Rgba8,
+    Rgba4UNorm,
+    Rgba16UNorm,
+    Rgba16Float,
+    Rgba32Float,
+};
+
 struct TextureProcessOptions
 {
     bool generateMipmaps = true;
     TextureCompression compression = TextureCompression::Automatic;
     TextureCompressionQuality quality = TextureCompressionQuality::Normal;
+    TextureTargetFormat targetFormat = TextureTargetFormat::Automatic;
 };
 
 /// Deterministic offline processing used by texture importers. The runtime

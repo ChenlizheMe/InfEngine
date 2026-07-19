@@ -24,6 +24,7 @@ from .parallel_backend import (
 from .asset_types import (
     TextureCompression as TextureCompression,
     TextureCompressionQuality as TextureCompressionQuality,
+    TextureFormat as TextureFormat,
     TextureImportSettings as TextureImportSettings,
     TextureType as TextureType,
     WrapMode as WrapMode,
@@ -62,6 +63,7 @@ __all__ = [
     "TextureImportSettings",
     "TextureCompression",
     "TextureCompressionQuality",
+    "TextureFormat",
     "TextureType",
     "WrapMode",
     "FilterMode",

@@ -138,7 +138,7 @@ bool IsValidSemantic(TextureSemantic semantic)
 
 bool IsValidFormat(TextureFormat format)
 {
-    return format >= TextureFormat::Rgba8UNorm && format <= TextureFormat::BC7Srgb;
+    return format >= TextureFormat::Rgba8UNorm && format <= TextureFormat::Rgba16Float;
 }
 
 struct MipLayout
@@ -248,8 +248,8 @@ std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::strin
     return bytes;
 }
 
-std::shared_ptr<const TextureCpuData>
-TextureArtifact::Deserialize(std::string_view bytes, std::string_view expectedSourceContentHash, bool legacySrgb)
+std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_view bytes,
+                                                                   std::string_view expectedSourceContentHash)
 {
     if (bytes.size() < Magic.size() + sizeof(uint32_t) * 4 + sizeof(uint64_t) * 2 ||
         bytes.substr(0, Magic.size()) != Magic)
@@ -261,7 +261,7 @@ TextureArtifact::Deserialize(std::string_view bytes, std::string_view expectedSo
 
     Reader reader(bytes.substr(Magic.size(), checksumOffset - Magic.size()));
     const uint32_t formatVersion = reader.ReadU32();
-    if (formatVersion != 1 && formatVersion != FormatVersion)
+    if (formatVersion != FormatVersion)
         throw std::invalid_argument("texture artifact uses an unsupported format version");
     if (reader.ReadU32() != EndianMarker)
         throw std::invalid_argument("texture artifact has an invalid endian marker");
@@ -269,25 +269,15 @@ TextureArtifact::Deserialize(std::string_view bytes, std::string_view expectedSo
         throw std::invalid_argument("texture artifact does not match the imported source content");
 
     auto texture = std::make_shared<TextureCpuData>();
-    if (formatVersion == 1) {
-        const uint32_t legacyStorage = reader.ReadU32();
-        if (legacyStorage == 1)
-            texture->format = legacySrgb ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
-        else if (legacyStorage == 2)
-            texture->format = TextureFormat::Rgba32Float;
-        else
-            throw std::invalid_argument("texture artifact has an unsupported legacy pixel storage");
-    } else {
-        texture->dimension = static_cast<TextureDimension>(reader.ReadU32());
-        texture->semantic = static_cast<TextureSemantic>(reader.ReadU32());
-        texture->format = static_cast<TextureFormat>(reader.ReadU32());
-        for (float &value : texture->bakeBasis)
-            value = reader.ReadFloat();
-        for (float &value : texture->valueMin)
-            value = reader.ReadFloat();
-        for (float &value : texture->valueMax)
-            value = reader.ReadFloat();
-    }
+    texture->dimension = static_cast<TextureDimension>(reader.ReadU32());
+    texture->semantic = static_cast<TextureSemantic>(reader.ReadU32());
+    texture->format = static_cast<TextureFormat>(reader.ReadU32());
+    for (float &value : texture->bakeBasis)
+        value = reader.ReadFloat();
+    for (float &value : texture->valueMin)
+        value = reader.ReadFloat();
+    for (float &value : texture->valueMax)
+        value = reader.ReadFloat();
     if (!IsValidFormat(texture->format))
         throw std::invalid_argument("texture artifact has an unsupported concrete format");
     const uint32_t mipCount = reader.ReadU32();
@@ -299,18 +289,11 @@ TextureArtifact::Deserialize(std::string_view bytes, std::string_view expectedSo
         TextureMipLevel mip;
         mip.width = reader.ReadU32();
         mip.height = reader.ReadU32();
-        if (formatVersion >= 2)
-            mip.depth = reader.ReadU32();
+        mip.depth = reader.ReadU32();
         mip.byteOffset = offset;
         mip.byteSize = reader.ReadU64();
-        if (formatVersion >= 2) {
-            mip.rowPitch = reader.ReadU64();
-            mip.slicePitch = reader.ReadU64();
-        } else {
-            const MipLayout layout = ComputeMipLayout(mip.width, mip.height, 1, texture->format);
-            mip.rowPitch = layout.rowPitch;
-            mip.slicePitch = layout.slicePitch;
-        }
+        mip.rowPitch = reader.ReadU64();
+        mip.slicePitch = reader.ReadU64();
         if (mip.byteSize > MaximumPayloadBytes - offset)
             throw std::invalid_argument("texture artifact mip payload exceeds the format limit");
         offset += mip.byteSize;

@@ -1342,7 +1342,8 @@ PYBIND11_MODULE(_Infernux, m)
              py::call_guard<py::gil_scoped_release>(), "Invalidate one texture preview task/cache entry")
         .def("query_or_schedule_texture_preview", &Infernux::QueryOrScheduleTexturePreview, py::arg("resource_key"),
              py::arg("texture_file_path"), py::arg("content_stamp_hint"), py::arg("nearest") = false,
-             py::arg("srgb") = false, py::arg("pump") = true, py::call_guard<py::gil_scoped_release>(),
+             py::arg("srgb") = false, py::arg("max_size") = 2048, py::arg("texture_format") = "auto",
+             py::arg("pump") = true, py::call_guard<py::gil_scoped_release>(),
              "Combined pump + query + schedule for texture preview. Returns (tex_id, width, height). C++ manages "
              "caching via generation counterching via generation counter.")
         .def(

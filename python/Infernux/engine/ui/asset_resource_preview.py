@@ -9,6 +9,7 @@ counters.  Python just passes content hints and gets back texture IDs.
 from __future__ import annotations
 
 import os
+import zlib
 from typing import Any, Optional
 
 from Infernux.debug import Debug
@@ -65,24 +66,46 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
     if native is None:
         return (0, 0, 0)
 
-    cache_key = f"tex|{norm_path}"
+    cache_key = f"texedit|{norm_path}" if texture_settings is not None else f"tex|{norm_path}"
     nearest = False
     srgb = False
+    max_size = 2048
+    texture_format = "auto"
+    settings_stamp = 0
     if texture_settings is not None:
         filter_mode = getattr(texture_settings, "filter_mode", None)
         mode_name = getattr(filter_mode, "name", "")
         nearest = str(mode_name).upper() == "POINT"
         srgb = bool(getattr(texture_settings, "srgb", False))
+        max_size = max(1, int(getattr(texture_settings, "max_size", 2048)))
+        format_value = getattr(texture_settings, "format", None)
+        to_string = getattr(format_value, "to_string", None)
+        texture_format = str(to_string() if callable(to_string) else "auto")
+        settings_values = (
+            getattr(getattr(texture_settings, "texture_type", None), "value", 0),
+            getattr(filter_mode, "value", 0),
+            getattr(getattr(texture_settings, "wrap_mode", None), "value", 0),
+            int(bool(getattr(texture_settings, "generate_mipmaps", True))),
+            int(srgb),
+            max_size,
+            int(getattr(texture_settings, "aniso_level", 1)),
+            getattr(format_value, "value", 0),
+            getattr(getattr(texture_settings, "compression", None), "value", 0),
+            getattr(getattr(texture_settings, "compression_quality", None), "value", 0),
+        )
+        settings_stamp = zlib.crc32("|".join(str(value) for value in settings_values).encode("ascii"))
 
     # Content stamp: image mtime XOR meta mtime.
     # C++ uses this to detect changes and bump its generation counter.
     image_mtime = safe_mtime_ns(norm_path)
     meta_mtime = safe_mtime_ns(f"{norm_path}.meta")
     content_stamp = (image_mtime ^ ((meta_mtime * 2654435761) & 0xFFFFFFFFFFFFFFFF)) & 0xFFFFFFFFFFFFFFFF
+    content_stamp ^= (int(settings_stamp) << 32) | int(settings_stamp)
 
     try:
         tex_id, w, h = native.query_or_schedule_texture_preview(
-            cache_key, norm_path, int(content_stamp), bool(nearest), bool(srgb), True)
+            cache_key, norm_path, int(content_stamp), nearest=bool(nearest), srgb=bool(srgb),
+            max_size=max_size, texture_format=texture_format, pump=True)
         return (int(tex_id), int(w), int(h))
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
@@ -253,8 +276,20 @@ def invalidate_resource_preview(file_path: str) -> None:
     try:
         if ext in _IMAGE_EXTS:
             native.invalidate_texture_preview_task(f"tex|{norm}")
+            native.invalidate_texture_preview_task(f"texedit|{norm}")
         if ext in _MATERIAL_EXTS:
             native.invalidate_material_preview_task(f"mat|{norm}")
+    except Exception as exc:
+        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+
+
+def invalidate_live_texture_preview(file_path: str) -> None:
+    """Release the transient Inspector generation for one texture."""
+    native = _resolve_native_engine(None)
+    if native is None or not file_path:
+        return
+    try:
+        native.invalidate_texture_preview_task(f"texedit|{os.path.normpath(file_path)}")
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
 

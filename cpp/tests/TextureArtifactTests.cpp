@@ -41,7 +41,7 @@ void AppendU32(std::string &bytes, uint32_t value)
         bytes.push_back(static_cast<char>((value >> shift) & 0xffU));
 }
 
-std::string MakeLegacyArtifact(const infernux::TextureCpuData &source, const std::string &sourceHash)
+std::string MakeVersion1Artifact(const infernux::TextureCpuData &source, const std::string &sourceHash)
 {
     std::string bytes = "INXTEX";
     AppendU32(bytes, 1);
@@ -89,12 +89,8 @@ int main()
     assert(restored->mipLevels[2].byteSize == 4);
     assert(restored->bytes == source.bytes);
 
-    const auto legacySrgb = infernux::TextureArtifact::Deserialize(MakeLegacyArtifact(source, SourceHash), SourceHash);
-    assert(legacySrgb->format == infernux::TextureFormat::Rgba8Srgb);
-    assert(legacySrgb->mipLevels[0].rowPitch == 16);
-    const auto legacyLinear =
-        infernux::TextureArtifact::Deserialize(MakeLegacyArtifact(source, SourceHash), SourceHash, false);
-    assert(legacyLinear->format == infernux::TextureFormat::Rgba8UNorm);
+    RequireInvalid(
+        [&] { (void)infernux::TextureArtifact::Deserialize(MakeVersion1Artifact(source, SourceHash), SourceHash); });
 
     infernux::TextureCpuData volume;
     volume.dimension = infernux::TextureDimension::Texture3D;

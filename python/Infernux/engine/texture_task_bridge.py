@@ -49,8 +49,8 @@ def query_or_schedule_texture(
         resource_key,
         os.path.normpath(texture_file_path),
         int(stamp),
-        bool(nearest),
-        bool(srgb),
-        bool(pump),
+        nearest=bool(nearest),
+        srgb=bool(srgb),
+        pump=bool(pump),
     )
     return int(tex_id), int(w), int(h)

@@ -51,6 +51,12 @@ class TextureImporter final : public AssetImporter
             meta.AddMetadata("texture_compression", std::string("auto"));
         if (!meta.HasKey("texture_compression_quality"))
             meta.AddMetadata("texture_compression_quality", std::string("normal"));
+        static const std::unordered_set<std::string> targetFormats = {
+            "auto", "rgba8", "rgba4444", "rgba16_unorm", "rgba16_float", "rgba32_float",
+        };
+        if (!meta.HasKey("texture_format") ||
+            targetFormats.find(meta.GetDataAs<std::string>("texture_format")) == targetFormats.end())
+            meta.AddMetadata("texture_format", std::string("auto"));
         const std::string textureType = meta.GetDataAs<std::string>("texture_type");
         if (textureType == "normal_map" || textureType == "data" || textureType == "vector_field" ||
             textureType == "sdf")

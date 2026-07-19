@@ -235,6 +235,12 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return std::string{};
             if (cpu->format == TextureFormat::Rgba32Float)
                 return std::string("rgba32_float");
+            if (cpu->format == TextureFormat::Rgba4UNormPack16)
+                return std::string("rgba4_unorm_pack16");
+            if (cpu->format == TextureFormat::Rgba16UNorm)
+                return std::string("rgba16_unorm");
+            if (cpu->format == TextureFormat::Rgba16Float)
+                return std::string("rgba16_float");
             return TextureFormatIsBlockCompressed(cpu->format) ? std::string("block_compressed") : std::string("rgba8");
         });
 

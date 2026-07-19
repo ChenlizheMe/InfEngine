@@ -923,7 +923,8 @@ class AnimClip2DEditorPanel(EditorPanel):
 
         native.pump_preview_tasks()
         texture_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
-            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+            resource_key, norm_path, int(stamp), nearest=bool(use_nearest),
+            srgb=bool(use_srgb), pump=False)
         texture_id = int(texture_id)
         tex_w = int(tex_w)
         tex_h = int(tex_h)
@@ -1010,7 +1011,8 @@ class AnimClip2DEditorPanel(EditorPanel):
 
         native.pump_preview_tasks()
         texture_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
-            resource_key, norm_path, int(stamp), bool(use_nearest), bool(use_srgb), False)
+            resource_key, norm_path, int(stamp), nearest=bool(use_nearest),
+            srgb=bool(use_srgb), pump=False)
         texture_id = int(texture_id)
         tex_w = int(tex_w)
         tex_h = int(tex_h)

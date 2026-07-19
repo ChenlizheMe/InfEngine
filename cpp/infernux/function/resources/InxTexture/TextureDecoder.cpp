@@ -69,6 +69,25 @@ TextureCompressionQuality ReadCompressionQuality(const InxResourceMeta &metadata
     throw std::invalid_argument("texture_compression_quality has an unsupported value: " + value);
 }
 
+TextureTargetFormat ReadTargetFormat(const InxResourceMeta &metadata)
+{
+    const std::string value =
+        metadata.HasKey("texture_format") ? metadata.GetDataAs<std::string>("texture_format") : "auto";
+    if (value == "auto")
+        return TextureTargetFormat::Automatic;
+    if (value == "rgba8")
+        return TextureTargetFormat::Rgba8;
+    if (value == "rgba4444")
+        return TextureTargetFormat::Rgba4UNorm;
+    if (value == "rgba16_unorm")
+        return TextureTargetFormat::Rgba16UNorm;
+    if (value == "rgba16_float")
+        return TextureTargetFormat::Rgba16Float;
+    if (value == "rgba32_float")
+        return TextureTargetFormat::Rgba32Float;
+    throw std::invalid_argument("texture_format has an unsupported value: " + value);
+}
+
 bool ReadSrgb(const InxResourceMeta &metadata)
 {
     return metadata.HasKey("srgb") ? metadata.GetDataAs<bool>("srgb") : true;
@@ -216,9 +235,9 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
         }
     }
 
-    return TextureProcessor::Process(std::move(*texture),
-                                     TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
-                                                           ReadCompressionQuality(metadata)});
+    return TextureProcessor::Process(
+        std::move(*texture), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
+                                                   ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
 }
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::CreateRgba8(const uint8_t *pixels, size_t byteCount,
