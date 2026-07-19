@@ -207,6 +207,7 @@ struct SortTrace
     std::vector<rhi::BindGroupHandle> groups;
     std::vector<particle::GpuParticleSortConstants> constants;
     std::vector<uint32_t> dispatches;
+    std::vector<rhi::BufferHandle> indirectDispatches;
 
     static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
     {
@@ -229,8 +230,10 @@ struct SortTrace
         assert(y == 1 && z == 1);
         static_cast<SortTrace *>(context)->dispatches.push_back(x);
     }
-    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    static void DispatchIndirect(void *context, rhi::BufferHandle buffer, uint64_t offset)
     {
+        assert(offset == 0);
+        static_cast<SortTrace *>(context)->indirectDispatches.push_back(buffer);
     }
 };
 
@@ -240,6 +243,7 @@ struct CullTrace
     std::vector<rhi::BindGroupHandle> groups;
     std::vector<particle::GpuParticleCullConstants> constants;
     std::vector<uint32_t> dispatches;
+    std::vector<rhi::BufferHandle> indirectDispatches;
 
     static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
     {
@@ -262,8 +266,10 @@ struct CullTrace
         assert(y == 1 && z == 1);
         static_cast<CullTrace *>(context)->dispatches.push_back(x);
     }
-    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    static void DispatchIndirect(void *context, rhi::BufferHandle buffer, uint64_t offset)
     {
+        assert(offset == 0);
+        static_cast<CullTrace *>(context)->indirectDispatches.push_back(buffer);
     }
 };
 
@@ -362,7 +368,8 @@ int main()
     sceneCuller.RecordCull(cullEncoder, frustumPlanes);
     sceneCuller.RecordFinalize(cullEncoder);
     assert(cullTrace.pipelines.size() == 3 && cullTrace.groups.size() == 3 && cullTrace.constants.size() == 3);
-    assert(cullTrace.dispatches == std::vector<uint32_t>({1, 4, 1}));
+    assert(cullTrace.dispatches == std::vector<uint32_t>({1, 1}));
+    assert(cullTrace.indirectDispatches == std::vector<rhi::BufferHandle>({sceneCuller.SortDispatchBuffer()}));
     assert(cullTrace.constants[0].capacity == 1000 && cullTrace.constants[1].capacity == 1000 &&
            cullTrace.constants[1].frustumPlanes == frustumPlanes && cullTrace.constants[2].capacity == 1000);
     sceneCuller.Destroy();
@@ -378,6 +385,8 @@ int main()
     sorterDesc.capacity = runtime.Capacity();
     sorterDesc.instances = runtime.InstanceBuffer();
     sorterDesc.indirectArguments = runtime.IndirectBuffer();
+    sorterDesc.sourceIndices = runtime.RenderIndexBuffer();
+    sorterDesc.dispatchArguments = {700, 1};
     sorterDesc.program = {
         {sortWords[0].data(), sortWords[0].size()},
         {sortWords[1].data(), sortWords[1].size()},
@@ -392,15 +401,17 @@ int main()
     assert(sorter.Create(sortDevice, sorterDesc));
     particle::ParticleGpuSorter gameViewSorter;
     assert(gameViewSorter.Create(sortDevice, sorterDesc));
+    const rhi::BufferHandle expectedSortDispatch{700, 1};
     assert(sorter.IsValid() && sorter.Capacity() == 1000 && sorter.BlockCount() == 4 &&
-           sorter.SortedIndices() == sorter.IndexBuffer(0) && gameViewSorter.IsValid() &&
-           gameViewSorter.SortedIndices() != sorter.SortedIndices());
+           sorter.SourceIndexBuffer() == runtime.RenderIndexBuffer() &&
+           sorter.DispatchBuffer() == expectedSortDispatch && sorter.SortedIndices() == sorter.IndexBuffer(0) &&
+           gameViewSorter.IsValid() && gameViewSorter.SortedIndices() != sorter.SortedIndices());
     assert(sortDevice.buffers.size() == 14 && sortDevice.buffers[0].byteSize == 4000 &&
            sortDevice.buffers[4].byteSize == 256 && sortDevice.buffers[5].byteSize == 256 &&
            sortDevice.buffers[6].byteSize == 64);
-    assert(sortDevice.layouts.size() == 2 && sortDevice.layouts[0].entryCount == 9 &&
-           sortDevice.bindGroups.size() == 4 && sortDevice.bindGroups[0].bufferCount == 9 &&
-           sortDevice.bindGroups[1].bufferCount == 9);
+    assert(sortDevice.layouts.size() == 2 && sortDevice.layouts[0].entryCount == 11 &&
+           sortDevice.bindGroups.size() == 4 && sortDevice.bindGroups[0].bufferCount == 11 &&
+           sortDevice.bindGroups[1].bufferCount == 11);
     assert(sortDevice.shaderCreates == 8 && sortDevice.shaderReleases == 8 && sortDevice.pipelineCreates == 8);
 
     SortTrace sortTrace;
@@ -415,7 +426,10 @@ int main()
     sorter.RecordScan(sortEncoder, 0);
     sorter.RecordScatter(sortEncoder, 0);
     sorter.RecordHistogram(sortEncoder, 1);
-    assert(sortTrace.dispatches == std::vector<uint32_t>({4, 4, 1, 4, 4}));
+    assert(sortTrace.dispatches == std::vector<uint32_t>({1}));
+    assert(sortTrace.indirectDispatches ==
+           std::vector<rhi::BufferHandle>({sorterDesc.dispatchArguments, sorterDesc.dispatchArguments,
+                                           sorterDesc.dispatchArguments, sorterDesc.dispatchArguments}));
     assert(sortTrace.constants.size() == 5 && sortTrace.constants[0].view == sortView &&
            sortTrace.constants[0].descending == 1 && sortTrace.constants[0].capacity == 1000 &&
            sortTrace.constants[0].blockCount == 4 && sortTrace.constants[1].digitShift == 0 &&
@@ -429,7 +443,8 @@ int main()
     gameSortView[12] = 12.0f;
     gameViewSorter.RecordGenerate(gameSortEncoder, gameSortView, particle::ParticleSortMode::FrontToBack);
     assert(gameSortTrace.constants.size() == 1 && gameSortTrace.constants[0].view == gameSortView &&
-           gameSortTrace.constants[0].descending == 0 && gameSortTrace.groups[0] != sortTrace.groups[0]);
+           gameSortTrace.constants[0].descending == 0 && gameSortTrace.groups[0] != sortTrace.groups[0] &&
+           gameSortTrace.indirectDispatches == std::vector<rhi::BufferHandle>({sorterDesc.dispatchArguments}));
     sorter.Destroy();
     gameViewSorter.Destroy();
     assert(!sorter.IsValid() && !gameViewSorter.IsValid() && sortDevice.bufferReleases == 14 &&

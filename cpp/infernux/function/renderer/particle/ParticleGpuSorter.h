@@ -45,6 +45,8 @@ struct GpuParticleSorterDesc
     uint32_t capacity = 0;
     rhi::BufferHandle instances;
     rhi::BufferHandle indirectArguments;
+    rhi::BufferHandle sourceIndices;
+    rhi::BufferHandle dispatchArguments;
     GpuParticleSortProgram program;
 };
 
@@ -94,6 +96,14 @@ class ParticleGpuSorter
     {
         return m_indirectArguments;
     }
+    [[nodiscard]] rhi::BufferHandle SourceIndexBuffer() const noexcept
+    {
+        return m_sourceIndices;
+    }
+    [[nodiscard]] rhi::BufferHandle DispatchBuffer() const noexcept
+    {
+        return m_dispatchArguments;
+    }
     [[nodiscard]] rhi::BufferHandle SortedIndices() const noexcept
     {
         return m_indices[0];
@@ -127,14 +137,18 @@ class ParticleGpuSorter
 
   private:
     [[nodiscard]] GpuParticleSortConstants Constants(uint32_t passIndex = 0) const noexcept;
-    void Record(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                rhi::BindGroupHandle group, const GpuParticleSortConstants &constants, uint32_t groups) const;
+    void RecordDirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
+                      rhi::BindGroupHandle group, const GpuParticleSortConstants &constants, uint32_t groups) const;
+    void RecordIndirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
+                        rhi::BindGroupHandle group, const GpuParticleSortConstants &constants) const;
 
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
     uint32_t m_blockCount = 0;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_indirectArguments;
+    rhi::BufferHandle m_sourceIndices;
+    rhi::BufferHandle m_dispatchArguments;
     std::array<rhi::BufferHandle, 2> m_keys{};
     std::array<rhi::BufferHandle, 2> m_indices{};
     rhi::BufferHandle m_histograms;

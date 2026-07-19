@@ -457,6 +457,22 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.msaa_policy COMMAND infernux_msaa_policy_tests)
 
+    add_executable(infernux_frustum_tests
+        cpp/tests/FrustumTests.cpp
+    )
+    target_include_directories(infernux_frustum_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_frustum_tests PRIVATE glm::glm)
+    target_compile_definitions(infernux_frustum_tests PRIVATE
+        GLM_FORCE_DEPTH_ZERO_TO_ONE
+        GLM_FORCE_LEFT_HANDED
+    )
+    if(MSVC)
+        target_compile_options(infernux_frustum_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.frustum COMMAND infernux_frustum_tests)
+
     add_executable(infernux_rhi_contracts_tests
         cpp/tests/RhiContractsTests.cpp
     )

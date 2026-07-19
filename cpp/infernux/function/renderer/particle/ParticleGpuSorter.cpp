@@ -31,6 +31,12 @@ layout(std430, set = 0, binding = 5) buffer OutputIndices { uint output_indices[
 layout(std430, set = 0, binding = 6) buffer Histograms { uint histograms[]; };
 layout(std430, set = 0, binding = 7) buffer BlockOffsets { uint block_offsets[]; };
 layout(std430, set = 0, binding = 8) buffer GlobalOffsets { uint global_offsets[]; };
+layout(std430, set = 0, binding = 9) readonly buffer SourceIndices { uint source_indices[]; };
+layout(std430, set = 0, binding = 10) readonly buffer DispatchArguments {
+    uint dispatch_group_count_x;
+    uint dispatch_group_count_y;
+    uint dispatch_group_count_z;
+};
 layout(push_constant) uniform SortConstants {
     mat4 view;
     uint capacity;
@@ -75,10 +81,11 @@ void main() {
     uint index = gl_GlobalInvocationID.x;
     uint live_count = min(indirect_args.instance_count, pc.capacity);
     if (index >= live_count) return;
-    vec4 view_position = pc.view * vec4(instances[index].position_size.xyz, 1.0);
-    uint key = inx_ordered_float(-view_position.z);
+    uint particle_index = source_indices[index];
+    vec4 view_position = pc.view * vec4(instances[particle_index].position_size.xyz, 1.0);
+    uint key = inx_ordered_float(view_position.z);
     input_keys[index] = pc.descending != 0u ? ~key : key;
-    input_indices[index] = index;
+    input_indices[index] = particle_index;
 }
 )glsl");
     return Source;
@@ -113,7 +120,8 @@ shared uint totals[16];
 void main() {
     uint bin = gl_LocalInvocationID.x;
     uint running = 0u;
-    for (uint block = 0u; block < pc.block_count; ++block) {
+    uint active_block_count = min(dispatch_group_count_x, pc.block_count);
+    for (uint block = 0u; block < active_block_count; ++block) {
         uint offset = block * 16u + bin;
         uint count = histograms[offset];
         block_offsets[offset] = running;
@@ -212,7 +220,8 @@ ParticleGpuSorter::~ParticleGpuSorter()
 bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc &desc)
 {
     Destroy();
-    if (desc.capacity == 0 || !desc.instances.IsValid() || !desc.indirectArguments.IsValid() || !desc.program.IsValid())
+    if (desc.capacity == 0 || !desc.instances.IsValid() || !desc.indirectArguments.IsValid() ||
+        !desc.sourceIndices.IsValid() || !desc.dispatchArguments.IsValid() || !desc.program.IsValid())
         return false;
 
     const uint64_t elementBytes = static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t);
@@ -227,6 +236,8 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
     m_blockCount = blockCount;
     m_instances = desc.instances;
     m_indirectArguments = desc.indirectArguments;
+    m_sourceIndices = desc.sourceIndices;
+    m_dispatchArguments = desc.dispatchArguments;
     for (auto &buffer : m_keys)
         buffer = device.CreateBuffer({elementBytes, storage});
     for (auto &buffer : m_indices)
@@ -242,9 +253,9 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
     }
 
     rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 9; ++binding)
+    for (uint32_t binding = 0; binding < 11; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 9;
+    layoutDesc.entryCount = 11;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
@@ -253,9 +264,10 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
 
     for (uint32_t pingPong = 0; pingPong < m_groups.size(); ++pingPong) {
         const uint32_t output = 1u - pingPong;
-        const std::array<rhi::BufferHandle, 9> buffers = {
-            m_instances,       m_indirectArguments, m_keys[pingPong], m_indices[pingPong], m_keys[output],
-            m_indices[output], m_histograms,        m_blockOffsets,   m_globalOffsets,
+        const std::array<rhi::BufferHandle, 11> buffers = {
+            m_instances,     m_indirectArguments, m_keys[pingPong],    m_indices[pingPong],
+            m_keys[output],  m_indices[output],   m_histograms,        m_blockOffsets,
+            m_globalOffsets, m_sourceIndices,     m_dispatchArguments,
         };
         rhi::BindGroupDesc groupDesc;
         groupDesc.layout = m_layout;
@@ -317,6 +329,8 @@ void ParticleGpuSorter::Destroy() noexcept
     m_blockCount = 0;
     m_instances = {};
     m_indirectArguments = {};
+    m_sourceIndices = {};
+    m_dispatchArguments = {};
     m_keys.fill({});
     m_indices.fill({});
     m_histograms = {};
@@ -332,7 +346,8 @@ void ParticleGpuSorter::Destroy() noexcept
 
 bool ParticleGpuSorter::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_blockCount > 0 && m_layout.IsValid() && m_groups[0].IsValid() &&
+    return m_device && m_capacity > 0 && m_blockCount > 0 && m_instances.IsValid() && m_indirectArguments.IsValid() &&
+           m_sourceIndices.IsValid() && m_dispatchArguments.IsValid() && m_layout.IsValid() && m_groups[0].IsValid() &&
            m_groups[1].IsValid() && m_generatePipeline.IsValid() && m_histogramPipeline.IsValid() &&
            m_scanPipeline.IsValid() && m_scatterPipeline.IsValid();
 }
@@ -352,30 +367,30 @@ void ParticleGpuSorter::RecordGenerate(const rhi::ComputeCommandEncoder &encoder
     auto constants = Constants();
     constants.view = view;
     constants.descending = mode == ParticleSortMode::BackToFront ? 1u : 0u;
-    Record(encoder, m_generatePipeline, m_groups[0], constants, m_blockCount);
+    RecordIndirect(encoder, m_generatePipeline, m_groups[0], constants);
 }
 
 void ParticleGpuSorter::RecordHistogram(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const
 {
     const auto constants = Constants(passIndex);
-    Record(encoder, m_histogramPipeline, m_groups[passIndex % 2u], constants, m_blockCount);
+    RecordIndirect(encoder, m_histogramPipeline, m_groups[passIndex % 2u], constants);
 }
 
 void ParticleGpuSorter::RecordScan(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const
 {
     const auto constants = Constants(passIndex);
-    Record(encoder, m_scanPipeline, m_groups[passIndex % 2u], constants, 1);
+    RecordDirect(encoder, m_scanPipeline, m_groups[passIndex % 2u], constants, 1);
 }
 
 void ParticleGpuSorter::RecordScatter(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const
 {
     const auto constants = Constants(passIndex);
-    Record(encoder, m_scatterPipeline, m_groups[passIndex % 2u], constants, m_blockCount);
+    RecordIndirect(encoder, m_scatterPipeline, m_groups[passIndex % 2u], constants);
 }
 
-void ParticleGpuSorter::Record(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                               rhi::BindGroupHandle group, const GpuParticleSortConstants &constants,
-                               uint32_t groups) const
+void ParticleGpuSorter::RecordDirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
+                                     rhi::BindGroupHandle group, const GpuParticleSortConstants &constants,
+                                     uint32_t groups) const
 {
     if (!IsValid() || !encoder.IsValid() || !pipeline.IsValid() || !group.IsValid() || groups == 0)
         return;
@@ -383,6 +398,17 @@ void ParticleGpuSorter::Record(const rhi::ComputeCommandEncoder &encoder, rhi::C
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, sizeof(constants), &constants);
     encoder.Dispatch(groups, 1, 1);
+}
+
+void ParticleGpuSorter::RecordIndirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
+                                       rhi::BindGroupHandle group, const GpuParticleSortConstants &constants) const
+{
+    if (!IsValid() || !encoder.IsValid() || !pipeline.IsValid() || !group.IsValid())
+        return;
+    encoder.BindPipeline(pipeline);
+    encoder.BindGroup(pipeline, 0, group);
+    encoder.PushConstants(pipeline, sizeof(constants), &constants);
+    encoder.DispatchIndirect(m_dispatchArguments);
 }
 
 } // namespace infernux::particle

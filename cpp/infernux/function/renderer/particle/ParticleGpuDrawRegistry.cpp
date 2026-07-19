@@ -1,5 +1,8 @@
 #include "ParticleGpuDrawRegistry.h"
 
+#include "ParticleGpuCuller.h"
+#include "ParticleGpuSorter.h"
+
 #include <algorithm>
 
 namespace infernux::particle
@@ -13,7 +16,9 @@ bool IsValidEntry(const GpuParticleDrawEntry &entry)
     return entry.id != 0 && entry.capacity != 0 && entry.instances.IsValid() && entry.renderIndices.IsValid() &&
            entry.indirectArguments.IsValid() && entry.renderer && entry.renderer->IsValid() &&
            entry.renderer->InstanceBuffer() == entry.instances &&
-           entry.renderer->RenderIndexBuffer() == entry.renderIndices;
+           entry.renderer->RenderIndexBuffer() == entry.renderIndices &&
+           (!entry.cullProgram || entry.cullProgram->IsValid()) &&
+           (!entry.sortProgram || (entry.sortProgram->IsValid() && entry.cullProgram));
 }
 
 } // namespace

@@ -41,6 +41,7 @@ class SceneRenderTarget;
 namespace particle
 {
 class ParticleGpuDrawRegistry;
+class ParticleGpuCuller;
 class ParticleGpuSorter;
 } // namespace particle
 
@@ -561,6 +562,7 @@ class SceneRenderGraph
 
     particle::ParticleGpuDrawRegistry *m_particleDrawRegistry = nullptr;
     uint64_t m_particleDrawRegistryRevision = 0;
+    std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuCuller>> m_particleCullers;
     std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuSorter>> m_particleSorters;
 
     // The underlying render graph (now fully utilized)

@@ -651,6 +651,10 @@ void main() { }
         {infernux::particle::GpuParticleSortShaderSources::Scan(), "ParticleSortScan.comp"},
         {infernux::particle::GpuParticleSortShaderSources::Scatter(), "ParticleSortScatter.comp"},
     }};
+    assert(infernux::particle::GpuParticleSortShaderSources::Generate().find("inx_ordered_float(view_position.z)") !=
+           std::string_view::npos);
+    assert(infernux::particle::GpuParticleSortShaderSources::Generate().find("-view_position.z") ==
+           std::string_view::npos);
     for (const auto &[source, name] : particleSortShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
         assert(spirv.size() >= 5 * sizeof(uint32_t));

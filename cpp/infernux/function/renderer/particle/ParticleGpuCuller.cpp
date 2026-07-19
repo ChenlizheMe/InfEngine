@@ -59,11 +59,6 @@ bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
     return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
 }
 
-uint32_t DivideRoundUp(uint32_t value, uint32_t divisor) noexcept
-{
-    return value == 0 ? 0 : 1u + (value - 1u) / divisor;
-}
-
 } // namespace
 
 std::string_view GpuParticleCullShaderSources::Reset() noexcept
@@ -74,7 +69,8 @@ void main() {
     draw_instance_count = 0u;
     draw_first_vertex = source_first_vertex;
     draw_first_instance = source_first_instance;
-    sort_group_count_x = 0u;
+    uint source_count = min(source_instance_count, pc.capacity);
+    sort_group_count_x = (source_count + 255u) / 256u;
     sort_group_count_y = 1u;
     sort_group_count_z = 1u;
 }
@@ -271,7 +267,12 @@ void ParticleGpuCuller::RecordCull(const rhi::ComputeCommandEncoder &encoder,
     GpuParticleCullConstants constants;
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
-    Record(encoder, m_cullPipeline, constants, DivideRoundUp(m_capacity, WorkgroupSize));
+    if (!IsValid() || !encoder.IsValid() || !m_cullPipeline.IsValid())
+        return;
+    encoder.BindPipeline(m_cullPipeline);
+    encoder.BindGroup(m_cullPipeline, 0, m_group);
+    encoder.PushConstants(m_cullPipeline, sizeof(constants), &constants);
+    encoder.DispatchIndirect(m_sortDispatchArguments);
 }
 
 void ParticleGpuCuller::RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const

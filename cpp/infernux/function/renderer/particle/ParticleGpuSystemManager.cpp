@@ -72,6 +72,7 @@ struct ParticleGpuSystemManager::Impl
     ParticleGpuDrawRegistry *drawRegistry = nullptr;
     GpuBillboardTextureResolver textureResolver;
     GpuBillboardTextureVersionResolver textureVersionResolver;
+    std::shared_ptr<const GpuParticleCullProgramStorage> cullProgram;
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
@@ -167,6 +168,10 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle sorting kernels are unavailable");
                 return {};
             }
+            if (output.shaderProgram && (!cullProgram || !cullProgram->IsValid())) {
+                SetError(error, "GPU particle view-culling kernels are unavailable");
+                return {};
+            }
             auto renderer =
                 CreateOutputRenderer(*emitter, output.material, output.fallbackMaterial, output.shaderProgram);
             if (!renderer) {
@@ -216,10 +221,17 @@ struct ParticleGpuSystemManager::Impl
         for (const auto &[id, emitter] : candidateEmitters) {
             (void)id;
             for (const auto &output : emitter->outputs) {
-                entries.push_back(
-                    {output.id, emitter->runtime->Capacity(), emitter->runtime->InstanceBuffer(),
-                     output.renderer->RenderIndexBuffer(), emitter->runtime->IndirectBuffer(), output.renderer,
-                     output.semantics.sortMode == ParticleSortMode::None ? nullptr : sortProgram, output.semantics});
+                GpuParticleDrawEntry entry;
+                entry.id = output.id;
+                entry.capacity = emitter->runtime->Capacity();
+                entry.instances = emitter->runtime->InstanceBuffer();
+                entry.renderIndices = output.renderer->RenderIndexBuffer();
+                entry.indirectArguments = emitter->runtime->IndirectBuffer();
+                entry.renderer = output.renderer;
+                entry.cullProgram = output.shaderProgram ? cullProgram : nullptr;
+                entry.sortProgram = output.semantics.sortMode == ParticleSortMode::None ? nullptr : sortProgram;
+                entry.semantics = output.semantics;
+                entries.push_back(std::move(entry));
             }
         }
         return entries;
@@ -251,7 +263,8 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
                                           FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
                                           GpuBillboardTextureResolver textureResolver,
                                           GpuBillboardTextureVersionResolver textureVersionResolver,
-                                          const GpuParticleSortProgram &sortProgram)
+                                          const GpuParticleSortProgram &sortProgram,
+                                          const GpuParticleCullProgram &cullProgram)
 {
     if (!m_impl || m_impl->context || !context.IsValid())
         return false;
@@ -261,6 +274,14 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
     m_impl->drawRegistry = &drawRegistry;
     m_impl->textureResolver = std::move(textureResolver);
     m_impl->textureVersionResolver = std::move(textureVersionResolver);
+    if (cullProgram.IsValid()) {
+        auto storage = std::make_shared<GpuParticleCullProgramStorage>();
+        if (!storage->Assign(cullProgram)) {
+            Shutdown();
+            return false;
+        }
+        m_impl->cullProgram = std::move(storage);
+    }
     if (sortProgram.IsValid()) {
         auto storage = std::make_shared<GpuParticleSortProgramStorage>();
         if (!storage->Assign(sortProgram)) {
@@ -288,6 +309,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->drawRegistry = nullptr;
     m_impl->textureResolver = {};
     m_impl->textureVersionResolver = {};
+    m_impl->cullProgram.reset();
     m_impl->sortProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;

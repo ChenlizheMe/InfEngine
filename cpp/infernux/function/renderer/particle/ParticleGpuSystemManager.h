@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuBillboardRenderer.h"
+#include "ParticleGpuCuller.h"
 #include "ParticleGpuSorter.h"
 #include "ParticleOutputSemantics.h"
 #include "ParticleRenderGraph.h"
@@ -72,7 +73,8 @@ class ParticleGpuSystemManager
                                   FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
                                   GpuBillboardTextureResolver textureResolver = {},
                                   GpuBillboardTextureVersionResolver textureVersionResolver = {},
-                                  const GpuParticleSortProgram &sortProgram = {});
+                                  const GpuParticleSortProgram &sortProgram = {},
+                                  const GpuParticleCullProgram &cullProgram = {});
     void Shutdown() noexcept;
 
     /// Compile-then-publish replacement. The active emitter remains untouched
