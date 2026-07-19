@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuBounds.h"
+#include "ParticleGpuMigrator.h"
 #include "ParticleGpuRuntime.h"
 
 #include <function/renderer/vk/RenderGraph.h>
@@ -54,9 +55,14 @@ class ParticleRenderGraph
     ParticleRenderGraph &operator=(ParticleRenderGraph &&) = delete;
 
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
-                              const std::string &namePrefix);
+                              const std::string &namePrefix, ParticleGpuMigrator *migration = nullptr);
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
     void Reset() noexcept;
+    [[nodiscard]] bool HasCompletedMigration() const noexcept
+    {
+        return m_migrationCompleted;
+    }
+    [[nodiscard]] bool ConsumeMigrationCompletion() noexcept;
 
     [[nodiscard]] bool IsAttached() const noexcept
     {
@@ -78,9 +84,12 @@ class ParticleRenderGraph
   private:
     ParticleGpuRuntime *m_runtime = nullptr;
     ParticleGpuBounds *m_bounds = nullptr;
+    ParticleGpuMigrator *m_migrator = nullptr;
     GpuParticleFrameRequest m_request{};
     GpuParticleGraphOutputs m_outputs{};
     bool m_bootstrapPending = true;
+    bool m_migrationPending = false;
+    bool m_migrationCompleted = false;
     bool m_framePending = false;
     bool m_hasConsumedFrame = false;
     uint64_t m_lastConsumedFrame = 0;

@@ -1,5 +1,6 @@
 #include "ParticleRenderGraph.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace infernux::particle
@@ -19,16 +20,22 @@ std::string StageName(const std::string &prefix, const char *stage)
 } // namespace
 
 bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
-                                 const std::string &namePrefix)
+                                 const std::string &namePrefix, ParticleGpuMigrator *migration)
 {
     if (IsAttached() || !runtime.IsValid() || !bounds.IsValid() ||
         bounds.InstanceBuffer() != runtime.InstanceBuffer() ||
-        bounds.SourceIndirectBuffer() != runtime.IndirectBuffer() || namePrefix.empty() || runtime.StateStride() == 0)
+        bounds.SourceIndirectBuffer() != runtime.IndirectBuffer() || namePrefix.empty() || runtime.StateStride() == 0 ||
+        (migration && (!migration->IsValid() || migration->DestinationStateBuffer() != runtime.StateBuffer() ||
+                       migration->DestinationFreeListBuffer() != runtime.FreeListBuffer() ||
+                       migration->DestinationCounterBuffer() != runtime.CounterBuffer())))
         return false;
 
     m_runtime = &runtime;
     m_bounds = &bounds;
-    m_bootstrapPending = runtime.NeedsBootstrap();
+    m_migrator = migration;
+    m_migrationPending = migration != nullptr;
+    m_migrationCompleted = false;
+    m_bootstrapPending = !migration && runtime.NeedsBootstrap();
     vk::ResourceHandle states;
     vk::ResourceHandle freeList;
     vk::ResourceHandle counters;
@@ -38,6 +45,10 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle transforms;
     vk::ResourceHandle boundsBuffer;
     vk::ResourceHandle boundsDispatch;
+    vk::ResourceHandle migrationSourceStates;
+    vk::ResourceHandle migrationSourceCounters;
+    vk::ResourceHandle migrationRanges;
+    vk::ResourceHandle migrationDefaults;
 
     graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
         const uint64_t capacity = runtime.Capacity();
@@ -81,6 +92,60 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         m_runtime = nullptr;
         m_bounds = nullptr;
         return false;
+    }
+
+    if (migration) {
+        graph.AddComputePass(StageName(namePrefix, "MigrationReset"), [&](vk::PassBuilder &builder) {
+            const auto &constants = migration->Constants();
+            migrationSourceStates = builder.ImportBuffer(
+                StageName(namePrefix, "MigrationSourceStates"), migration->SourceStateBuffer(),
+                static_cast<uint64_t>(constants.sourceCapacity) * constants.sourceStrideWords * sizeof(uint32_t));
+            migrationSourceCounters = builder.ImportBuffer(StageName(namePrefix, "MigrationSourceCounters"),
+                                                           migration->SourceCounterBuffer(), CounterBufferBytes);
+            migrationRanges = builder.ImportBuffer(
+                StageName(namePrefix, "MigrationRanges"), migration->CopyRangeBuffer(),
+                std::max<uint64_t>(static_cast<uint64_t>(constants.copyRangeCount) * sizeof(GpuParticleMigrationRange),
+                                   sizeof(GpuParticleMigrationRange)));
+            migrationDefaults =
+                builder.ImportBuffer(StageName(namePrefix, "MigrationDefaults"), migration->DefaultStateBuffer(),
+                                     static_cast<uint64_t>(constants.destinationStrideWords) * sizeof(uint32_t));
+            if (!migrationSourceStates.IsValid() || !migrationSourceCounters.IsValid() || !migrationRanges.IsValid() ||
+                !migrationDefaults.IsValid())
+                return vk::PassExecuteCallback{};
+            builder.ReadStorageBuffer(migrationSourceCounters);
+            counters = builder.WriteStorageBuffer(counters);
+            return vk::PassExecuteCallback{[this](vk::RenderContext &context) {
+                if (m_framePending && m_migrationPending && m_migrator)
+                    m_migrator->RecordReset(context.GetComputeCommandEncoder());
+            }};
+        });
+
+        if (!migrationSourceStates.IsValid() || !migrationSourceCounters.IsValid() || !migrationRanges.IsValid() ||
+            !migrationDefaults.IsValid()) {
+            m_runtime = nullptr;
+            m_bounds = nullptr;
+            m_migrator = nullptr;
+            return false;
+        }
+
+        graph.AddComputePass(StageName(namePrefix, "Migration"), [&](vk::PassBuilder &builder) {
+            builder.ReadStorageBuffer(migrationSourceStates);
+            builder.ReadStorageBuffer(migrationRanges);
+            builder.ReadStorageBuffer(migrationDefaults);
+            states = builder.WriteStorageBuffer(states);
+            freeList = builder.WriteStorageBuffer(freeList);
+            counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_migrationPending || !m_migrator || !m_runtime)
+                    return;
+                m_migrator->RecordMigrate(context.GetComputeCommandEncoder());
+                if (!m_migrator->WasRecorded())
+                    return;
+                m_runtime->MarkStateInitialized();
+                m_migrationPending = false;
+                m_migrationCompleted = true;
+            };
+        });
     }
 
     graph.AddComputePass(StageName(namePrefix, "Init"), [&](vk::PassBuilder &builder) {
@@ -183,12 +248,25 @@ bool ParticleRenderGraph::BeginFrame(const GpuParticleFrameRequest &request) noe
 
 void ParticleRenderGraph::Reset() noexcept
 {
+    if (m_migrationPending) {
+        m_migrationPending = false;
+        m_migrationCompleted = true;
+    }
     if (m_runtime)
         m_runtime->RequestBootstrap();
     m_bootstrapPending = true;
     m_framePending = false;
     m_hasConsumedFrame = false;
     m_lastConsumedFrame = 0;
+}
+
+bool ParticleRenderGraph::ConsumeMigrationCompletion() noexcept
+{
+    if (!m_migrationCompleted)
+        return false;
+    m_migrationCompleted = false;
+    m_migrator = nullptr;
+    return true;
 }
 
 } // namespace infernux::particle

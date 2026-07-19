@@ -3,6 +3,7 @@
 #include "ParticleGpuBillboardRenderer.h"
 #include "ParticleGpuBounds.h"
 #include "ParticleGpuCuller.h"
+#include "ParticleGpuMigrator.h"
 #include "ParticleGpuSorter.h"
 #include "ParticleOutputSemantics.h"
 #include "ParticleRenderGraph.h"
@@ -52,6 +53,14 @@ struct GpuParticleEmitterProgram
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     bool preserveState = false;
+    struct StateMigration
+    {
+        uint32_t sourceStride = 0;
+        uint32_t destinationStride = 0;
+        std::vector<GpuParticleMigrationRange> copyRanges;
+        std::vector<uint32_t> defaultStateWords;
+    };
+    std::optional<StateMigration> migration;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
@@ -77,7 +86,8 @@ class ParticleGpuSystemManager
                                   GpuBillboardTextureVersionResolver textureVersionResolver = {},
                                   const GpuParticleSortProgram &sortProgram = {},
                                   const GpuParticleCullProgram &cullProgram = {},
-                                  const GpuParticleBoundsProgram &boundsProgram = {});
+                                  const GpuParticleBoundsProgram &boundsProgram = {},
+                                  const GpuParticleMigrationProgram &migrationProgram = {});
     void Shutdown() noexcept;
 
     /// Compile-then-publish replacement. The active emitter remains untouched

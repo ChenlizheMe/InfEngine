@@ -210,6 +210,12 @@ void ParticleGpuRuntime::RequestBootstrap() noexcept
         m_residentState->bootstrapRecorded = false;
 }
 
+void ParticleGpuRuntime::MarkStateInitialized() noexcept
+{
+    if (m_residentState)
+        m_residentState->bootstrapRecorded = true;
+}
+
 bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
 {
     return m_device && m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms));

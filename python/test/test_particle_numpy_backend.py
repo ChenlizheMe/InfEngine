@@ -495,5 +495,11 @@ def test_gpu_controller_compatible_migration_preserves_schedule_and_pause():
         1,
     )
 
+    resized = migrated.migrate_to(replace(migrated.settings, capacity=32))
+    assert resized.simulation_step == migrated.simulation_step
+    assert resized.is_playing is True
+
     with pytest.raises(ValueError, match="emitter restart"):
-        migrated.migrate_to(replace(settings, capacity=32))
+        migrated.migrate_to(
+            replace(migrated.settings, bursts=(ParticleBurst(0.0, 4),))
+        )

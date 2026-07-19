@@ -22,6 +22,7 @@ from Infernux.particle import (
     ParticleKernelLowerer,
     ParticleKernelProgram,
     ParticleRuntimeCompatibility,
+    build_gpu_particle_migration,
     classify_emitter_update,
     decode_gpu_particle_spirv,
     decode_particle_runtime_metadata,
@@ -58,6 +59,7 @@ class ParticleSystem(InxComponent):
     _runtime_target: ExecutionTarget | None = None
     _particle_program = None
     _particle_kernel = None
+    _particle_gpu_layouts: tuple[dict, ...]
     _particle_metadata = None
     _artifact_revision: int = 0
     _artifact_source_key: str = ""
@@ -91,6 +93,7 @@ class ParticleSystem(InxComponent):
         self._runtime_target = None
         self._particle_program = None
         self._particle_kernel = None
+        self._particle_gpu_layouts = ()
         self._particle_metadata = None
         self._artifact_revision = 0
         self._artifact_source_key = ""
@@ -360,12 +363,6 @@ class ParticleSystem(InxComponent):
                     )
                     if previous_target is not targets[emitter_index]:
                         compatibility = ParticleRuntimeCompatibility.EMITTER_RESTART
-                    elif (
-                        targets[emitter_index] is ExecutionTarget.GPU
-                        and compatibility
-                        is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
-                    ):
-                        compatibility = ParticleRuntimeCompatibility.EMITTER_RESTART
                     reload_compatibility[emitter_index] = compatibility
             cpu_indices = [
                 index
@@ -403,6 +400,7 @@ class ParticleSystem(InxComponent):
                 self._publish_gpu_particle_graph(
                     artifact,
                     metadata,
+                    kernel,
                     targets,
                     reload_compatibility,
                 )
@@ -416,6 +414,11 @@ class ParticleSystem(InxComponent):
         self._runtime = None
         self._particle_program = program
         self._particle_kernel = kernel
+        self._particle_gpu_layouts = (
+            tuple(artifact.gpu_glsl["emitters"])
+            if artifact is not None
+            else ()
+        )
         self._runtimes = runtimes
         self._cpu_emitter_indices = cpu_indices
         self._particle_metadata = metadata
@@ -452,6 +455,7 @@ class ParticleSystem(InxComponent):
         self._cpu_emitter_indices = []
         self._particle_program = None
         self._particle_kernel = None
+        self._particle_gpu_layouts = ()
         self._particle_metadata = None
         self._material_guid = emitter.renderer.material
         self._emitter_runtime_targets = ()
@@ -492,7 +496,7 @@ class ParticleSystem(InxComponent):
         return tuple(targets)
 
     def _publish_gpu_particle_graph(
-        self, artifact, metadata, targets, reload_compatibility
+        self, artifact, metadata, kernel, targets, reload_compatibility
     ) -> None:
         if artifact is None:
             raise RuntimeError("GPU ParticleGraph execution requires an AOT artifact")
@@ -509,6 +513,7 @@ class ParticleSystem(InxComponent):
         emitter_ids = []
         emitter_indices = []
         previous_controllers = {}
+        previous_layouts = {}
         previous_metadata = getattr(self, "_particle_metadata", None)
         if previous_metadata is not None:
             previous_controllers = {
@@ -518,6 +523,13 @@ class ParticleSystem(InxComponent):
                     getattr(self, "_gpu_controllers", ()),
                 )
                 if 0 <= emitter_index < len(previous_metadata.emitters)
+            }
+            previous_layouts = {
+                emitter.stable_id: layout
+                for emitter, layout in zip(
+                    previous_metadata.emitters,
+                    getattr(self, "_particle_gpu_layouts", ()),
+                )
             }
         for index, (emitter, glsl_emitter) in enumerate(
             zip(metadata.emitters, glsl_emitters)
@@ -535,12 +547,29 @@ class ParticleSystem(InxComponent):
             decoded = decode_gpu_particle_spirv(artifact.gpu_spirv, index)
             emitter_id = self._gpu_emitter_id(emitter.stable_id)
             previous_controller = previous_controllers.get(emitter.stable_id)
+            migration = None
+            if (
+                previous_controller is not None
+                and reload_compatibility[index]
+                is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+            ):
+                try:
+                    migration = build_gpu_particle_migration(
+                        previous_layouts[emitter.stable_id],
+                        glsl_emitter,
+                        kernel.emitters[index],
+                    )
+                except (KeyError, TypeError, ValueError):
+                    reload_compatibility[index] = (
+                        ParticleRuntimeCompatibility.EMITTER_RESTART
+                    )
             preserve_state = (
                 previous_controller is not None
                 and reload_compatibility[index]
                 in {
                     ParticleRuntimeCompatibility.PARAMETER_ONLY,
                     ParticleRuntimeCompatibility.KERNEL_COMPATIBLE,
+                    ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE,
                 }
             )
             programs.append(
@@ -551,6 +580,7 @@ class ParticleSystem(InxComponent):
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
                     "preserve_state": preserve_state,
+                    "migration": migration,
                     "stages": decoded["stages"],
                     "billboard": decoded["billboard"],
                     "outputs": [
@@ -914,6 +944,7 @@ class ParticleSystem(InxComponent):
         self._runtime_target = None
         self._particle_program = None
         self._particle_kernel = None
+        self._particle_gpu_layouts = ()
         self._particle_metadata = None
         self._artifact_revision = 0
         self._artifact_source_key = ""

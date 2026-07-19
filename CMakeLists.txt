@@ -507,6 +507,7 @@ if(INFERNUX_BUILD_TESTS)
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp
     )
     target_include_directories(infernux_particle_gpu_runtime_tests PRIVATE

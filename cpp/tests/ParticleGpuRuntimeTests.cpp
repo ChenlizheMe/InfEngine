@@ -3,6 +3,7 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
+#include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -204,6 +205,37 @@ struct GraphicsTrace
     }
 };
 
+struct MigrationTrace
+{
+    std::vector<rhi::ComputePipelineHandle> pipelines;
+    std::vector<particle::GpuParticleMigrationConstants> constants;
+    std::vector<uint32_t> dispatches;
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<MigrationTrace *>(context)->pipelines.push_back(pipeline);
+    }
+    static void BindGroup(void *, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0 && group.IsValid());
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == sizeof(particle::GpuParticleMigrationConstants));
+        particle::GpuParticleMigrationConstants value;
+        std::memcpy(&value, data, sizeof(value));
+        static_cast<MigrationTrace *>(context)->constants.push_back(value);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        assert(y == 1 && z == 1);
+        static_cast<MigrationTrace *>(context)->dispatches.push_back(x);
+    }
+    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    {
+    }
+};
+
 struct SortTrace
 {
     std::vector<rhi::ComputePipelineHandle> pipelines;
@@ -316,6 +348,68 @@ struct BoundsTrace
 
 int main()
 {
+    {
+        FakeDevice migrationDevice;
+        std::array<std::array<uint32_t, 5>, 2> migrationWords{};
+        for (auto &shader : migrationWords)
+            shader[0] = 0x07230203u;
+        particle::GpuParticleMigrationDesc migrationDesc;
+        migrationDesc.sourceCapacity = 512;
+        migrationDesc.destinationCapacity = 256;
+        migrationDesc.sourceStride = 64;
+        migrationDesc.destinationStride = 80;
+        migrationDesc.sourceStates = {900, 1};
+        migrationDesc.sourceCounters = {901, 1};
+        migrationDesc.destinationStates = {902, 1};
+        migrationDesc.destinationFreeList = {903, 1};
+        migrationDesc.destinationCounters = {904, 1};
+        migrationDesc.copyRanges = {{4, 4, 3, 0}, {8, 12, 4, 0}};
+        migrationDesc.defaultStateWords.resize(20, 0u);
+        migrationDesc.defaultStateWords[16] = 0x3f800000u;
+        migrationDesc.program = {
+            {migrationWords[0].data(), migrationWords[0].size()},
+            {migrationWords[1].data(), migrationWords[1].size()},
+        };
+
+        particle::ParticleGpuMigrator migrator;
+        assert(migrator.Create(migrationDevice, migrationDesc));
+        assert(migrator.IsValid() && !migrator.WasRecorded());
+        assert(migrationDevice.buffers.size() == 2 && migrationDevice.writes == 2);
+        assert(migrator.Constants().sourceStrideWords == 16 && migrator.Constants().destinationStrideWords == 20 &&
+               migrator.Constants().copyRangeCount == 2 && migrator.Constants().invocationCount == 512);
+
+        MigrationTrace trace;
+        const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
+            &MigrationTrace::BindPipeline, &MigrationTrace::BindGroup, &MigrationTrace::PushConstants,
+            &MigrationTrace::Dispatch, &MigrationTrace::DispatchIndirect};
+        const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
+        migrator.RecordMigrate(encoder);
+        assert(!migrator.WasRecorded() && trace.pipelines.empty());
+        migrator.RecordReset(encoder);
+        migrator.RecordMigrate(encoder);
+        migrator.RecordMigrate(encoder);
+        assert(migrator.WasRecorded());
+        assert(trace.pipelines.size() == 2 && trace.constants.size() == 2);
+        assert(trace.dispatches == std::vector<uint32_t>({1, 2}));
+        migrator.Destroy();
+        assert(migrationDevice.bufferReleases == 2 && migrationDevice.pipelineReleases == 2 &&
+               migrationDevice.groupReleases == 1 && migrationDevice.layoutReleases == 1);
+
+        migrationDesc.copyRanges.clear();
+        const size_t buffersBeforeEmptyMigration = migrationDevice.buffers.size();
+        assert(migrator.Create(migrationDevice, migrationDesc));
+        assert(migrator.Constants().copyRangeCount == 0);
+        assert(migrationDevice.buffers.size() == buffersBeforeEmptyMigration + 2 &&
+               migrationDevice.buffers[buffersBeforeEmptyMigration].byteSize ==
+                   sizeof(particle::GpuParticleMigrationRange) &&
+               migrationDevice.buffers[buffersBeforeEmptyMigration + 1].byteSize ==
+                   migrationDesc.defaultStateWords.size() * sizeof(uint32_t));
+        migrator.Destroy();
+
+        migrationDesc.copyRanges = {{15, 4, 2, 0}};
+        assert(!migrator.Create(migrationDevice, migrationDesc));
+    }
+
     {
         FakeDevice sharingDevice;
         std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> sharingWords{};

@@ -54,6 +54,8 @@ struct ParticleGpuSystemManager::Impl
         bool statePreservedOnPublish = false;
         std::unique_ptr<ParticleGpuRuntime> runtime;
         std::unique_ptr<ParticleGpuBounds> bounds;
+        std::shared_ptr<ParticleGpuMigrator> migration;
+        std::shared_ptr<Emitter> migrationSource;
         std::vector<uint32_t> billboardVertexShader;
         std::vector<uint32_t> billboardFragmentShader;
         std::vector<Output> outputs;
@@ -77,6 +79,7 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleCullProgramStorage> cullProgram;
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     std::shared_ptr<const GpuParticleBoundsProgramStorage> boundsProgram;
+    std::shared_ptr<const GpuParticleMigrationProgramStorage> migrationProgram;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
 
@@ -148,7 +151,9 @@ struct ParticleGpuSystemManager::Impl
             SetError(error, "GPU particle state preservation requires the same live emitter identity");
             return {};
         }
-        const bool runtimeCreated = program.preserveState
+        const bool requiresMigration = program.preserveState && program.migration.has_value();
+        const bool runtimeCreated = requiresMigration ? emitter->runtime->Create(device, runtimeDesc)
+                                    : program.preserveState
                                         ? emitter->runtime->CreateCompatible(device, runtimeDesc, *previous->runtime)
                                         : emitter->runtime->Create(device, runtimeDesc);
         if (!runtimeCreated) {
@@ -156,6 +161,34 @@ struct ParticleGpuSystemManager::Impl
                                 ? "GPU particle state ABI is incompatible with the requested hot reload"
                                 : "failed to create GPU particle simulation runtime");
             return {};
+        }
+        if (requiresMigration) {
+            const auto &migration = *program.migration;
+            if (!migrationProgram || !migrationProgram->IsValid() ||
+                migration.sourceStride != previous->runtime->StateStride() ||
+                migration.destinationStride != emitter->runtime->StateStride()) {
+                SetError(error, "GPU particle migration descriptor does not match the live state ABI");
+                return {};
+            }
+            GpuParticleMigrationDesc migrationDesc;
+            migrationDesc.sourceCapacity = previous->runtime->Capacity();
+            migrationDesc.destinationCapacity = emitter->runtime->Capacity();
+            migrationDesc.sourceStride = migration.sourceStride;
+            migrationDesc.destinationStride = migration.destinationStride;
+            migrationDesc.sourceStates = previous->runtime->StateBuffer();
+            migrationDesc.sourceCounters = previous->runtime->CounterBuffer();
+            migrationDesc.destinationStates = emitter->runtime->StateBuffer();
+            migrationDesc.destinationFreeList = emitter->runtime->FreeListBuffer();
+            migrationDesc.destinationCounters = emitter->runtime->CounterBuffer();
+            migrationDesc.copyRanges = migration.copyRanges;
+            migrationDesc.defaultStateWords = migration.defaultStateWords;
+            migrationDesc.program = migrationProgram->View();
+            emitter->migration = std::make_shared<ParticleGpuMigrator>();
+            if (!emitter->migration->Create(device, migrationDesc)) {
+                SetError(error, "failed to create GPU particle state migrator");
+                return {};
+            }
+            emitter->migrationSource = previous;
         }
         if (!boundsProgram || !boundsProgram->IsValid()) {
             SetError(error, "GPU particle bounds kernels are unavailable");
@@ -224,7 +257,8 @@ struct ParticleGpuSystemManager::Impl
         for (const auto &[id, emitter] : candidateEmitters) {
             auto scheduler = std::make_unique<ParticleRenderGraph>();
             const std::string prefix = "GpuParticle/" + std::to_string(id);
-            if (!scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, prefix)) {
+            if (!scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, prefix,
+                                   emitter->migration.get())) {
                 SetError(error, "failed to attach GPU particle emitter to the simulation graph");
                 return {};
             }
@@ -278,6 +312,60 @@ struct ParticleGpuSystemManager::Impl
             });
         }
     }
+
+    void RetireCompletedMigrations()
+    {
+        if (!graphState)
+            return;
+        std::vector<uint64_t> completedIds;
+        for (const auto &[id, emitter] : emitters) {
+            (void)emitter;
+            const auto scheduler = graphState->schedulerById.find(id);
+            if (scheduler != graphState->schedulerById.end() && scheduler->second->HasCompletedMigration())
+                completedIds.push_back(id);
+        }
+        if (completedIds.empty())
+            return;
+
+        struct RetiredMigration
+        {
+            std::shared_ptr<ParticleGpuMigrator> migrator;
+            std::shared_ptr<Emitter> source;
+        };
+        std::vector<RetiredMigration> retired;
+        retired.reserve(completedIds.size());
+        for (const uint64_t id : completedIds) {
+            auto &emitter = emitters.at(id);
+            retired.push_back({std::move(emitter->migration), std::move(emitter->migrationSource)});
+        }
+
+        auto replacementGraph = BuildGraph(emitters, nullptr);
+        if (!replacementGraph) {
+            for (size_t index = 0; index < completedIds.size(); ++index) {
+                auto &emitter = emitters.at(completedIds[index]);
+                emitter->migration = std::move(retired[index].migrator);
+                emitter->migrationSource = std::move(retired[index].source);
+            }
+            return;
+        }
+
+        for (const uint64_t id : completedIds) {
+            const auto scheduler = graphState->schedulerById.find(id);
+            if (scheduler != graphState->schedulerById.end())
+                (void)scheduler->second->ConsumeMigrationCompletion();
+        }
+        auto retiredGraph = std::move(graphState);
+        graphState = std::move(replacementGraph);
+        EmitterMap graphLifetime = emitters;
+        if (deletionQueue) {
+            deletionQueue->Push([graph = std::move(retiredGraph), emitters = std::move(graphLifetime),
+                                 migrations = std::move(retired)]() mutable {
+                graph.reset();
+                emitters.clear();
+                migrations.clear();
+            });
+        }
+    }
 };
 
 ParticleGpuSystemManager::ParticleGpuSystemManager() : m_impl(std::make_unique<Impl>())
@@ -295,9 +383,10 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
                                           GpuBillboardTextureVersionResolver textureVersionResolver,
                                           const GpuParticleSortProgram &sortProgram,
                                           const GpuParticleCullProgram &cullProgram,
-                                          const GpuParticleBoundsProgram &boundsProgram)
+                                          const GpuParticleBoundsProgram &boundsProgram,
+                                          const GpuParticleMigrationProgram &migrationProgram)
 {
-    if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid())
+    if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid())
         return false;
     m_impl->context = &context;
     m_impl->pipelines = &pipelines;
@@ -311,6 +400,12 @@ bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPi
         return false;
     }
     m_impl->boundsProgram = std::move(boundsStorage);
+    auto migrationStorage = std::make_shared<GpuParticleMigrationProgramStorage>();
+    if (!migrationStorage->Assign(migrationProgram)) {
+        Shutdown();
+        return false;
+    }
+    m_impl->migrationProgram = std::move(migrationStorage);
     if (cullProgram.IsValid()) {
         auto storage = std::make_shared<GpuParticleCullProgramStorage>();
         if (!storage->Assign(cullProgram)) {
@@ -349,6 +444,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->cullProgram.reset();
     m_impl->sortProgram.reset();
     m_impl->boundsProgram.reset();
+    m_impl->migrationProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;
     m_impl->context = nullptr;
@@ -565,8 +661,10 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
         return;
     const bool hasPending = std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                                         [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
-    if (hasPending)
+    if (hasPending) {
         m_impl->graphState->graph->Execute(commandBuffer);
+        m_impl->RetireCompletedMigrations();
+    }
 }
 
 bool ParticleGpuSystemManager::Contains(uint64_t id) const

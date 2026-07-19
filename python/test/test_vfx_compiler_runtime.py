@@ -621,6 +621,33 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     )
     assert engine._gpu_particle_state_was_preserved(emitter_id) is True
 
+    resized_graph = ParticleGraphAsset(
+        stable_id="gpu-smoke-component",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="smoke",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=64,
+                    spawn_rate=4.0,
+                    bursts=(ParticleBurst(0.0, 4),),
+                ),
+                rendering=_two_output_rendering_graph(material_ref),
+            ),
+        ),
+    )
+    resized_revision = component._artifact_revision
+    resized_graph.save(str(source))
+    component.update(0.0)
+    assert component._artifact_revision > resized_revision
+    assert component._gpu_controllers[0].is_playing is False
+    assert component._gpu_controllers[0].simulation_step == 1
+    assert (
+        component.emitter_reload_compatibility(0)
+        is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+    )
+    assert engine._gpu_particle_state_was_preserved(emitter_id) is True
+
     previous_revision = component._artifact_revision
     revised_graph = ParticleGraphAsset(
         stable_id="gpu-smoke-component",

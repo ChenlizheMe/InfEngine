@@ -3,6 +3,7 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
+#include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuSystemManager.h>
 #include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/shader/ShaderReflection.h>
@@ -169,6 +170,238 @@ bool Require(bool condition, const char *message)
     return condition;
 }
 
+bool VerifyGpuParticleMigration(TestResources &resources,
+                                const infernux::particle::GpuParticleMigrationProgram &program)
+{
+    constexpr uint32_t sourceCapacity = 4;
+    constexpr uint32_t destinationCapacity = 3;
+    constexpr uint32_t sourceStrideWords = 6;
+    constexpr uint32_t destinationStrideWords = 8;
+    constexpr VkDeviceSize destinationStateBytes = destinationCapacity * destinationStrideWords * sizeof(uint32_t);
+    constexpr VkDeviceSize destinationFreeListBytes = destinationCapacity * sizeof(uint32_t);
+    constexpr VkDeviceSize counterBytes = 4 * sizeof(uint32_t);
+    constexpr VkDeviceSize readbackBytes = destinationStateBytes + destinationFreeListBytes + counterBytes;
+
+    const std::array<uint32_t, sourceCapacity * sourceStrideWords> sourceStates = {
+        1, 11, 100, 101, 200, 900, 0, 0, 110, 111, 210, 901, 1, 22, 120, 121, 220, 902, 1, 33, 130, 131, 230, 903,
+    };
+    const std::array<uint32_t, 4> sourceCounters = {1, 3, 5, 7};
+    const std::array<uint32_t, destinationStrideWords> defaults = {
+        0, 0, 0xDEADu, 0xBEEFu, 0, 0, 0x1234u, 0x5678u,
+    };
+
+    auto &rhi = resources.context.GetRhiDevice();
+    infernux::rhi::BufferDesc sourceDesc;
+    sourceDesc.usage = infernux::rhi::BufferUsageFlags::Storage;
+    sourceDesc.memory = infernux::rhi::BufferMemory::Upload;
+    sourceDesc.byteSize = sizeof(sourceStates);
+    sourceDesc.initialData = sourceStates.data();
+    sourceDesc.initialDataBytes = sizeof(sourceStates);
+    const auto sourceStateBuffer = rhi.CreateBuffer(sourceDesc);
+    sourceDesc.byteSize = sizeof(sourceCounters);
+    sourceDesc.initialData = sourceCounters.data();
+    sourceDesc.initialDataBytes = sizeof(sourceCounters);
+    const auto sourceCounterBuffer = rhi.CreateBuffer(sourceDesc);
+
+    infernux::rhi::BufferDesc destinationDesc;
+    destinationDesc.usage = infernux::rhi::BufferUsageFlags::Storage | infernux::rhi::BufferUsageFlags::TransferSource;
+    destinationDesc.byteSize = destinationStateBytes;
+    const auto destinationStateBuffer = rhi.CreateBuffer(destinationDesc);
+    destinationDesc.byteSize = destinationFreeListBytes;
+    const auto destinationFreeListBuffer = rhi.CreateBuffer(destinationDesc);
+    destinationDesc.byteSize = counterBytes;
+    const auto destinationCounterBuffer = rhi.CreateBuffer(destinationDesc);
+    if (!Require(sourceStateBuffer.IsValid() && sourceCounterBuffer.IsValid() && destinationStateBuffer.IsValid() &&
+                     destinationFreeListBuffer.IsValid() && destinationCounterBuffer.IsValid(),
+                 "GPU particle migration fixture buffers are invalid"))
+        return false;
+
+    infernux::particle::GpuParticleMigrationDesc migrationDesc;
+    migrationDesc.sourceCapacity = sourceCapacity;
+    migrationDesc.destinationCapacity = destinationCapacity;
+    migrationDesc.sourceStride = sourceStrideWords * sizeof(uint32_t);
+    migrationDesc.destinationStride = destinationStrideWords * sizeof(uint32_t);
+    migrationDesc.sourceStates = sourceStateBuffer;
+    migrationDesc.sourceCounters = sourceCounterBuffer;
+    migrationDesc.destinationStates = destinationStateBuffer;
+    migrationDesc.destinationFreeList = destinationFreeListBuffer;
+    migrationDesc.destinationCounters = destinationCounterBuffer;
+    migrationDesc.copyRanges = {
+        {4, 2, 1, 0},
+        {2, 4, 2, 0},
+    };
+    migrationDesc.defaultStateWords.assign(defaults.begin(), defaults.end());
+    migrationDesc.program = program;
+    infernux::particle::ParticleGpuMigrator migrator;
+    if (!Require(migrator.Create(rhi, migrationDesc), "GPU particle migrator creation failed"))
+        return false;
+
+    RenderGraph migrationGraph;
+    migrationGraph.Initialize(&resources.context, &resources.pipelines);
+    ResourceHandle sourceState;
+    ResourceHandle sourceCounter;
+    ResourceHandle destinationState;
+    ResourceHandle destinationFreeList;
+    ResourceHandle destinationCounter;
+    ResourceHandle copyRanges;
+    ResourceHandle defaultState;
+    migrationGraph.AddComputePass("ParticleMigration/Reset", [&](PassBuilder &builder) {
+        sourceCounter = builder.ImportBuffer("ParticleMigrationSourceCounters", sourceCounterBuffer, counterBytes);
+        destinationCounter =
+            builder.ImportBuffer("ParticleMigrationDestinationCounters", destinationCounterBuffer, counterBytes);
+        builder.ReadStorageBuffer(sourceCounter);
+        destinationCounter = builder.WriteStorageBuffer(destinationCounter);
+        return [&](RenderContext &context) { migrator.RecordReset(context.GetComputeCommandEncoder()); };
+    });
+    migrationGraph.AddComputePass("ParticleMigration/Migrate", [&](PassBuilder &builder) {
+        sourceState = builder.ImportBuffer("ParticleMigrationSourceStates", sourceStateBuffer, sizeof(sourceStates));
+        destinationState =
+            builder.ImportBuffer("ParticleMigrationDestinationStates", destinationStateBuffer, destinationStateBytes);
+        destinationFreeList = builder.ImportBuffer("ParticleMigrationDestinationFreeList", destinationFreeListBuffer,
+                                                   destinationFreeListBytes);
+        copyRanges = builder.ImportBuffer("ParticleMigrationCopyRanges", migrator.CopyRangeBuffer(),
+                                          migrationDesc.copyRanges.size() *
+                                              sizeof(infernux::particle::GpuParticleMigrationRange));
+        defaultState = builder.ImportBuffer("ParticleMigrationDefaults", migrator.DefaultStateBuffer(),
+                                            defaults.size() * sizeof(uint32_t));
+        builder.ReadStorageBuffer(sourceState);
+        builder.ReadStorageBuffer(copyRanges);
+        builder.ReadStorageBuffer(defaultState);
+        destinationState = builder.WriteStorageBuffer(destinationState);
+        destinationFreeList = builder.WriteStorageBuffer(destinationFreeList);
+        destinationCounter = builder.ReadWrite(destinationCounter, infernux::rhi::PipelineStage::ComputeShader);
+        return [&](RenderContext &context) { migrator.RecordMigrate(context.GetComputeCommandEncoder()); };
+    });
+    if (!Require(migrationGraph.Compile(), "GPU particle migration RenderGraph compilation failed") ||
+        !Require(migrationGraph.GetExecutionPassNames() ==
+                     std::vector<std::string>{"ParticleMigration/Reset", "ParticleMigration/Migrate"},
+                 "GPU particle migration pass ordering is incorrect"))
+        return false;
+
+    BufferReadback readback;
+    if (!Require(readback.Create(resources.context.GetVmaAllocator(), readbackBytes),
+                 "GPU particle migration readback creation failed"))
+        return false;
+
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = resources.context.GetQueueIndices().graphicsFamily.value();
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    if (!Require(vkCreateCommandPool(resources.context.GetDevice(), &poolInfo, nullptr, &commandPool) == VK_SUCCESS,
+                 "GPU particle migration command pool creation failed"))
+        return false;
+
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo allocateInfo{};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocateInfo.commandPool = commandPool;
+    allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocateInfo.commandBufferCount = 1;
+    if (!Require(vkAllocateCommandBuffers(resources.context.GetDevice(), &allocateInfo, &commandBuffer) == VK_SUCCESS,
+                 "GPU particle migration command buffer allocation failed")) {
+        vkDestroyCommandPool(resources.context.GetDevice(), commandPool, nullptr);
+        return false;
+    }
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (!Require(vkBeginCommandBuffer(commandBuffer, &beginInfo) == VK_SUCCESS,
+                 "GPU particle migration command buffer begin failed")) {
+        vkDestroyCommandPool(resources.context.GetDevice(), commandPool, nullptr);
+        return false;
+    }
+    migrationGraph.Execute(commandBuffer);
+
+    const std::array<infernux::rhi::BufferHandle, 3> destinations = {
+        destinationStateBuffer,
+        destinationFreeListBuffer,
+        destinationCounterBuffer,
+    };
+    const std::array<VkDeviceSize, 3> destinationBytes = {
+        destinationStateBytes,
+        destinationFreeListBytes,
+        counterBytes,
+    };
+    const std::array<VkDeviceSize, 3> readbackOffsets = {
+        0,
+        destinationStateBytes,
+        destinationStateBytes + destinationFreeListBytes,
+    };
+    std::array<VkBufferMemoryBarrier, 3> barriers{};
+    for (size_t index = 0; index < destinations.size(); ++index) {
+        auto &barrier = barriers[index];
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = rhi.Resolve(destinations[index]);
+        barrier.offset = 0;
+        barrier.size = destinationBytes[index];
+    }
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                         nullptr, static_cast<uint32_t>(barriers.size()), barriers.data(), 0, nullptr);
+    for (size_t index = 0; index < destinations.size(); ++index) {
+        const VkBufferCopy copy{0, readbackOffsets[index], destinationBytes[index]};
+        vkCmdCopyBuffer(commandBuffer, barriers[index].buffer, readback.buffer, 1, &copy);
+    }
+    const bool commandRecorded = migrator.WasRecorded() && vkEndCommandBuffer(commandBuffer) == VK_SUCCESS;
+
+    VkFence fence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    const bool fenceCreated =
+        commandRecorded && vkCreateFence(resources.context.GetDevice(), &fenceInfo, nullptr, &fence) == VK_SUCCESS;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkResult submitResult = fenceCreated
+                                      ? vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &submitInfo, fence)
+                                      : VK_ERROR_INITIALIZATION_FAILED;
+    const VkResult waitResult = submitResult == VK_SUCCESS
+                                    ? vkWaitForFences(resources.context.GetDevice(), 1, &fence, VK_TRUE, UINT64_MAX)
+                                    : submitResult;
+    if (fence != VK_NULL_HANDLE)
+        vkDestroyFence(resources.context.GetDevice(), fence, nullptr);
+    vkDestroyCommandPool(resources.context.GetDevice(), commandPool, nullptr);
+    if (!Require(commandRecorded && submitResult == VK_SUCCESS && waitResult == VK_SUCCESS,
+                 "GPU particle migration submission failed"))
+        return false;
+    if (!Require(vmaInvalidateAllocation(readback.allocator, readback.allocation, 0, readback.byteSize) == VK_SUCCESS,
+                 "GPU particle migration readback invalidation failed"))
+        return false;
+
+    const std::array<uint32_t, destinationCapacity * destinationStrideWords> expectedStates = {
+        1, 11, 200,     0xBEEFu, 100, 101, 0x1234u, 0x5678u, 0,   0,   0xDEADu, 0xBEEFu,
+        0, 0,  0x1234u, 0x5678u, 1,   22,  220,     0xBEEFu, 120, 121, 0x1234u, 0x5678u,
+    };
+    std::array<uint32_t, expectedStates.size()> migratedStates{};
+    std::array<uint32_t, destinationCapacity> migratedFreeList{};
+    std::array<uint32_t, 4> migratedCounters{};
+    std::memcpy(migratedStates.data(), readback.mapped, sizeof(migratedStates));
+    std::memcpy(migratedFreeList.data(), static_cast<const uint8_t *>(readback.mapped) + destinationStateBytes,
+                sizeof(migratedFreeList));
+    std::memcpy(migratedCounters.data(),
+                static_cast<const uint8_t *>(readback.mapped) + destinationStateBytes + destinationFreeListBytes,
+                sizeof(migratedCounters));
+    const bool migrationMatches = migratedStates == expectedStates && migratedFreeList[0] == 1 &&
+                                  migratedCounters == std::array<uint32_t, 4>{1, 0, 6, 7};
+
+    migrationGraph.Destroy();
+    migrator.Destroy();
+    rhi.Release(destinationCounterBuffer);
+    rhi.Release(destinationFreeListBuffer);
+    rhi.Release(destinationStateBuffer);
+    rhi.Release(sourceCounterBuffer);
+    rhi.Release(sourceStateBuffer);
+    return Require(
+        migrationMatches,
+        "GPU particle migration did not preserve fields, apply defaults, rebuild free slots, or count drops");
+}
+
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
          const std::filesystem::path &particleComputePath, const std::filesystem::path &particleVertexPath,
@@ -261,6 +494,23 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         {boundsCode[0].data(), boundsCode[0].size()},
         {boundsCode[1].data(), boundsCode[1].size()},
     };
+    const std::array<std::string_view, 2> migrationSources = {
+        infernux::particle::GpuParticleMigrationShaderSources::Reset(),
+        infernux::particle::GpuParticleMigrationShaderSources::Migrate(),
+    };
+    std::array<std::vector<uint32_t>, 2> migrationCode;
+    for (size_t index = 0; index < migrationSources.size(); ++index) {
+        migrationCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
+            std::string(migrationSources[index]), "Tests/ParticleMigration" + std::to_string(index) + ".comp"));
+        if (!Require(!migrationCode[index].empty(), "Failed to compile GPU particle migration fixture"))
+            return false;
+    }
+    const infernux::particle::GpuParticleMigrationProgram migrationProgram = {
+        {migrationCode[0].data(), migrationCode[0].size()},
+        {migrationCode[1].data(), migrationCode[1].size()},
+    };
+    if (!VerifyGpuParticleMigration(resources, migrationProgram))
+        return false;
 
     auto initialLinkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
     initialLinkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 10};
@@ -279,7 +529,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuDrawRegistry particleDrawRegistry;
     infernux::particle::ParticleGpuSystemManager particleSystems;
     if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, particleDeletionQueue,
-                                            particleDrawRegistry, {}, {}, sortProgram, cullProgram, boundsProgram),
+                                            particleDrawRegistry, {}, {}, sortProgram, cullProgram, boundsProgram,
+                                            migrationProgram),
                  "GPU particle system manager initialization failed"))
         return false;
 
@@ -1209,11 +1460,84 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Per-view particle cull workspaces did not preserve visible/offscreen indirect counts"))
         return false;
 
-    if (!Require(!particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
+    auto executeManagedFrame = [&](const char *failureMessage) {
+        if (vkResetCommandPool(device, resources.commandPool, 0) != VK_SUCCESS)
+            return Require(false, failureMessage);
+        VkCommandBufferBeginInfo managerBeginInfo{};
+        managerBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        managerBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(commandBuffer, &managerBeginInfo) != VK_SUCCESS)
+            return Require(false, failureMessage);
+        particleSystems.Execute(commandBuffer);
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+            return Require(false, failureMessage);
+        VkFence managerFence = VK_NULL_HANDLE;
+        VkFenceCreateInfo managerFenceInfo{};
+        managerFenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (vkCreateFence(device, &managerFenceInfo, nullptr, &managerFence) != VK_SUCCESS)
+            return Require(false, failureMessage);
+        VkSubmitInfo managerSubmitInfo{};
+        managerSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        managerSubmitInfo.commandBufferCount = 1;
+        managerSubmitInfo.pCommandBuffers = &commandBuffer;
+        const VkResult managerSubmit =
+            vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &managerSubmitInfo, managerFence);
+        const VkResult managerWait = managerSubmit == VK_SUCCESS
+                                         ? vkWaitForFences(device, 1, &managerFence, VK_TRUE, UINT64_MAX)
+                                         : managerSubmit;
+        vkDestroyFence(device, managerFence, nullptr);
+        return Require(managerSubmit == VK_SUCCESS && managerWait == VK_SUCCESS, failureMessage);
+    };
+
+    const auto preMigrationEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    const auto preMigrationInstances = preMigrationEntries.front().instances;
+    managedProgram.artifactRevision = 4;
+    managedProgram.capacity = 64;
+    infernux::particle::GpuParticleEmitterProgram::StateMigration managerMigration;
+    managerMigration.sourceStride = 16;
+    managerMigration.destinationStride = 16;
+    managerMigration.copyRanges = {{2, 2, 2, 0}};
+    managerMigration.defaultStateWords = {0, 0, 0, 0};
+    managedProgram.migration = std::move(managerMigration);
+    if (!Require(particleSystems.CreateOrReplace(managedProgram, &managedError) &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 4 &&
+                     particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
+                     particleDeletionQueue.PendingCount() == 4,
+                 "GPU particle manager rejected a layout-migratable revision"))
+        return false;
+    const auto migratingEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    if (!Require(migratingEntries.size() == 2 && migratingEntries.front().capacity == 64 &&
+                     migratingEntries.front().instances != preMigrationInstances,
+                 "GPU particle manager reused incompatible resident buffers during layout migration"))
+        return false;
+
+    auto migrationFrame = managedFrame;
+    migrationFrame.frameIndex = 44;
+    migrationFrame.spawnCount = 0;
+    migrationFrame.simulate = false;
+    migrationFrame.render = false;
+    if (!Require(particleSystems.BeginFrame(managedProgram.id, migrationFrame, managedTransforms),
+                 "GPU particle manager rejected the migration boundary frame") ||
+        !executeManagedFrame("GPU particle manager migration frame failed") ||
+        !Require(particleDeletionQueue.PendingCount() == 5,
+                 "GPU particle manager did not retire the migration graph and source at the frame boundary"))
+        return false;
+
+    particleDeletionQueue.FlushAll();
+    auto postMigrationFrame = migrationFrame;
+    postMigrationFrame.frameIndex = 45;
+    if (!Require(particleSystems.BeginFrame(managedProgram.id, postMigrationFrame, managedTransforms),
+                 "GPU particle manager rejected the post-migration frame") ||
+        !executeManagedFrame("GPU particle manager post-migration graph failed") ||
+        !Require(particleDeletionQueue.PendingCount() == 0,
+                 "GPU particle manager retained migration resources after graph replacement"))
+        return false;
+
+    if (!Require(!particleSystems.BeginFrame(managedProgram.id, postMigrationFrame, managedTransforms),
                  "GPU particle manager accepted the same engine frame twice"))
         return false;
     if (!Require(particleSystems.Remove(managedProgram.id) && particleSystems.Size() == 0 &&
-                     particleDrawRegistry.Size() == 0 && particleDeletionQueue.PendingCount() == 4,
+                     particleDrawRegistry.Size() == 0 && particleDeletionQueue.PendingCount() == 1,
                  "GPU particle manager removal did not retire graph resources"))
         return false;
     particleSystems.Shutdown();

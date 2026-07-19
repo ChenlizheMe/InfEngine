@@ -79,6 +79,7 @@ class ParticleGpuRuntime
     [[nodiscard]] bool SharesStateWith(const ParticleGpuRuntime &other) const noexcept;
     [[nodiscard]] bool NeedsBootstrap() const noexcept;
     void RequestBootstrap() noexcept;
+    void MarkStateInitialized() noexcept;
     [[nodiscard]] bool UpdateTransforms(const GpuParticleTransforms &transforms);
 
     void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed);

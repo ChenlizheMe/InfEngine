@@ -22,6 +22,7 @@
 #include "particle/ParticleGpuBounds.h"
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
+#include "particle/ParticleGpuMigrator.h"
 #include "particle/ParticleGpuSorter.h"
 #include "particle/ParticleGpuSystemManager.h"
 #include "vk/RenderGraph.h"
@@ -102,6 +103,19 @@ struct CompiledParticleBoundsProgram
     }
 };
 
+struct CompiledParticleMigrationProgram
+{
+    std::array<std::vector<uint32_t>, 2> shaders;
+
+    [[nodiscard]] particle::GpuParticleMigrationProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+        };
+    }
+};
+
 CompiledParticleSortProgram CompileParticleSortProgram()
 {
     InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
@@ -149,6 +163,24 @@ CompiledParticleBoundsProgram CompileParticleBoundsProgram()
         {particle::GpuParticleBoundsShaderSources::Reduce(), "Infernux/ParticleBoundsReduce.comp"},
     }};
     CompiledParticleBoundsProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleMigrationProgram CompileParticleMigrationProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 2> sources = {{
+        {particle::GpuParticleMigrationShaderSources::Reset(), "Infernux/ParticleMigrationReset.comp"},
+        {particle::GpuParticleMigrationShaderSources::Migrate(), "Infernux/ParticleMigration.comp"},
+    }};
+    CompiledParticleMigrationProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
         const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
         if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
@@ -406,11 +438,14 @@ void InxRenderer::PreparePipeline()
         const auto particleBoundsProgram = CompileParticleBoundsProgram();
         if (!particleBoundsProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle bounds kernels");
+        const auto particleMigrationProgram = CompileParticleMigrationProgram();
+        if (!particleMigrationProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
         if (!m_particleGpuSystemManager->Initialize(
                 m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetDeletionQueue(),
                 *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
                 std::move(particleTextureVersionResolver), particleSortProgram.View(), particleCullProgram.View(),
-                particleBoundsProgram.View())) {
+                particleBoundsProgram.View(), particleMigrationProgram.View())) {
             m_particleGpuSystemManager.reset();
             INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         }

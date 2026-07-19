@@ -68,8 +68,7 @@ class GpuParticleEmitterController:
         if not isinstance(settings, EmitterSettings):
             raise TypeError("GPU particle controller migration requires EmitterSettings")
         if (
-            settings.capacity != self.settings.capacity
-            or settings.simulation_space != self.settings.simulation_space
+            settings.simulation_space != self.settings.simulation_space
             or settings.bursts != self.settings.bursts
         ):
             raise ValueError("GPU particle controller settings require an emitter restart")

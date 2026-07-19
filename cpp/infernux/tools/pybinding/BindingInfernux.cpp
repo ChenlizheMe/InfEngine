@@ -87,6 +87,37 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     program.stateStride = py::cast<uint32_t>(value["state_stride"]);
     if (value.contains("preserve_state"))
         program.preserveState = py::cast<bool>(value["preserve_state"]);
+    if (value.contains("migration") && !value["migration"].is_none()) {
+        const py::dict migration = py::cast<py::dict>(value["migration"]);
+        for (const char *field : {"source_stride", "destination_stride", "copy_ranges", "default_state_words"}) {
+            if (!migration.contains(field))
+                throw std::invalid_argument(std::string("GPU particle migration is missing ") + field);
+        }
+        particle::GpuParticleEmitterProgram::StateMigration decoded;
+        decoded.sourceStride = py::cast<uint32_t>(migration["source_stride"]);
+        decoded.destinationStride = py::cast<uint32_t>(migration["destination_stride"]);
+        decoded.defaultStateWords = py::cast<std::vector<uint32_t>>(migration["default_state_words"]);
+        const py::sequence ranges = py::cast<py::sequence>(migration["copy_ranges"]);
+        decoded.copyRanges.reserve(ranges.size());
+        for (const py::handle item : ranges) {
+            if (!py::isinstance<py::dict>(item))
+                throw std::invalid_argument("GPU particle migration copy ranges must contain dictionaries");
+            const py::dict range = py::reinterpret_borrow<py::dict>(item);
+            for (const char *field : {"source_offset", "destination_offset", "byte_size"}) {
+                if (!range.contains(field))
+                    throw std::invalid_argument(std::string("GPU particle migration range is missing ") + field);
+            }
+            const uint32_t sourceOffset = py::cast<uint32_t>(range["source_offset"]);
+            const uint32_t destinationOffset = py::cast<uint32_t>(range["destination_offset"]);
+            const uint32_t byteSize = py::cast<uint32_t>(range["byte_size"]);
+            if (sourceOffset % sizeof(uint32_t) != 0 || destinationOffset % sizeof(uint32_t) != 0 || byteSize == 0 ||
+                byteSize % sizeof(uint32_t) != 0)
+                throw std::invalid_argument("GPU particle migration range must be uint32 aligned");
+            decoded.copyRanges.push_back({sourceOffset / sizeof(uint32_t), destinationOffset / sizeof(uint32_t),
+                                          byteSize / sizeof(uint32_t), 0});
+        }
+        program.migration = std::move(decoded);
+    }
 
     const py::dict stages = py::cast<py::dict>(value["stages"]);
     for (size_t index = 0; index < StageNames.size(); ++index) {
