@@ -196,7 +196,6 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     cache_manifest = json.loads(
         (cache_root / ("a" * 64) / "runtime-pack.json").read_text(encoding="utf-8")
     )
-    assert cache_manifest["schema_version"] == 4
     assert cache_manifest["compression"] == "zip-deflate-9"
     assert cache_manifest["lto"] is True
     assert cache_manifest["file_count"] == 2
@@ -418,7 +417,6 @@ def test_windows_launcher_layout_hides_runtime_payload(tmp_path, monkeypatch):
     assert (data_root / "Runtime" / "python312.dll").read_bytes() == b"python"
     assert (data_root / "RuntimeModules" / "core" / "core-module.zip").read_bytes() == b"core"
     layout = json.loads((data_root / "PlayerLayout.json").read_text(encoding="utf-8"))
-    assert layout["schema_version"] == 3
     assert layout["layout"] == "infernux-windows-player"
 
 

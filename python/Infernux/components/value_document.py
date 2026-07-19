@@ -3,8 +3,6 @@ from __future__ import annotations
 
 
 TYPE_KEY = "$type"
-VERSION_KEY = "$version"
-SCHEMA_VERSION = 1
 
 ENUM = "enum"
 GAME_OBJECT_REF = "game_object_ref"
@@ -14,7 +12,7 @@ SERIALIZABLE_OBJECT = "serializable_object"
 
 
 def make_document(document_type: str, **payload) -> dict:
-    return {TYPE_KEY: document_type, VERSION_KEY: SCHEMA_VERSION, **payload}
+    return {TYPE_KEY: document_type, **payload}
 
 
 def make_enum(enum_type: str, name: str) -> dict:

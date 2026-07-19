@@ -397,7 +397,6 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
             if not new_ref["guid"] and not new_ref["shader_id"]:
                 return
             shaders[shader_key] = new_ref
-            mat_data["material_version"] = 4
             changed = True
             change_key = f"shader.{shader_key}"
             requires_deserialize = True
@@ -1010,7 +1009,6 @@ def _on_shader_drop(path: str, required_ext: str, shaders_dict: dict):
         reference = shader_utils.make_shader_reference(path, required_ext)
         shaders_dict[key] = reference
         if reference != old and _cached_data:
-            _cached_data["material_version"] = 4
             vert_id = shader_utils.shader_ref_id(shaders_dict.get("vertex", ""))
             frag_id = shader_utils.shader_ref_id(shaders_dict.get("fragment", ""))
             shader_utils.sync_all_shader_properties(_cached_data, vert_id, frag_id, remove_unknown=True)

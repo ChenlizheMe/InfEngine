@@ -518,7 +518,7 @@ nlohmann::json Transform::SerializeDocument() const
 void Transform::ValidateSerializedDocument(const nlohmann::json &document)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(document, "Transform", 1, {"position", "rotation", "scale"});
+    ValidateComponentDocument(document, "Transform", {"position", "rotation", "scale"});
     RequireFiniteVector(document, "position", 3, "Transform");
     RequireFiniteVector(document, "rotation", 3, "Transform");
     RequireFiniteVector(document, "scale", 3, "Transform");

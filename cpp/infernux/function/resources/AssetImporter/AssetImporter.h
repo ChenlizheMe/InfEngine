@@ -48,7 +48,6 @@ struct ImportArtifact
     {
         RuntimeArtifactKind kind = RuntimeArtifactKind::Primary;
         ResourceType resourceType = ResourceType::DefaultBinary;
-        uint32_t formatVersion = 0;
         std::string bytes;
     };
 

@@ -21,7 +21,6 @@ from .script import ParticleScriptCompiler
 
 
 PARTICLE_ARTIFACT_SCHEMA = "infernux.particle_artifact"
-PARTICLE_ARTIFACT_VERSION = 12
 
 
 class ParticleArtifactError(ValueError):
@@ -115,7 +114,6 @@ class ParticleArtifactRegistry:
         revision = cls._revision + 1
         payload = {
             "$schema": PARTICLE_ARTIFACT_SCHEMA,
-            "$version": PARTICLE_ARTIFACT_VERSION,
             "source_key": key,
             "source_hash": source_hash,
             "source_kind": source_kind,
@@ -194,8 +192,11 @@ class ParticleArtifactRegistry:
             payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
             if (
                 type(payload) is not dict
+                or set(payload) != {
+                    "$schema", "source_key", "source_hash", "source_kind", "revision",
+                    "semantic_hash", "behavior_hash", "hir", "kernel_ir", "gpu_glsl", "gpu_spirv",
+                }
                 or payload.get("$schema") != PARTICLE_ARTIFACT_SCHEMA
-                or payload.get("$version") != PARTICLE_ARTIFACT_VERSION
                 or payload.get("source_key") != key
                 or payload.get("source_hash") != source_hash
                 or payload.get("source_kind") != source_kind
@@ -305,7 +306,6 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
 
 __all__ = [
     "PARTICLE_ARTIFACT_SCHEMA",
-    "PARTICLE_ARTIFACT_VERSION",
     "ParticleArtifact",
     "ParticleArtifactError",
     "ParticleArtifactRegistry",

@@ -19,8 +19,6 @@ enum class PhysicsMaterialCombine : uint8_t
 class PhysicMaterial
 {
   public:
-    static constexpr int SchemaVersion = 1;
-
     [[nodiscard]] float GetFriction() const
     {
         return m_friction;

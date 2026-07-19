@@ -80,7 +80,7 @@ KERNEL_RUNTIME_UNIFORMS: Mapping[str, TypeRef] = {
     "delta_time": TypeRef(ValueType.F32),
 }
 
-RANDOM_ALGORITHM = "inx_hash32_v1"
+RANDOM_ALGORITHM = "inx_hash32"
 RANDOM_FLOAT_MAPPING = "high24_div_2pow24"
 RANDOM_KEY_FIELDS = (
     "system_seed",
@@ -103,7 +103,7 @@ class KernelRuntimeContract:
     pause_policy: str = "no_spawn_no_update_no_step_increment"
     capacity_policy: str = "drop_newest"
     unwritten_attribute_policy: str = "schema_default"
-    shape_sampling: str = "infernux_shape_v1"
+    shape_sampling: str = "infernux_shape"
     random_algorithm: str = RANDOM_ALGORITHM
     random_float_mapping: str = RANDOM_FLOAT_MAPPING
     random_key_fields: tuple[str, ...] = RANDOM_KEY_FIELDS
@@ -125,7 +125,7 @@ class KernelRuntimeContract:
             raise KernelSemanticError("unsupported particle capacity policy")
         if self.unwritten_attribute_policy != "schema_default":
             raise KernelSemanticError("unsupported particle unwritten-attribute policy")
-        if self.shape_sampling != "infernux_shape_v1":
+        if self.shape_sampling != "infernux_shape":
             raise KernelSemanticError("unsupported particle shape-sampling contract")
         if self.random_algorithm != RANDOM_ALGORITHM:
             raise KernelSemanticError("unsupported particle random algorithm")

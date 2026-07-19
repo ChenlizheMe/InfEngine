@@ -89,7 +89,6 @@ class TestSerialization:
         s = Stats()
         data = s._serialize()
         assert data["$type"] == "serializable_object"
-        assert data["$version"] == 1
         assert data["type_id"] == get_serializable_type_id(Stats)
         assert data["fields"]["hp"] == 100
 
@@ -141,7 +140,7 @@ class TestSerialization:
     @pytest.mark.parametrize(
         "mutate, error",
         [
-            (lambda data: data.pop("$version"), "invalid"),
+            (lambda data: data.__setitem__("unknown", 1), "invalid"),
             (lambda data: data.__setitem__("type_id", "removed:Type"), "unknown"),
         ],
     )

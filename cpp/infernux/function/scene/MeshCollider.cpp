@@ -698,7 +698,7 @@ nlohmann::json MeshCollider::SerializeDocument() const
 void MeshCollider::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "MeshCollider", 1, {"is_trigger", "center", "physic_material_guid", "convex"});
+    ValidateComponentDocument(j, "MeshCollider", {"is_trigger", "center", "physic_material_guid", "convex"});
     RequireBoolean(j, "is_trigger", "MeshCollider");
     RequireFiniteVector(j, "center", 3, "MeshCollider");
     RequireString(j, "physic_material_guid", "MeshCollider");

@@ -38,7 +38,7 @@ class Override:
 # ─── Core diff ────────────────────────────────────────────────────────────
 
 _SKIP_KEYS = frozenset({
-    "id", "local_id", "schema_version", "children", "components",
+    "id", "local_id", "children", "components",
     "transform", "prefab_guid", "prefab_root",
 })
 

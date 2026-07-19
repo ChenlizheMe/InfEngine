@@ -221,7 +221,7 @@ class TestMeshImportSettings:
 
     def test_incomplete_importer_metadata_is_rejected(self):
         with pytest.raises(ValueError):
-            MeshImportSettings.from_dict({"importer_version": 1, "flip_uvs": False})
+            MeshImportSettings.from_dict({"flip_uvs": False})
 
     def test_copy(self):
         s = MeshImportSettings(optimize_mesh=False)
@@ -340,7 +340,6 @@ class TestReadMetaGuid:
         asset = tmp_path / "model.fbx"
         asset.write_bytes(b"fbx")
         meta = {
-            "meta_version": 2,
             "metadata": {
                 "guid": {"type": "string", "value": "abc123def456"},
             },
@@ -368,7 +367,6 @@ class TestNativeResourceMetaSchema:
         from Infernux.lib import ResourceMeta
 
         valid = {
-            "meta_version": 2,
             "metadata": {
                 "guid": {"type": "string", "value": "strict-guid"},
                 "resource_type": {
@@ -382,9 +380,6 @@ class TestNativeResourceMetaSchema:
         assert meta.serialize_document() == valid
 
         invalid_documents = []
-        old_version = json.loads(json.dumps(valid))
-        old_version["meta_version"] = 1
-        invalid_documents.append(old_version)
         unknown_field = json.loads(json.dumps(valid))
         unknown_field["legacy_guid"] = "strict-guid"
         invalid_documents.append(unknown_field)

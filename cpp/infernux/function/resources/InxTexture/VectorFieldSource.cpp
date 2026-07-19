@@ -66,12 +66,9 @@ TextureCpuData VectorFieldSource::Decode(std::string_view document)
         throw std::invalid_argument(std::string("vector field JSON is invalid: ") + exception.what());
     }
 
-    RequireExactKeys(root, {"$schema", "$version", "dimensions", "storage_order", "bake_basis", "vectors"},
-                     "vector field");
+    RequireExactKeys(root, {"$schema", "dimensions", "storage_order", "bake_basis", "vectors"}, "vector field");
     if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.vector_field")
         throw std::invalid_argument("vector field $schema must be 'infernux.vector_field'");
-    if (!root["$version"].is_number_integer() || root["$version"].get<int64_t>() != FormatVersion)
-        throw std::invalid_argument("vector field $version is unsupported");
     if (!root["storage_order"].is_string() || root["storage_order"].get<std::string>() != "x_fastest")
         throw std::invalid_argument("vector field storage_order must be 'x_fastest'");
 

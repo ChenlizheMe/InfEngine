@@ -100,7 +100,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "For material assets, call material_create and material_set_shader with IDs verified by shader_describe. Runtime scripts may use Material.vert_shader_name/frag_shader_name.",
         ],
         "common_mistakes": [
-            "Do not mix two competing ShaderInfo blocks in one asset. Name is the stable shader ID and Version must currently be 1.",
+            "Do not mix two competing ShaderInfo blocks in one asset. Name is the stable shader ID.",
             "Do not write layout(set=...), layout(binding=...), or layout(location=...) in normal ShaderInfo shaders.",
             "Do not assign a .shadingmodel or .glsl library as Material.frag_shader_name.",
             "Do not invent property names in Material unless the shader declares them or intentionally uses dynamic properties.",
@@ -116,7 +116,6 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             },
             "shader_info": {
                 "Name": "Stable shader ID used by materials and RenderGraph.",
-                "Version": "Schema version. Use 1.",
                 "ShadingModel": "Fragment lighting model such as pbr or unlit.",
                 "Properties": "Typed declarations such as Float amount = 0.5 Range(0.0, 1.0), Color tint = [...] HDR, or Texture2D albedo = white.",
                 "Imports": "List of GLSL library IDs, for example Imports [\"lib/common\", \"lib/color\"].",
@@ -830,7 +829,6 @@ def _parse_shader_annotations(path: str) -> dict[str, Any]:
             "shading_model": str(metadata.get("shader_lighting_type") or ""),
             "queue": metadata.get("shader_queue", ""),
             "schema_format": str(metadata.get("shader_schema_format") or ""),
-            "schema_version": metadata.get("shader_schema_version", 0),
         }
 
     # Migration fallback for source files that have not been imported yet.

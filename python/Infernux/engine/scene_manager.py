@@ -41,9 +41,7 @@ KEY_RIGHT_CTRL = 531 # Right Ctrl
 
 
 def _empty_scene_document(name: str) -> dict:
-    # Must match Scene::DeserializeDocument / GameObject schema_version 2.
     return {
-        "schema_version": 2,
         "name": name,
         "isPlaying": False,
         "objects": [],

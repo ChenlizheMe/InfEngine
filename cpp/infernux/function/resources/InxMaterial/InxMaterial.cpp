@@ -654,7 +654,6 @@ void InxMaterial::SyncAlphaClipProperty()
 nlohmann::json InxMaterial::SerializeDocument() const
 {
     json j;
-    j["material_version"] = 4;
     j["name"] = m_name;
     j["builtin"] = m_builtin;
 

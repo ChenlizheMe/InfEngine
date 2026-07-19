@@ -39,7 +39,7 @@ nlohmann::json Camera::SerializeDocument() const
 void Camera::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "Camera", 1,
+    ValidateComponentDocument(j, "Camera",
                               {"projectionMode", "fov", "aspectRatio", "orthoSize", "nearClip", "farClip", "depth",
                                "cullingMask", "clearFlags", "backgroundColor"});
     const int projectionMode = RequireInteger(j, "projectionMode", "Camera");

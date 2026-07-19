@@ -6,7 +6,6 @@ RENDER_EFFECT_EXTENSION: str
 RENDER_EFFECT_GROUP_EXTENSION: str
 RENDER_EFFECT_SCHEMA: str
 RENDER_EFFECT_GROUP_SCHEMA: str
-RENDER_EFFECT_SCHEMA_VERSION: int
 
 class EffectAssetReference:
     guid: str
@@ -18,13 +17,11 @@ class RenderEffectAsset:
     feature_type: str
     parameters: Mapping[str, Any]
     dependencies: tuple[EffectAssetReference, ...]
-    schema_version: int
     def __init__(
         self,
         feature_type: str,
         parameters: Mapping[str, Any] = ...,
         dependencies: tuple[EffectAssetReference, ...] = ...,
-        schema_version: int = ...,
     ) -> None: ...
     def to_dict(self) -> dict[str, Any]: ...
 
@@ -44,11 +41,9 @@ class RenderEffectGroupEntry:
 
 class RenderEffectGroupAsset:
     entries: tuple[RenderEffectGroupEntry, ...]
-    schema_version: int
     def __init__(
         self,
         entries: tuple[RenderEffectGroupEntry, ...] = ...,
-        schema_version: int = ...,
     ) -> None: ...
     def to_dict(self) -> dict[str, Any]: ...
 

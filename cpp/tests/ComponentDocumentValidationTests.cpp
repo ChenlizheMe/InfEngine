@@ -14,15 +14,24 @@ using nlohmann::json;
 json MakeDocument()
 {
     return {
-        {"schema_version", 1}, {"type", "Example"}, {"enabled", true}, {"execution_order", 0}, {"value", 7},
+        {"type", "Example"},
+        {"enabled", true},
+        {"execution_order", 0},
+        {"value", 7},
     };
 }
 
-void VerifyRemovedFieldsAreIgnored()
+void VerifyUnknownFieldsAreRejected()
 {
     auto document = MakeDocument();
-    document["removed_field"] = "preserved only in the old asset";
-    ValidateComponentDocument(document, "Example", 1, {"value"});
+    document["removed_field"] = "old asset payload";
+    bool rejected = false;
+    try {
+        ValidateComponentDocument(document, "Example", {"value"});
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    assert(rejected);
 }
 
 void VerifyEnvelopeAndCurrentFieldsRemainStrict()
@@ -31,7 +40,7 @@ void VerifyEnvelopeAndCurrentFieldsRemainStrict()
     document["type"] = "Other";
     bool rejected = false;
     try {
-        ValidateComponentDocument(document, "Example", 1, {"value"});
+        ValidateComponentDocument(document, "Example", {"value"});
     } catch (const std::invalid_argument &) {
         rejected = true;
     }
@@ -41,7 +50,7 @@ void VerifyEnvelopeAndCurrentFieldsRemainStrict()
     document.erase("value");
     rejected = false;
     try {
-        ValidateComponentDocument(document, "Example", 1, {"value"});
+        ValidateComponentDocument(document, "Example", {"value"});
     } catch (const std::invalid_argument &) {
         rejected = true;
     }
@@ -52,7 +61,7 @@ void VerifyEnvelopeAndCurrentFieldsRemainStrict()
 
 int main()
 {
-    VerifyRemovedFieldsAreIgnored();
+    VerifyUnknownFieldsAreRejected();
     VerifyEnvelopeAndCurrentFieldsRemainStrict();
     std::cout << "Component document validation tests passed\n";
     return 0;

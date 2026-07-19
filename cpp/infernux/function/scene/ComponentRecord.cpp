@@ -16,11 +16,14 @@ constexpr const char *NATIVE_TYPE_PREFIX = "native:infernux.";
 constexpr const char *PYTHON_TYPE_PREFIX = "python:";
 
 const std::unordered_set<std::string> RECORD_FIELDS = {
-    "component_id", "type_id", "type_version", "enabled", "execution_order", "data",
+    "component_id", "type_id", "enabled", "execution_order", "data",
 };
 
 const std::unordered_set<std::string> COMPONENT_BASE_FIELDS = {
-    "schema_version", "type", "component_id", "enabled", "execution_order",
+    "type",
+    "component_id",
+    "enabled",
+    "execution_order",
 };
 
 void RequireExactFields(const json &document, const std::unordered_set<std::string> &allowed, const char *label)
@@ -90,9 +93,7 @@ nlohmann::json SerializeComponentRecord(const Component &component)
         record["enabled"] = proxyDocument.at("enabled");
         record["execution_order"] = proxyDocument.at("execution_order");
         json fields = proxyDocument.at("py_fields");
-        if (!fields.is_object() || !fields.contains("__schema_version__") ||
-            !fields["__schema_version__"].is_number_integer() || fields["__schema_version__"].get<int>() <= 0 ||
-            !fields.contains("__type_name__") || !fields["__type_name__"].is_string() ||
+        if (!fields.is_object() || !fields.contains("__type_name__") || !fields["__type_name__"].is_string() ||
             fields["__type_name__"].get<std::string>() != pythonProxy->GetPyTypeName() ||
             !fields.contains("__component_id__") || !fields["__component_id__"].is_number_unsigned() ||
             fields["__component_id__"].get<uint64_t>() != component.GetComponentID()) {
@@ -102,8 +103,6 @@ nlohmann::json SerializeComponentRecord(const Component &component)
         record["type_id"] = std::string(PYTHON_TYPE_PREFIX) + pythonProxy->GetScriptGuid() + ":" +
                             pythonProxy->GetTypeGuid() + ":" + pythonProxy->GetModuleName() + ":" +
                             pythonProxy->GetQualifiedName();
-        record["type_version"] = fields["__schema_version__"];
-        fields.erase("__schema_version__");
         fields.erase("__type_name__");
         fields.erase("__component_id__");
         record["data"] = std::move(fields);
@@ -111,16 +110,13 @@ nlohmann::json SerializeComponentRecord(const Component &component)
     }
 
     json componentDocument = component.SerializeDocument();
-    if (!componentDocument.is_object() || !componentDocument.contains("schema_version") ||
-        !componentDocument["schema_version"].is_number_integer() ||
-        componentDocument["schema_version"].get<int>() <= 0 || !componentDocument.contains("type") ||
+    if (!componentDocument.is_object() || !componentDocument.contains("type") ||
         !componentDocument["type"].is_string() ||
         componentDocument["type"].get<std::string>() != component.GetTypeName()) {
         throw std::logic_error("native component returned an invalid typed document");
     }
 
     record["type_id"] = std::string(NATIVE_TYPE_PREFIX) + component.GetTypeName();
-    record["type_version"] = componentDocument["schema_version"];
     for (const auto &field : COMPONENT_BASE_FIELDS)
         componentDocument.erase(field);
     record["data"] = std::move(componentDocument);
@@ -134,8 +130,6 @@ DecodedComponentRecord DecodeComponentRecord(const nlohmann::json &document)
         throw std::invalid_argument("ComponentRecord.component_id must be a non-zero unsigned integer");
     if (!document["type_id"].is_string() || document["type_id"].get_ref<const std::string &>().empty())
         throw std::invalid_argument("ComponentRecord.type_id must be a non-empty string");
-    if (!document["type_version"].is_number_integer() || document["type_version"].get<int>() <= 0)
-        throw std::invalid_argument("ComponentRecord.type_version must be a positive integer");
     if (!document["enabled"].is_boolean())
         throw std::invalid_argument("ComponentRecord.enabled must be boolean");
     if (!document["execution_order"].is_number_integer())
@@ -146,7 +140,6 @@ DecodedComponentRecord DecodeComponentRecord(const nlohmann::json &document)
     DecodedComponentRecord record;
     record.componentId = document["component_id"].get<uint64_t>();
     record.typeId = document["type_id"].get<std::string>();
-    record.typeVersion = document["type_version"].get<int>();
     record.enabled = document["enabled"].get<bool>();
     record.executionOrder = document["execution_order"].get<int>();
     record.data = document["data"];
@@ -167,7 +160,6 @@ DecodedComponentRecord DecodeComponentRecord(const nlohmann::json &document)
         throw std::invalid_argument(
             "Python ComponentRecord.type_id must encode script GUID, type GUID, module, and qualname");
     static const std::unordered_set<std::string> pythonMetadata = {
-        "__schema_version__",
         "__type_name__",
         "__component_id__",
     };
@@ -186,7 +178,6 @@ nlohmann::json BuildNativeComponentDocument(const DecodedComponentRecord &record
     if (record.kind != ComponentRecordKind::Native)
         throw std::invalid_argument("cannot build a native document from a Python ComponentRecord");
     json document = record.data;
-    document["schema_version"] = record.typeVersion;
     document["type"] = record.nativeTypeName;
     document["component_id"] = record.componentId;
     document["enabled"] = record.enabled;
@@ -199,7 +190,6 @@ nlohmann::json BuildPythonFieldsDocument(const DecodedComponentRecord &record)
     if (record.kind != ComponentRecordKind::Python)
         throw std::invalid_argument("cannot build Python fields from a native ComponentRecord");
     json document = record.data;
-    document["__schema_version__"] = record.typeVersion;
     document["__type_name__"] = record.pythonTypeName;
     document["__component_id__"] = record.componentId;
     return document;

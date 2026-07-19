@@ -1,4 +1,4 @@
-"""serialized_field v2 — annotation-driven Unity-style field declarations.
+"""Annotation-driven Unity-style serialized field declarations.
 
 Covers:
 - bare typed defaults (``health: int = 100``)
@@ -271,7 +271,7 @@ class TestStrictSerializationFailures:
     @pytest.mark.parametrize(
         "mutate, error",
         [
-            (lambda data: data.__setitem__("__schema_version__", 0), "requires schema"),
+            (lambda data: data.__setitem__("removed_field", 0), "fields mismatch"),
             (lambda data: data.__setitem__("__type_name__", "Other"), "type mismatch"),
             (lambda data: data.__setitem__("health", "bad"), "requires an integer"),
         ],
@@ -328,21 +328,16 @@ class TestStrictSerializationFailures:
         with pytest.raises(ValueError, match="serialized fields mismatch"):
             EvolvingFields()._deserialize_fields(json.dumps(document))
 
-    def test_runtime_schema_migration_hook_is_not_used(self):
+    def test_unknown_metadata_is_rejected(self):
         import json
 
-        class NoRuntimeMigration(InxComponent):
-            __schema_version__ = 2
+        class CurrentFields(InxComponent):
             value: int = 3
 
-            @classmethod
-            def __migrate__(cls, data, from_version):
-                raise AssertionError("runtime migration must not run")
-
-        document = json.loads(NoRuntimeMigration()._serialize_fields())
-        document["__schema_version__"] = 1
-        with pytest.raises(ValueError, match="requires schema 2"):
-            NoRuntimeMigration()._deserialize_fields(json.dumps(document))
+        document = json.loads(CurrentFields()._serialize_fields())
+        document["__unknown__"] = 1
+        with pytest.raises(ValueError, match="serialized fields mismatch"):
+            CurrentFields()._deserialize_fields(json.dumps(document))
 
     def test_all_fields_validate_before_any_decode(self, monkeypatch):
         class ValidateFirst(InxComponent):

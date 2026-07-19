@@ -23,9 +23,6 @@ from typing import Any, Dict, List, Optional
 from Infernux.core.animation_event import AnimationEvent, events_from_list
 
 
-ANIMATION_CLIP3D_SCHEMA_VERSION = 1
-
-
 def is_asset_guid_string(s: str) -> bool:
     """True for dashed UUIDs or 32 hex chars (no hyphens) as used in the asset database."""
     t = (s or "").strip()
@@ -88,7 +85,6 @@ class AnimationClip3D:
     """A single 3D animation clip — references a model + named take."""
 
     name: str = "New Animation Clip 3D"
-    schema_version: int = ANIMATION_CLIP3D_SCHEMA_VERSION
 
     # Source skeletal model (FBX/GLTF/etc.) — GUID is authoritative when present.
     source_model_guid: str = ""
@@ -113,7 +109,6 @@ class AnimationClip3D:
 
     def to_dict(self) -> dict:
         return {
-            "schema_version": int(self.schema_version),
             "name": self.name,
             "source_model_guid": self.source_model_guid,
             "source_model_path": self.source_model_path,
@@ -126,7 +121,6 @@ class AnimationClip3D:
     @classmethod
     def from_dict(cls, d: dict) -> "AnimationClip3D":
         expected = {
-            "schema_version",
             "name",
             "source_model_guid",
             "source_model_path",
@@ -140,10 +134,6 @@ class AnimationClip3D:
             raise ValueError(
                 f"animation clip 3D fields mismatch; "
                 f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
-            )
-        if d["schema_version"] != ANIMATION_CLIP3D_SCHEMA_VERSION:
-            raise ValueError(
-                f"animation clip 3D schema_version must be {ANIMATION_CLIP3D_SCHEMA_VERSION}"
             )
         string_fields = ("name", "source_model_guid", "source_model_path", "take_name")
         if any(type(d[name]) is not str for name in string_fields):
@@ -160,7 +150,6 @@ class AnimationClip3D:
             raise TypeError("events must be an array")
         return cls(
             name=d["name"],
-            schema_version=d["schema_version"],
             source_model_guid=d["source_model_guid"],
             source_model_path=d["source_model_path"],
             take_name=d["take_name"],

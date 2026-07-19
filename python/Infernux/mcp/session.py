@@ -484,7 +484,6 @@ def _write_attempt_manifest(active: McpSession, trace: dict[str, Any]) -> str:
     trace_id = str(trace.get("trace_id", "") or "")
     trace_path = active.last_trace_path or _expected_trace_path(trace_id)
     payload = {
-        "schema_version": 2,
         "kind": "infernux.mcp.attempt_manifest",
         "generated_at": time.time(),
         "session": {
@@ -524,7 +523,6 @@ def _write_persistence_proof(active: McpSession, trace: dict[str, Any]) -> str:
     delta = checkpoint_store.diff_ledgers(active.attempt_baseline_ledger, current_ledger)
     trace_id = str(trace.get("trace_id", "") or "")
     payload = {
-        "schema_version": 1,
         "kind": "infernux.mcp.attempt_persistence_proof",
         "generated_at": time.time(),
         "session_id": active.session_id,
@@ -552,7 +550,6 @@ def _write_persistence_proof(active: McpSession, trace: dict[str, Any]) -> str:
 def _capture_build_identity(policy: dict[str, Any], build_profile: str) -> dict[str, Any]:
     source_root = _find_source_root()
     return {
-        "schema_version": 2,
         "captured_at": time.time(),
         "source_root": source_root,
         "package_version": _read_package_version(source_root),

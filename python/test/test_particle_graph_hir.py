@@ -43,13 +43,11 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     assert restored.semantic_hash() == asset.semantic_hash()
 
 
-def test_particle_graph_rejects_noncanonical_version():
-    value = ParticleGraphAsset(stable_id="legacy-particle").to_dict()
-    value["$version"] = 1
-    for emitter in value["emitters"]:
-        emitter.pop("data_interfaces")
+def test_particle_graph_rejects_unknown_field():
+    value = ParticleGraphAsset(stable_id="current-particle").to_dict()
+    value["unknown"] = 1
 
-    with pytest.raises(ParticleGraphSchemaError, match="schema or version"):
+    with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
         ParticleGraphAsset.from_dict(value)
 
 
@@ -234,7 +232,7 @@ def test_particle_stage_value_links_use_common_typed_expression_ir():
         links=(
             GraphLinkRecord("s1", "root.update", "out", "gravity", "in", PortKind.STREAM),
             GraphLinkRecord("v1", "a", "value", "add", "a"),
-            GraphLinkRecord("v2", "b", "value", "add", "b"),
+            GraphLinkRecord("link_b", "b", "value", "add", "b"),
             GraphLinkRecord("v3", "add", "result", "normalize", "value"),
             GraphLinkRecord("v4", "normalize", "result", "gravity", "value"),
         ),
@@ -548,7 +546,6 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
         "rendering",
     }
     assert graph_artifact.gpu_spirv["target"] == "vulkan1.2-spirv1.5"
-    assert graph_artifact.gpu_spirv["$version"] == 2
     assert graph_artifact.gpu_spirv["kernel_hash"] == graph_artifact.kernel_ir["kernel_hash"]
     assert set(graph_artifact.gpu_spirv["emitters"][0]["stages"]) == set(
         graph_artifact.gpu_glsl["emitters"][0]["stages"]

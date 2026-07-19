@@ -245,31 +245,30 @@ class TestPhysicsSettings:
         with pytest.raises(PhysicsSettingsError):
             load_physics_settings(project)
 
-    def test_load_legacy_document_without_schema_is_rejected(self, tmp_path):
+    def test_load_current_document(self, tmp_path):
         project = str(tmp_path)
         ps_dir = os.path.join(project, "ProjectSettings")
         os.makedirs(ps_dir, exist_ok=True)
         with open(os.path.join(ps_dir, "PhysicsSettings.json"), "w", encoding="utf-8") as file:
             json.dump(dict(DEFAULT_PHYSICS_SETTINGS), file)
-        with pytest.raises(PhysicsSettingsError):
-            load_physics_settings(project)
+        assert load_physics_settings(project) == DEFAULT_PHYSICS_SETTINGS
 
-    def test_save_uses_current_schema_and_leaves_no_temporary_file(self, tmp_path):
+    def test_save_uses_current_fields_and_leaves_no_temporary_file(self, tmp_path):
         project = str(tmp_path)
         save_physics_settings(project, dict(DEFAULT_PHYSICS_SETTINGS))
         path = settings_path(project)
         with open(path, encoding="utf-8") as file:
             document = json.load(file)
-        assert document["schema_version"] == 2
+        assert document == DEFAULT_PHYSICS_SETTINGS
         assert list((tmp_path / "ProjectSettings").glob("PhysicsSettings.json.tmp.*")) == []
 
-    def test_schema_one_document_is_rejected(self, tmp_path):
+    def test_unknown_field_is_rejected(self, tmp_path):
         project_settings = tmp_path / "ProjectSettings"
         project_settings.mkdir()
-        document = {"schema_version": 1, **DEFAULT_PHYSICS_SETTINGS}
+        document = {"unknown": 1, **DEFAULT_PHYSICS_SETTINGS}
         (project_settings / "PhysicsSettings.json").write_text(json.dumps(document), encoding="utf-8")
 
-        with pytest.raises(PhysicsSettingsError, match="schema_version 2"):
+        with pytest.raises(PhysicsSettingsError, match="unknown physics settings fields"):
             load_physics_settings(str(tmp_path))
 
     def test_native_timestep_rejects_invalid_values(self):

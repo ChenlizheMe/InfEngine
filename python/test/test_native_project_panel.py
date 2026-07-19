@@ -53,7 +53,6 @@ class TestProjectPanelCreation:
         path = tmp_path / "Ice.physicMaterial"
         assert database.paths == [str(path)]
         assert json.loads(path.read_text(encoding="utf-8")) == {
-            "schema_version": 1,
             "friction": 0.4,
             "bounciness": 0.0,
             "friction_combine": 0,
@@ -70,7 +69,7 @@ class TestProjectPanelCreation:
         pp.open_particle_graph("/path/Smoke.particlegraph")
         assert opened == ["/path/Smoke.particlegraph"]
 
-    def test_create_material_writes_schema_v4_document(self, tmp_path, engine):
+    def test_create_material_writes_current_document(self, tmp_path, engine):
         from Infernux.lib import InxMaterial
 
         class RecordingAssetDatabase:
@@ -93,7 +92,7 @@ class TestProjectPanelCreation:
         path = tmp_path / "NewMaterial.mat"
         assert database.paths == [str(path)]
         document = json.loads(path.read_text(encoding="utf-8"))
-        assert document["material_version"] == 4
+        assert "material_version" not in document
         assert document["shaders"]["vertex"]["shader_id"] == "standard"
         assert document["shaders"]["fragment"]["shader_id"] == "unlit"
         assert document["name"] == "NewMaterial"
@@ -106,7 +105,7 @@ class TestProjectPanelCreation:
         from Infernux.core.assets import AssetManager
 
         path = tmp_path / "Fresh.mat"
-        path.write_text('{"material_version":3}', encoding="utf-8")
+        path.write_text('{"name":"Fresh"}', encoding="utf-8")
 
         class Native:
             def __init__(self):
@@ -130,9 +129,9 @@ class TestProjectPanelCreation:
         assert native.full_speed_requests == 1
 
         native.queries.clear()
-        AssetManager._prime_material_preview(str(path), '{"material_version":3}')
+        AssetManager._prime_material_preview(str(path), '{"name":"Fresh"}')
         assert native.queries == [(
-            f"matedit|{normalized}", normalized, '{"material_version":3}', 0,
+            f"matedit|{normalized}", normalized, '{"name":"Fresh"}', 0,
         )]
 
     def test_create_prefab_links_the_saved_source(self, tmp_path, monkeypatch):

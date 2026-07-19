@@ -23,7 +23,6 @@ class RenderEffectCompileError(ValueError):
 
 
 _ARTIFACT_SCHEMA = "infernux.render_effect_artifact"
-_ARTIFACT_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -94,7 +93,6 @@ class RenderEffectArtifactRegistry:
         next_revision = cls._revision + 1
         payload = {
             "$schema": _ARTIFACT_SCHEMA,
-            "$version": _ARTIFACT_VERSION,
             "source_key": key,
             "source_hash": source_hash,
             "structural_hash": structural_hash,
@@ -138,8 +136,11 @@ class RenderEffectArtifactRegistry:
             payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
             if (
                 type(payload) is not dict
+                or set(payload) != {
+                    "$schema", "source_key", "source_hash", "structural_hash",
+                    "kind", "revision", "source", "features",
+                }
                 or payload.get("$schema") != _ARTIFACT_SCHEMA
-                or payload.get("$version") != _ARTIFACT_VERSION
                 or payload.get("source_key") != key
                 or payload.get("source_hash") != source_hash
                 or payload.get("kind") not in {"effect", "group"}

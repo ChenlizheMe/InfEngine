@@ -12,7 +12,6 @@ RENDER_EFFECT_EXTENSION = ".effect"
 RENDER_EFFECT_GROUP_EXTENSION = ".effectgroup"
 RENDER_EFFECT_SCHEMA = "infernux.render_effect"
 RENDER_EFFECT_GROUP_SCHEMA = "infernux.render_effect_group"
-RENDER_EFFECT_SCHEMA_VERSION = 1
 
 _TYPE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 
@@ -43,14 +42,12 @@ class RenderEffectAsset:
     feature_type: str
     parameters: Mapping[str, Any] = field(default_factory=dict)
     dependencies: tuple[EffectAssetReference, ...] = ()
-    schema_version: int = RENDER_EFFECT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         feature_type = str(self.feature_type or "").strip()
         if not _TYPE_ID_PATTERN.fullmatch(feature_type):
             raise ValueError("feature_type must be a lowercase namespaced identifier")
         _require_json_object(self.parameters, "parameters")
-        _require_current_version(self.schema_version)
         object.__setattr__(self, "feature_type", feature_type)
         object.__setattr__(self, "parameters", _json_clone(dict(self.parameters)))
         dependencies = tuple(self.dependencies)
@@ -61,7 +58,6 @@ class RenderEffectAsset:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": RENDER_EFFECT_SCHEMA,
-            "$version": self.schema_version,
             "feature_type": self.feature_type,
             "parameters": _json_clone(dict(self.parameters)),
             "dependencies": [reference.to_dict() for reference in self.dependencies],
@@ -101,10 +97,8 @@ class RenderEffectGroupAsset:
     """An ordered reusable chain of effects or nested groups."""
 
     entries: tuple[RenderEffectGroupEntry, ...] = ()
-    schema_version: int = RENDER_EFFECT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        _require_current_version(self.schema_version)
         entries = tuple(self.entries)
         if not all(isinstance(value, RenderEffectGroupEntry) for value in entries):
             raise TypeError("entries must contain RenderEffectGroupEntry values")
@@ -116,7 +110,6 @@ class RenderEffectGroupAsset:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": RENDER_EFFECT_GROUP_SCHEMA,
-            "$version": self.schema_version,
             "entries": [entry.to_dict() for entry in self.entries],
         }
 
@@ -141,7 +134,7 @@ def parse_render_effect_document(value: str | bytes | Mapping[str, Any]) -> Rend
     if schema == RENDER_EFFECT_SCHEMA:
         _require_exact_keys(
             root,
-            {"$schema", "$version", "feature_type", "parameters", "dependencies"},
+            {"$schema", "feature_type", "parameters", "dependencies"},
             "render effect",
         )
         dependencies = _parse_references(root["dependencies"], "dependencies")
@@ -149,10 +142,9 @@ def parse_render_effect_document(value: str | bytes | Mapping[str, Any]) -> Rend
             feature_type=root["feature_type"],
             parameters=root["parameters"],
             dependencies=dependencies,
-            schema_version=root["$version"],
         )
     if schema == RENDER_EFFECT_GROUP_SCHEMA:
-        _require_exact_keys(root, {"$schema", "$version", "entries"}, "render effect group")
+        _require_exact_keys(root, {"$schema", "entries"}, "render effect group")
         raw_entries = root["entries"]
         if type(raw_entries) is not list:
             raise TypeError("entries must be an array")
@@ -173,7 +165,7 @@ def parse_render_effect_document(value: str | bytes | Mapping[str, Any]) -> Rend
                     overrides=raw_entry["overrides"],
                 )
             )
-        return RenderEffectGroupAsset(entries=tuple(entries), schema_version=root["$version"])
+        return RenderEffectGroupAsset(entries=tuple(entries))
     raise ValueError(f"unsupported render effect schema: {schema!r}")
 
 
@@ -204,11 +196,6 @@ def _parse_reference(value: Any, location: str) -> EffectAssetReference:
     if type(value["guid"]) is not str or type(value["path_hint"]) is not str:
         raise TypeError(f"{location}.guid and path_hint must be strings")
     return EffectAssetReference(guid=value["guid"], path_hint=value["path_hint"])
-
-
-def _require_current_version(value: Any) -> None:
-    if type(value) is not int or value != RENDER_EFFECT_SCHEMA_VERSION:
-        raise ValueError(f"render effect $version must be {RENDER_EFFECT_SCHEMA_VERSION}")
 
 
 def _require_exact_keys(value: Mapping[str, Any], expected: set[str], location: str) -> None:

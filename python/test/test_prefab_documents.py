@@ -11,7 +11,6 @@ from Infernux.components.builtin import BoxCollider
 from Infernux.components.ref_wrappers import ComponentRef, GameObjectRef
 from Infernux.components.value_document import make_game_object_ref
 from Infernux.engine.prefab_manager import (
-    PREFAB_VERSION,
     PrefabDocumentError,
     _PREFAB_TEMPLATE_CACHE,
     _link_created_prefab_source,
@@ -73,7 +72,6 @@ def test_authoritative_object_snapshot_overlays_live_component_data():
         @staticmethod
         def serialize_document():
             return {
-                "schema_version": 1,
                 "type": "BoxCollider",
                 "component_id": 7,
                 "enabled": True,
@@ -117,7 +115,6 @@ def test_authoritative_object_snapshot_strips_python_identity_metadata():
         @staticmethod
         def _serialize_fields_document():
             return {
-                "__schema_version__": 3,
                 "__type_name__": "RaceController",
                 "__component_id__": 11,
                 "lap_count": 4,
@@ -193,7 +190,7 @@ def test_prefab_save_is_strict_typed_and_atomic(scene, tmp_path):
     assert save_prefab(root, str(path), source_canvas_name="HUD") is True
 
     envelope = json.loads(path.read_text(encoding="utf-8"))
-    assert envelope["prefab_version"] == PREFAB_VERSION
+    assert set(envelope) == {"root_object", "source_canvas_name"}
     assert envelope["source_canvas_name"] == "HUD"
     _assert_runtime_ids_removed(envelope["root_object"])
     assert list(path.parent.glob("typed.prefab.tmp.*")) == []
@@ -311,7 +308,6 @@ def test_prefab_revert_command_restores_complete_subtree_on_undo(scene, tmp_path
     before_document = serialize_game_object_document_authoritatively(instance)
     before_data = before_document["children"][0]["components"][0]["data"]
     assert before_data["is_trigger"] is True
-    assert "schema_version" not in before_data
     assert "component_id" not in before_data
     reverted_document = _build_reverted_prefab_document(instance, str(path))
     command = PrefabRevertCommand(
@@ -438,9 +434,7 @@ def test_apply_propagates_to_existing_instances_and_preserves_overrides(scene, t
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda document: document.pop("prefab_version"),
-        lambda document: document.__setitem__("prefab_version", 0),
-        lambda document: document.__setitem__("prefab_version", 2),
+        lambda document: document.pop("root_object"),
         lambda document: document.__setitem__("unknown", True),
         lambda document: document["root_object"].__setitem__("unknown", True),
     ],

@@ -99,7 +99,7 @@ nlohmann::json BoxCollider::SerializeDocument() const
 void BoxCollider::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "BoxCollider", 1, {"is_trigger", "center", "physic_material_guid", "size"});
+    ValidateComponentDocument(j, "BoxCollider", {"is_trigger", "center", "physic_material_guid", "size"});
     RequireBoolean(j, "is_trigger", "BoxCollider");
     RequireFiniteVector(j, "center", 3, "BoxCollider");
     RequireString(j, "physic_material_guid", "BoxCollider");

@@ -249,8 +249,8 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
                                                        const ShaderStageLinkOptions &options)
 {
     ShaderProgramInterfaceArtifact artifact;
-    artifact.vertex = {vertex.shaderId, vertex.filePath, vertex.schemaVersion};
-    artifact.fragment = {fragment.shaderId, fragment.filePath, fragment.schemaVersion};
+    artifact.vertex = {vertex.shaderId, vertex.filePath};
+    artifact.fragment = {fragment.shaderId, fragment.filePath};
     artifact.domain =
         HasCapability(vertex, "ParticleSprite") ? ShaderProgramDomain::ParticleSprite : ShaderProgramDomain::Mesh;
     artifact.shadingModel = fragment.shadingModel;
@@ -406,7 +406,6 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
     AssignPropertyLayout(artifact, fragment.hasSurfaceFunc, options.maximumMaterialTextures);
 
     uint64_t compatibility = FnvOffset;
-    compatibility = HashNumber(compatibility, artifact.schemaVersion);
     compatibility = HashNumber(compatibility, static_cast<uint8_t>(artifact.domain));
     compatibility = HashNumber(compatibility, artifact.varyingInterfaceSignature);
     compatibility = HashNumber(compatibility, artifact.materialLayoutSignature);

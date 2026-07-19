@@ -41,8 +41,7 @@ DEFAULT_PHYSICS_SETTINGS: Dict[str, object] = {
     "max_worker_threads": 0,
 }
 
-_SCHEMA_VERSION = 2
-_DOCUMENT_KEYS = {"schema_version", *DEFAULT_PHYSICS_SETTINGS}
+_DOCUMENT_KEYS = set(DEFAULT_PHYSICS_SETTINGS)
 
 
 class PhysicsSettingsError(ValueError):
@@ -66,15 +65,11 @@ def _integer(value: object, field: str, minimum: int, maximum: int) -> int:
     return value
 
 
-def _validate_document(data: object, *, require_schema: bool) -> dict:
+def _validate_document(data: object) -> dict:
     if not isinstance(data, dict):
         raise PhysicsSettingsError("physics settings must be a JSON object")
 
-    if require_schema and data.get("schema_version") != _SCHEMA_VERSION:
-        raise PhysicsSettingsError(f"expected physics settings schema_version {_SCHEMA_VERSION}")
-
-    allowed = _DOCUMENT_KEYS if require_schema else _DOCUMENT_KEYS - {"schema_version"}
-    unknown = set(data) - allowed
+    unknown = set(data) - _DOCUMENT_KEYS
     if unknown:
         raise PhysicsSettingsError(f"unknown physics settings fields: {', '.join(sorted(unknown))}")
 
@@ -167,18 +162,17 @@ def load(project_path: str) -> dict:
             data = json.load(f)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise PhysicsSettingsError(f"failed to read {path}: {exc}") from exc
-    return _validate_document(data, require_schema=True)
+    return _validate_document(data)
 
 
 def save(project_path: str, settings: dict) -> None:
     """Validate and atomically persist physics settings."""
     if not project_path:
         raise PhysicsSettingsError("project_path is required to save physics settings")
-    validated = _validate_document(settings, require_schema=False)
+    validated = _validate_document(settings)
     path = settings_path(project_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    document = {"schema_version": _SCHEMA_VERSION, **validated}
-    content = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    content = json.dumps(validated, indent=2, ensure_ascii=False) + "\n"
     from Infernux.core.document_store import DocumentStore
     DocumentStore.instance().write_and_wait(path, content)
 
@@ -189,7 +183,7 @@ def apply(settings: dict) -> None:
     from Infernux.physics import Physics
     from Infernux.timing import Time
 
-    validated = _validate_document(settings, require_schema=False)
+    validated = _validate_document(settings)
     gravity = validated["gravity"]
     fixed_dt = validated["fixed_delta_time"]
     max_fixed_dt = validated["max_fixed_delta_time"]

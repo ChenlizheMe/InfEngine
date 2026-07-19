@@ -35,13 +35,11 @@ def _expression_document(position=(0.0, 0.0)):
     )
 
 
-def test_graph_document_v2_round_trip_is_canonical_and_strict():
+def test_graph_document_round_trip_is_canonical_and_strict():
     document = _expression_document()
     restored = GraphDocument.from_json(document.canonical_json())
 
     assert restored == document
-    assert json.loads(restored.canonical_json())["$version"] == 2
-
     invalid = restored.to_dict()
     invalid["future"] = True
     with pytest.raises(GraphDocumentError, match="keys mismatch"):

@@ -91,7 +91,6 @@ def _capture_project_ledger(
     entries.sort(key=lambda item: item["path"])
     digest = _ledger_digest(entries, roots_present)
     return {
-        "schema_version": 1,
         "kind": "infernux.mcp.project_ledger",
         "captured_at": time.time(),
         "roots": roots_present,
@@ -127,7 +126,6 @@ def create_checkpoint(
         if payload_ledger["digest"] != source_ledger["digest"]:
             raise CheckpointError("Checkpoint payload hash does not match the source project ledger.")
         manifest = {
-            "schema_version": 1,
             "kind": "infernux.mcp.checkpoint",
             "checkpoint_id": safe_id,
             "session_id": str(session_id or ""),
@@ -163,7 +161,7 @@ def load_checkpoint(
     manifest = _read_json(manifest_path)
     if not manifest:
         raise FileNotFoundError(f"Managed checkpoint was not found: {safe_id}")
-    if manifest.get("kind") != "infernux.mcp.checkpoint" or int(manifest.get("schema_version", 0)) != 1:
+    if manifest.get("kind") != "infernux.mcp.checkpoint":
         raise CheckpointError(f"Managed checkpoint manifest is unsupported: {safe_id}")
     if str(manifest.get("checkpoint_id", "")) != safe_id:
         raise CheckpointError("Checkpoint manifest identifier does not match its directory.")
@@ -326,7 +324,6 @@ def restore_checkpoint(
 
     delta = diff_ledgers(before, after)
     proof = {
-        "schema_version": 1,
         "kind": "infernux.mcp.checkpoint_restore",
         "restore_id": os.path.basename(journal),
         "restored_at": time.time(),

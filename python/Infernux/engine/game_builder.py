@@ -121,8 +121,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     )
     _CONTENT_ARCHIVE_FILENAME = "Content.inxpkg"
     _CONTENT_MANIFEST_FILENAME = "Content.json"
-    _CONTENT_SCHEMA_VERSION = 1
-
     def __init__(
         self,
         project_path: str,
@@ -937,7 +935,6 @@ finally:
 
         shutil.copy2(launcher_path, game_executable)
         layout_manifest = {
-            "schema_version": 3,
             "layout": "infernux-windows-player",
             "launcher": os.path.basename(game_executable),
             "data_directory": data_name,
@@ -1195,7 +1192,6 @@ finally:
 
         archive_bytes = os.path.getsize(archive_path)
         manifest = {
-            "schema_version": 1,
             "module": "core",
             "archive": "core-module.zip",
             "archive_sha256": self._sha256_file(archive_path),
@@ -1287,7 +1283,6 @@ finally:
 
         archive_bytes = os.path.getsize(archive_path)
         manifest = {
-            "schema_version": self._CONTENT_SCHEMA_VERSION,
             "archive": self._CONTENT_ARCHIVE_FILENAME,
             "archive_sha256": self._sha256_file(archive_path),
             "archive_bytes": archive_bytes,
@@ -1405,7 +1400,6 @@ finally:
             pass
 
         payload = {
-            "schema_version": 3,
             "layout": (
                 "infernux-windows-player"
                 if self._player_launcher_path()

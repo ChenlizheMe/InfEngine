@@ -71,7 +71,6 @@ struct ShaderStageReference
 {
     std::string shaderId;
     std::string filePath;
-    uint32_t schemaVersion = 0;
 };
 
 struct LinkedShaderVarying
@@ -99,9 +98,6 @@ struct LinkedShaderProperty
 
 struct ShaderProgramInterfaceArtifact
 {
-    static constexpr uint32_t CurrentSchemaVersion = 1;
-
-    uint32_t schemaVersion = CurrentSchemaVersion;
     ShaderStageReference vertex;
     ShaderStageReference fragment;
     ShaderProgramDomain domain = ShaderProgramDomain::Mesh;

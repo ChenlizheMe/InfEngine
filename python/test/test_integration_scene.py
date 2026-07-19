@@ -714,7 +714,7 @@ class TestSceneSerialization:
         assert scene.find("WorkerRenderAudioExisting") is existing
         assert existing.get_component(component_type) is component
 
-    def test_worker_type_validator_ignores_removed_ordinary_field(self, scene, tmp_path):
+    def test_worker_type_validator_rejects_removed_ordinary_field(self, scene, tmp_path):
         existing = scene.create_game_object("WorkerRemovedField")
         existing.add_component("SkinnedMeshRenderer")
         candidate = json.loads(json.dumps(scene.serialize_document()))
@@ -724,10 +724,11 @@ class TestSceneSerialization:
         path.write_text(json.dumps(candidate), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
-        assert transaction.run_to_completion(raise_on_failure=False) is True
+        assert transaction.run_to_completion(raise_on_failure=False) is False
         assert transaction.ran_on_worker is True
-        assert transaction.state is SceneDocumentTransactionState.COMPLETED
+        assert transaction.state is SceneDocumentTransactionState.FAILED
         loaded = scene.find("WorkerRemovedField").get_component("SkinnedMeshRenderer")
+        assert loaded is not None
         assert "sourceModelGuid" not in loaded.serialize_document()
 
     @pytest.mark.parametrize("failure", ["missing_guid", "wrong_type", "embedded_material"])
@@ -746,7 +747,6 @@ class TestSceneSerialization:
             asset_path.write_text(
                 json.dumps(
                     {
-                        "schema_version": 1,
                         "friction": 0.5,
                         "bounciness": 0.0,
                         "friction_combine": 0,
@@ -783,7 +783,6 @@ class TestSceneSerialization:
         asset_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
                     "friction": 0.65,
                     "bounciness": 0.1,
                     "friction_combine": 2,
@@ -1000,7 +999,6 @@ class TestSceneSerialization:
         assert scene.save_to_file(str(scene_path)) is True
 
         document = json.loads(scene_path.read_text(encoding="utf-8"))
-        assert document["schema_version"] == 2
         assert document["objects"][0]["name"] == "AtomicSceneObject"
         assert list(tmp_path.glob("atomic.scene.tmp.*")) == []
 
@@ -1103,29 +1101,19 @@ class TestSceneSerialization:
         assert created_after_load.id > persisted_id
         assert scene.find_by_id(created_after_load.id) is created_after_load
 
-    @pytest.mark.parametrize("schema_version", [0, 1, 3, "2"])
-    def test_deserialize_rejects_non_current_schema(self, scene, schema_version):
-        original_name = scene.name
-        document = json.loads(scene.serialize())
-        document["schema_version"] = schema_version
-
-        assert scene._commit_document(document) is False
-        assert scene.name == original_name
-
-    def test_empty_scene_document_schema_v2_commits(self, scene):
-        """Editor new-scene path must use schema_version 2 (Codex left it at 1)."""
+    def test_empty_scene_document_uses_current_format(self, scene):
         from Infernux.engine.scene_manager import _empty_scene_document
 
         document = _empty_scene_document("BlankEditorScene")
-        assert document["schema_version"] == 2
+        assert set(document) == {"name", "isPlaying", "objects"}
         assert scene._commit_document(document) is True
         assert scene.name == "BlankEditorScene"
         assert scene.get_root_objects() == []
 
-    def test_retained_world_rejects_bad_schema_without_destroying_live_graph(self, scene):
+    def test_retained_world_rejects_unknown_field_without_destroying_live_graph(self, scene):
         existing = scene.create_game_object("KeepAliveOnBadSchema")
         transform = existing.transform
-        document = {"schema_version": 1, "name": "Bad", "isPlaying": False, "objects": []}
+        document = {"unknown": 1, "name": "Bad", "isPlaying": False, "objects": []}
 
         assert scene._commit_document_retaining_world(document) is None
         assert scene.find("KeepAliveOnBadSchema") is existing
@@ -1137,7 +1125,7 @@ class TestSceneSerialization:
         collider = existing.add_component("BoxCollider")
         transform = existing.transform
         document = scene.serialize_document()
-        document["schema_version"] = 99
+        document["unknown"] = 1
 
         assert scene._commit_document_retaining_world(document) is None
         assert scene.find("RetainedNativeFailure") is existing
@@ -1156,7 +1144,6 @@ class TestSceneSerialization:
             {
                 "component_id": 999999,
                 "type_id": "native:infernux.MissingNativeComponent",
-                "type_version": 1,
                 "enabled": True,
                 "execution_order": 0,
                 "data": {},
@@ -1181,7 +1168,6 @@ class TestSceneSerialization:
             "unknown_object_field",
             "invalid_layer",
             "invalid_python_descriptor",
-            "old_python_field_schema",
             "empty_python_script_guid",
         ],
     )
@@ -1216,8 +1202,6 @@ class TestSceneSerialization:
         elif corruption == "empty_python_script_guid":
             descriptor = _python_records(first_doc)[0]
             descriptor["type_id"] = descriptor["type_id"].replace("python:", "python::", 1)
-        else:
-            _python_records(first_doc)[0]["type_version"] = 0
 
         assert scene._commit_document(candidate) is False
         assert scene.serialize_document() == original_document
@@ -1257,7 +1241,6 @@ class TestSceneSerialization:
         exploding._component_id = original_component_id
         fields = exploding._serialize_fields_document()
         descriptor["type_id"] = _python_type_id(exploding)
-        descriptor["type_version"] = fields.pop("__schema_version__")
         fields.pop("__type_name__")
         fields.pop("__component_id__")
         descriptor["data"] = fields
@@ -1460,7 +1443,6 @@ class TestSceneSerialization:
         assert len(pending) == 1
         descriptor = _python_records(document["objects"][0])[0]
         expected_fields = {
-            "__schema_version__": descriptor["type_version"],
             "__type_name__": "_StrictSceneComponent",
             "__component_id__": descriptor["component_id"],
             **descriptor["data"],
@@ -1615,7 +1597,6 @@ class TestSceneSerialization:
                 {
                     "component_id": 999998,
                     "type_id": "native:infernux.RemovedNativeComponent",
-                    "type_version": 1,
                     "enabled": True,
                     "execution_order": 0,
                     "data": {},

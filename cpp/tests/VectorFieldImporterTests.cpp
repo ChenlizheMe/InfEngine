@@ -27,7 +27,6 @@ int main()
 {
     const std::string source = R"({
         "$schema": "infernux.vector_field",
-        "$version": 1,
         "dimensions": [2, 1, 1],
         "storage_order": "x_fastest",
         "bake_basis": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],

@@ -189,7 +189,7 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
     texture->dimension = TextureDimension::Texture2D;
     texture->semantic = ReadSemantic(metadata);
     if (texture->semantic == TextureSemantic::VectorField)
-        throw std::invalid_argument("VectorField textures must use the versioned .inxvfield source format");
+        throw std::invalid_argument("VectorField textures must use the .inxvfield source format");
     if (stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
         texture->format = TextureFormat::Rgba32Float;
         float *decoded = stbi_loadf_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,

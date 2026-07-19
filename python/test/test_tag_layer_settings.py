@@ -203,7 +203,7 @@ def test_save_atomically_replaces_file_without_temporary_residue(tmp_path):
 
     assert manager.save_to_file(str(path)) is True
     document = json.loads(path.read_text(encoding="utf-8"))
-    assert document["schema_version"] == 1
+    assert set(document) == {"custom_tags", "layers", "layer_collision_masks"}
     assert len(document["layers"]) == 32
     assert list(tmp_path.glob("TagLayerSettings.json.tmp.*")) == []
 

@@ -1105,19 +1105,19 @@ class TestColliders:
         assert collider.deserialize_document(invalid) is False
         assert collider.serialize_document() == original
 
-    def test_collider_document_ignores_removed_ordinary_field(self, scene):
+    def test_collider_document_rejects_removed_ordinary_field(self, scene):
         collider = scene.create_game_object("UnknownColliderField").add_component("BoxCollider")
         original = collider.serialize_document()
         invalid = dict(original)
         invalid["legacy_material"] = 1
 
-        assert collider.deserialize_document(invalid) is True
+        assert collider.deserialize_document(invalid) is False
         assert collider.serialize_document() == original
 
     @pytest.mark.parametrize(
         "field,value",
         [
-            ("schema_version", 2),
+            ("unknown", 2),
             ("friction", 1.1),
             ("bounciness", float("nan")),
             ("friction_combine", 4),
@@ -1140,7 +1140,6 @@ class TestColliders:
         asset_path = Path(asset_database.assets_root) / "SharedSurface.physicMaterial"
         asset_path.parent.mkdir(parents=True, exist_ok=True)
         asset_path.write_text(json.dumps({
-            "schema_version": 1,
             "friction": 0.65,
             "bounciness": 0.25,
             "friction_combine": 2,
@@ -1174,7 +1173,6 @@ class TestColliders:
         assert restored.physic_material.resolve().native is material
 
         asset_path.write_text(json.dumps({
-            "schema_version": 1,
             "friction": 0.1,
             "bounciness": 0.9,
             "friction_combine": 1,
@@ -1348,7 +1346,7 @@ class TestMaterial:
         mat.set_float("testValue", 0.25)
         document = json.loads(mat.serialize())
 
-        assert document["material_version"] == 4
+        assert "material_version" not in document
         assert document["shaders"]["vertex"]["shader_id"] == "standard"
         assert document["shaders"]["fragment"]["shader_id"] == "lit"
 
@@ -1395,10 +1393,10 @@ class TestMaterial:
         for field, expected in extended_state["renderState"].items():
             assert round_tripped_state[field] == expected
 
-        wrong_version = json.loads(json.dumps(document))
-        wrong_version["material_version"] = 2
-        wrong_version["name"] = "PartialMutation"
-        assert mat.deserialize(json.dumps(wrong_version)) is False
+        removed_version = json.loads(json.dumps(document))
+        removed_version["material_version"] = 4
+        removed_version["name"] = "PartialMutation"
+        assert mat.deserialize(json.dumps(removed_version)) is False
         assert mat.name == "StableMaterial"
         assert mat.get_float("testValue", 0.0) == pytest.approx(0.25)
 
@@ -1430,7 +1428,7 @@ class TestMaterial:
         path = tmp_path / "atomic.mat"
 
         assert mat.save_to(str(path)) is True
-        assert json.loads(path.read_text(encoding="utf-8"))["material_version"] == 4
+        assert "material_version" not in json.loads(path.read_text(encoding="utf-8"))
         assert list(tmp_path.glob("atomic.mat.tmp.*")) == []
 
     def test_renderer_embeds_typed_material_document(self, scene):
@@ -1443,7 +1441,7 @@ class TestMaterial:
         document = json.loads(renderer.serialize())
         slot = document["materials"][0]
         assert isinstance(slot["material"], dict)
-        assert slot["material"]["material_version"] == 4
+        assert "material_version" not in slot["material"]
         assert "material_json" not in slot
 
         serialized_scene = scene.serialize()
@@ -1507,7 +1505,7 @@ class TestComponentSerialization:
             "SpriteRenderer",
         ],
     )
-    def test_registered_component_ignores_removed_ordinary_field(self, scene, component_type):
+    def test_registered_component_rejects_removed_ordinary_field(self, scene, component_type):
         owner = scene.create_game_object(f"Strict{component_type}")
         if component_type == "Transform":
             component = owner.transform
@@ -1517,31 +1515,24 @@ class TestComponentSerialization:
         invalid = dict(original)
         invalid["legacy"] = True
 
-        assert component.deserialize_document(invalid) is True
+        assert component.deserialize_document(invalid) is False
         assert component.serialize_document() == original
 
-    def test_schema_version_is_strict_per_component_type(self, scene):
-        cube = scene.create_primitive(PrimitiveType.Cube, "SchemaCube")
+    def test_component_documents_are_strict(self, scene):
+        cube = scene.create_primitive(PrimitiveType.Cube, "CurrentFormatCube")
         renderer = cube.get_component("MeshRenderer")
         renderer_document = renderer.serialize_document()
-        assert renderer_document["schema_version"] == 5
-
-        renderer_document["schema_version"] = 1
+        renderer_document["unknown"] = 5
         assert renderer.deserialize_document(renderer_document) is False
 
         rigidbody = cube.add_component("Rigidbody")
         rigidbody_document = rigidbody.serialize_document()
-        assert rigidbody_document["schema_version"] == 1
         assert "instance_guid" not in rigidbody_document
 
         obsolete_document = dict(rigidbody_document)
         obsolete_document["instance_guid"] = str(rigidbody.component_id)
         assert rigidbody.deserialize_document(obsolete_document) is False
 
-        rigidbody_document["schema_version"] = 4
-        assert rigidbody.deserialize_document(rigidbody_document) is False
-
-        rigidbody_document["schema_version"] = 1
         rigidbody_document["type"] = "Camera"
         assert rigidbody.deserialize_document(rigidbody_document) is False
 

@@ -2,6 +2,9 @@
 
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
+#include <function/resources/InxMesh/MeshArtifact.h>
+#include <function/resources/InxPointCache/PointCacheArtifact.h>
+#include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 
 #include <core/log/InxLog.h>
@@ -57,6 +60,25 @@ bool RequiresRuntimeCpuArtifact(ResourceType type)
     return type == ResourceType::Mesh || type == ResourceType::Texture || type == ResourceType::PointCache;
 }
 
+bool HasCurrentRuntimeArtifactHeader(const std::filesystem::path &path, ResourceType type,
+                                     ImportArtifact::RuntimeArtifactKind kind)
+{
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream)
+        return false;
+    char buffer[32]{};
+    stream.read(buffer, sizeof(buffer));
+    const std::string_view header(buffer, static_cast<size_t>(stream.gcount()));
+    if (type == ResourceType::Texture)
+        return kind == ImportArtifact::RuntimeArtifactKind::Primary && TextureArtifact::HasCurrentHeader(header);
+    if (type == ResourceType::PointCache)
+        return kind == ImportArtifact::RuntimeArtifactKind::Primary && PointCacheArtifact::HasCurrentHeader(header);
+    if (type == ResourceType::Mesh)
+        return kind == ImportArtifact::RuntimeArtifactKind::Primary ? MeshArtifact::HasCurrentHeader(header)
+                                                                    : SkinnedMeshArtifact::HasCurrentHeader(header);
+    return false;
+}
+
 bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
                                 const std::filesystem::path &projectRoot)
 {
@@ -65,19 +87,19 @@ bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
         return entry.artifactPath.empty();
     if (entry.artifactPath != expected)
         return false;
-    if (type == ResourceType::Texture &&
-        (!entry.metadata.HasKey("texture_artifact_version") ||
-         entry.metadata.GetDataAs<int>("texture_artifact_version") != static_cast<int>(TextureArtifact::FormatVersion)))
-        return false;
     std::error_code error;
-    if (!std::filesystem::is_regular_file(projectRoot / std::filesystem::u8path(expected), error) || error)
+    const auto primaryPath = projectRoot / std::filesystem::u8path(expected);
+    if (!std::filesystem::is_regular_file(primaryPath, error) || error ||
+        !HasCurrentRuntimeArtifactHeader(primaryPath, type, ImportArtifact::RuntimeArtifactKind::Primary))
         return false;
     if (type != ResourceType::Mesh)
         return true;
     const std::string skinned =
         RuntimeArtifactRelativePath(entry.guid, ResourceType::Mesh, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
     error.clear();
-    return std::filesystem::is_regular_file(projectRoot / std::filesystem::u8path(skinned), error) && !error;
+    const auto skinnedPath = projectRoot / std::filesystem::u8path(skinned);
+    return std::filesystem::is_regular_file(skinnedPath, error) && !error &&
+           HasCurrentRuntimeArtifactHeader(skinnedPath, type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
 }
 
 std::vector<DocumentTransactionEntry>
@@ -89,7 +111,7 @@ TakeRuntimeArtifactWrites(std::vector<ImportArtifact::RuntimeCpuArtifact> &artif
     std::vector<DocumentTransactionEntry> writes;
     writes.reserve(artifacts.size());
     for (auto &artifact : artifacts) {
-        if (artifact.resourceType != requestedType || artifact.formatVersion == 0 || artifact.bytes.empty())
+        if (artifact.resourceType != requestedType || artifact.bytes.empty())
             throw std::logic_error("Importer produced an invalid runtime CPU artifact");
         switch (artifact.kind) {
         case ImportArtifact::RuntimeArtifactKind::Primary:
@@ -1246,8 +1268,6 @@ AssetIndex AssetDatabase::BuildDerivedIndexArtifact(
         entry.meta = fileState->second.meta;
         entry.readOnly = fileState->second.readOnly;
         entry.metadata = *metadata->second;
-        if (entry.metadata.HasKey("importer_version"))
-            entry.importerVersion = entry.metadata.GetDataAs<int>("importer_version");
         if (entry.metadata.HasKey("content_hash"))
             entry.contentHash = entry.metadata.GetDataAs<std::string>("content_hash");
         const auto dependencies = dependenciesByGuid.find(guid);
@@ -2155,9 +2175,6 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
                 throw std::runtime_error("Failed to persist asset metadata: " + metaFilePath);
         }
     } else {
-        if (!metaFile.HasKey("importer_version") ||
-            metaFile.GetDataAs<int>("importer_version") != InxResourceMeta::ImporterVersion)
-            throw std::runtime_error("Asset metadata does not use the current importer schema: " + metaFilePath);
         if (metaFile.GetResourceType() != type)
             throw std::runtime_error("Asset metadata resource_type does not match its file extension: " + metaFilePath);
     }

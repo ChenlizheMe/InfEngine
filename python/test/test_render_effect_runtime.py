@@ -277,7 +277,6 @@ def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
         json.dumps(
             {
                 "$schema": "infernux.render_effect",
-                "$version": 1,
                 "feature_type": "infernux.post.bloom",
                 "parameters": {"intensity": 0.5},
                 "dependencies": [],

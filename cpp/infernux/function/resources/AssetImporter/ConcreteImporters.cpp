@@ -91,7 +91,7 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
         else if (format != "rgba16_float" && format != "rgba32_float")
             throw std::invalid_argument("VectorField textures require rgba16_float or rgba32_float storage");
     } else if (artifact.metadata.GetDataAs<std::string>("texture_type") == "vector_field") {
-        throw std::invalid_argument("VectorField textures must use the versioned .inxvfield source format");
+        throw std::invalid_argument("VectorField textures must use the .inxvfield source format");
     }
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");
@@ -102,13 +102,12 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
     artifact.metadata.AddMetadata("artifact_height", static_cast<int>(cpuData->mipLevels.front().height));
     artifact.metadata.AddMetadata("artifact_depth", static_cast<int>(cpuData->mipLevels.front().depth));
     artifact.metadata.AddMetadata("artifact_mip_count", static_cast<int>(cpuData->mipLevels.size()));
-    artifact.metadata.AddMetadata("texture_artifact_version", static_cast<int>(TextureArtifact::FormatVersion));
     artifact.metadata.AddMetadata("artifact_dimension",
                                   std::string(cpuData->dimension == TextureDimension::Texture3D ? "3d" : "2d"));
     artifact.metadata.AddMetadata("artifact_srgb", TextureFormatIsSrgb(cpuData->format));
     artifact.metadata.AddMetadata("artifact_format", std::string(TextureFormatName(cpuData->format)));
     artifact.runtimeCpuArtifacts.push_back(ImportArtifact::RuntimeCpuArtifact{
-        ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::Texture, TextureArtifact::FormatVersion,
+        ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::Texture,
         TextureArtifact::Serialize(*cpuData, artifact.metadata.GetDataAs<std::string>("content_hash"))});
     return artifact;
 }
@@ -234,8 +233,6 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
         throw std::runtime_error("render effect document root must be an object");
     if (!root.contains("$schema") || !root["$schema"].is_string())
         throw std::runtime_error("render effect $schema must be a string");
-    if (!root.contains("$version") || !root["$version"].is_number_integer() || root["$version"].get<int>() != 1)
-        throw std::runtime_error("render effect $version must be 1");
 
     std::unordered_set<std::string> dependencies;
     const auto readReference = [&](const nlohmann::json &reference, const std::string &location) {
@@ -253,7 +250,7 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
 
     const std::string schema = root["$schema"].get<std::string>();
     if (schema == "infernux.render_effect") {
-        requireExactKeys(root, {"$schema", "$version", "feature_type", "parameters", "dependencies"}, "render effect");
+        requireExactKeys(root, {"$schema", "feature_type", "parameters", "dependencies"}, "render effect");
         static const std::regex featureTypePattern("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$");
         if (!root["feature_type"].is_string() ||
             !std::regex_match(root["feature_type"].get_ref<const std::string &>(), featureTypePattern))
@@ -265,7 +262,7 @@ std::vector<std::string> RenderEffectImporter::ScanDependencies(const ImportRequ
         for (size_t index = 0; index < root["dependencies"].size(); ++index)
             readReference(root["dependencies"][index], "dependencies[" + std::to_string(index) + "]");
     } else if (schema == "infernux.render_effect_group") {
-        requireExactKeys(root, {"$schema", "$version", "entries"}, "render effect group");
+        requireExactKeys(root, {"$schema", "entries"}, "render effect group");
         if (!root["entries"].is_array())
             throw std::runtime_error("render effect group entries must be an array");
         std::unordered_set<std::string> entryIds;
@@ -331,13 +328,9 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         }
     };
 
-    requireExactKeys(root, {"$schema", "$version", "stable_id", "name", "emitters", "parameters"}, "particle graph");
+    requireExactKeys(root, {"$schema", "stable_id", "name", "emitters", "parameters"}, "particle graph");
     if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.particle_graph")
         throw std::runtime_error("particle graph has an unsupported $schema");
-    if (!root["$version"].is_number_integer())
-        throw std::runtime_error("particle graph $version must be an integer");
-    if (root["$version"].get<int>() != 2)
-        throw std::runtime_error("particle graph $version must be the current canonical value 2");
     if (!root["stable_id"].is_string() || root["stable_id"].get_ref<const std::string &>().empty() ||
         !root["name"].is_string() || root["name"].get_ref<const std::string &>().empty())
         throw std::runtime_error("particle graph stable_id and name must be non-empty strings");
@@ -393,7 +386,7 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         for (const char *stageName : {"init", "update", "rendering"}) {
             const auto &stage = emitter["stages"][stageName];
             const std::string stageLocation = emitterLocation + ".stages." + stageName;
-            requireExactKeys(stage, {"$schema", "$version", "domain", "nodes", "links", "metadata"}, stageLocation);
+            requireExactKeys(stage, {"$schema", "domain", "nodes", "links", "metadata"}, stageLocation);
             if (!stage["nodes"].is_array() || !stage["links"].is_array())
                 throw std::runtime_error(stageLocation + " nodes and links must be arrays");
             for (const auto &node : stage["nodes"]) {
@@ -440,11 +433,9 @@ ImportArtifact PointCacheImporter::Import(const ImportRequest &request) const
         }
     };
 
-    requireExactKeys(root, {"$schema", "$version", "stable_id", "name", "bake_basis", "point_count", "channels"},
-                     "point cache");
-    if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.point_cache" ||
-        !root["$version"].is_number_integer() || root["$version"].get<int>() != 1)
-        throw std::runtime_error("point cache schema or version is unsupported");
+    requireExactKeys(root, {"$schema", "stable_id", "name", "bake_basis", "point_count", "channels"}, "point cache");
+    if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.point_cache")
+        throw std::runtime_error("point cache schema is unsupported");
     if (!root["stable_id"].is_string() || root["stable_id"].get_ref<const std::string &>().empty() ||
         !root["name"].is_string() || root["name"].get_ref<const std::string &>().empty() ||
         !root["bake_basis"].is_string() || root["bake_basis"].get_ref<const std::string &>().empty())
@@ -535,7 +526,7 @@ ImportArtifact PointCacheImporter::Import(const ImportRequest &request) const
     artifact.metadata.AddMetadata("artifact_channel_count", static_cast<int>(cache.channels.size()));
     artifact.metadata.AddMetadata("artifact_bake_basis", cache.bakeBasis);
     artifact.runtimeCpuArtifacts.push_back(ImportArtifact::RuntimeCpuArtifact{
-        ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::PointCache, PointCacheArtifact::FormatVersion,
+        ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::PointCache,
         PointCacheArtifact::Serialize(cache, artifact.metadata.GetDataAs<std::string>("content_hash"))});
     return artifact;
 }
@@ -589,11 +580,11 @@ ImportArtifact ModelImporter::Import(const ImportRequest &request) const
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("ModelImporter metadata has no source content hash");
     artifact.runtimeCpuArtifacts.push_back(ImportArtifact::RuntimeCpuArtifact{
-        ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::Mesh, MeshArtifact::FormatVersion,
+        ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::Mesh,
         MeshArtifact::Serialize(*imported.mesh, artifact.metadata.GetDataAs<std::string>("content_hash"))});
     const std::string sourceHash = artifact.metadata.GetDataAs<std::string>("content_hash");
     artifact.runtimeCpuArtifacts.push_back(ImportArtifact::RuntimeCpuArtifact{
-        ImportArtifact::RuntimeArtifactKind::SkinnedMesh, ResourceType::Mesh, SkinnedMeshArtifact::FormatVersion,
+        ImportArtifact::RuntimeArtifactKind::SkinnedMesh, ResourceType::Mesh,
         imported.skinnedMesh ? SkinnedMeshArtifact::Serialize(*imported.skinnedMesh, sourceHash)
                              : SkinnedMeshArtifact::SerializeEmpty(sourceHash)});
 

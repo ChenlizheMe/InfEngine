@@ -200,12 +200,10 @@ class SerializableObject:
 
         if not isinstance(data, dict):
             raise TypeError(f"{path}: SerializableObject document must be an object")
-        from .value_document import TYPE_KEY, VERSION_KEY, SCHEMA_VERSION, SERIALIZABLE_OBJECT
-        expected_keys = {TYPE_KEY, VERSION_KEY, "type_id", "fields"}
+        from .value_document import TYPE_KEY, SERIALIZABLE_OBJECT
+        expected_keys = {TYPE_KEY, "type_id", "fields"}
         if set(data) != expected_keys or data.get(TYPE_KEY) != SERIALIZABLE_OBJECT:
             raise ValueError(f"{path}: invalid SerializableObject typed document")
-        if data.get(VERSION_KEY) != SCHEMA_VERSION:
-            raise ValueError(f"{path}: SerializableObject requires value schema {SCHEMA_VERSION}")
         type_id = data.get("type_id")
         if not isinstance(type_id, str) or not type_id:
             raise ValueError(f"{path}: SerializableObject document requires type_id")

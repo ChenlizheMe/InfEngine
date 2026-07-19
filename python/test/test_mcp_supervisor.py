@@ -583,7 +583,6 @@ def test_supervisor_stops_player_through_authenticated_control_without_force(tmp
         assert value["token"] == "private-player-control-token"
         assert value["action"] == "shutdown"
         original_write_json(supervisor.player_response_path, {
-            "schema_version": 1,
             "command_id": value["command_id"],
             "ok": True,
             "data": {"close_requested": True},

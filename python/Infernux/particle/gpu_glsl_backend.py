@@ -148,7 +148,6 @@ class GpuParticleProgramSource:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": "infernux.particle_gpu_glsl",
-            "$version": 4,
             "kernel_hash": self.kernel_hash,
             "emitters": [emitter.to_dict() for emitter in self.emitters],
         }
@@ -296,7 +295,6 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
 
     return {
         "$schema": "infernux.particle_gpu_spirv",
-        "$version": 2,
         "target": "vulkan1.2-spirv1.5",
         "kernel_hash": program.kernel_hash,
         "emitters": emitters,
@@ -310,7 +308,6 @@ def validate_gpu_particle_spirv(
     """Strictly validate a persisted GPU binary payload without recompiling it."""
     expected_top = {
         "$schema",
-        "$version",
         "target",
         "kernel_hash",
         "emitters",
@@ -320,7 +317,6 @@ def validate_gpu_particle_spirv(
         raise GpuParticleCompileError("particle GPU SPIR-V payload is invalid")
     if (
         value["$schema"] != "infernux.particle_gpu_spirv"
-        or value["$version"] != 2
         or value["target"] != "vulkan1.2-spirv1.5"
         or value["kernel_hash"] != program.kernel_hash
         or type(value["emitters"]) is not list

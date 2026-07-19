@@ -10,7 +10,6 @@ from Infernux.mcp.tools import material as mcp_material
 
 def _write_meta(path, metadata):
     document = {
-        "meta_version": 2,
         "metadata": {
             key: {
                 "type": "bool" if isinstance(value, bool) else "string",
@@ -187,7 +186,6 @@ def test_mcp_catalog_consumes_native_shader_metadata(tmp_path):
         {
             "shader_id": "Imported/McpShader",
             "shader_schema_format": "ShaderInfo",
-            "shader_schema_version": "1",
             "shader_hidden": False,
             "shader_lighting_type": "unlit",
             "shader_queue": "2010",

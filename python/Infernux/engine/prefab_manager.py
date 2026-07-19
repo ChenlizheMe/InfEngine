@@ -2,7 +2,7 @@
 Prefab system for Infernux.
 
 Handles saving GameObjects as .prefab files and instantiating them back into scenes.
-Prefab files contain a typed GameObject document wrapped in a strict versioned envelope.
+Prefab files contain a typed GameObject document wrapped in a strict envelope.
 """
 
 import json
@@ -12,7 +12,6 @@ import copy
 from Infernux.debug import Debug
 
 PREFAB_EXTENSION = ".prefab"
-PREFAB_VERSION = 1
 _PREFAB_TEMPLATE_SCENE_NAME = "__InfernuxPrefabTemplateCache__"
 _PREFAB_TEMPLATE_CACHE = {}
 
@@ -31,7 +30,7 @@ def _validate_game_object_document(
     if local_ids is None:
         local_ids = set()
     required = {
-        "schema_version", "local_id", "name", "active", "is_static", "tag", "layer",
+        "local_id", "name", "active", "is_static", "tag", "layer",
         "transform", "components", "children",
     }
     if set(document) != required:
@@ -40,8 +39,6 @@ def _validate_game_object_document(
         raise PrefabDocumentError(
             f"{location} fields do not match the current schema; missing={missing}, unknown={unknown}"
         )
-    if type(document["schema_version"]) is not int or document["schema_version"] != 2:
-        raise PrefabDocumentError(f"{location}.schema_version must be 2")
     local_id = document["local_id"]
     if type(local_id) is not int or local_id <= 0 or local_id in local_ids:
         raise PrefabDocumentError(f"{location}.local_id must be a unique positive integer")
@@ -64,14 +61,10 @@ def _validate_game_object_document(
 def _validate_prefab_document(document: dict, file_path: str = "<memory>") -> None:
     if not isinstance(document, dict):
         raise PrefabDocumentError(f"Prefab '{file_path}' must contain an object")
-    allowed = {"prefab_version", "root_object", "source_canvas_name"}
-    required = {"prefab_version", "root_object"}
+    allowed = {"root_object", "source_canvas_name"}
+    required = {"root_object"}
     if not required.issubset(document) or not set(document).issubset(allowed):
         raise PrefabDocumentError(f"Prefab '{file_path}' has missing or unknown envelope fields")
-    if type(document["prefab_version"]) is not int or document["prefab_version"] != PREFAB_VERSION:
-        raise PrefabDocumentError(
-            f"Prefab '{file_path}' must use prefab_version {PREFAB_VERSION}"
-        )
     if "source_canvas_name" in document and not isinstance(document["source_canvas_name"], str):
         raise PrefabDocumentError(f"Prefab '{file_path}' source_canvas_name must be a string")
     _validate_game_object_document(document["root_object"])
@@ -310,7 +303,6 @@ def save_prefab(game_object, file_path: str, asset_database=None,
         return False
 
     prefab_data = {
-        "prefab_version": PREFAB_VERSION,
         "root_object": go_data,
     }
     if source_canvas_name:

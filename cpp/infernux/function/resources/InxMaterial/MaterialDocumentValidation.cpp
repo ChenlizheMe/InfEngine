@@ -256,7 +256,7 @@ void ValidateShaderReference(const json &document, std::string_view path)
 void ValidateMaterialDocument(const nlohmann::json &document, std::string_view path)
 {
     static const std::unordered_set<std::string> required = {
-        "material_version", "name", "builtin", "shaders", "renderState", "properties",
+        "name", "builtin", "shaders", "renderState", "properties",
     };
     static const std::unordered_set<std::string> optional = {
         "passTag",
@@ -265,10 +265,6 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
     };
     static const std::unordered_set<std::string> shaderFields = {"vertex", "fragment"};
     RequireExactFields(document, required, optional, path);
-    if (!document["material_version"].is_number_integer())
-        Fail(path, "material_version must be an integer");
-    if (document["material_version"].get<int>() != 4)
-        Fail(path, "material_version must be the current canonical value 4");
     if (!document["name"].is_string())
         Fail(path, "name must be a string");
     if (!document["builtin"].is_boolean())

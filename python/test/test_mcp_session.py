@@ -206,7 +206,6 @@ def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
     trace_path = tmp_path / stopped["trace_path"]
     with open(trace_path, "r", encoding="utf-8") as f:
         trace = json.load(f)
-    assert trace["schema_version"] == 1
     assert trace["task"] == "save persistence validation"
     context = dict(trace["context"])
     assert context.pop("build_identity") == configured.build_identity
@@ -248,7 +247,6 @@ def test_global_validation_trace_persists_compact_tool_results(tmp_path, monkeyp
 
 def test_global_validation_attempt_manifest_persists_build_identity(tmp_path, monkeypatch):
     identity = {
-        "schema_version": 1,
         "source_root": "E:/engine",
         "package_version": "0.2.1",
         "git": {"available": True, "branch": "029/030preview", "revision": "abc123"},

@@ -17,7 +17,6 @@ class ComponentSerializationMixin:
         
         fields = get_serialized_fields(self.__class__)
         data = {
-            "__schema_version__": getattr(self, "__schema_version__", 1),
             "__type_name__": self.__class__.__name__,
             "__component_id__": self._component_id,
         }
@@ -50,13 +49,6 @@ class ComponentSerializationMixin:
         if not isinstance(data, dict):
             raise TypeError("Python component fields document must be an object")
 
-        schema_version = data.get("__schema_version__")
-        current_version = getattr(self, "__schema_version__", 1)
-        if type(schema_version) is not int or schema_version != current_version:
-            raise ValueError(
-                f"{self.__class__.__name__} requires schema {current_version}, "
-                f"got {schema_version!r}"
-            )
         type_name = data.get("__type_name__")
         if type_name != self.__class__.__name__:
             raise ValueError(
@@ -65,7 +57,7 @@ class ComponentSerializationMixin:
             )
 
         fields = get_serialized_fields(self.__class__)
-        metadata_keys = {"__schema_version__", "__type_name__"}
+        metadata_keys = {"__type_name__"}
         if "__component_id__" in data:
             metadata_keys.add("__component_id__")
         from .serialized_field import validate_serialized_field_document

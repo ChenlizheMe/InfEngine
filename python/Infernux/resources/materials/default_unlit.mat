@@ -1,5 +1,4 @@
 {
-  "material_version": 4,
   "name": "DefaultUnlit",
   "builtin": false,
   "shaders": {

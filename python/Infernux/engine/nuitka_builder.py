@@ -42,12 +42,10 @@ _STAGING_ROOT = "C:\\_InxBuild"
 _NUITKA_CACHE_DIR = os.path.join(_STAGING_ROOT, "_nuitka_cache")
 _RUNTIME_PACK_DIR = os.path.join(_STAGING_ROOT, "_runtime_packs")
 _REQUIREMENTS_STATE_DIR = os.path.join(_STAGING_ROOT, "_requirements_state")
-_RUNTIME_PACK_SCHEMA_VERSION = 4
 _MAX_RUNTIME_PACKS = 4
 _RUNTIME_HASH_STATE_FILENAME = "content-hashes.json"
 _RUNTIME_ARCHIVE_FILENAME = "runtime-pack.zip"
 _PACKAGED_RUNTIME_DIRNAME = "_runtime_packs"
-_RUNTIME_MODULE_SCHEMA_VERSION = 1
 _RUNTIME_MODULE_ARCHIVE_FILENAME = "parallel-module.zip"
 _RUNTIME_MODULE_MANIFEST_FILENAME = "parallel-module.json"
 _PACKAGED_RUNTIME_MODULE_DIRNAME = "_runtime_modules"
@@ -1041,7 +1039,7 @@ class NuitkaBuilder:
     def _runtime_pack_fingerprint(self, cmd: List[str]) -> str:
         """Fingerprint every input that can change a reusable Player runtime."""
         digest = hashlib.sha256()
-        digest.update(f"runtime-pack-v{_RUNTIME_PACK_SCHEMA_VERSION}\0".encode("ascii"))
+        digest.update(b"runtime-pack\0")
         normalized_command = []
         for index, argument in enumerate(cmd):
             value = str(argument)
@@ -1077,7 +1075,6 @@ class NuitkaBuilder:
                 "sha256": self._hash_file(Path(requirement_file)),
             })
         payload = {
-            "schema_version": _RUNTIME_PACK_SCHEMA_VERSION,
             "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
             "platform": sys.platform,
             "machine": platform.machine().lower(),
@@ -1297,8 +1294,7 @@ print(json.dumps({{
         except (OSError, json.JSONDecodeError):
             return None
         if (
-            manifest.get("schema_version") != _RUNTIME_PACK_SCHEMA_VERSION
-            or (expected_fingerprint and manifest.get("fingerprint") != expected_fingerprint)
+            (expected_fingerprint and manifest.get("fingerprint") != expected_fingerprint)
             or (
                 expected_compatibility_key
                 and manifest.get("compatibility_key") != expected_compatibility_key
@@ -1364,7 +1360,6 @@ print(json.dumps({{
         os.makedirs(_RUNTIME_PACK_DIR, exist_ok=True)
         pack_root = self._runtime_pack_path(runtime_pack_key)
         marker = {
-            "schema_version": _RUNTIME_PACK_SCHEMA_VERSION,
             "fingerprint": runtime_pack_key,
             "compatibility_key": compatibility_key,
             "engine_fingerprint": self._engine_content_fingerprint(),
@@ -1502,7 +1497,6 @@ print(json.dumps({{
             if file_count == 0:
                 raise RuntimeError("Parallel Runtime Module contains no files")
             manifest = {
-                "schema_version": _RUNTIME_MODULE_SCHEMA_VERSION,
                 "module": module_name,
                 "compatibility_key": self.last_runtime_compatibility_key,
                 "engine_fingerprint": self._engine_content_fingerprint(),
@@ -1572,8 +1566,7 @@ print(json.dumps({{
                 except (OSError, json.JSONDecodeError):
                     continue
                 if (
-                    manifest.get("schema_version") != _RUNTIME_MODULE_SCHEMA_VERSION
-                    or manifest.get("module") != module_name
+                    manifest.get("module") != module_name
                     or manifest.get("compatibility_key") != compatibility_key
                     or manifest.get("engine_fingerprint")
                     != self._engine_content_fingerprint()

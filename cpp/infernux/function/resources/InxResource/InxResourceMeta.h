@@ -16,8 +16,6 @@ namespace infernux
 class InxResourceMeta
 {
   public:
-    static constexpr int ImporterVersion = 2;
-
     // Type definitions
     using MetadataType = std::pair<std::string, std::any>;
     using MetadataMap = std::unordered_map<std::string, MetadataType>;

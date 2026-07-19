@@ -1,4 +1,4 @@
-"""Versioned particle data-interface descriptors shared by both frontends."""
+"""Particle data-interface descriptors shared by both frontends."""
 
 from __future__ import annotations
 

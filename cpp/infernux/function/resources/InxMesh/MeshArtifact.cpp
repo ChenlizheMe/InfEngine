@@ -11,7 +11,7 @@ namespace infernux
 {
 namespace
 {
-constexpr std::string_view Magic = "INXMESH\0";
+constexpr std::string_view Magic = "INXMESHART";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumElementCount = 100'000'000U;
 constexpr uint32_t MaximumStringBytes = 16U * 1024U * 1024U;
@@ -178,7 +178,6 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
         throw std::invalid_argument("mesh artifact requires a source content hash");
 
     std::string bytes(Magic);
-    AppendU32(bytes, FormatVersion);
     AppendU32(bytes, EndianMarker);
     AppendString(bytes, sourceContentHash);
     AppendString(bytes, mesh.GetName());
@@ -241,7 +240,7 @@ std::string MeshArtifact::Serialize(const InxMesh &mesh, std::string_view source
 
 std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::string_view expectedSourceContentHash)
 {
-    if (bytes.size() < Magic.size() + sizeof(uint32_t) * 2 + sizeof(uint64_t) || bytes.substr(0, Magic.size()) != Magic)
+    if (bytes.size() < Magic.size() + sizeof(uint32_t) + sizeof(uint64_t) || bytes.substr(0, Magic.size()) != Magic)
         throw std::invalid_argument("mesh artifact has an invalid header");
 
     const size_t payloadSize = bytes.size() - sizeof(uint64_t);
@@ -251,8 +250,6 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
         throw std::invalid_argument("mesh artifact checksum mismatch");
 
     Reader reader(bytes.substr(Magic.size(), payloadSize - Magic.size()));
-    if (reader.ReadU32() != FormatVersion)
-        throw std::invalid_argument("mesh artifact uses an unsupported format version");
     if (reader.ReadU32() != EndianMarker)
         throw std::invalid_argument("mesh artifact has an invalid endian marker");
     const std::string sourceContentHash = reader.ReadString();
@@ -320,6 +317,15 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
     mesh->SetMaterialSlotData(std::move(slotData));
     mesh->SetNodeNames(std::move(nodeNames));
     return mesh;
+}
+
+bool MeshArtifact::HasCurrentHeader(std::string_view bytes) noexcept
+{
+    return bytes.size() >= Magic.size() + sizeof(uint32_t) && bytes.substr(0, Magic.size()) == Magic &&
+           static_cast<unsigned char>(bytes[Magic.size()]) == 0x04 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 1]) == 0x03 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 2]) == 0x02 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 3]) == 0x01;
 }
 
 } // namespace infernux

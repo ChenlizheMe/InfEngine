@@ -20,7 +20,6 @@ struct DecodedComponentRecord
     ComponentRecordKind kind = ComponentRecordKind::Native;
     uint64_t componentId = 0;
     std::string typeId;
-    int typeVersion = 0;
     bool enabled = true;
     int executionOrder = 0;
     nlohmann::json data = nlohmann::json::object();

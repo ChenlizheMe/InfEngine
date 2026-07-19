@@ -12,7 +12,7 @@ namespace infernux
 {
 namespace
 {
-constexpr std::string_view Magic = "INXSKIN\0";
+constexpr std::string_view Magic = "INXSKINART";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumVertices = 10'000'000U;
 constexpr uint32_t MaximumIndices = 30'000'000U;
@@ -315,7 +315,6 @@ std::string SkinnedMeshArtifact::Serialize(const InxSkinnedMesh &mesh, std::stri
         throw std::invalid_argument("skinned Mesh artifact requires a bounded source content hash");
 
     std::string bytes(Magic);
-    AppendU32(bytes, FormatVersion);
     AppendU32(bytes, EndianMarker);
     AppendString(bytes, sourceContentHash, false);
     AppendU32(bytes, 1);
@@ -419,7 +418,6 @@ std::string SkinnedMeshArtifact::SerializeEmpty(std::string_view sourceContentHa
     if (sourceContentHash.empty() || sourceContentHash.size() > MaximumHashBytes)
         throw std::invalid_argument("skinned Mesh artifact requires a bounded source content hash");
     std::string bytes(Magic);
-    AppendU32(bytes, FormatVersion);
     AppendU32(bytes, EndianMarker);
     AppendString(bytes, sourceContentHash, false);
     AppendU32(bytes, 0);
@@ -432,7 +430,7 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
 {
     if (expectedSourceContentHash.empty() || expectedSourceContentHash.size() > MaximumHashBytes)
         throw std::invalid_argument("skinned Mesh artifact requires an expected source content hash");
-    if (bytes.size() > MaximumArtifactBytes || bytes.size() < Magic.size() + sizeof(uint32_t) * 2 + sizeof(uint64_t) ||
+    if (bytes.size() > MaximumArtifactBytes || bytes.size() < Magic.size() + sizeof(uint32_t) + sizeof(uint64_t) ||
         bytes.substr(0, Magic.size()) != Magic)
         throw std::invalid_argument("skinned Mesh artifact has an invalid header");
     const size_t checksumOffset = bytes.size() - sizeof(uint64_t);
@@ -441,8 +439,6 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         throw std::invalid_argument("skinned Mesh artifact checksum mismatch");
 
     Reader reader(bytes.substr(Magic.size(), checksumOffset - Magic.size()));
-    if (reader.ReadU32() != FormatVersion)
-        throw std::invalid_argument("skinned Mesh artifact uses an unsupported format version");
     if (reader.ReadU32() != EndianMarker)
         throw std::invalid_argument("skinned Mesh artifact has an invalid endian marker");
     const std::string sourceHash = reader.ReadString(false);
@@ -570,6 +566,15 @@ std::shared_ptr<InxSkinnedMesh> SkinnedMeshArtifact::Deserialize(std::string_vie
         throw std::invalid_argument("skinned Mesh artifact contains no renderable geometry");
     mesh->NormalizeInfluences();
     return mesh;
+}
+
+bool SkinnedMeshArtifact::HasCurrentHeader(std::string_view bytes) noexcept
+{
+    return bytes.size() >= Magic.size() + sizeof(uint32_t) && bytes.substr(0, Magic.size()) == Magic &&
+           static_cast<unsigned char>(bytes[Magic.size()]) == 0x04 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 1]) == 0x03 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 2]) == 0x02 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 3]) == 0x01;
 }
 
 } // namespace infernux

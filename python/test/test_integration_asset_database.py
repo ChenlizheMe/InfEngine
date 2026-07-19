@@ -28,7 +28,6 @@ def test_audio_import_rejects_noncurrent_metadata(engine, tmp_path: Path):
     legacy_guid = "a" * 32
     meta_path.write_text(
         json.dumps({
-            "meta_version": 2,
             "metadata": {
                 "guid": {"type": "string", "value": legacy_guid},
                 "resource_type": {
@@ -59,7 +58,6 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
     def effect_document(feature_type: str) -> dict:
         return {
             "$schema": "infernux.render_effect",
-            "$version": 1,
             "feature_type": feature_type,
             "parameters": {},
             "dependencies": [],
@@ -81,7 +79,6 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
             json.dumps(
                 {
                     "$schema": "infernux.render_effect_group",
-                    "$version": 1,
                     "entries": [
                         {
                             "entry_id": "bloom",
@@ -122,7 +119,6 @@ def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Pat
         json.dumps(
             {
                 "$schema": "infernux.render_effect",
-                "$version": 1,
                 "feature_type": "infernux.post.grayscale",
                 "parameters": {},
                 "dependencies": [],
@@ -263,7 +259,6 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
         json.dumps(
             {
                 "$schema": "infernux.point_cache",
-                "$version": 1,
                 "stable_id": "morph-cache",
                 "name": "Morph Cache",
                 "bake_basis": "right_handed_y_up",
@@ -393,7 +388,6 @@ def test_vector_field_import_exposes_immutable_volume_generations(engine, tmp_pa
     def document(vectors):
         return {
             "$schema": "infernux.vector_field",
-            "$version": 1,
             "dimensions": [2, 1, 1],
             "storage_order": "x_fastest",
             "bake_basis": [
@@ -607,7 +601,6 @@ def test_metadata_creation_uses_the_submitted_source_bytes(engine, tmp_path: Pat
         assert texture_meta.get_int("channels") == 3
         assert texture_meta.get_string("source_container") == "PPM"
         assert texture_meta.get_string("texture_format") == "auto"
-        assert texture_meta.get_int("texture_artifact_version") == 3
     finally:
         for path in (text, texture):
             if asset_db.contains_path(str(path)):
@@ -836,7 +829,6 @@ def test_refresh_builds_import_artifacts_only_on_workers(engine):
         assert model_meta.get_int("material_slot_count") == 1
         assert model_meta.get_int("bone_count") == 0
         assert model_meta.get_int("animation_count") == 0
-        assert model_meta.get_int("importer_version") == 2
     finally:
         for path in paths:
             if asset_db.contains_path(str(path)):
@@ -873,8 +865,7 @@ def test_asset_index_reuses_unchanged_assets_and_recovers_from_corruption(engine
 
         index_path = Path(asset_db.asset_index_path)
         index_document = json.loads(index_path.read_text(encoding="utf-8"))
-        assert set(index_document) == {"schema_version", "project_root", "entries"}
-        assert index_document["schema_version"] == 1
+        assert set(index_document) == {"project_root", "entries"}
 
         query_generation = asset_db.query_generation
         catalog_generation = asset_db.catalog_generation
@@ -906,12 +897,12 @@ def test_asset_index_reuses_unchanged_assets_and_recovers_from_corruption(engine
         assert asset_db.last_refresh_reused_count >= len(paths) - 1
         assert asset_db.get_guid_from_path(str(paths[5])) == original_guids[paths[5]]
 
-        index_path.write_text('{"schema_version": 999}', encoding="utf-8")
+        index_path.write_text('{"legacy": true}', encoding="utf-8")
         asset_db.refresh()
         assert asset_db.last_refresh_imported_count >= len(paths)
         assert {path: asset_db.get_guid_from_path(str(path)) for path in paths} == original_guids
         rebuilt = json.loads(index_path.read_text(encoding="utf-8"))
-        assert rebuilt["schema_version"] == 1
+        assert set(rebuilt) == {"project_root", "entries"}
     finally:
         for path in paths:
             path.unlink(missing_ok=True)

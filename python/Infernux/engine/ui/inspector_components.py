@@ -740,7 +740,7 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
         _render_multi_rows(ctx, rows)
         return
 
-    ignore_keys = {"schema_version", "type", "enabled", "component_id"}
+    ignore_keys = {"type", "enabled", "component_id"}
     serialized = []
     for comp in comps:
         try:
@@ -957,7 +957,7 @@ def render_cpp_component_generic(ctx: InxGUIContext, comp):
     original_document = comp.serialize_document()
     data = dict(original_document)
 
-    ignore_keys = {"schema_version", "type", "enabled", "component_id"}
+    ignore_keys = {"type", "enabled", "component_id"}
     changed = False
 
     visible_keys = [k for k in data if k not in ignore_keys]

@@ -376,7 +376,8 @@ class Parser final
                 if (auto value = Scalar(key.text))
                     m_document.name = value->text;
             } else if (key.text == "Version") {
-                ParseVersion();
+                Error(key, "ShaderInfo Version has been removed");
+                SkipUnknownValue();
             } else if (key.text == "ShadingModel") {
                 if (auto value = Scalar(key.text))
                     m_document.shadingModel = value->text;
@@ -432,20 +433,6 @@ class Parser final
                 Advance();
         }
         Consume(TokenKind::RightBrace, "unterminated ShaderInfo declaration");
-    }
-
-    void ParseVersion()
-    {
-        const auto value = Scalar("Version");
-        if (!value)
-            return;
-        uint32_t parsed = 0;
-        const auto result = std::from_chars(value->text.data(), value->text.data() + value->text.size(), parsed);
-        if (result.ec != std::errc{} || result.ptr != value->text.data() + value->text.size() || parsed == 0) {
-            Error(*value, "Version expects a positive integer");
-            return;
-        }
-        m_document.formatVersion = parsed;
     }
 
     void ParseQueue()
@@ -705,9 +692,6 @@ class Parser final
 
     void Validate()
     {
-        if (m_document.formatVersion != 1)
-            Error({TokenKind::Invalid, {}, m_document.declaration.begin, m_document.declaration.begin},
-                  "unsupported ShaderInfo Version " + std::to_string(m_document.formatVersion));
         if (m_document.name.empty())
             Error({TokenKind::Invalid, {}, m_document.declaration.begin, m_document.declaration.begin},
                   "ShaderInfo requires Name");

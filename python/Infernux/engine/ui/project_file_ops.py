@@ -34,7 +34,6 @@ class {class_name}(InxComponent):
 VERTEX_SHADER_TEMPLATE = '''#version 450
 
 ShaderInfo {{
-    Version 1
     Name "{shader_id}"
 }}
 '''
@@ -42,7 +41,6 @@ ShaderInfo {{
 FRAGMENT_SHADER_TEMPLATE = '''#version 450
 
 ShaderInfo {{
-    Version 1
     Name "{shader_id}"
     ShadingModel "unlit"
     Surface Opaque
@@ -62,14 +60,12 @@ void surface(out SurfaceData s) {{
 '''
 
 SCENE_TEMPLATE = '''{{
-  "schema_version": 2,
   "name": "{scene_name}",
   "isPlaying": false,
   "objects": []
 }}
 '''
 MATERIAL_TEMPLATE = '''{{
-  "material_version": 4,
   "name": "{material_name}",
   "builtin": false,
   "shaders": {{
@@ -119,7 +115,6 @@ MATERIAL_TEMPLATE = '''{{
 '''
 
 PHYSIC_MATERIAL_TEMPLATE = '''{
-  "schema_version": 1,
   "friction": 0.4,
   "bounciness": 0.0,
   "friction_combine": 0,
@@ -137,14 +132,13 @@ ANIMCLIP_TEMPLATE = '''{
 '''
 
 ANIMCLIP3D_TEMPLATE = '''{
-  "schema_version": 1,
   "name": "{clip_name}",
   "source_model_guid": "",
   "source_model_path": "",
   "take_name": "",
   "bind_pose_bone_names": [],
-  "speed": 1.0,
-  "loop": true
+  "duration_hint": 0.0,
+  "events": []
 }
 '''
 
@@ -158,7 +152,6 @@ ANIMFSM_TEMPLATE = '''{
 '''
 
 ANIMTIMELINE_TEMPLATE = '''{
-  "schema_version": 1,
   "name": "{timeline_name}",
   "duration": 2.0,
   "apply_mode": "additive",

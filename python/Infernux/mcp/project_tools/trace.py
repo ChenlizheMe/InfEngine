@@ -97,7 +97,6 @@ def start_trace(
     """Start a trace, optionally attaching immutable attempt/session context."""
     global _active_trace
     _active_trace = {
-        "schema_version": 1,
         "trace_id": f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
         "task": str(task or ""),
         "started_at": time.time(),

@@ -73,7 +73,7 @@ nlohmann::json Light::SerializeDocument() const
 void Light::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "Light", 1,
+    ValidateComponentDocument(j, "Light",
                               {"lightType", "color", "intensity", "range", "spotAngle", "outerSpotAngle", "shadows",
                                "shadowStrength", "shadowBias", "shadowNormalBias", "renderMode", "cullingMask",
                                "baked"});

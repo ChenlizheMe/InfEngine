@@ -126,8 +126,6 @@ void InxResourceMeta::Init(const char *content, size_t contentSize, const std::s
     // This remains unchanged across moves/renames because the meta is preserved.
     AddMetadata("guid", GenerateGuid());
 
-    AddMetadata("importer_version", ImporterVersion);
-
     // Get file modification time
     std::string modTimeStr;
     try {
@@ -239,8 +237,6 @@ std::string InxResourceMeta::NormalizeFilePath(const std::string &filePath)
 nlohmann::json InxResourceMeta::SerializeDocument() const
 {
     nlohmann::json root;
-    root["meta_version"] = 2;
-
     nlohmann::json entries = nlohmann::json::object();
     for (const auto &[key, metaPair] : m_metadata) {
         const std::string &typeName = metaPair.first;
@@ -277,11 +273,8 @@ nlohmann::json InxResourceMeta::SerializeDocument() const
 
 void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
 {
-    if (!document.is_object() || document.size() != 2 || !document.contains("meta_version") ||
-        !document.contains("metadata"))
-        throw std::invalid_argument("metadata document must contain exactly meta_version and metadata");
-    if (!document["meta_version"].is_number_integer() || document["meta_version"].get<int>() != 2)
-        throw std::invalid_argument("metadata document requires meta_version 2");
+    if (!document.is_object() || document.size() != 1 || !document.contains("metadata"))
+        throw std::invalid_argument("metadata document must contain exactly metadata");
     if (!document["metadata"].is_object())
         throw std::invalid_argument("metadata must be an object");
 

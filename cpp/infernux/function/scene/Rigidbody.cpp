@@ -1055,7 +1055,7 @@ nlohmann::json Rigidbody::SerializeDocument() const
 void Rigidbody::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
-    ValidateComponentDocument(j, "Rigidbody", 1,
+    ValidateComponentDocument(j, "Rigidbody",
                               {"mass", "drag", "angular_drag", "use_gravity", "is_kinematic", "constraints",
                                "collision_detection_mode", "interpolation", "max_angular_velocity",
                                "max_linear_velocity"});

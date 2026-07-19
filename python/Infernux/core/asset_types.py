@@ -437,10 +437,8 @@ class AudioImportSettings:
 def _load_strict_meta_root(meta_path: str) -> Dict[str, Any]:
     with open(meta_path, "r", encoding="utf-8") as f:
         root = json.load(f)
-    if type(root) is not dict or set(root) != {"meta_version", "metadata"}:
-        raise ValueError("meta document must contain exactly meta_version and metadata")
-    if type(root["meta_version"]) is not int or root["meta_version"] != 2:
-        raise ValueError("meta_version must be 2")
+    if type(root) is not dict or set(root) != {"metadata"}:
+        raise ValueError("meta document must contain exactly metadata")
     entries = root["metadata"]
     if type(entries) is not dict:
         raise TypeError("metadata must be an object")
@@ -632,7 +630,7 @@ class MeshImportSettings:
             "scale_factor", "generate_normals", "generate_tangents", "flip_uvs",
             "swap_uv_channels", "optimize_mesh",
         }
-        if type(d) is not dict or not required.issubset(d):
+        if type(d) is not dict or set(d) != required:
             raise ValueError("mesh import settings must use the complete current field set")
         scale = d["scale_factor"]
         if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0.0:

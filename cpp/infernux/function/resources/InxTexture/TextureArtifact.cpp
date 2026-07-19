@@ -10,7 +10,7 @@ namespace infernux
 {
 namespace
 {
-constexpr std::string_view Magic = "INXTEX";
+constexpr std::string_view Magic = "INXTEXTURE";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumDimension = 65'536;
 constexpr uint32_t MaximumMipLevels = 32;
@@ -221,7 +221,6 @@ std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::strin
 {
     ValidateTexture(texture);
     std::string bytes(Magic);
-    AppendU32(bytes, FormatVersion);
     AppendU32(bytes, EndianMarker);
     AppendString(bytes, sourceContentHash);
     AppendU32(bytes, static_cast<uint32_t>(texture.dimension));
@@ -251,7 +250,7 @@ std::string TextureArtifact::Serialize(const TextureCpuData &texture, std::strin
 std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_view bytes,
                                                                    std::string_view expectedSourceContentHash)
 {
-    if (bytes.size() < Magic.size() + sizeof(uint32_t) * 4 + sizeof(uint64_t) * 2 ||
+    if (bytes.size() < Magic.size() + sizeof(uint32_t) * 3 + sizeof(uint64_t) * 2 ||
         bytes.substr(0, Magic.size()) != Magic)
         throw std::invalid_argument("texture artifact has an invalid header");
     const size_t checksumOffset = bytes.size() - sizeof(uint64_t);
@@ -260,9 +259,6 @@ std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_v
         throw std::invalid_argument("texture artifact checksum mismatch");
 
     Reader reader(bytes.substr(Magic.size(), checksumOffset - Magic.size()));
-    const uint32_t formatVersion = reader.ReadU32();
-    if (formatVersion != FormatVersion)
-        throw std::invalid_argument("texture artifact uses an unsupported format version");
     if (reader.ReadU32() != EndianMarker)
         throw std::invalid_argument("texture artifact has an invalid endian marker");
     if (reader.ReadString() != expectedSourceContentHash)
@@ -308,6 +304,15 @@ std::shared_ptr<const TextureCpuData> TextureArtifact::Deserialize(std::string_v
         throw std::invalid_argument("texture artifact contains trailing data");
     ValidateTexture(*texture);
     return texture;
+}
+
+bool TextureArtifact::HasCurrentHeader(std::string_view bytes) noexcept
+{
+    return bytes.size() >= Magic.size() + sizeof(uint32_t) && bytes.substr(0, Magic.size()) == Magic &&
+           static_cast<unsigned char>(bytes[Magic.size()]) == 0x04 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 1]) == 0x03 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 2]) == 0x02 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 3]) == 0x01;
 }
 
 } // namespace infernux

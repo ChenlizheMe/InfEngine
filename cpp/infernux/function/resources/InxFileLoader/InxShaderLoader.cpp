@@ -446,7 +446,6 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
 
     metaData.AddMetadata("shader_id", desc.shaderId);
     metaData.AddMetadata("properties", propertiesJson);
-    metaData.AddMetadata("shader_schema_version", static_cast<int>(desc.schemaVersion));
     metaData.AddMetadata("shader_schema_format",
                          desc.usesStructuredInfo ? std::string("ShaderInfo") : std::string("LegacyAnnotations"));
     metaData.AddMetadata("shader_inputs", serializeVaryings(desc.inputs));
@@ -572,7 +571,6 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     std::string sourceForLegacyScan = source;
     if (shaderInfo.foundDeclaration) {
         desc.usesStructuredInfo = true;
-        desc.schemaVersion = shaderInfo.formatVersion;
         sourceForLegacyScan = StripShaderInfoDeclaration(source, shaderInfo);
         if (!shaderInfo.name.empty())
             desc.shaderId = shaderInfo.name;

@@ -5,7 +5,6 @@ from typing import Any, Callable
 
 class ValueCodecDescriptor:
     name: str
-    version: int
     can_encode: Callable[[Any], bool]
     can_decode: Callable[[Any], bool]
     encode: Callable[[Any, str, ValueCodecRegistry], Any]
@@ -15,7 +14,6 @@ class ValueCodecDescriptor:
     def __init__(
         self,
         name: str,
-        version: int,
         can_encode: Callable[[Any], bool],
         can_decode: Callable[[Any], bool],
         encode: Callable[[Any, str, ValueCodecRegistry], Any],
@@ -29,7 +27,6 @@ class ValueCodecDescriptor:
 
 class ValueCodecRegistry:
     BUILTIN_CODEC_NAME: str
-    BUILTIN_CODEC_VERSION: int
 
     def __init__(self) -> None: ...
     @property

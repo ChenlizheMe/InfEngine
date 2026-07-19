@@ -13,7 +13,6 @@ from .registry import (
 from .common_nodes import COMMON_NODE_DEFINITIONS
 from .document import (
     GRAPH_DOCUMENT_SCHEMA,
-    GRAPH_DOCUMENT_VERSION,
     GraphDocument,
     GraphDocumentError,
     GraphLinkRecord,

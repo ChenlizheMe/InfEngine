@@ -573,7 +573,7 @@ def test_initial_material_preview_uses_the_in_memory_document(monkeypatch, tmp_p
     from Infernux.engine.ui import asset_resource_preview
 
     path = tmp_path / "Fresh.mat"
-    path.write_text('{"material_version":3}', encoding="utf-8")
+    path.write_text('{"name":"Fresh"}', encoding="utf-8")
     calls = []
     native = object()
     monkeypatch.setattr(asset_resource_preview, "_resolve_native_engine", lambda _panel: native)
@@ -581,7 +581,7 @@ def test_initial_material_preview_uses_the_in_memory_document(monkeypatch, tmp_p
                         lambda native, preview_path, **kwargs:
                         calls.append((native, preview_path, kwargs)) or 17)
 
-    document = {"material_version": 3}
+    document = {"name": "Fresh"}
     tex = module._query_material_preview_tex(
         SimpleNamespace(), None, document,
         SimpleNamespace(extra={"cached_json": json.dumps(document)}), "", str(path),

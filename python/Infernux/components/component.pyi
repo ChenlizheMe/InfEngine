@@ -34,7 +34,6 @@ class InxComponent:
     """
 
     _serialized_fields_: Dict[str, Any]
-    __schema_version__: int
     _component_category_: str
     _always_show: bool
 

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 TYPE_KEY: str
-VERSION_KEY: str
-SCHEMA_VERSION: int
 ENUM: str
 GAME_OBJECT_REF: str
 COMPONENT_REF: str

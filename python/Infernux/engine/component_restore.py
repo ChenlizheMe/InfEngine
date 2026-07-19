@@ -143,7 +143,7 @@ class PreparedPythonComponent:
 
 
 _COMPONENT_RECORD_FIELDS = {
-    "component_id", "type_id", "type_version", "enabled", "execution_order", "data",
+    "component_id", "type_id", "enabled", "execution_order", "data",
 }
 _NATIVE_TYPE_PREFIX = "native:infernux."
 _PYTHON_TYPE_PREFIX = "python:"
@@ -163,7 +163,7 @@ def _decode_python_component_record(record: dict, path: str) -> tuple[str, str, 
     script_guid, type_guid, module_name, qualified_name = parts
     data = record.get("data")
     if isinstance(data, dict) and {
-        "__schema_version__", "__type_name__", "__component_id__",
+        "__type_name__", "__component_id__",
     }.intersection(data):
         raise PythonComponentRestoreError(f"{path}.data contains reserved component metadata")
     return script_guid, type_guid, module_name, qualified_name, qualified_name.rsplit(".", 1)[-1]
@@ -261,13 +261,10 @@ def _prepare_python_component_records(
         )
         enabled = descriptor.get("enabled")
         execution_order = descriptor.get("execution_order")
-        type_version = descriptor.get("type_version")
         data = descriptor.get("data")
         if (
             type(enabled) is not bool
             or type(execution_order) is not int
-            or type(type_version) is not int
-            or type_version <= 0
             or not isinstance(data, dict)
         ):
             raise PythonComponentRestoreError(f"Python component '{type_name}' has invalid typed fields")
@@ -280,7 +277,6 @@ def _prepare_python_component_records(
             )
         python_component_ids.add(component_id)
         fields = {
-            "__schema_version__": type_version,
             "__type_name__": type_name,
             "__component_id__": component_id,
             **data,
@@ -871,14 +867,12 @@ def serialize_game_object_document_authoritatively(game_object) -> dict:
     """
     document = game_object.serialize_document()
     native_metadata = {
-        "schema_version",
         "type",
         "component_id",
         "enabled",
         "execution_order",
     }
     python_metadata = {
-        "__schema_version__",
         "__type_name__",
         "__component_id__",
     }

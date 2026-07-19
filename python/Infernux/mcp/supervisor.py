@@ -605,7 +605,6 @@ class SupervisorSession:
             except FileNotFoundError:
                 pass
         _write_json(self.player_control_path, {
-            "schema_version": 1,
             "command_id": command_id,
             "token": self._player_control_token,
             "action": str(action),
@@ -727,7 +726,6 @@ class SupervisorSession:
     ) -> dict[str, Any]:
         previous = self.status()
         event = {
-            "schema_version": 1,
             "kind": "infernux.mcp.checkpoint_create_event",
             "operation_id": f"checkpoint-create-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
             "checkpoint_id": checkpoint_id,
@@ -814,7 +812,6 @@ class SupervisorSession:
     ) -> dict[str, Any]:
         previous = self.status()
         event = {
-            "schema_version": 1,
             "kind": "infernux.mcp.checkpoint_restore_event",
             "operation_id": f"checkpoint-restore-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
             "checkpoint_id": checkpoint_id,
@@ -987,7 +984,6 @@ class SupervisorSession:
         next_recording_enabled = bool(requested_recording and next_build_profile == "debug_feedback")
         previous_status = self.status()
         event: dict[str, Any] = {
-            "schema_version": 1,
             "handoff_id": f"handoff-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
             "started_at": time.time(),
             "state": "started",
@@ -1202,7 +1198,6 @@ class SupervisorSession:
         if not editor["running"]:
             self._mcp_ready = False
         return {
-            "schema_version": 5,
             "session_id": self.session_id,
             "project_root": self.project_root,
             "mode": self.mode,
@@ -1248,7 +1243,6 @@ class SupervisorSession:
             self.mcp_endpoint,
         ]
         return {
-            "schema_version": 1,
             "project_root": self.project_root,
             "working_directory": self.project_root,
             "session_id": self.session_id,

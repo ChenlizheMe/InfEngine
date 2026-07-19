@@ -79,7 +79,6 @@ struct ShaderInfoDocument
 {
     bool foundDeclaration = false;
     ShaderInfoKind kind = ShaderInfoKind::Shader;
-    uint32_t formatVersion = 1;
     std::string name;
     std::string shadingModel;
     std::string surfaceType;

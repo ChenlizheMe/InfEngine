@@ -5,8 +5,8 @@ transform over time.  This is the 0.2.1 "most basic" timeline: ONE track of
 transform keyframes (position / euler-rotation / scale), each keyframe carrying
 the transition curve used to interpolate *into* it from the previous keyframe.
 
-The asset mirrors :class:`AnimationClip3D` conventions: plain JSON on disk,
-``schema_version`` for exact format identity and the ``.animtimeline`` extension.
+The asset mirrors :class:`AnimationClip3D` conventions: strict plain JSON on
+disk using the ``.animtimeline`` extension.
 """
 
 from __future__ import annotations
@@ -18,8 +18,6 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 Vec3 = List[float]
-ANIMATION_TIMELINE_SCHEMA_VERSION = 1
-
 # Interpolation modes describing the transition from the PREVIOUS keyframe INTO
 # this keyframe.
 INTERP_CONSTANT = "constant"
@@ -163,7 +161,6 @@ class AnimationTimeline:
     absolute application of the sampled transform.
     """
 
-    schema_version: int = ANIMATION_TIMELINE_SCHEMA_VERSION
     name: str = ""
     duration: float = 2.0
     apply_mode: str = APPLY_ADDITIVE
@@ -188,7 +185,6 @@ class AnimationTimeline:
     # ── Serialization ──────────────────────────────────────────────────
     def to_dict(self) -> dict:
         return {
-            "schema_version": int(self.schema_version),
             "name": self.name,
             "duration": float(self.duration),
             "apply_mode": self.apply_mode,
@@ -197,16 +193,12 @@ class AnimationTimeline:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AnimationTimeline":
-        expected = {"schema_version", "name", "duration", "apply_mode", "keyframes"}
+        expected = {"name", "duration", "apply_mode", "keyframes"}
         if type(d) is not dict or set(d) != expected:
             actual = set(d) if type(d) is dict else set()
             raise ValueError(
                 f"animation timeline fields mismatch; "
                 f"missing={sorted(expected - actual)}, unknown={sorted(actual - expected)}"
-            )
-        if d["schema_version"] != ANIMATION_TIMELINE_SCHEMA_VERSION:
-            raise ValueError(
-                f"animation timeline schema_version must be {ANIMATION_TIMELINE_SCHEMA_VERSION}"
             )
         if type(d["name"]) is not str:
             raise TypeError("animation timeline name must be a string")
@@ -222,7 +214,6 @@ class AnimationTimeline:
             raise TypeError("animation timeline keyframes must be an array")
         keys = [TimelineKeyframe.from_dict(k) for k in d["keyframes"]]
         return cls(
-            schema_version=d["schema_version"],
             name=d["name"],
             duration=duration,
             apply_mode=mode,

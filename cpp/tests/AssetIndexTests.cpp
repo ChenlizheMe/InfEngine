@@ -34,13 +34,11 @@ AssetIndexEntry MakeEntry(size_t index)
     entry.resourceType = ResourceType::DefaultText;
     entry.source = {100 + index, static_cast<int64_t>(1000 + index)};
     entry.meta = {200 + index, static_cast<int64_t>(2000 + index)};
-    entry.importerVersion = 1;
     entry.contentHash = "hash-" + std::to_string(index);
     if (index > 1)
         entry.dependencies = {"guid-0", "guid-1"};
     entry.metadata.AddMetadata("guid", entry.guid);
     entry.metadata.AddMetadata("resource_type", entry.resourceType);
-    entry.metadata.AddMetadata("importer_version", entry.importerVersion);
     entry.metadata.AddMetadata("content_hash", entry.contentHash);
     return entry;
 }

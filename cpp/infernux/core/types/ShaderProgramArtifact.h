@@ -145,9 +145,6 @@ struct ShaderProgramPropertyBinding
 
 struct ShaderProgramArtifact
 {
-    static constexpr uint32_t CurrentSchemaVersion = 3;
-
-    uint32_t schemaVersion = CurrentSchemaVersion;
     ShaderProgramKey key;
     ShaderProgramDomain domain = ShaderProgramDomain::Mesh;
     std::string shadingModel;

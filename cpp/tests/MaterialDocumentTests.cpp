@@ -11,16 +11,14 @@ namespace
 using infernux::InxMaterial;
 using infernux::ShaderAssetReference;
 
-void VerifyLegacyRejection()
+void VerifyRemovedFieldRejection()
 {
-    InxMaterial material("Legacy", "lit");
-    auto legacy = material.SerializeDocument();
-    legacy["material_version"] = 3;
-    legacy["shaders"]["vertex"] = "standard";
-    legacy["shaders"]["fragment"] = "lit";
+    InxMaterial material("Current", "lit");
+    auto invalid = material.SerializeDocument();
+    invalid["material_version"] = 4;
 
     const auto before = material.SerializeDocument();
-    assert(!material.DeserializeDocument(legacy));
+    assert(!material.DeserializeDocument(invalid));
     assert(material.SerializeDocument() == before);
 }
 
@@ -110,7 +108,7 @@ void VerifyShaderReferenceVersioning()
 
 int main()
 {
-    VerifyLegacyRejection();
+    VerifyRemovedFieldRejection();
     VerifyStableReferencesAndClone();
     VerifyTransactionalFailure();
     VerifyRenderStateVersioning();

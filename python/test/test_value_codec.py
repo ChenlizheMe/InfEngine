@@ -8,8 +8,6 @@ from Infernux.components.serialized_field import FieldMetadata, FieldType
 from Infernux.components.value_codec import ValueCodecDescriptor, ValueCodecRegistry
 from Infernux.components.value_document import (
     TYPE_KEY,
-    VERSION_KEY,
-    SCHEMA_VERSION,
     GAME_OBJECT_REF,
     COMPONENT_REF,
     ASSET_REF,
@@ -48,7 +46,6 @@ def test_duplicate_codec_registration_is_rejected():
     codec = ValueCodecRegistry()
     descriptor = ValueCodecDescriptor(
         name="point",
-        version=1,
         can_encode=lambda value: False,
         can_decode=lambda field: False,
         encode=lambda value, path, registry: {},
@@ -63,12 +60,10 @@ def test_duplicate_codec_registration_is_rejected():
     assert not hasattr(codec, "register_decoder")
 
 
-@pytest.mark.parametrize("name,version", [("", 1), ("point", 0), ("point", "1")])
-def test_codec_descriptor_requires_identity_and_positive_version(name, version):
+def test_codec_descriptor_requires_identity():
     with pytest.raises((TypeError, ValueError)):
         ValueCodecDescriptor(
-            name=name,
-            version=version,
+            name="",
             can_encode=lambda value: False,
             can_decode=lambda field: False,
             encode=lambda value, path, registry: value,
@@ -92,7 +87,6 @@ def test_custom_codecs_are_explicit_and_path_aware():
     codec.register_codec(
         ValueCodecDescriptor(
             name="point",
-            version=2,
             can_encode=lambda value: isinstance(value, Point),
             can_decode=lambda field: field is custom_type,
             encode=lambda value, path, registry: {"point": value.x, "path": path},
@@ -106,7 +100,7 @@ def test_custom_codecs_are_explicit_and_path_aware():
         "path": "Owner.location",
     }
     assert codec.decode({"point": 4}, custom_type, "Owner.location") == Point(4)
-    assert codec.descriptors[0].identity == "point@2"
+    assert codec.descriptors[0].identity == "point"
 
 
 def test_validate_does_not_invoke_custom_decoder():
@@ -116,7 +110,6 @@ def test_validate_does_not_invoke_custom_decoder():
     codec.register_codec(
         ValueCodecDescriptor(
             name="validated-only",
-            version=1,
             can_encode=lambda value: False,
             can_decode=lambda field: field is token,
             encode=lambda value, path, registry: value,
@@ -135,7 +128,6 @@ def test_custom_encoder_must_return_document_data():
     codec.register_codec(
         ValueCodecDescriptor(
             name="bad-output",
-            version=1,
             can_encode=lambda value: value is Ellipsis,
             can_decode=lambda field: False,
             encode=lambda value, path, registry: object(),
@@ -152,21 +144,20 @@ def test_custom_encoder_must_return_document_data():
     "document,error",
     [
         (
-            {TYPE_KEY: GAME_OBJECT_REF, VERSION_KEY: SCHEMA_VERSION, "object_id": "12"},
+            {TYPE_KEY: GAME_OBJECT_REF, "object_id": "12"},
             "non-negative integer",
         ),
         (
-            {TYPE_KEY: GAME_OBJECT_REF, VERSION_KEY: SCHEMA_VERSION, "object_id": 12, "legacy": True},
+            {TYPE_KEY: GAME_OBJECT_REF, "object_id": 12, "legacy": True},
             "unknown or missing fields",
         ),
         (
-            {TYPE_KEY: COMPONENT_REF, VERSION_KEY: SCHEMA_VERSION, "game_object_id": 1},
+            {TYPE_KEY: COMPONENT_REF, "game_object_id": 1},
             "unknown or missing fields",
         ),
         (
             {
                 TYPE_KEY: COMPONENT_REF,
-                VERSION_KEY: SCHEMA_VERSION,
                 "game_object_id": -1,
                 "component_type": "Mover",
             },
@@ -175,7 +166,6 @@ def test_custom_encoder_must_return_document_data():
         (
             {
                 TYPE_KEY: ASSET_REF,
-                VERSION_KEY: SCHEMA_VERSION,
                 "asset_type": "Material",
                 "guid": 42,
                 "path_hint": "",
@@ -185,7 +175,6 @@ def test_custom_encoder_must_return_document_data():
         (
             {
                 TYPE_KEY: ASSET_REF,
-                VERSION_KEY: SCHEMA_VERSION,
                 "asset_type": "Texture",
                 "guid": "guid",
                 "path_hint": 42,
@@ -208,7 +197,7 @@ def test_legacy_marker_documents_are_rejected():
         codec.decode({"__game_object__": 12}, FieldType.UNKNOWN, "Target")
 
 
-def test_enum_uses_versioned_typed_document():
+def test_enum_uses_exact_typed_document():
     class Mode(Enum):
         ACTIVE = 1
 
@@ -220,14 +209,13 @@ def test_enum_uses_versioned_typed_document():
 
     assert document == {
         TYPE_KEY: "enum",
-        VERSION_KEY: SCHEMA_VERSION,
         "enum_type": Mode.__qualname__,
         "name": "ACTIVE",
     }
     assert codec.decode(document, meta, "Owner.mode") is Mode.ACTIVE
 
-    document[VERSION_KEY] = 0
-    with pytest.raises(ValueError, match="requires schema 1"):
+    document["unknown"] = 1
+    with pytest.raises(ValueError, match="unknown or missing fields"):
         codec.decode(document, meta, "Owner.mode")
 
 

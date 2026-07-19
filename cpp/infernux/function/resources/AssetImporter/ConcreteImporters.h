@@ -296,11 +296,6 @@ class ModelImporter final : public AssetImporter
             meta.AddMetadata("swap_uv_channels", false);
         if (!meta.HasKey("optimize_mesh"))
             meta.AddMetadata("optimize_mesh", true);
-        if (!meta.HasKey("importer_version")) {
-            meta.AddMetadata("importer_version", InxResourceMeta::ImporterVersion);
-        } else if (meta.GetDataAs<int>("importer_version") != InxResourceMeta::ImporterVersion) {
-            throw std::runtime_error("ModelImporter metadata uses an unsupported importer_version");
-        }
     }
 };
 

@@ -506,7 +506,6 @@ class PlayerControlChannel:
         error: str = "",
     ) -> None:
         payload = {
-            "schema_version": 1,
             "command_id": command_id,
             "ok": bool(ok),
             "data": data or {},

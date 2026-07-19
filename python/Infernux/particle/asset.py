@@ -30,7 +30,6 @@ from .data_interface import (
 
 
 PARTICLE_GRAPH_SCHEMA = "infernux.particle_graph"
-PARTICLE_GRAPH_VERSION = 2
 
 
 class ParticleGraphSchemaError(ValueError):
@@ -430,7 +429,6 @@ class ParticleGraphAsset:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": PARTICLE_GRAPH_SCHEMA,
-            "$version": PARTICLE_GRAPH_VERSION,
             "stable_id": self.stable_id,
             "name": self.name,
             "emitters": [emitter.to_dict() for emitter in self.emitters],
@@ -464,14 +462,12 @@ class ParticleGraphAsset:
 
     @classmethod
     def from_dict(cls, value) -> "ParticleGraphAsset":
-        expected = {"$schema", "$version", "stable_id", "name", "emitters", "parameters"}
+        expected = {"$schema", "stable_id", "name", "emitters", "parameters"}
         _exact_object(value, expected, "$")
         if value["$schema"] != PARTICLE_GRAPH_SCHEMA:
-            raise ParticleGraphSchemaError("unsupported particle graph schema or version")
+            raise ParticleGraphSchemaError("unsupported particle graph schema")
         if type(value["emitters"]) is not list or type(value["parameters"]) is not list:
             raise ParticleGraphSchemaError("emitters and parameters must be arrays")
-        if value["$version"] != PARTICLE_GRAPH_VERSION:
-            raise ParticleGraphSchemaError("unsupported particle graph schema or version")
         return cls(
             stable_id=value["stable_id"],
             name=value["name"],
@@ -531,7 +527,6 @@ __all__ = [
     "EmitterShapeKind",
     "ExecutionTarget",
     "PARTICLE_GRAPH_SCHEMA",
-    "PARTICLE_GRAPH_VERSION",
     "ParticleAttribute",
     "ParticleBurst",
     "ParticleEmitterAsset",

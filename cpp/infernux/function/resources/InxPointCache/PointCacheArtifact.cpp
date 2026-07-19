@@ -11,7 +11,7 @@ namespace infernux
 {
 namespace
 {
-constexpr std::string_view Magic = "INXPOINT";
+constexpr std::string_view Magic = "INXPOINTCACHE";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumPointCount = 100'000'000U;
 constexpr uint32_t MaximumChannelCount = 256U;
@@ -305,7 +305,6 @@ std::string PointCacheArtifact::Serialize(const PointCacheCpuData &cache, std::s
 {
     ValidatePointCache(cache);
     std::string bytes(Magic);
-    AppendU32(bytes, FormatVersion);
     AppendU32(bytes, EndianMarker);
     AppendString(bytes, sourceContentHash, "source content hash");
     AppendString(bytes, cache.stableId, "stable ID");
@@ -328,7 +327,7 @@ std::string PointCacheArtifact::Serialize(const PointCacheCpuData &cache, std::s
 
 PointCacheCpuData PointCacheArtifact::Deserialize(std::string_view bytes, std::string_view expectedSourceContentHash)
 {
-    if (bytes.size() < Magic.size() + sizeof(uint32_t) * 4 + sizeof(uint64_t) * 2 ||
+    if (bytes.size() < Magic.size() + sizeof(uint32_t) * 3 + sizeof(uint64_t) * 2 ||
         bytes.substr(0, Magic.size()) != Magic)
         throw std::invalid_argument("point cache artifact has an invalid header");
     const size_t checksumOffset = bytes.size() - sizeof(uint64_t);
@@ -337,8 +336,6 @@ PointCacheCpuData PointCacheArtifact::Deserialize(std::string_view bytes, std::s
         throw std::invalid_argument("point cache artifact checksum mismatch");
 
     Reader reader(bytes.substr(Magic.size(), checksumOffset - Magic.size()));
-    if (reader.ReadU32() != FormatVersion)
-        throw std::invalid_argument("point cache artifact uses an unsupported format version");
     if (reader.ReadU32() != EndianMarker)
         throw std::invalid_argument("point cache artifact has an invalid endian marker");
     if (reader.ReadString("source content hash") != expectedSourceContentHash)
@@ -372,6 +369,15 @@ PointCacheCpuData PointCacheArtifact::Deserialize(std::string_view bytes, std::s
     ValidatePointCache(cache);
     cache.RebuildIdLookup();
     return cache;
+}
+
+bool PointCacheArtifact::HasCurrentHeader(std::string_view bytes) noexcept
+{
+    return bytes.size() >= Magic.size() + sizeof(uint32_t) && bytes.substr(0, Magic.size()) == Magic &&
+           static_cast<unsigned char>(bytes[Magic.size()]) == 0x04 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 1]) == 0x03 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 2]) == 0x02 &&
+           static_cast<unsigned char>(bytes[Magic.size() + 3]) == 0x01;
 }
 
 } // namespace infernux

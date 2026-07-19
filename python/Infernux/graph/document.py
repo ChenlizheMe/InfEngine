@@ -12,7 +12,6 @@ from .registry import PortKind
 
 
 GRAPH_DOCUMENT_SCHEMA = "infernux.graph_document"
-GRAPH_DOCUMENT_VERSION = 2
 
 
 class GraphDocumentError(ValueError):
@@ -104,7 +103,6 @@ class GraphDocument:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": GRAPH_DOCUMENT_SCHEMA,
-            "$version": GRAPH_DOCUMENT_VERSION,
             "domain": self.domain,
             "nodes": [node.to_dict() for node in self.nodes],
             "links": [link.to_dict() for link in self.links],
@@ -138,14 +136,14 @@ class GraphDocument:
     def from_dict(cls, value: Any) -> "GraphDocument":
         if type(value) is not dict:
             raise GraphDocumentError("graph document root must be an object")
-        expected = {"$schema", "$version", "domain", "nodes", "links", "metadata"}
+        expected = {"$schema", "domain", "nodes", "links", "metadata"}
         if set(value) != expected:
             raise GraphDocumentError(
                 f"graph document keys mismatch; missing={sorted(expected - set(value))}, "
                 f"unknown={sorted(set(value) - expected)}"
             )
-        if value["$schema"] != GRAPH_DOCUMENT_SCHEMA or value["$version"] != GRAPH_DOCUMENT_VERSION:
-            raise GraphDocumentError("unsupported graph document schema or version")
+        if value["$schema"] != GRAPH_DOCUMENT_SCHEMA:
+            raise GraphDocumentError("unsupported graph document schema")
         if type(value["nodes"]) is not list or type(value["links"]) is not list:
             raise GraphDocumentError("graph nodes and links must be arrays")
         nodes = tuple(cls._parse_node(item, index) for index, item in enumerate(value["nodes"]))
@@ -191,7 +189,6 @@ class GraphDocument:
 
 __all__ = [
     "GRAPH_DOCUMENT_SCHEMA",
-    "GRAPH_DOCUMENT_VERSION",
     "GraphDocument",
     "GraphDocumentError",
     "GraphLinkRecord",

@@ -542,7 +542,6 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
         json.dumps(
             {
                 "$schema": "infernux.point_cache",
-                "$version": 1,
                 "stable_id": "gpu-spawn-points",
                 "name": "GPU Spawn Points",
                 "bake_basis": "right_handed_y_up",
@@ -678,7 +677,6 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
     def document(vectors):
         return {
             "$schema": "infernux.vector_field",
-            "$version": 1,
             "dimensions": [2, 1, 1],
             "storage_order": "x_fastest",
             "bake_basis": [

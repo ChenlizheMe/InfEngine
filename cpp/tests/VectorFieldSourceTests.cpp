@@ -24,7 +24,6 @@ std::string Source(std::string vectors)
 {
     return R"({
         "$schema": "infernux.vector_field",
-        "$version": 1,
         "dimensions": [2, 1, 1],
         "storage_order": "x_fastest",
         "bake_basis": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
@@ -51,7 +50,7 @@ int main()
     RequireInvalid([&] { (void)infernux::VectorFieldSource::Decode(Source("[[1, 2], [3, 4, 5]]")); });
     RequireInvalid([&] {
         (void)infernux::VectorFieldSource::Decode(
-            R"({"$schema":"infernux.vector_field","$version":2,"dimensions":[1,1,1],"storage_order":"x_fastest","bake_basis":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"vectors":[[0,0,0]]})");
+            R"({"$schema":"infernux.vector_field","unknown":1,"dimensions":[1,1,1],"storage_order":"x_fastest","bake_basis":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],"vectors":[[0,0,0]]})");
     });
 
     std::cout << "Vector field source tests passed\n";

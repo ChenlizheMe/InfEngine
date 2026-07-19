@@ -95,7 +95,6 @@ def test_create_component_instance_follows_class_rename_in_one_component_script(
 
 def test_missing_script_placeholder_preserves_identity_and_fields():
     fields = {
-        "__schema_version__": 1,
         "__type_name__": "Gone",
         "__component_id__": 42,
         "speed": 3.5,

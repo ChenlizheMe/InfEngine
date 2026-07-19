@@ -61,7 +61,6 @@ int main()
     const std::string waveVertex = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/WaveDeform"
     Properties
     {
@@ -93,7 +92,6 @@ VertexOutput vertex(inout VertexInput v)
     const std::string oceanFragment = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/OceanSurface"
     ShadingModel "PBR"
     Properties
@@ -122,7 +120,6 @@ void surface(out SurfaceData s)
     const auto fragment = compiler.ParseShaderSource(oceanFragment, "OceanSurface.frag");
     const auto artifact = infernux::ShaderStageLinker::Link(vertex, fragment);
     assert(artifact.IsValid());
-    assert(artifact.schemaVersion == infernux::ShaderProgramInterfaceArtifact::CurrentSchemaVersion);
     assert(artifact.vertex.shaderId == "Tests/WaveDeform");
     assert(artifact.fragment.shaderId == "Tests/OceanSurface");
     assert(artifact.shadingModel == "pbr");
@@ -351,7 +348,6 @@ this_is_not_valid_glsl
     const std::string transparentFragment = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/TransparentForwardOnly"
     ShadingModel "Unlit"
     Surface Transparent
@@ -392,7 +388,6 @@ void surface(out SurfaceData surface)
     const std::string particleVertex = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/ParticleSprite"
     Capabilities [ParticleSprite]
 }
@@ -400,7 +395,6 @@ ShaderInfo
     const std::string particleFragment = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/ParticleSurface"
     ShadingModel "Unlit"
     Surface Transparent
@@ -479,7 +473,6 @@ void surface(out SurfaceData surface)
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/PlainSurface"
     ShadingModel "Unlit"
 }
@@ -511,7 +504,6 @@ void surface(out SurfaceData surface)
     const std::string migrationMaterialFragment = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/MigrationMaterial"
     ShadingModel "Unlit"
     Properties
@@ -540,7 +532,6 @@ void surface(out SurfaceData surface)
     const std::string lavaFragment = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/LavaSurface"
     ShadingModel "Unlit"
     Inputs
@@ -561,7 +552,6 @@ void surface(out SurfaceData surface) { }
     const std::string missingInput = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/Missing"
     Inputs { Smooth Float missing }
 }
@@ -575,7 +565,6 @@ void main() { }
     const std::string mismatchedInput = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/Mismatch"
     Properties { Float amplitude = 0.5 Range(0.0, 1.0) }
     Inputs
@@ -596,7 +585,6 @@ void main() { }
     const std::string textureVarying = R"(
 ShaderInfo
 {
-    Version 1
     Name "Tests/TextureVarying"
     Inputs { Texture2D displacement }
 }

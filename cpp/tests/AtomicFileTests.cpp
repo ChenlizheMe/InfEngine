@@ -39,7 +39,7 @@ std::string ReadText(const std::filesystem::path &path)
 
 std::string MakeCrashDocument(char fill)
 {
-    std::string document = "INFERNUX_ATOMIC_CRASH_GATE_V1\n";
+    std::string document = "INFERNUX_ATOMIC_CRASH_GATE\n";
     document.append(4 * 1024 * 1024, fill);
     document += "\nEND\n";
     return document;

@@ -541,7 +541,6 @@ def _load_prefab(path: str):
 
     root_copy = copy.deepcopy(root_json)
     return root_copy, {
-        "prefab_version": data.get("prefab_version", 0),
         "prefab_path": path,
         "prefab_envelope": data,
         "root_name": root_copy.get("name", "GameObject"),

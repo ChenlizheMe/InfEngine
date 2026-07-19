@@ -45,8 +45,7 @@ void PhysicMaterial::SetBounceCombine(PhysicsMaterialCombine value)
 
 nlohmann::json PhysicMaterial::SerializeDocument() const
 {
-    return {{"schema_version", SchemaVersion},
-            {"friction", m_friction},
+    return {{"friction", m_friction},
             {"bounciness", m_bounciness},
             {"friction_combine", static_cast<int>(m_frictionCombine)},
             {"bounce_combine", static_cast<int>(m_bounceCombine)}};
@@ -54,8 +53,8 @@ nlohmann::json PhysicMaterial::SerializeDocument() const
 
 void PhysicMaterial::DeserializeDocument(const nlohmann::json &document)
 {
-    static const std::unordered_set<std::string> fields = {"schema_version", "friction", "bounciness",
-                                                           "friction_combine", "bounce_combine"};
+    static const std::unordered_set<std::string> fields = {"friction", "bounciness", "friction_combine",
+                                                           "bounce_combine"};
     if (!document.is_object() || document.size() != fields.size())
         throw std::invalid_argument("PhysicMaterial document must contain exactly the current schema fields");
     for (const auto &[key, value] : document.items()) {
@@ -63,8 +62,6 @@ void PhysicMaterial::DeserializeDocument(const nlohmann::json &document)
         if (fields.find(key) == fields.end())
             throw std::invalid_argument("unknown PhysicMaterial field: " + key);
     }
-    if (!document.at("schema_version").is_number_integer() || document.at("schema_version").get<int>() != SchemaVersion)
-        throw std::invalid_argument("unsupported PhysicMaterial schema_version");
     if (!document.at("friction").is_number() || !document.at("bounciness").is_number() ||
         !document.at("friction_combine").is_number_integer() || !document.at("bounce_combine").is_number_integer())
         throw std::invalid_argument("PhysicMaterial fields have invalid types");

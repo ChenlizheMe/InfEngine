@@ -91,8 +91,8 @@ const ShaderProgramArtifact::PassVariant *ShaderProgramArtifact::FindVariant(Sha
 
 bool ShaderProgramArtifact::IsValid() const noexcept
 {
-    if (schemaVersion != CurrentSchemaVersion || !key.IsValid() || key.revision == 0 || compatibilitySignature == 0 ||
-        domain >= ShaderProgramDomain::Count || variants.empty() || materialBufferSize % 16 != 0) {
+    if (!key.IsValid() || key.revision == 0 || compatibilitySignature == 0 || domain >= ShaderProgramDomain::Count ||
+        variants.empty() || materialBufferSize % 16 != 0) {
         return false;
     }
 
@@ -135,8 +135,6 @@ uint64_t ComputeShaderProgramRevision(std::string_view generatedVertexSource, st
     const auto targetValue = static_cast<int32_t>(target);
     hash = AppendBytes(hash, &targetValue, sizeof(targetValue));
     hash = AppendBytes(hash, &compatibilitySignature, sizeof(compatibilitySignature));
-    const uint32_t artifactSchema = ShaderProgramArtifact::CurrentSchemaVersion;
-    hash = AppendBytes(hash, &artifactSchema, sizeof(artifactSchema));
     return hash == 0 ? 1 : hash;
 }
 
@@ -180,8 +178,6 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
     hash = AppendBytes(hash, &artifact.varyingInterfaceSignature, sizeof(artifact.varyingInterfaceSignature));
     hash = AppendBytes(hash, &artifact.materialLayoutSignature, sizeof(artifact.materialLayoutSignature));
     hash = AppendBytes(hash, &artifact.compatibilitySignature, sizeof(artifact.compatibilitySignature));
-    hash = AppendBytes(hash, &artifact.schemaVersion, sizeof(artifact.schemaVersion));
-
     std::array<const ShaderProgramArtifact::PassVariant *, static_cast<size_t>(ShaderCompileTarget::Count)> ordered{};
     if (artifact.variants.size() > ordered.size())
         return 1;

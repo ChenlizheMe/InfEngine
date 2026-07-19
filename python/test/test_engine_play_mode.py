@@ -218,7 +218,6 @@ class TestPlayModeManager:
             def __init__(self):
                 self.playing = None
                 self.document = {
-                    "schema_version": 1,
                     "name": "FakeLiveScene",
                     "isPlaying": False,
                     "objects": [],
@@ -267,7 +266,6 @@ class TestPlayModeManager:
         monkeypatch.setattr(mgr, "_materialize_prefab_references_for_play", _unexpected_materialize)
 
         snapshot = {
-            "schema_version": 1,
             "name": "PlayModeRebuild",
             "isPlaying": False,
             "objects": [],

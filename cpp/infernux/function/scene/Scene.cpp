@@ -80,9 +80,8 @@ std::string DumpSceneDocument(const nlohmann::json &document, size_t objectCount
 /// Full graph validation still happens inside DeserializeDocument.
 bool ValidateSceneDocumentHeader(const nlohmann::json &document)
 {
-    if (!document.is_object() || !document.contains("schema_version") ||
-        !document["schema_version"].is_number_integer() || document["schema_version"].get<int>() != 2) {
-        INXLOG_ERROR("Scene::Deserialize: expected schema_version 2");
+    if (!document.is_object()) {
+        INXLOG_ERROR("Scene::Deserialize: expected an object document");
         return false;
     }
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
@@ -91,7 +90,10 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         return false;
     }
     static const std::unordered_set<std::string> allowedSceneFields = {
-        "schema_version", "name", "isPlaying", "objects", "mainCameraComponentId",
+        "name",
+        "isPlaying",
+        "objects",
+        "mainCameraComponentId",
     };
     for (const auto &[key, value] : document.items()) {
         (void)value;
@@ -715,15 +717,14 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
         return nullptr;
     };
 
-    if (!objJson.is_object() || !objJson.contains("schema_version") || !objJson["schema_version"].is_number_integer() ||
-        objJson["schema_version"].get<int>() != 2) {
-        INXLOG_ERROR("Scene object must use schema_version 2");
+    if (!objJson.is_object()) {
+        INXLOG_ERROR("Scene object must be an object document");
         return fail();
     }
 
     static const std::unordered_set<std::string> allowedObjectFields = {
-        "schema_version", "name",        "id",          "active",    "is_static",  "tag",
-        "layer",          "prefab_guid", "prefab_root", "transform", "components", "children",
+        "name",        "id",          "active",    "is_static",  "tag",      "layer",
+        "prefab_guid", "prefab_root", "transform", "components", "children",
     };
     for (const auto &[key, value] : objJson.items()) {
         (void)value;
@@ -845,7 +846,6 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
             const auto mixHash = [&](size_t value) {
                 prototypeHash ^= value + 0x9e3779b97f4a7c15ULL + (prototypeHash << 6u) + (prototypeHash >> 2u);
             };
-            mixHash(std::hash<int>{}(record.typeVersion));
             mixHash(std::hash<bool>{}(record.enabled));
             mixHash(std::hash<int>{}(record.executionOrder));
             mixHash(std::hash<json>{}(record.data));
@@ -854,7 +854,6 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJsonImpl(const json &objJs
                 for (const ComponentPrototype &candidate : cacheIt->second) {
                     const json &candidateRecord = *candidate.record;
                     if (candidateRecord.at("type_id") == componentRecordDocument.at("type_id") &&
-                        candidateRecord.at("type_version") == componentRecordDocument.at("type_version") &&
                         candidateRecord.at("enabled") == componentRecordDocument.at("enabled") &&
                         candidateRecord.at("execution_order") == componentRecordDocument.at("execution_order") &&
                         candidateRecord.at("data") == componentRecordDocument.at("data")) {
@@ -1126,7 +1125,6 @@ GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, GameO
 nlohmann::json Scene::SerializeDocument() const
 {
     json j;
-    j["schema_version"] = 2;
     j["name"] = m_name;
     j["isPlaying"] = m_isPlaying;
 

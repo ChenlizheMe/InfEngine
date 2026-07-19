@@ -227,7 +227,6 @@ Transform *Component::GetTransform() const
 nlohmann::json Component::SerializeDocument() const
 {
     json j;
-    j["schema_version"] = GetSerializationSchemaVersion();
     j["type"] = GetTypeName();
     j["enabled"] = m_enabled;
     j["execution_order"] = m_executionOrder;
@@ -255,13 +254,6 @@ bool Component::DeserializeDocument(const nlohmann::json &j)
     try {
         if (!j.is_object()) {
             INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': expected an object document");
-            return false;
-        }
-
-        const int expectedVersion = GetSerializationSchemaVersion();
-        if (!j.contains("schema_version") || !j["schema_version"].is_number_integer() ||
-            j["schema_version"].get<int>() != expectedVersion) {
-            INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': expected schema_version ", expectedVersion);
             return false;
         }
 

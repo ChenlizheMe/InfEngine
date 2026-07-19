@@ -187,7 +187,6 @@ def test_keyframe_from_dict_coerces_ints_to_float():
 
 def test_timeline_defaults():
     tl = AnimationTimeline()
-    assert tl.schema_version == 1
     assert tl.name == ""
     assert tl.duration == 2.0
     assert tl.apply_mode == APPLY_ADDITIVE
@@ -320,7 +319,7 @@ def test_sample_returns_copies_not_references():
 
 def test_timeline_to_dict_keys():
     d = AnimationTimeline().to_dict()
-    assert set(d) == {"schema_version", "name", "duration", "apply_mode", "keyframes"}
+    assert set(d) == {"name", "duration", "apply_mode", "keyframes"}
 
 
 def test_timeline_to_dict_excludes_file_path():

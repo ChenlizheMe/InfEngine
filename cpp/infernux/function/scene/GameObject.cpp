@@ -694,7 +694,6 @@ void GameObject::EditorUpdate(float deltaTime)
 nlohmann::json GameObject::SerializeDocument() const
 {
     json j;
-    j["schema_version"] = 2;
     j["name"] = m_name;
     j["id"] = m_id;
     j["active"] = m_active;

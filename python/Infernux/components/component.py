@@ -61,9 +61,6 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
     # Class-level storage for serialized field metadata
     _serialized_fields_: Dict[str, Any] = {}
 
-    # Exact schema identity for serialized component documents.
-    __schema_version__ = 1
-
     # Active instance registry: go_id (int) → list of live InxComponent instances.
     # Used by GizmosCollector to skip the expensive get_all_objects() + get_py_components()
     # scene walk — instead we iterate only objects that actually have Python components.

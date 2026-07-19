@@ -64,7 +64,6 @@ struct SurfaceOptions
 
 struct ShaderDescriptor
 {
-    uint32_t schemaVersion = 0;
     bool usesStructuredInfo = false;
 
     std::string shaderId;

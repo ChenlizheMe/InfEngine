@@ -40,7 +40,6 @@ def _configure(tmp_path, monkeypatch, *, debug=True):
 
 def _write_request(path, command_id: str, action: str, **values):
     path.write_text(json.dumps({
-        "schema_version": 1,
         "command_id": command_id,
         "token": "control-token-123456789",
         "action": action,

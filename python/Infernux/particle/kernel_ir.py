@@ -26,7 +26,6 @@ from .kernel_semantics import (
 
 
 KERNEL_IR_SCHEMA = "infernux.particle_kernel_ir"
-KERNEL_IR_VERSION = 2
 
 
 class KernelCompileError(ValueError):
@@ -436,7 +435,6 @@ class ParticleKernelProgram:
     def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
         return {
             "$schema": KERNEL_IR_SCHEMA,
-            "$version": KERNEL_IR_VERSION,
             "source_behavior_hash": self.source_behavior_hash,
             "kernel_hash": self.kernel_hash,
             "contract": self.contract.to_dict(),
@@ -452,7 +450,6 @@ class ParticleKernelProgram:
             value,
             {
                 "$schema",
-                "$version",
                 "source_behavior_hash",
                 "kernel_hash",
                 "contract",
@@ -460,8 +457,8 @@ class ParticleKernelProgram:
             },
             "particle kernel program",
         )
-        if value["$schema"] != KERNEL_IR_SCHEMA or value["$version"] != KERNEL_IR_VERSION:
-            raise KernelCompileError("particle kernel schema or version is unsupported")
+        if value["$schema"] != KERNEL_IR_SCHEMA:
+            raise KernelCompileError("particle kernel schema is unsupported")
         if type(value["emitters"]) is not list:
             raise KernelCompileError("particle kernel emitters must be an array")
         try:
@@ -914,7 +911,6 @@ def _kernel_semantic_hash(
 ) -> str:
     semantic = {
         "$schema": KERNEL_IR_SCHEMA,
-        "$version": KERNEL_IR_VERSION,
         "contract": contract.to_dict(),
         "emitters": [emitter.to_dict(include_source=False) for emitter in emitters],
     }
@@ -924,7 +920,6 @@ def _kernel_semantic_hash(
 
 __all__ = [
     "KERNEL_IR_SCHEMA",
-    "KERNEL_IR_VERSION",
     "KernelCapability",
     "KernelCompileError",
     "KernelInstruction",

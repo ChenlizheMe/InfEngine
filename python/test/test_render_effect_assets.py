@@ -50,7 +50,6 @@ def test_render_effect_round_trips_as_deterministic_json():
     assert encoded.endswith("\n")
     assert list(json.loads(encoded)) == [
         "$schema",
-        "$version",
         "dependencies",
         "feature_type",
         "parameters",
@@ -78,7 +77,6 @@ def test_render_effect_documents_reject_unknown_fields_and_duplicate_entry_ids()
         parse_render_effect_document(
             {
                 "$schema": "infernux.render_effect",
-                "$version": 1,
                 "feature_type": "infernux.post.bloom",
                 "parameters": {},
                 "dependencies": [],

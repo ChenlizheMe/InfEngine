@@ -34,7 +34,6 @@ int main()
 // ShaderInfo { Name "Ignored/InComment" }
 ShaderInfo
 {
-    Version 1
     Name "Tests/WaveSurface"
     ShadingModel "PBR"
     Surface Opaque
@@ -67,7 +66,6 @@ void surface (out SurfaceData surface) { }
     const infernux::ShaderInfoDocument info = infernux::ParseShaderInfo(richSource);
     assert(info.IsValid());
     assert(info.kind == infernux::ShaderInfoKind::Shader);
-    assert(info.formatVersion == 1);
     assert(info.name == "Tests/WaveSurface");
     assert(info.shadingModel == "PBR");
     assert(info.renderQueue == 2050);
@@ -125,7 +123,6 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
     const infernux::ShaderDescriptor descriptor = compiler.ParseShaderSource(richSource, "WaveSurface.frag");
     assert(descriptor.usesStructuredInfo);
-    assert(descriptor.schemaVersion == 1);
     assert(descriptor.shaderId == "Tests/WaveSurface");
     assert(descriptor.shadingModel == "pbr");
     assert(descriptor.hasSurfaceFunc);
@@ -137,7 +134,6 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     infernux::InxResourceMeta richMetadata;
     compiler.CreateMeta(richSource.data(), richSource.size(), "WaveSurface.frag", richMetadata);
     assert(richMetadata.GetDataAs<std::string>("shader_schema_format") == "ShaderInfo");
-    assert(richMetadata.GetDataAs<int>("shader_schema_version") == 1);
     const nlohmann::json propertySchema = nlohmann::json::parse(richMetadata.GetDataAs<std::string>("properties"));
     assert(propertySchema.size() == 3);
     assert(propertySchema[0]["default"] == 0.35);
@@ -147,7 +143,6 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     const std::string vertexSource = R"(
 #version 450
 ShaderInfo {
-    Version 1
     Name "Tests/StructuredWave"
     Properties {
         Float amplitude = 0.05 Range(0.0, 1.0)
@@ -162,7 +157,6 @@ void vertex(inout VertexInput v) {
     const std::string fragmentSource = R"(
 #version 450
 ShaderInfo {
-    Version 1
     Name "Tests/StructuredUnlit"
     ShadingModel "unlit"
     Surface Opaque
