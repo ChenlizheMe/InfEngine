@@ -7,6 +7,7 @@
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
+#include <function/renderer/vk/VkResourceManager.h>
 
 #include <algorithm>
 #include <map>
@@ -36,6 +37,23 @@ bool IsSpirv(const std::vector<uint32_t> &words)
 
 struct ParticleGpuSystemManager::Impl
 {
+    struct PointCacheResources
+    {
+        std::shared_ptr<rhi::BufferResource> data;
+        std::shared_ptr<rhi::BufferResource> lookup;
+    };
+
+    struct PointCacheUpload
+    {
+        std::weak_ptr<InxPointCache> owner;
+        uint64_t generation = 0;
+        std::shared_ptr<const PointCacheCpuData> cpuData;
+        std::shared_ptr<vk::BufferUploadTicket> dataTicket;
+        std::shared_ptr<vk::BufferUploadTicket> lookupTicket;
+        std::shared_ptr<PointCacheResources> resources;
+        bool failed = false;
+    };
+
     struct Emitter
     {
         struct Output
@@ -80,6 +98,7 @@ struct ParticleGpuSystemManager::Impl
 
     vk::VkDeviceContext *context = nullptr;
     vk::VkPipelineManager *pipelines = nullptr;
+    vk::VkResourceManager *resources = nullptr;
     FrameDeletionQueue *deletionQueue = nullptr;
     ParticleGpuDrawRegistry *drawRegistry = nullptr;
     GpuBillboardTextureResolver textureResolver;
@@ -91,6 +110,78 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleMigrationProgramStorage> migrationProgram;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
+    mutable std::unordered_map<const InxPointCache *, PointCacheUpload> pointCacheUploads;
+
+    [[nodiscard]] std::shared_ptr<PointCacheResources>
+    ResolvePointCacheResources(const std::shared_ptr<InxPointCache> &cache, std::string *error) const
+    {
+        if (!resources || !cache || !cache->GetCpuData()) {
+            SetError(error, "GPU particle Point Cache resource service is unavailable");
+            return {};
+        }
+
+        for (auto it = pointCacheUploads.begin(); it != pointCacheUploads.end();) {
+            if (it->second.owner.expired())
+                it = pointCacheUploads.erase(it);
+            else
+                ++it;
+        }
+
+        const auto cpuData = cache->GetCpuData();
+        const uint64_t generation = cache->GetGeneration();
+        auto &upload = pointCacheUploads[cache.get()];
+        const auto owner = upload.owner.lock();
+        if (owner.get() != cache.get() || upload.generation != generation || upload.cpuData != cpuData) {
+            upload = {};
+            upload.owner = cache;
+            upload.generation = generation;
+            upload.cpuData = cpuData;
+            try {
+                upload.dataTicket = resources->BeginBufferUpload(
+                    {cpuData->bytes.data(), cpuData->bytes.size(), rhi::BufferUsage::Storage});
+                const PointCacheIdLookupEntry identityLookup = {0, UINT32_MAX};
+                const bool hashedLookup = cpuData->idLookupMode == PointCacheIdLookupMode::Hash;
+                upload.lookupTicket = resources->BeginBufferUpload(
+                    {hashedLookup ? static_cast<const void *>(cpuData->idLookup.data())
+                                  : static_cast<const void *>(&identityLookup),
+                     hashedLookup ? cpuData->idLookup.size() * sizeof(PointCacheIdLookupEntry) : sizeof(identityLookup),
+                     rhi::BufferUsage::Storage});
+            } catch (const std::exception &exception) {
+                upload.failed = true;
+                SetError(error, std::string("GPU particle Point Cache upload failed: ") + exception.what());
+                return {};
+            }
+        }
+        if (upload.failed) {
+            SetError(error, "GPU particle Point Cache upload failed");
+            return {};
+        }
+        if (upload.resources)
+            return upload.resources;
+
+        try {
+            const bool dataReady = resources->TryPublishBufferUpload(upload.dataTicket);
+            const bool lookupReady = resources->TryPublishBufferUpload(upload.lookupTicket);
+            if (!dataReady || !lookupReady) {
+                SetError(error, "GPU particle Point Cache upload is pending");
+                return {};
+            }
+            auto result = std::make_shared<PointCacheResources>();
+            result->data = resources->GetPublishedRhiBuffer(upload.dataTicket);
+            result->lookup = resources->GetPublishedRhiBuffer(upload.lookupTicket);
+            if (!result->data || !result->data->IsValid() || !result->lookup || !result->lookup->IsValid()) {
+                upload.failed = true;
+                SetError(error, "GPU particle Point Cache upload produced invalid RHI buffers");
+                return {};
+            }
+            upload.resources = result;
+            return result;
+        } catch (const std::exception &exception) {
+            upload.failed = true;
+            SetError(error, std::string("GPU particle Point Cache publication failed: ") + exception.what());
+            return {};
+        }
+    }
 
     [[nodiscard]] bool BuildRuntimeDesc(const GpuParticleEmitterProgram &program, GpuEmitterDesc &runtimeDesc,
                                         std::vector<std::shared_ptr<InxPointCache>> &pointCaches,
@@ -123,6 +214,12 @@ struct ParticleGpuSystemManager::Impl
             runtimePointCache.worldSpace = pointCache.worldSpace;
             runtimePointCache.cacheToSpace = pointCache.cacheToSpace;
             runtimePointCache.data = pointCache.cache->GetCpuData();
+            const auto gpuResources = ResolvePointCacheResources(pointCache.cache, error);
+            if (!gpuResources)
+                return false;
+            runtimePointCache.dataBuffer = gpuResources->data->GetBuffer();
+            runtimePointCache.lookupBuffer = gpuResources->lookup->GetBuffer();
+            runtimePointCache.keepAlive = gpuResources;
             runtimePointCache.samples = pointCache.samples;
             runtimeDesc.pointCaches.pointCaches.push_back(std::move(runtimePointCache));
             pointCaches.push_back(pointCache.cache);
@@ -370,7 +467,8 @@ struct ParticleGpuSystemManager::Impl
         const bool replacementCreated =
             descriptorValid && replacement->CreateCompatible(context->GetRhiDevice(), runtimeDesc, *emitter.runtime);
         if (!replacementCreated || !deletionQueue || !emitter.runtime->AdoptCompatibleRevision(*replacement)) {
-            emitter.observedPointCacheGenerations = std::move(currentPointCacheGenerations);
+            if (error != "GPU particle Point Cache upload is pending")
+                emitter.observedPointCacheGenerations = std::move(currentPointCacheGenerations);
             if (error != "GPU particle Vector Field texture upload is pending")
                 emitter.observedVectorFieldGenerations = std::move(currentVectorFieldGenerations);
             INXLOG_WARN("GPU particle data-interface refresh kept last-known-good emitter '", emitter.stableId,
@@ -519,20 +617,19 @@ ParticleGpuSystemManager::~ParticleGpuSystemManager()
     Shutdown();
 }
 
-bool ParticleGpuSystemManager::Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
-                                          FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
-                                          GpuBillboardTextureResolver textureResolver,
-                                          GpuBillboardTextureVersionResolver textureVersionResolver,
-                                          GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver,
-                                          const GpuParticleSortProgram &sortProgram,
-                                          const GpuParticleCullProgram &cullProgram,
-                                          const GpuParticleBoundsProgram &boundsProgram,
-                                          const GpuParticleMigrationProgram &migrationProgram)
+bool ParticleGpuSystemManager::Initialize(
+    vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
+    FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+    GpuBillboardTextureResolver textureResolver, GpuBillboardTextureVersionResolver textureVersionResolver,
+    GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver, const GpuParticleSortProgram &sortProgram,
+    const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
+    const GpuParticleMigrationProgram &migrationProgram)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid())
         return false;
     m_impl->context = &context;
     m_impl->pipelines = &pipelines;
+    m_impl->resources = &resources;
     m_impl->deletionQueue = &deletionQueue;
     m_impl->drawRegistry = &drawRegistry;
     m_impl->textureResolver = std::move(textureResolver);
@@ -582,6 +679,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
         m_impl->drawRegistry->Clear();
     m_impl->graphState.reset();
     m_impl->emitters.clear();
+    m_impl->pointCacheUploads.clear();
     m_impl->drawRegistry = nullptr;
     m_impl->textureResolver = {};
     m_impl->textureVersionResolver = {};
@@ -591,6 +689,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->migrationProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;
+    m_impl->resources = nullptr;
     m_impl->context = nullptr;
 }
 

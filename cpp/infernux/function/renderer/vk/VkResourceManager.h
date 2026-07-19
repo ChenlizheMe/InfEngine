@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include "../rhi/RhiBuffer.h"
 #include "../rhi/RhiTexture.h"
 #include "../rhi/RhiUpload.h"
 #include "AsyncTransferContext.h"
@@ -70,12 +71,14 @@ class BufferUploadTicket final
         return m_size;
     }
     [[nodiscard]] const std::shared_ptr<VkBufferHandle> &GetBuffer() const;
+    [[nodiscard]] const std::shared_ptr<rhi::BufferResource> &GetRhiBuffer() const;
 
   private:
     friend class VkResourceManager;
     VkResourceManager *m_manager = nullptr;
     std::shared_ptr<VkBufferHandle> m_staging;
     std::shared_ptr<VkBufferHandle> m_destination;
+    std::shared_ptr<rhi::BufferResource> m_rhiBuffer;
     AsyncSubmissionHandle m_upload;
     VkDeviceSize m_size = 0;
     bool m_complete = false;
@@ -309,6 +312,8 @@ class VkResourceManager
 
     [[nodiscard]] std::shared_ptr<BufferUploadTicket> BeginBufferUpload(const rhi::BufferUploadRequest &request);
     [[nodiscard]] bool TryPublishBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket);
+    [[nodiscard]] const std::shared_ptr<rhi::BufferResource> &
+    GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicket> &ticket);
     void DrainBufferUploads() noexcept;
 
     [[nodiscard]] std::shared_ptr<TextureUploadTicket> BeginTextureUpload(const rhi::TextureUploadRequest &request);
@@ -334,6 +339,10 @@ class VkResourceManager
     [[nodiscard]] uint64_t GetTimelineUploadPublicationCount() const noexcept
     {
         return m_timelineUploadPublicationCount;
+    }
+    [[nodiscard]] uint64_t GetBufferUploadSubmissionCount() const noexcept
+    {
+        return m_bufferUploadSubmissionCount;
     }
     [[nodiscard]] bool IsUploadTimelineEnabled() const noexcept
     {
@@ -657,6 +666,7 @@ class VkResourceManager
     uint64_t m_stagingDiscardCount = 0;
     uint64_t m_requiredUploadTimelineValue = 0;
     uint64_t m_timelineUploadPublicationCount = 0;
+    uint64_t m_bufferUploadSubmissionCount = 0;
 
     // Cached samplers
     VkSampler m_linearSampler = VK_NULL_HANDLE;

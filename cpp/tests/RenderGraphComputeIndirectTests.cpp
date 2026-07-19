@@ -175,6 +175,36 @@ bool Require(bool condition, const char *message)
     return condition;
 }
 
+bool VerifyRhiBufferUpload(TestResources &resources)
+{
+    const std::array<uint32_t, 8> source = {3, 5, 8, 13, 21, 34, 55, 89};
+    auto ticket =
+        resources.resources.BeginBufferUpload({source.data(), sizeof(source), infernux::rhi::BufferUsage::Storage});
+    if (!Require(ticket && resources.resources.TryPublishBufferUpload(ticket),
+                 "DeviceLocal RHI buffer upload did not publish"))
+        return false;
+
+    auto resident = resources.resources.GetPublishedRhiBuffer(ticket);
+    if (!Require(resident && resident->IsValid() && resident->GetByteSize() == sizeof(source),
+                 "Published RHI buffer resource is invalid"))
+        return false;
+    const auto handle = resident->GetBuffer();
+    if (!Require(resources.context.GetRhiDevice().Resolve(handle) == ticket->GetBuffer()->GetBuffer(),
+                 "Published RHI buffer does not resolve to the uploaded Vulkan allocation"))
+        return false;
+
+    VkMemoryPropertyFlags memoryFlags = 0;
+    vmaGetAllocationMemoryProperties(resources.context.GetVmaAllocator(), ticket->GetBuffer()->GetAllocation(),
+                                     &memoryFlags);
+    if (!Require((memoryFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0, "Published RHI buffer is not DeviceLocal"))
+        return false;
+
+    resident.reset();
+    ticket.reset();
+    return Require(resources.context.GetRhiDevice().Resolve(handle) == VK_NULL_HANDLE,
+                   "Released RHI buffer registration remained visible");
+}
+
 bool VerifyGpuParticleMigration(TestResources &resources,
                                 const infernux::particle::GpuParticleMigrationProgram &program)
 {
@@ -412,8 +442,7 @@ bool VerifyVectorFieldSampling(TestResources &resources, infernux::InxShaderLoad
     constexpr uint32_t sampleCount = 5;
     constexpr VkDeviceSize outputBytes = sampleCount * 4 * sizeof(float);
     const std::array<float, 2 * 2 * 2 * 4> texels = {
-        1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0,
-        13, 14, 15, 0, 16, 17, 18, 0, 19, 20, 21, 0, 22, 23, 24, 0,
+        1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0, 13, 14, 15, 0, 16, 17, 18, 0, 19, 20, 21, 0, 22, 23, 24, 0,
     };
     const std::string source = R"(#version 450
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
@@ -469,8 +498,7 @@ void main() {
 
     infernux::rhi::BufferDesc outputDesc;
     outputDesc.byteSize = outputBytes;
-    outputDesc.usage =
-        infernux::rhi::BufferUsageFlags::Storage | infernux::rhi::BufferUsageFlags::TransferSource;
+    outputDesc.usage = infernux::rhi::BufferUsageFlags::Storage | infernux::rhi::BufferUsageFlags::TransferSource;
     const auto output = rhi.CreateBuffer(outputDesc);
     infernux::rhi::SamplerDesc linearClampDesc;
     linearClampDesc.addressU = infernux::rhi::AddressMode::ClampToEdge;
@@ -490,12 +518,12 @@ void main() {
 
     infernux::rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, infernux::rhi::BindingType::StorageBuffer, infernux::rhi::ShaderStage::Compute, 1};
-    layoutDesc.entries[1] = {
-        1, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute, 1};
-    layoutDesc.entries[2] = {
-        2, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute, 1};
-    layoutDesc.entries[3] = {
-        3, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[1] = {1, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute,
+                             1};
+    layoutDesc.entries[2] = {2, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute,
+                             1};
+    layoutDesc.entries[3] = {3, infernux::rhi::BindingType::CombinedTextureSampler, infernux::rhi::ShaderStage::Compute,
+                             1};
     layoutDesc.entryCount = 4;
     const auto layout = rhi.CreateBindingLayout(layoutDesc);
     const auto shader = rhi.CreateShaderModule({shaderWords.data(), shaderWords.size()});
@@ -546,8 +574,7 @@ void main() {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (!Require(vkBeginCommandBuffer(commandBuffer, &beginInfo) == VK_SUCCESS,
-                 "Vector Field command begin failed")) {
+    if (!Require(vkBeginCommandBuffer(commandBuffer, &beginInfo) == VK_SUCCESS, "Vector Field command begin failed")) {
         vkDestroyCommandPool(resources.context.GetDevice(), commandPool, nullptr);
         return false;
     }
@@ -578,9 +605,8 @@ void main() {
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
-    const VkResult submitted = fenceCreated
-                                   ? vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &submitInfo, fence)
-                                   : VK_ERROR_INITIALIZATION_FAILED;
+    const VkResult submitted = fenceCreated ? vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &submitInfo, fence)
+                                            : VK_ERROR_INITIALIZATION_FAILED;
     const VkResult waited = submitted == VK_SUCCESS
                                 ? vkWaitForFences(resources.context.GetDevice(), 1, &fence, VK_TRUE, UINT64_MAX)
                                 : submitted;
@@ -597,9 +623,7 @@ void main() {
         const size_t base = static_cast<size_t>(((z * 2 + y) * 2 + x) * 4);
         return Vec3{texels[base], texels[base + 1], texels[base + 2]};
     };
-    const auto transform = [](Vec3 value) {
-        return Vec3{-1.5f * value[1], 3.0f * value[0], 0.75f * value[2]};
-    };
+    const auto transform = [](Vec3 value) { return Vec3{-1.5f * value[1], 3.0f * value[0], 0.75f * value[2]}; };
     const auto nearest = [&](Vec3 uvw, bool repeat) {
         std::array<int, 3> index{};
         for (size_t axis = 0; axis < 3; ++axis) {
@@ -685,6 +709,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.context.Initialize(resources.window, deviceConfig), "Vulkan device initialization failed"))
         return false;
     if (!Require(resources.resources.Initialize(resources.context), "Vulkan resource manager initialization failed"))
+        return false;
+    if (!VerifyRhiBufferUpload(resources))
         return false;
 
     const VkDevice device = resources.context.GetDevice();
@@ -794,9 +820,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     particleDeletionQueue.Initialize(2);
     infernux::particle::ParticleGpuDrawRegistry particleDrawRegistry;
     infernux::particle::ParticleGpuSystemManager particleSystems;
-    if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, particleDeletionQueue,
-                                            particleDrawRegistry, {}, {}, {}, sortProgram, cullProgram, boundsProgram,
-                                            migrationProgram),
+    if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, resources.resources,
+                                            particleDeletionQueue, particleDrawRegistry, {}, {}, {}, sortProgram,
+                                            cullProgram, boundsProgram, migrationProgram),
                  "GPU particle system manager initialization failed"))
         return false;
 
@@ -810,6 +836,36 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         kernel = particleComputeCode;
     managedProgram.billboardVertexShader = particleVertexCode;
     managedProgram.billboardFragmentShader = particleFragmentCode;
+    auto pointCacheData = std::make_shared<infernux::PointCacheCpuData>();
+    pointCacheData->stableId = "managed-points";
+    pointCacheData->name = "Managed Points";
+    pointCacheData->bakeBasis = "right_handed_y_up";
+    pointCacheData->pointCount = 2;
+    pointCacheData->channels = {
+        {"position", infernux::PointCacheChannelType::Float3, infernux::PointCacheChannelSemantic::Position, 0, 12},
+        {"id", infernux::PointCacheChannelType::UInt, infernux::PointCacheChannelSemantic::Id, 32, 4},
+    };
+    pointCacheData->bytes.resize(40);
+    const std::array<float, 6> managedPointPositions = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+    const std::array<uint32_t, 2> managedPointIds = {7, 42};
+    std::memcpy(pointCacheData->bytes.data(), managedPointPositions.data(), sizeof(managedPointPositions));
+    std::memcpy(pointCacheData->bytes.data() + 32, managedPointIds.data(), sizeof(managedPointIds));
+    pointCacheData->RebuildIdLookup();
+    auto managedPointCache = std::make_shared<infernux::InxPointCache>();
+    managedPointCache->SetGuid("managed-point-cache-guid");
+    managedPointCache->SetCpuData(pointCacheData);
+    infernux::particle::GpuParticlePointCacheProgram pointCacheProgram;
+    pointCacheProgram.stableId = "managed-point-cache";
+    pointCacheProgram.interfaceIndex = 0;
+    pointCacheProgram.dataBinding = 1;
+    pointCacheProgram.lookupBinding = 2;
+    pointCacheProgram.cacheToSpace = {
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    pointCacheProgram.cache = managedPointCache;
+    pointCacheProgram.samples.push_back({0, "position", infernux::PointCacheChannelType::Float3, false});
+    managedProgram.pointCaches.sampleCount = 1;
+    managedProgram.pointCaches.pointCaches.push_back(std::move(pointCacheProgram));
     infernux::particle::GpuParticleOutputProgram primaryOutput;
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
@@ -823,9 +879,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     primaryOutput.material->SetRenderState(primaryMaterialState);
     managedProgram.outputs.push_back(primaryOutput);
     std::string managedError;
+    const uint64_t pointCacheUploadsBeforeCreate = resources.resources.GetBufferUploadSubmissionCount();
     if (!Require(particleSystems.CreateOrReplace(managedProgram, &managedError), managedError.c_str()) ||
         !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
-                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 &&
+                     particleDrawRegistry.Size() == 1 &&
+                     particleSystems.ActivePointCacheGeneration(managedProgram.id, 0) ==
+                         managedPointCache->GetGeneration() &&
+                     resources.resources.GetBufferUploadSubmissionCount() == pointCacheUploadsBeforeCreate + 2,
                  "GPU particle system was not published atomically"))
         return false;
     const auto initialManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
@@ -924,6 +985,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     const auto preservedManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
     if (!Require(preservedManagedEntries.size() == 2 &&
+                     resources.resources.GetBufferUploadSubmissionCount() == pointCacheUploadsBeforeCreate + 2 &&
                      preservedManagedEntries[0].instances == initialManagedInstances &&
                      preservedManagedEntries[1].instances == initialManagedInstances &&
                      preservedManagedEntries[0].indirectArguments == initialManagedIndirect &&

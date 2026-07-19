@@ -451,8 +451,8 @@ void InxRenderer::PreparePipeline()
         if (!particleMigrationProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
         if (!m_particleGpuSystemManager->Initialize(
-                m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetDeletionQueue(),
-                *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
+                m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetResourceManager(),
+                m_vkCore->GetDeletionQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
                 std::move(particleTextureVersionResolver), std::move(particleVectorFieldTextureResolver),
                 particleSortProgram.View(), particleCullProgram.View(), particleBoundsProgram.View(),
                 particleMigrationProgram.View())) {

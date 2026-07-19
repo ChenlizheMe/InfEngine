@@ -143,6 +143,13 @@ const std::shared_ptr<VkBufferHandle> &BufferUploadTicket::GetBuffer() const
     return m_destination;
 }
 
+const std::shared_ptr<rhi::BufferResource> &BufferUploadTicket::GetRhiBuffer() const
+{
+    if (!m_published || !m_rhiBuffer)
+        throw std::logic_error("RHI buffer upload has not been published");
+    return m_rhiBuffer;
+}
+
 const std::shared_ptr<rhi::TextureResource> &TextureUploadTicket::GetTexture() const
 {
     if (!m_published || !m_texture)
@@ -359,7 +366,6 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
         throw std::invalid_argument("GPU buffer upload requires non-empty source data");
     if (finalUsage == 0)
         throw std::invalid_argument("GPU buffer upload has no supported destination usage");
-
     auto ticket = std::make_shared<BufferUploadTicket>();
     ticket->m_manager = this;
     ticket->m_size = size;
@@ -378,6 +384,7 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
                                             .release());
     if (!ticket->m_destination)
         throw std::runtime_error("failed to allocate GPU upload destination buffer");
+    ++m_bufferUploadSubmissionCount;
 
     if (!canSubmitAsync) {
         CopyBuffer(ticket->m_staging->GetBuffer(), ticket->m_destination->GetBuffer(), size);
@@ -429,6 +436,25 @@ bool VkResourceManager::TryPublishBufferUpload(const std::shared_ptr<BufferUploa
     m_pendingBufferUploads.erase(std::remove(m_pendingBufferUploads.begin(), m_pendingBufferUploads.end(), ticket),
                                  m_pendingBufferUploads.end());
     return true;
+}
+
+const std::shared_ptr<rhi::BufferResource> &
+VkResourceManager::GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicket> &ticket)
+{
+    if (!ticket || ticket->m_manager != this)
+        throw std::invalid_argument("GPU buffer upload ticket belongs to another resource manager");
+    if (!ticket->m_published || !ticket->m_destination)
+        throw std::logic_error("GPU buffer upload has not been published");
+    if (!ticket->m_rhiBuffer) {
+        if (!m_rhiDevice)
+            throw std::logic_error("GPU buffer upload has no RHI device");
+        const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size);
+        if (!handle.IsValid())
+            throw std::runtime_error("failed to register uploaded GPU buffer with the RHI device");
+        ticket->m_rhiBuffer =
+            std::make_shared<rhi::BufferResource>(*m_rhiDevice, handle, ticket->m_size, ticket->m_destination);
+    }
+    return ticket->m_rhiBuffer;
 }
 
 void VkResourceManager::DrainBufferUploads() noexcept

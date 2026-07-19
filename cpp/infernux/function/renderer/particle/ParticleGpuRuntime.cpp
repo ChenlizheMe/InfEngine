@@ -117,10 +117,6 @@ struct ParticleGpuRuntime::DataInterfaceState
             return;
         device->Release(group);
         device->Release(layout);
-        for (auto buffer : lookupBuffers)
-            device->Release(buffer);
-        for (auto buffer : dataBuffers)
-            device->Release(buffer);
         device->Release(metadataBuffer);
     }
 
@@ -128,8 +124,6 @@ struct ParticleGpuRuntime::DataInterfaceState
     rhi::BindingLayoutHandle layout;
     rhi::BindGroupHandle group;
     rhi::BufferHandle metadataBuffer;
-    std::vector<rhi::BufferHandle> dataBuffers;
-    std::vector<rhi::BufferHandle> lookupBuffers;
     std::vector<GpuPointCacheDesc> pointCaches;
     std::vector<uint32_t> metadataWords;
     uint32_t interfaceStrideWords = 0;
@@ -294,8 +288,6 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         dataInterfaces->interfaceStrideWords = pointCacheLayout.interfaceStrideWords;
         dataInterfaces->sampleStrideWords = pointCacheLayout.sampleStrideWords;
         dataInterfaces->metadataWords.assign(static_cast<size_t>(metadataWordCount), 0);
-        dataInterfaces->dataBuffers.reserve(pointCacheLayout.pointCaches.size());
-        dataInterfaces->lookupBuffers.reserve(pointCacheLayout.pointCaches.size());
 
         std::array<bool, rhi::BindingLayoutDesc::MaxEntries> usedBindings{};
         usedBindings[pointCacheLayout.metadataBinding] = true;
@@ -315,6 +307,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             if (pointCache.interfaceIndex != index || pointCache.dataBinding >= usedBindings.size() ||
                 pointCache.lookupBinding >= usedBindings.size() || usedBindings[pointCache.dataBinding] ||
                 usedBindings[pointCache.lookupBinding] || !pointCache.data || !pointCache.data->IsValid() ||
+                !pointCache.dataBuffer.IsValid() || !pointCache.lookupBuffer.IsValid() || !pointCache.keepAlive ||
                 pointCache.data->bytes.empty() || pointCache.data->bytes.size() % sizeof(uint32_t) != 0) {
                 Destroy();
                 return false;
@@ -370,40 +363,12 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                 dataInterfaces->metadataWords[sampleBase + 3] = pointCache.interfaceIndex;
             }
 
-            rhi::BufferDesc dataBufferDesc;
-            dataBufferDesc.byteSize = pointCache.data->bytes.size();
-            dataBufferDesc.usage = rhi::BufferUsageFlags::Storage;
-            dataBufferDesc.memory = rhi::BufferMemory::Upload;
-            dataBufferDesc.initialData = pointCache.data->bytes.data();
-            dataBufferDesc.initialDataBytes = pointCache.data->bytes.size();
-            const auto dataBuffer = device.CreateBuffer(dataBufferDesc);
-
-            const PointCacheIdLookupEntry identityLookup = {0, UINT32_MAX};
             const bool hashedLookup = pointCache.data->idLookupMode == PointCacheIdLookupMode::Hash;
             if (hashedLookup && (pointCache.data->idLookup.empty() ||
                                  (pointCache.data->idLookup.size() & (pointCache.data->idLookup.size() - 1)) != 0)) {
                 Destroy();
                 return false;
             }
-            rhi::BufferDesc lookupBufferDesc;
-            lookupBufferDesc.byteSize = hashedLookup
-                                            ? pointCache.data->idLookup.size() * sizeof(PointCacheIdLookupEntry)
-                                            : sizeof(identityLookup);
-            lookupBufferDesc.usage = rhi::BufferUsageFlags::Storage;
-            lookupBufferDesc.memory = rhi::BufferMemory::Upload;
-            lookupBufferDesc.initialData =
-                hashedLookup ? static_cast<const void *>(pointCache.data->idLookup.data()) : &identityLookup;
-            lookupBufferDesc.initialDataBytes = lookupBufferDesc.byteSize;
-            const auto lookupBuffer = device.CreateBuffer(lookupBufferDesc);
-            if (!dataBuffer.IsValid() || !lookupBuffer.IsValid()) {
-                device.Release(dataBuffer);
-                device.Release(lookupBuffer);
-                Destroy();
-                return false;
-            }
-            dataInterfaces->dataBuffers.push_back(dataBuffer);
-            dataInterfaces->lookupBuffers.push_back(lookupBuffer);
-
             const uint32_t layoutOffset = dataLayoutDesc.entryCount;
             dataLayoutDesc.entries[layoutOffset] = {pointCache.dataBinding, rhi::BindingType::StorageBuffer,
                                                     rhi::ShaderStage::Compute, 1};
@@ -411,9 +376,10 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                                                         rhi::ShaderStage::Compute, 1};
             dataLayoutDesc.entryCount += 2;
             const uint32_t groupOffset = dataGroupDesc.bufferCount;
-            dataGroupDesc.buffers[groupOffset] = {pointCache.dataBinding, rhi::BindingType::StorageBuffer, dataBuffer};
+            dataGroupDesc.buffers[groupOffset] = {pointCache.dataBinding, rhi::BindingType::StorageBuffer,
+                                                  pointCache.dataBuffer};
             dataGroupDesc.buffers[groupOffset + 1] = {pointCache.lookupBinding, rhi::BindingType::StorageBuffer,
-                                                      lookupBuffer};
+                                                      pointCache.lookupBuffer};
             dataGroupDesc.bufferCount += 2;
         }
         if (std::find(usedSamples.begin(), usedSamples.end(), false) != usedSamples.end()) {

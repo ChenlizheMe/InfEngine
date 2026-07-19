@@ -48,6 +48,9 @@ struct GpuPointCacheDesc
         1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
     };
     std::shared_ptr<const PointCacheCpuData> data;
+    rhi::BufferHandle dataBuffer;
+    rhi::BufferHandle lookupBuffer;
+    std::shared_ptr<void> keepAlive;
     std::vector<GpuPointCacheSampleDesc> samples;
 };
 

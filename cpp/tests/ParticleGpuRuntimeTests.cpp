@@ -6,6 +6,7 @@
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
+#include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <array>
@@ -524,6 +525,22 @@ int main()
             1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
         };
         pointCache.data = cache;
+        rhi::BufferDesc cacheDataDesc;
+        cacheDataDesc.byteSize = cache->bytes.size();
+        cacheDataDesc.usage = rhi::BufferUsageFlags::Storage;
+        const auto cacheDataResource = std::make_shared<rhi::BufferResource>(
+            pointCacheDevice, pointCacheDevice.CreateBuffer(cacheDataDesc), cacheDataDesc.byteSize);
+        rhi::BufferDesc cacheLookupDesc;
+        cacheLookupDesc.byteSize = cache->idLookup.size() * sizeof(PointCacheIdLookupEntry);
+        cacheLookupDesc.usage = rhi::BufferUsageFlags::Storage;
+        const auto cacheLookupResource = std::make_shared<rhi::BufferResource>(
+            pointCacheDevice, pointCacheDevice.CreateBuffer(cacheLookupDesc), cacheLookupDesc.byteSize);
+        const auto cacheResources = std::make_shared<std::array<std::shared_ptr<rhi::BufferResource>, 2>>();
+        (*cacheResources)[0] = cacheDataResource;
+        (*cacheResources)[1] = cacheLookupResource;
+        pointCache.dataBuffer = cacheDataResource->GetBuffer();
+        pointCache.lookupBuffer = cacheLookupResource->GetBuffer();
+        pointCache.keepAlive = cacheResources;
         pointCache.samples.push_back({0, "position", PointCacheChannelType::Float3, false});
         pointCacheDesc.pointCaches.sampleCount = 1;
         pointCacheDesc.pointCaches.pointCaches.push_back(pointCache);
@@ -536,11 +553,8 @@ int main()
         assert(pointCacheDevice.bindGroups.size() == 2 && pointCacheDevice.bindGroups[1].bufferCount == 3);
         assert(pointCacheDevice.computePipelineDescs.size() == 5 &&
                pointCacheDevice.computePipelineDescs[0].bindingLayoutCount == 2);
-        assert(pointCacheDevice.buffers[7].memory == rhi::BufferMemory::Upload &&
-               pointCacheDevice.buffers[7].usage == rhi::BufferUsageFlags::Storage);
-        assert(pointCacheDevice.initialBufferBytes[7] == cache->bytes);
-        assert(pointCacheDevice.initialBufferBytes[8].size() ==
-               cache->idLookup.size() * sizeof(PointCacheIdLookupEntry));
+        assert(pointCacheDevice.buffers[0].memory == rhi::BufferMemory::DeviceLocal &&
+               pointCacheDevice.buffers[1].memory == rhi::BufferMemory::DeviceLocal);
         const auto readWord = [](const std::vector<uint8_t> &bytes, size_t index) {
             uint32_t result = 0;
             std::memcpy(&result, bytes.data() + index * sizeof(result), sizeof(result));
@@ -575,7 +589,7 @@ int main()
         pointCacheRuntime.RecordUpdate(pointCacheEncoder, 11, 3, 1.0f / 60.0f);
         assert(pointCacheTrace.groups.size() == 2 && pointCacheTrace.groupSets == std::vector<uint32_t>({0, 1}));
         pointCacheRuntime.Destroy();
-        assert(pointCacheDevice.bufferReleases == 10 && pointCacheDevice.layoutReleases == 2 &&
+        assert(pointCacheDevice.bufferReleases == 8 && pointCacheDevice.layoutReleases == 2 &&
                pointCacheDevice.groupReleases == 2 && pointCacheDevice.pipelineReleases == 5);
     }
 

@@ -30,6 +30,7 @@ namespace vk
 {
 class VkDeviceContext;
 class VkPipelineManager;
+class VkResourceManager;
 } // namespace vk
 
 namespace particle
@@ -129,7 +130,8 @@ class ParticleGpuSystemManager
     ParticleGpuSystemManager &operator=(ParticleGpuSystemManager &&) = delete;
 
     [[nodiscard]] bool Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
-                                  FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+                                  vk::VkResourceManager &resources, FrameDeletionQueue &deletionQueue,
+                                  ParticleGpuDrawRegistry &drawRegistry,
                                   GpuBillboardTextureResolver textureResolver = {},
                                   GpuBillboardTextureVersionResolver textureVersionResolver = {},
                                   GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
