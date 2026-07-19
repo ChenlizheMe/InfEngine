@@ -10,6 +10,12 @@ from typing import Any, Mapping
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
 from .hir import ParticleEmitterHIR, ParticleProgramHIR, ParticleStage, ParticleStageHIR
+from .data_interface import (
+    ParticleDataInterface,
+    PointCache,
+    VectorField,
+    particle_data_interface_from_dict,
+)
 from .kernel_semantics import (
     KernelCapability,
     KernelRuntimeContract,
@@ -20,7 +26,7 @@ from .kernel_semantics import (
 
 
 KERNEL_IR_SCHEMA = "infernux.particle_kernel_ir"
-KERNEL_IR_VERSION = 1
+KERNEL_IR_VERSION = 2
 
 
 class KernelCompileError(ValueError):
@@ -259,14 +265,25 @@ class ParticleEmitterKernelIR:
     init: ParticleKernelFunction
     update: ParticleKernelFunction
     rendering: ParticleKernelFunction
+    data_interfaces: tuple[ParticleDataInterface, ...] = ()
 
     def __post_init__(self) -> None:
+        interfaces = tuple(self.data_interfaces)
         if type(self.stable_id) is not str or not self.stable_id:
             raise KernelCompileError("kernel emitter stable_id cannot be empty")
         if type(self.random_seed) is not int or not 0 <= self.random_seed <= 0xFFFFFFFF:
             raise KernelCompileError("kernel emitter random_seed must be an unsigned 32-bit integer")
         if len({stable_id for stable_id, _type, _default in self.attributes}) != len(self.attributes):
             raise KernelCompileError("kernel emitter attribute stable ids must be unique")
+        if not all(
+            isinstance(interface, (VectorField, PointCache))
+            for interface in interfaces
+        ):
+            raise KernelCompileError("kernel emitter data interfaces are invalid")
+        interfaces = tuple(sorted(interfaces, key=lambda value: value.stable_id))
+        object.__setattr__(self, "data_interfaces", interfaces)
+        if len({interface.stable_id for interface in interfaces}) != len(interfaces):
+            raise KernelCompileError("kernel emitter data-interface stable ids must be unique")
         for stable_id, value_type, default in self.attributes:
             if type(stable_id) is not str or not stable_id or not isinstance(value_type, TypeRef):
                 raise KernelCompileError("kernel emitter attribute schema is invalid")
@@ -322,6 +339,9 @@ class ParticleEmitterKernelIR:
                 {"stable_id": stable_id, "type": value_type.to_dict(), "default": default}
                 for stable_id, value_type, default in self.attributes
             ],
+            "data_interfaces": [
+                interface.to_dict() for interface in self.data_interfaces
+            ],
             "init": self.init.to_dict(include_source=include_source),
             "update": self.update.to_dict(include_source=include_source),
             "rendering": self.rendering.to_dict(include_source=include_source),
@@ -331,11 +351,21 @@ class ParticleEmitterKernelIR:
     def from_dict(cls, value: Any) -> "ParticleEmitterKernelIR":
         _exact_dict(
             value,
-            {"stable_id", "random_seed", "attributes", "init", "update", "rendering"},
+            {
+                "stable_id",
+                "random_seed",
+                "attributes",
+                "data_interfaces",
+                "init",
+                "update",
+                "rendering",
+            },
             "kernel emitter",
         )
-        if type(value["attributes"]) is not list:
-            raise KernelCompileError("kernel emitter attributes must be an array")
+        if type(value["attributes"]) is not list or type(value["data_interfaces"]) is not list:
+            raise KernelCompileError(
+                "kernel emitter attributes and data interfaces must be arrays"
+            )
         attributes = []
         for item in value["attributes"]:
             _exact_dict(item, {"stable_id", "type", "default"}, "kernel attribute")
@@ -351,6 +381,12 @@ class ParticleEmitterKernelIR:
             ParticleKernelFunction.from_dict(value["init"]),
             ParticleKernelFunction.from_dict(value["update"]),
             ParticleKernelFunction.from_dict(value["rendering"]),
+            tuple(
+                particle_data_interface_from_dict(
+                    item, f"kernel emitter data_interfaces[{index}]"
+                )
+                for index, item in enumerate(value["data_interfaces"])
+            ),
         )
 
 
@@ -449,6 +485,7 @@ class ParticleKernelLowerer:
             self._lower_init(emitter, types, defaults),
             self._lower_update(emitter, types),
             self._lower_rendering(emitter, types),
+            emitter.data_interfaces,
         )
 
     def _lower_init(self, emitter, attribute_types, defaults) -> ParticleKernelFunction:

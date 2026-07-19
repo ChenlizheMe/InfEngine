@@ -19,6 +19,7 @@ from .asset import (
     ScalarRange,
     default_stage_graph,
 )
+from .data_interface import PointCache, VectorField
 from .hir import ParticleGraphCompiler
 
 
@@ -119,6 +120,25 @@ class ParticleScriptCompiler:
         if settings_node is None:
             raise self._error(source_name, node, f"emitter {node.name} requires settings")
         settings = self._constructor(settings_node, "EmitterSettings")
+        data_interfaces_node = self._assignment(node, "data_interfaces")
+        data_interfaces = ()
+        if data_interfaces_node is not None:
+            decoded_interfaces = self._value(data_interfaces_node)
+            if not isinstance(decoded_interfaces, (list, tuple)):
+                raise self._error(
+                    source_name,
+                    data_interfaces_node,
+                    "emitter data_interfaces must be a list or tuple",
+                )
+            data_interfaces = tuple(decoded_interfaces)
+        if not all(
+            isinstance(value, (VectorField, PointCache)) for value in data_interfaces
+        ):
+            raise self._error(
+                source_name,
+                data_interfaces_node or node,
+                "emitter data_interfaces must contain VectorField or PointCache values",
+            )
         methods = {
             item.name: item
             for item in node.body
@@ -140,6 +160,7 @@ class ParticleScriptCompiler:
             stable_id=stable_id,
             name=node.name,
             settings=settings,
+            data_interfaces=data_interfaces,
             init=stages["init"],
             update=stages["update"],
             rendering=stages["rendering"],
@@ -214,6 +235,8 @@ class ParticleScriptCompiler:
             "ParticleBurst": ("time", "count", "cycles", "interval"),
             "EmitterShape": ("kind", "space", "radius", "angle_degrees", "dimensions"),
             "AssetReference": ("guid", "path_hint"),
+            "VectorField": (),
+            "PointCache": (),
         }[expected_name]
         if len(node.args) > len(positional_names):
             raise ParticleScriptError(f"{expected_name} has too many positional arguments")
@@ -231,8 +254,14 @@ class ParticleScriptCompiler:
             "ParticleBurst": ParticleBurst,
             "EmitterShape": EmitterShape,
             "AssetReference": AssetReference,
+            "VectorField": VectorField,
+            "PointCache": PointCache,
         }[expected_name]
         try:
+            if expected_name == "VectorField" and type(values.get("texture")) is dict:
+                values["texture"] = AssetReference.from_dict(values["texture"])
+            if expected_name == "PointCache" and type(values.get("cache")) is dict:
+                values["cache"] = AssetReference.from_dict(values["cache"])
             result = constructor(**values)
             return result.to_dict() if isinstance(result, AssetReference) else result
         except (TypeError, ValueError) as exc:
@@ -244,6 +273,8 @@ class ParticleScriptCompiler:
             "ParticleBurst",
             "EmitterShape",
             "AssetReference",
+            "VectorField",
+            "PointCache",
         }:
             return self._constructor(node, node.func.id)
         if isinstance(node, (ast.List, ast.Tuple)):
@@ -322,7 +353,7 @@ class ParticleScriptCompiler:
                 continue
             if self._is_named_assignment(statement, "stable_id") or self._is_named_assignment(
                 statement, "settings"
-            ):
+            ) or self._is_named_assignment(statement, "data_interfaces"):
                 continue
             raise self._error(source_name, statement, "unsupported ParticleEmitter class statement")
 
@@ -357,6 +388,8 @@ __all__ = [
     "ParticleScriptCompiler",
     "ParticleScriptError",
     "ParticleStream",
+    "PointCache",
     "RenderingContext",
     "UpdateContext",
+    "VectorField",
 ]

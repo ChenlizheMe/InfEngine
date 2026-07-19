@@ -21,7 +21,7 @@ from .script import ParticleScriptCompiler
 
 
 PARTICLE_ARTIFACT_SCHEMA = "infernux.particle_artifact"
-PARTICLE_ARTIFACT_VERSION = 10
+PARTICLE_ARTIFACT_VERSION = 11
 
 
 class ParticleArtifactError(ValueError):
@@ -279,6 +279,9 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                 "name": emitter.name,
                 "settings": emitter.settings.to_dict(),
                 "attributes": [attribute.to_dict() for attribute in emitter.attributes],
+                "data_interfaces": [
+                    interface.to_dict() for interface in emitter.data_interfaces
+                ],
                 "init": stage(emitter.init),
                 "update": stage(emitter.update),
                 "rendering": stage(emitter.rendering),

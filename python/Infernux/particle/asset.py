@@ -21,10 +21,16 @@ from Infernux.graph.registry import PortKind
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
 from . import nodes as _particle_nodes  # noqa: F401
+from .data_interface import (
+    ParticleDataInterface,
+    PointCache,
+    VectorField,
+    particle_data_interface_from_dict,
+)
 
 
 PARTICLE_GRAPH_SCHEMA = "infernux.particle_graph"
-PARTICLE_GRAPH_VERSION = 1
+PARTICLE_GRAPH_VERSION = 2
 
 
 class ParticleGraphSchemaError(ValueError):
@@ -302,6 +308,7 @@ class ParticleEmitterAsset:
     name: str = "Emitter"
     settings: EmitterSettings = EmitterSettings()
     attributes: tuple[ParticleAttribute, ...] = field(default_factory=standard_particle_attributes)
+    data_interfaces: tuple[ParticleDataInterface, ...] = ()
     init: GraphDocument = field(default_factory=lambda: default_stage_graph("init"))
     update: GraphDocument = field(default_factory=lambda: default_stage_graph("update"))
     rendering: GraphDocument = field(default_factory=lambda: default_stage_graph("rendering"))
@@ -319,14 +326,20 @@ class ParticleEmitterAsset:
         if not all(isinstance(value, GraphDocument) for value in (self.init, self.update, self.rendering)):
             raise ParticleGraphSchemaError("particle emitter stages must be GraphDocument values")
         attributes = tuple(self.attributes)
+        data_interfaces = tuple(self.data_interfaces)
         if not all(isinstance(value, ParticleAttribute) for value in attributes):
             raise ParticleGraphSchemaError("particle emitter attributes are invalid")
+        if not all(isinstance(value, (VectorField, PointCache)) for value in data_interfaces):
+            raise ParticleGraphSchemaError("particle emitter data interfaces are invalid")
         object.__setattr__(self, "attributes", attributes)
+        object.__setattr__(self, "data_interfaces", data_interfaces)
         _validate_stage_root("init", self.init)
         _validate_stage_root("update", self.update)
         _validate_stage_root("rendering", self.rendering)
         if len({attribute.stable_id for attribute in self.attributes}) != len(self.attributes):
             raise ParticleGraphSchemaError("particle attribute stable ids must be unique")
+        if len({interface.stable_id for interface in data_interfaces}) != len(data_interfaces):
+            raise ParticleGraphSchemaError("particle data-interface stable ids must be unique")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -334,6 +347,7 @@ class ParticleEmitterAsset:
             "name": self.name,
             "settings": self.settings.to_dict(),
             "attributes": [attribute.to_dict() for attribute in self.attributes],
+            "data_interfaces": [interface.to_dict() for interface in self.data_interfaces],
             "stages": {
                 "init": self.init.to_dict(),
                 "update": self.update.to_dict(),
@@ -343,10 +357,23 @@ class ParticleEmitterAsset:
 
     @classmethod
     def from_dict(cls, value, location: str) -> "ParticleEmitterAsset":
-        _exact_object(value, {"stable_id", "name", "settings", "attributes", "stages"}, location)
+        _exact_object(
+            value,
+            {
+                "stable_id",
+                "name",
+                "settings",
+                "attributes",
+                "data_interfaces",
+                "stages",
+            },
+            location,
+        )
         _exact_object(value["stages"], {"init", "update", "rendering"}, f"{location}.stages")
-        if type(value["attributes"]) is not list:
-            raise ParticleGraphSchemaError(f"{location}.attributes must be an array")
+        if type(value["attributes"]) is not list or type(value["data_interfaces"]) is not list:
+            raise ParticleGraphSchemaError(
+                f"{location}.attributes and data_interfaces must be arrays"
+            )
         return cls(
             stable_id=value["stable_id"],
             name=value["name"],
@@ -354,6 +381,12 @@ class ParticleEmitterAsset:
             attributes=tuple(
                 ParticleAttribute.from_dict(item, f"{location}.attributes[{index}]")
                 for index, item in enumerate(value["attributes"])
+            ),
+            data_interfaces=tuple(
+                particle_data_interface_from_dict(
+                    item, f"{location}.data_interfaces[{index}]"
+                )
+                for index, item in enumerate(value["data_interfaces"])
             ),
             init=_parse_stage_document(value["stages"]["init"], f"{location}.stages.init"),
             update=_parse_stage_document(value["stages"]["update"], f"{location}.stages.update"),
@@ -433,10 +466,23 @@ class ParticleGraphAsset:
     def from_dict(cls, value) -> "ParticleGraphAsset":
         expected = {"$schema", "$version", "stable_id", "name", "emitters", "parameters"}
         _exact_object(value, expected, "$")
-        if value["$schema"] != PARTICLE_GRAPH_SCHEMA or value["$version"] != PARTICLE_GRAPH_VERSION:
+        if value["$schema"] != PARTICLE_GRAPH_SCHEMA:
             raise ParticleGraphSchemaError("unsupported particle graph schema or version")
         if type(value["emitters"]) is not list or type(value["parameters"]) is not list:
             raise ParticleGraphSchemaError("emitters and parameters must be arrays")
+        if value["$version"] == 1:
+            value = {
+                **value,
+                "$version": PARTICLE_GRAPH_VERSION,
+                "emitters": [
+                    {**emitter, "data_interfaces": []}
+                    if type(emitter) is dict
+                    else emitter
+                    for emitter in value["emitters"]
+                ],
+            }
+        elif value["$version"] != PARTICLE_GRAPH_VERSION:
+            raise ParticleGraphSchemaError("unsupported particle graph schema or version")
         return cls(
             stable_id=value["stable_id"],
             name=value["name"],
@@ -502,8 +548,10 @@ __all__ = [
     "ParticleEmitterAsset",
     "ParticleGraphAsset",
     "ParticleGraphSchemaError",
+    "PointCache",
     "ScalarRange",
     "SimulationSpace",
+    "VectorField",
     "default_stage_graph",
     "standard_particle_attributes",
 ]

@@ -261,8 +261,11 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
     requireExactKeys(root, {"$schema", "$version", "stable_id", "name", "emitters", "parameters"}, "particle graph");
     if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.particle_graph")
         throw std::runtime_error("particle graph has an unsupported $schema");
-    if (!root["$version"].is_number_integer() || root["$version"].get<int>() != 1)
-        throw std::runtime_error("particle graph $version must be 1");
+    if (!root["$version"].is_number_integer())
+        throw std::runtime_error("particle graph $version must be an integer");
+    const int version = root["$version"].get<int>();
+    if (version != 1 && version != 2)
+        throw std::runtime_error("particle graph $version must be 1 or 2");
     if (!root["stable_id"].is_string() || root["stable_id"].get_ref<const std::string &>().empty() ||
         !root["name"].is_string() || root["name"].get_ref<const std::string &>().empty())
         throw std::runtime_error("particle graph stable_id and name must be non-empty strings");
@@ -270,10 +273,51 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         throw std::runtime_error("particle graph requires emitters and parameters arrays");
 
     std::unordered_set<std::string> dependencies;
+    const auto readReference = [&](const nlohmann::json &reference, const std::string &location) {
+        requireExactKeys(reference, {"guid", "path_hint"}, location);
+        if (!reference["guid"].is_string() || !reference["path_hint"].is_string())
+            throw std::runtime_error(location + " guid and path_hint must be strings");
+        std::string guid = reference["guid"].get<std::string>();
+        const std::string pathHint = reference["path_hint"].get<std::string>();
+        if (guid.empty() && !pathHint.empty())
+            guid = request.resolveAssetGuid(pathHint);
+        if (!guid.empty())
+            dependencies.insert(guid);
+    };
     for (size_t emitterIndex = 0; emitterIndex < root["emitters"].size(); ++emitterIndex) {
         const auto &emitter = root["emitters"][emitterIndex];
         const std::string emitterLocation = "emitters[" + std::to_string(emitterIndex) + "]";
-        requireExactKeys(emitter, {"stable_id", "name", "settings", "attributes", "stages"}, emitterLocation);
+        if (version == 1) {
+            requireExactKeys(emitter, {"stable_id", "name", "settings", "attributes", "stages"}, emitterLocation);
+        } else {
+            requireExactKeys(emitter, {"stable_id", "name", "settings", "attributes", "data_interfaces", "stages"},
+                             emitterLocation);
+            if (!emitter["data_interfaces"].is_array())
+                throw std::runtime_error(emitterLocation + ".data_interfaces must be an array");
+            for (size_t interfaceIndex = 0; interfaceIndex < emitter["data_interfaces"].size(); ++interfaceIndex) {
+                const auto &dataInterface = emitter["data_interfaces"][interfaceIndex];
+                const std::string interfaceLocation =
+                    emitterLocation + ".data_interfaces[" + std::to_string(interfaceIndex) + "]";
+                if (!dataInterface.is_object() || !dataInterface.contains("kind") || !dataInterface["kind"].is_string())
+                    throw std::runtime_error(interfaceLocation + " must be a typed object");
+                const std::string kind = dataInterface["kind"].get<std::string>();
+                if (kind == "vector_field") {
+                    requireExactKeys(dataInterface,
+                                     {"kind", "stable_id", "name", "texture", "space", "field_to_space", "vector_scale",
+                                      "boundary", "filtering"},
+                                     interfaceLocation);
+                    readReference(dataInterface["texture"], interfaceLocation + ".texture");
+                } else if (kind == "point_cache") {
+                    requireExactKeys(dataInterface,
+                                     {"kind", "stable_id", "name", "cache", "space", "cache_to_space",
+                                      "position_channel", "normal_channel", "color_channel", "id_channel"},
+                                     interfaceLocation);
+                    readReference(dataInterface["cache"], interfaceLocation + ".cache");
+                } else {
+                    throw std::runtime_error(interfaceLocation + " has unsupported kind '" + kind + "'");
+                }
+            }
+        }
         if (!emitter["stages"].is_object())
             throw std::runtime_error(emitterLocation + ".stages must be an object");
         requireExactKeys(emitter["stages"], {"init", "update", "rendering"}, emitterLocation + ".stages");
@@ -290,15 +334,7 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
                 const auto material = node["properties"].find("material");
                 if (material == node["properties"].end())
                     continue;
-                requireExactKeys(*material, {"guid", "path_hint"}, stageLocation + ".material");
-                if (!(*material)["guid"].is_string() || !(*material)["path_hint"].is_string())
-                    throw std::runtime_error(stageLocation + ".material guid and path_hint must be strings");
-                std::string guid = (*material)["guid"].get<std::string>();
-                const std::string pathHint = (*material)["path_hint"].get<std::string>();
-                if (guid.empty() && !pathHint.empty())
-                    guid = request.resolveAssetGuid(pathHint);
-                if (!guid.empty())
-                    dependencies.insert(guid);
+                readReference(*material, stageLocation + ".material");
             }
         }
     }

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
-from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.particle import (
     EmitterShape,
     KernelCompileError,
@@ -19,6 +19,10 @@ from Infernux.particle import (
     ParticleKernelFunction,
     ParticleKernelLowerer,
     ParticleKernelProgram,
+    ParticleRuntimeCompatibility,
+    PointCache,
+    VectorField,
+    classify_emitter_update,
     particle_random_f32,
     particle_random_u32,
 )
@@ -58,6 +62,89 @@ def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
         "builtin.lifetime",
         "builtin.id",
     ]
+
+
+def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
+    first_emitter = ParticleEmitterAsset(
+        stable_id="data-emitter",
+        data_interfaces=(
+            VectorField(
+                stable_id="wind",
+                texture=AssetReference(path_hint="Assets/WindA.vectorfield"),
+            ),
+            PointCache(
+                stable_id="points",
+                cache=AssetReference(path_hint="Assets/Face.pointcache"),
+            ),
+        ),
+    )
+    first = _lower(ParticleGraphAsset(stable_id="data-graph", emitters=(first_emitter,)))
+    restored = ParticleKernelProgram.from_dict(first.to_dict())
+
+    assert restored == first
+    assert [value.stable_id for value in restored.emitters[0].data_interfaces] == [
+        "points",
+        "wind",
+    ]
+
+    rebound_emitter = replace(
+        first_emitter,
+        data_interfaces=(
+            replace(
+                first_emitter.data_interfaces[0],
+                texture=AssetReference(path_hint="Assets/WindB.vectorfield"),
+            ),
+            first_emitter.data_interfaces[1],
+        ),
+    )
+    rebound = _lower(
+        ParticleGraphAsset(stable_id="data-graph", emitters=(rebound_emitter,))
+    )
+
+    assert rebound.kernel_hash != first.kernel_hash
+    assert (
+        classify_emitter_update(
+            first.emitters[0],
+            rebound.emitters[0],
+            first_emitter.settings,
+            rebound_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.PARAMETER_ONLY
+    )
+
+    reordered = _lower(
+        ParticleGraphAsset(
+            stable_id="data-graph",
+            emitters=(
+                replace(
+                    first_emitter,
+                    data_interfaces=tuple(reversed(first_emitter.data_interfaces)),
+                ),
+            ),
+        )
+    )
+    assert reordered.kernel_hash == first.kernel_hash
+    assert [
+        interface.stable_id for interface in reordered.emitters[0].data_interfaces
+    ] == ["points", "wind"]
+
+    extended_emitter = replace(
+        first_emitter,
+        data_interfaces=first_emitter.data_interfaces
+        + (VectorField(stable_id="turbulence"),),
+    )
+    extended = _lower(
+        ParticleGraphAsset(stable_id="data-graph", emitters=(extended_emitter,))
+    )
+    assert (
+        classify_emitter_update(
+            first.emitters[0],
+            extended.emitters[0],
+            first_emitter.settings,
+            extended_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
+    )
 
 
 def test_kernel_random_slots_are_unique_and_source_uid_independent():

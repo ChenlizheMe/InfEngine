@@ -48,6 +48,11 @@ def classify_emitter_update(
     ):
         return ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
 
+    previous_interfaces = _data_interface_abi(previous_kernel)
+    next_interfaces = _data_interface_abi(next_kernel)
+    if previous_interfaces != next_interfaces:
+        return ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
+
     previous_code = _kernel_code(previous_kernel)
     next_code = _kernel_code(next_kernel)
     if previous_code == next_code:
@@ -60,6 +65,15 @@ def _kernel_code(kernel: ParticleEmitterKernelIR) -> tuple[dict, dict, dict]:
         kernel.init.to_dict(include_source=False),
         kernel.update.to_dict(include_source=False),
         kernel.rendering.to_dict(include_source=False),
+    )
+
+
+def _data_interface_abi(
+    kernel: ParticleEmitterKernelIR,
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (interface.stable_id, interface.kind)
+        for interface in kernel.data_interfaces
     )
 
 

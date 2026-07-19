@@ -8,6 +8,10 @@ from typing import Any, Mapping
 from Infernux.graph.types import AssetReference
 
 from .asset import EmitterSettings
+from .data_interface import (
+    ParticleDataInterface,
+    particle_data_interface_from_dict,
+)
 from .hir import ParticleOutputDescriptor, ParticleProgramHIR
 
 
@@ -20,6 +24,7 @@ class ParticleEmitterRuntimeMetadata:
     stable_id: str
     settings: EmitterSettings
     outputs: tuple[ParticleOutputDescriptor, ...]
+    data_interfaces: tuple[ParticleDataInterface, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,7 @@ def decode_particle_runtime_metadata(
                 emitter.stable_id,
                 emitter.settings,
                 tuple(emitter.render_plan.outputs),
+                tuple(emitter.data_interfaces),
             )
             for emitter in hir.emitters
         }
@@ -69,9 +75,14 @@ def decode_particle_runtime_metadata(
         stable_id = encoded.get("stable_id")
         settings_value = encoded.get("settings")
         render_plan = encoded.get("render_plan")
+        data_interfaces_value = encoded.get("data_interfaces")
         if type(stable_id) is not str or not stable_id or stable_id in by_id:
             raise ParticleRuntimeMetadataError(f"{location} stable_id is invalid")
-        if type(settings_value) is not dict or type(render_plan) is not list:
+        if (
+            type(settings_value) is not dict
+            or type(render_plan) is not list
+            or type(data_interfaces_value) is not list
+        ):
             raise ParticleRuntimeMetadataError(f"{location} runtime metadata is invalid")
         try:
             settings = EmitterSettings.from_dict(settings_value, f"{location}.settings")
@@ -79,11 +90,19 @@ def decode_particle_runtime_metadata(
                 _decode_output(value, f"{location}.render_plan[{output_index}]")
                 for output_index, value in enumerate(render_plan)
             )
+            data_interfaces = tuple(
+                particle_data_interface_from_dict(
+                    value, f"{location}.data_interfaces[{interface_index}]"
+                )
+                for interface_index, value in enumerate(data_interfaces_value)
+            )
         except (TypeError, ValueError) as exc:
             raise ParticleRuntimeMetadataError(str(exc)) from exc
         if not outputs:
             raise ParticleRuntimeMetadataError(f"{location} requires a rendering output")
-        by_id[stable_id] = ParticleEmitterRuntimeMetadata(stable_id, settings, outputs)
+        by_id[stable_id] = ParticleEmitterRuntimeMetadata(
+            stable_id, settings, outputs, data_interfaces
+        )
     return _ordered_metadata(behavior_hash, tuple(schedule_value), by_id)
 
 

@@ -13,6 +13,7 @@ from Infernux.graph.expression_ir import ExpressionCompileError, ExpressionCompi
 from Infernux.graph.types import AssetReference
 
 from .asset import EmitterSettings, ParticleAttribute, ParticleGraphAsset
+from .data_interface import ParticleDataInterface
 
 
 class ParticleStage(str, Enum):
@@ -69,6 +70,7 @@ class ParticleEmitterHIR:
     update: ParticleStageHIR
     rendering: ParticleStageHIR
     render_plan: ParticleRenderPlan
+    data_interfaces: tuple[ParticleDataInterface, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,13 @@ class ParticleGraphCompiler:
                     "stable_id": emitter.stable_id,
                     "settings": emitter.settings.to_dict(),
                     "attributes": [attribute.to_dict() for attribute in emitter.attributes],
+                    "data_interfaces": [
+                        interface.to_dict()
+                        for interface in sorted(
+                            emitter.data_interfaces,
+                            key=lambda value: value.stable_id,
+                        )
+                    ],
                     "stages": {
                         stage_name: stage_payload(getattr(emitter, stage_name))
                         for stage_name in ("init", "update", "rendering")
@@ -222,6 +231,7 @@ class ParticleGraphCompiler:
             update,
             rendering,
             ParticleRenderPlan(outputs),
+            emitter.data_interfaces,
         )
 
     def _compile_stage(

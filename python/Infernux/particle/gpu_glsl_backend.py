@@ -106,6 +106,7 @@ class GpuParticleEmitterSource:
     update: str
     render_reset: str
     rendering: str
+    data_interfaces: tuple[dict[str, Any], ...] = ()
 
     def stages(self) -> dict[str, str]:
         return {
@@ -131,6 +132,7 @@ class GpuParticleEmitterSource:
                 for stable_id, field, glsl_type, offset, byte_size in self.attribute_fields
             ],
             "state_stride": self.state_stride,
+            "data_interfaces": [dict(value) for value in self.data_interfaces],
             "stages": self.stages(),
         }
 
@@ -143,7 +145,7 @@ class GpuParticleProgramSource:
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": "infernux.particle_gpu_glsl",
-            "$version": 2,
+            "$version": 3,
             "kernel_hash": self.kernel_hash,
             "emitters": [emitter.to_dict() for emitter in self.emitters],
         }
@@ -191,6 +193,7 @@ class GpuParticleGlslLowerer:
             prelude + _update_main(update_body, emitter, fields),
             prelude + _render_reset_main(),
             prelude + _rendering_main(rendering_body, exports),
+            tuple(interface.to_dict() for interface in emitter.data_interfaces),
         )
 
 

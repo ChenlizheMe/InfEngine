@@ -10,7 +10,13 @@ import pytest
 
 from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, ResourceType
 from Infernux.core.assets import AssetManager
-from Infernux.particle import AssetReference, ParticleArtifactRegistry, ParticleGraphAsset
+from Infernux.particle import (
+    AssetReference,
+    ParticleArtifactRegistry,
+    ParticleGraphAsset,
+    PointCache,
+    VectorField,
+)
 
 
 def test_audio_import_repairs_legacy_default_text_metadata(engine, tmp_path: Path):
@@ -144,6 +150,16 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
     document["emitters"][0]["stages"]["rendering"]["nodes"][1]["properties"][
         "material"
     ] = AssetReference(guid="smoke-material-guid").to_dict()
+    document["emitters"][0]["data_interfaces"] = [
+        VectorField(
+            stable_id="wind-field",
+            texture=AssetReference(guid="wind-field-guid"),
+        ).to_dict(),
+        PointCache(
+            stable_id="spawn-points",
+            cache=AssetReference(guid="point-cache-guid"),
+        ).to_dict(),
+    ]
     source.write_text(
         json.dumps(document),
         encoding="utf-8",
@@ -161,7 +177,9 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         assert ParticleArtifactRegistry.get(str(source)) is artifact
         assert artifact.hir["stable_id"] == "integration-smoke"
         assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
-            "smoke-material-guid"
+            "point-cache-guid",
+            "smoke-material-guid",
+            "wind-field-guid",
         }
     finally:
         if asset_db.contains_path(str(source)):

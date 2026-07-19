@@ -19,8 +19,10 @@ from Infernux.particle import (
     ParticleScriptError,
     ParticleArtifactError,
     ParticleArtifactRegistry,
+    PointCache,
     ScalarRange,
     SimulationSpace,
+    VectorField,
     migrate_vfx_system,
 )
 from Infernux.graph import AssetReference, TypeRef, ValueType
@@ -38,6 +40,65 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     restored = ParticleGraphAsset.from_json(asset.canonical_json())
     assert restored == asset
     assert restored.semantic_hash() == asset.semantic_hash()
+
+
+def test_particle_graph_v1_migrates_to_typed_empty_data_interfaces():
+    value = ParticleGraphAsset(stable_id="legacy-particle").to_dict()
+    value["$version"] = 1
+    for emitter in value["emitters"]:
+        emitter.pop("data_interfaces")
+
+    migrated = ParticleGraphAsset.from_dict(value)
+
+    assert migrated.emitters[0].data_interfaces == ()
+    assert migrated.to_dict()["$version"] == 2
+
+    value["emitters"] = None
+    with pytest.raises(ParticleGraphSchemaError, match="must be arrays"):
+        ParticleGraphAsset.from_dict(value)
+
+
+def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
+    emitter = ParticleEmitterAsset(
+        stable_id="data-emitter",
+        data_interfaces=(
+            VectorField(
+                stable_id="wind-field",
+                name="Wind",
+                texture=AssetReference(path_hint="Assets/Fields/Wind.vectorfield"),
+                space="world",
+                boundary="repeat",
+                filtering="linear",
+                vector_scale=2.5,
+            ),
+            PointCache(
+                stable_id="morph-points",
+                name="Morph Points",
+                cache=AssetReference(path_hint="Assets/Caches/Face.pointcache"),
+                space="emitter_local",
+                id_channel="stable_id",
+            ),
+        ),
+    )
+    asset = ParticleGraphAsset(stable_id="data-graph", emitters=(emitter,))
+
+    restored = ParticleGraphAsset.from_json(asset.canonical_json())
+    hir = ParticleGraphCompiler().compile(restored)
+
+    assert restored == asset
+    assert [interface.stable_id for interface in hir.emitters[0].data_interfaces] == [
+        "wind-field",
+        "morph-points",
+    ]
+    assert hir.emitters[0].data_interfaces[0].boundary.value == "repeat"
+
+    with pytest.raises(ParticleGraphSchemaError, match="stable ids must be unique"):
+        ParticleEmitterAsset(
+            data_interfaces=(
+                VectorField(stable_id="duplicate"),
+                PointCache(stable_id="duplicate"),
+            )
+        )
 
 
 @pytest.mark.parametrize("stage", ["init", "update", "rendering"])
@@ -307,7 +368,7 @@ def test_v1_vfx_migration_preserves_emitter_settings_and_operations():
 
 
 PARTICLE_SCRIPT_SOURCE = '''\
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, ScalarRange
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, ScalarRange, VectorField, PointCache
 
 class SmokeGraph(ParticleScript):
     stable_id = "smoke-graph"
@@ -322,6 +383,22 @@ class SmokeGraph(ParticleScript):
             lifetime=ScalarRange(4.0, 8.0),
             initial_speed=ScalarRange(0.4, 1.2),
             gravity=(0.0, -0.2, 0.0),
+        )
+        data_interfaces = (
+            VectorField(
+                stable_id="wind-field",
+                name="Wind",
+                texture=AssetReference(path_hint="Assets/Fields/Wind.vectorfield"),
+                space="world",
+                boundary="repeat",
+            ),
+            PointCache(
+                stable_id="morph-points",
+                name="Morph Points",
+                cache=AssetReference(path_hint="Assets/Caches/Face.pointcache"),
+                space="emitter_local",
+                id_channel="stable_id",
+            ),
         )
 
         def init(self, ctx, particles):
@@ -357,6 +434,10 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert emitter.update.operations[-1].opcode == "integrate.acceleration"
     assert emitter.render_plan.outputs[0].receive_scene_lighting is True
     assert emitter.render_plan.outputs[0].receive_shadows is True
+    assert [interface.stable_id for interface in emitter.data_interfaces] == [
+        "wind-field",
+        "morph-points",
+    ]
     assert program.behavior_hash == ParticleGraphCompiler().compile(asset).behavior_hash
 
 
@@ -428,6 +509,10 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert graph_artifact.kernel_ir["kernel_hash"] == script_artifact.kernel_ir["kernel_hash"]
     assert graph_artifact.gpu_glsl["$schema"] == "infernux.particle_gpu_glsl"
     assert graph_artifact.gpu_glsl["kernel_hash"] == graph_artifact.kernel_ir["kernel_hash"]
+    assert [
+        value["stable_id"]
+        for value in graph_artifact.gpu_glsl["emitters"][0]["data_interfaces"]
+    ] == ["morph-points", "wind-field"]
     assert set(graph_artifact.gpu_glsl["emitters"][0]["stages"]) == {
         "bootstrap",
         "init",
