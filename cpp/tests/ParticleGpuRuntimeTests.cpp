@@ -1,5 +1,6 @@
 #include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
+#include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
@@ -76,7 +77,7 @@ struct FakeDevice final : rhi::Device
     rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override
     {
         assert(desc.computeShader.IsValid() && desc.bindingLayoutCount == 1 &&
-               (desc.pushConstantBytes == 32 || desc.pushConstantBytes == 80));
+               (desc.pushConstantBytes == 32 || desc.pushConstantBytes == 80 || desc.pushConstantBytes == 112));
         ++pipelineCreates;
         return {nextIndex++, 1};
     }
@@ -233,6 +234,39 @@ struct SortTrace
     }
 };
 
+struct CullTrace
+{
+    std::vector<rhi::ComputePipelineHandle> pipelines;
+    std::vector<rhi::BindGroupHandle> groups;
+    std::vector<particle::GpuParticleCullConstants> constants;
+    std::vector<uint32_t> dispatches;
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<CullTrace *>(context)->pipelines.push_back(pipeline);
+    }
+    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0);
+        static_cast<CullTrace *>(context)->groups.push_back(group);
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == sizeof(particle::GpuParticleCullConstants));
+        particle::GpuParticleCullConstants value;
+        std::memcpy(&value, data, sizeof(value));
+        static_cast<CullTrace *>(context)->constants.push_back(value);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        assert(y == 1 && z == 1);
+        static_cast<CullTrace *>(context)->dispatches.push_back(x);
+    }
+    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    {
+    }
+};
+
 } // namespace
 
 int main()
@@ -279,6 +313,62 @@ int main()
     assert(trace.dispatches == std::vector<uint32_t>({4, 2, 4, 1, 4}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[2].simulationStep == 9);
+
+    FakeDevice cullDevice;
+    std::array<std::array<uint32_t, 5>, 3> cullWords{};
+    for (auto &shader : cullWords)
+        shader[0] = 0x07230203u;
+    particle::GpuParticleCullerDesc cullerDesc;
+    cullerDesc.capacity = runtime.Capacity();
+    cullerDesc.instances = runtime.InstanceBuffer();
+    cullerDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+    cullerDesc.program = {
+        {cullWords[0].data(), cullWords[0].size()},
+        {cullWords[1].data(), cullWords[1].size()},
+        {cullWords[2].data(), cullWords[2].size()},
+    };
+    particle::GpuParticleCullProgramStorage cullProgramStorage;
+    assert(cullProgramStorage.Assign(cullerDesc.program) && cullProgramStorage.IsValid());
+    assert(cullProgramStorage.View().reset.words != cullerDesc.program.reset.words &&
+           cullProgramStorage.View().reset.wordCount == cullerDesc.program.reset.wordCount);
+    particle::ParticleGpuCuller sceneCuller;
+    particle::ParticleGpuCuller gameCuller;
+    assert(sceneCuller.Create(cullDevice, cullerDesc));
+    assert(gameCuller.Create(cullDevice, cullerDesc));
+    assert(sceneCuller.IsValid() && gameCuller.IsValid() && sceneCuller.Capacity() == 1000 &&
+           sceneCuller.InstanceBuffer() == runtime.InstanceBuffer() &&
+           sceneCuller.SourceIndirectBuffer() == runtime.IndirectBuffer());
+    assert(sceneCuller.VisibleIndexBuffer() != gameCuller.VisibleIndexBuffer() &&
+           sceneCuller.DrawIndirectBuffer() != gameCuller.DrawIndirectBuffer() &&
+           sceneCuller.SortDispatchBuffer() != gameCuller.SortDispatchBuffer());
+    assert(cullDevice.buffers.size() == 6 && cullDevice.buffers[0].byteSize == 4000 &&
+           cullDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage && cullDevice.buffers[1].byteSize == 16 &&
+           rhi::HasBufferUsage(cullDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect) &&
+           cullDevice.buffers[2].byteSize == 12 &&
+           rhi::HasBufferUsage(cullDevice.buffers[2].usage, rhi::BufferUsageFlags::Indirect));
+    assert(cullDevice.layouts.size() == 2 && cullDevice.layouts[0].entryCount == 5 &&
+           cullDevice.bindGroups.size() == 2 && cullDevice.bindGroups[0].bufferCount == 5 &&
+           cullDevice.shaderCreates == 6 && cullDevice.shaderReleases == 6 && cullDevice.pipelineCreates == 6);
+
+    CullTrace cullTrace;
+    const rhi::ComputeCommandEncoder::DispatchTable cullDispatch = {&CullTrace::BindPipeline, &CullTrace::BindGroup,
+                                                                    &CullTrace::PushConstants, &CullTrace::Dispatch,
+                                                                    &CullTrace::DispatchIndirect};
+    const rhi::ComputeCommandEncoder cullEncoder(&cullTrace, &cullDispatch);
+    std::array<float, particle::ParticleGpuCuller::PlaneCount * 4> frustumPlanes{};
+    for (size_t index = 0; index < frustumPlanes.size(); ++index)
+        frustumPlanes[index] = static_cast<float>(index + 1);
+    sceneCuller.RecordReset(cullEncoder);
+    sceneCuller.RecordCull(cullEncoder, frustumPlanes);
+    sceneCuller.RecordFinalize(cullEncoder);
+    assert(cullTrace.pipelines.size() == 3 && cullTrace.groups.size() == 3 && cullTrace.constants.size() == 3);
+    assert(cullTrace.dispatches == std::vector<uint32_t>({1, 4, 1}));
+    assert(cullTrace.constants[0].capacity == 1000 && cullTrace.constants[1].capacity == 1000 &&
+           cullTrace.constants[1].frustumPlanes == frustumPlanes && cullTrace.constants[2].capacity == 1000);
+    sceneCuller.Destroy();
+    gameCuller.Destroy();
+    assert(!sceneCuller.IsValid() && !gameCuller.IsValid() && cullDevice.bufferReleases == 6 &&
+           cullDevice.groupReleases == 2 && cullDevice.layoutReleases == 2 && cullDevice.pipelineReleases == 6);
 
     FakeDevice sortDevice;
     std::array<std::array<uint32_t, 5>, 4> sortWords{};

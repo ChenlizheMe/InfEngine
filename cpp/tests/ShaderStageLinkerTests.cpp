@@ -1,3 +1,4 @@
+#include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
@@ -651,6 +652,19 @@ void main() { }
         {infernux::particle::GpuParticleSortShaderSources::Scatter(), "ParticleSortScatter.comp"},
     }};
     for (const auto &[source, name] : particleSortShaders) {
+        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
+        assert(spirv.size() >= 5 * sizeof(uint32_t));
+        uint32_t magic = 0;
+        std::memcpy(&magic, spirv.data(), sizeof(magic));
+        assert(magic == 0x07230203u);
+    }
+
+    const std::array<std::pair<std::string_view, const char *>, 3> particleCullShaders = {{
+        {infernux::particle::GpuParticleCullShaderSources::Reset(), "ParticleCullReset.comp"},
+        {infernux::particle::GpuParticleCullShaderSources::Cull(), "ParticleCull.comp"},
+        {infernux::particle::GpuParticleCullShaderSources::Finalize(), "ParticleCullFinalize.comp"},
+    }};
+    for (const auto &[source, name] : particleCullShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
         assert(spirv.size() >= 5 * sizeof(uint32_t));
         uint32_t magic = 0;
