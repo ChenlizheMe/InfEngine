@@ -630,7 +630,7 @@ class MeshImportSettings:
             "scale_factor", "generate_normals", "generate_tangents", "flip_uvs",
             "swap_uv_channels", "optimize_mesh",
         }
-        if type(d) is not dict or set(d) != required:
+        if type(d) is not dict or not required.issubset(d):
             raise ValueError("mesh import settings must use the complete current field set")
         scale = d["scale_factor"]
         if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0.0:

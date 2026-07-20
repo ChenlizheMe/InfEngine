@@ -19,6 +19,7 @@ import struct
 import time as _time
 from typing import Dict, List, Optional
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
 
@@ -155,7 +156,7 @@ class SplashPlayer:
         stamp = texture_stamp(path, "splash_image")
         if stamp == 0:
             return
-        self._tex_resource_key = f"splash|{os.path.normpath(path)}"
+        self._tex_resource_key = f"splash|{resolved_path(path)}"
         tex_id, tex_w, tex_h = query_or_schedule_texture(
             native_engine,
             self._tex_resource_key,

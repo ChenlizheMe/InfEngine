@@ -54,6 +54,30 @@ class TestFocusGating:
         Input.set_game_viewport_origin(100.0, 200.0)
         assert Input._game_viewport_origin == (100.0, 200.0)
 
+    def test_automation_scope_routes_game_input_without_claiming_editor_focus(self):
+        Input.set_game_focused(False)
+
+        Input._begin_automation_game_input()
+        try:
+            assert Input.is_game_focused() is False
+            assert Input._accepts_game_input() is True
+        finally:
+            Input._end_automation_game_input()
+
+        assert Input.is_game_focused() is False
+        assert Input._accepts_game_input() is False
+
+    def test_automation_scope_is_nestable_and_clamped(self):
+        Input.set_game_focused(False)
+        Input._begin_automation_game_input()
+        Input._begin_automation_game_input()
+        Input._end_automation_game_input()
+        assert Input._accepts_game_input() is True
+        Input._end_automation_game_input()
+        Input._end_automation_game_input()
+        assert Input._automation_game_input_depth == 0
+        assert Input._accepts_game_input() is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _resolve_key (real InputManager.name_to_scancode)

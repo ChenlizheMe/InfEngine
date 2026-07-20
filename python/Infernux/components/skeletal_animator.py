@@ -21,6 +21,7 @@ from Infernux.core.anim_state_machine import (
 from Infernux.core.animation_clip3d import AnimationClip3D, resolve_disk_path_for_guid_string
 from Infernux.core.asset_ref import AnimStateMachineRef
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import lexical_path, portable_path
 
 
 def _normalize_guid_key(s: str) -> str:
@@ -37,7 +38,7 @@ def _try_guid_for_model_path(db, path: str) -> str:
         return ""
     seen = set()
     cands: list = []
-    for p in (p0, os.path.normpath(p0), os.path.normpath(os.path.abspath(p0))):
+    for p in (p0, portable_path(p0), lexical_path(p0), portable_path(lexical_path(p0))):
         if p and p not in seen:
             seen.add(p)
             cands.append(p)

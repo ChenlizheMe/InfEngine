@@ -775,7 +775,8 @@ class RenderGraph:
     ) -> None:
         """Declare an injection point at the current topology position.
 
-        RenderStack injects user-mounted passes here during graph build.
+        Pipeline authors use injection points to name stable topology boundaries.
+        User-facing effects bind only to explicit EffectStages.
 
         Args:
             name: Unique identifier (e.g. ``"after_opaque"``).

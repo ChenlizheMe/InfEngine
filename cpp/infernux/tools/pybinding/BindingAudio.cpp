@@ -158,6 +158,13 @@ void RegisterAudioBindings(py::module_ &m)
                       "Master volume (0.0 = silence, 1.0 = full)")
         .def("pause_all", &AudioEngine::PauseAll, "Pause all audio playback")
         .def("resume_all", &AudioEngine::ResumeAll, "Resume all audio playback")
+        .def("play_preview", &AudioEngine::PlayPreview, py::arg("file_path"),
+             "Play an Editor audio-asset preview through the shared device")
+        .def("stop_preview", &AudioEngine::StopPreview, "Stop the active Editor audio-asset preview")
+        .def("is_preview_playing", &AudioEngine::IsPreviewPlaying, py::arg("file_path") = "",
+             "Whether an Editor audio preview is currently playing")
+        .def_property_readonly("preview_path", &AudioEngine::GetPreviewPath,
+                               "Source path of the active Editor audio preview")
         .def_property_readonly("is_paused", &AudioEngine::IsPaused, "Whether all audio is globally paused")
         .def_property_readonly("sample_rate", &AudioEngine::GetSampleRate, "Output sample rate in Hz")
         .def_property_readonly("channel_count", &AudioEngine::GetChannelCount, "Output channel count");

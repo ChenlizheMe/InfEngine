@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
 
@@ -70,7 +71,7 @@ class UITextureCache:
         project_root = get_project_root()
         if not project_root:
             return 0
-        abs_path = os.path.normpath(tex_path if os.path.isabs(tex_path) else os.path.join(project_root, tex_path))
+        abs_path = resolved_path(tex_path if os.path.isabs(tex_path) else os.path.join(project_root, tex_path))
         if not os.path.isfile(abs_path):
             if self._cache.get(key, 0) != 0:
                 self._generation += 1

@@ -190,9 +190,10 @@ INTENT_RECOMMENDATIONS: dict[str, dict[str, Any]] = {
             "renderstack_find_or_create",
             "renderstack_inspect",
             "renderstack_list_pipelines",
-            "renderstack_list_passes",
-            "renderstack_add_pass",
-            "renderstack_set_pass_params",
+            "renderstack_list_effect_stages",
+            "renderstack_add_effect",
+            "renderstack_remove_effect",
+            "renderstack_set_effect_enabled",
         ],
     },
     "shader_authoring": {
@@ -477,7 +478,12 @@ def _visible_groups(mcp) -> dict[str, list[str]]:
         "component": ["component_list_types", "component_describe_type", "component_set_field"],
         "asset": ["asset_ensure_folder", "asset_list", "asset_search", "asset_read_text", "asset_write_text", "asset_refresh"],
         "camera": ["camera_find_main", "camera_describe_view", "camera_visibility_report", "camera_frame_targets"],
-        "renderstack": ["renderstack_inspect", "renderstack_list_pipelines", "renderstack_add_pass", "renderstack_set_pass_params"],
+        "renderstack": [
+            "renderstack_inspect",
+            "renderstack_list_pipelines",
+            "renderstack_list_effect_stages",
+            "renderstack_add_effect",
+        ],
         "runtime": [
             "editor_play", "runtime_wait", "runtime_run_for", "runtime_measure_motion",
             "runtime_motion_capture_arm", "runtime_motion_capture_status", "runtime_motion_capture_cancel",

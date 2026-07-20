@@ -219,6 +219,7 @@ def validate_serialized_field_document(
     *,
     owner_name: str,
     metadata_keys: set[str] | frozenset[str] = ...,
+    allow_missing: bool = False,
 ) -> None: ...
 
 
@@ -240,6 +241,12 @@ def resolve_runtime_field_value(value: Any, field_meta_or_type: Any) -> Any:
 
 def normalize_runtime_field_value(value: Any, field_meta_or_type: Any) -> Any:
     """Normalize a runtime field value for serialization."""
+    ...
+
+def coerce_serialized_field_input(
+    value: Any, field_meta_or_type: Any, path: str = ...
+) -> Any:
+    """Convert JSON-friendly editor input into a valid runtime field value."""
     ...
 
 def get_annotation_default(annotation: Any) -> Any:

@@ -73,8 +73,10 @@ class Scene
     /// Python components are stored as pending for Python-side reconstruction.
     /// @param source The GameObject to clone
     /// @param parent Optional parent for the clone (nullptr = root level)
+    /// @param instantiateInWorldSpace Preserve the source root's world transform after parenting
     /// @return The cloned GameObject, or nullptr on failure
-    GameObject *InstantiateGameObject(GameObject *source, GameObject *parent = nullptr);
+    GameObject *InstantiateGameObject(GameObject *source, GameObject *parent = nullptr,
+                                      bool instantiateInWorldSpace = false);
 
     /// @brief Instantiate a GameObject hierarchy from a JSON string (e.g. prefab file).
     /// Creates fresh IDs for all objects. Python components are stored as pending.

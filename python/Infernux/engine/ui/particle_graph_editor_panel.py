@@ -10,6 +10,7 @@ from typing import Optional
 
 from Infernux.debug import Debug
 from Infernux.engine.i18n import t
+from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.graph.registry import COMMON_NODE_REGISTRY
 from Infernux.graph.types import ValueType
 from Infernux.lib import InxGUIContext
@@ -125,7 +126,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             Debug.log_error(f"Failed to open Particle Graph '{file_path}': {exc}")
             return False
         self._asset = asset
-        self._file_path = os.path.abspath(file_path)
+        self._file_path = resolved_path(file_path)
         self._emitter_index = 0
         self._stage = "init"
         self._dirty = False
@@ -135,9 +136,9 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     def _save_to(self, file_path: str) -> bool:
         self._sync_model_to_asset()
-        target = os.path.abspath(file_path)
-        current = os.path.abspath(self._file_path) if self._file_path else ""
-        if not current or os.path.normcase(target) != os.path.normcase(current):
+        target = resolved_path(file_path)
+        current = resolved_path(self._file_path) if self._file_path else ""
+        if not current or not same_path(target, current):
             self._asset = replace(
                 self._asset,
                 name=os.path.splitext(os.path.basename(target))[0],
@@ -362,7 +363,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         if bool(data.get("dirty")) and isinstance(draft, dict):
             try:
                 self._asset = ParticleGraphAsset.from_dict(draft)
-                self._file_path = os.path.abspath(path) if path else ""
+                self._file_path = resolved_path(path) if path else ""
                 self._dirty = True
             except ParticleGraphSchemaError as exc:
                 Debug.log_warning(f"Failed to restore Particle Graph draft: {exc}")

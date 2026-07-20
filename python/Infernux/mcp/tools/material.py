@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
+from Infernux.engine.path_utils import relative_path
 from Infernux.mcp.tools.common import (
     main_thread,
     notify_asset_changed,
@@ -29,7 +31,6 @@ def register_material_tools(mcp, project_path: str) -> None:
 
         def _create():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
-            import os
             from Infernux.core.material import Material
             file_path = resolve_project_path(project_path, path)
             if os.path.exists(file_path) and not overwrite:
@@ -40,7 +41,7 @@ def register_material_tools(mcp, project_path: str) -> None:
             _set_properties(mat, properties or {})
             mat.save(file_path)
             notify_asset_changed(file_path, "created")
-            return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), **_material_info(mat)}
+            return {"path": relative_path(file_path, project_path), **_material_info(mat)}
 
         return main_thread("material_create", _create, arguments={"path": path, "template": template, "overwrite": overwrite, "knowledge_token": knowledge_token})
 
@@ -49,9 +50,8 @@ def register_material_tools(mcp, project_path: str) -> None:
         """Read material properties."""
 
         def _get():
-            import os
             mat = _load_material(project_path, path)
-            return {"path": os.path.relpath(resolve_project_path(project_path, path), project_path).replace("\\", "/"), **_material_info(mat)}
+            return {"path": relative_path(resolve_project_path(project_path, path), project_path), **_material_info(mat)}
 
         return main_thread("material_get_properties", _get)
 

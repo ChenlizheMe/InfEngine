@@ -1040,10 +1040,14 @@ Component *Scene::FindComponentByID(uint64_t componentId) const
 // Instantiate (deep clone) — Unity: Object.Instantiate()
 // ============================================================================
 
-GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent)
+GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent, bool instantiateInWorldSpace)
 {
     if (!source)
         return nullptr;
+
+    const glm::vec3 sourceWorldPosition = source->GetTransform()->GetWorldPosition();
+    const glm::quat sourceWorldRotation = source->GetTransform()->GetWorldRotation();
+    const glm::vec3 sourceWorldScale = source->GetTransform()->GetWorldScale();
 
     // Native deep clone — no JSON serialization round-trip.
     auto clone = source->Clone(this);
@@ -1070,6 +1074,12 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent)
         parent->AttachChild(std::move(clone));
     } else {
         m_rootObjects.push_back(std::move(clone));
+    }
+
+    if (instantiateInWorldSpace) {
+        ptr->GetTransform()->SetWorldPosition(sourceWorldPosition);
+        ptr->GetTransform()->SetWorldRotation(sourceWorldRotation);
+        ptr->GetTransform()->SetWorldScale(sourceWorldScale);
     }
 
     // Awake C++ components so they register with subsystems

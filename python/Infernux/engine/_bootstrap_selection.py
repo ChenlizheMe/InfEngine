@@ -186,6 +186,9 @@ class BootstrapSelectionMixin:
         selection explicitly. Recording every click here makes Ctrl+Z undo
         navigation before the property edit the user is trying to revert.
         """
+        from Infernux.engine.ui.asset_resource_preview import release_all_preview_authoring
+
+        release_all_preview_authoring()
         next_file = file_path or ""
         self._prev_selection_ids = list(new_ids)
         self._prev_selected_file = next_file

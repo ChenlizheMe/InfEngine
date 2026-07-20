@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 
+from Infernux.engine.path_utils import path_key, relative_path, same_path
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools.common import (
     get_asset_database,
@@ -173,21 +174,16 @@ def _relative_project_path(project_path: str, path: str) -> str:
     if not path:
         return ""
     try:
-        return os.path.relpath(path, project_path).replace("\\", "/")
+        return relative_path(path, project_path, allow_root=True)
     except ValueError:
         return ""
 
 
 def _normalize(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path)) if path else ""
+    return path_key(path) if path else ""
 
 
 def _same_path(first: str, second: str) -> bool:
     if not first or not second:
         return False
-    try:
-        if os.path.exists(first) and os.path.exists(second):
-            return os.path.samefile(first, second)
-    except OSError:
-        pass
-    return _normalize(first) == _normalize(second)
+    return same_path(first, second)

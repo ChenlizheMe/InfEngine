@@ -246,6 +246,18 @@ class _AnimClipSaveAsContext:
         self.events.append(("open_popup", popup_id))
 
     @staticmethod
+    def get_main_viewport_bounds():
+        return 0.0, 0.0, 1280.0, 720.0
+
+    @staticmethod
+    def set_next_window_pos(_x, _y, _condition, _pivot_x, _pivot_y) -> None:
+        pass
+
+    @staticmethod
+    def set_next_window_size(_width, _height, _condition) -> None:
+        pass
+
+    @staticmethod
     def is_key_down(_key: int) -> bool:
         return False
 
@@ -273,6 +285,10 @@ class _AnimClipSaveAsContext:
         pass
 
     @staticmethod
+    def text_wrapped(_text: str) -> None:
+        pass
+
+    @staticmethod
     def spacing() -> None:
         pass
 
@@ -291,7 +307,7 @@ class _AnimClipSaveAsContext:
         pass
 
     @staticmethod
-    def button(_label: str, _callback) -> bool:
+    def button(_label: str, _callback, width: float = 0.0, height: float = 0.0) -> bool:
         return False
 
     @staticmethod
@@ -319,12 +335,13 @@ def test_animclip_agent_save_as_uses_editor_modal_and_focuses_name(tmp_path, mon
     assert panel._pending_save_as_clip is clip
     assert panel._save_as_dialog.folder == "Assets"
     assert panel._save_as_dialog.name == "Player___Idle"
-    assert ctx.events == [
-        ("open_popup", "Save 2D Animation Clip###animclip2d_save_as"),
-        ("text_input", "Folder##animclip2d.save_as_folder"),
-        ("focus", ""),
-        ("text_input", "Name##animclip2d.save_as_name"),
-    ]
+    assert ctx.events[0][0] == "open_popup"
+    assert ctx.events[0][1].endswith("###animclip2d_save_as")
+    assert ctx.events[1][0] == "text_input"
+    assert ctx.events[1][1].endswith("##animclip2d.save_as_folder")
+    assert ctx.events[2] == ("focus", "")
+    assert ctx.events[3][0] == "text_input"
+    assert ctx.events[3][1].endswith("##animclip2d.save_as_name")
     assert {
         "animclip2d.save_as.dialog",
         "animclip2d.save_as.folder",

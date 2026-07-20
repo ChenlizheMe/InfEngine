@@ -293,7 +293,9 @@ void PackPropertiesByType(const std::unordered_map<std::string, MaterialProperty
 
 void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
 {
-    if (!material.IsPropertiesDirty()) {
+    const bool hasPendingTextures = m_materialPipelineManagerInitialized &&
+                                    m_materialPipelineManager.HasPendingTextureProperties(material.GetMaterialKey());
+    if (!material.IsPropertiesDirty() && !hasPendingTextures) {
         return;
     }
 
@@ -303,7 +305,9 @@ void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
             renderData->descriptorSet != VK_NULL_HANDLE &&
             m_materialPipelineManager.IsDescriptorSetLive(renderData->descriptorSet)) {
             m_materialPipelineManager.UpdateMaterialProperties(material.GetMaterialKey(), material);
-            material.ClearPropertiesDirty();
+            if (!m_materialPipelineManager.HasPendingTextureProperties(material.GetMaterialKey())) {
+                material.ClearPropertiesDirty();
+            }
             return;
         }
     }

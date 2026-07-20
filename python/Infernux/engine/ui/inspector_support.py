@@ -124,6 +124,24 @@ _inspector_value_generation = 1
 _inspector_profile_metrics: dict[str, float] = {}
 
 
+def _native_frame_profile_enabled() -> bool:
+    try:
+        from Infernux import lib as _native
+
+        query = getattr(_native, "is_frame_profile_enabled", None)
+        return bool(query()) if query is not None else False
+    except (ImportError, RuntimeError, AttributeError):
+        return False
+
+
+_inspector_profile_enabled = _native_frame_profile_enabled()
+
+
+def is_inspector_profile_enabled() -> bool:
+    """Return whether detailed Inspector profiling is enabled in this build."""
+    return _inspector_profile_enabled
+
+
 def bump_component_structure_version() -> None:
     """Increment structure/reset versions so the native Inspector drops stale refs."""
     global _component_structure_version, _component_tracker_reset_version
@@ -154,14 +172,14 @@ def get_inspector_value_generation() -> int:
 
 def record_inspector_profile_timing(bucket: str, elapsed_ms: float) -> None:
     """Accumulate an Inspector profile timing bucket in milliseconds."""
-    if not bucket or elapsed_ms <= 0.0:
+    if not _inspector_profile_enabled or not bucket or elapsed_ms <= 0.0:
         return
     _inspector_profile_metrics[bucket] = _inspector_profile_metrics.get(bucket, 0.0) + float(elapsed_ms)
 
 
 def record_inspector_profile_count(bucket: str, amount: float = 1.0) -> None:
     """Accumulate a non-time Inspector profile metric, such as a call count."""
-    if not bucket or amount == 0.0:
+    if not _inspector_profile_enabled or not bucket or amount == 0.0:
         return
     _inspector_profile_metrics[bucket] = _inspector_profile_metrics.get(bucket, 0.0) + float(amount)
 
@@ -219,6 +237,7 @@ __all__ = [
     "ensure_material_file_path",
     "get_component_structure_version",
     "get_inspector_value_generation",
+    "is_inspector_profile_enabled",
     "prepare_component_icon_pixels",
     "record_inspector_profile_count",
     "record_inspector_profile_timing",

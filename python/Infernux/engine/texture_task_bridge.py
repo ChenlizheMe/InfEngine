@@ -4,6 +4,8 @@ import os
 import zlib
 from typing import Tuple
 
+from Infernux.engine.path_utils import resolved_path
+
 
 _U64 = 0xFFFFFFFFFFFFFFFF
 
@@ -47,7 +49,7 @@ def query_or_schedule_texture(
 
     tex_id, w, h = native.query_or_schedule_texture_preview(
         resource_key,
-        os.path.normpath(texture_file_path),
+        resolved_path(texture_file_path),
         int(stamp),
         nearest=bool(nearest),
         srgb=bool(srgb),

@@ -32,13 +32,41 @@ from .inspector_utils import (
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from . import inspector_shader_utils as shader_utils
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import resolved_path
 import logging
 
 
+_PROFILE_ENABLED = _inspector_support.is_inspector_profile_enabled()
+
+
+def _profile_start() -> float:
+    return _time.perf_counter() if _PROFILE_ENABLED else 0.0
+
+
 def _record_profile_timing(bucket: str, start_time: float) -> None:
-    _inspector_support.record_inspector_profile_timing(
-        bucket, (_time.perf_counter() - start_time) * 1000.0,
-    )
+    if _PROFILE_ENABLED:
+        _inspector_support.record_inspector_profile_timing(
+            bucket, (_time.perf_counter() - start_time) * 1000.0,
+        )
+
+
+def _render_virtualized_material_block(ctx, state, block_key, renderer, empty_result):
+    heights = state.extra.setdefault("_material_virtual_block_heights", {})
+    cached_height = heights.get(block_key, 0.0)
+    visibility_query = getattr(ctx, "is_virtualized_region_visible", None)
+    if cached_height > 0.0 and callable(visibility_query) and not visibility_query(cached_height):
+        ctx.dummy(0.0, cached_height)
+        return empty_result
+
+    start_y = ctx.get_cursor_pos_y()
+    try:
+        return renderer()
+    finally:
+        measured_height = max(0.0, ctx.get_cursor_pos_y() - start_y)
+        if measured_height > 0.0:
+            heights[block_key] = measured_height
+        else:
+            heights.pop(block_key, None)
 
 
 def _draw_centered_texture(ctx: InxGUIContext, tex_id: int, width: float, height: float,
@@ -119,9 +147,8 @@ def _is_material_preview_ready(panel, preview_path, cache_tag) -> bool:
         return True
 
     embedded = isinstance(preview_path, str) and "::submat:" in preview_path
-    uses_live_json = not embedded
-    norm_path = os.path.normpath(preview_path or "")
-    cache_key = f"matedit|{norm_path}" if uses_live_json else f"mat|{norm_path}"
+    norm_path = resolved_path(preview_path or "")
+    cache_key = f"mat|{norm_path}"
     try:
         return bool(native.is_material_preview_ready(cache_key))
     except Exception:
@@ -378,7 +405,7 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
 
     if is_builtin:
         ctx.begin_disabled(True)
-    section_t0 = _time.perf_counter()
+    section_t0 = _profile_start()
     if render_compact_section_header(ctx, t("material.shader_section"), level="secondary",
                                      default_open=default_open):
         shaders = mat_data.setdefault("shaders", {})
@@ -416,7 +443,8 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
         if _render_obj_field(ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
                              lambda p: _apply_shader("vertex", p, "fragment"),
                              picker_asset_items=lambda filt: _picker_assets(filt, "*.vert"),
-                             on_pick=lambda picked: _apply_shader("vertex", picked, "fragment")):
+                             on_pick=lambda picked: _apply_shader("vertex", picked, "fragment"),
+                             semantic_id="asset.material.shader.vertex"):
             ctx.open_popup("mat_vert_popup")
         if ctx.begin_popup("mat_vert_popup"):
             for display, value in vert_items:
@@ -432,7 +460,8 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
         if _render_obj_field(ctx, "mat_frag", frag_display, "Frag", "SHADER_FILE",
                              lambda p: _apply_shader("fragment", p, "vertex"),
                              picker_asset_items=lambda filt: _picker_assets(filt, "*.frag"),
-                             on_pick=lambda picked: _apply_shader("fragment", picked, "vertex")):
+                             on_pick=lambda picked: _apply_shader("fragment", picked, "vertex"),
+                             semantic_id="asset.material.shader.fragment"):
             ctx.open_popup("mat_frag_popup")
         if ctx.begin_popup("mat_frag_popup"):
             for display, value in frag_items:
@@ -445,8 +474,8 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open):
     return changed, requires_deserialize, requires_pipeline_refresh, change_key
 
 
-def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
-    """Render all steady-state surface controls through one native bridge call."""
+def _prepare_surface_options_batch(ctx, rs, so_lw):
+    """Prepare the reusable native surface plan and its current values."""
     entries = []
 
     def add(key, desc):
@@ -454,15 +483,17 @@ def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
 
     surface_items = [t("material.opaque"), t("material.transparent")]
     add("surface", {"t": 7, "w": "##mat_surface_type", "n": t("material.surface_type"),
-                    "ei": 1 if rs.get("blendEnable", False) else 0, "en": surface_items})
+                    "ei": 1 if rs.get("blendEnable", False) else 0, "en": surface_items,
+                    "sid": "asset.material.surface.type"})
 
     cull_items = [t("material.cull_none"), t("material.cull_front"), t("material.cull_back")]
     cull_idx = {0: 0, 1: 1, 2: 2}.get(int(rs.get("cullMode", 2)), 2)
     add("cull", {"t": 7, "w": "##mat_cull_mode", "n": t("material.cull_mode"),
-                 "ei": cull_idx, "en": cull_items})
+                 "ei": cull_idx, "en": cull_items, "sid": "asset.material.surface.cull"})
 
     add("depth_write", {"t": 2, "w": "##mat_depth_write", "n": t("material.depth_write"),
-                        "b": bool(rs.get("depthWriteEnable", True)), "fl": True})
+                        "b": bool(rs.get("depthWriteEnable", True)), "fl": True,
+                        "sid": "asset.material.surface.depth_write"})
 
     compare_items = [t("material.compare_never"), t("material.compare_less"),
                      t("material.compare_equal"), t("material.compare_less_equal"),
@@ -472,7 +503,8 @@ def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
     depth_op = int(rs.get("depthCompareOp", 1))
     depth_names = compare_items if depth_enabled else ["Off"] + compare_items[1:]
     add("depth_test", {"t": 7, "w": "##mat_depth_test", "n": t("material.depth_test"),
-                       "ei": depth_op if depth_enabled else 7, "en": depth_names})
+                       "ei": depth_op if depth_enabled else 7, "en": depth_names,
+                       "sid": "asset.material.surface.depth_test"})
 
     if rs.get("blendEnable", False):
         src = int(rs.get("srcColorBlendFactor", 6))
@@ -481,25 +513,30 @@ def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
         add("blend", {"t": 7, "w": "##mat_blend_mode", "n": t("material.blend_mode"),
                       "ei": blend_idx,
                       "en": [t("material.blend_alpha"), t("material.blend_additive"),
-                             t("material.blend_premultiply")]})
+                             t("material.blend_premultiply")],
+                      "sid": "asset.material.surface.blend"})
 
     alpha_clip = bool(rs.get("alphaClipEnabled", False))
     add("alpha_clip", {"t": 2, "w": "##mat_alpha_clip", "n": t("material.alpha_clip"),
-                       "b": alpha_clip, "fl": True})
+                       "b": alpha_clip, "fl": True,
+                       "sid": "asset.material.surface.alpha_clip"})
     if alpha_clip:
         add("alpha_threshold", {"t": 0, "w": "##mat_alpha_threshold", "n": t("material.threshold"),
                                 "f": float(rs.get("alphaClipThreshold", 0.5)),
-                                "mn": 0.0, "mx": 1.0, "sl": True})
+                                "mn": 0.0, "mx": 1.0, "sl": True,
+                                "sid": "asset.material.surface.alpha_threshold"})
 
     is_transparent = bool(rs.get("blendEnable", False))
     rq_min, rq_max = (2501, 5000) if is_transparent else (0, 2500)
     rq = max(rq_min, min(int(rs.get("renderQueue", 2000)), rq_max))
     add("render_queue", {"t": 1, "w": "##mat_render_queue", "n": t("material.render_queue"),
-                         "i": rq, "sp": 1.0, "mn": rq_min, "mx": rq_max})
+                         "i": rq, "sp": 1.0, "mn": rq_min, "mx": rq_max,
+                         "sid": "asset.material.surface.render_queue"})
 
     plan_key = tuple(
         (key, desc["t"], desc["w"], desc["n"], tuple(desc.get("en", ())),
-         desc.get("mn"), desc.get("mx"), desc.get("sp"), desc.get("sl"), desc.get("fl"))
+         desc.get("mn"), desc.get("mx"), desc.get("sp"), desc.get("sl"), desc.get("fl"),
+         desc.get("sid", ""))
         for key, desc in entries
     )
     plan = _surface_batch_plans.get(plan_key)
@@ -517,7 +554,11 @@ def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
             values.append(desc["b"])
         else:
             values.append(desc["ei"])
-    changes = ctx.render_property_batch_plan_values(plan, values, so_lw)
+    return entries, plan, values, depth_enabled, depth_op
+
+
+def _apply_surface_option_changes(changes, entries, rs, mat_data, overrides,
+                                  depth_enabled, depth_op):
     change_key = ""
     for raw_index, value in changes.items():
         key = entries[int(raw_index)][0]
@@ -570,6 +611,15 @@ def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
     return overrides, change_key
 
 
+def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw):
+    """Render all steady-state surface controls through one native bridge call."""
+    entries, plan, values, depth_enabled, depth_op = _prepare_surface_options_batch(
+        ctx, rs, so_lw)
+    changes = ctx.render_property_batch_plan_values(plan, values, so_lw)
+    return _apply_surface_option_changes(
+        changes, entries, rs, mat_data, overrides, depth_enabled, depth_op)
+
+
 def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
     """Render surface options (cull, depth, blend, alpha clip, render queue).
 
@@ -582,7 +632,7 @@ def _render_surface_options_section(ctx, mat_data, is_builtin, default_open):
 
     if is_builtin:
         ctx.begin_disabled(True)
-    section_t0 = _time.perf_counter()
+    section_t0 = _profile_start()
     if render_compact_section_header(ctx, t("material.surface_options"), level="secondary",
                                      default_open=default_open):
         rs = mat_data.setdefault("renderState", {})
@@ -616,7 +666,7 @@ def _render_properties_section(ctx, mat_data, is_builtin, default_open):
 
     if is_builtin:
         ctx.begin_disabled(True)
-    section_t0 = _time.perf_counter()
+    section_t0 = _profile_start()
     if render_compact_section_header(ctx, t("material.properties_section"), level="secondary",
                                      default_open=default_open):
         props = mat_data.get("properties", {})
@@ -820,7 +870,262 @@ def _sync_shader_annotations(mat_data, state):
     return changed, requires_deserialize
 
 
+def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
+                                default_open_sections, is_embedded_slot):
+    """Render the stable material top area in one native bridge call."""
+    native_renderer = getattr(ctx, "render_material_top", None)
+    if not callable(native_renderer):
+        return None
+
+    shaders = mat_data.setdefault("shaders", {})
+    vert_ref = shaders.get("vertex", "")
+    frag_ref = shaders.get("fragment", "")
+    vert_items = shader_utils.get_shader_candidates(".vert", _shader_cache)
+    frag_items = shader_utils.get_shader_candidates(".frag", _shader_cache)
+    vert_display = shader_utils.shader_display_from_value(vert_ref, vert_items)
+    frag_display = shader_utils.shader_display_from_value(frag_ref, frag_items)
+    shader_lw = max_label_w(ctx, [t("material.vertex"), t("material.fragment")])
+
+    rs = mat_data.setdefault("renderState", {})
+    overrides = int(mat_data.get("renderStateOverrides", 0))
+    surface_labels = [t("material.surface_type"), t("material.cull_mode"),
+                      t("material.depth_write"), t("material.depth_test"),
+                      t("material.blend_mode"), t("material.alpha_clip"),
+                      t("material.render_queue")]
+    surface_lw = max_label_w(ctx, surface_labels)
+    entries, surface_plan, surface_values, depth_enabled, depth_op = (
+        _prepare_surface_options_batch(ctx, rs, surface_lw)
+    )
+
+    cache_tag = state.extra.get("_material_cache_tag", "")
+    if not cache_tag and not is_embedded_slot:
+        try:
+            cache_tag = state.extra.get("cached_json") or json.dumps(
+                mat_data, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            cache_tag = ""
+        state.extra["_material_cache_tag"] = cache_tag
+
+    now = _time.time()
+    if (state.extra.get("_material_preview_pending", False)
+            and now >= float(state.extra.get("_material_preview_ready_at", 0.0) or 0.0)):
+        try:
+            cache_tag = json.dumps(mat_data, sort_keys=True, ensure_ascii=False)
+            state.extra["_material_cache_tag"] = cache_tag
+        except Exception:
+            cache_tag = state.extra.get("_material_cache_tag", cache_tag)
+        state.extra["_material_preview_pending"] = False
+
+    preview_path = getattr(state, "file_path", "")
+    if not preview_path and _native_mat is not None:
+        preview_path = _ensure_material_file_path(panel, _native_mat)
+    previous_preview_path = state.extra.get("_material_preview_path", "")
+    if preview_path != previous_preview_path:
+        if previous_preview_path:
+            from .asset_resource_preview import invalidate_live_material_preview
+            invalidate_live_material_preview(previous_preview_path)
+        state.extra["_material_preview_path"] = preview_path
+    preview_tex_id = 0
+    if preview_path or _native_mat is not None:
+        preview_tex_id = _get_cached_material_preview_tex(
+            panel, _native_mat, mat_data, state, cache_tag, preview_path)
+
+    from .editor_icons import EditorIcons
+    interaction = native_renderer(
+        t("material.shader_section"), t("material.vertex"), vert_display,
+        t("material.fragment"), frag_display, shader_lw,
+        t("material.surface_options"), surface_plan, surface_values, surface_lw,
+        int(EditorIcons.get_cached(Theme.ICON_IMG_PICKER) or 0),
+        int(preview_tex_id or 0), "Material preview unavailable.",
+        bool(default_open_sections), bool(section_readonly),
+    )
+    (vert_flags, vert_picker_open, vert_payload, vert_list_open,
+     frag_flags, frag_picker_open, frag_payload, frag_list_open,
+     surface_changes) = interaction
+
+    changed = False
+    requires_deserialize = False
+    requires_pipeline_refresh = False
+    change_key = ""
+
+    def apply_shader(shader_key, new_value, other_key):
+        nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
+        old_val = shaders.get(shader_key, "")
+        ext = ".vert" if shader_key == "vertex" else ".frag"
+        new_ref = shader_utils.make_shader_reference(new_value, ext)
+        if not new_ref["guid"] and not new_ref["shader_id"]:
+            return
+        shaders[shader_key] = new_ref
+        changed = True
+        change_key = f"shader.{shader_key}"
+        requires_deserialize = True
+        requires_pipeline_refresh = True
+        if new_ref != old_val:
+            other_id = shader_utils.shader_ref_id(shaders.get(other_key, ""))
+            new_id = shader_utils.shader_ref_id(new_ref)
+            vert_id, frag_id = ((new_id, other_id) if shader_key == "vertex"
+                                else (other_id, new_id))
+            shader_utils.sync_all_shader_properties(
+                mat_data, vert_id, frag_id, remove_unknown=True)
+            state.extra["shader_sync_key"] = (
+                f"{vert_id}|{frag_id}:{shader_utils.get_shader_property_generation()}"
+            )
+
+    if vert_payload:
+        apply_shader("vertex", str(vert_payload), "fragment")
+    if frag_payload:
+        apply_shader("fragment", str(frag_payload), "vertex")
+
+    from . import igui as _igui_module
+    from .igui import IGUI
+    from .inspector_components import _picker_assets
+
+    def render_shader_popups(field_id, flags, picker_open, list_open,
+                             popup_id, items, selected_id, apply):
+        if flags:
+            _igui_module._popup_needs_focus.add(field_id)
+            _igui_module._picker_filters.pop(f"_igui_filter_{field_id}", None)
+        if picker_open or flags:
+            ctx.push_id_str(field_id)
+            try:
+                IGUI._render_object_picker_popup(
+                    ctx, field_id, None,
+                    lambda filt: _picker_assets(filt, "*.vert" if field_id == "mat_vert" else "*.frag"),
+                    apply, None,
+                )
+            finally:
+                ctx.pop_id()
+        if flags & 1:
+            ctx.open_popup(popup_id)
+        if list_open or (flags & 1):
+            if ctx.begin_popup(popup_id):
+                for display, value in items:
+                    if ctx.selectable(display, value == selected_id):
+                        apply(value)
+                ctx.end_popup()
+
+    render_shader_popups(
+        "mat_vert", int(vert_flags), bool(vert_picker_open), bool(vert_list_open),
+        "mat_vert_popup", vert_items, shader_utils.shader_ref_id(vert_ref),
+        lambda value: apply_shader("vertex", value, "fragment"),
+    )
+    render_shader_popups(
+        "mat_frag", int(frag_flags), bool(frag_picker_open), bool(frag_list_open),
+        "mat_frag_popup", frag_items, shader_utils.shader_ref_id(frag_ref),
+        lambda value: apply_shader("fragment", value, "vertex"),
+    )
+
+    overrides, surface_change_key = _apply_surface_option_changes(
+        surface_changes, entries, rs, mat_data, overrides, depth_enabled, depth_op)
+    if surface_change_key:
+        changed = True
+        requires_deserialize = True
+        requires_pipeline_refresh = True
+        change_key = surface_change_key
+
+    return changed, requires_deserialize, requires_pipeline_refresh, change_key
+
+
+def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
+                                default_open_sections, is_embedded_slot):
+    """Compatibility path for bindings without the native material-top batch."""
+    changed = False
+    requires_deserialize = False
+    requires_pipeline_refresh = False
+    change_key = ""
+
+    did_split = ctx.begin_table("##material_top_split", 2, 0, 0.0)
+    if did_split:
+        ctx.table_next_column()
+
+    s_ch, s_ds, s_pr, s_ck = _render_shader_section(
+        ctx, mat_data, state, section_readonly, default_open_sections)
+    changed |= s_ch
+    requires_deserialize |= s_ds
+    requires_pipeline_refresh |= s_pr
+    if s_ck:
+        change_key = s_ck
+
+    ctx.separator()
+    so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(
+        ctx, mat_data, section_readonly, default_open_sections)
+    changed |= so_ch
+    requires_deserialize |= so_ds
+    requires_pipeline_refresh |= so_pr
+    if so_ck:
+        change_key = so_ck
+
+    now = _time.time()
+    cache_tag = state.extra.get("_material_cache_tag", "")
+    if not cache_tag and not is_embedded_slot:
+        try:
+            cache_tag = state.extra.get("cached_json") or json.dumps(
+                mat_data, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            cache_tag = ""
+        state.extra["_material_cache_tag"] = cache_tag
+    if (state.extra.get("_material_preview_pending", False)
+            and now >= float(state.extra.get("_material_preview_ready_at", 0.0) or 0.0)):
+        try:
+            cache_tag = json.dumps(mat_data, sort_keys=True, ensure_ascii=False)
+            state.extra["_material_cache_tag"] = cache_tag
+        except Exception:
+            cache_tag = state.extra.get("_material_cache_tag", cache_tag)
+        state.extra["_material_preview_pending"] = False
+
+    if did_split:
+        ctx.table_next_column()
+        avail_w = max(140.0, ctx.get_content_region_avail_width())
+        preview_size = min(max(avail_w * 0.90, 140.0), 240.0)
+        preview_path = getattr(state, "file_path", "")
+        if not preview_path and _native_mat is not None:
+            preview_path = _ensure_material_file_path(panel, _native_mat)
+        previous_preview_path = state.extra.get("_material_preview_path", "")
+        if preview_path != previous_preview_path:
+            if previous_preview_path:
+                from .asset_resource_preview import invalidate_live_material_preview
+                invalidate_live_material_preview(previous_preview_path)
+            state.extra["_material_preview_path"] = preview_path
+        preview_tex_id = 0
+        if preview_path or _native_mat is not None:
+            preview_tex_id = _get_cached_material_preview_tex(
+                panel, _native_mat, mat_data, state, cache_tag, preview_path)
+        if not _draw_centered_texture(ctx, preview_tex_id, avail_w, preview_size, 256, 256):
+            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+            ctx.label("Material preview unavailable.")
+            ctx.pop_style_color(1)
+        ctx.end_table()
+    ctx.separator()
+    return changed, requires_deserialize, requires_pipeline_refresh, change_key
+
+
 def render_material_body(ctx: InxGUIContext, panel, state):
+    """Render a material while guaranteeing balanced ImGui state on errors."""
+    native_mat = state.extra["native_mat"]
+    is_embedded_slot = "::submat:" in (
+        (getattr(native_mat, "file_path", "") or getattr(state, "file_path", "") or "")
+    )
+    pushed_style_vars = 0
+    disabled = False
+    try:
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
+        pushed_style_vars += 1
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
+        pushed_style_vars += 1
+        if is_embedded_slot:
+            ctx.begin_disabled(True)
+            disabled = True
+        _render_material_body_impl(ctx, panel, state)
+    finally:
+        try:
+            if disabled:
+                ctx.end_disabled()
+        finally:
+            if pushed_style_vars:
+                ctx.pop_style_var(pushed_style_vars)
+
+
+def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     """Render the material-specific inspector body.
 
     *state* is the ``_State`` object from ``asset_details_renderer``.  Relevant
@@ -852,12 +1157,6 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     elif is_embedded_slot:
         ctx.label(t("material.embedded_model_slot"))
 
-    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
-    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
-
-    if is_embedded_slot:
-        ctx.begin_disabled(True)
-
     changed = False
     requires_deserialize = False
     requires_pipeline_refresh = False
@@ -868,82 +1167,29 @@ def render_material_body(ctx: InxGUIContext, panel, state):
     changed |= sync_ch
     requires_deserialize |= sync_ds
 
-    # ── Top row: left = Shader + Surface, right = centered material preview ──
-    split_cols = 2
-    split_id = "##material_top_split"
-    did_split = ctx.begin_table(split_id, split_cols, 0, 0.0)
-    preview_size = 180.0
-    if did_split:
-        # Left column: Shader + Surface Options
-        ctx.table_next_column()
-
-    s_ch, s_ds, s_pr, s_ck = _render_shader_section(ctx, mat_data, state, section_readonly, default_open_sections)
-    changed |= s_ch
-    requires_deserialize |= s_ds
-    requires_pipeline_refresh |= s_pr
-    if s_ck:
-        change_key = s_ck
-
-    ctx.separator()
-
-    so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(ctx, mat_data, section_readonly, default_open_sections)
-    changed |= so_ch
-    requires_deserialize |= so_ds
-    requires_pipeline_refresh |= so_pr
-    if so_ck:
-        change_key = so_ck
-
-    # Publish edits on the following frame. Native generation coalescing keeps
-    # slider drags responsive without displaying the previous edit as current.
-    now = _time.time()
-    cache_tag = state.extra.get("_material_cache_tag", "")
-    if not cache_tag and not is_embedded_slot:
-        try:
-            cache_tag = state.extra.get("cached_json") or json.dumps(
-                mat_data, sort_keys=True, ensure_ascii=False)
-        except Exception:
-            cache_tag = ""
-        state.extra["_material_cache_tag"] = cache_tag
-
-    pending_preview_refresh = bool(state.extra.get("_material_preview_pending", False))
-    refresh_ready_at = float(state.extra.get("_material_preview_ready_at", 0.0) or 0.0)
-    if pending_preview_refresh and now >= refresh_ready_at:
-        try:
-            cache_tag = json.dumps(mat_data, sort_keys=True, ensure_ascii=False)
-            state.extra["_material_cache_tag"] = cache_tag
-        except Exception:
-            cache_tag = state.extra.get("_material_cache_tag", cache_tag)
-        state.extra["_material_preview_pending"] = False
-        pending_preview_refresh = False
-
-    if did_split:
-        # Right column: material preview centered in its region.
-        ctx.table_next_column()
-        avail_w = max(140.0, ctx.get_content_region_avail_width())
-        preview_size = min(max(avail_w * 0.90, 140.0), 240.0)
-        preview_path = getattr(state, "file_path", "")
-        if not preview_path and _native_mat is not None:
-            preview_path = _ensure_material_file_path(panel, _native_mat)
-
-        last_preview_path = state.extra.get("_material_preview_path", "")
-        if preview_path != last_preview_path:
-            state.extra["_material_preview_path"] = preview_path
-
-        preview_tex_id = 0
-        if preview_path or _native_mat is not None:
-            preview_tex_id = _get_cached_material_preview_tex(
-                panel, _native_mat, mat_data, state, cache_tag, preview_path)
-
-        if not _draw_centered_texture(ctx, preview_tex_id, avail_w, preview_size, 256, 256):
-            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-            ctx.label("Material preview unavailable.")
-            ctx.pop_style_color(1)
-        ctx.end_table()
-
-    ctx.separator()
+    # ── Top row: Shader + Surface + live preview ───────────────────────
+    top_result = _render_material_top_native(
+        ctx, panel, state, mat_data, section_readonly,
+        default_open_sections, is_embedded_slot)
+    if top_result is None:
+        top_result = _render_material_top_legacy(
+            ctx, panel, state, mat_data, section_readonly,
+            default_open_sections, is_embedded_slot)
+    top_changed, top_deserialize, top_pipeline_refresh, top_change_key = top_result
+    changed |= top_changed
+    requires_deserialize |= top_deserialize
+    requires_pipeline_refresh |= top_pipeline_refresh
+    if top_change_key:
+        change_key = top_change_key
 
     # ── Properties ─────────────────────────────────────────────────────
-    p_ch, p_ck, p_ds = _render_properties_section(ctx, mat_data, section_readonly, default_open_sections)
+    p_ch, p_ck, p_ds = _render_virtualized_material_block(
+        ctx, state, "properties",
+        lambda: _render_properties_section(
+            ctx, mat_data, section_readonly, default_open_sections,
+        ),
+        (False, "", False),
+    )
     changed |= p_ch
     requires_deserialize |= p_ds
     if p_ck:
@@ -971,17 +1217,11 @@ def render_material_body(ctx: InxGUIContext, panel, state):
         # Drag ended (or no edit this frame) — commit deferred undo snapshot.
         _flush_deferred_undo(panel, state, mat_data, _native_mat)
 
-    if is_embedded_slot:
-        ctx.end_disabled()
-
-    ctx.pop_style_var(2)
-
-
 def render_inline_material_body(ctx: InxGUIContext, panel, native_mat, cache_key: str | None = None) -> None:
     """Render a MeshRenderer-linked material using the shared material inspector."""
     if native_mat is None:
         return
-    inline_t0 = _time.perf_counter()
+    inline_t0 = _profile_start()
     state = _build_inline_state(panel, native_mat)
     ctx.push_id_str(cache_key or f"inline_material_{id(native_mat)}")
     try:
@@ -1016,7 +1256,8 @@ def _on_shader_drop(path: str, required_ext: str, shaders_dict: dict):
 
 def _render_obj_field(ctx: InxGUIContext, fid: str, display: str, type_hint: str,
                       drag_type: str, on_drop,
-                      picker_asset_items=None, on_pick=None, on_clear=None) -> bool:
+                      picker_asset_items=None, on_pick=None, on_clear=None,
+                      semantic_id: str = "") -> bool:
     """Simplified object-field renderer accepting drag-drop."""
     from . import inspector_components as comp_ui
     return comp_ui.render_object_field(ctx, fid, display, type_hint,
@@ -1025,7 +1266,8 @@ def _render_obj_field(ctx: InxGUIContext, fid: str, display: str, type_hint: str
                                        on_drop_callback=on_drop,
                                        picker_asset_items=picker_asset_items,
                                        on_pick=on_pick,
-                                       on_clear=on_clear)
+                                       on_clear=on_clear,
+                                       semantic_id=semantic_id)
 
 
 def _apply_native_prop(prop_name: str, value, ptype: int):

@@ -1,6 +1,7 @@
 """Main wiring function for the C++ InspectorPanel."""
 from __future__ import annotations
 
+import copy
 import time as _time
 from typing import TYPE_CHECKING
 
@@ -70,6 +71,23 @@ def _wire_component_list(ctx):
     _invalidate = ctx.invalidate_component_cache
     _versions = ctx.current_scene_and_versions
 
+    def _native_wrapper_is_dead(component):
+        """Cheaply reject wrappers invalidated by a scene/component rebuild.
+
+        Calling ``is_valid`` here would resolve a native handle for every
+        component on every Inspector frame.  The invalidation path already
+        clears ``_cpp_component`` and marks the wrapper destroyed, so these
+        local fields are sufficient to decide whether the cached map must be
+        rebuilt.
+        """
+        return (
+            bool(getattr(component, "_is_builtin_component_wrapper", False))
+            and (
+                getattr(component, "_cpp_component", None) is None
+                or bool(getattr(component, "_is_destroyed", False))
+            )
+        )
+
     def _is_py_entry(component):
         return isinstance(component, InxComponent) or hasattr(component, 'get_py_component')
 
@@ -86,7 +104,7 @@ def _wire_component_list(ctx):
             stale = False
             for item in items:
                 comp = native_map.get(item.component_id) if item.is_native else py_map.get(item.component_id)
-                if comp is None:
+                if comp is None or (item.is_native and _native_wrapper_is_dead(comp)):
                     stale = True
                     break
                 item.enabled = bool(getattr(comp, 'enabled', True))
@@ -168,8 +186,10 @@ def _wire_component_list(ctx):
             and _component_cache["scene_version"] == scene_ver
             and _component_cache["structure_version"] == struct_ver
         ):
-            return (scene, _component_cache["items"],
-                    _component_cache["native_map"], _component_cache["py_map"])
+            native_map = _component_cache["native_map"]
+            if not any(_native_wrapper_is_dead(comp) for comp in native_map.values()):
+                return (scene, _component_cache["items"],
+                        native_map, _component_cache["py_map"])
         return _get_component_payload(obj_id)
 
     ctx.get_cached_component_maps = _get_cached_maps
@@ -325,6 +345,7 @@ def _wire_icons_and_body(ctx):
     _record_timing = ctx._record_profile_timing
     _component_cache = ctx.component_cache
     _inspector_support = ctx._inspector_support
+    _profile_enabled = _inspector_support.is_inspector_profile_enabled()
     from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
     _icon_cache = {}
@@ -379,21 +400,28 @@ def _wire_icons_and_body(ctx):
 
     from Infernux.engine.ui import inspector_components as comp_ui
 
-    def _render_component_body(ctx_arg, obj_id, type_name, comp_id, is_native):
-        _record_count("bodyResolve_count")
-        _resolve_t0 = _time.perf_counter()
+    _component_body_heights = {}
+
+    def _render_component_body_live(ctx_arg, obj_id, type_name, comp_id, is_native):
+        if _profile_enabled:
+            _record_count("bodyResolve_count")
+        _resolve_t0 = _time.perf_counter() if _profile_enabled else 0.0
         comp = ctx.resolve_component(obj_id, comp_id, is_native)
-        _record_timing("bodyResolve", (_time.perf_counter() - _resolve_t0) * 1000.0)
+        if _profile_enabled:
+            _record_timing("bodyResolve", (_time.perf_counter() - _resolve_t0) * 1000.0)
         if comp is None:
             return
         if is_native:
-            _record_count("bodyNativeDispatch_count")
-            _t0 = _time.perf_counter()
+            if _profile_enabled:
+                _record_count("bodyNativeDispatch_count")
+            _t0 = _time.perf_counter() if _profile_enabled else 0.0
             comp_ui.render_component(ctx_arg, comp)
-            _record_timing("bodyNativeDispatch", (_time.perf_counter() - _t0) * 1000.0)
+            if _profile_enabled:
+                _record_timing("bodyNativeDispatch", (_time.perf_counter() - _t0) * 1000.0)
             return
-        _record_count("bodyPyCheck_count")
-        _t0 = _time.perf_counter()
+        if _profile_enabled:
+            _record_count("bodyPyCheck_count")
+        _t0 = _time.perf_counter() if _profile_enabled else 0.0
         _script_err = None
         if getattr(comp, '_is_broken', False):
             _script_err = getattr(comp, '_broken_error', '') or 'Script failed to load'
@@ -405,7 +433,8 @@ def _wire_icons_and_body(ctx):
                 _py_path = adb.get_path_from_guid(_py_guid)
                 if _py_path:
                     _script_err = get_script_error_by_path(_py_path)
-        _record_timing("bodyPyCheck", (_time.perf_counter() - _t0) * 1000.0)
+        if _profile_enabled:
+            _record_timing("bodyPyCheck", (_time.perf_counter() - _t0) * 1000.0)
         if _script_err:
             from Infernux.engine.ui.theme import Theme, ImGuiCol
             ctx_arg.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
@@ -413,10 +442,32 @@ def _wire_icons_and_body(ctx):
             ctx_arg.pop_style_color(1)
         else:
             from Infernux.engine.ui.inspector_components import render_py_component
-            _record_count("bodyPyDispatch_count")
-            _t0 = _time.perf_counter()
+            if _profile_enabled:
+                _record_count("bodyPyDispatch_count")
+            _t0 = _time.perf_counter() if _profile_enabled else 0.0
             render_py_component(ctx_arg, comp)
-            _record_timing("bodyPyDispatch", (_time.perf_counter() - _t0) * 1000.0)
+            if _profile_enabled:
+                _record_timing("bodyPyDispatch", (_time.perf_counter() - _t0) * 1000.0)
+
+    def _render_component_body(ctx_arg, obj_id, type_name, comp_id, is_native):
+        cache_key = (obj_id, comp_id, bool(is_native), type_name)
+        cached_height = _component_body_heights.get(cache_key, 0.0)
+        visibility_query = getattr(ctx_arg, "is_virtualized_region_visible", None)
+        if cached_height > 0.0 and callable(visibility_query) and not visibility_query(cached_height):
+            ctx_arg.dummy(0.0, cached_height)
+            if _profile_enabled:
+                _record_count("bodyVirtualizedSkip_count")
+            return
+
+        start_y = ctx_arg.get_cursor_pos_y()
+        try:
+            _render_component_body_live(ctx_arg, obj_id, type_name, comp_id, is_native)
+        finally:
+            measured_height = max(0.0, ctx_arg.get_cursor_pos_y() - start_y)
+            if measured_height > 0.0:
+                _component_body_heights[cache_key] = measured_height
+            else:
+                _component_body_heights.pop(cache_key, None)
 
     ip.render_component_body = _render_component_body
 
@@ -428,10 +479,12 @@ def _wire_icons_and_body(ctx):
                 comps.append(comp)
         if not comps:
             return
-        _record_count("bodyMultiDispatch_count")
-        _t0 = _time.perf_counter()
+        if _profile_enabled:
+            _record_count("bodyMultiDispatch_count")
+        _t0 = _time.perf_counter() if _profile_enabled else 0.0
         comp_ui.render_multi_component(ctx_arg, comps, is_native=is_native)
-        _record_timing("bodyMultiDispatch", (_time.perf_counter() - _t0) * 1000.0)
+        if _profile_enabled:
+            _record_timing("bodyMultiDispatch", (_time.perf_counter() - _t0) * 1000.0)
 
     ip.render_multi_component_body = _render_multi_component_body
 
@@ -459,6 +512,30 @@ def _wire_icons_and_body(ctx):
 
 # ═══════ Clipboard & context menu ══════════════════════════════
 
+def _python_component_clipboard_document(comp) -> dict:
+    """Capture fields without copying the source component's identity."""
+    document = copy.deepcopy(comp._serialize_fields_document())
+    document.pop("__component_id__", None)
+    return document
+
+
+def _apply_python_component_clipboard_document(
+    comp,
+    document: dict,
+    *,
+    invoke_after_deserialize: bool = True,
+) -> None:
+    """Apply a clipboard field snapshot while preserving target identity."""
+    if not isinstance(document, dict):
+        raise TypeError("Python component clipboard payload must be an object")
+    payload = copy.deepcopy(document)
+    payload.pop("__component_id__", None)
+    payload["__type_name__"] = type(comp).__name__
+    comp._deserialize_fields_document(
+        payload,
+        _skip_on_after_deserialize=not invoke_after_deserialize,
+    )
+
 def _wire_clipboard_and_context(ctx):
     """Wire clipboard operations and component context menu."""
     ip = ctx.ip
@@ -481,8 +558,8 @@ def _wire_clipboard_and_context(ctx):
         try:
             if is_native and hasattr(comp, "serialize_document"):
                 _comp_clipboard["payload"] = comp.serialize_document()
-            elif hasattr(comp, "_serialize_fields"):
-                _comp_clipboard["payload"] = comp._serialize_fields()
+            elif hasattr(comp, "_serialize_fields_document"):
+                _comp_clipboard["payload"] = _python_component_clipboard_document(comp)
             else:
                 _comp_clipboard["payload"] = None
         except Exception:
@@ -494,8 +571,15 @@ def _wire_clipboard_and_context(ctx):
     def _can_paste_values(comp, type_name, is_native):
         if not _has_clip():
             return False
-        return (_comp_clipboard["type_name"] == type_name and
-                _comp_clipboard["is_native"] == is_native)
+        if not (_comp_clipboard["type_name"] == type_name and
+                _comp_clipboard["is_native"] == is_native):
+            return False
+        if is_native:
+            return True
+        return (
+            _comp_clipboard["script_guid"] == (getattr(comp, "_script_guid", "") or "")
+            and _comp_clipboard["type_guid"] == comp.__class__._get_type_guid()
+        )
 
     def _paste_as_new(obj):
         tn = _comp_clipboard["type_name"]
@@ -517,24 +601,48 @@ def _wire_clipboard_and_context(ctx):
             sfm = SceneFileManager.instance()
             asset_db = sfm._asset_database if sfm else None
             instance, _sp = create_component_instance(
-                guid, type_guid, tn, asset_database=asset_db)
+                guid,
+                type_guid,
+                tn,
+                asset_database=asset_db,
+                prefer_loaded_type=True,
+            )
             if instance is None:
                 Debug.log_warning(f"Cannot paste: failed to create '{tn}'")
                 return
             if payload:
                 try:
-                    instance._deserialize_fields(payload, _skip_on_after_deserialize=True)
-                except TypeError:
-                    instance._deserialize_fields(payload)
+                    _apply_python_component_clipboard_document(
+                        instance,
+                        payload,
+                        invoke_after_deserialize=False,
+                    )
                 except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                    instance._call_on_destroy()
+                    Debug.log_error(f"Cannot paste '{tn}' fields: {_exc}")
+                    return False
             if guid:
                 try:
                     instance._script_guid = guid
                 except Exception as _exc:
                     Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            obj.add_py_component(instance)
+            before_ids = {getattr(item, "component_id", 0) for item in obj.get_components()}
+            attached = obj.add_py_component(instance)
+            if attached is None:
+                instance._call_on_destroy()
+                Debug.log_error(f"Cannot paste: failed to attach '{tn}'")
+                return False
+            attached._call_on_after_deserialize()
+            from Infernux.engine.ui._inspector_undo import _record_add_component_compound
+            _record_add_component_compound(
+                obj,
+                tn,
+                attached,
+                before_ids,
+                is_py=True,
+            )
         _invalidate()
+        return True
 
     def _paste_values(comp, is_native):
         payload = _comp_clipboard["payload"]
@@ -546,14 +654,32 @@ def _wire_clipboard_and_context(ctx):
                     raise RuntimeError("Failed to paste native component values")
             except Exception as _exc:
                 Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        elif hasattr(comp, "_deserialize_fields"):
+        elif hasattr(comp, "_deserialize_fields_document"):
             try:
-                comp._deserialize_fields(payload, _skip_on_after_deserialize=True)
-            except TypeError:
-                comp._deserialize_fields(payload)
+                old_document = _python_component_clipboard_document(comp)
+                new_document = copy.deepcopy(payload)
+                new_document["__type_name__"] = type(comp).__name__
+                from Infernux.engine.undo import (
+                    PythonComponentDocumentCommand,
+                    UndoManager,
+                )
+                manager = UndoManager.instance()
+                if manager:
+                    manager.execute(PythonComponentDocumentCommand(
+                        comp,
+                        old_document,
+                        new_document,
+                        f"Paste {type(comp).__name__} Properties",
+                    ))
+                else:
+                    _apply_python_component_clipboard_document(comp, new_document)
+                    from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+                    _notify_scene_modified()
             except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+                Debug.log_error(f"Cannot paste component properties: {_exc}")
+                return False
         _bump()
+        return True
 
     def _get_script_path(comp):
         guid = getattr(comp, '_script_guid', None)

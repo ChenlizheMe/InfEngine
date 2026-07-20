@@ -126,6 +126,72 @@ class GenericComponentCommand(UndoCommand):
         self.timestamp = other.timestamp
 
 
+class PythonComponentDocumentCommand(UndoCommand):
+    """Undo/redo one complete Python serialized-field document edit."""
+
+    _is_property_edit = True
+    MERGE_WINDOW: float = 0.3
+
+    def __init__(self, comp: Any, old_document: dict, new_document: dict,
+                 description: str = ""):
+        super().__init__(description or f"Edit {_comp_type_name_of(comp)}")
+        self._comp = comp
+        self._old_document = copy.deepcopy(old_document)
+        self._new_document = copy.deepcopy(new_document)
+        self._comp_id: int = getattr(comp, "component_id", id(comp))
+        self._game_object_id: int = _game_object_id_of(comp)
+        self._comp_type_name: str = _comp_type_name_of(comp)
+
+    def _live(self):
+        if self._game_object_id and self._comp_id:
+            from Infernux.engine.undo._helpers import _get_active_scene
+            scene = _get_active_scene()
+            obj = scene.find_by_id(self._game_object_id) if scene else None
+            if obj is not None:
+                for component in (obj.get_py_components() or ()):
+                    if getattr(component, "component_id", 0) == self._comp_id:
+                        return component
+        return _resolve_target(self._comp, self._game_object_id, self._comp_type_name)
+
+    @staticmethod
+    def _apply(comp: Any, document: dict) -> None:
+        if comp is None or not hasattr(comp, "_deserialize_fields_document"):
+            raise RuntimeError("Python component document target is unavailable")
+        comp._deserialize_fields_document(copy.deepcopy(document))
+
+    def execute(self) -> None:
+        self._apply(self._live() or self._comp, self._new_document)
+
+    def undo(self) -> None:
+        target = self._live()
+        if target is None:
+            Debug.log_error(
+                f"[Undo] PythonComponent('{self._comp_type_name}').undo: not found"
+            )
+            return
+        self._apply(target, self._old_document)
+
+    def redo(self) -> None:
+        target = self._live()
+        if target is None:
+            Debug.log_error(
+                f"[Undo] PythonComponent('{self._comp_type_name}').redo: not found"
+            )
+            return
+        self._apply(target, self._new_document)
+
+    def can_merge(self, other: UndoCommand) -> bool:
+        return (
+            isinstance(other, PythonComponentDocumentCommand)
+            and self._comp_id == other._comp_id
+            and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
+        )
+
+    def merge(self, other: PythonComponentDocumentCommand) -> None:
+        self._new_document = copy.deepcopy(other._new_document)
+        self.timestamp = other.timestamp
+
+
 class MaterialDocumentCommand(UndoCommand):
     """Undo/redo for typed material edits followed by an atomic save."""
 

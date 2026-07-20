@@ -266,14 +266,17 @@ class SerializableObject:
         return f"{self.__class__.__name__}({', '.join(parts)})"
 
     def __deepcopy__(self, memo):
-        from .serialized_field import get_serialized_fields
+        from .serialized_field import get_raw_field_value, get_serialized_fields
 
         cls = self.__class__
         result = cls.__new__(cls)
         memo[id(self)] = result
         fields = get_serialized_fields(cls)
         for name in fields:
-            value = getattr(self, name, None)
+            # Serialized asset/reference fields resolve through __getattribute__
+            # for runtime use. Copies used by Undo and list editing must retain
+            # their raw GUID/path wrapper instead of copying the resolved asset.
+            value = get_raw_field_value(self, name)
             setattr(result, name, copy.deepcopy(value, memo))
         return result
 

@@ -6,6 +6,37 @@ that callers can provide for per-session caching.
 """
 
 import os
+from Infernux.engine.path_utils import path_key, portable_path
+
+
+def _normalize_imported_property(item: dict) -> dict:
+    """Normalize importer metadata before it reaches material UI code."""
+    import json
+
+    result = dict(item)
+    default = result.get("default")
+    if isinstance(default, str):
+        token = default.strip()
+        if token.startswith("[") and "]" in token:
+            bracket_end = token.find("]") + 1
+            try:
+                result["default"] = json.loads(token[:bracket_end])
+            except (json.JSONDecodeError, TypeError):
+                pass
+            flags = token[bracket_end:].lstrip(" ,")
+            if flags.upper() == "HDR":
+                result["hdr"] = True
+        elif result.get("type") == "Float":
+            try:
+                result["default"] = float(token)
+            except ValueError:
+                pass
+        elif result.get("type") == "Int":
+            try:
+                result["default"] = int(token)
+            except ValueError:
+                pass
+    return result
 
 
 def _read_compiled_shader_metadata(filepath: str) -> dict | None:
@@ -95,7 +126,7 @@ def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dic
 def _get_shader_catalog(ext: str) -> dict[str, object]:
     """Return cached shader catalog for the requested extension."""
     search_roots = _get_shader_search_roots()
-    root_signature = tuple(os.path.normcase(os.path.abspath(root)) for root in search_roots if root)
+    root_signature = tuple(path_key(root) for root in search_roots if root)
     cache_key = (ext, root_signature)
     catalog = _shader_catalog_cache.get(cache_key)
     if catalog is None:
@@ -155,7 +186,11 @@ def parse_shader_properties(filepath: str) -> list:
             try:
                 properties = json.loads(encoded)
                 if isinstance(properties, list):
-                    return [item for item in properties if isinstance(item, dict)]
+                    return [
+                        _normalize_imported_property(item)
+                        for item in properties
+                        if isinstance(item, dict)
+                    ]
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -270,7 +305,7 @@ def make_shader_reference(value, ext: str) -> dict[str, str]:
         resolved_path = get_shader_file_path(shader_id, ext) or ""
 
     if resolved_path:
-        resolved_path = os.path.normpath(resolved_path).replace("\\", "/")
+        resolved_path = portable_path(resolved_path)
         metadata = _read_compiled_shader_metadata(resolved_path)
         if metadata is not None:
             imported_id = metadata.get("shader_id", "")
@@ -331,6 +366,49 @@ _SHADER_TYPE_MAP = {
 }
 
 
+_PROPERTY_VALUE_DEFAULTS = {
+    "Float": 0.0,
+    "Float2": [0.0, 0.0],
+    "Float3": [0.0, 0.0, 0.0],
+    "Float4": [0.0, 0.0, 0.0, 0.0],
+    "Color": [1.0, 1.0, 1.0, 1.0],
+    "Int": 0,
+    "Mat4": [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ],
+}
+
+
+def _coerce_property_value(property_type: str, value):
+    """Return a canonical material value, or ``None`` when incompatible."""
+    try:
+        if property_type == "Float":
+            if isinstance(value, (list, tuple, dict, bool)):
+                return None
+            return float(value)
+        if property_type == "Int":
+            if isinstance(value, (list, tuple, dict, bool)):
+                return None
+            return int(value)
+
+        lengths = {
+            "Float2": 2,
+            "Float3": 3,
+            "Float4": 4,
+            "Color": 4,
+            "Mat4": 16,
+        }
+        expected = lengths.get(property_type)
+        if expected is None or not isinstance(value, (list, tuple)) or len(value) != expected:
+            return None
+        return [float(component) for component in value]
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
                                 remove_unknown: bool = False):
     """Apply a merged list of imported shader property dicts to mat_data.
@@ -353,7 +431,8 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
     mat_data["_shader_property_order"] = ordered_names
 
     shader_prop_names: set[str] = set()
-    for sp in all_props:
+    for raw_sp in all_props:
+        sp = _normalize_imported_property(raw_sp)
         name = sp.get('name', '')
         ptype_str = sp.get('type', 'Float')
         default = sp.get('default')
@@ -366,14 +445,26 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
         shader_prop_names.add(name)
         ptype = _SHADER_TYPE_MAP.get(ptype_str, 0)
 
-        if name in props:
-            props[name]['type'] = ptype
-            props[name]['hdr'] = hdr
+        existing = props.get(name)
+        if not isinstance(existing, dict):
+            existing = {}
+            props[name] = existing
+
+        existing['type'] = ptype
+        existing['hdr'] = hdr
+        if ptype == 6:
+            guid = existing.get('guid', '')
+            existing['guid'] = guid if isinstance(guid, str) else ''
+            existing.pop('value', None)
         else:
-            if ptype == 6:
-                props[name] = {'type': ptype, 'guid': "", 'hdr': hdr}
-            else:
-                props[name] = {'type': ptype, 'value': default, 'hdr': hdr}
+            fallback = _coerce_property_value(ptype_str, default)
+            if fallback is None:
+                fallback = _coerce_property_value(
+                    ptype_str, _PROPERTY_VALUE_DEFAULTS.get(ptype_str)
+                )
+            current = _coerce_property_value(ptype_str, existing.get('value'))
+            existing['value'] = current if current is not None else fallback
+            existing.pop('guid', None)
 
         if (
             ptype in (0, 4)

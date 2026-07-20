@@ -546,7 +546,6 @@ class AssetDatabase
     void PublishQuerySnapshot();
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
-    [[nodiscard]] std::string NormalizePath(const std::string &path) const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
     static void PrepareMetadata(WorkerMetadataPrepare &item);

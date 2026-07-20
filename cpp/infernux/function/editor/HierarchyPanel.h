@@ -88,6 +88,7 @@ class HierarchyPanel : public EditorPanel
 
     std::function<void(uint64_t, const std::string &)> undoRecordCreate;
     std::function<void(uint64_t, const std::string &)> undoRecordDelete;
+    std::function<void(uint64_t, const std::string &, const std::string &)> undoRecordRename;
     /// (objId, oldParentId, newParentId, oldSibIdx, newSibIdx)
     std::function<void(uint64_t, uint64_t, uint64_t, int, int)> undoRecordMove;
 
@@ -248,6 +249,9 @@ class HierarchyPanel : public EditorPanel
     uint64_t m_renameId = 0;
     char m_renameBuf[256] = {};
     bool m_renameFocus = false;
+    // Context-menu dismissal can deactivate the newly opened input before it
+    // receives focus. Keep rename alive until the input has settled.
+    int m_renameSkipDeactivateFrames = 0;
 
     // ── Right-click tracking ─────────────────────────────────────────
     uint64_t m_rightClickedObjId = 0;

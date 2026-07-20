@@ -74,38 +74,7 @@ std::string GenerateGuid()
 
 std::string NormalizeMetadataFilePath(const std::string &filePath)
 {
-    if (filePath.empty())
-        return {};
-
-    std::error_code error;
-    std::filesystem::path normalized = ToFsPath(filePath);
-    if (normalized.is_relative()) {
-        auto absolute = std::filesystem::absolute(normalized, error);
-        if (!error)
-            normalized = std::move(absolute);
-        error.clear();
-    }
-    if (std::filesystem::exists(normalized, error)) {
-        auto canonical = std::filesystem::weakly_canonical(normalized, error);
-        if (!error)
-            normalized = std::move(canonical);
-        error.clear();
-    }
-
-#ifdef INX_PLATFORM_WINDOWS
-    const std::wstring native = normalized.native();
-    const DWORD required = GetLongPathNameW(native.c_str(), nullptr, 0);
-    if (required > 0) {
-        std::wstring expanded(static_cast<size_t>(required), L'\0');
-        const DWORD written = GetLongPathNameW(native.c_str(), expanded.data(), required);
-        if (written > 0 && written < required) {
-            expanded.resize(static_cast<size_t>(written));
-            normalized = std::filesystem::path(std::move(expanded));
-        }
-    }
-#endif
-
-    return FromFsPath(normalized.lexically_normal());
+    return ResolveFilesystemPath(filePath);
 }
 } // namespace
 

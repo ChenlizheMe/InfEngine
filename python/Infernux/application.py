@@ -7,6 +7,8 @@ import threading
 import weakref
 from typing import Any
 
+from Infernux.engine.path_utils import resolved_path
+
 _lock = threading.RLock()
 _engine_ref: weakref.ReferenceType | None = None
 _runtime_kind = "uninitialized"
@@ -48,7 +50,7 @@ class Application:
         from Infernux.engine.project_context import get_project_root
 
         root = get_project_root()
-        return os.path.abspath(root) if root else ""
+        return resolved_path(root) if root else ""
 
     @staticmethod
     def persistent_data_path() -> str:
@@ -58,7 +60,7 @@ class Application:
         if is_player:
             packaged_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
             if packaged_root:
-                return os.path.abspath(packaged_root)
+                return resolved_path(packaged_root)
         return Application.data_path()
 
     @staticmethod

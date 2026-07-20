@@ -8,6 +8,7 @@ import threading
 from typing import Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import resolved_path
 
 HOST = "127.0.0.1"
 PORT = 9713
@@ -247,7 +248,7 @@ def _write_discovery_files(project_path: str, *, host: str, port: int) -> None:
     the embedded editor MCP endpoint discoverable without hard-coding the port
     in an agent prompt.
     """
-    root = os.path.abspath(project_path or "")
+    root = resolved_path(project_path or "")
     if not root:
         return
     info = connection_info(host=host, port=port)

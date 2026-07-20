@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.i18n import t
 
 
 class DirtyPanelConfirmationCoordinator:
@@ -116,7 +117,7 @@ class DirtyPanelConfirmationCoordinator:
             return
         save_handler = entry.get("save_handler")
         if not callable(save_handler):
-            self._error = "This panel does not provide a save action."
+            self._error = t("editor.unsaved.no_save_action")
             self._show_popup = True
             return
         try:
@@ -125,7 +126,7 @@ class DirtyPanelConfirmationCoordinator:
             Debug.log_suppressed(
                 f"DirtyPanelConfirmation.save[{self.active_panel_id}]", exc
             )
-            self._error = "The panel could not be saved. Check the Console for details."
+            self._error = t("editor.unsaved.save_failed")
             self._show_popup = True
             return
 
@@ -136,7 +137,7 @@ class DirtyPanelConfirmationCoordinator:
             self._waiting_for_save = True
             self._error = ""
             return
-        self._error = "The save was cancelled or failed."
+        self._error = t("editor.unsaved.save_cancelled")
         self._show_popup = True
 
     def choose_discard(self) -> None:
@@ -149,7 +150,7 @@ class DirtyPanelConfirmationCoordinator:
         if self._scope == "panel":
             discard_handler = entry.get("discard_handler")
             if not callable(discard_handler):
-                self._error = "This panel cannot discard its unsaved changes safely."
+                self._error = t("editor.unsaved.no_discard_action")
                 self._show_popup = True
                 return
             try:
@@ -158,11 +159,11 @@ class DirtyPanelConfirmationCoordinator:
                 Debug.log_suppressed(
                     f"DirtyPanelConfirmation.discard[{self.active_panel_id}]", exc
                 )
-                self._error = "The panel could not discard its unsaved changes."
+                self._error = t("editor.unsaved.discard_failed")
                 self._show_popup = True
                 return
             if self._entry_is_dirty(entry):
-                self._error = "The panel is still dirty after the discard action."
+                self._error = t("editor.unsaved.still_dirty")
                 self._show_popup = True
                 return
         self._resolve_active()
@@ -237,7 +238,7 @@ class DirtyPanelConfirmationCoordinator:
         if self._entry_save_pending(entry):
             return
         self._waiting_for_save = False
-        self._error = "The save was cancelled or failed."
+        self._error = t("editor.unsaved.save_cancelled")
         self._show_popup = True
 
     @staticmethod

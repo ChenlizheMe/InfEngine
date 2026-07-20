@@ -153,14 +153,23 @@ def _invalidate_component_render_cache(cache_entry) -> None:
     cache_entry.pop("py_plan", None)
 
 
+_PROFILE_ENABLED = _inspector_support.is_inspector_profile_enabled()
+
+
+def _profile_start() -> float:
+    return _time.perf_counter() if _PROFILE_ENABLED else 0.0
+
+
 def _record_profile_timing(bucket: str, start_time: float) -> None:
-    _inspector_support.record_inspector_profile_timing(
-        bucket, (_time.perf_counter() - start_time) * 1000.0,
-    )
+    if _PROFILE_ENABLED:
+        _inspector_support.record_inspector_profile_timing(
+            bucket, (_time.perf_counter() - start_time) * 1000.0,
+        )
 
 
 def _record_profile_count(bucket: str, amount: float = 1.0) -> None:
-    _inspector_support.record_inspector_profile_count(bucket, amount)
+    if _PROFILE_ENABLED:
+        _inspector_support.record_inspector_profile_count(bucket, amount)
 
 
 def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields, cache_entry, refresh_values):
@@ -394,7 +403,7 @@ def render_component(ctx: InxGUIContext, comp):
     renderer = _COMPONENT_RENDERERS.get(comp.type_name)
     if renderer:
         _record_profile_count("bodyNativeCustom_count")
-        _t0 = _time.perf_counter()
+        _t0 = _profile_start()
         try:
             renderer(ctx, comp)
         finally:
@@ -410,17 +419,17 @@ def render_component(ctx: InxGUIContext, comp):
             if not isinstance(comp, BuiltinComponent):
                 go = getattr(comp, 'game_object', None)
                 if go is not None:
-                    _wrap_t0 = _time.perf_counter()
+                    _wrap_t0 = _profile_start()
                     comp = wrapper_cls._get_or_create_wrapper(comp, go)
                     _record_profile_timing("bodyBuiltinWrap", _wrap_t0)
                 else:
                     _record_profile_count("bodyCppGeneric_count")
-                    _generic_t0 = _time.perf_counter()
+                    _generic_t0 = _profile_start()
                     render_cpp_component_generic(ctx, raw_cpp)
                     _record_profile_timing("bodyCppGeneric", _generic_t0)
                     return
             _record_profile_count("bodyBuiltinTotal_count")
-            _builtin_t0 = _time.perf_counter()
+            _builtin_t0 = _profile_start()
             try:
                 comp.render_inspector(ctx)
             finally:
@@ -435,7 +444,7 @@ def render_component(ctx: InxGUIContext, comp):
             )
             try:
                 _record_profile_count("bodyCppGeneric_count")
-                _generic_t0 = _time.perf_counter()
+                _generic_t0 = _profile_start()
                 render_cpp_component_generic(ctx, raw_cpp)
                 _record_profile_timing("bodyCppGeneric", _generic_t0)
             except Exception as fallback_exc:
@@ -447,7 +456,7 @@ def render_component(ctx: InxGUIContext, comp):
 
     # 3. Fallback — generic property table
     _record_profile_count("bodyCppGeneric_count")
-    _generic_t0 = _time.perf_counter()
+    _generic_t0 = _profile_start()
     render_cpp_component_generic(ctx, comp)
     _record_profile_timing("bodyCppGeneric", _generic_t0)
 
@@ -886,7 +895,7 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
         else:
             _record_profile_count("bodyBuiltinPlanSkipMismatch_count")
         _record_profile_count("bodyBuiltinPlanBuild_count")
-        _plan_t0 = _time.perf_counter()
+        _plan_t0 = _profile_start()
         plan = _build_builtin_cached_plan(ctx, comp, props, lw, skip_fields, cache_entry, refresh_values)
         _record_profile_timing("bodyBuiltinPlanBuild", _plan_t0)
         cache_entry["builtin_plan"] = plan
@@ -894,7 +903,7 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
         _record_profile_count("bodyBuiltinPlanHit_count")
 
     _record_profile_count("bodyBuiltinPlanReplay_count")
-    _replay_t0 = _time.perf_counter()
+    _replay_t0 = _profile_start()
     _replay_builtin_cached_plan(ctx, comp, plan, cache_entry)
     _record_profile_timing("bodyBuiltinPlanReplay", _replay_t0)
 
@@ -902,7 +911,7 @@ def render_builtin_via_setters(ctx: InxGUIContext, comp, wrapper_cls, *, skip_fi
     extra = _COMPONENT_EXTRA_RENDERERS.get(getattr(comp, 'type_name', ''))
     if extra:
         _record_profile_count("bodyBuiltinExtra_count")
-        _extra_t0 = _time.perf_counter()
+        _extra_t0 = _profile_start()
         extra(ctx, comp)
         _record_profile_timing("bodyBuiltinExtra", _extra_t0)
 
@@ -1025,7 +1034,7 @@ def _try_custom_py_renderer(ctx, py_comp):
         from Infernux.components.component import InxComponent
         if on_gui is not InxComponent.on_inspector_gui:
             _record_profile_count("bodyPyCustom_count")
-            _py_custom_t0 = _time.perf_counter()
+            _py_custom_t0 = _profile_start()
             try:
                 py_comp.on_inspector_gui(ctx)
             finally:
@@ -1034,7 +1043,7 @@ def _try_custom_py_renderer(ctx, py_comp):
     renderer = _PY_COMPONENT_RENDERERS.get(py_comp.type_name)
     if renderer:
         _record_profile_count("bodyPyCustom_count")
-        _py_custom_t0 = _time.perf_counter()
+        _py_custom_t0 = _profile_start()
         try:
             renderer(ctx, py_comp)
         finally:
@@ -1093,6 +1102,12 @@ def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value
 
 def render_py_component(ctx: InxGUIContext, py_comp):
     """Render a Python InxComponent's serialized fields."""
+    from .inspector_declarative import get_inspector_model, render_inspector_model
+
+    declarative_model = get_inspector_model(py_comp)
+    if declarative_model is not None:
+        render_inspector_model(ctx, py_comp, declarative_model)
+        return
     if _try_custom_py_renderer(ctx, py_comp):
         return
 
@@ -1103,7 +1118,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
     cache_entry, refresh_values = _begin_component_value_cache("py", py_comp)
     capture_semantics = semantic_capture_enabled(ctx)
     _record_profile_count("bodyPyGenericTotal_count")
-    _py_generic_t0 = _time.perf_counter()
+    _py_generic_t0 = _profile_start()
 
     batch_descs = []
     batch_info = []
@@ -1113,7 +1128,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         if not batch_descs:
             return
         _record_profile_count("bodyPyGenericBatch_count")
-        _batch_t0 = _time.perf_counter()
+        _batch_t0 = _profile_start()
         changes = ctx.render_property_batch(batch_descs, lw)
         _record_profile_timing("bodyPyGenericBatch", _batch_t0)
         if changes:
@@ -1224,3 +1239,4 @@ register_component_extra_renderer("SkinnedMeshRenderer", _render_mesh_renderer_m
 
 # Registers UI component inspectors.
 from . import inspector_ui_components
+from . import inspector_renderstack

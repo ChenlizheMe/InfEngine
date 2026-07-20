@@ -9,6 +9,7 @@ import time
 import uuid
 from typing import Any
 
+from Infernux.engine.path_utils import is_path_within, relative_path, resolved_path
 
 _ACTIVE: "MCPTransaction | None" = None
 _LAST: dict[str, Any] | None = None
@@ -16,7 +17,7 @@ _LAST: dict[str, Any] | None = None
 
 class MCPTransaction:
     def __init__(self, project_path: str, label: str = "") -> None:
-        self.project_path = os.path.abspath(project_path)
+        self.project_path = resolved_path(project_path)
         self.transaction_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         self.label = str(label or "")
         self.started_at = time.time()
@@ -121,13 +122,13 @@ class MCPTransaction:
         return backup_path
 
     def _resolve(self, path: str) -> str:
-        raw = os.path.abspath(path if os.path.isabs(path) else os.path.join(self.project_path, path))
-        if os.path.commonpath([self.project_path, raw]) != self.project_path:
+        raw = resolved_path(path if os.path.isabs(path) else os.path.join(self.project_path, path))
+        if not is_path_within(raw, self.project_path):
             raise ValueError("Transaction path must stay inside the project.")
         return raw
 
     def _rel(self, path: str) -> str:
-        return os.path.relpath(os.path.abspath(path), self.project_path).replace("\\", "/")
+        return relative_path(path, self.project_path, allow_root=True)
 
 
 def begin(project_path: str, label: str = "") -> dict[str, Any]:
@@ -167,6 +168,6 @@ def rollback() -> dict[str, Any]:
 def record_path_before_change(project_path: str, path: str, operation: str = "modify") -> None:
     if _ACTIVE is None:
         return
-    if os.path.commonpath([os.path.abspath(project_path), _ACTIVE.project_path]) != _ACTIVE.project_path:
+    if not is_path_within(project_path, _ACTIVE.project_path):
         return
     _ACTIVE.record_path_before_change(path, operation=operation)

@@ -8,7 +8,8 @@ import pytest
 
 from Infernux.components.script_loader import load_component_class_from_file
 from Infernux.components import InxComponent
-from Infernux.components.registry import get_type_by_identity
+from Infernux.components.component_identity import bind_asset_script_guid
+from Infernux.components.registry import get_type, get_type_by_identity
 from Infernux.engine.component_restore import create_component_instance
 from Infernux.engine.project_context import get_project_root, set_project_root
 
@@ -66,6 +67,24 @@ def test_component_identity_distinguishes_same_named_classes():
     )
     assert type(instance) is first
     assert path is None
+
+
+def test_component_lookup_prefers_latest_hot_reloaded_class():
+    first = type("HotReloadLookupProbe", (InxComponent,), {
+        "__module__": "hot_reload_lookup_probe",
+    })
+    bind_asset_script_guid(first, "hot-reload-script-guid")
+    second = type("HotReloadLookupProbe", (InxComponent,), {
+        "__module__": "hot_reload_lookup_probe",
+    })
+    type_guid = bind_asset_script_guid(second, "hot-reload-script-guid")
+
+    assert get_type("HotReloadLookupProbe") is second
+    assert get_type_by_identity(
+        "HotReloadLookupProbe",
+        "hot-reload-script-guid",
+        type_guid,
+    ) is second
 
 
 def test_script_loader_executes_exact_pyc_with_canonical_project_module(tmp_path, monkeypatch):

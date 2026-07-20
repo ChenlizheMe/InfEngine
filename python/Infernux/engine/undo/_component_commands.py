@@ -89,7 +89,12 @@ def _instantiate_py_snapshot(type_name: str, script_guid: str, type_guid: str,
     sfm = SceneFileManager.instance()
     asset_db = sfm._asset_database if sfm else None
     instance, script_path = create_component_instance(
-        script_guid, type_guid, type_name, asset_database=asset_db)
+        script_guid,
+        type_guid,
+        type_name,
+        asset_database=asset_db,
+        prefer_loaded_type=True,
+    )
 
     if instance is None:
         location = script_path or script_guid or "<unresolved>"

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any, Callable
 
+from Infernux.engine.path_utils import is_path_within, path_key, relative_path, resolved_path
 from Infernux.engine.project_context import temporary_script_import_paths
 from Infernux.mcp.project_tools.decorators import AgentToolMetadata, InxAgentToolset
 
@@ -34,7 +35,7 @@ class ProjectToolDefinition:
 
 
 def module_name_for_path(path: str) -> str:
-    normalized = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    normalized = path_key(path)
     digest = hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
     stem = os.path.splitext(os.path.basename(path))[0]
     safe_stem = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in stem)
@@ -43,7 +44,7 @@ def module_name_for_path(path: str) -> str:
 
 def validate_file(project_path: str, path: str) -> dict[str, Any]:
     file_path = _resolve_project_file(project_path, path)
-    rel_path = os.path.relpath(file_path, project_path).replace("\\", "/")
+    rel_path = relative_path(file_path, project_path)
     result: dict[str, Any] = {
         "path": rel_path,
         "ok": False,
@@ -104,7 +105,7 @@ def load_tool_module(project_path: str, file_path: str) -> dict[str, Any]:
 
 
 def collect_tool_definitions(module: ModuleType, project_path: str, file_path: str) -> list[ProjectToolDefinition]:
-    rel_path = os.path.relpath(file_path, project_path).replace("\\", "/")
+    rel_path = relative_path(file_path, project_path)
     module_name = getattr(module, "__name__", module_name_for_path(file_path))
     definitions: list[ProjectToolDefinition] = []
     for _, obj in inspect.getmembers(module, inspect.isfunction):
@@ -195,9 +196,9 @@ def _definition_summary(definition: ProjectToolDefinition) -> dict[str, Any]:
 
 
 def _resolve_project_file(project_path: str, path: str) -> str:
-    root = os.path.abspath(project_path)
-    raw = os.path.abspath(path if os.path.isabs(path) else os.path.join(root, path))
-    if os.path.commonpath([root, raw]) != root:
+    root = resolved_path(project_path)
+    raw = resolved_path(path if os.path.isabs(path) else os.path.join(root, path))
+    if not is_path_within(raw, root):
         raise ValueError("Project tool path must stay inside the project.")
     return raw
 

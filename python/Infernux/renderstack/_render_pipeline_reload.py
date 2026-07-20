@@ -1,57 +1,8 @@
-"""PipelineReloadMixin — extracted from RenderStack."""
+"""Hot-reload support for RenderStack pipeline definitions."""
 from __future__ import annotations
 
-"""
-RenderStack — Scene-level rendering configuration component.
-
-RenderStack is a scene-singleton InxComponent that manages:
-- The active RenderPipeline (topology skeleton + injection points)
-- All mounted RenderPass instances (user effects + built-in passes)
-- Graph construction: combines pipeline topology with injected passes
-
-Architecture::
-
-    RenderStack (InxComponent, scene singleton)
-      ├── selected_pipeline: RenderPipeline  (defines topology skeleton)
-      └── pass_entries: List[PassEntry]      (user-mounted passes)
-
-    Each frame:
-      1. RenderStack.render(context, camera)
-      2. Lazy-build graph if invalidated
-      3. context.apply_graph(desc) + context.submit_culling(culling)
-
-Build flow (Section 7.1)::
-
-    graph = RenderGraph("Pipeline+Stack")
-    bus = ResourceBus()
-    pipeline.define_topology(graph, bus, callback)
-      └── callback triggers _inject_passes_at for each injection point
-    graph.set_output(bus.get("color"))
-    graph.build() → RenderGraphDescription
-
-Usage::
-
-    # In a scene setup script
-    stack = game_object.add_component(RenderStack)
-    stack.set_pipeline("Default Forward")
-    stack.add_pass(BloomPass())
-"""
-
-
-import json as _json
 import sys
 import warnings
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
-
-from Infernux.components.component import InxComponent
-from Infernux.components.decorators import disallow_multiple, add_component_menu
-from Infernux.renderstack._pipeline_common import (
-    COLOR_TEXTURE,
-    ensure_standard_post_process_points,
-)
-from Infernux.renderstack.injection_point import InjectionPoint
-from Infernux.renderstack.resource_bus import ResourceBus
 
 
 class PipelineReloadMixin:
@@ -87,13 +38,13 @@ class PipelineReloadMixin:
         mod = self._pipeline_module
         if mod is None:
             return
-        print(f"[RenderStack] Pipeline file changed, reloading...", file=sys.stderr)
+        print("[RenderStack] Pipeline file changed, reloading...", file=sys.stderr)
         self._save_current_pipeline_params()
         invalidate_discovery_cache()
         importlib.reload(mod)
         self._pipeline = None   # re-instantiate on next .pipeline access
         self.invalidate_graph() # clears _build_failed + _graph_desc
-        print(f"[RenderStack] Pipeline reloaded.", file=sys.stderr)
+        print("[RenderStack] Pipeline reloaded.", file=sys.stderr)
 
     def _sync_pipeline_catalog(self) -> None:
         """Refresh available pipeline catalog and enforce fallback policy."""

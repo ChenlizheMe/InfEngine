@@ -69,7 +69,7 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
         for (int depth = 0; depth < 8 && !current.empty(); ++depth) {
             const fs::path candidate = current / relative;
             if (fs::exists(candidate, error) && !error) {
-                const std::string resolved = FromFsPath(fs::weakly_canonical(candidate, error));
+                const std::string resolved = ResolveFilesystemPath(FromFsPath(candidate));
                 std::string guid = database->GetGuidFromPath(resolved);
                 if (guid.empty())
                     guid = database->ImportAsset(resolved).guid;

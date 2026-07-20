@@ -761,6 +761,126 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
     return value
 
 
+def coerce_serialized_field_input(
+    value: Any,
+    field_meta_or_type,
+    path: str = "value",
+) -> Any:
+    """Convert JSON-friendly editor input into one valid runtime field value."""
+    metadata = field_meta_or_type if hasattr(field_meta_or_type, "field_type") else None
+    field_type = metadata.field_type if metadata is not None else field_meta_or_type
+
+    if field_type == FieldType.LIST:
+        if not isinstance(value, list):
+            raise TypeError(f"{path}: LIST field requires an array")
+        element_type = getattr(metadata, "element_type", None) or FieldType.UNKNOWN
+        element_meta = copy.copy(metadata) if metadata is not None else element_type
+        if metadata is not None:
+            element_meta.field_type = element_type
+            element_meta.element_type = None
+            if element_type == FieldType.SERIALIZABLE_OBJECT:
+                element_meta.serializable_class = metadata.element_class
+        return [
+            coerce_serialized_field_input(item, element_meta, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+
+    if field_type == FieldType.SERIALIZABLE_OBJECT:
+        if value is None:
+            return None
+        from .serializable_object import SerializableObject, get_serializable_type_id
+        expected_class = getattr(metadata, "serializable_class", None)
+        if isinstance(value, SerializableObject):
+            if expected_class is not None and not isinstance(value, expected_class):
+                raise TypeError(
+                    f"{path}: expected {expected_class.__qualname__}, "
+                    f"got {type(value).__qualname__}"
+                )
+            return copy.deepcopy(value)
+        if not isinstance(value, dict):
+            raise TypeError(f"{path}: SERIALIZABLE_OBJECT field requires an object")
+
+        from .value_document import TYPE_KEY, make_serializable_object
+        if TYPE_KEY not in value:
+            if expected_class is None:
+                raise TypeError(
+                    f"{path}: plain object input requires a declared serializable class"
+                )
+            nested_fields = get_serialized_fields(expected_class)
+            validate_serialized_field_document(
+                value,
+                nested_fields,
+                owner_name=get_serializable_type_id(expected_class),
+            )
+            from .value_codec import VALUE_CODECS
+            encoded_fields = {}
+            for name, nested_meta in nested_fields.items():
+                runtime_value = coerce_serialized_field_input(
+                    value[name], nested_meta, f"{path}.{name}"
+                )
+                encoded_fields[name] = VALUE_CODECS.encode(
+                    runtime_value, f"{path}.{name}"
+                )
+            value = make_serializable_object(
+                get_serializable_type_id(expected_class), encoded_fields
+            )
+
+        from .value_codec import VALUE_CODECS
+        decoded = VALUE_CODECS.decode(value, field_meta_or_type, path)
+        if expected_class is not None and not isinstance(decoded, expected_class):
+            raise TypeError(
+                f"{path}: expected {expected_class.__qualname__}, "
+                f"got {type(decoded).__qualname__}"
+            )
+        return decoded
+
+    from .value_document import (
+        TYPE_KEY,
+        make_asset_ref,
+        make_component_ref,
+        make_game_object_ref,
+    )
+    reference_asset_types = {
+        FieldType.MATERIAL: "Material",
+        FieldType.TEXTURE: "Texture",
+        FieldType.SHADER: "Shader",
+        FieldType.ASSET: getattr(metadata, "asset_type", None) or "AudioClip",
+    }
+    if field_type in reference_asset_types and isinstance(value, dict) and TYPE_KEY not in value:
+        if set(value) != {"guid", "path_hint"}:
+            raise ValueError(f"{path}: asset reference requires guid and path_hint")
+        value = make_asset_ref(
+            reference_asset_types[field_type], value["guid"], value["path_hint"]
+        )
+    elif field_type == FieldType.GAME_OBJECT:
+        if type(value) is int:
+            value = make_game_object_ref(value)
+        elif isinstance(value, dict) and TYPE_KEY not in value:
+            if set(value) != {"object_id"}:
+                raise ValueError(f"{path}: GameObject reference requires object_id")
+            value = make_game_object_ref(value["object_id"])
+    elif field_type == FieldType.COMPONENT and isinstance(value, dict) and TYPE_KEY not in value:
+        if set(value) != {"game_object_id", "component_type"}:
+            raise ValueError(
+                f"{path}: component reference requires game_object_id and component_type"
+            )
+        value = make_component_ref(value["game_object_id"], value["component_type"])
+
+    from .value_codec import VALUE_CODECS
+    if isinstance(value, (dict, list, tuple)) or value is None or field_type in {
+        FieldType.BOOL,
+        FieldType.INT,
+        FieldType.FLOAT,
+        FieldType.STRING,
+    }:
+        return VALUE_CODECS.decode(value, field_meta_or_type, path)
+
+    normalized = normalize_runtime_field_value(value, field_meta_or_type)
+    encoded = VALUE_CODECS.encode(normalized, path)
+    VALUE_CODECS.validate(encoded, field_meta_or_type, path)
+    return normalized
+
+
 def get_raw_field_value(component: 'InxComponent', field_name: str) -> Any:
     """Get the raw stored value of a serialized field (bypasses auto-resolve).
 
@@ -1407,13 +1527,14 @@ def validate_serialized_field_document(
     *,
     owner_name: str,
     metadata_keys: set[str] | frozenset[str] = frozenset(),
+    allow_missing: bool = False,
 ) -> None:
     """Require a serialized document to match the current field declaration."""
     expected = set(fields).union(metadata_keys)
     actual = set(document)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        unknown = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    if unknown or (missing and not allow_missing):
         raise ValueError(
             f"{owner_name}: serialized fields mismatch; "
             f"missing={missing}, unknown={unknown}"

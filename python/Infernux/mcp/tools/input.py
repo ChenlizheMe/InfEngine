@@ -583,6 +583,36 @@ def perform_key_transition(
     )
 
 
+def perform_mouse_button_transition(
+    button: int,
+    pressed: bool,
+    *,
+    x: float = -10_000.0,
+    y: float = -10_000.0,
+    timeout_seconds: float = 3.0,
+    trace_name: str = "input_mouse_button_transition",
+) -> dict:
+    """Queue one gameplay mouse-button transition for composed input."""
+    session.require_mode("global_validation")
+    button = _validate_mouse_button(button)
+    _require_finite("x", x)
+    _require_finite("y", y)
+    return _queue_input(
+        trace_name,
+        lambda native: native.queue_synthetic_mouse_button_input(
+            button, bool(pressed), float(x), float(y)
+        ),
+        arguments={
+            "button": button,
+            "pressed": bool(pressed),
+            "x": float(x),
+            "y": float(y),
+        },
+        wait_for_delivery=True,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def perform_pointer_move(
     x: float,
     y: float,

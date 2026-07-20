@@ -13,6 +13,14 @@ from Infernux.engine.undo._helpers import (
 )
 
 
+def _snapshot_object(obj) -> dict:
+    from Infernux.engine.component_restore import (
+        serialize_game_object_document_authoritatively,
+    )
+
+    return serialize_game_object_document_authoritatively(obj)
+
+
 class CreateGameObjectCommand(UndoCommand):
     """Undo destroys the object; redo recreates from a document snapshot."""
 
@@ -34,7 +42,7 @@ class CreateGameObjectCommand(UndoCommand):
         if scene:
             obj = scene.find_by_id(self._object_id)
             if obj:
-                self._document = obj.serialize_document()
+                self._document = _snapshot_object(obj)
                 parent = obj.get_parent()
                 self._parent_id = parent.id if parent else None
                 t = getattr(obj, "transform", None)
@@ -73,7 +81,7 @@ class DeleteGameObjectCommand(UndoCommand):
         if scene:
             obj = scene.find_by_id(object_id)
             if obj:
-                self._document = obj.serialize_document()
+                self._document = _snapshot_object(obj)
                 parent = obj.get_parent()
                 self._parent_id = parent.id if parent else None
                 t = getattr(obj, "transform", None)
@@ -103,7 +111,7 @@ class DeleteGameObjectCommand(UndoCommand):
         if scene:
             obj = scene.find_by_id(self._object_id)
             if obj:
-                self._document = obj.serialize_document()
+                self._document = _snapshot_object(obj)
                 _destroy_game_object_immediately(scene, obj)
         fn = type(self)._selection_restore_fn
         if fn:

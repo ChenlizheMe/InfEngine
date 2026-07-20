@@ -9,10 +9,12 @@ counters.  Python just passes content hints and gets back texture IDs.
 from __future__ import annotations
 
 import os
+import time
 import zlib
 from typing import Any, Optional
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.texture_task_bridge import safe_mtime_ns
 
 
@@ -20,6 +22,24 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".hdr", ".pic", 
 _MATERIAL_EXTS = {".mat"}
 _MODEL_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".dae", ".blend"}
 _PREFAB_EXTS = {".prefab"}
+_AUTHORING_PREVIEW_KEYS: set[str] = set()
+_MTIME_CACHE: dict[str, tuple[float, int]] = {}
+_MTIME_CACHE_TTL_SECONDS = 0.5
+
+
+def _cached_mtime_ns(path: str) -> int:
+    now = time.monotonic()
+    cached = _MTIME_CACHE.get(path)
+    if cached is not None and now - cached[0] < _MTIME_CACHE_TTL_SECONDS:
+        return cached[1]
+    value = safe_mtime_ns(path)
+    _MTIME_CACHE[path] = (now, value)
+    return value
+
+
+def _invalidate_mtime_cache(path: str) -> None:
+    _MTIME_CACHE.pop(path, None)
+    _MTIME_CACHE.pop(f"{path}.meta", None)
 
 
 def _resolve_native_engine(panel: Any) -> Any:
@@ -46,7 +66,7 @@ def _try_get_cpp_mesh_preview(native: Any, norm_path: str) -> int:
     if native is None:
         return 0
     cache_key = f"mesh|{norm_path}"
-    mtime_hint = safe_mtime_ns(norm_path)
+    mtime_hint = _cached_mtime_ns(norm_path)
     try:
         if hasattr(native, "pump_preview_tasks"):
             native.pump_preview_tasks()
@@ -66,11 +86,13 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
     if native is None:
         return (0, 0, 0)
 
-    cache_key = f"texedit|{norm_path}" if texture_settings is not None else f"tex|{norm_path}"
+    cache_key = f"tex|{norm_path}"
+    authoring = texture_settings is not None
     nearest = False
     srgb = False
     max_size = 2048
     texture_format = "auto"
+    texture_type = "default"
     settings_stamp = 0
     if texture_settings is not None:
         filter_mode = getattr(texture_settings, "filter_mode", None)
@@ -81,6 +103,8 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
         format_value = getattr(texture_settings, "format", None)
         to_string = getattr(format_value, "to_string", None)
         texture_format = str(to_string() if callable(to_string) else "auto")
+        type_value = getattr(texture_settings, "texture_type", None)
+        texture_type = str(getattr(type_value, "name", "default") or "default").lower()
         settings_values = (
             getattr(getattr(texture_settings, "texture_type", None), "value", 0),
             getattr(filter_mode, "value", 0),
@@ -97,15 +121,18 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
 
     # Content stamp: image mtime XOR meta mtime.
     # C++ uses this to detect changes and bump its generation counter.
-    image_mtime = safe_mtime_ns(norm_path)
-    meta_mtime = safe_mtime_ns(f"{norm_path}.meta")
+    image_mtime = _cached_mtime_ns(norm_path)
+    meta_mtime = _cached_mtime_ns(f"{norm_path}.meta")
     content_stamp = (image_mtime ^ ((meta_mtime * 2654435761) & 0xFFFFFFFFFFFFFFFF)) & 0xFFFFFFFFFFFFFFFF
     content_stamp ^= (int(settings_stamp) << 32) | int(settings_stamp)
 
     try:
         tex_id, w, h = native.query_or_schedule_texture_preview(
             cache_key, norm_path, int(content_stamp), nearest=bool(nearest), srgb=bool(srgb),
-            max_size=max_size, texture_format=texture_format, pump=True)
+            max_size=max_size, texture_format=texture_format, texture_type=texture_type,
+            authoring=authoring, pump=True)
+        if authoring:
+            _AUTHORING_PREVIEW_KEYS.add(cache_key)
         return (int(tex_id), int(w), int(h))
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
@@ -123,16 +150,16 @@ def _try_get_cpp_material_preview_texture(native: Any, norm_path: str,
     if native is None:
         return 0
 
-    # Single shared "mat|" key for the Project-panel thumbnail (mtime-driven).
-    # Inspector live edits use a separate "matedit|" key so JSON and disk saves
-    # do not fight over the same generation counter.
-    cache_key = f"matedit|{norm_path}" if material_json else f"mat|{norm_path}"
+    cache_key = f"mat|{norm_path}"
+    authoring = bool(material_json)
     try:
         if hasattr(native, "pump_preview_tasks"):
             native.pump_preview_tasks()
         if hasattr(native, 'query_or_schedule_material_preview'):
             tex_id = int(native.query_or_schedule_material_preview(
-                cache_key, norm_path, material_json, int(file_mtime_hint)))
+                cache_key, norm_path, material_json, int(file_mtime_hint), authoring))
+            if authoring:
+                _AUTHORING_PREVIEW_KEYS.add(cache_key)
             if tex_id == 0 and hasattr(native, "pump_preview_tasks") and hasattr(native, "get_material_preview_texture_id"):
                 native.pump_preview_tasks()
                 tex_id = int(native.get_material_preview_texture_id(cache_key) or 0)
@@ -163,14 +190,14 @@ def get_resource_preview_texture_id(panel: Any, file_path: str, preview_size: in
     if not native:
         return 0
 
-    norm_path = os.path.normpath(file_path)
+    norm_path = resolved_path(file_path)
     ext = os.path.splitext(norm_path)[1].lower()
 
     if "::submat:" in norm_path:
         # Passive read of the shared "mat|" key (mtime=0): the C++ Project panel
         # owns mtime-based change detection. Python and C++ compute mtimes on
         # different epochs, so if both passed a hint the generation would ping-pong
-        # and re-render every frame. Live edits still use the JSON ("matedit|") key.
+        # and re-render every frame. Live edits temporarily own this same key.
         return _try_get_cpp_material_preview_texture(
             native, norm_path, material_json=material_json, file_mtime_hint=0)
 
@@ -201,7 +228,7 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
     if not native:
         return False
 
-    norm_path = os.path.normpath(file_path)
+    norm_path = resolved_path(file_path)
     ext = os.path.splitext(norm_path)[1].lower()
     tex_id = 0
     src_w = 0
@@ -209,12 +236,12 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
 
     if "::submat:" in norm_path:
         # Passive read of the shared "mat|" key (mtime=0); C++ Project panel owns
-        # mtime change detection. Live edits use the JSON ("matedit|") key.
+        # mtime change detection. Live edits temporarily own this same key.
         tex_id = _try_get_cpp_material_preview_texture(
             native, norm_path, material_json=cache_tag, file_mtime_hint=0)
         if tex_id != 0:
-            src_w = 256
-            src_h = 256
+            src_w = 200
+            src_h = 200
     elif ext in _MODEL_EXTS or ext in _PREFAB_EXTS:
         tex_id = _try_get_cpp_mesh_preview(native, norm_path)
         if tex_id == 0:
@@ -225,12 +252,12 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
         tex_id, src_w, src_h = _try_get_cpp_texture_preview(native, norm_path, texture_settings)
     elif ext in _MATERIAL_EXTS:
         # Passive read (mtime=0) of the shared "mat|" key; C++ Project panel owns
-        # mtime change detection. Live edits use the JSON ("matedit|") key.
+        # mtime change detection. Live edits temporarily own this same key.
         tex_id = _try_get_cpp_material_preview_texture(
             native, norm_path, material_json=cache_tag, file_mtime_hint=0)
         if preserve_aspect:
-            src_w = 256
-            src_h = 256
+            src_w = 200
+            src_h = 200
 
     if tex_id == 0:
         return False
@@ -267,7 +294,8 @@ def invalidate_resource_preview(file_path: str) -> None:
     if not file_path:
         return
 
-    norm = os.path.normpath(file_path)
+    norm = resolved_path(file_path)
+    _invalidate_mtime_cache(norm)
     native = _resolve_native_engine(None)
     if native is None:
         return
@@ -276,7 +304,6 @@ def invalidate_resource_preview(file_path: str) -> None:
     try:
         if ext in _IMAGE_EXTS:
             native.invalidate_texture_preview_task(f"tex|{norm}")
-            native.invalidate_texture_preview_task(f"texedit|{norm}")
         if ext in _MATERIAL_EXTS:
             native.invalidate_material_preview_task(f"mat|{norm}")
     except Exception as exc:
@@ -284,14 +311,44 @@ def invalidate_resource_preview(file_path: str) -> None:
 
 
 def invalidate_live_texture_preview(file_path: str) -> None:
-    """Release the transient Inspector generation for one texture."""
+    """Release Inspector ownership of the shared texture preview."""
     native = _resolve_native_engine(None)
     if native is None or not file_path:
         return
     try:
-        native.invalidate_texture_preview_task(f"texedit|{os.path.normpath(file_path)}")
+        key = f"tex|{resolved_path(file_path)}"
+        native.release_preview_authoring(key)
+        _AUTHORING_PREVIEW_KEYS.discard(key)
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+
+
+def invalidate_live_material_preview(file_path: str) -> None:
+    """Release Inspector ownership of the shared material preview."""
+    native = _resolve_native_engine(None)
+    if native is None or not file_path:
+        return
+    try:
+        key = f"mat|{resolved_path(file_path)}"
+        native.release_preview_authoring(key)
+        _AUTHORING_PREVIEW_KEYS.discard(key)
+    except Exception as exc:
+        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+
+
+def release_all_preview_authoring() -> None:
+    """Return all Inspector-owned previews to passive asset observation."""
+    if not _AUTHORING_PREVIEW_KEYS:
+        return
+    native = _resolve_native_engine(None)
+    if native is None:
+        return
+    for key in tuple(_AUTHORING_PREVIEW_KEYS):
+        try:
+            native.release_preview_authoring(key)
+        except Exception as exc:
+            Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+    _AUTHORING_PREVIEW_KEYS.clear()
 
 
 def invalidate_all_resource_previews() -> None:

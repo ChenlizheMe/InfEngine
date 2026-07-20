@@ -302,7 +302,8 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
         {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
         {".pointcache", {"POINT_CACHE_FILE", "Point Cache"}},
         {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
-        {".effectgroup", {"RENDER_EFFECT_GROUP_FILE", "Render Effect Group"}},
+        // Effect assets and groups occupy the same RenderStack slot type.
+        {".effectgroup", {"RENDER_EFFECT_FILE", "Render Effect Group"}},
         {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
         {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
     };
@@ -424,44 +425,11 @@ bool ProjectPanel::ShouldShow(const std::string &name)
 // Path utilities
 // ════════════════════════════════════════════════════════════════════
 
-std::string ProjectPanel::NormalizePath(const std::string &path)
-{
-    std::error_code ec;
-    auto canonical = fs::weakly_canonical(fs::u8path(path), ec);
-    if (ec)
-        return path;
-    std::string str = infernux::FromFsPath(canonical);
-    // Case-fold ASCII letters only — UTF-8 multibyte sequences must stay intact.
-#ifdef _WIN32
-    for (auto &c : str) {
-        unsigned char uc = static_cast<unsigned char>(c);
-        if (uc >= 'A' && uc <= 'Z')
-            c = static_cast<char>(uc + 32);
-    }
-#endif
-    return str;
-}
-
-bool ProjectPanel::IsPathWithin(const std::string &path, const std::string &parent)
-{
-    auto np = NormalizePath(path);
-    auto npar = NormalizePath(parent);
-    if (np.size() < npar.size())
-        return false;
-    if (np.substr(0, npar.size()) != npar)
-        return false;
-    // Must be exactly parent or parent + separator
-    if (np.size() == npar.size())
-        return true;
-    char sep = np[npar.size()];
-    return sep == '/' || sep == '\\';
-}
-
 std::string ProjectPanel::GetMinimumBrowsePath() const
 {
     if (!m_rootPath.empty() && m_navHasSubfolders && !m_preferredNavPath.empty())
-        return NormalizePath(m_preferredNavPath);
-    return NormalizePath(m_rootPath);
+        return FilesystemPathKey(m_preferredNavPath);
+    return FilesystemPathKey(m_rootPath);
 }
 
 bool ProjectPanel::CanNavigateUpFromCurrent() const
@@ -474,20 +442,14 @@ int ProjectPanel::GetPathDepthFromRoot(const std::string &path) const
     if (m_rootPath.empty() || path.empty())
         return 0;
 
-    const std::string normPath = NormalizePath(path);
-    const std::string normRoot = NormalizePath(m_rootPath);
-    if (!IsPathWithin(normPath, normRoot))
+    std::string relative;
+    if (!infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relative, true))
         return -1;
-
-    std::error_code ec;
-    const fs::path rel = fs::relative(fs::u8path(normPath), fs::u8path(normRoot), ec);
-    if (ec)
-        return normPath == normRoot ? 0 : -1;
-    if (rel.empty() || rel == ".")
+    if (relative == ".")
         return 0;
 
     int depth = 0;
-    for (const auto &part : rel) {
+    for (const auto &part : infernux::ToFsPath(relative)) {
         const std::string name = infernux::FromFsPath(part);
         if (name.empty() || name == ".")
             continue;
@@ -503,15 +465,15 @@ void ProjectPanel::ClampNavigationPath()
         return;
     }
 
-    if (!IsPathWithin(m_currentPath, m_rootPath)) {
+    if (!IsFilesystemPathWithin(m_currentPath, m_rootPath)) {
         m_currentPath = (m_navHasSubfolders && !m_preferredNavPath.empty()) ? m_preferredNavPath : m_rootPath;
         UpdateNavigationCache();
         return;
     }
 
     if (m_navHasSubfolders) {
-        const std::string cur = NormalizePath(m_currentPath);
-        if (cur == NormalizePath(m_rootPath) || GetPathDepthFromRoot(m_currentPath) < 1)
+        const std::string cur = FilesystemPathKey(m_currentPath);
+        if (cur == FilesystemPathKey(m_rootPath) || GetPathDepthFromRoot(m_currentPath) < 1)
             m_currentPath = m_preferredNavPath.empty() ? m_rootPath : m_preferredNavPath;
     }
     UpdateNavigationCache();
@@ -523,12 +485,10 @@ void ProjectPanel::UpdateNavigationCache()
         m_canNavigateUp = false;
         return;
     }
-    const std::string current = NormalizePath(m_currentPath);
-    const std::string root = NormalizePath(m_rootPath);
+    const std::string current = FilesystemPathKey(m_currentPath);
+    const std::string root = FilesystemPathKey(m_rootPath);
     const std::string floor = GetMinimumBrowsePath();
-    const bool withinRoot =
-        current.size() >= root.size() && current.compare(0, root.size(), root) == 0 &&
-        (current.size() == root.size() || current[root.size()] == '/' || current[root.size()] == '\\');
+    const bool withinRoot = IsFilesystemPathWithin(current, root);
     m_canNavigateUp = withinRoot && current != floor;
 }
 
@@ -676,12 +636,12 @@ void ProjectPanel::SetCurrentPath(const std::string &path)
     std::error_code ec;
     if (path.empty() || !fs::is_directory(fs::u8path(path), ec))
         return;
-    if (!m_rootPath.empty() && !IsPathWithin(path, m_rootPath))
+    if (!m_rootPath.empty() && !IsFilesystemPathWithin(path, m_rootPath))
         return;
     if (m_navHasSubfolders) {
         if (GetPathDepthFromRoot(path) < 1)
             return;
-        if (NormalizePath(path) == NormalizePath(m_rootPath))
+        if (FilesystemPathKey(path) == FilesystemPathKey(m_rootPath))
             return;
     }
     AssignCurrentPath(path);
@@ -721,11 +681,11 @@ void ProjectPanel::InvalidateMaterialThumbnail(const std::string &filePath)
 {
     if (filePath.empty())
         return;
-    auto normTarget = NormalizePath(filePath);
+    auto normTarget = FilesystemPathKey(filePath);
 
     std::vector<std::string> mtimeToRemove;
     for (auto &[path, _] : m_materialMtimeCache) {
-        if (NormalizePath(path) == normTarget)
+        if (FilesystemPathKey(path) == normTarget)
             mtimeToRemove.push_back(path);
     }
     for (auto &path : mtimeToRemove)
@@ -736,11 +696,11 @@ void ProjectPanel::InvalidateTextureThumbnail(const std::string &filePath)
 {
     if (filePath.empty())
         return;
-    auto normTarget = NormalizePath(filePath);
+    auto normTarget = FilesystemPathKey(filePath);
 
     std::vector<std::string> mtimeToRemove;
     for (auto &[path, _] : m_textureMtimeCache) {
-        if (NormalizePath(path) == normTarget)
+        if (FilesystemPathKey(path) == normTarget)
             mtimeToRemove.push_back(path);
     }
     for (auto &path : mtimeToRemove)
@@ -886,7 +846,7 @@ ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
     }
 
     if (catalog) {
-        const auto &assets = catalog->GetDirectory(NormalizePath(path));
+        const auto &assets = catalog->GetDirectory(FilesystemPathKey(path));
         snap.files.reserve(assets.size());
         for (const auto &asset : assets) {
             if (!ShouldShow(asset.name))
@@ -1198,16 +1158,12 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     if (filePath.empty() || !m_engine)
         return 0;
 
-    const std::string liveResourceKey = std::string("texedit|") + filePath;
-    const uint64_t liveTexture = m_engine->GetTexturePreviewTextureId(liveResourceKey);
-    if (liveTexture != 0)
-        return liveTexture;
-
     // Read the complete preview-affecting import contract from .meta.
     bool nearest = false;
     bool srgb = false;
     int maxSize = 2048;
     std::string textureFormat = "auto";
+    std::string textureType = "default";
     if (m_assetDatabase) {
         const auto meta = m_assetDatabase->GetMetaByPath(filePath);
         if (meta) {
@@ -1221,6 +1177,8 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
                 maxSize = meta->GetDataAs<int>("max_size");
             if (meta->HasKey("texture_format"))
                 textureFormat = meta->GetDataAs<std::string>("texture_format");
+            if (meta->HasKey("texture_type"))
+                textureType = meta->GetDataAs<std::string>("texture_type");
         }
     }
 
@@ -1238,7 +1196,7 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     const std::string resourceKey = std::string("tex|") + filePath;
     // pump=false: PreRender already pumped once this frame.
     auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb,
-                                                                 maxSize, textureFormat, false);
+                                                                 maxSize, textureFormat, textureType, false, false);
     return texId;
 }
 
@@ -1246,13 +1204,6 @@ uint64_t ProjectPanel::GetMaterialThumbnail(const std::string &filePath, uint64_
 {
     if (filePath.empty() || !m_engine)
         return 0;
-
-    // The Inspector publishes its current document under matedit|. Prefer that
-    // in-memory preview so thumbnails follow edits without waiting for autosave.
-    const std::string liveResourceKey = std::string("matedit|") + filePath;
-    const uint64_t liveTexture = m_engine->GetMaterialPreviewTextureId(liveResourceKey);
-    if (liveTexture != 0)
-        return liveTexture;
 
     const std::string resourceKey = std::string("mat|") + filePath;
     uint64_t mtimeNs = cachedMtimeNs != 0 ? cachedMtimeNs : GetMaterialMtimeNs(filePath);
@@ -2004,7 +1955,7 @@ void ProjectPanel::ClipboardPaste()
     for (auto &src : sources) {
         auto name = FromFsPath(fs::u8path(src).filename());
         auto dst = FromFsPath(fs::u8path(m_currentPath) / fs::u8path(name));
-        bool samePath = (NormalizePath(src) == NormalizePath(dst));
+        bool samePath = (FilesystemPathKey(src) == FilesystemPathKey(dst));
 
         if (samePath && isCut)
             continue;
@@ -2087,7 +2038,7 @@ std::vector<std::string> ProjectPanel::GetDragMoveSources(const std::string &dra
     for (auto &p : candidates) {
         bool subsumed = false;
         for (auto &k : kept) {
-            if (IsPathWithin(p, k)) {
+            if (IsFilesystemPathWithin(p, k)) {
                 subsumed = true;
                 break;
             }
@@ -2162,16 +2113,17 @@ void ProjectPanel::MoveProjectItemsToFolder(const std::string &targetDir, const 
 
     auto sources = GetDragMoveSources(draggedPath);
     // Remove items targeting self
-    sources.erase(std::remove_if(sources.begin(), sources.end(),
-                                 [&](const std::string &s) { return NormalizePath(s) == NormalizePath(targetDir); }),
-                  sources.end());
+    sources.erase(
+        std::remove_if(sources.begin(), sources.end(),
+                       [&](const std::string &s) { return FilesystemPathKey(s) == FilesystemPathKey(targetDir); }),
+        sources.end());
 
     if (sources.empty())
         return;
 
     std::vector<std::string> movedPaths;
     for (auto &source : sources) {
-        if (fs::is_directory(fs::u8path(source), ec) && IsPathWithin(targetDir, source))
+        if (fs::is_directory(fs::u8path(source), ec) && IsFilesystemPathWithin(targetDir, source))
             continue; // Can't move folder into itself
 
         if (moveItemToDirectory) {
@@ -2302,8 +2254,9 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     if (m_currentPath != m_breadcrumbPath) {
         m_breadcrumbPath = m_currentPath;
         if (!m_rootPath.empty()) {
-            auto rel = fs::relative(fs::u8path(m_currentPath), fs::u8path(m_rootPath));
-            auto relStr = infernux::FromFsPath(rel);
+            std::string relStr;
+            if (!infernux::TryMakeRelativeFilesystemPath(m_currentPath, m_rootPath, relStr, true))
+                relStr = m_currentPath;
             if (relStr == ".")
                 relStr = infernux::FromFsPath(fs::u8path(m_rootPath).filename());
             m_breadcrumbText = "Path: " + relStr;
@@ -2419,7 +2372,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
     // any path above it.
     if (CanNavigateUpFromCurrent()) {
         if (ctx->Selectable("[..]", false)) {
-            const std::string parent = infernux::FromFsPath(fs::u8path(NormalizePath(m_currentPath)).parent_path());
+            const std::string parent =
+                infernux::FromFsPath(infernux::ToFsPath(infernux::ResolveFilesystemPath(m_currentPath)).parent_path());
             AssignCurrentPath(parent);
         }
     }
@@ -2626,18 +2580,18 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 int srcW = 0;
                 int srcH = 0;
                 if (item.type == FileItem::SubMaterial) {
-                    srcW = 256;
-                    srcH = 256;
+                    srcW = 200;
+                    srcH = 200;
                 } else if (item.type == FileItem::File) {
                     if (IsImageExt(item.ext) && m_engine) {
-                        const std::string liveResourceKey = std::string("texedit|") + item.path;
-                        const std::string resourceKey = m_engine->GetTexturePreviewTextureId(liveResourceKey) != 0
-                                                            ? liveResourceKey
-                                                            : std::string("tex|") + item.path;
+                        const std::string resourceKey = std::string("tex|") + item.path;
                         auto [readyW, readyH] = m_engine->GetTexturePreviewSize(resourceKey);
                         srcW = readyW;
                         srcH = readyH;
-                    } else if (IsMaterialExt(item.ext) || IsModelExt(item.ext) || item.ext == ".prefab") {
+                    } else if (IsMaterialExt(item.ext)) {
+                        srcW = 200;
+                        srcH = 200;
+                    } else if (IsModelExt(item.ext) || item.ext == ".prefab") {
                         srcW = 256;
                         srcH = 256;
                     }
@@ -3150,10 +3104,9 @@ std::string ProjectPanel::MakeProjectRelativeSemanticPath(const std::string &pat
     std::string relativePath;
 
     if (!m_rootPath.empty() && !realPath.empty()) {
-        std::error_code ec;
-        const fs::path relative = fs::relative(fs::u8path(realPath), fs::u8path(m_rootPath), ec);
-        if (!ec && !relative.empty() && relative != ".")
-            relativePath = infernux::FromFsPath(relative);
+        std::string candidate;
+        if (infernux::TryMakeRelativeFilesystemPath(realPath, m_rootPath, candidate) && !candidate.empty())
+            relativePath = std::move(candidate);
     }
 
     if (relativePath.empty() && !realPath.empty())
@@ -3161,8 +3114,7 @@ std::string ProjectPanel::MakeProjectRelativeSemanticPath(const std::string &pat
     if (relativePath.empty())
         relativePath = "unknown";
 
-    std::replace(relativePath.begin(), relativePath.end(), '\\', '/');
-    return relativePath + virtualSuffix;
+    return infernux::NormalizePortablePath(relativePath) + virtualSuffix;
 }
 
 } // namespace infernux

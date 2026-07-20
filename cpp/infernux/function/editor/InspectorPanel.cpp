@@ -1,4 +1,5 @@
 #include <function/editor/InspectorPanel.h>
+#include <function/renderer/ProfileConfig.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 
 #include <imgui.h>
@@ -211,11 +212,8 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
     if (undoBeginFrame)
         undoBeginFrame();
 
-    bool childHovered = false;
     bool childVisible = ImGui::BeginChild("PropertiesModule", ImVec2(0, height), ImGuiChildFlags_Borders);
     if (childVisible) {
-        childHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_None);
-
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_FRAME_PAD);
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_ITEM_SPC);
 
@@ -242,12 +240,6 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
     bool anyActive = ImGui::IsAnyItemActive();
     if (undoEndFrame)
         undoEndFrame(anyActive);
-
-    // Idle-skip counter
-    if (childHovered || anyActive)
-        m_idleFrames = 0;
-    else
-        ++m_idleFrames;
 
     // Drag-drop target for scripts on the whole PropertiesModule
     if (m_selectedObjectId != 0 && ImGui::BeginDragDropTarget()) {
@@ -330,15 +322,25 @@ float InspectorPanel::RenderSplitter(InxGUIContext * /*ctx*/, float totalHeight)
 
 void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 {
+#if INFERNUX_FRAME_PROFILE
     using clock = std::chrono::high_resolution_clock;
+#endif
 
     uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
-    bool refreshSnapshots = (m_cachedObjInfoId != objId) || (m_cachedComponentListObjId != objId) ||
-                            (m_idleFrames <= 0) || (valueGeneration != m_cachedValueGeneration) ||
-                            ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
+    const bool objectChanged = (m_cachedObjInfoId != objId) || (m_cachedComponentListObjId != objId);
+    bool refreshSnapshots = objectChanged ||
+                             (valueGeneration != m_cachedValueGeneration) ||
+                             ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
+
+    if (objectChanged) {
+        m_cachedComponentBodyHeights.clear();
+        m_cachedTransformBodyHeight = 0.0f;
+    }
 
     // ── Sub-timing: getObjectInfo + getPrefabInfo ────────────────────
+#if INFERNUX_FRAME_PROFILE
     auto t0 = clock::now();
+#endif
 
     if (refreshSnapshots) {
         if (getObjectInfo)
@@ -352,8 +354,10 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
             m_cachedPrefabInfo = {};
     }
 
+#if INFERNUX_FRAME_PROFILE
     auto t1 = clock::now();
     m_subGetInfo += std::chrono::duration<double, std::milli>(t1 - t0).count();
+#endif
 
     const auto &info = m_cachedObjInfo;
     const auto &pinfo = m_cachedPrefabInfo;
@@ -381,7 +385,9 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
 
     // ── Sub-timing: Transform ────────────────────────────────────────
+#if INFERNUX_FRAME_PROFILE
     auto t2 = clock::now();
+#endif
 
     // Transform (skip for screen-space UI elements)
     if (!info.hideTransform) {
@@ -395,21 +401,34 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
         if (headerOpen) {
             if (isPrefabTransformReadonly)
                 ImGui::BeginDisabled();
-            RenderTransform(ctx, objId);
+            if (m_cachedTransformBodyHeight > 0.0f && ctx &&
+                !ctx->IsVirtualizedRegionVisible(m_cachedTransformBodyHeight)) {
+                ImGui::Dummy(ImVec2(0.0f, m_cachedTransformBodyHeight));
+            } else {
+                const float bodyStartY = ImGui::GetCursorPosY();
+                RenderTransform(ctx, objId);
+                const float bodyHeight = ImGui::GetCursorPosY() - bodyStartY;
+                if (bodyHeight > 0.0f)
+                    m_cachedTransformBodyHeight = bodyHeight;
+            }
             if (isPrefabTransformReadonly)
                 ImGui::EndDisabled();
         }
     }
 
+#if INFERNUX_FRAME_PROFILE
     auto t3 = clock::now();
     m_subTransform += std::chrono::duration<double, std::milli>(t3 - t2).count();
+#endif
 
     // --- Prefab instance: disable everything below Transform ---
     if (isPrefabReadonly)
         ImGui::BeginDisabled();
 
     // ── Sub-timing: getComponentList ─────────────────────────────────
+#if INFERNUX_FRAME_PROFILE
     auto t4 = clock::now();
+#endif
 
     if (refreshSnapshots) {
         if (getComponentList)
@@ -423,11 +442,15 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
     const auto &components = m_cachedComponents;
 
+#if INFERNUX_FRAME_PROFILE
     auto t5 = clock::now();
     m_subGetComponents += std::chrono::duration<double, std::milli>(t5 - t4).count();
+#endif
 
     // ── Sub-timing: Component bodies ─────────────────────────────────
+#if INFERNUX_FRAME_PROFILE
     auto t6 = clock::now();
+#endif
 
     // Render each component
     for (const auto &comp : components) {
@@ -465,7 +488,18 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());
                     ImGui::PopStyleColor();
                 } else if (renderComponentBody) {
-                    renderComponentBody(ctx, objId, comp.typeName, comp.componentId, comp.isNative);
+                    const auto heightIt = m_cachedComponentBodyHeights.find(comp.componentId);
+                    const float cachedHeight =
+                        heightIt != m_cachedComponentBodyHeights.end() ? heightIt->second : 0.0f;
+                    if (cachedHeight > 0.0f && ctx && !ctx->IsVirtualizedRegionVisible(cachedHeight)) {
+                        ImGui::Dummy(ImVec2(0.0f, cachedHeight));
+                    } else {
+                        const float bodyStartY = ImGui::GetCursorPosY();
+                        renderComponentBody(ctx, objId, comp.typeName, comp.componentId, comp.isNative);
+                        const float bodyHeight = ImGui::GetCursorPosY() - bodyStartY;
+                        if (bodyHeight > 0.0f)
+                            m_cachedComponentBodyHeights[comp.componentId] = bodyHeight;
+                    }
                 }
             }
         }
@@ -480,18 +514,24 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP));
     RenderAddComponentPopup(ctx);
 
+#if INFERNUX_FRAME_PROFILE
     auto t7 = clock::now();
     m_subComponentBodies += std::chrono::duration<double, std::milli>(t7 - t6).count();
+#endif
 
     // ── Sub-timing: Material sections ────────────────────────────────
+#if INFERNUX_FRAME_PROFILE
     auto t8 = clock::now();
+#endif
 
     // Material override sections
     if (renderMaterialSections)
         renderMaterialSections(ctx, objId);
 
+#if INFERNUX_FRAME_PROFILE
     auto t9 = clock::now();
     m_subMaterials += std::chrono::duration<double, std::milli>(t9 - t8).count();
+#endif
 
     if (isPrefabReadonly)
         ImGui::EndDisabled();
@@ -616,7 +656,9 @@ InspectorPanel::GetMultiTransformSnapshot(const std::vector<uint64_t> &ids)
 
 void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint64_t> &ids)
 {
+#if INFERNUX_FRAME_PROFILE
     using clock = std::chrono::high_resolution_clock;
+#endif
 
     int n = static_cast<int>(ids.size());
     ImGui::PushID("multi_edit");
@@ -634,18 +676,28 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
                                                            /*showEnabled=*/false, /*isEnabled=*/true, /*suffix=*/"",
                                                            /*defaultOpen=*/true);
 
+#if INFERNUX_FRAME_PROFILE
         auto transformStart = clock::now();
+#endif
         if (headerOpen)
             RenderMultiTransform(ctx, ids);
+#if INFERNUX_FRAME_PROFILE
         auto transformEnd = clock::now();
         m_subTransform += std::chrono::duration<double, std::milli>(transformEnd - transformStart).count();
+#endif
 
+#if INFERNUX_FRAME_PROFILE
         auto componentsStart = clock::now();
+#endif
         const auto &commonComponents = GetCommonComponentsForMultiSelection(ids);
+#if INFERNUX_FRAME_PROFILE
         auto componentsEnd = clock::now();
         m_subGetComponents += std::chrono::duration<double, std::milli>(componentsEnd - componentsStart).count();
+#endif
 
+#if INFERNUX_FRAME_PROFILE
         auto componentBodiesStart = clock::now();
+#endif
         for (const auto &entry : commonComponents) {
             const auto &comp = entry.display;
             ImGui::PushID(static_cast<int>(comp.componentId));
@@ -673,9 +725,11 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
 
             ImGui::PopID();
         }
+#if INFERNUX_FRAME_PROFILE
         auto componentBodiesEnd = clock::now();
         m_subComponentBodies +=
             std::chrono::duration<double, std::milli>(componentBodiesEnd - componentBodiesStart).count();
+#endif
 
         // Add Component
         ImGui::Separator();

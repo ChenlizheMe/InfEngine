@@ -425,8 +425,6 @@ class ProjectPanel : public EditorPanel
                                   const std::string &payload);
 
     // ── Path utility ─────────────────────────────────────────────────
-    static std::string NormalizePath(const std::string &path);
-    static bool IsPathWithin(const std::string &path, const std::string &parent);
     /// Directory depth relative to m_rootPath (root=0, Assets=1, Assets/Mats=2, …).
     int GetPathDepthFromRoot(const std::string &path) const;
     /// Lowest folder users may browse (Assets/Logs when present, else project root).

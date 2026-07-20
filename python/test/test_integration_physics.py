@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from Infernux.components import InxComponent
+from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
 from Infernux.timing import Time
 from Infernux.lib import BoxCollider as NativeBoxCollider
 from Infernux.lib import MeshCollider as NativeMeshCollider
@@ -68,6 +69,28 @@ def _make_ball(scene, *, pos=None, mass=1.0, radius=0.5):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestGravity:
+    def test_player_style_scene_rebuild_preserves_static_collisions(self, scene):
+        """A full native graph rebuild must still publish physics bodies on Play."""
+        Physics.set_gravity(Vector3(0, -9.81, 0))
+        _make_ground(scene)
+        _make_ball(scene, pos=Vector3(0, 4, 0))
+
+        snapshot = scene.serialize_document()
+        transaction = SceneDocumentTransaction(
+            scene,
+            document=snapshot,
+            after_publish=lambda: scene.set_playing(True),
+        )
+        assert transaction.run_to_completion() is True
+
+        restored_ball = scene.find("Ball")
+        manager = SceneManager.instance()
+        manager.play()
+        manager.pause()
+        _step_frames(180)
+
+        assert restored_ball.transform.position.y > 0.9
+
     def test_set_gravity_persists(self, scene):
         Physics.set_gravity(Vector3(0, -9.81, 0))
         g = Physics.get_gravity()

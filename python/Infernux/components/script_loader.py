@@ -12,6 +12,7 @@ import importlib.util
 import inspect
 from typing import Type, List, Optional
 
+from Infernux.engine.path_utils import path_key
 from Infernux.engine.project_context import (
     get_script_module_name,
     resolve_script_path,
@@ -39,14 +40,14 @@ _script_errors: dict[str, str] = {}
 
 def _normalize_script_path(file_path: str) -> str:
     """Return a stable absolute key for script-error bookkeeping."""
-    return os.path.normcase(os.path.normpath(os.path.abspath(file_path)))
+    return path_key(file_path)
 
 
 def _unique_module_name_for_path(file_path: str) -> str:
     """Build a fallback module name for scripts without a valid import path."""
     import hashlib
 
-    normalized_path = os.path.normcase(os.path.normpath(file_path))
+    normalized_path = path_key(file_path)
     module_name = os.path.splitext(os.path.basename(file_path))[0]
     path_hash = hashlib.md5(normalized_path.encode()).hexdigest()[:8]
     return f"infernux_script_{module_name}_{path_hash}"
@@ -246,6 +247,10 @@ def load_all_components_from_file(file_path: str) -> List[Type[InxComponent]]:
             # Ensure it's defined in this module (not imported)
             if obj.__module__ == module_name:
                 components.append(obj)
+
+    from .registry import register_component_type
+    for component_type in components:
+        register_component_type(component_type, script_path=file_path)
 
     return components
 

@@ -295,7 +295,7 @@ class TestStrictSerializationFailures:
         assert target.health == 77
         assert target.title == "unchanged"
 
-    def test_missing_current_field_is_rejected(self):
+    def test_missing_new_component_field_uses_declared_default(self):
         import json
 
         class AdditiveFields(InxComponent):
@@ -311,8 +311,11 @@ class TestStrictSerializationFailures:
         document = json.loads(source._serialize_fields())
         document.pop("tags")
 
-        with pytest.raises(ValueError, match="serialized fields mismatch"):
-            AdditiveFields()._deserialize_fields(json.dumps(document))
+        restored = AdditiveFields()
+        restored._deserialize_fields(json.dumps(document))
+
+        assert restored.health == 42
+        assert restored.tags == []
 
     def test_removed_and_renamed_fields_are_rejected(self):
         import json

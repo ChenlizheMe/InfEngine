@@ -639,8 +639,8 @@ void OutlineRenderer::CreateOutlineMaterialResources()
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         poolSizes[0].descriptorCount = 64 + framesInFlight; // 32 materials × 2 bindings + globals UBOs
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        // Globals set at index 2 has three STORAGE_BUFFER bindings (instance + skin meta + palettes) per frame.
-        poolSizes[1].descriptorCount = framesInFlight * 3;
+        // Globals set 2 owns instance, skin metadata, skin palette, and particle buffers per frame.
+        poolSizes[1].descriptorCount = framesInFlight * 4;
 
         VkDescriptorPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

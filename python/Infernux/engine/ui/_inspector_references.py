@@ -29,6 +29,7 @@ def _tooltip_and_info(ctx, metadata):
 
 def _asset_guid_from_path(file_path: str) -> str:
     from Infernux.debug import Debug
+    from Infernux.core.asset_types import read_meta_guid
     from Infernux.core.assets import AssetManager
 
     guid = ""
@@ -38,8 +39,10 @@ def _asset_guid_from_path(file_path: str) -> str:
             guid = adb.get_guid_from_path(file_path) or ""
         except RuntimeError as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
-    return guid
+    # AssetDatabase paths may be project-relative or canonical absolute paths,
+    # depending on the caller. The adjacent current-format meta remains the
+    # source of truth when a path lookup has not produced an identity.
+    return guid or read_meta_guid(file_path)
 
 
 def _resolve_guid_and_path(payload: str):

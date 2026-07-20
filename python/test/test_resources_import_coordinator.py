@@ -5,9 +5,15 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.core.assets import AssetManager
 from Infernux.engine.engine import Engine
-from Infernux.engine.resources_manager import ResourceChangeHandler, ResourcesManager
+from Infernux.engine.resources_manager import (
+    ResourceChangeHandler,
+    ResourcesManager,
+    _AssetImportNotReady,
+)
 from Infernux.lib import AssetMutationResult, RuntimeMode
 
 
@@ -226,6 +232,26 @@ def test_watcher_thread_only_submits_and_main_thread_commits(monkeypatch, tmp_pa
     assert [entry[0] for entry in database.mutations] == ["modified"]
     assert asset_calls[0][-1] == threading.get_ident()
     assert database.mutations[0][-1] == threading.get_ident()
+
+
+def test_modified_asset_failure_surfaces_runtime_compile_detail(monkeypatch, tmp_path):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    path = tmp_path / "Tone.effect"
+    path.write_text("{}", encoding="utf-8")
+    resolved = str(path.resolve())
+    database.guid_by_path[resolved] = "tone-guid"
+    failure = AssetMutationResult()
+    failure.succeeded = False
+    failure.error = "tone mapping enum compile failed"
+    monkeypatch.setattr(
+        AssetManager,
+        "reimport_asset",
+        classmethod(lambda _cls, *_args, **_kwargs: failure),
+    )
+
+    with pytest.raises(_AssetImportNotReady, match="tone mapping enum compile failed"):
+        handler._commit_modified(resolved)
 
 
 def test_move_query_may_run_on_watcher_but_mutation_waits_for_owner(monkeypatch, tmp_path):

@@ -9,6 +9,7 @@ import time
 import uuid
 from typing import Any
 
+from Infernux.engine.path_utils import relative_path, resolved_path
 
 _active_trace: dict[str, Any] | None = None
 _last_trace: dict[str, Any] | None = None
@@ -35,7 +36,7 @@ def public_tool_trace_active() -> bool:
 def set_session_project_path(project_path: str) -> dict[str, Any]:
     """Bind trace output to a project without creating a log file yet."""
     global _session_project_path, _session_log_path
-    _session_project_path = os.path.abspath(project_path or "") if project_path else ""
+    _session_project_path = resolved_path(project_path or "") if project_path else ""
     _session_log_path = _session_log_file(_session_project_path)
     return session_log_info(_session_project_path)
 
@@ -202,7 +203,7 @@ def list_traces(project_path: str, limit: int = 50) -> list[dict[str, Any]]:
             continue
         path = os.path.join(trace_dir, name)
         entries.append({
-            "file": os.path.relpath(path, project_path).replace("\\", "/"),
+            "file": relative_path(path, project_path),
             "name": name,
             "size": os.path.getsize(path),
         })
@@ -218,18 +219,18 @@ def _save_trace(project_path: str, trace: dict[str, Any]) -> str:
     with open(file_path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(trace, f, indent=2, ensure_ascii=False)
         f.write("\n")
-    return os.path.relpath(file_path, project_path).replace("\\", "/")
+    return relative_path(file_path, project_path)
 
 
 def _trace_dir(project_path: str) -> str:
-    return os.path.join(os.path.abspath(project_path), ".infernux", "mcp_traces")
+    return os.path.join(resolved_path(project_path), ".infernux", "mcp_traces")
 
 
 def _session_log_file(project_path: str) -> str:
     root = str(project_path or "").strip()
     if not root:
         return ""
-    return os.path.join(os.path.abspath(root), "Logs", "mcp_session.jsonl")
+    return os.path.join(resolved_path(root), "Logs", "mcp_session.jsonl")
 
 
 def _record_session_tool_call(
@@ -299,7 +300,7 @@ def _rel(project_path: str, path: str) -> str:
     if not project_path or not path:
         return path
     try:
-        return os.path.relpath(os.path.abspath(path), os.path.abspath(project_path)).replace("\\", "/")
+        return relative_path(path, project_path, allow_root=True)
     except Exception:
         return path
 

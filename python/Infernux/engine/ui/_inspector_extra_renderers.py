@@ -3,6 +3,7 @@
 import os
 
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import path_key
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from .inspector_utils import (
@@ -271,7 +272,7 @@ def _mesh_picker_items(filter_text: str):
     seen_paths = set()
     for pattern in _MODEL_ASSET_GLOBS:
         for name, path in _picker_assets(filter_text, pattern):
-            norm = os.path.normcase(os.path.normpath(str(path)))
+            norm = path_key(str(path))
             if norm in seen_paths:
                 continue
             seen_paths.add(norm)
@@ -346,6 +347,28 @@ def _apply_mesh_pick(comp, picked_value) -> None:
     _assign_model_mesh(comp, picked_value)
 
 
+def _set_material_slot_from_path(comp, slot_idx: int, material_path) -> None:
+    from Infernux.lib import AssetRegistry
+
+    adb = AssetRegistry.instance().get_asset_database()
+    if not adb:
+        return
+    guid = adb.get_guid_from_path(str(material_path))
+    if not guid:
+        return
+    guids = comp.get_material_guids()
+    old_guid = guids[slot_idx] or "" if slot_idx < len(guids) else ""
+    comp.set_material(slot_idx, guid)
+    _record_material_slot(comp, slot_idx, old_guid, guid, f"Set Material Slot {slot_idx}")
+
+
+def _clear_material_slot(comp, slot_idx: int) -> None:
+    guids = comp.get_material_guids()
+    old_guid = guids[slot_idx] or "" if slot_idx < len(guids) else ""
+    comp.set_material(slot_idx, "")
+    _record_material_slot(comp, slot_idx, old_guid, "", f"Clear Material Slot {slot_idx}")
+
+
 def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
     """Render material slot fields after MeshRenderer CppProperty fields."""
     from Infernux.components.builtin_component import BuiltinComponent
@@ -364,26 +387,15 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
     labels = [t("inspector.mesh"), "Materials", "Element 0"]
     lw = max_label_w(ctx, labels)
 
-    field_label(ctx, t("inspector.mesh"), lw)
     mesh_field_id = f"mesh_field_{getattr(comp, 'component_id', id(comp))}"
-    render_object_field(
-        ctx, mesh_field_id, _mesh_display_name(comp), "Mesh",
-        clickable=False,
-        accept_drag_type=["MODEL_GUID", "MODEL_FILE"],
-        on_drop_callback=lambda payload, _comp=comp: _assign_model_mesh(_comp, payload),
-        picker_asset_items=_mesh_picker_items,
-        on_pick=lambda picked, _comp=comp: _apply_mesh_pick(_comp, picked),
-        on_clear=lambda _comp=comp: _clear_mesh(_comp),
-    )
+    mesh_display = _mesh_display_name(comp)
 
     # Material slots
     mat_count = getattr(comp, 'material_count', 0) or 1
     material_guids = comp.get_material_guids() if hasattr(comp, 'get_material_guids') else []
     slot_names = comp.get_material_slot_names() if hasattr(comp, 'get_material_slot_names') else []
 
-    field_label(ctx, "Materials", lw)
-    ctx.label(f"Size: {mat_count}")
-
+    slot_rows = []
     for slot_idx in range(mat_count):
         # Determine slot label
         if slot_idx < len(slot_names) and slot_names[slot_idx]:
@@ -403,24 +415,74 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         is_default = ((slot_idx >= len(material_guids)) or (not material_guids[slot_idx])) and not is_embedded
         mat_name = getattr(mat, 'name', 'None') if mat else 'None'
         display_name = mat_name + (" (Default)" if is_default else "")
+        slot_rows.append((slot_label, display_name))
+
+    native_batch = getattr(ctx, "render_mesh_renderer_inspector_fields", None)
+    if callable(native_batch):
+        from .editor_icons import EditorIcons
+        from .igui import IGUI
+
+        picker_texture = EditorIcons.get_cached(Theme.ICON_IMG_PICKER)
+        interactions = native_batch(
+            mesh_field_id,
+            t("inspector.mesh"),
+            mesh_display,
+            [row[0] for row in slot_rows],
+            [row[1] for row in slot_rows],
+            int(picker_texture or 0),
+            lw,
+        )
+        for interaction in interactions:
+            slot_idx = int(interaction.get("index", -1))
+            payload = interaction.get("payload", "")
+            if payload:
+                if slot_idx < 0:
+                    _assign_model_mesh(comp, payload)
+                else:
+                    _set_material_slot_from_path(comp, slot_idx, payload)
+            if not interaction.get("popup_open", False):
+                continue
+            field_id = mesh_field_id if slot_idx < 0 else f"mat_{slot_idx}"
+            ctx.push_id_str(field_id)
+            try:
+                if slot_idx < 0:
+                    IGUI._render_object_picker_popup(
+                        ctx, field_id, None, _mesh_picker_items,
+                        lambda picked, _comp=comp: _apply_mesh_pick(_comp, picked),
+                        lambda _comp=comp: _clear_mesh(_comp),
+                    )
+                else:
+                    IGUI._render_object_picker_popup(
+                        ctx, field_id, None,
+                        lambda filt: _picker_assets(filt, "*.mat"),
+                        lambda picked, _comp=comp, _slot=slot_idx:
+                            _set_material_slot_from_path(_comp, _slot, picked),
+                        lambda _comp=comp, _slot=slot_idx:
+                            _clear_material_slot(_comp, _slot),
+                    )
+            finally:
+                ctx.pop_id()
+        return
+
+    field_label(ctx, t("inspector.mesh"), lw)
+    render_object_field(
+        ctx, mesh_field_id, mesh_display, "Mesh",
+        clickable=False,
+        accept_drag_type=["MODEL_GUID", "MODEL_FILE"],
+        on_drop_callback=lambda payload, _comp=comp: _assign_model_mesh(_comp, payload),
+        picker_asset_items=_mesh_picker_items,
+        on_pick=lambda picked, _comp=comp: _apply_mesh_pick(_comp, picked),
+        on_clear=lambda _comp=comp: _clear_mesh(_comp),
+    )
+
+    field_label(ctx, "Materials", lw)
+    ctx.label(f"Size: {mat_count}")
+
+    for slot_idx, (slot_label, display_name) in enumerate(slot_rows):
 
         def _make_on_drop(s, _comp=comp):
             def _on_drop(mat_path):
-                from Infernux.lib import AssetRegistry
-                registry = AssetRegistry.instance()
-                adb = registry.get_asset_database()
-                if not adb:
-                    return
-                guid = adb.get_guid_from_path(str(mat_path))
-                if not guid:
-                    return
-                old_guid = ""
-                guids = _comp.get_material_guids()
-                if s < len(guids):
-                    old_guid = guids[s] or ""
-                _comp.set_material(s, guid)
-                _record_material_slot(_comp, s, old_guid, guid,
-                                     f"Set Material Slot {s}")
+                _set_material_slot_from_path(_comp, s, mat_path)
             return _on_drop
 
         def _make_on_pick(s, _comp=comp):
@@ -430,13 +492,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
 
         def _make_on_clear(s, _comp=comp):
             def _on_clear():
-                old_guid = ""
-                guids = _comp.get_material_guids()
-                if s < len(guids):
-                    old_guid = guids[s] or ""
-                _comp.set_material(s, "")
-                _record_material_slot(_comp, s, old_guid, "",
-                                     f"Clear Material Slot {s}")
+                _clear_material_slot(_comp, s)
             return _on_clear
 
         field_label(ctx, slot_label, lw)

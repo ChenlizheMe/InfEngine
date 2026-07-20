@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import wave
 import zlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -27,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from Infernux.lib import InxGUIContext
 from Infernux.engine.i18n import t
 from Infernux.core.asset_types import (
+    AudioCompressionFormat,
     FilterMode,
     SpriteFrame,
     TextureCompression,
@@ -48,6 +50,7 @@ from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .asset_resource_preview import render_resource_preview_rect
 from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
+from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.debug import Debug
 
 
@@ -165,7 +168,16 @@ class _State:
             if cat_def.refresh_fn:
                 cat_def.refresh_fn(self)
             return True
-        # Fresh load
+        # Fresh load. Return live preview ownership before replacing state.
+        if self.file_path and self.category in {"texture", "material"}:
+            from .asset_resource_preview import (
+                invalidate_live_material_preview,
+                invalidate_live_texture_preview,
+            )
+            if self.category == "texture":
+                invalidate_live_texture_preview(self.file_path)
+            else:
+                invalidate_live_material_preview(self.file_path)
         self.reset()
         self.file_path = file_path
         self.category = category
@@ -262,8 +274,20 @@ def _ensure_categories():
         load_fn=_load_audio,
         editable_fields=[
             FieldDef("force_mono", "asset.force_mono", WidgetType.CHECKBOX),
+            FieldDef("load_in_background", "asset.audio_load_in_background", WidgetType.CHECKBOX),
+            FieldDef(
+                "compression_format", "asset.audio_compression_format", WidgetType.COMBO,
+                [("asset.audio_compression_pcm", AudioCompressionFormat.PCM),
+                 ("asset.audio_compression_vorbis", AudioCompressionFormat.VORBIS),
+                 ("asset.audio_compression_adpcm", AudioCompressionFormat.ADPCM)],
+            ),
+            FieldDef(
+                "quality", "asset.audio_quality", WidgetType.FLOAT,
+                float_speed=0.01, float_range=(0.0, 1.0),
+            ),
         ],
         extra_meta_keys=["file_size", "extension"],
+        custom_header_fn=_render_audio_header,
     )
 
     # ── Shader ─────────────────────────────────────────────────────────
@@ -319,6 +343,14 @@ def _ensure_categories():
         autosave_debounce=0.35,
     )
 
+    _categories["render_effect"] = AssetCategoryDef(
+        display_name="asset.display_render_effect",
+        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
+        load_fn=_load_render_effect,
+        custom_body_fn=_render_render_effect_body,
+        autosave_debounce=0.5,
+    )
+
     _categories["physic_material"] = AssetCategoryDef(
         display_name="asset.display_physic_material",
         access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
@@ -364,13 +396,17 @@ def _ensure_categories():
         autosave_debounce=0.5,
     )
 
+    _categories["animtimeline"] = AssetCategoryDef(
+        display_name="asset.display_animtimeline",
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+        load_fn=_load_identity_asset,
+    )
+
     # ── Timeline State Machine (.timelinefsm) ──────────────────────────
     _categories["timelinefsm"] = AssetCategoryDef(
         display_name="asset.display_timelinefsm",
-        access_mode=AssetAccessMode.READ_WRITE_RESOURCE,
-        load_fn=_load_animfsm,
-        custom_body_fn=_render_animfsm_body,
-        autosave_debounce=0.5,
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+        load_fn=_load_identity_asset,
     )
 
     _categories["particle_graph"] = AssetCategoryDef(
@@ -391,7 +427,24 @@ def _load_texture(path: str):
 
 
 def _load_audio(path: str):
-    return read_audio_import_settings(path), {}
+    extra = {"duration": 0.0, "sample_rate": 0, "channels": 0, "sample_count": 0}
+    try:
+        with wave.open(path, "rb") as stream:
+            sample_rate = int(stream.getframerate())
+            sample_count = int(stream.getnframes())
+            extra.update(
+                duration=(float(sample_count) / float(sample_rate)) if sample_rate > 0 else 0.0,
+                sample_rate=sample_rate,
+                channels=int(stream.getnchannels()),
+                sample_count=sample_count,
+            )
+    except (OSError, EOFError, wave.Error):
+        pass
+    return read_audio_import_settings(path), extra
+
+
+def _load_identity_asset(path: str):
+    return {"path": path}, {}
 
 
 def _load_shader(path: str):
@@ -439,6 +492,30 @@ def _load_material(path: str):
         "shader_sync_key": "",
         "_applied_version": native.get_version(),
     }
+
+
+def _load_render_effect(path: str):
+    from Infernux.renderstack.render_effect import RenderEffect
+
+    if path.lower().endswith(".effect"):
+        from Infernux.core.assets import AssetManager
+
+        effect = AssetManager.load(path, asset_type=RenderEffect)
+        return (effect, {"document_kind": "effect"}) if effect is not None else None
+
+    try:
+        from pathlib import Path
+        from Infernux.renderstack.render_effect_asset import (
+            RenderEffectGroupAsset,
+            parse_render_effect_document,
+        )
+
+        document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, RenderEffectGroupAsset):
+        return None
+    return document, {"document_kind": "group"}
 
 
 def _load_physic_material(path: str):
@@ -1034,7 +1111,7 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
         if stamp == 0:
             return False
 
-        norm_path = os.path.normpath(tex_file)
+        norm_path = resolved_path(tex_file)
         resource_key = f"animclip_insp|{norm_path}|{int(use_nearest)}|{int(use_srgb)}"
 
         pv = state.extra.get("_animclip_pv")
@@ -1397,8 +1474,15 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
     _ensure_categories()
     cat_def = _categories.get(category)
     if cat_def is None:
-        ctx.label(t("asset.unknown_asset_type").format(cat=category))
-        return
+        display_name = str(category or "asset").replace("_", " ").strip().title()
+        if not display_name:
+            display_name = os.path.splitext(os.path.basename(file_path))[1].lstrip(".").upper() or "Asset"
+        cat_def = AssetCategoryDef(
+            display_name=display_name,
+            access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+            load_fn=_load_identity_asset,
+        )
+        _categories[category] = cat_def
 
     if not _state.load(file_path, category, cat_def):
         ctx.label(t("asset.failed_load").format(name=t(cat_def.display_name)))
@@ -1443,6 +1527,11 @@ def invalidate():
     if _state.category == "texture" and _state.file_path:
         from .asset_resource_preview import invalidate_live_texture_preview
         invalidate_live_texture_preview(_state.file_path)
+    if _state.category == "material" and _state.file_path:
+        from .asset_resource_preview import invalidate_live_material_preview
+        invalidate_live_material_preview(_state.file_path)
+    if _state.category == "audio":
+        _stop_audio_preview()
     _state.reset()
     _sprite_state.reset()
 
@@ -1455,10 +1544,16 @@ def invalidate_asset(path: str):
     """
     if not _state.file_path or not path:
         return
-    if os.path.normpath(_state.file_path) == os.path.normpath(path):
-        if _state.category == "texture":
-            from .asset_resource_preview import invalidate_live_texture_preview
-            invalidate_live_texture_preview(_state.file_path)
+    if same_path(_state.file_path, path):
+        if _state.category in {"texture", "material"}:
+            from .asset_resource_preview import (
+                invalidate_live_material_preview,
+                invalidate_live_texture_preview,
+            )
+            if _state.category == "texture":
+                invalidate_live_texture_preview(_state.file_path)
+            else:
+                invalidate_live_material_preview(_state.file_path)
         _state.reset()
 
 
@@ -1516,6 +1611,62 @@ def _render_file_size(ctx: InxGUIContext, val):
             ctx.label(t("asset.size_bytes").format(size=size))
     except (ValueError, TypeError):
         ctx.label(t("asset.size_bytes").format(size=val))
+
+
+def _audio_engine():
+    try:
+        from Infernux.lib import AudioEngine
+
+        engine = AudioEngine.instance()
+        return engine if engine is not None and engine.is_initialized else None
+    except (ImportError, RuntimeError, AttributeError):
+        return None
+
+
+def _stop_audio_preview() -> None:
+    engine = _audio_engine()
+    if engine is not None and hasattr(engine, "stop_preview"):
+        engine.stop_preview()
+
+
+def _render_audio_header(ctx: InxGUIContext, panel, state: _State) -> None:
+    """Render shared-device playback controls and source metadata."""
+    del panel
+    engine = _audio_engine()
+    can_preview = engine is not None and hasattr(engine, "play_preview")
+    playing = bool(
+        can_preview
+        and hasattr(engine, "is_preview_playing")
+        and engine.is_preview_playing(state.file_path)
+    )
+
+    if playing:
+        label = t("asset.audio_stop_preview")
+        callback = engine.stop_preview
+    else:
+        label = t("asset.audio_play_preview")
+        callback = (lambda: engine.play_preview(state.file_path)) if can_preview else (lambda: None)
+    if not can_preview:
+        ctx.begin_disabled(True)
+    ctx.button(f"{label}##audio_asset_preview", callback, width=132.0, height=32.0)
+    ctx.record_semantic_item("button", label, can_preview, "asset.audio.preview")
+    if not can_preview:
+        ctx.end_disabled()
+
+    duration = float(state.extra.get("duration", 0.0) or 0.0)
+    sample_rate = int(state.extra.get("sample_rate", 0) or 0)
+    channels = int(state.extra.get("channels", 0) or 0)
+    sample_count = int(state.extra.get("sample_count", 0) or 0)
+    if sample_rate > 0:
+        ctx.text_wrapped(
+            t("asset.audio_summary").format(
+                duration=f"{duration:.2f}",
+                sample_rate=sample_rate,
+                channels=channels,
+                samples=sample_count,
+            )
+        )
+    ctx.separator()
 
 
 def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
@@ -1787,7 +1938,7 @@ def _ensure_sprite_texture(state: _State) -> bool:
 
         filter_tag = cur_filter.name if cur_filter else "default"
         srgb_tag = "srgb" if cur_srgb else "linear"
-        norm_path = os.path.normpath(state.file_path)
+        norm_path = resolved_path(state.file_path)
         stamp = texture_stamp(norm_path, "sprite_edit_preview", filter_tag, srgb_tag)
         if stamp == 0:
             return False
@@ -2407,3 +2558,50 @@ def _render_shader_source(ctx: InxGUIContext, file_path: str):
 def _render_material_body(ctx: InxGUIContext, panel, state: _State):
     from . import inspector_material as mat_ui
     mat_ui.render_material_body(ctx, panel, state)
+
+
+def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
+    del panel
+    from .inspector_utils import render_compact_section_header
+    from .render_effect_inspector import render_render_effect_parameters
+    from Infernux.renderstack.render_effect import RenderEffect
+
+    resource = state.settings
+    if isinstance(resource, RenderEffect):
+        field_label(ctx, "Feature", max_label_w(ctx, ["Feature"]))
+        ctx.label(resource.feature_type)
+        ctx.separator()
+        render_render_effect_parameters(ctx, resource, widget_prefix="asset_effect")
+        return
+
+    # Effect groups remain structural assets, but expose their referenced
+    # shared effects so editing from the group Inspector updates every stack.
+    from Infernux.core.asset_ref import RenderEffectRef
+
+    for index, entry in enumerate(resource.entries):
+        label = entry.entry_id or f"Effect {index + 1}"
+        if not render_compact_section_header(
+            ctx,
+            f"{label}##effect_group_{index}",
+            level="secondary",
+        ):
+            continue
+        reference = RenderEffectRef(
+            guid=entry.asset.guid,
+            path_hint=entry.asset.path_hint,
+        )
+        effect = reference.resolve()
+        if effect is None:
+            ctx.label(entry.asset.path_hint or entry.asset.guid)
+            continue
+        if not entry.enabled:
+            ctx.begin_disabled(True)
+        try:
+            render_render_effect_parameters(
+                ctx,
+                effect,
+                widget_prefix=f"asset_effect_group_{index}",
+            )
+        finally:
+            if not entry.enabled:
+                ctx.end_disabled()

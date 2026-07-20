@@ -42,6 +42,7 @@ from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
+from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
 
 
 def _ensure_video_splash_packages() -> None:
@@ -137,10 +138,10 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         lto: bool = True,
         enable_jit: bool = False,
     ):
-        self.project_path = os.path.abspath(project_path)
+        self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
-        self.output_dir = os.path.abspath(output_dir)
-        self.icon_path = os.path.abspath(icon_path) if icon_path else ""
+        self.output_dir = resolved_path(output_dir)
+        self.icon_path = resolved_path(icon_path) if icon_path else ""
         self.display_mode = display_mode
         self.window_width = window_width
         self.window_height = window_height
@@ -330,7 +331,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._validate_output_directory()
 
     def _output_marker_path(self, directory: Optional[str] = None) -> str:
-        target_dir = os.path.abspath(directory or self.output_dir)
+        target_dir = resolved_path(directory or self.output_dir)
         if self._player_launcher_path():
             target_dir = os.path.join(target_dir, f"{self.project_name}_Data")
         return os.path.join(target_dir, self.OUTPUT_MARKER_FILENAME)
@@ -450,9 +451,9 @@ sys.dont_write_bytecode = True
 # these explicitly; the fallback keeps older flat distributions portable.
 _DIR = os.environ.get("_INFERNUX_PLAYER_RUNTIME_ROOT", "").strip()
 if not _DIR:
-    _DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+    _DIR = os.path.dirname(resolved_path(sys.argv[0]))
     if not os.path.isdir(os.path.join(_DIR, "Data")):
-        _DIR = os.path.dirname(os.path.abspath(sys.executable))
+        _DIR = os.path.dirname(resolved_path(sys.executable))
 _DATA_ROOT = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
 if not _DATA_ROOT:
     _DATA_ROOT = os.path.join(_DIR, "Data")
@@ -873,7 +874,7 @@ finally:
         if (
             not self._player_launcher_path()
             and os.path.isfile(runtime_executable)
-            and os.path.normcase(runtime_executable) != os.path.normcase(game_executable)
+            and not same_path(runtime_executable, game_executable)
         ):
             os.replace(runtime_executable, game_executable)
 
@@ -1148,9 +1149,7 @@ finally:
                                         .get("guid", {})
                                         .get("value", ""))
                             if guid:
-                                pyc_rel = os.path.relpath(
-                                    py_path + "c", data_dir
-                                ).replace("\\", "/")
+                                pyc_rel = relative_path(py_path + "c", data_dir)
                                 guid_map[guid] = pyc_rel
                         except (json.JSONDecodeError, OSError) as _exc:
                             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
@@ -1173,7 +1172,7 @@ finally:
                             py_compile.compile(
                                 sidecar_py,
                                 cfile=sidecar_py + "c",
-                                dfile=os.path.relpath(sidecar_py, data_dir).replace("\\", "/"),
+                                dfile=relative_path(sidecar_py, data_dir),
                                 optimize=2,
                                 doraise=True,
                             )
@@ -1191,7 +1190,7 @@ finally:
                         py_compile.compile(
                             py_path,
                             cfile=py_path + "c",
-                            dfile=os.path.relpath(py_path, data_dir).replace("\\", "/"),
+                            dfile=relative_path(py_path, data_dir),
                             optimize=2,
                             doraise=True,
                         )
@@ -1239,7 +1238,7 @@ finally:
             for root, _dirs, filenames in os.walk(payload_root):
                 for filename in filenames:
                     source_path = os.path.join(root, filename)
-                    relative = os.path.relpath(source_path, final_dir).replace("\\", "/")
+                    relative = relative_path(source_path, final_dir)
                     files.append((source_path, relative))
                     uncompressed_bytes += os.path.getsize(source_path)
         if not files:
@@ -1312,7 +1311,7 @@ finally:
             dirs[:] = [directory for directory in dirs if directory != "Logs"]
             for filename in filenames:
                 path = os.path.join(root, filename)
-                relative = os.path.relpath(path, data_root).replace("\\", "/")
+                relative = relative_path(path, data_root)
                 if "/" not in relative and relative in retained:
                     continue
                 if relative in self._PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS:
@@ -1405,7 +1404,7 @@ finally:
         for root, _dirs, files in os.walk(final_dir):
             for filename in files:
                 path = os.path.join(root, filename)
-                relative = os.path.relpath(path, final_dir).replace("\\", "/")
+                relative = relative_path(path, final_dir)
                 try:
                     size = os.path.getsize(path)
                 except OSError:
@@ -1526,10 +1525,10 @@ finally:
         rel_scenes = []
         for scene_path in scenes:
             try:
-                rel = os.path.relpath(scene_path, self.project_path)
+                rel = relative_path(scene_path, self.project_path)
             except ValueError:
                 rel = os.path.basename(scene_path)
-            rel_scenes.append(rel.replace("\\", "/"))
+            rel_scenes.append(portable_path(rel))
         data["scenes"] = rel_scenes
 
         with open(bs, "w", encoding="utf-8") as f:

@@ -21,7 +21,7 @@ from typing import Optional
 
 from Infernux.debug import Debug
 from Infernux.engine.project_context import get_project_root
-from Infernux.engine.path_utils import safe_path as _safe_path
+from Infernux.engine.path_utils import is_path_within, path_key, resolved_path, safe_path as _safe_path
 from .scene_manager import (
     SCENE_EXTENSION,
     DEFAULT_SCENE_FILE_BASE,
@@ -161,7 +161,7 @@ class SceneSaveMixin:
 
         # Step 2: durably replace the scene file. The old daemon+immediate-join
         # path was synchronous in practice and could outlive a timeout.
-        abs_path = os.path.abspath(path)
+        abs_path = resolved_path(path)
         try:
             os.makedirs(os.path.dirname(abs_path), exist_ok=True)
             from Infernux.core.document_store import DocumentStore
@@ -319,7 +319,7 @@ class SceneSaveMixin:
         if os.path.isabs(folder):
             return "", "Folder must be a project-relative path under Assets."
 
-        target_folder = os.path.abspath(os.path.join(root, folder))
+        target_folder = resolved_path(os.path.join(root, folder))
         if not self._is_under_assets(target_folder):
             return "", "Scenes must be saved under the project's Assets directory."
 
@@ -335,7 +335,7 @@ class SceneSaveMixin:
 
     def _resolve_native_save_as_path(self, path: str) -> tuple[str, str]:
         """Validate a platform dialog result using the same Assets boundary."""
-        target = os.path.abspath(str(path or ""))
+        target = resolved_path(str(path or ""))
         if not target.lower().endswith(SCENE_EXTENSION):
             target += SCENE_EXTENSION
         if not self._is_under_assets(target):
@@ -369,7 +369,7 @@ class SceneSaveMixin:
         self._run_post_save_callback()
 
     def _save_as_path(self, path: str) -> bool:
-        if os.path.exists(path) and os.path.normcase(path) != os.path.normcase(self._current_scene_path or ""):
+        if os.path.exists(path) and path_key(path) != path_key(self._current_scene_path or ""):
             self._save_as_error = "A scene already exists at this location. Choose another name to avoid overwriting it."
             return False
         if not self._do_save(path):
@@ -411,16 +411,7 @@ class SceneSaveMixin:
         root = _effective_project_root()
         if not root:
             return False
-        # The native AssetDatabase may return a Windows 8.3 alias while the
-        # Python project context keeps the long path. Resolve both forms before
-        # comparing their path components.
-        assets = os.path.normcase(os.path.realpath(os.path.abspath(os.path.join(root, "Assets"))))
-        target = os.path.normcase(os.path.realpath(os.path.abspath(path)))
-        try:
-            return os.path.commonpath((assets, target)) == assets
-        except ValueError:
-            # Different Windows volumes cannot share a common path.
-            return False
+        return is_path_within(path, os.path.join(root, "Assets"))
 
     def _remember_last_scene(self, path: str):
         settings = _load_editor_settings()

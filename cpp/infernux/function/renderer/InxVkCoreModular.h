@@ -155,7 +155,10 @@ class InxVkCoreModular
         if (mode < 0 || mode > 3)
             return;
         m_swapchain.SetPreferredPresentMode(kModes[mode]);
+        m_deviceContext.WaitIdle();
+        DestroyGuiRenderGraphs();
         m_swapchain.Recreate(m_deviceContext, m_windowWidth, m_windowHeight);
+        m_renderGraph.Initialize(&m_deviceContext, &m_pipelineManager);
     }
 
     /// @brief Get current present mode preference (0=IMMEDIATE,1=MAILBOX,2=FIFO,3=FIFO_RELAXED)
@@ -961,6 +964,8 @@ class InxVkCoreModular
     void CreateDepthResources();
 
     void CreateUniformBuffers();
+    vk::RenderGraph &GetGuiRenderGraph(uint32_t imageIndex);
+    void DestroyGuiRenderGraphs();
     void RecordCommandBuffer(uint32_t imageIndex);
     void UpdateUniformBuffer(uint32_t currentImage, const float *viewPos, const float *viewLookAt, const float *viewUp);
 
@@ -984,6 +989,8 @@ class InxVkCoreModular
     vk::AsyncTransferContext m_asyncTransferContext;
     vk::AsyncTransferContext m_asyncReadbackContext;
     vk::RenderGraph m_renderGraph;
+    std::vector<std::unique_ptr<vk::RenderGraph>> m_additionalGuiRenderGraphs;
+    std::vector<bool> m_guiRenderGraphReady;
 #if INFERNUX_FRAME_PROFILE
     vk::GpuTimestampQueries m_gpuTimestampQueries;
 #endif

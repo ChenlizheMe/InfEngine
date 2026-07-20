@@ -43,6 +43,7 @@ from Infernux.core.animation_clip import AnimationClip
 from Infernux.core.animation_clip3d import AnimationClip3D
 from Infernux.core.anim_state_machine import AnimStateMachine
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import path_key, portable_path, resolved_path
 
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
@@ -86,6 +87,11 @@ class AssetManager:
     # Pre-captured material JSON snapshots for async save.
     # Key = normalized file path, value = serialized JSON string.
     _material_save_snapshots: Dict[str, str] = {}
+
+    # JSON snapshots are captured on the main thread, while DocumentStore owns
+    # coalescing and atomic IO on native worker threads.
+    _render_effect_save_snapshots: Dict[str, str] = {}
+    _pending_document_writes: Dict[str, Any] = {}
 
     # Cached reference to C++ AssetRegistry singleton
     _registry = None
@@ -259,6 +265,7 @@ class AssetManager:
         cls.register_import_strategy("audio", write_audio_import_settings)
         cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
+        cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
         cls.register_save_strategy("animclip", cls._save_animclip_resource)
         cls.register_save_strategy("animclip3d", cls._save_animclip3d_resource)
         cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
@@ -640,7 +647,54 @@ class AssetManager:
         if file_path and "::submat:" in file_path:
             return
         if file_path and json_str:
-            cls._material_save_snapshots[os.path.normpath(file_path)] = json_str
+            cls._material_save_snapshots[path_key(file_path)] = json_str
+
+    @classmethod
+    def set_render_effect_save_snapshot(cls, file_path: str, json_str: str) -> None:
+        """Replace the pending immutable snapshot for one RenderEffect asset."""
+        if file_path and json_str:
+            cls._render_effect_save_snapshots[path_key(file_path)] = json_str
+
+    @classmethod
+    def _save_render_effect_resource(cls, resource_obj):
+        """Submit a coalesced RenderEffect source write to DocumentStore."""
+        file_path = str(getattr(resource_obj, "file_path", "") or "")
+        if not file_path:
+            return False
+        norm_path = path_key(file_path)
+        snapshot = cls._render_effect_save_snapshots.pop(norm_path, "")
+        if not snapshot:
+            from Infernux.renderstack.render_effect_asset import dump_render_effect_document
+
+            snapshot = dump_render_effect_document(resource_obj.to_asset())
+
+        from Infernux.core.document_store import submit_document_text
+
+        # The live shared instance already contains this generation.  Do not
+        # re-read our own atomic replace through the file watcher.
+        cls._suppress_watcher_echo("modified", file_path, match_any=True)
+        try:
+            ticket = submit_document_text(file_path, snapshot)
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_error(f"RenderEffect save submission failed for '{file_path}': {exc}")
+            return False
+        cls._pending_document_writes[norm_path] = ticket
+        callback = getattr(resource_obj, "_on_save_submitted", None)
+        if callable(callback):
+            callback()
+        return True
+
+    @classmethod
+    def poll_pending_asset_writes(cls) -> None:
+        """Retire completed asynchronous asset writes and surface failures."""
+        for path, ticket in list(cls._pending_document_writes.items()):
+            if not bool(getattr(ticket, "is_complete", False)):
+                continue
+            status = str(getattr(ticket, "status", "") or "")
+            if status not in {"succeeded", "superseded"}:
+                Debug.log_error(f"Asset document write failed for '{path}' ({status or 'unknown'})")
+            if cls._pending_document_writes.get(path) is ticket:
+                cls._pending_document_writes.pop(path, None)
 
     @classmethod
     def _save_material_resource(cls, resource_obj):
@@ -648,7 +702,7 @@ class AssetManager:
         file_path = getattr(resource_obj, "file_path", "") or ""
 
         # Use pre-captured snapshot if available (avoids main-thread serialize).
-        norm_path = os.path.normpath(file_path) if file_path else ""
+        norm_path = path_key(file_path) if file_path else ""
         snapshot = cls._material_save_snapshots.pop(norm_path, "")
 
         # Prefer C++ async save path when available to avoid main-thread stalls.
@@ -738,7 +792,7 @@ class AssetManager:
         return save()
 
     @classmethod
-    def flush_scheduled_saves(cls, key: Optional[str] = None):
+    def flush_scheduled_saves(cls, key: Optional[str] = None, *, force: bool = False):
         """Execute due scheduled saves. If key is given, only flush that key."""
         now = time.perf_counter()
 
@@ -746,10 +800,10 @@ class AssetManager:
             record = cls._scheduled_saves.get(key)
             if not record:
                 return
-            if bool(record.get("wait_one_flush", False)):
+            if not force and bool(record.get("wait_one_flush", False)):
                 record["wait_one_flush"] = False
                 return
-            if now < float(record.get("deadline", 0.0)):
+            if not force and now < float(record.get("deadline", 0.0)):
                 return
             try:
                 save_fn = record.get("save_fn")
@@ -761,10 +815,10 @@ class AssetManager:
 
         due_keys = []
         for k, v in cls._scheduled_saves.items():
-            if bool(v.get("wait_one_flush", False)):
+            if not force and bool(v.get("wait_one_flush", False)):
                 v["wait_one_flush"] = False
                 continue
-            if now >= float(v.get("deadline", 0.0)):
+            if force or now >= float(v.get("deadline", 0.0)):
                 due_keys.append(k)
         for k in due_keys:
             record = cls._scheduled_saves.get(k)
@@ -775,6 +829,15 @@ class AssetManager:
                         save_fn()
             finally:
                 cls._scheduled_saves.pop(k, None)
+
+    @classmethod
+    def flush_all_asset_writes(cls) -> None:
+        """Force pending snapshots into DocumentStore and wait for durability."""
+        cls.flush_scheduled_saves(force=True)
+        from Infernux.core.document_store import DocumentStore
+
+        DocumentStore.flush()
+        cls.poll_pending_asset_writes()
 
     # ==========================================================================
     # Internal helpers
@@ -939,7 +1002,7 @@ class AssetManager:
     @classmethod
     def _schedule_gpu_texture_reload(cls, path: str) -> None:
         """Queue native GPU texture invalidation for the next post-draw tick."""
-        key = cls._normalize_asset_path(path) or os.path.abspath(path)
+        key = cls._normalize_asset_path(path) or path_key(path)
         cls._pending_gpu_texture_reloads[key] = path
 
         guid = cls._get_guid_from_path(path)
@@ -1083,12 +1146,12 @@ class AssetManager:
         if native is None or not hasattr(native, "query_or_schedule_material_preview"):
             return
         try:
-            normalized = os.path.normpath(path)
+            normalized = resolved_path(path)
             live_document = str(material_json or "")
             stamp = 0 if live_document else int(os.stat(normalized).st_mtime_ns)
-            resource_key = f"matedit|{normalized}" if live_document else f"mat|{normalized}"
+            resource_key = f"mat|{normalized}"
             native.query_or_schedule_material_preview(
-                resource_key, normalized, live_document, stamp,
+                resource_key, normalized, live_document, stamp, False,
             )
             if hasattr(native, "request_full_speed_frame"):
                 native.request_full_speed_frame()
@@ -1097,12 +1160,7 @@ class AssetManager:
 
     @staticmethod
     def _normalize_asset_path(path: str) -> str:
-        if not path:
-            return ""
-        result = os.path.normpath(path).replace("\\", "/")
-        if os.name == "nt":
-            result = result.lower()
-        return result
+        return portable_path(path_key(path)) if path else ""
 
     @classmethod
     def _invalidate_texture_ui_cache(cls, path: str) -> None:

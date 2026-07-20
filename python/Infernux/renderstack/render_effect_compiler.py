@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from Infernux.core.asset_ref import RenderEffectRef
+from Infernux.engine.path_utils import path_key, resolved_path
 from Infernux.renderstack.render_effect import RenderEffect
 from Infernux.renderstack.render_effect_asset import (
     RenderEffectAsset,
@@ -42,6 +43,7 @@ class RenderEffectArtifactRegistry:
     """Compile-then-publish registry with persistent last-known-good artifacts."""
 
     _artifacts: dict[str, RenderEffectArtifact] = {}
+    _compiling: set[str] = set()
     _revision = 0
     _topology_generation = 0
 
@@ -56,13 +58,27 @@ class RenderEffectArtifactRegistry:
     @classmethod
     def clear(cls) -> None:
         cls._artifacts.clear()
+        cls._compiling.clear()
         cls._revision = 0
         cls._topology_generation = 0
 
     @classmethod
     def compile_and_publish(cls, path: str, *, guid: str = ""):
         """Compile one source and atomically publish it after artifact IO succeeds."""
-        source_path = os.path.abspath(path)
+        source_path = resolved_path(path)
+        key = cls._source_key(source_path, guid)
+        if key in cls._compiling:
+            raise RenderEffectCompileError(
+                f"render effect compile cycle detected at {source_path!r}"
+            )
+        cls._compiling.add(key)
+        try:
+            return cls._compile_and_publish_unchecked(source_path, guid=guid)
+        finally:
+            cls._compiling.discard(key)
+
+    @classmethod
+    def _compile_and_publish_unchecked(cls, source_path: str, *, guid: str = ""):
         try:
             source_text = Path(source_path).read_text(encoding="utf-8")
             document = parse_render_effect_document(source_text)
@@ -213,7 +229,7 @@ class RenderEffectArtifactRegistry:
 
     @staticmethod
     def _source_key(path: str, guid: str) -> str:
-        return str(guid or "").strip() or os.path.normcase(os.path.abspath(path))
+        return str(guid or "").strip() or path_key(path)
 
     @staticmethod
     def _artifact_path(source_path: str, guid: str) -> str:
@@ -225,7 +241,7 @@ class RenderEffectArtifactRegistry:
         identity = str(guid or "").strip()
         if not identity:
             identity = hashlib.sha256(
-                os.path.normcase(source_path).encode("utf-8")
+                path_key(source_path).encode("utf-8")
             ).hexdigest()[:32]
         if not all(character.isalnum() or character in "-_" for character in identity):
             identity = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
@@ -471,7 +487,7 @@ def expand_render_effect_reference(
     _trail: tuple[str, ...] = (),
 ) -> list[RenderEffect]:
     """Resolve one effect or recursively flatten an ordered effect group."""
-    cached = reference.resolve()
+    cached = getattr(reference, "_cached", None)
     if isinstance(cached, RenderEffect):
         return [cached]
 
@@ -480,11 +496,14 @@ def expand_render_effect_reference(
         raise RenderEffectCompileError(
             f"effect reference cannot be resolved: {reference.path_hint or reference.guid!r}"
         )
-    cycle_key = reference.guid or os.path.normcase(os.path.abspath(path))
+    cycle_key = reference.guid or path_key(path)
     if cycle_key in _trail:
         raise RenderEffectCompileError(f"render effect group cycle detected at {path!r}")
     document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
     if isinstance(document, RenderEffectAsset):
+        cached = reference.resolve()
+        if isinstance(cached, RenderEffect):
+            return [cached]
         return [RenderEffect(document, file_path=path, guid=reference.guid)]
     if not isinstance(document, RenderEffectGroupAsset):
         raise RenderEffectCompileError(f"unsupported effect document: {path!r}")
@@ -580,6 +599,14 @@ def _resolve_reference_path(reference: RenderEffectRef, parent: str) -> str:
         path = AssetManager._get_path_from_guid(reference.guid) or ""
     if not path:
         path = reference.path_hint
-    if path and parent and not os.path.isabs(path) and not os.path.isfile(path):
-        path = os.path.join(parent, path)
-    return os.path.normpath(path) if path else ""
+    if path and not os.path.isabs(path) and not os.path.isfile(path):
+        from Infernux.engine.project_context import get_project_root
+
+        project_root = get_project_root()
+        project_path = os.path.join(project_root, path) if project_root else ""
+        parent_path = os.path.join(parent, path) if parent else ""
+        if project_path and os.path.isfile(project_path):
+            path = project_path
+        elif parent_path:
+            path = parent_path
+    return resolved_path(path) if path else ""

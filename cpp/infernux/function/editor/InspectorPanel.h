@@ -226,9 +226,6 @@ class InspectorPanel : public EditorPanel
     std::vector<AddComponentEntry> m_addCompEntries;
     bool m_addCompNeedsFocus = false;
 
-    // ── Idle-skip state ──────────────────────────────────────────────
-    int m_idleFrames = 0;
-
     // ── Timing ───────────────────────────────────────────────────────
     float m_frameTimeNow = 0.0f;
     // ── Split sub-timings (accumulated ms, consumed by profile) ───
@@ -243,6 +240,7 @@ class InspectorPanel : public EditorPanel
     PrefabInfo m_cachedPrefabInfo;
     uint64_t m_cachedComponentListObjId = 0;
     std::vector<ComponentInfo> m_cachedComponents;
+    std::unordered_map<uint64_t, float> m_cachedComponentBodyHeights;
     uint64_t m_cachedValueGeneration = 0;
     float m_cachedValueRefreshTime = 0.0f;
     static constexpr float VALUE_CACHE_TTL = 0.20f;
@@ -273,6 +271,7 @@ class InspectorPanel : public EditorPanel
 
     // ── Cached icon IDs ──────────────────────────────────────────────
     uint64_t m_cachedTransformIconId = 0;
+    float m_cachedTransformBodyHeight = 0.0f;
 
     // ── Render helpers ───────────────────────────────────────────────
     void RenderPropertiesModule(InxGUIContext *ctx, float height);

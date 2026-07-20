@@ -35,6 +35,7 @@ from Infernux.debug import Debug
 
 _sort_by_sort_order = attrgetter('sort_order')
 _GAME_VIEWPORT_SEMANTIC_ID = "game_view.viewport"
+_GAME_VIEW_FPS_SEMANTIC_ID = "game_view.fps"
 _GAME_UI_BUTTON_SEMANTIC_PREFIX = "game_view.ui_button."
 
 
@@ -409,6 +410,13 @@ class GameViewPanel(EditorPanel):
         if fps_x + text_w <= ctx.get_window_width() - 12.0:
             ctx.same_line(fps_x)
             ctx.label(fps_text)
+            if bool(getattr(ctx, "semantic_capture_enabled", False)):
+                ctx.record_semantic_item(
+                    "performance",
+                    fps_text,
+                    False,
+                    _GAME_VIEW_FPS_SEMANTIC_ID,
+                )
 
     def _route_game_input(self, ctx, target_w, target_h,
                           viewport_hovered, viewport_clicked, canvases):

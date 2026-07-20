@@ -160,7 +160,7 @@ InxVkCoreModular::~InxVkCoreModular()
 #if INFERNUX_FRAME_PROFILE
     m_gpuTimestampQueries.Destroy();
 #endif
-    m_renderGraph.Destroy();
+    DestroyGuiRenderGraphs();
     m_resourceManager.Destroy();
     m_asyncReadbackContext.Destroy();
     m_asyncTransferContext.Destroy();
@@ -570,6 +570,10 @@ void InxVkCoreModular::RecreateSwapchain()
     // Wait for device idle
     m_deviceContext.WaitIdle();
 
+    // GUI graphs retain framebuffers and RHI aliases for individual
+    // swapchain images. Retire them before those views are destroyed.
+    DestroyGuiRenderGraphs();
+
     // Cleanup old depth resources
     m_depthImage.reset();
 
@@ -597,9 +601,38 @@ void InxVkCoreModular::RecreateSwapchain()
 
     // Recreate swapchain
     m_swapchain.Recreate(m_deviceContext, width, height);
+    m_renderGraph.Initialize(&m_deviceContext, &m_pipelineManager);
 
     // Recreate depth resources
     CreateDepthResources();
+}
+
+vk::RenderGraph &InxVkCoreModular::GetGuiRenderGraph(uint32_t imageIndex)
+{
+    if (imageIndex == 0)
+        return m_renderGraph;
+
+    const size_t additionalIndex = static_cast<size_t>(imageIndex - 1);
+    if (m_additionalGuiRenderGraphs.size() <= additionalIndex)
+        m_additionalGuiRenderGraphs.resize(additionalIndex + 1);
+
+    auto &graph = m_additionalGuiRenderGraphs[additionalIndex];
+    if (!graph) {
+        graph = std::make_unique<vk::RenderGraph>();
+        graph->Initialize(&m_deviceContext, &m_pipelineManager);
+    }
+    return *graph;
+}
+
+void InxVkCoreModular::DestroyGuiRenderGraphs()
+{
+    for (auto &graph : m_additionalGuiRenderGraphs) {
+        if (graph)
+            graph->Destroy();
+    }
+    m_additionalGuiRenderGraphs.clear();
+    m_guiRenderGraphReady.clear();
+    m_renderGraph.Destroy();
 }
 
 void InxVkCoreModular::CreateDepthResources()
@@ -730,65 +763,71 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
 #endif
 
     // ========================================================================
-    // Swapchain GUI Pass via RenderGraph
+    // Swapchain GUI Pass via RenderGraph. Each swapchain image owns one
+    // persistent compiled graph because its VkImageView/framebuffer is stable
+    // until swapchain recreation. Rebuilding this one-pass graph every frame
+    // used to repeat RHI registration, graph compilation and framebuffer
+    // lookup on the hottest render path.
     // ========================================================================
-    m_renderGraph.Reset();
+    vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);
+    if (m_guiRenderGraphReady.size() <= imageIndex)
+        m_guiRenderGraphReady.resize(static_cast<size_t>(imageIndex) + 1, false);
 
-    VkImage swapchainImage = m_swapchain.GetImage(imageIndex);
-    VkImageView swapchainView = m_swapchain.GetImageView(imageIndex);
-    VkExtent2D extent = m_swapchain.GetExtent();
-    VkFormat format = m_swapchain.GetImageFormat();
+    if (!m_guiRenderGraphReady[imageIndex]) {
+        guiGraph.Reset();
 
-    vk::ResourceHandle backbuffer =
-        m_renderGraph.SetBackbuffer(swapchainImage, swapchainView, format, extent.width, extent.height,
-                                    VK_SAMPLE_COUNT_1_BIT, rhi::TextureLayout::Undefined);
+        const VkImage swapchainImage = m_swapchain.GetImage(imageIndex);
+        const VkImageView swapchainView = m_swapchain.GetImageView(imageIndex);
+        const VkExtent2D extent = m_swapchain.GetExtent();
+        const VkFormat format = m_swapchain.GetImageFormat();
 
-    m_renderGraph.SetBackbufferFinalLayout(rhi::TextureLayout::Present);
+        vk::ResourceHandle backbuffer =
+            guiGraph.SetBackbuffer(swapchainImage, swapchainView, format, extent.width, extent.height,
+                                   VK_SAMPLE_COUNT_1_BIT, rhi::TextureLayout::Undefined);
+        guiGraph.SetBackbufferFinalLayout(rhi::TextureLayout::Present);
 
-    auto guiCallback = m_guiRenderCallback;
+        guiGraph.AddPass("GUI", [this, &backbuffer, extent](vk::PassBuilder &builder) {
+            backbuffer = builder.WriteColor(backbuffer, 0);
+            builder.SetRenderArea(extent.width, extent.height);
+            builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
-    m_renderGraph.AddPass("GUI", [&backbuffer, extent, guiCallback](vk::PassBuilder &builder) {
-        backbuffer = builder.WriteColor(backbuffer, 0);
-        builder.SetRenderArea(extent.width, extent.height);
-        builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            return [this, extent](vk::RenderContext &ctx) {
+                VkViewport viewport{};
+                viewport.x = 0.0f;
+                viewport.y = 0.0f;
+                viewport.width = static_cast<float>(extent.width);
+                viewport.height = static_cast<float>(extent.height);
+                viewport.minDepth = 0.0f;
+                viewport.maxDepth = 1.0f;
+                ctx.SetViewport(viewport);
 
-        return [guiCallback, extent](vk::RenderContext &ctx) {
-            VkViewport viewport{};
-            viewport.x = 0.0f;
-            viewport.y = 0.0f;
-            viewport.width = static_cast<float>(extent.width);
-            viewport.height = static_cast<float>(extent.height);
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            ctx.SetViewport(viewport);
+                VkRect2D scissor{};
+                scissor.offset = {0, 0};
+                scissor.extent = extent;
+                ctx.SetScissor(scissor);
 
-            VkRect2D scissor{};
-            scissor.offset = {0, 0};
-            scissor.extent = extent;
-            ctx.SetScissor(scissor);
+                if (m_guiRenderCallback)
+                    m_guiRenderCallback(ctx);
+            };
+        });
 
-            if (guiCallback) {
-                guiCallback(ctx);
-            }
-        };
-    });
-
-    m_renderGraph.SetOutput(backbuffer);
-
-    if (!m_renderGraph.Compile()) {
-        INXLOG_ERROR("Failed to compile swapchain render graph");
+        guiGraph.SetOutput(backbuffer);
+        if (!guiGraph.Compile()) {
+            INXLOG_ERROR("Failed to compile swapchain GUI render graph");
 #if INFERNUX_FRAME_PROFILE
-        m_gpuTimestampQueries.EndRegion(cmdBuf, gpuFrameRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-        m_gpuTimestampQueries.FinishFrame(m_currentFrame);
+            m_gpuTimestampQueries.EndRegion(cmdBuf, gpuFrameRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+            m_gpuTimestampQueries.FinishFrame(m_currentFrame);
 #endif
-        vkEndCommandBuffer(cmdBuf);
-        return;
+            vkEndCommandBuffer(cmdBuf);
+            return;
+        }
+        m_guiRenderGraphReady[imageIndex] = true;
     }
 
 #if INFERNUX_FRAME_PROFILE
     const auto gpuGuiRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "GUI", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 #endif
-    m_renderGraph.Execute(cmdBuf);
+    guiGraph.Execute(cmdBuf);
 #if INFERNUX_FRAME_PROFILE
     m_gpuTimestampQueries.EndRegion(cmdBuf, gpuGuiRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 #endif

@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Union
 
+from Infernux.engine.path_utils import portable_path
+
 
 RENDER_EFFECT_EXTENSION = ".effect"
 RENDER_EFFECT_GROUP_EXTENSION = ".effectgroup"
@@ -25,7 +27,7 @@ class EffectAssetReference:
 
     def __post_init__(self) -> None:
         guid = str(self.guid or "").strip()
-        path_hint = str(self.path_hint or "").strip().replace("\\", "/")
+        path_hint = portable_path(str(self.path_hint or "").strip())
         if not guid and not path_hint:
             raise ValueError("effect asset reference requires guid or path_hint")
         object.__setattr__(self, "guid", guid)

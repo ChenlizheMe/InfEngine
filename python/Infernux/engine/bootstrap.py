@@ -19,6 +19,7 @@ from Infernux.engine.engine import Engine, LogLevel
 from Infernux.engine.resources_manager import ResourcesManager
 from Infernux.engine.play_mode import PlayModeManager, PlayModeState
 from Infernux.engine.scene_manager import SceneFileManager
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.ui import (
     SceneViewPanel,
     GameViewPanel,
@@ -39,6 +40,19 @@ _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 5
 _TOTAL_STEPS = 12
+
+
+def _iter_project_material_paths(project_path: str):
+    """Yield user material assets without walking project runtimes or caches."""
+    assets_root = os.path.join(resolved_path(project_path), "Assets")
+    if not os.path.isdir(assets_root):
+        return
+
+    for dirpath, dirnames, filenames in os.walk(assets_root):
+        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+        for name in filenames:
+            if name.lower().endswith(".mat"):
+                yield os.path.join(dirpath, name)
 
 
 def _signal_progress(current_step: int, total: int, message: str) -> None:
@@ -192,19 +206,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         if native is None:
             return
 
-        root = os.path.abspath(self.project_path)
-        if not os.path.isdir(root):
-            return
-
-        material_paths = []
-        for dirpath, _dirnames, filenames in os.walk(root):
-            # Skip engine/library caches to avoid unnecessary startup work.
-            low = dirpath.lower().replace("\\", "/")
-            if "/library" in low or "/logs" in low or "/temp" in low:
-                continue
-            for name in filenames:
-                if name.lower().endswith(".mat"):
-                    material_paths.append(os.path.join(dirpath, name))
+        material_paths = list(_iter_project_material_paths(self.project_path))
 
         if not material_paths:
             return

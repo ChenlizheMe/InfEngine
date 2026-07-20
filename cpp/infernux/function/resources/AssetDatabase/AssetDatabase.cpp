@@ -31,6 +31,43 @@ namespace
 constexpr size_t kOwnerMergeEntryBudget = 256;
 constexpr auto kOwnerMergeTimeBudget = std::chrono::milliseconds(2);
 
+bool LoadCurrentMetadataDocument(const std::string &path, InxResourceMeta &metadata, std::string &recoveredGuid,
+                                 std::string &error) noexcept
+{
+    try {
+        std::ifstream file(ToFsPath(path));
+        if (!file)
+            throw std::runtime_error("metadata sidecar cannot be opened");
+        const nlohmann::json document = nlohmann::json::parse(file);
+        const auto entries = document.find("metadata");
+        if (entries != document.end() && entries->is_object()) {
+            const auto guid = entries->find("guid");
+            if (guid != entries->end() && guid->is_object()) {
+                const auto value = guid->find("value");
+                if (value != guid->end() && value->is_string())
+                    recoveredGuid = value->get<std::string>();
+            }
+        }
+        metadata.DeserializeDocument(document);
+        return true;
+    } catch (const std::exception &exception) {
+        error = exception.what();
+    } catch (...) {
+        error = "metadata sidecar raised a non-standard parsing exception";
+    }
+    return false;
+}
+
+void RemoveInvalidMetadataDocument(const std::string &path, const std::string &reason)
+{
+    std::error_code error;
+    const bool removed = std::filesystem::remove(ToFsPath(path), error);
+    if (error)
+        throw std::runtime_error("failed to remove incompatible metadata sidecar '" + path + "': " + error.message());
+    INXLOG_WARN("AssetDatabase: ", removed ? "removed" : "discarded", " incompatible metadata sidecar '", path,
+                "' and will regenerate it: ", reason);
+}
+
 std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
                             ImportArtifact::RuntimeArtifactKind kind = ImportArtifact::RuntimeArtifactKind::Primary)
@@ -247,46 +284,6 @@ void RequireUnchangedFingerprint(const std::string &path, const AssetFileFingerp
         throw std::runtime_error("asset source changed during asynchronous refresh: " + path);
 }
 
-std::string NormalizeLexicalFilesystemPath(const std::filesystem::path &path)
-{
-    std::string result = FromFsPath(path.lexically_normal());
-#ifdef INX_PLATFORM_WINDOWS
-    for (char &character : result) {
-        if (character >= 'A' && character <= 'Z')
-            character = static_cast<char>(character + ('a' - 'A'));
-    }
-#endif
-    return result;
-}
-
-std::string NormalizeFilesystemPath(const std::string &path)
-{
-    if (path.empty())
-        return {};
-
-    try {
-        const std::filesystem::path fsPath = ToFsPath(path);
-        const std::filesystem::path normalized =
-            std::filesystem::exists(fsPath) ? std::filesystem::weakly_canonical(fsPath) : fsPath.lexically_normal();
-        std::string result = FromFsPath(normalized);
-#ifdef INX_PLATFORM_WINDOWS
-        for (char &character : result) {
-            if (character >= 'A' && character <= 'Z')
-                character = static_cast<char>(character + ('a' - 'A'));
-        }
-#endif
-        return result;
-    } catch (...) {
-        std::string result = FromFsPath(ToFsPath(path));
-#ifdef INX_PLATFORM_WINDOWS
-        for (char &character : result) {
-            if (character >= 'A' && character <= 'Z')
-                character = static_cast<char>(character + ('a' - 'A'));
-        }
-#endif
-        return result;
-    }
-}
 } // namespace
 
 const std::vector<AssetCatalogEntry> &AssetCatalogSnapshot::GetDirectory(const std::string &normalizedDirectory) const
@@ -462,7 +459,7 @@ AssetDatabase::AssetScanRequest AssetDatabase::CaptureScanRequest() const
 {
     AssetScanRequest request;
     request.assetIndexPath = m_assetIndexPath;
-    request.normalizedProjectRoot = NormalizePath(m_projectRoot);
+    request.normalizedProjectRoot = FilesystemPathKey(m_projectRoot);
     request.expectedQueryGeneration = m_queryGeneration;
     if (!m_assetsRoot.empty())
         request.roots.push_back({m_assetsRoot, false});
@@ -487,7 +484,7 @@ AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetSca
     }
 
     artifact.files.reserve(artifact.index.Size());
-    const std::string normalizedIndexPath = NormalizeFilesystemPath(request.assetIndexPath);
+    const std::string normalizedIndexPath = FilesystemPathKey(request.assetIndexPath);
     std::unordered_set<std::string> observedPaths;
     std::unordered_map<std::string, AssetFileFingerprint> metadataFingerprints;
     metadataFingerprints.reserve(artifact.index.Size());
@@ -518,13 +515,13 @@ AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetSca
                     if (ReadFingerprint(entry, fingerprint)) {
                         std::filesystem::path sourcePath = filePath;
                         sourcePath.replace_extension();
-                        metadataFingerprints[NormalizeLexicalFilesystemPath(sourcePath)] = fingerprint;
+                        metadataFingerprints[LexicalFilesystemPathKey(FromFsPath(sourcePath))] = fingerprint;
                     }
                 }
                 continue;
             }
 
-            const std::string normalizedPath = NormalizeFilesystemPath(path);
+            const std::string normalizedPath = FilesystemPathKey(path);
             if (normalizedPath == normalizedIndexPath)
                 continue;
             if (!observedPaths.insert(normalizedPath).second)
@@ -536,9 +533,10 @@ AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetSca
             scanned.readOnly = scanRoot.readOnly;
             if (!ReadFingerprint(entry, scanned.source))
                 continue;
-            std::error_code relativeError;
-            const auto relativePath = std::filesystem::relative(filePath, rootPath, relativeError);
-            scanned.identityKey = relativeError ? FromFsPath(filePath.filename()) : FromFsPath(relativePath);
+            std::string relativePath;
+            scanned.identityKey = TryMakeRelativeFilesystemPath(path, scanRoot.path, relativePath)
+                                      ? relativePath
+                                      : FromFsPath(filePath.filename());
             artifact.files.push_back(std::move(scanned));
         }
     }
@@ -546,7 +544,7 @@ AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetSca
     for (auto &file : artifact.files) {
         if (file.readOnly)
             continue;
-        const auto metadata = metadataFingerprints.find(NormalizeLexicalFilesystemPath(ToFsPath(file.path)));
+        const auto metadata = metadataFingerprints.find(LexicalFilesystemPathKey(file.path));
         if (metadata != metadataFingerprints.end())
             file.meta = metadata->second;
     }
@@ -760,22 +758,31 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         const std::string metaPath = InxResourceMeta::GetMetaFilePath(item.file.path);
         const bool sidecarExists = std::filesystem::is_regular_file(ToFsPath(metaPath));
         InxResourceMeta metadata;
-
-        if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
-            (item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad && sidecarExists)) {
-            if (!metadata.LoadFromFile(metaPath))
-                throw std::runtime_error("failed to load metadata sidecar: " + metaPath);
-            RequireUnchangedFingerprint(item.file.path, item.file.source);
-            item.metadata = std::move(metadata);
-            return;
-        }
-
         InxResourceMeta previousMetadata;
+        bool previousMetadataLoaded = false;
         std::string preservedGuid = item.fallbackGuid;
-        if (item.mode == WorkerMetadataPrepare::Mode::Rebuild && sidecarExists) {
-            if (!previousMetadata.LoadFromFile(metaPath))
-                throw std::runtime_error("failed to load metadata sidecar: " + metaPath);
-            preservedGuid = previousMetadata.GetGuid();
+
+        // Read-only package roots never consume sidecars. They are derived
+        // project state and may have been produced by a different engine.
+        if (sidecarExists && !item.file.readOnly) {
+            InxResourceMeta loadedMetadata;
+            std::string recoveredGuid;
+            std::string loadError;
+            if (LoadCurrentMetadataDocument(metaPath, loadedMetadata, recoveredGuid, loadError)) {
+                if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
+                    item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
+                    RequireUnchangedFingerprint(item.file.path, item.file.source);
+                    item.metadata = std::move(loadedMetadata);
+                    return;
+                }
+                previousMetadata = std::move(loadedMetadata);
+                previousMetadataLoaded = true;
+                preservedGuid = previousMetadata.GetGuid();
+            } else {
+                if (preservedGuid.empty())
+                    preservedGuid = std::move(recoveredGuid);
+                RemoveInvalidMetadataDocument(metaPath, loadError);
+            }
         }
 
         const std::vector<char> content = ReadExactSourceBytes(item.file.path);
@@ -784,13 +791,14 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         item.loader->CreateMeta(contentData, content.size(), item.file.path, metadata);
         metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(item.file.path));
 
-        if (item.mode == WorkerMetadataPrepare::Mode::Rebuild) {
+        if (item.mode == WorkerMetadataPrepare::Mode::Rebuild && previousMetadataLoaded) {
             for (const auto &[key, value] : previousMetadata.GetMetadata()) {
                 if (key != "guid" && !metadata.HasKey(key))
                     metadata.AddMetadata(key, value.second);
             }
-            if (!preservedGuid.empty())
-                metadata.AddMetadata("guid", preservedGuid);
+        }
+        if (!preservedGuid.empty()) {
+            metadata.AddMetadata("guid", preservedGuid);
         } else if (item.file.readOnly) {
             metadata.AddMetadata("guid", MakeReadOnlyGuid(item.file.identityKey));
             metadata.AddMetadata("read_only", true);
@@ -947,6 +955,7 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             item.fallbackGuid = indexed->guid;
         } else if (indexed && !file.readOnly && indexed->source == file.source && indexed->meta != file.meta) {
             item.mode = WorkerMetadataPrepare::Mode::LoadExisting;
+            item.fallbackGuid = indexed->guid;
         } else if (indexed && !file.readOnly && indexed->source != file.source) {
             item.mode = WorkerMetadataPrepare::Mode::Rebuild;
             item.fallbackGuid = indexed->guid;
@@ -1055,7 +1064,7 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         item.request.metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(asset.path));
         item.expectedSource = asset.source;
         item.request.resolveAssetGuid = [pathSnapshot = state->importPathSnapshot](const std::string &dependencyPath) {
-            const auto dependency = pathSnapshot->find(NormalizeFilesystemPath(dependencyPath));
+            const auto dependency = pathSnapshot->find(FilesystemPathKey(dependencyPath));
             return dependency != pathSnapshot->end() ? dependency->second : std::string{};
         };
         state->workerImports.push_back(std::move(item));
@@ -1351,7 +1360,7 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
         state->stagedWorkingSet.guidToPath.size() == state->stagedWorkingSet.assetIndex.Size() &&
         state->scanArtifact.files.size() == state->stagedWorkingSet.assetIndex.Size();
     state->indexRebuildRequired = !reusedLoadedIndex;
-    const std::string normalizedProjectRoot = NormalizePath(m_projectRoot);
+    const std::string normalizedProjectRoot = FilesystemPathKey(m_projectRoot);
     const std::string assetIndexPath = m_assetIndexPath;
     const uint64_t queryGeneration = m_queryGeneration + 1;
     state->expectedDependencyGeneration = AssetDependencyGraph::Instance().GetAssetGeneration();
@@ -1447,11 +1456,7 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
 bool AssetDatabase::IsReadOnlyPath(const std::string &normalizedPath) const
 {
     for (const auto &root : m_readOnlyScanRoots) {
-        const std::string normalizedRoot = NormalizePath(root);
-        if (normalizedPath == normalizedRoot)
-            return true;
-        if (normalizedPath.size() > normalizedRoot.size() && normalizedPath.rfind(normalizedRoot, 0) == 0 &&
-            normalizedPath[normalizedRoot.size()] == '/')
+        if (IsFilesystemPathWithin(normalizedPath, root))
             return true;
     }
     return false;
@@ -1472,7 +1477,7 @@ void AssetDatabase::RebuildDerivedIndex()
     dependenciesByGuid.reserve(dependencySets.size());
     for (const auto &[guid, dependencies] : dependencySets)
         dependenciesByGuid.emplace(guid, std::vector<std::string>(dependencies.begin(), dependencies.end()));
-    workingSet.assetIndex = BuildDerivedIndexArtifact(workingSet, dependenciesByGuid, NormalizePath(m_projectRoot));
+    workingSet.assetIndex = BuildDerivedIndexArtifact(workingSet, dependenciesByGuid, FilesystemPathKey(m_projectRoot));
     InstallWorkingSet(std::move(workingSet));
     restoreWorkingSet.Release();
 }
@@ -1525,7 +1530,9 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
         return result;
     }
 
-    std::string guid = CreateOrLoadMetadata(path, type, false, true, NormalizePath(path));
+    const std::string normalizedPath = FilesystemPathKey(path);
+    const bool readOnly = IsReadOnlyPath(normalizedPath);
+    std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = "asset metadata could not be created or loaded";
@@ -1534,7 +1541,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     result.guid = guid;
 
     UpdateMapping(guid, path);
-    if (!RunImporter(guid, path, false)) {
+    if (!RunImporter(guid, path, false, !readOnly)) {
         const auto importResult = m_importResults.find(guid);
         const std::string importError = importResult != m_importResults.end() && !importResult->second.error.empty()
                                             ? importResult->second.error
@@ -1546,7 +1553,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
         result.error = importError;
         return result;
     }
-    UpdateCachedFileState(path, IsReadOnlyPath(NormalizePath(path)));
+    UpdateCachedFileState(path, readOnly);
     m_assetIndexDirty = true;
     PublishQuerySnapshot();
     result.succeeded = true;
@@ -1620,7 +1627,7 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
         result.error = importError;
         return result;
     }
-    UpdateCachedFileState(path, IsReadOnlyPath(NormalizePath(path)));
+    UpdateCachedFileState(path, IsReadOnlyPath(FilesystemPathKey(path)));
     m_assetIndexDirty = true;
     PublishQuerySnapshot();
     AssetDependencyGraph::Instance().NotifyEvent(guid, GetResourceTypeForPath(path), AssetEvent::Modified);
@@ -1673,7 +1680,7 @@ AssetMutationResult AssetDatabase::DeleteAsset(const std::string &path)
     }
     if (!guid.empty())
         m_importResults.erase(guid);
-    m_fileStates.erase(NormalizePath(path));
+    m_fileStates.erase(FilesystemPathKey(path));
     m_assetIndexDirty = true;
     PublishQuerySnapshot();
     result.succeeded = true;
@@ -1692,7 +1699,7 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     result.path = newPath;
     result.previousPath = oldPath;
     result.resourceType = GetResourceTypeForPath(newPath);
-    const std::string normalizedOldPath = NormalizePath(oldPath);
+    const std::string normalizedOldPath = FilesystemPathKey(oldPath);
     std::string guid = GetGuidFromPath(oldPath);
     if (guid.empty()) {
         // Try to recover guid from old .meta file
@@ -1710,7 +1717,7 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
         UpdateMapping(guid, newPath);
         RemoveMappingByPath(oldPath);
         m_fileStates.erase(normalizedOldPath);
-        UpdateCachedFileState(newPath, IsReadOnlyPath(NormalizePath(newPath)));
+        UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
         m_assetIndexDirty = true;
         PublishQuerySnapshot();
         // Notify dependents — GUID unchanged, but path changed
@@ -1744,7 +1751,7 @@ bool AssetDatabase::ContainsGuid(const std::string &guid) const
 
 bool AssetDatabase::ContainsPath(const std::string &path) const
 {
-    std::string norm = NormalizePath(path);
+    std::string norm = FilesystemPathKey(path);
     if (CanReadWorkingSet())
         return m_pathToGuid.find(norm) != m_pathToGuid.end();
     const auto snapshot = LoadQuerySnapshot();
@@ -1753,7 +1760,7 @@ bool AssetDatabase::ContainsPath(const std::string &path) const
 
 std::string AssetDatabase::GetGuidFromPath(const std::string &path) const
 {
-    const std::string normalized = NormalizePath(path);
+    const std::string normalized = FilesystemPathKey(path);
     if (CanReadWorkingSet()) {
         const auto it = m_pathToGuid.find(normalized);
         return it != m_pathToGuid.end() ? it->second : "";
@@ -1790,7 +1797,7 @@ std::shared_ptr<const InxResourceMeta> AssetDatabase::GetMetaByPath(const std::s
     if (path.empty())
         return nullptr;
 
-    const std::string normalized = NormalizePath(path);
+    const std::string normalized = FilesystemPathKey(path);
     if (CanReadWorkingSet()) {
         const auto pathIt = m_pathToGuid.find(normalized);
         if (pathIt == m_pathToGuid.end())
@@ -1835,7 +1842,7 @@ std::vector<AssetCatalogEntry> AssetDatabase::GetDirectoryCatalog(const std::str
     const auto catalog = GetCatalogSnapshot();
     if (!catalog)
         return {};
-    return catalog->GetDirectory(NormalizePath(directory));
+    return catalog->GetDirectory(FilesystemPathKey(directory));
 }
 
 uint64_t AssetDatabase::GetQueryGeneration() const
@@ -1850,24 +1857,7 @@ size_t AssetDatabase::GetAssetCount() const
 
 bool AssetDatabase::IsAssetPath(const std::string &path) const
 {
-    if (m_assetsRoot.empty())
-        return false;
-
-    std::string norm = NormalizePath(path);
-    std::string assetsNorm = NormalizePath(m_assetsRoot);
-
-    if (assetsNorm.empty())
-        return false;
-
-    if (norm.size() < assetsNorm.size())
-        return false;
-
-    return norm.rfind(assetsNorm, 0) == 0;
-}
-
-std::string AssetDatabase::NormalizePath(const std::string &path) const
-{
-    return NormalizeFilesystemPath(path);
+    return !m_assetsRoot.empty() && IsFilesystemPathWithin(path, m_assetsRoot);
 }
 
 bool AssetDatabase::IsIgnoredImportPath(const std::filesystem::path &path)
@@ -1896,23 +1886,44 @@ void AssetDatabase::UpdateMapping(const std::string &guid, const std::string &pa
     if (guid.empty() || path.empty())
         return;
 
-    std::string norm = NormalizePath(path);
-    m_guidToPath[guid] = path;
+    const std::string resolvedPath = ResolveFilesystemPath(path);
+    std::string norm = FilesystemPathKey(resolvedPath);
+
+    const auto previousPath = m_guidToPath.find(guid);
+    if (previousPath != m_guidToPath.end()) {
+        for (auto it = m_pathToGuid.begin(); it != m_pathToGuid.end();) {
+            if (it->second == guid && it->first != norm)
+                it = m_pathToGuid.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    const auto previousGuid = m_pathToGuid.find(norm);
+    if (previousGuid != m_pathToGuid.end() && previousGuid->second != guid) {
+        const auto reverse = m_guidToPath.find(previousGuid->second);
+        if (reverse != m_guidToPath.end() && FilesystemPathKey(reverse->second) == norm)
+            m_guidToPath.erase(reverse);
+    }
+
+    m_guidToPath[guid] = resolvedPath;
     m_pathToGuid[norm] = guid;
 }
 
 void AssetDatabase::RemoveMappingByGuid(const std::string &guid)
 {
-    auto it = m_guidToPath.find(guid);
-    if (it != m_guidToPath.end()) {
-        RemoveMappingByPath(it->second);
-        m_guidToPath.erase(it);
+    for (auto it = m_pathToGuid.begin(); it != m_pathToGuid.end();) {
+        if (it->second == guid)
+            it = m_pathToGuid.erase(it);
+        else
+            ++it;
     }
+    m_guidToPath.erase(guid);
 }
 
 void AssetDatabase::RemoveMappingByPath(const std::string &path)
 {
-    std::string norm = NormalizePath(path);
+    std::string norm = FilesystemPathKey(path);
     auto it = m_pathToGuid.find(norm);
     if (it != m_pathToGuid.end()) {
         m_pathToGuid.erase(it);
@@ -1923,13 +1934,13 @@ void AssetDatabase::UpdateCachedFileState(const std::string &path, bool readOnly
 {
     CachedFileState state;
     if (!ReadFingerprint(ToFsPath(path), state.source)) {
-        m_fileStates.erase(NormalizePath(path));
+        m_fileStates.erase(FilesystemPathKey(path));
         return;
     }
     state.readOnly = readOnly;
     if (!readOnly)
         ReadFingerprint(ToFsPath(InxResourceMeta::GetMetaFilePath(path)), state.meta);
-    m_fileStates[NormalizePath(path)] = state;
+    m_fileStates[FilesystemPathKey(path)] = state;
 }
 
 bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata)
@@ -1972,13 +1983,7 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
         for (auto &runtimeArtifactWrite : runtimeArtifactWrites)
             writes.push_back(std::move(runtimeArtifactWrite));
         if (!writes.empty()) {
-            const std::string normalizedRoot = NormalizePath(m_projectRoot);
-            const std::string normalizedSource = NormalizePath(path);
-            const bool sourceInsideProject = normalizedSource == normalizedRoot ||
-                                             (normalizedSource.size() > normalizedRoot.size() &&
-                                              normalizedSource.compare(0, normalizedRoot.size(), normalizedRoot) == 0 &&
-                                              normalizedSource[normalizedRoot.size()] == '/');
-            if (sourceInsideProject) {
+            if (IsFilesystemPathWithin(path, m_projectRoot)) {
                 (void)DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath, std::move(writes),
                                                   {m_assetIndexPath});
             } else {
@@ -2163,14 +2168,28 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
 
     InxResourceMeta metaFile;
     std::string metaFilePath = InxResourceMeta::GetMetaFilePath(filePath);
-
-    const bool loadedExistingMeta = metaFile.LoadFromFile(metaFilePath);
+    bool loadedExistingMeta = false;
+    std::string preservedGuid = GetGuidFromPath(filePath);
+    if (!readOnly && std::filesystem::is_regular_file(ToFsPath(metaFilePath))) {
+        std::string recoveredGuid;
+        std::string loadError;
+        loadedExistingMeta = LoadCurrentMetadataDocument(metaFilePath, metaFile, recoveredGuid, loadError);
+        if (!loadedExistingMeta) {
+            if (preservedGuid.empty())
+                preservedGuid = std::move(recoveredGuid);
+            RemoveInvalidMetadataDocument(metaFilePath, loadError);
+        }
+    }
     if (!loadedExistingMeta) {
         m_loaders[type]->CreateMeta(contentPtr, content.size(), filePath, metaFile);
         if (readOnly) {
             metaFile.AddMetadata("guid", MakeReadOnlyGuid(identityKey));
             metaFile.AddMetadata("read_only", true);
-        } else if (persistMetadata) {
+        } else {
+            if (!preservedGuid.empty())
+                metaFile.AddMetadata("guid", preservedGuid);
+        }
+        if (!readOnly && persistMetadata) {
             if (!metaFile.SaveToFile(metaFilePath))
                 throw std::runtime_error("Failed to persist asset metadata: " + metaFilePath);
         }
@@ -2264,7 +2283,7 @@ void AssetDatabase::DeleteMetadata(const std::string &path)
 {
     namespace fs = std::filesystem;
 
-    const auto pathIt = m_pathToGuid.find(NormalizePath(path));
+    const auto pathIt = m_pathToGuid.find(FilesystemPathKey(path));
     if (pathIt != m_pathToGuid.end())
         m_metas.erase(pathIt->second);
 
@@ -2314,7 +2333,7 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
         ResourceType type = GetResourcesType(ext);
 
         if (type != ResourceType::Meta) {
-            CreateOrLoadMetadata(newPath, type, false, true, NormalizePath(newPath));
+            CreateOrLoadMetadata(newPath, type, false, true, FilesystemPathKey(newPath));
             INXLOG_INFO("AssetDatabase: created metadata at moved path: ", newPath);
         }
     }

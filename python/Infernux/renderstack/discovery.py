@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from Infernux.engine.path_utils import path_key, relative_path
 import sys
 from typing import Dict, Optional, Set
 
@@ -103,7 +104,7 @@ def _ensure_user_scripts_loaded(*keywords: str) -> None:
 
     for dirpath, _dirs, filenames in os.walk(project_root):
         # Skip hidden dirs, __pycache__, and build output directories
-        rel = os.path.relpath(dirpath, project_root)
+        rel = relative_path(dirpath, project_root, allow_root=True)
         parts = rel.split(os.sep)
         if any(
             p.startswith(".") or p in ("__pycache__", "build", "dist", ".venv", "venv", ".runtime")
@@ -117,7 +118,7 @@ def _ensure_user_scripts_loaded(*keywords: str) -> None:
             if not (fn.endswith(".py") or is_pyc) or fn.startswith("_"):
                 continue
             full = os.path.join(dirpath, fn)
-            norm = os.path.normcase(os.path.normpath(full))
+            norm = path_key(full)
             try:
                 mtime = os.path.getmtime(full)
             except OSError:

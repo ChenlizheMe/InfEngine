@@ -49,7 +49,7 @@ class _SemanticContext:
     def text_wrapped(_value: str) -> None:
         pass
 
-    def button(self, label: str, callback) -> None:
+    def button(self, label: str, callback, width: float = 0.0, height: float = 0.0) -> None:
         self.buttons[label] = callback
 
     def record_semantic_item(self, _kind, _label, _enabled, semantic_id) -> None:
@@ -287,6 +287,7 @@ from pathlib import Path
 import Infernux.lib as native
 from Infernux.engine.ui import project_file_ops
 from Infernux.engine.ui.project_delete_confirmation import ProjectDeleteConfirmationCoordinator
+from Infernux.engine.ui.scene_delete_confirmation import SceneDeleteConfirmationCoordinator
 
 
 class _ProjectDeleteSemanticContext:
@@ -337,7 +338,7 @@ class _ProjectDeleteSemanticContext:
     def end_popup() -> None:
         pass
 
-    def button(self, label: str, callback) -> None:
+    def button(self, label: str, callback, width: float = 0.0, height: float = 0.0) -> None:
         self.buttons[label] = callback
 
     def close_current_popup(self) -> None:
@@ -354,13 +355,14 @@ def test_project_delete_modal_publishes_semantics_and_cancel_preserves_asset(tmp
     ctx = _ProjectDeleteSemanticContext()
     coordinator.render(ctx)
 
-    assert ctx.opened == ["Delete Assets###project_delete_confirm"]
+    assert len(ctx.opened) == 1
+    assert ctx.opened[0].endswith("###project_delete_confirm")
     assert {
         "project.delete.dialog",
         "project.delete.confirm",
         "project.delete.cancel",
     }.issubset(ctx.semantics)
-    ctx.buttons["Cancel##project_delete_cancel"]()
+    next(callback for label, callback in ctx.buttons.items() if label.endswith("##cancel"))()
     assert coordinator.is_active is False
     assert asset.exists()
     assert deleted == []
@@ -380,9 +382,31 @@ def test_project_delete_modal_confirms_deduplicated_existing_paths(tmp_path):
     )
     ctx = _ProjectDeleteSemanticContext()
     coordinator.render(ctx)
-    ctx.buttons["Delete##project_delete_confirm"]()
+    next(callback for label, callback in ctx.buttons.items() if label.endswith("##confirm"))()
 
     assert received == [[str(first.resolve()), str(second.resolve())]]
+    assert coordinator.is_active is False
+    assert ctx.closed is True
+
+
+def test_scene_delete_modal_uses_shared_centered_framework_and_defers_delete():
+    deleted: list[str] = []
+    coordinator = SceneDeleteConfirmationCoordinator()
+
+    assert coordinator.request(["Player"], lambda: deleted.append("Player"))
+    assert deleted == []
+    ctx = _ProjectDeleteSemanticContext()
+    coordinator.render(ctx)
+
+    assert ctx.opened[0].endswith("###scene_delete_confirm")
+    assert {
+        "hierarchy.delete.dialog",
+        "hierarchy.delete.confirm",
+        "hierarchy.delete.cancel",
+    }.issubset(ctx.semantics)
+    assert deleted == []
+    next(callback for label, callback in ctx.buttons.items() if label.endswith("##confirm"))()
+    assert deleted == ["Player"]
     assert coordinator.is_active is False
     assert ctx.closed is True
 

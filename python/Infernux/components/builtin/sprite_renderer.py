@@ -16,6 +16,7 @@ from typing import List, Optional
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
 from Infernux.components.serialized_field import FieldType
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import lexical_path, portable_path, same_path
 
 
 def _to_native_material(value):
@@ -200,12 +201,8 @@ class SpriteRenderer(BuiltinComponent):
             asset_path = adb.get_path_from_guid(guid)
             if not asset_path:
                 return
-            # Normalize both paths for comparison
-            import os
-            norm_asset = os.path.normpath(asset_path).lower()
-            norm_changed = os.path.normpath(file_path).lower()
             # Also check if the .meta was modified
-            if norm_changed == norm_asset or norm_changed == norm_asset + ".meta":
+            if same_path(file_path, asset_path) or same_path(file_path, asset_path + ".meta"):
                 Debug.log_internal(f"SpriteRenderer: asset changed, refreshing texture")
                 self._load_sprite_data()
                 self._apply_uv_rect()
@@ -404,7 +401,7 @@ class SpriteRenderer(BuiltinComponent):
 
     def _on_sprite_drop(self, payload):
         from Infernux.engine.ui.inspector_components import _record_builtin_property
-        dropped = str(payload).replace("\\", "/")
+        dropped = portable_path(str(payload))
         Debug.log(f"SpriteRenderer: drop payload = {dropped}")
         old = self.sprite_guid
         guid = self._resolve_texture_guid(dropped)
@@ -490,28 +487,19 @@ class SpriteRenderer(BuiltinComponent):
                 return ""
 
             candidates = [path_str]
-            normalized = path_str.replace("\\", "/")
+            normalized = portable_path(path_str)
             if normalized not in candidates:
                 candidates.append(normalized)
 
             try:
-                import os
-                normpath = os.path.normpath(path_str)
+                normpath = lexical_path(path_str)
                 if normpath not in candidates:
                     candidates.append(normpath)
-                slash_norm = normpath.replace("\\", "/")
+                slash_norm = portable_path(normpath)
                 if slash_norm not in candidates:
                     candidates.append(slash_norm)
             except Exception:
                 pass
-
-            lowered = []
-            for candidate in candidates:
-                if isinstance(candidate, str):
-                    low = candidate.lower()
-                    if low not in candidates and low not in lowered:
-                        lowered.append(low)
-            candidates.extend(lowered)
 
             for candidate in candidates:
                 guid = adb.get_guid_from_path(candidate)

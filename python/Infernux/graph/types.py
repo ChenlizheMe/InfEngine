@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from Infernux.engine.path_utils import portable_path
+
 
 class ValueType(str, Enum):
     BOOL = "bool"
@@ -40,7 +42,7 @@ class AssetReference:
         if type(self.guid) is not str or type(self.path_hint) is not str:
             raise TypeError("asset reference guid and path_hint must be strings")
         object.__setattr__(self, "guid", self.guid.strip())
-        object.__setattr__(self, "path_hint", self.path_hint.strip().replace("\\", "/"))
+        object.__setattr__(self, "path_hint", portable_path(self.path_hint.strip()))
 
     def to_dict(self) -> dict[str, str]:
         return {"guid": self.guid, "path_hint": self.path_hint}

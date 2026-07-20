@@ -12,6 +12,7 @@ from Infernux.ui import UICanvas, UIText, UIImage, UIButton
 from Infernux.ui.enums import TextResizeMode
 from Infernux.ui.enums import RenderMode, TextAlignH, TextAlignV
 from Infernux.engine.project_context import get_project_root
+from Infernux.engine.path_utils import relative_path, resolved_path
 
 from .inspector_components import _record_property, register_py_component_renderer
 from Infernux.engine.i18n import t
@@ -164,7 +165,7 @@ def _get_project_font_options():
                 continue
             seen_names.add(name_lower)
             abs_path = os.path.join(dirpath, filename)
-            rel_path = os.path.relpath(abs_path, root).replace("\\", "/")
+            rel_path = relative_path(abs_path, root)
             found.append((filename, rel_path))
 
     found.sort(key=lambda item: item[0].lower())
@@ -275,7 +276,7 @@ def _set_native_size(comp):
     project_root = get_project_root()
     if not project_root:
         return
-    abs_path = os.path.normpath(os.path.join(project_root, tex_path))
+    abs_path = resolved_path(os.path.join(project_root, tex_path))
     if not os.path.isfile(abs_path):
         return
 
@@ -294,7 +295,7 @@ def _set_native_size(comp):
 
     _, tex_w, tex_h = query_or_schedule_texture(
         native,
-        f"ui_native_size|{os.path.normpath(tex_path)}",
+        f"ui_native_size|{resolved_path(tex_path)}",
         abs_path,
         int(stamp),
         nearest=False,

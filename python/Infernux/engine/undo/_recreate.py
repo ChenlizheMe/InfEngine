@@ -25,6 +25,7 @@ def _recreate_game_object_from_document(document: dict,
         document,
         asset_database=sfm._asset_database if sfm else None,
         preserve_document_ids=True,
+        reference_scene=scene,
     )
 
     obj = scene.create_game_object("__undo_restore__")

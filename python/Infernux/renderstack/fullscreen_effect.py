@@ -259,13 +259,20 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
                 if meta is None:
                     raise ValueError(f"{type(self).__name__} has no parameter '{field_name}'")
                 if meta.field_type == FieldType.ENUM:
-                    if type(value) is not dict or set(value) != {"__enum_name__"}:
-                        raise ValueError(f"{type(self).__name__}.{field_name} requires an enum value")
                     enum_cls = meta.enum_type
-                    enum_name = value["__enum_name__"]
-                    if enum_cls is None or type(enum_name) is not str or enum_name not in enum_cls.__members__:
+                    if enum_cls is None:
+                        raise ValueError(f"{type(self).__name__}.{field_name} has no enum type")
+                    if type(value) is dict and set(value) == {"__enum_name__"}:
+                        enum_name = value["__enum_name__"]
+                        if type(enum_name) is not str or enum_name not in enum_cls.__members__:
+                            raise ValueError(f"{type(self).__name__}.{field_name} has an unknown enum value")
+                        setattr(self, field_name, enum_cls[enum_name])
+                        continue
+                    try:
+                        enum_value = enum_cls(value)
+                    except (TypeError, ValueError):
                         raise ValueError(f"{type(self).__name__}.{field_name} has an unknown enum value")
-                    setattr(self, field_name, enum_cls[enum_name])
+                    setattr(self, field_name, enum_value)
                     continue
                 setattr(self, field_name, value)
         finally:

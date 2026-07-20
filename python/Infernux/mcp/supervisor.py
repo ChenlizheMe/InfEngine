@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
+from Infernux.engine.path_utils import is_path_within, relative_path, resolved_path, same_path
 from Infernux.mcp import capabilities
 from Infernux.mcp import checkpoints as checkpoint_store
 
@@ -57,12 +58,12 @@ class SupervisorSession:
     _player_log_handle: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.project_root = os.path.abspath(self.project_root)
+        self.project_root = resolved_path(self.project_root)
         self.mode = _require_choice("mode", self.mode, VALID_MODES)
         self.build_profile = _require_choice("build_profile", self.build_profile, VALID_BUILD_PROFILES)
         self.recording_enabled = bool(self.recording_enabled and self.build_profile == "debug_feedback")
         self.managed_checkpoints_required = bool(self.managed_checkpoints_required)
-        self.python_executable = os.path.abspath(self.python_executable)
+        self.python_executable = resolved_path(self.python_executable)
         self.mcp_host = _require_loopback_host(self.mcp_host)
         self.mcp_port = _require_port(self.mcp_port)
 
@@ -137,7 +138,7 @@ class SupervisorSession:
         only trusts a saved PID after the loopback endpoint, mode/profile,
         editor instance ID, lease fingerprint, and project lock all agree.
         """
-        root = os.path.abspath(project_root or "")
+        root = resolved_path(project_root or "")
         requested_session_id = str(session_id or "").strip()
         if not requested_session_id:
             raise ValueError("A non-empty session_id is required to resume a Supervisor session.")
@@ -145,8 +146,8 @@ class SupervisorSession:
         state = _read_json_object(state_path)
         if not state:
             raise FileNotFoundError(f"Supervisor session state was not found: {state_path}")
-        stored_root = os.path.abspath(str(state.get("project_root", "") or ""))
-        if not stored_root or os.path.normcase(stored_root) != os.path.normcase(root):
+        stored_root = resolved_path(str(state.get("project_root", "") or ""))
+        if not stored_root or not same_path(stored_root, root):
             raise ValueError("Persisted Supervisor session belongs to a different project root.")
         stored_session_id = str(state.get("session_id", "") or "").strip()
         if stored_session_id != requested_session_id:
@@ -173,7 +174,7 @@ class SupervisorSession:
         resumed._project_lock_token = str(state.get("project_lock_token", "") or "").strip()
         resumed._mcp_ready = bool(state.get("mcp_ready", False))
         resumed._player_control_token = str(state.get("player_control_token", "") or "").strip()
-        resumed._player_executable = os.path.abspath(str(state.get("player_executable", "") or "")) if state.get("player_executable") else ""
+        resumed._player_executable = resolved_path(str(state.get("player_executable", "") or "")) if state.get("player_executable") else ""
         resumed._player_start_scene = str(state.get("player_start_scene", "") or "").strip()
         resumed._player_ready = bool(state.get("player_ready", False))
         persisted_pid = int(state.get("editor_pid", 0) or 0)
@@ -447,6 +448,9 @@ class SupervisorSession:
         trigger_timeout: float = 60.0,
         hold_key: str | int | None = None,
         hold_keys: list[str | int] | None = None,
+        hold_mouse_buttons: list[int] | None = None,
+        mouse_x: float = -10_000.0,
+        mouse_y: float = -10_000.0,
         frame_count: int | None = None,
         hold_frame_count: int | None = None,
         wait_frame_count: int | None = None,
@@ -470,6 +474,7 @@ class SupervisorSession:
         settle_wait = _bounded_finite_float(wait_seconds, "wait_seconds", minimum=0.0, maximum=30.0)
         probes = _normalize_player_component_probes(component_probes, names)
         hold_scancodes = _normalize_player_hold_scancodes(hold_key, hold_keys)
+        mouse_buttons = _normalize_player_hold_mouse_buttons(hold_mouse_buttons)
         assertions = _normalize_player_stop_assertions(stop_assertions)
         normalized_stop_mode = str(stop_mode or "all").strip().lower()
         if normalized_stop_mode not in {"all", "any"}:
@@ -485,6 +490,13 @@ class SupervisorSession:
                     "trigger_scene_name": str(trigger_scene_name or "").strip(),
                     "trigger_timeout": trigger_wait,
                     "hold_scancodes": hold_scancodes,
+                    "hold_mouse_buttons": mouse_buttons,
+                    "mouse_x": _bounded_finite_float(
+                        mouse_x, "mouse_x", minimum=-100_000.0, maximum=100_000.0
+                    ),
+                    "mouse_y": _bounded_finite_float(
+                        mouse_y, "mouse_y", minimum=-100_000.0, maximum=100_000.0
+                    ),
                     "frame_count": frame_count,
                     "hold_frame_count": hold_frame_count,
                     "wait_frame_count": wait_frame_count,
@@ -1137,9 +1149,9 @@ class SupervisorSession:
                 f"{readiness.get('ready_error', 'unknown error')}"
             )
         observed = self._read_mcp_session_status(timeout_seconds=timeout_seconds)
-        observed_root = os.path.abspath(str(observed.get("project_root", "") or ""))
+        observed_root = resolved_path(str(observed.get("project_root", "") or ""))
         observed_session_id = str(observed.get("session_id", "") or "")
-        if os.path.normcase(observed_root) != os.path.normcase(self.project_root):
+        if not same_path(observed_root, self.project_root):
             raise RuntimeError("MCP endpoint project root does not match the persisted Supervisor session.")
         if observed_session_id != self.session_id:
             raise RuntimeError("MCP endpoint session_id does not match the persisted Supervisor session.")
@@ -1319,8 +1331,8 @@ class SupervisorSession:
             raise RuntimeError("Editor project lock token does not match the persisted Supervisor session.")
         if int(lock.get("pid", 0) or 0) != int(editor.get("pid", 0) or 0):
             raise RuntimeError("Editor project lock PID does not match the running Editor process.")
-        lock_project = os.path.abspath(str(lock.get("project_path", "") or ""))
-        if os.path.normcase(lock_project) != os.path.normcase(self.project_root):
+        lock_project = resolved_path(str(lock.get("project_path", "") or ""))
+        if not same_path(lock_project, self.project_root):
             raise RuntimeError("Editor project lock project path does not match the persisted Supervisor session.")
 
     def _wait_for_clean_editor_shutdown(self, editor_pid: int, *, timeout_seconds: float) -> bool:
@@ -1403,15 +1415,15 @@ class SupervisorSession:
 
 
 def _validate_player_executable(executable_path: str, project_root: str) -> tuple[str, dict[str, Any]]:
-    executable = os.path.abspath(str(executable_path or ""))
+    executable = resolved_path(str(executable_path or ""))
     if not os.path.isfile(executable):
         raise FileNotFoundError(f"Player executable was not found: {executable}")
     output_root = os.path.dirname(executable)
     marker = _read_json_object(os.path.join(output_root, ".infernux-build-output"))
     if marker.get("tool") != "Infernux" or marker.get("kind") != "build-output":
         raise ValueError("Player executable is not inside a verified Infernux build output directory.")
-    marker_project = os.path.abspath(str(marker.get("project_path", "") or ""))
-    if os.path.normcase(marker_project) != os.path.normcase(os.path.abspath(project_root)):
+    marker_project = resolved_path(str(marker.get("project_path", "") or ""))
+    if not same_path(marker_project, project_root):
         raise ValueError("Player build output belongs to a different project.")
     manifest_path = os.path.join(output_root, "Data", "BuildManifest.json")
     manifest = _read_json_object(manifest_path)
@@ -1428,13 +1440,10 @@ def _resolve_player_start_scene(start_scene: str, project_root: str, manifest: d
     if not requested:
         return ""
 
-    root = os.path.abspath(project_root)
-    candidate = os.path.abspath(requested if os.path.isabs(requested) else os.path.join(root, requested))
-    try:
-        if os.path.commonpath([root, candidate]) != root:
-            raise ValueError("Player validation start_scene must stay inside the project root.")
-    except ValueError as exc:
-        raise ValueError("Player validation start_scene must stay inside the project root.") from exc
+    root = resolved_path(project_root)
+    candidate = resolved_path(requested if os.path.isabs(requested) else os.path.join(root, requested))
+    if not is_path_within(candidate, root):
+        raise ValueError("Player validation start_scene must stay inside the project root.")
     if os.path.splitext(candidate)[1].lower() != ".scene":
         raise ValueError("Player validation start_scene must name a .scene file.")
 
@@ -1442,9 +1451,9 @@ def _resolve_player_start_scene(start_scene: str, project_root: str, manifest: d
         scene = str(listed or "").strip()
         if not scene:
             continue
-        manifest_candidate = os.path.abspath(scene if os.path.isabs(scene) else os.path.join(root, scene))
-        if os.path.normcase(manifest_candidate) == os.path.normcase(candidate):
-            return os.path.relpath(manifest_candidate, root).replace("\\", "/")
+        manifest_candidate = resolved_path(scene if os.path.isabs(scene) else os.path.join(root, scene))
+        if same_path(manifest_candidate, candidate):
+            return relative_path(manifest_candidate, root)
     raise ValueError("Player validation start_scene must be declared by the current Debug Player BuildManifest.")
 
 
@@ -1462,12 +1471,12 @@ def _compact_checkpoint_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_project_root(path: str) -> None:
-    root = os.path.abspath(path)
+    root = resolved_path(path)
     if not os.path.isabs(root):
         raise ValueError("Project root must be an absolute path.")
-    home = os.path.abspath(os.path.expanduser("~"))
+    home = resolved_path(os.path.expanduser("~"))
     desktop = os.path.join(home, "Desktop")
-    if os.path.normcase(root) == os.path.normcase(desktop):
+    if same_path(root, desktop):
         raise ValueError("Project root must be a named folder under Desktop, not the entire Desktop.")
 
 
@@ -1646,6 +1655,20 @@ def _normalize_player_hold_scancodes(
     if len(set(scancodes)) != len(scancodes):
         raise ValueError("hold_keys must not contain duplicate keys.")
     return scancodes
+
+
+def _normalize_player_hold_mouse_buttons(value: list[int] | None) -> list[int]:
+    buttons = list(value or [])
+    if len(buttons) > 5:
+        raise ValueError("hold_mouse_buttons may contain at most 5 buttons.")
+    normalized: list[int] = []
+    for button in buttons:
+        if isinstance(button, bool) or int(button) not in range(5):
+            raise ValueError("hold_mouse_buttons must use Unity button indices 0 through 4.")
+        normalized.append(int(button))
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("hold_mouse_buttons must not contain duplicate buttons.")
+    return normalized
 
 
 def _normalize_player_stop_assertions(assertions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

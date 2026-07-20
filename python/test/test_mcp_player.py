@@ -102,6 +102,9 @@ def test_player_validation_tools_proxy_only_constrained_operations(tmp_path, mon
         seconds=1.5,
         trigger_scene_name="racetrack",
         hold_keys=["W", "A"],
+        hold_mouse_buttons=[1],
+        mouse_x=640.0,
+        mouse_y=360.0,
         hold_frame_count=90,
         wait_frame_count=30,
         pause_on_complete=True,
@@ -139,6 +142,9 @@ def test_player_validation_tools_proxy_only_constrained_operations(tmp_path, mon
     assert supervisor.calls[4][2]["trigger_scene_name"] == "racetrack"
     assert supervisor.calls[4][2]["component_probes"][0]["fields"] == ["current_speed_kph"]
     assert supervisor.calls[4][2]["hold_keys"] == ["W", "A"]
+    assert supervisor.calls[4][2]["hold_mouse_buttons"] == [1]
+    assert supervisor.calls[4][2]["mouse_x"] == 640.0
+    assert supervisor.calls[4][2]["mouse_y"] == 360.0
     assert supervisor.calls[4][2]["hold_frame_count"] == 90
     assert supervisor.calls[4][2]["wait_frame_count"] == 30
     assert supervisor.calls[4][2]["pause_on_complete"] is True

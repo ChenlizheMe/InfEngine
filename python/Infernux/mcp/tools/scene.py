@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
 from Infernux.mcp.tools.common import (
     coerce_vector3,
     find_game_object,
@@ -101,8 +102,8 @@ def register_scene_tools(mcp) -> None:
                 raise RuntimeError("SceneFileManager is not available.")
             if getattr(sfm, "is_dirty", False):
                 raise RuntimeError("The active scene is dirty. Call scene_save before scene.open.")
-            current_path = os.path.abspath(str(getattr(sfm, "current_scene_path", "") or ""))
-            if current_path and os.path.abspath(scene_path) == current_path:
+            current_path = resolved_path(str(getattr(sfm, "current_scene_path", "") or ""))
+            if current_path and same_path(scene_path, current_path):
                 return {
                     "accepted": True,
                     "already_open": True,
@@ -238,7 +239,8 @@ def register_scene_tools(mcp) -> None:
                 raise RuntimeError(f"Failed to add component '{component_type}'.")
 
             for key, value in (fields or {}).items():
-                setattr(comp, key, _coerce_property_value(key, value))
+                current_value = _component_field_value(comp, key)
+                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
 
             from Infernux.engine.ui._inspector_undo import _record_add_component_compound
             _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
@@ -492,7 +494,7 @@ def register_scene_tools(mcp) -> None:
             created = []
             parent_id = 0
             current_path = ""
-            target_path = str(path).replace("\\", "/").strip("/")
+            target_path = portable_path(str(path)).strip("/")
             for part in [p for p in target_path.split("/") if p]:
                 current_path = f"{current_path}/{part}" if current_path else part
                 existing = _find_by_path_exact(current_path)
@@ -734,8 +736,8 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            old_value = getattr(comp, field)
-            new_value = _coerce_property_value(field, value)
+            old_value = _component_field_value(comp, field)
+            new_value = _coerce_component_property_value(comp, field, value, old_value)
             from Infernux.engine.ui._inspector_undo import _record_property
             _record_property(comp, field, old_value, new_value, f"Set {component_type}.{field}")
             return {
@@ -757,12 +759,49 @@ def register_scene_tools(mcp) -> None:
             comp = _find_component(obj, component_type, int(ordinal))
             if comp is None:
                 raise FileNotFoundError(f"Component '{component_type}' was not found on GameObject {object_id}.")
-            from Infernux.engine.ui._inspector_undo import _record_property
-            changed = {}
+            changes = []
             for field, value in (values or {}).items():
-                old_value = getattr(comp, field)
-                new_value = _coerce_property_value(field, value)
-                _record_property(comp, field, old_value, new_value, f"Set {component_type}.{field}")
+                old_value = _component_field_value(comp, field)
+                new_value = _coerce_component_property_value(comp, field, value, old_value)
+                changes.append((field, old_value, new_value))
+
+            from Infernux.engine.undo import (
+                CompoundCommand,
+                SetPropertyCommand,
+                UndoManager,
+            )
+            commands = [
+                SetPropertyCommand(
+                    comp,
+                    field,
+                    old_value,
+                    new_value,
+                    f"Set {component_type}.{field}",
+                )
+                for field, old_value, new_value in changes
+            ]
+            manager = UndoManager.instance()
+            if manager and commands:
+                command = commands[0] if len(commands) == 1 else CompoundCommand(
+                    commands,
+                    f"Set {component_type} Fields",
+                )
+                manager.execute(command)
+            elif commands:
+                applied = []
+                try:
+                    for field, old_value, new_value in changes:
+                        setattr(comp, field, new_value)
+                        applied.append((field, old_value))
+                except Exception:
+                    for field, old_value in reversed(applied):
+                        setattr(comp, field, old_value)
+                    raise
+                from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+                _notify_scene_modified()
+
+            changed = {}
+            for field, _old_value, _new_value in changes:
                 changed[field] = serialize_value(getattr(comp, field))
             return {"object_id": int(obj.id), "component": serialize_component(comp), "changed": changed}
 
@@ -810,7 +849,8 @@ def register_scene_tools(mcp) -> None:
                 _record_add_component_compound(obj, component_type, comp, before_ids, is_py=is_py)
                 created = True
             for key, value in (fields or {}).items():
-                setattr(comp, key, _coerce_property_value(key, value))
+                current_value = _component_field_value(comp, key)
+                setattr(comp, key, _coerce_component_property_value(comp, key, value, current_value))
             return {"object_id": int(obj.id), "created": created, "component": serialize_component(comp), "components": _all_components(obj)}
 
         return main_thread("component_ensure", _ensure, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
@@ -1061,7 +1101,7 @@ def _find_by_path_exact(path: str):
     scene = SceneManager.instance().get_active_scene()
     if not scene:
         raise RuntimeError("No active scene.")
-    normalized = str(path).replace("\\", "/").strip("/")
+    normalized = portable_path(str(path)).strip("/")
     if not normalized:
         return None
     for obj in list(scene.get_all_objects() or []):
@@ -1108,10 +1148,59 @@ def _component_snapshot(obj, comp) -> dict[str, Any]:
     }
 
 
-def _coerce_property_value(field: str, value: Any) -> Any:
+def _coerce_property_value(field: str, value: Any, current_value: Any = None) -> Any:
     if isinstance(value, dict) and {"x", "y", "z"}.issubset(value.keys()):
         return coerce_vector3(value)
+    if isinstance(value, (list, tuple)) and current_value is not None:
+        if all(hasattr(current_value, axis) for axis in ("x", "y", "z")):
+            if hasattr(current_value, "w") and len(value) >= 4:
+                try:
+                    return type(current_value)(*(float(item) for item in value[:4]))
+                except (TypeError, ValueError):
+                    pass
+            if len(value) >= 3:
+                return coerce_vector3(value)
+        if all(hasattr(current_value, axis) for axis in ("x", "y")) and len(value) >= 2:
+            try:
+                return type(current_value)(float(value[0]), float(value[1]))
+            except (TypeError, ValueError):
+                pass
     return value
+
+
+def _component_field_value(comp, field: str) -> Any:
+    from Infernux.components.serialized_field import (
+        get_raw_field_value,
+        get_serialized_fields,
+    )
+
+    if field in get_serialized_fields(type(comp)):
+        return get_raw_field_value(comp, field)
+    return getattr(comp, field)
+
+
+def _coerce_component_property_value(
+    comp,
+    field: str,
+    value: Any,
+    current_value: Any = None,
+) -> Any:
+    from Infernux.components.serialized_field import (
+        coerce_serialized_field_input,
+        get_serialized_fields,
+    )
+
+    metadata = get_serialized_fields(type(comp)).get(field)
+    if metadata is not None:
+        if metadata.readonly:
+            raise AttributeError(f"{type(comp).__name__}.{field} is readonly")
+        value = _coerce_property_value(field, value, current_value)
+        return coerce_serialized_field_input(
+            value,
+            metadata,
+            f"{type(comp).__name__}.{field}",
+        )
+    return _coerce_property_value(field, value, current_value)
 
 
 def _is_python_script_component(comp) -> bool:
@@ -1482,7 +1571,7 @@ def _project_rel(path: str | None) -> str:
         from Infernux.engine.project_context import get_project_root
         root = get_project_root()
         if root:
-            return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/")
+            return relative_path(path, root, allow_root=True)
     except Exception:
         pass
     return str(path)

@@ -42,8 +42,21 @@ if(NOT WHEEL_COUNT EQUAL 1)
 endif()
 
 list(GET WHEELS 0 WHEEL_TO_INSTALL)
+
+# pip renames packages to leading-tilde directories while uninstalling on
+# Windows. Interrupted installs and loaded native DLLs can leave those trees
+# behind; a later wheel install may then combine old and new package content.
 execute_process(
-    COMMAND "${PYTHON_EXECUTABLE}" -m pip uninstall -y Infernux
+    COMMAND "${PYTHON_EXECUTABLE}" "${INFERNUX_SOURCE_DIR}/cmake/clean_installed_infernux.py" residues
+    RESULT_VARIABLE _preclean_result
+    COMMAND_ECHO STDOUT
+)
+if(NOT _preclean_result EQUAL 0)
+    message(FATAL_ERROR "Failed to remove stale Infernux pip directories before uninstall")
+endif()
+
+execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" -m pip --disable-pip-version-check uninstall -y Infernux
     RESULT_VARIABLE _pip_uninstall_result
     COMMAND_ECHO STDOUT
 )
@@ -53,11 +66,41 @@ if(NOT _pip_uninstall_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${PYTHON_EXECUTABLE}" -m pip install --no-deps --force-reinstall "${WHEEL_TO_INSTALL}"
+    COMMAND "${PYTHON_EXECUTABLE}" "${INFERNUX_SOURCE_DIR}/cmake/clean_installed_infernux.py" purge
+    RESULT_VARIABLE _purge_result
+    COMMAND_ECHO STDOUT
+)
+if(NOT _purge_result EQUAL 0)
+    message(FATAL_ERROR
+        "Failed to purge the previous Infernux installation. Close running editors/players and retry."
+    )
+endif()
+
+execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" -m pip --disable-pip-version-check install --no-deps --no-cache-dir
+            "${WHEEL_TO_INSTALL}"
     RESULT_VARIABLE _pip_install_result
     COMMAND_ECHO STDOUT
 )
 
 if(NOT _pip_install_result EQUAL 0)
     message(FATAL_ERROR "Failed to install wheel: ${WHEEL_TO_INSTALL}")
+endif()
+
+execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" "${INFERNUX_SOURCE_DIR}/cmake/clean_installed_infernux.py" residues
+    RESULT_VARIABLE _postclean_result
+    COMMAND_ECHO STDOUT
+)
+if(NOT _postclean_result EQUAL 0)
+    message(FATAL_ERROR "Failed to remove stale Infernux pip directories after install")
+endif()
+
+execute_process(
+    COMMAND "${PYTHON_EXECUTABLE}" "${INFERNUX_SOURCE_DIR}/cmake/clean_installed_infernux.py" verify
+    RESULT_VARIABLE _verify_install_result
+    COMMAND_ECHO STDOUT
+)
+if(NOT _verify_install_result EQUAL 0)
+    message(FATAL_ERROR "Installed Infernux wheel failed cleanliness verification")
 endif()

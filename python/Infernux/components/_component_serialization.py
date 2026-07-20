@@ -66,6 +66,7 @@ class ComponentSerializationMixin:
             fields,
             owner_name=self.__class__.__name__,
             metadata_keys=metadata_keys,
+            allow_missing=True,
         )
 
         saved_id = data.get("__component_id__")
@@ -73,12 +74,15 @@ class ComponentSerializationMixin:
             raise ValueError("__component_id__ must be a positive integer when present")
 
         from .value_codec import VALUE_CODECS
-        for name, meta in fields.items():
+        present_fields = {
+            name: meta for name, meta in fields.items() if name in data
+        }
+        for name, meta in present_fields.items():
             VALUE_CODECS.validate(data[name], meta, f"{self.__class__.__name__}.{name}")
 
         decoded = {
             name: self._deserialize_value(data[name], meta)
-            for name, meta in fields.items()
+            for name, meta in present_fields.items()
         }
         previous_values = {
             name: get_raw_field_value(self, name)

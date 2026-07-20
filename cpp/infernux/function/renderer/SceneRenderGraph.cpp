@@ -422,7 +422,10 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
             }
         }
 
-        if (writesBackbuffer && writesSingleSampleTarget) {
+        // A graph that explicitly disables MSAA can safely combine the
+        // camera-sized main depth target with single-sample transient MRTs.
+        // The renderer applies the 1x request before executing the graph.
+        if (writesBackbuffer && writesSingleSampleTarget && desc.msaaSamples != 1) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                          "' mixes backbuffer-sampled and single-sample transient attachments");
             return false;

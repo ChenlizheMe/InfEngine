@@ -223,6 +223,16 @@ class TestMeshImportSettings:
         with pytest.raises(ValueError):
             MeshImportSettings.from_dict({"flip_uvs": False})
 
+    def test_importer_metadata_can_coexist_with_current_settings(self):
+        document = MeshImportSettings().to_dict()
+        document.update(
+            guid="mesh-guid",
+            bone_count=14,
+            animation_names_csv="Armature|ArmatureAction",
+        )
+
+        assert MeshImportSettings.from_dict(document) == MeshImportSettings()
+
     def test_copy(self):
         s = MeshImportSettings(optimize_mesh=False)
         c = s.copy()

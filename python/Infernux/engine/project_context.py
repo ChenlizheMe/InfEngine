@@ -5,6 +5,7 @@ import sys
 from contextlib import contextmanager
 from typing import Iterator, Optional, Callable, Any
 from Infernux.debug import Debug
+from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
 
 _project_root: Optional[str] = None
 _guid_manifest: Optional[dict] = None
@@ -19,7 +20,7 @@ _panel_discard_handlers: dict[str, Callable[[], Any]] = {}
 def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
     global _project_root
-    _project_root = os.path.abspath(path) if path else None
+    _project_root = resolved_path(path) if path else None
 
 
 def get_project_root() -> Optional[str]:
@@ -154,23 +155,19 @@ def get_script_module_name(path: Optional[str]) -> Optional[str]:
         return None
 
     assets_root = get_assets_root()
-    resolved_abs = os.path.abspath(resolved)
+    resolved_abs = resolved_path(resolved)
     if not assets_root:
         return None
 
-    try:
-        if os.path.commonpath([resolved_abs, assets_root]) != assets_root:
-            return None
-    except ValueError as exc:
-        Debug.log_suppressed("project_context.normalize_relative_path", exc)
+    if not is_path_within(resolved_abs, assets_root):
         return None
 
-    rel_path = os.path.relpath(resolved_abs, assets_root)
+    rel_path = relative_path(resolved_abs, assets_root)
     module_path, ext = os.path.splitext(rel_path)
     if ext not in (".py", ".pyc"):
         return None
 
-    parts = module_path.replace("\\", "/").split("/")
+    parts = portable_path(module_path).split("/")
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
     if not parts:
@@ -189,22 +186,19 @@ def get_script_import_paths(path: Optional[str] = None) -> list[str]:
       ``from scripts.foo import Bar``.
     """
     resolved = resolve_script_path(path) if path else None
-    resolved_abs = os.path.abspath(resolved) if resolved else ""
+    resolved_abs = resolved_path(resolved) if resolved else ""
     assets_root = get_assets_root()
     project_root = get_project_root()
 
     roots: list[str] = []
 
     if assets_root and resolved_abs:
-        try:
-            if os.path.commonpath([resolved_abs, assets_root]) == assets_root:
-                roots.append(assets_root)
-                parent_dir = os.path.dirname(resolved_abs)
-                if parent_dir and parent_dir not in roots:
-                    roots.append(parent_dir)
-                return roots
-        except ValueError as exc:
-            Debug.log_suppressed("project_context.collect_assets_roots", exc)
+        if is_path_within(resolved_abs, assets_root):
+            roots.append(assets_root)
+            parent_dir = os.path.dirname(resolved_abs)
+            if parent_dir and parent_dir not in roots:
+                roots.append(parent_dir)
+            return roots
 
     if assets_root:
         roots.append(assets_root)
@@ -241,11 +235,11 @@ def resolve_script_path(path: Optional[str]) -> Optional[str]:
     if not path:
         return path
     if os.path.isabs(path):
-        resolved = path
+        resolved = resolved_path(path)
     elif _project_root:
-        resolved = os.path.abspath(os.path.join(_project_root, path))
+        resolved = resolved_path(os.path.join(_project_root, path))
     else:
-        resolved = os.path.abspath(path)
+        resolved = resolved_path(path)
 
     # Fallback: .py → .pyc for packaged builds
     if not os.path.exists(resolved) and resolved.endswith('.py'):

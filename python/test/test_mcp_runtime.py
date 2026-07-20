@@ -130,7 +130,7 @@ def test_runtime_renderer_state_combines_frame_submission_and_gpu_residency(monk
         preview_task_snapshots = [
             {
                 "kind": "material",
-                "resource_key": "matedit|Assets/Test.mat",
+                "resource_key": "mat|Assets/Test.mat",
                 "generation": 2,
                 "ready_generation": 2,
                 "texture_id": 123,
@@ -364,6 +364,7 @@ def test_runtime_find_objects_exposes_name_to_id_resolution(monkeypatch):
 
 def test_runtime_measure_motion_holds_input_and_returns_trajectory_summary(monkeypatch):
     from Infernux.mcp.tools import input as input_tools
+    from Infernux.input import Input
 
     fake = _FakeMcp()
     runtime.register_runtime_tools(fake)
@@ -387,8 +388,11 @@ def test_runtime_measure_motion_holds_input_and_returns_trajectory_summary(monke
     monkeypatch.setattr(
         input_tools,
         "perform_key_transition",
-        lambda key, pressed, **_: transitions.append((key, pressed)) or {"ok": True, "data": {"delivered": True}},
+        lambda key, pressed, **_: transitions.append(
+            (key, pressed, Input._accepts_game_input(), Input.is_game_focused())
+        ) or {"ok": True, "data": {"delivered": True}},
     )
+    Input.set_game_focused(False)
 
     response = fake.tools["runtime_measure_motion"](
         ["PlayerCar"], seconds=0.2, hold_key="w", sample_interval=0.2
@@ -401,7 +405,11 @@ def test_runtime_measure_motion_holds_input_and_returns_trajectory_summary(monke
     assert measurement["axis_path_length"] == [0.0, 0.0, 2.5]
     assert measurement["path_length"] == pytest.approx(2.5)
     assert response["data"]["sample_count"] == 2
-    assert transitions == [("w", True), ("w", False)]
+    assert transitions == [
+        ("w", True, True, False),
+        ("w", False, True, False),
+    ]
+    assert Input._automation_game_input_depth == 0
 
 
 def test_runtime_measure_motion_holds_multiple_keys_in_one_action_window(monkeypatch):
@@ -432,7 +440,6 @@ def test_runtime_measure_motion_holds_multiple_keys_in_one_action_window(monkeyp
             "data": {"key": key, "pressed": pressed},
         },
     )
-
     response = fake.tools["runtime_measure_motion"](
         ["PlayerCar"], seconds=0.2, hold_keys=["w", "a"], sample_interval=0.2
     )
@@ -554,6 +561,7 @@ def test_armed_motion_capture_samples_across_a_later_real_play_transition(monkey
         return {"FallingBall": value}
 
     transitions = []
+    mouse_transitions = []
     monkeypatch.setattr(runtime, "_editor_state", state)
     monkeypatch.setattr(runtime, "_named_transform_snapshots", objects)
     monkeypatch.setattr(runtime, "_run_on_main", lambda _name, fn: fn())
@@ -578,6 +586,16 @@ def test_armed_motion_capture_samples_across_a_later_real_play_transition(monkey
             "data": {"delivered": True, "pressed": pressed},
         },
     )
+    monkeypatch.setattr(
+        input_tools,
+        "perform_mouse_button_transition",
+        lambda button, pressed, **kwargs: mouse_transitions.append(
+            (button, pressed, kwargs["x"], kwargs["y"])
+        ) or {
+            "ok": True,
+            "data": {"delivered": True, "button": button, "pressed": pressed},
+        },
+    )
 
     armed = fake.tools["runtime_motion_capture_arm"](
         ["FallingBall"],
@@ -585,6 +603,9 @@ def test_armed_motion_capture_samples_across_a_later_real_play_transition(monkey
         sample_interval=0.02,
         trigger_timeout=1.0,
         hold_keys=["w", "a"],
+        hold_mouse_buttons=[1],
+        mouse_x=640.0,
+        mouse_y=360.0,
         component_probes=[{
             "object_name": "FallingBall",
             "component_type": "Rigidbody",
@@ -612,9 +633,13 @@ def test_armed_motion_capture_samples_across_a_later_real_play_transition(monkey
     assert completed["data"]["component_measurements"][0]["sample_count"] >= 3
     assert completed["data"]["input_press"] == {"delivered": True, "pressed": True}
     assert completed["data"]["input_release"] == {"delivered": True, "pressed": False}
-    assert len(completed["data"]["input_presses"]) == 2
-    assert len(completed["data"]["input_releases"]) == 2
+    assert len(completed["data"]["input_presses"]) == 3
+    assert len(completed["data"]["input_releases"]) == 3
     assert transitions == [("w", True), ("a", True), ("a", False), ("w", False)]
+    assert mouse_transitions == [
+        (1, True, 640.0, 360.0),
+        (1, False, 640.0, 360.0),
+    ]
     runtime._MOTION_CAPTURES.clear()
 
 
@@ -658,6 +683,7 @@ def test_motion_capture_exposes_bounded_frame_plan_without_per_frame_requests(mo
         sample_interval=0.1,
         trigger_timeout=1.0,
         hold_keys=["w", "a"],
+        hold_mouse_buttons=[1],
         frame_count=180,
         pause_on_complete=True,
     )
@@ -668,6 +694,7 @@ def test_motion_capture_exposes_bounded_frame_plan_without_per_frame_requests(mo
     assert armed["data"]["wait_frame_count"] == 0
     assert armed["data"]["pause_on_complete"] is True
     assert armed["data"]["hold_keys"] == ["w", "a"]
+    assert armed["data"]["hold_mouse_buttons"] == [1]
     cancelled = fake.tools["runtime_motion_capture_cancel"](armed["data"]["capture_id"])
     assert cancelled["ok"] is True
     completed = fake.tools["runtime_motion_capture_status"](

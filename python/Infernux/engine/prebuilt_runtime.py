@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from Infernux.engine.path_utils import resolved_path
+
 from Infernux.engine.game_builder import GameBuilder
 from Infernux.engine.nuitka_builder import NuitkaBuilder
 from Infernux.resources import get_package_resources_path
@@ -17,14 +19,14 @@ from Infernux.resources import get_package_resources_path
 
 def _clean_generated_python_package_artifacts() -> None:
     """Remove editor metadata and stale incremental wheel payloads."""
-    package_root = Path(__file__).resolve().parents[1]
+    package_root = Path(resolved_path(__file__)).parents[1]
     for metadata_path in package_root.rglob("*.meta"):
         try:
             metadata_path.unlink()
         except OSError:
             pass
 
-    repository_root = Path(__file__).resolve().parents[3]
+    repository_root = Path(resolved_path(__file__)).parents[3]
     build_root = repository_root / "build"
     if not build_root.is_dir():
         return
@@ -82,7 +84,7 @@ def build_prebuilt_runtime(
         )
         builder.build(force_runtime_rebuild=force)
         exported_path = builder.export_runtime_pack(output_root)
-        module_root = str(Path(output_root).resolve().parent / "_runtime_modules")
+        module_root = str(Path(resolved_path(output_root)).parent / "_runtime_modules")
         exported_module_path = builder.export_runtime_module(
             module_root,
             module_name="parallel",
@@ -114,7 +116,7 @@ def build_prebuilt_runtime(
             json.dump(module_manifest, manifest_file, indent=2, sort_keys=True)
             manifest_file.write("\n")
         os.replace(temporary, module_manifest_path)
-        exported_resolved = Path(exported_path).resolve()
+        exported_resolved = Path(resolved_path(exported_path))
         for candidate_manifest in Path(output_root).glob("*/runtime-pack.json"):
             candidate_root = candidate_manifest.parent.resolve()
             if candidate_root == exported_resolved:
@@ -128,7 +130,7 @@ def build_prebuilt_runtime(
                 and candidate.get("profile") == profile
             ):
                 shutil.rmtree(candidate_root, ignore_errors=True)
-        exported_module_resolved = Path(exported_module_path).resolve()
+        exported_module_resolved = Path(resolved_path(exported_module_path))
         for candidate_manifest in Path(module_root).glob("*/parallel-module.json"):
             candidate_root = candidate_manifest.parent.resolve()
             if candidate_root == exported_module_resolved:
@@ -162,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-root",
-        default=str(Path(__file__).resolve().parents[1] / "_runtime_packs"),
+        default=str(Path(resolved_path(__file__)).parents[1] / "_runtime_packs"),
         help="Directory embedded into the platform wheel as Infernux package data.",
     )
     parser.add_argument("--profile", choices=("release", "debug", "all"), default="release")

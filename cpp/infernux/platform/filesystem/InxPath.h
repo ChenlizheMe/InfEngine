@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <core/log/InxLog.h>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -76,9 +78,9 @@ namespace infernux
 {
 
 /**
- * @brief Normalize a file path: replace backslashes with forward slashes.
+ * @brief Normalize a portable logical path by using forward slashes.
  */
-inline std::string NormalizePath(const std::string &path)
+inline std::string NormalizePortablePath(const std::string &path)
 {
     std::string result = path;
     std::replace(result.begin(), result.end(), '\\', '/');
@@ -135,6 +137,185 @@ inline std::string FromFsPath(const std::filesystem::path &p)
 #else
     return p.generic_string();
 #endif
+}
+
+/**
+ * @brief Return an absolute, lexically-normal UTF-8 path without consulting disk.
+ *
+ * Use this for paths that may
+ * no longer exist. It deliberately does not
+ * resolve symlinks or Windows 8.3 aliases, so its result never changes
+ * merely
+ * because a file was created or deleted.
+ */
+inline std::string NormalizeFilesystemPathLexically(const std::string &path)
+{
+    if (path.empty())
+        return {};
+
+    std::error_code error;
+    std::filesystem::path normalized = ToFsPath(path);
+    if (normalized.is_relative()) {
+        auto absolute = std::filesystem::absolute(normalized, error);
+        if (!error)
+            normalized = std::move(absolute);
+    }
+    return FromFsPath(normalized.lexically_normal());
+}
+
+/**
+ * @brief Resolve an existing path to its stable display/storage spelling.
+ *
+ * Existing aliases and symlinks are
+ * resolved when possible. Windows short
+ * names are expanded to long names. Missing paths fall back to absolute
+ *
+ * lexical normalization.
+ */
+inline std::string ResolveFilesystemPath(const std::string &path)
+{
+    std::string lexical = NormalizeFilesystemPathLexically(path);
+    if (lexical.empty())
+        return {};
+
+    std::error_code error;
+    std::filesystem::path resolved = ToFsPath(lexical);
+    auto canonical = std::filesystem::weakly_canonical(resolved, error);
+    if (!error)
+        resolved = std::move(canonical);
+
+#ifdef INX_PLATFORM_WINDOWS
+    std::filesystem::path existingPrefix = resolved;
+    std::vector<std::filesystem::path> missingSuffix;
+    while (!existingPrefix.empty() && !std::filesystem::exists(existingPrefix, error)) {
+        error.clear();
+        const auto parent = existingPrefix.parent_path();
+        if (parent == existingPrefix)
+            break;
+        missingSuffix.push_back(existingPrefix.filename());
+        existingPrefix = parent;
+    }
+
+    const std::wstring native = existingPrefix.native();
+    const DWORD required = GetLongPathNameW(native.c_str(), nullptr, 0);
+    if (required > 0) {
+        std::wstring expanded(static_cast<size_t>(required), L'\0');
+        const DWORD written = GetLongPathNameW(native.c_str(), expanded.data(), required);
+        if (written > 0 && written < required) {
+            expanded.resize(static_cast<size_t>(written));
+            resolved = std::filesystem::path(std::move(expanded));
+            for (auto it = missingSuffix.rbegin(); it != missingSuffix.rend(); ++it)
+                resolved /= *it;
+        }
+    }
+#endif
+
+    return FromFsPath(resolved.lexically_normal());
+}
+
+inline std::string PortablePathFilename(const std::string &path)
+{
+    return FromFsPath(ToFsPath(NormalizePortablePath(path)).filename());
+}
+
+inline std::string PortablePathStem(const std::string &path)
+{
+    return FromFsPath(ToFsPath(NormalizePortablePath(path)).stem());
+}
+
+inline bool TryNormalizePortableRelativePath(const std::string &path, std::string &normalized, bool allowRoot = false)
+{
+    normalized.clear();
+    if (path.empty())
+        return false;
+
+    const auto relative = ToFsPath(NormalizePortablePath(path)).lexically_normal();
+    if (relative.empty() || relative.is_absolute())
+        return false;
+    if (relative == ".") {
+        if (!allowRoot)
+            return false;
+        normalized = ".";
+        return true;
+    }
+    if (*relative.begin() == "..")
+        return false;
+    normalized = NormalizePortablePath(FromFsPath(relative));
+    return true;
+}
+
+inline std::string FoldFilesystemPathCase(std::string path)
+{
+#ifdef INX_PLATFORM_WINDOWS
+    std::wstring folded = ToFsPath(path).generic_wstring();
+    if (!folded.empty())
+        CharLowerBuffW(folded.data(), static_cast<DWORD>(folded.size()));
+    return FromFsPath(std::filesystem::path(std::move(folded)));
+#else
+    return path;
+#endif
+}
+
+inline std::string FilesystemPathKey(const std::string &path)
+{
+    return FoldFilesystemPathCase(ResolveFilesystemPath(path));
+}
+
+inline std::string LexicalFilesystemPathKey(const std::string &path)
+{
+    return FoldFilesystemPathCase(NormalizeFilesystemPathLexically(path));
+}
+
+inline bool FilesystemPathsEquivalent(const std::string &left, const std::string &right)
+{
+    if (left.empty() || right.empty())
+        return false;
+    std::error_code error;
+    if (std::filesystem::exists(ToFsPath(left), error) && !error && std::filesystem::exists(ToFsPath(right), error) &&
+        !error) {
+        const bool equivalent = std::filesystem::equivalent(ToFsPath(left), ToFsPath(right), error);
+        if (!error)
+            return equivalent;
+    }
+    return FilesystemPathKey(left) == FilesystemPathKey(right);
+}
+
+inline bool IsFilesystemPathWithin(const std::string &path, const std::string &root, bool allowRoot = true)
+{
+    if (path.empty() || root.empty())
+        return false;
+
+    const auto candidate = ToFsPath(FilesystemPathKey(path));
+    const auto parent = ToFsPath(FilesystemPathKey(root));
+    auto candidatePart = candidate.begin();
+    for (auto rootPart = parent.begin(); rootPart != parent.end(); ++rootPart, ++candidatePart) {
+        if (candidatePart == candidate.end() || *candidatePart != *rootPart)
+            return false;
+    }
+    return allowRoot || candidatePart != candidate.end();
+}
+
+inline bool TryMakeRelativeFilesystemPath(const std::string &path, const std::string &root, std::string &relative,
+                                          bool allowRoot = false)
+{
+    relative.clear();
+    if (!IsFilesystemPathWithin(path, root, allowRoot))
+        return false;
+
+    const auto candidate = ToFsPath(ResolveFilesystemPath(path));
+    const auto parent = ToFsPath(ResolveFilesystemPath(root));
+    auto result = candidate.lexically_relative(parent).lexically_normal();
+    if (result.empty() || result.is_absolute())
+        return false;
+    if (result == ".") {
+        if (!allowRoot)
+            return false;
+        relative = ".";
+        return true;
+    }
+    if (*result.begin() == "..")
+        return false;
+    return TryNormalizePortableRelativePath(FromFsPath(result), relative, allowRoot);
 }
 
 /**

@@ -122,6 +122,7 @@ if(MSVC)
     foreach(_infernux_target InfernuxRuntime _Infernux)
         target_compile_options(${_infernux_target} PRIVATE
             /utf-8
+            /MP       # Compile independent translation units concurrently.
             /FS       # Serialize writes to the shared compiler PDB under parallel MSBuild.
             /bigobj   # pybind11 binding TUs exceed the default COFF section limit
         )
@@ -282,6 +283,17 @@ option(INFERNUX_BUILD_TESTS "Build Infernux native regression tests" ON)
 if(INFERNUX_BUILD_TESTS)
     enable_testing()
     find_package(Threads REQUIRED)
+
+    add_executable(infernux_path_tests
+        cpp/tests/PathTests.cpp
+    )
+    target_include_directories(infernux_path_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_path_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.path COMMAND infernux_path_tests)
 
     add_executable(infernux_job_system_tests
         cpp/tests/JobSystemTests.cpp

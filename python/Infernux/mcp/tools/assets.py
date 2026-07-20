@@ -6,6 +6,7 @@ import os
 import json
 import shutil
 
+from Infernux.engine.path_utils import relative_path, same_path
 from Infernux.mcp.tools.common import (
     get_asset_database,
     ensure_not_active_scene_file,
@@ -54,7 +55,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 os.makedirs(folder, exist_ok=True)
                 notify_asset_changed(folder, "created")
             return {
-                "path": os.path.relpath(folder, project_path).replace("\\", "/"),
+                "path": relative_path(folder, project_path),
                 "created": not existed,
                 "existed": existed,
             }
@@ -98,7 +99,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             adb = get_asset_database()
 
             def _entry(path: str) -> dict:
-                rel = os.path.relpath(path, project_path).replace("\\", "/")
+                rel = relative_path(path, project_path)
                 data = {
                     "path": rel,
                     "name": os.path.basename(path),
@@ -117,13 +118,13 @@ def register_asset_tools(mcp, project_path: str) -> None:
                     for name in sorted(dirs + files):
                         entries.append(_entry(os.path.join(base, name)))
                         if len(entries) >= max_count:
-                            return {"root": os.path.relpath(root, project_path).replace("\\", "/"), "entries": entries}
+                            return {"root": relative_path(root, project_path, allow_root=True), "entries": entries}
             else:
                 for name in sorted(os.listdir(root)):
                     entries.append(_entry(os.path.join(root, name)))
                     if len(entries) >= max_count:
                         break
-            return {"root": os.path.relpath(root, project_path).replace("\\", "/"), "entries": entries}
+            return {"root": relative_path(root, project_path, allow_root=True), "entries": entries}
 
         return main_thread("asset_list", _list, arguments={"directory": directory, "recursive": recursive, "include_meta": include_meta, "limit": limit})
 
@@ -144,7 +145,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                     if exts and os.path.splitext(name)[1].lower() not in exts:
                         continue
                     path = os.path.join(base, name)
-                    matches.append(os.path.relpath(path, project_path).replace("\\", "/"))
+                    matches.append(relative_path(path, project_path))
                     if len(matches) >= max(int(limit), 1):
                         return {"matches": matches}
             return {"matches": matches}
@@ -165,7 +166,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
             return {
-                "path": os.path.relpath(file_path, project_path).replace("\\", "/"),
+                "path": relative_path(file_path, project_path),
                 "size": size,
                 "text": text,
             }
@@ -188,7 +189,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             write_document_text(file_path, text or "")
             notify_asset_changed(file_path, "modified" if existed else "created")
             return {
-                "path": os.path.relpath(file_path, project_path).replace("\\", "/"),
+                "path": relative_path(file_path, project_path),
                 "bytes": os.path.getsize(file_path),
                 "created": not existed,
             }
@@ -216,7 +217,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             write_document_text(file_path, updated)
             notify_asset_changed(file_path, "modified")
             return {
-                "path": os.path.relpath(file_path, project_path).replace("\\", "/"),
+                "path": relative_path(file_path, project_path),
                 "occurrences": occurrences,
                 "replaced": occurrences if replace_count < 0 else min(occurrences, replace_count),
                 "bytes": os.path.getsize(file_path),
@@ -230,7 +231,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
 
         def _delete():
             target = resolve_project_path(project_path, path)
-            if os.path.abspath(target) == os.path.abspath(project_path):
+            if same_path(target, project_path):
                 raise ValueError("Refusing to delete the project root.")
             if not os.path.exists(target):
                 raise FileNotFoundError(f"Path not found: {path}")
@@ -246,7 +247,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 else:
                     os.remove(target)
                 notify_asset_changed(target, "deleted")
-            return {"deleted": True, "path": os.path.relpath(target, project_path).replace("\\", "/"), "directory": is_dir}
+            return {"deleted": True, "path": relative_path(target, project_path), "directory": is_dir}
 
         return main_thread("asset_delete", _delete)
 
@@ -283,7 +284,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             else:
                 raise ValueError("Provide path or guid.")
             return {
-                "path": os.path.relpath(resolved_path, project_path).replace("\\", "/") if resolved_path else "",
+                "path": relative_path(resolved_path, project_path) if resolved_path else "",
                 "guid": resolved_guid,
             }
 
@@ -298,7 +299,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"Path not found: {path}")
             notify_asset_changed(file_path, "modified")
-            return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "imported": True}
+            return {"path": relative_path(file_path, project_path), "imported": True}
 
         return main_thread("asset_import", _import)
 
@@ -332,8 +333,8 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 raise RuntimeError(f"Failed to move '{src}' to '{dst}'")
             dst = moved
             return {
-                "old_path": os.path.relpath(src, project_path).replace("\\", "/"),
-                "path": os.path.relpath(dst, project_path).replace("\\", "/"),
+                "old_path": relative_path(src, project_path),
+                "path": relative_path(dst, project_path),
             }
 
         return main_thread("asset_move", _move)
@@ -362,7 +363,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                     raise FileExistsError(f"Destination already exists: {new_name}")
                 os.rename(src, dst)
             notify_asset_changed(dst, "modified")
-            return {"path": os.path.relpath(dst, project_path).replace("\\", "/")}
+            return {"path": relative_path(dst, project_path)}
 
         return main_thread("asset_rename", _rename)
 
@@ -394,8 +395,8 @@ def register_asset_tools(mcp, project_path: str) -> None:
                 shutil.copy2(src, dst)
             notify_asset_changed(dst, "created")
             return {
-                "source": os.path.relpath(src, project_path).replace("\\", "/"),
-                "path": os.path.relpath(dst, project_path).replace("\\", "/"),
+                "source": relative_path(src, project_path),
+                "path": relative_path(dst, project_path),
             }
 
         return main_thread("asset_copy", _copy)
@@ -443,7 +444,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
                     pass
                 if asset_type and str(type_name).lower() != str(asset_type).lower():
                     continue
-                matches.append({"guid": guid, "path": os.path.relpath(path, project_path).replace("\\", "/"), "type": type_name})
+                matches.append({"guid": guid, "path": relative_path(path, project_path), "type": type_name})
                 if len(matches) >= max(int(limit), 1):
                     break
             return {"assets": matches}
@@ -461,7 +462,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             if os.path.getsize(file_path) > max(int(max_bytes), 1):
                 raise ValueError("JSON file is too large.")
             with open(file_path, "r", encoding="utf-8") as f:
-                return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "json": json.load(f)}
+                return {"path": relative_path(file_path, project_path), "json": json.load(f)}
 
         return main_thread("asset_read_json", _read_json)
 
@@ -480,7 +481,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             from Infernux.core.document_store import write_document_text
             write_document_text(file_path, json.dumps(value, ensure_ascii=False, indent=int(indent)) + "\n")
             notify_asset_changed(file_path, "modified" if existed else "created")
-            return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "bytes": os.path.getsize(file_path), "created": not existed}
+            return {"path": relative_path(file_path, project_path), "bytes": os.path.getsize(file_path), "created": not existed}
 
         return main_thread("asset_write_json", _write_json, arguments={"path": path, "overwrite": overwrite, "indent": indent})
 
@@ -509,7 +510,7 @@ def register_asset_tools(mcp, project_path: str) -> None:
             from Infernux.core.document_store import write_document_text
             write_document_text(file_path, text)
             notify_asset_changed(file_path, "modified")
-            return {"path": os.path.relpath(file_path, project_path).replace("\\", "/"), "replacements": trace}
+            return {"path": relative_path(file_path, project_path), "replacements": trace}
 
         return main_thread("asset_patch_text", _patch_text)
 
@@ -527,7 +528,7 @@ def _create_builtin(project_path: str, kind: str, name: str, directory: str, sha
             success, message = True, "Folder already exists."
             existed = True
         elif os.path.exists(path):
-            rel_path = os.path.relpath(path, project_path).replace("\\", "/")
+            rel_path = relative_path(path, project_path)
             raise FileExistsError(f"Path exists but is not a folder: {rel_path}")
         else:
             track_project_path_before_change(project_path, path, "create_builtin")
@@ -572,7 +573,7 @@ def _create_builtin(project_path: str, kind: str, name: str, directory: str, sha
     return {
         "kind": normalized,
         "name": name,
-        "path": os.path.relpath(path, project_path).replace("\\", "/") if path else "",
+        "path": relative_path(path, project_path) if path else "",
         "absolute_path": path,
         "guid": guid,
         "created": not existed,

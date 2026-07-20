@@ -29,6 +29,8 @@ from __future__ import annotations
 import os
 from typing import Any, List, Optional, TYPE_CHECKING
 
+from Infernux.engine.path_utils import lexical_path
+
 from .closable_panel import ClosablePanel
 
 if TYPE_CHECKING:
@@ -299,9 +301,8 @@ class EditorPanel(ClosablePanel):
             return text
         if "path" not in key.lower():
             return text
-        text = text.replace("/", os.sep)
         if os.path.isabs(text):
-            return os.path.normpath(text)
+            return lexical_path(text)
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -309,8 +310,8 @@ class EditorPanel(ClosablePanel):
         except Exception:
             root = None
         if root:
-            return os.path.normpath(os.path.join(root, text))
-        return os.path.abspath(text)
+            return lexical_path(os.path.join(root, text))
+        return lexical_path(text)
 
     @classmethod
     def _auto_state_serialize_value(
@@ -388,9 +389,8 @@ class EditorPanel(ClosablePanel):
             return text
         if "path" not in key.lower():
             return text
-        text = text.replace("/", os.sep)
         if os.path.isabs(text):
-            return os.path.normpath(text)
+            return lexical_path(text)
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -398,7 +398,7 @@ class EditorPanel(ClosablePanel):
         except Exception:
             root = None
         if root:
-            return os.path.normpath(os.path.join(root, text))
+            return lexical_path(os.path.join(root, text))
         return text
 
     def _apply_auto_state(self, data: dict) -> None:

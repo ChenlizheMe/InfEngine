@@ -8,6 +8,7 @@ import os
 from Infernux.debug import Debug
 
 from Infernux.engine.ide_preference import get_ide
+from Infernux.engine.path_utils import resolved_path
 
 # File extensions to hide
 HIDDEN_EXTENSIONS = {'.meta', '.pyc', '.pyo', '.tmp'}
@@ -136,7 +137,7 @@ def open_in_vscode(file_path: str, line: int = 0, project_root: str = "") -> boo
     if not file_path:
         return False
 
-    file_path = os.path.abspath(file_path)
+    file_path = resolved_path(file_path)
     if not os.path.isfile(file_path):
         return False
 
@@ -148,7 +149,7 @@ def open_in_vscode(file_path: str, line: int = 0, project_root: str = "") -> boo
 
     cmd = []
     if project_root:
-        project_root = os.path.abspath(project_root)
+        project_root = resolved_path(project_root)
         if os.path.isdir(project_root):
             cmd.append(project_root)
     cmd.extend(['--goto', target])
@@ -546,7 +547,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     if not project_root:
         return False
 
-    project_root = os.path.abspath(project_root)
+    project_root = resolved_path(project_root)
 
     # Accept either a project directory or a file path inside the project.
     if os.path.isfile(project_root):
@@ -556,7 +557,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
         return False
 
     idea_dir = os.path.join(project_root, '.idea')
-    project_name = os.path.basename(os.path.normpath(project_root)) or 'Project'
+    project_name = os.path.basename(resolved_path(project_root)) or 'Project'
     module_name = 'project'
     module_rel_path = f'.idea/{module_name}.iml'
     setup_guide_path = os.path.join(project_root, 'PYCHARM_SETUP.zh-CN.en.md')
@@ -741,7 +742,7 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
     if not file_path:
         return False
 
-    file_path = os.path.abspath(file_path)
+    file_path = resolved_path(file_path)
     if not os.path.isfile(file_path):
         return False
 
@@ -749,7 +750,7 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
     if not pycharm_exe:
         return False
 
-    project_root = os.path.abspath(project_root) if project_root else ""
+    project_root = resolved_path(project_root) if project_root else ""
     if project_root:
         if os.path.isfile(project_root):
             project_root = os.path.dirname(project_root)
@@ -909,7 +910,7 @@ def reveal_in_file_explorer(path: str):
     import platform
     import subprocess
 
-    path = os.path.abspath(path)
+    path = resolved_path(path)
     system = platform.system()
     if system == 'Windows':
         # /select highlights the file/folder in Explorer

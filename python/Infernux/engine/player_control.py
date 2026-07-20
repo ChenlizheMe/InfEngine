@@ -11,6 +11,8 @@ import time
 import uuid
 from typing import Any
 
+from Infernux.engine.path_utils import resolved_path
+
 
 _MAX_COMMAND_BYTES = 64 * 1024
 _MAX_OBJECT_NAMES = 32
@@ -44,8 +46,8 @@ class PlayerControlChannel:
     """Poll a token-authenticated file channel from the Player main thread."""
 
     def __init__(self, request_path: str = "", response_path: str = "", token: str = "") -> None:
-        self.request_path = os.path.abspath(request_path) if request_path else ""
-        self.response_path = os.path.abspath(response_path) if response_path else ""
+        self.request_path = resolved_path(request_path) if request_path else ""
+        self.response_path = resolved_path(response_path) if response_path else ""
         self._token = str(token or "")
         self._last_command_id = ""
         self._pending_input: dict[str, Any] | None = None
@@ -223,6 +225,13 @@ class PlayerControlChannel:
                 if trigger_scene_name and initial_scene_name.casefold() == trigger_scene_name.casefold():
                     raise ValueError("motion capture must be armed before the target scene becomes active")
                 hold_scancodes = _bounded_scancodes(command.get("hold_scancodes", []))
+                hold_mouse_buttons = _bounded_mouse_buttons(command.get("hold_mouse_buttons", []))
+                mouse_x = _bounded_finite_float(
+                    command.get("mouse_x", -10_000.0), "mouse_x", minimum=-100_000.0, maximum=100_000.0
+                )
+                mouse_y = _bounded_finite_float(
+                    command.get("mouse_y", -10_000.0), "mouse_y", minimum=-100_000.0, maximum=100_000.0
+                )
                 frame_count = _bounded_positive_frame_count(command.get("frame_count"), "frame_count")
                 hold_frame_count = _bounded_positive_frame_count(
                     command.get("hold_frame_count"), "hold_frame_count"
@@ -232,7 +241,7 @@ class PlayerControlChannel:
                     frame_count,
                     hold_frame_count,
                     wait_frame_count,
-                    hold_scancodes,
+                    bool(hold_scancodes or hold_mouse_buttons),
                 )
                 wait_seconds = _bounded_finite_float(
                     command.get("wait_seconds", 0.0), "wait_seconds", minimum=0.0, maximum=30.0
@@ -252,6 +261,9 @@ class PlayerControlChannel:
                     "seconds": seconds,
                     "sample_interval": sample_interval,
                     "hold_scancodes": hold_scancodes,
+                    "hold_mouse_buttons": hold_mouse_buttons,
+                    "mouse_x": mouse_x,
+                    "mouse_y": mouse_y,
                     "frame_count": total_frame_count,
                     "hold_frame_count": hold_frame_count,
                     "wait_frame_count": wait_frame_count,
@@ -576,18 +588,18 @@ def _normalize_frame_plan(
     frame_count: int,
     hold_frame_count: int,
     wait_frame_count: int,
-    hold_scancodes: list[int],
+    has_held_input: bool,
 ) -> tuple[int, int, int]:
     if wait_frame_count and not hold_frame_count:
         raise ValueError("wait_frame_count requires hold_frame_count")
-    if hold_frame_count and not hold_scancodes:
-        raise ValueError("hold_frame_count requires hold_key or hold_keys")
+    if hold_frame_count and not has_held_input:
+        raise ValueError("hold_frame_count requires hold_key, hold_keys, or hold_mouse_buttons")
     if frame_count and wait_frame_count:
         raise ValueError("Use frame_count as the total budget, or use hold_frame_count with wait_frame_count")
     if frame_count:
         if hold_frame_count > frame_count:
             raise ValueError("hold_frame_count must not exceed frame_count")
-        if hold_scancodes and not hold_frame_count:
+        if has_held_input and not hold_frame_count:
             hold_frame_count = frame_count
         return hold_frame_count, frame_count - hold_frame_count, frame_count
     if hold_frame_count:
@@ -595,9 +607,24 @@ def _normalize_frame_plan(
         if total > _MAX_CAPTURE_FRAMES:
             raise ValueError(f"hold_frame_count plus wait_frame_count must not exceed {_MAX_CAPTURE_FRAMES}")
         return hold_frame_count, wait_frame_count, total
-    if hold_scancodes:
-        raise ValueError("hold_key or hold_keys requires frame_count or hold_frame_count")
+    if has_held_input:
+        raise ValueError("held keyboard or mouse input requires frame_count or hold_frame_count")
     return 0, 0, 0
+
+
+def _bounded_mouse_buttons(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        raise ValueError("hold_mouse_buttons must be a list")
+    if len(value) > 5:
+        raise ValueError("hold_mouse_buttons cannot contain more than 5 entries")
+    buttons: list[int] = []
+    for raw in value:
+        if isinstance(raw, bool) or int(raw) not in range(5):
+            raise ValueError("hold_mouse_buttons must use Unity button indices 0 through 4")
+        buttons.append(int(raw))
+    if len(set(buttons)) != len(buttons):
+        raise ValueError("hold_mouse_buttons must not contain duplicates")
+    return buttons
 
 
 def _bounded_stop_assertions(
@@ -757,6 +784,19 @@ def _press_motion_capture_input(native, capture: dict[str, Any]) -> None:
             "sequence": sequence,
             "queued_at_capture_frame": 0,
         })
+    for button in list(capture.get("hold_mouse_buttons") or []):
+        sequence = int(native.queue_synthetic_mouse_button_input(
+            int(button),
+            True,
+            float(capture.get("mouse_x", -10_000.0)),
+            float(capture.get("mouse_y", -10_000.0)),
+        ))
+        presses.append({
+            "button": int(button),
+            "pressed": True,
+            "sequence": sequence,
+            "queued_at_capture_frame": 0,
+        })
     capture["input_presses"] = presses
 
 
@@ -764,6 +804,19 @@ def _release_motion_capture_input(native, capture: dict[str, Any], *, hold_frame
     if capture.get("input_releases"):
         return
     releases = []
+    for button in reversed(list(capture.get("hold_mouse_buttons") or [])):
+        sequence = int(native.queue_synthetic_mouse_button_input(
+            int(button),
+            False,
+            float(capture.get("mouse_x", -10_000.0)),
+            float(capture.get("mouse_y", -10_000.0)),
+        ))
+        releases.append({
+            "button": int(button),
+            "pressed": False,
+            "sequence": sequence,
+            "queued_at_hold_frame": int(hold_frame_count),
+        })
     for scancode in reversed(list(capture.get("hold_scancodes") or [])):
         sequence = int(native.queue_synthetic_key_input(int(scancode), False, False))
         releases.append({
@@ -869,6 +922,9 @@ def _public_motion_capture(capture: dict[str, Any]) -> dict[str, Any]:
         "seconds": float(capture.get("seconds") or 0.0),
         "sample_interval": float(capture.get("sample_interval") or 0.0),
         "hold_scancodes": list(capture.get("hold_scancodes") or []),
+        "hold_mouse_buttons": list(capture.get("hold_mouse_buttons") or []),
+        "mouse_x": float(capture.get("mouse_x", -10_000.0)),
+        "mouse_y": float(capture.get("mouse_y", -10_000.0)),
         "frame_count": int(capture.get("frame_count") or 0),
         "hold_frame_count": int(capture.get("hold_frame_count") or 0),
         "wait_frame_count": int(capture.get("wait_frame_count") or 0),
@@ -1142,7 +1198,7 @@ def _json_public_value(value: Any) -> Any:
 
 
 def _write_json_atomic(path: str, payload: dict[str, Any]) -> None:
-    directory = os.path.dirname(os.path.abspath(path))
+    directory = os.path.dirname(resolved_path(path))
     os.makedirs(directory, exist_ok=True)
     descriptor, temporary_path = tempfile.mkstemp(prefix=".player-control-", suffix=".tmp", dir=directory, text=True)
     try:

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from Infernux.core.animation_event import AnimationEvent, events_from_list
+from Infernux.engine.path_utils import resolved_path
 
 
 def is_asset_guid_string(s: str) -> bool:
@@ -57,7 +58,7 @@ def resolve_disk_path_for_guid_string(adb, guid: str) -> Optional[str]:
         for g in _iter_guid_lookups(guid):
             p = adb.get_path_from_guid(g)
             if p and os.path.isfile(p):
-                return os.path.normpath(p)
+                return resolved_path(p)
     except Exception:
         pass
     return None
@@ -76,7 +77,7 @@ def resolve_model_disk_path_from_virtual_base(base: str) -> Optional[str]:
             return p
         except Exception:
             return None
-    p = os.path.normpath(b)
+    p = resolved_path(b)
     return p if os.path.isfile(p) else None
 
 

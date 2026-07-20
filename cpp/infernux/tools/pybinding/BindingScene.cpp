@@ -43,6 +43,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 
 namespace py = pybind11;
@@ -59,6 +60,7 @@ class ScenePlayModeSnapshot
 
     [[nodiscard]] py::tuple GetPythonComponentRecords() const
     {
+        static constexpr std::string_view kNativeTypePrefix = "native:infernux.";
         py::set objectIds;
         py::set nativeTypes;
         py::list descriptors;
@@ -100,8 +102,8 @@ class ScenePlayModeSnapshot
                     const auto typeIt = component.find("type_id");
                     if (typeIt != component.end() && typeIt->is_string()) {
                         const std::string &typeId = typeIt->get_ref<const std::string &>();
-                        if (typeId.rfind("native:", 0) == 0) {
-                            nativeTypes.add(py::make_tuple(objectId, typeId.substr(7)));
+                        if (typeId.rfind(kNativeTypePrefix, 0) == 0) {
+                            nativeTypes.add(py::make_tuple(objectId, typeId.substr(kNativeTypePrefix.size())));
                         } else if (typeId.rfind("python:", 0) == 0) {
                             descriptors.append(py::make_tuple(objectId,
                                                               "snapshot.objects[id=" + std::to_string(objectId) +
@@ -1953,7 +1955,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def("destroy_game_object", &Scene::DestroyGameObject, py::arg("game_object"),
              "Destroy a GameObject (will be removed at end of frame)")
         .def("_clone_game_object", &Scene::InstantiateGameObject, py::return_value_policy::reference, py::arg("source"),
-             py::arg("parent") = nullptr, "Internal native subtree clone; Python callers must preflight first")
+             py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
+             "Internal native subtree clone; Python callers must preflight first")
         .def(
             "_instantiate_document",
             [](Scene &scene, py::handle document, GameObject *parent) {

@@ -8,6 +8,7 @@ import os
 import threading
 from typing import Any
 
+from Infernux.engine.path_utils import portable_path, relative_path, resolved_path
 from Infernux.mcp.tools.common import issue_knowledge_token, ok, register_tool_metadata, serialize_value
 
 
@@ -554,13 +555,13 @@ def _public_api_dirnames(names: list[str]) -> list[str]:
 
 
 def _python_api_roots() -> list[str]:
-    return [os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))]
+    return [resolved_path(os.path.join(os.path.dirname(__file__), "..", ".."))]
 
 
 def _module_name_for_path(path: str) -> str:
     root = _python_api_roots()[0]
     package_parent = os.path.dirname(root)
-    rel = os.path.relpath(os.path.abspath(path), package_parent)
+    rel = relative_path(path, package_parent)
     module = os.path.splitext(rel)[0].replace(os.sep, ".")
     if module.endswith(".__init__"):
         module = module[: -len(".__init__")]
@@ -962,10 +963,10 @@ def _project_rel(path: str) -> str:
         from Infernux.engine.project_context import get_project_root
         root = get_project_root()
         if root:
-            return os.path.relpath(os.path.abspath(path), os.path.abspath(root)).replace("\\", "/")
+            return relative_path(path, root, allow_root=True)
     except Exception:
         pass
-    return str(path).replace("\\", "/")
+    return portable_path(str(path))
 
 
 def _register_metadata() -> None:

@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from Infernux.engine.path_utils import resolved_path, same_path
+
 
 def clear_deleted_asset_references(asset_guid: str, asset_path: str) -> dict[str, Any]:
     """Clear matching AssetRefBase values from active Python components."""
     guid = str(asset_guid or "").strip()
-    path = os.path.abspath(str(asset_path or "")) if asset_path else ""
+    path = resolved_path(str(asset_path or "")) if asset_path else ""
     if not guid and not path:
         return {"references_cleared": 0, "components_changed": 0, "fields": []}
 
@@ -137,7 +139,7 @@ def _matches_deleted_asset(value: Any, asset_guid: str, asset_path: str) -> bool
     hint = str(value.path_hint or "").strip()
     if not hint or not asset_path:
         return False
-    return os.path.normcase(os.path.abspath(hint)) == os.path.normcase(asset_path)
+    return same_path(hint, asset_path)
 
 
 def _set_without_field_transaction(owner: Any, field_name: str, value: Any) -> None:

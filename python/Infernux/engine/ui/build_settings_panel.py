@@ -16,6 +16,7 @@ import os
 import json
 import sys
 import threading
+from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
 from typing import Dict, List, Optional
 
 from Infernux.debug import Debug
@@ -377,7 +378,7 @@ class BuildSettingsPanel:
                     ext = os.path.splitext(path)[1].lower()
                     if ext not in _ICON_EXTS:
                         raise ValueError("Unsupported icon format")
-                    self._icon_path = os.path.abspath(path)
+                    self._icon_path = resolved_path(path)
                     self._save()
             except Exception as exc:
                 Debug.log_warning(f"Build Settings icon picker failed: {exc}")
@@ -560,7 +561,7 @@ class BuildSettingsPanel:
                     itype = "video" if ext in _VIDEO_EXTS else "image"
                     self._splash_items.append({
                         "type": itype,
-                        "path": os.path.abspath(path),
+                        "path": resolved_path(path),
                         "duration": 3.0 if itype == "image" else 0.0,
                         "fade_in": 0.5,
                         "fade_out": 0.5,
@@ -607,12 +608,12 @@ class BuildSettingsPanel:
             name = os.path.splitext(os.path.basename(scene_path))[0]
             root = get_project_root() or ""
             try:
-                rel = os.path.relpath(scene_path, root) if root else scene_path
+                rel = relative_path(scene_path, root) if root else scene_path
             except ValueError:
                 # Windows cannot compute a relative path across drive letters.
                 # A copied project can temporarily retain absolute build-scene
                 # paths from its source project, so keep the panel renderable.
-                rel = os.path.normpath(scene_path)
+                rel = resolved_path(scene_path)
 
             ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.BUILD_SETTINGS_ROW_SPC)
             
@@ -624,7 +625,7 @@ class BuildSettingsPanel:
                 name,
                 True,
                 f"build_settings.scene.{i}.row",
-                string_value=rel.replace("\\", "/"),
+                string_value=portable_path(rel),
             )
 
             # Drag source — reorder
@@ -1001,11 +1002,11 @@ class BuildSettingsPanel:
     # ------------------------------------------------------------------
 
     def _add_scene(self, path: str):
-        abs_path = os.path.abspath(path)
+        abs_path = resolved_path(path)
         if not abs_path.lower().endswith(".scene"):
             return
         for existing in self._scenes:
-            if os.path.normcase(os.path.abspath(existing)) == os.path.normcase(abs_path):
+            if same_path(existing, abs_path):
                 return
         self._scenes.append(abs_path)
         self._save()

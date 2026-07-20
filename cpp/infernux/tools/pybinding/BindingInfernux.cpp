@@ -909,6 +909,8 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["runtime_material_count"] = snapshot.runtimeMaterialCount;
                                    result["asset_material_count"] = snapshot.assetMaterialCount;
                                    result["material_descriptor_set_count"] = snapshot.materialDescriptorSetCount;
+                                   result["pending_material_texture_descriptor_set_count"] =
+                                       snapshot.pendingMaterialTextureDescriptorSetCount;
                                    result["retired_material_descriptor_set_count"] =
                                        snapshot.retiredMaterialDescriptorSetCount;
                                    result["material_descriptor_pool_count"] = snapshot.materialDescriptorPoolCount;
@@ -1327,6 +1329,7 @@ PYBIND11_MODULE(_Infernux, m)
             py::return_value_policy::reference, "Get the resource preview manager for file previews")
         .def("query_or_schedule_material_preview", &Infernux::QueryOrScheduleMaterialPreview, py::arg("resource_key"),
              py::arg("mat_file_path"), py::arg("material_json") = "", py::arg("file_mtime_hint") = 0,
+             py::arg("authoring") = false,
              py::call_guard<py::gil_scoped_release>(),
              "Combined query + schedule for material preview. Returns ImGui texture id.")
         .def("query_or_schedule_mesh_preview", &Infernux::QueryOrScheduleMeshPreview, py::arg("resource_key"),
@@ -1390,12 +1393,16 @@ PYBIND11_MODULE(_Infernux, m)
              py::call_guard<py::gil_scoped_release>(), "Invalidate one material preview task/cache entry")
         .def("invalidate_texture_preview_task", &Infernux::InvalidateTexturePreviewTask, py::arg("resource_key"),
              py::call_guard<py::gil_scoped_release>(), "Invalidate one texture preview task/cache entry")
+        .def("release_preview_authoring", &Infernux::ReleasePreviewAuthoring, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Release Inspector ownership while keeping the shared preview visible")
         .def("query_or_schedule_texture_preview", &Infernux::QueryOrScheduleTexturePreview, py::arg("resource_key"),
              py::arg("texture_file_path"), py::arg("content_stamp_hint"), py::arg("nearest") = false,
              py::arg("srgb") = false, py::arg("max_size") = 2048, py::arg("texture_format") = "auto",
+             py::arg("texture_type") = "default", py::arg("authoring") = false,
              py::arg("pump") = true, py::call_guard<py::gil_scoped_release>(),
              "Combined pump + query + schedule for texture preview. Returns (tex_id, width, height). C++ manages "
-             "caching via generation counterching via generation counter.")
+             "caching via a shared generation counter.")
         .def(
             "schedule_texture_preview_from_memory",
             [](Infernux &self, const std::string &resourceKey, const py::buffer &imageData, uint64_t stamp,

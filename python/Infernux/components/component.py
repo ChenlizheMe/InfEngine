@@ -258,6 +258,9 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         # ── Register numeric fields with C++ ComponentDataStore ──
         from ._cds_bridge import register_class as _cds_register
         _cds_register(cls)
+
+        from .registry import register_component_type
+        register_component_type(cls)
     
     def __init__(self):
         """Internal framework initialization — **do not override**.

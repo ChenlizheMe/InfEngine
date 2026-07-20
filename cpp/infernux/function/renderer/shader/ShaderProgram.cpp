@@ -1,6 +1,7 @@
 #include "ShaderProgram.h"
 #include <algorithm>
 #include <core/log/InxLog.h>
+#include <platform/filesystem/InxPath.h>
 #include <stdexcept>
 
 namespace infernux
@@ -666,16 +667,7 @@ ShaderProgramCache::TakeProgramsContainingShader(const std::string &shaderName)
     if (shaderName.empty())
         throw std::invalid_argument("Shader program invalidation requires a non-empty shader identifier");
 
-    auto normalizeIdentifier = [](const std::string &path) {
-        size_t lastSlash = path.find_last_of("/\\");
-        std::string fileName = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
-        size_t dotPos = fileName.find_last_of('.');
-        if (dotPos != std::string::npos) {
-            fileName.resize(dotPos);
-            return fileName;
-        }
-        return path;
-    };
+    auto normalizeIdentifier = [](const std::string &path) { return PortablePathStem(path); };
 
     auto matchesShader = [&](const std::string &stageId) {
         if (stageId == shaderName || stageId.rfind(shaderName + "/", 0) == 0)

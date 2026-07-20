@@ -55,6 +55,116 @@ def test_inspector_reads_native_shader_schema_without_parsing_source(tmp_path):
     assert inspector_shader_utils.is_shader_hidden(str(shader)) is True
 
 
+def test_inspector_repairs_legacy_hdr_vector_metadata(tmp_path):
+    shader = tmp_path / "legacy.frag"
+    shader.write_text("@shader_id: Legacy/Hdr\n", encoding="utf-8")
+    _write_meta(
+        shader,
+        {
+            "shader_id": "Legacy/Hdr",
+            "properties": json.dumps([{
+                "name": "emissionColor",
+                "type": "Color",
+                "default": "[0.0, 0.0, 0.0, 0.0], HDR",
+                "hdr": False,
+            }]),
+        },
+    )
+
+    assert inspector_shader_utils.parse_shader_properties(str(shader)) == [{
+        "name": "emissionColor",
+        "type": "Color",
+        "default": [0.0, 0.0, 0.0, 0.0],
+        "hdr": True,
+    }]
+
+
+def test_shader_property_sync_replaces_incompatible_existing_value():
+    mat_data = {
+        "properties": {
+            "emissionColor": {"type": 0, "value": "[0.0, 0.0, 0.0, 0.0], HDR"},
+        },
+    }
+    inspector_shader_utils._apply_shader_props_to_mat(
+        mat_data,
+        [{
+            "name": "emissionColor",
+            "type": "Color",
+            "default": "[0.1, 0.2, 0.3, 1.0], HDR",
+            "hdr": False,
+        }],
+    )
+
+    assert mat_data["properties"]["emissionColor"] == {
+        "type": 7,
+        "value": [0.1, 0.2, 0.3, 1.0],
+        "hdr": True,
+    }
+
+
+class _StyleScopeContext:
+    def __init__(self):
+        self.calls = []
+
+    def push_style_var_vec2(self, *_args):
+        self.calls.append("push")
+
+    def pop_style_var(self, count):
+        self.calls.append(("pop", count))
+
+    def begin_disabled(self, _disabled):
+        self.calls.append("begin_disabled")
+
+    def end_disabled(self):
+        self.calls.append("end_disabled")
+
+
+def test_material_inspector_balances_style_scope_after_render_error(monkeypatch):
+    ctx = _StyleScopeContext()
+    state = type("State", (), {
+        "extra": {"native_mat": type("Mat", (), {"file_path": "asset::submat:0"})()},
+        "file_path": "",
+    })()
+
+    def fail_render(*_args):
+        raise ValueError("bad shader property")
+
+    monkeypatch.setattr(inspector_material, "_render_material_body_impl", fail_render)
+    try:
+        inspector_material.render_material_body(ctx, None, state)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected the synthetic material render error")
+
+    assert ctx.calls == [
+        "push", "push", "begin_disabled", "end_disabled", ("pop", 2),
+    ]
+
+
+def test_material_shader_object_field_forwards_stable_semantic_id(monkeypatch):
+    calls = []
+
+    def render_object_field(*args, **kwargs):
+        calls.append((args, kwargs))
+        return False
+
+    from Infernux.engine.ui import inspector_components
+
+    monkeypatch.setattr(inspector_components, "render_object_field", render_object_field)
+    inspector_material._render_obj_field(
+        object(),
+        "mat_frag",
+        "unlit",
+        "Frag",
+        "SHADER_FILE",
+        lambda _path: None,
+        semantic_id="asset.material.shader.fragment",
+    )
+
+    assert calls[0][1]["semantic_id"] == "asset.material.shader.fragment"
+
+
 def test_shader_range_is_preserved_in_material_property_metadata():
     mat_data = {"properties": {"amount": {"type": 0, "value": 0.25}}}
     inspector_shader_utils._apply_shader_props_to_mat(

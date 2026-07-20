@@ -1008,6 +1008,42 @@ static void ApplyTextureFormatPreviewInPlace(std::vector<unsigned char> &pixels,
     }
 }
 
+static void ApplyNormalMapPreviewInPlace(std::vector<unsigned char> &pixels, int width, int height)
+{
+    if (pixels.empty() || width <= 0 || height <= 0)
+        return;
+
+    const std::vector<unsigned char> source = pixels;
+    constexpr float kStrength = 2.0f;
+    const auto sampleLuminance = [&source, width, height](int x, int y) {
+        x = std::clamp(x, 0, width - 1);
+        y = std::clamp(y, 0, height - 1);
+        const size_t index = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4u;
+        return (static_cast<float>(source[index]) * 0.299f + static_cast<float>(source[index + 1]) * 0.587f +
+                static_cast<float>(source[index + 2]) * 0.114f) /
+               255.0f;
+    };
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float nx = (sampleLuminance(x - 1, y) - sampleLuminance(x + 1, y)) * kStrength;
+            float ny = (sampleLuminance(x, y - 1) - sampleLuminance(x, y + 1)) * kStrength;
+            float nz = 1.0f;
+            const float inverseLength = 1.0f / std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx *= inverseLength;
+            ny *= inverseLength;
+            nz *= inverseLength;
+
+            const size_t index =
+                (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4u;
+            pixels[index] = static_cast<unsigned char>((nx * 0.5f + 0.5f) * 255.0f);
+            pixels[index + 1] = static_cast<unsigned char>((ny * 0.5f + 0.5f) * 255.0f);
+            pixels[index + 2] = static_cast<unsigned char>((nz * 0.5f + 0.5f) * 255.0f);
+            pixels[index + 3] = 255;
+        }
+    }
+}
+
 struct PreviewPixelSummary
 {
     uint64_t hash = UINT64_C(1469598103934665603);
@@ -1044,7 +1080,8 @@ static PreviewPixelSummary SummarizePreviewPixels(const std::vector<unsigned cha
 }
 
 uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey, const std::string &matFilePath,
-                                                  const std::string &materialJson, uint64_t fileMtimeHint)
+                                                  const std::string &materialJson, uint64_t fileMtimeHint,
+                                                  bool authoring)
 {
     if (resourceKey.empty())
         return 0;
@@ -1055,6 +1092,12 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
     auto &state = m_materialPreviewStates[key];
     if (state.textureName.empty())
         state.textureName = BuildPreviewTextureName(key);
+
+    state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
+    if (!authoring && state.authoring)
+        return state.textureId;
+    if (authoring)
+        state.authoring = true;
 
     // ── Detect content changes ──────────────────────────────────
     std::string renderJson; // JSON to use if we schedule a render
@@ -1084,7 +1127,6 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
         state.generation = 1;
 
     // ── Already up-to-date? ─────────────────────────────────────
-    state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
     if (state.readyGeneration == state.generation && state.textureId != 0) {
         return state.textureId;
     }
@@ -1109,7 +1151,7 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
     if (!m_renderer || uploadBudget <= 0)
         return 0;
 
-    constexpr int kMaterialPreviewSize = 256;
+    constexpr int kMaterialPreviewSize = 200;
     int consumed = 0;
     struct CompletedMaterialRender
     {
@@ -1799,35 +1841,42 @@ void Infernux::InvalidateTexturePreviewTask(const std::string &resourceKey)
     if (resourceKey.empty())
         return;
 
-    const std::string key = CanonicalizePreviewKey(resourceKey);
-    std::string releasedTextureName;
-    {
-        std::lock_guard<std::mutex> lock(m_previewResultMutex);
-        auto it = m_texturePreviewStates.find(key);
-        if (it == m_texturePreviewStates.end())
-            return;
+    std::lock_guard<std::mutex> lock(m_previewResultMutex);
+    auto it = m_texturePreviewStates.find(CanonicalizePreviewKey(resourceKey));
+    if (it == m_texturePreviewStates.end())
+        return;
 
-        // Inspector generations are transient. Dropping them makes ProjectPanel
-        // fall back to the imported asset after Apply, Revert, or selection changes.
-        if (key.compare(0, 8, "texedit|") == 0) {
-            releasedTextureName = std::move(it->second.textureName);
-            m_texturePreviewStates.erase(it);
-        } else {
-            // Keep the last imported preview visible while its replacement is prepared.
-            it->second.generation++;
-            it->second.lastContentStamp = 0;
-            it->second.inFlight = false;
-        }
+    // Keep the last imported preview visible while its replacement is prepared.
+    it->second.generation++;
+    it->second.lastContentStamp = 0;
+    it->second.inFlight = false;
+}
+
+void Infernux::ReleasePreviewAuthoring(const std::string &resourceKey)
+{
+    if (resourceKey.empty())
+        return;
+
+    const std::string key = CanonicalizePreviewKey(resourceKey);
+    std::lock_guard<std::mutex> lock(m_previewResultMutex);
+    if (auto material = m_materialPreviewStates.find(key); material != m_materialPreviewStates.end()) {
+        material->second.authoring = false;
+        material->second.lastFileMtime = 0;
+        material->second.lastJsonHash = 0;
     }
-    if (!releasedTextureName.empty() && m_renderer)
-        m_renderer->RemoveImGuiTexture(releasedTextureName);
+    if (auto texture = m_texturePreviewStates.find(key); texture != m_texturePreviewStates.end()) {
+        texture->second.authoring = false;
+        texture->second.lastContentStamp = 0;
+    }
 }
 
 std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey,
                                                                        const std::string &textureFilePath,
                                                                        uint64_t contentStampHint, bool nearest,
                                                                        bool srgb, int maxSize,
-                                                                       const std::string &textureFormat, bool pump)
+                                                                       const std::string &textureFormat,
+                                                                       const std::string &textureType, bool authoring,
+                                                                       bool pump)
 {
     if (resourceKey.empty() || textureFilePath.empty())
         return {0, 0, 0};
@@ -1846,7 +1895,13 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
         auto &state = m_texturePreviewStates[key];
         if (state.textureName.empty())
-            state.textureName = BuildTexturePreviewTextureName(resourceKey);
+            state.textureName = BuildTexturePreviewTextureName(key);
+
+        state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
+        if (!authoring && state.authoring)
+            return {state.textureId, state.readyWidth, state.readyHeight};
+        if (authoring)
+            state.authoring = true;
 
         // ── Detect content changes ──────────────────────────────
         if (contentStampHint != 0 && contentStampHint != state.lastContentStamp) {
@@ -1856,16 +1911,17 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
 
         const int sanitizedMaxSize = std::clamp(maxSize, 1, 65'536);
         // Also bump generation if a caller omitted these settings from its content stamp.
-        if (state.textureId != 0 && (nearest != state.nearest || srgb != state.srgb ||
-                                     sanitizedMaxSize != state.maxSize || textureFormat != state.textureFormat)) {
+        if (state.generation != 0 &&
+            (nearest != state.nearest || srgb != state.srgb || sanitizedMaxSize != state.maxSize ||
+             textureFormat != state.textureFormat || textureType != state.textureType)) {
             state.generation++;
         }
         state.nearest = nearest;
         state.srgb = srgb;
         state.maxSize = sanitizedMaxSize;
         state.textureFormat = textureFormat;
+        state.textureType = textureType;
 
-        state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
         texId = state.textureId;
         w = state.readyWidth;
         h = state.readyHeight;
@@ -1879,14 +1935,14 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
         // Schedule render if not already in flight.
         if (!state.inFlight && state.readyGeneration < state.generation) {
             state.inFlight = true;
-            req = TexturePreviewRequest{key,  textureFilePath,  state.generation, nearest,
-                                        srgb, sanitizedMaxSize, textureFormat};
+            req = TexturePreviewRequest{key, textureFilePath, state.generation, nearest,
+                                        srgb, sanitizedMaxSize, textureFormat, textureType};
             shouldEnqueue = true;
         }
     }
 
     if (shouldEnqueue) {
-        constexpr int kDefaultPreviewResolution = 256;
+        constexpr int kDefaultPreviewResolution = 200;
         // Inspector component icons (~16 logical px, often 2x framebuffer); keep GPU texture near
         // display density instead of a 256px atlas + heavy minification.
         constexpr int kComponentIconPreviewMaxDim = 64;
@@ -1912,7 +1968,9 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
                                    : configuredMaxDim);
                     DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
                     if (!sampled.empty() && outW > 0 && outH > 0) {
-                        if (!req.srgb)
+                        if (req.textureType == "normal_map")
+                            ApplyNormalMapPreviewInPlace(sampled, outW, outH);
+                        else if (!req.srgb)
                             ApplyLinearToSrgbPreviewInPlace(sampled);
                         ApplyTextureFormatPreviewInPlace(sampled, req.textureFormat);
                         completed.width = outW;
@@ -2838,8 +2896,12 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
 
         std::string filePath = FromFsPath(file);
 
-        // Always register to ensure meta + GUID↔path mappings are cached
-        std::string guid = adb->ImportAsset(filePath).guid;
+        // Refresh already registers project and built-in roots. Re-importing a
+        // read-only built-in here would create derived sidecars beside package
+        // resources and duplicate importer work.
+        std::string guid = adb->GetGuidFromPath(filePath);
+        if (guid.empty())
+            guid = adb->ImportAsset(filePath).guid;
         if (guid.empty())
             return;
 

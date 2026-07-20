@@ -204,8 +204,11 @@ def wire_clipboard(ctx):
         for obj in roots:
             parent = obj.get_parent()
             transform = getattr(obj, "transform", None)
+            from Infernux.engine.component_restore import (
+                serialize_game_object_document_authoritatively,
+            )
             entries.append({
-                "document": obj.serialize_document(),
+                "document": serialize_game_object_document_authoritatively(obj),
                 "source_parent_id": parent.id if parent else None,
                 "source_sibling_index": transform.get_sibling_index() if transform else 0,
                 "source_world_position": transform.position.to_tuple() if transform else None,
@@ -239,10 +242,9 @@ def wire_clipboard(ctx):
         from Infernux.lib import SceneManager, Vector3, quatf
         from Infernux.engine.undo import CompoundCommand, CreateGameObjectCommand, UndoManager
         from Infernux.engine.component_restore import (
-            instantiate_prepared_game_object_document,
+            instantiate_prepared_game_object_documents,
             preflight_game_object_python_components,
         )
-        from Infernux.engine.prefab_manager import _strip_prefab_runtime_fields
         import copy
         scene = SceneManager.instance().get_active_scene()
         if not scene:
@@ -259,11 +261,12 @@ def wire_clipboard(ctx):
         try:
             for entry in _clipboard["entries"]:
                 obj_data = copy.deepcopy(entry["document"])
-                _strip_prefab_runtime_fields(obj_data)
                 prepared = preflight_game_object_python_components(
                     obj_data,
                     asset_database=adb,
                     preserve_document_ids=False,
+                    prefer_loaded_types=True,
+                    reference_scene=scene,
                 )
                 prepared_entries.append((entry, obj_data, prepared))
         except RuntimeError as exc:
@@ -272,6 +275,7 @@ def wire_clipboard(ctx):
             Debug.log_error(f"Paste preflight failed: {exc}")
             return False
 
+        batch_entries = []
         try:
             for entry, obj_data, prepared in prepared_entries:
                 src_parent = None
@@ -279,15 +283,11 @@ def wire_clipboard(ctx):
                 if src_pid is not None:
                     src_parent = scene.find_by_id(src_pid)
                 parent = anchor_parent if anchor is not None else src_parent
-                new_obj = instantiate_prepared_game_object_document(
-                    scene,
-                    obj_data,
-                    prepared,
-                    parent,
-                )
+                batch_entries.append((obj_data, prepared, parent))
+            created = instantiate_prepared_game_object_documents(scene, batch_entries)
+            for (entry, _obj_data, _prepared), new_obj in zip(prepared_entries, created):
+                parent = new_obj.get_parent()
                 if new_obj:
-                    if new_obj.get_parent() is not parent:
-                        new_obj.set_parent(parent, True)
                     transform = getattr(new_obj, "transform", None)
                     if transform is not None:
                         world_position = entry.get("source_world_position")
@@ -313,11 +313,17 @@ def wire_clipboard(ctx):
                         offset = per_parent_insert_offsets.get(parent_key, 0)
                         transform.set_sibling_index(max(0, base_index + offset))
                         per_parent_insert_offsets[parent_key] = offset + 1
-                    created.append(new_obj)
         except Exception as exc:
-            for created_object in reversed(created):
-                scene.destroy_game_object(created_object)
-            scene.process_pending_destroys()
+            for instance in reversed(created):
+                try:
+                    scene.destroy_game_object(instance)
+                except Exception as cleanup_exc:
+                    Debug.log_suppressed("hierarchy.clipboard.paste_cleanup", cleanup_exc)
+            if created:
+                try:
+                    scene.process_pending_destroys()
+                except Exception as cleanup_exc:
+                    Debug.log_suppressed("hierarchy.clipboard.paste_cleanup_flush", cleanup_exc)
             Debug.log_error(f"Paste commit failed: {exc}")
             return False
         finally:

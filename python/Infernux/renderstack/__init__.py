@@ -2,14 +2,12 @@
 Infernux RenderStack Module
 
 Scene-level rendering configuration system.
-Provides a composable, per-scene rendering stack where users can mount
-arbitrary render passes to pipeline-defined injection points.
+Provides a composable, per-scene rendering stack where users mount reusable
+Effect assets to pipeline-defined EffectStages.
 
 Core classes:
-    - **RenderStack**: Scene-singleton component managing pipeline + passes
-    - **RenderPipeline**: Topology skeleton with named injection points
-    - **RenderPass**: Base class for mountable rendering steps
-    - **GeometryPass**: Scene geometry drawing (outline, decal, etc.)
+    - **RenderStack**: Scene-singleton component managing pipeline + effects
+    - **RenderPipeline**: Topology skeleton with named EffectStages
     - **ResourceBus**: Transient resource handle dictionary
     - **InjectionPoint**: Named slot in the pipeline topology
 
@@ -18,9 +16,8 @@ Architecture::
     Scene
     └── RenderStack (InxComponent)
         ├── selected_pipeline: RenderPipeline
-        │   └── define_topology(graph, bus, on_injection_point)
-        └── pass_entries: [PassEntry, ...]
-            └── each: RenderPass.inject(graph, bus)
+        │   └── define_topology(graph)
+        └── effect_slots: [EffectSlot, ...]
 
 Quick start::
 
@@ -67,7 +64,7 @@ from Infernux.renderstack.chromatic_aberration_effect import ChromaticAberration
 from Infernux.renderstack.film_grain_effect import FilmGrainEffect
 from Infernux.renderstack.white_balance_effect import WhiteBalanceEffect
 from Infernux.renderstack.sharpen_effect import SharpenEffect
-from Infernux.renderstack.render_stack import RenderStack, PassEntry
+from Infernux.renderstack.render_stack import RenderStack
 from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
@@ -76,7 +73,6 @@ from Infernux.renderstack.discovery import discover_pipelines, discover_passes
 __all__ = [
     # Core
     "RenderStack",
-    "PassEntry",
     "RenderPipeline",
     "RenderPipelineAsset",
     "RenderStackPipeline",

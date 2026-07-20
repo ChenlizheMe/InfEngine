@@ -44,6 +44,7 @@ struct GpuResidencySnapshot
     size_t runtimeMaterialCount = 0;
     size_t assetMaterialCount = 0;
     size_t materialDescriptorSetCount = 0;
+    size_t pendingMaterialTextureDescriptorSetCount = 0;
     size_t retiredMaterialDescriptorSetCount = 0;
     size_t materialDescriptorPoolCount = 0;
     size_t materialPipelineCount = 0;
@@ -68,6 +69,7 @@ struct MaterialGpuResidencySnapshot
     size_t runtimeMaterialCount = 0;
     size_t assetMaterialCount = 0;
     size_t descriptorSetCount = 0;
+    size_t pendingTextureDescriptorSetCount = 0;
     size_t retiredDescriptorSetCount = 0;
     size_t descriptorPoolCount = 0;
     size_t pipelineCount = 0;

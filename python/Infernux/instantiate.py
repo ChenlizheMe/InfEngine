@@ -72,11 +72,15 @@ def Instantiate(original, parent=None):
     # ── C++ GameObject ───────────────────────────────────────────────────
     from Infernux.lib import GameObject
     if isinstance(original, GameObject):
+        if parent is None:
+            return GameObject.instantiate(original)
         return GameObject.instantiate(original, parent)
 
     # ── GameObjectRef / PrefabRef (have .instantiate()) ──────────────────
     if hasattr(original, "instantiate") and callable(original.instantiate):
-        return original.instantiate()
+        if parent is None:
+            return original.instantiate()
+        return original.instantiate(parent=parent)
 
     raise TypeError(
         f"Instantiate: unsupported type {type(original).__name__!r}. "

@@ -100,12 +100,14 @@ PrefabUnpackCommand = _undo_mod.PrefabUnpackCommand
 PrefabRevertCommand = _undo_mod.PrefabRevertCommand
 InspectorSnapshotCommand = _undo_mod.InspectorSnapshotCommand
 InspectorUndoTracker = _undo_mod.InspectorUndoTracker
+HierarchyUndoTracker = _undo_mod.HierarchyUndoTracker
 RenderStackFieldCommand = _undo_mod.RenderStackFieldCommand
 _snapshot_value = _undo_mod._snapshot_value
 SelectionManager = _sel_mod.SelectionManager
 _helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
 _property_mod = sys.modules["Infernux.engine.undo._property_commands"]
 _structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
+_trackers_mod = sys.modules["Infernux.engine.undo._trackers"]
 _recreate_mod = sys.modules["Infernux.engine.undo._recreate"]
 
 
@@ -1158,6 +1160,40 @@ class TestInspectorUndoTracker:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# HierarchyUndoTracker
+# ══════════════════════════════════════════════════════════════════════
+
+class TestHierarchyUndoTracker:
+    def test_rename_records_undo_and_redo(self, monkeypatch, _reset_undo_manager):
+        class _GameObject:
+            def __init__(self):
+                self.id = 7
+                self.name = "New Name"
+
+        class _Scene:
+            def __init__(self, obj):
+                self.obj = obj
+
+            def find_by_id(self, object_id):
+                return self.obj if object_id == self.obj.id else None
+
+        obj = _GameObject()
+        scene = _Scene(obj)
+        monkeypatch.setattr(_trackers_mod, "_get_active_scene", lambda: scene)
+        monkeypatch.setattr(_helpers_mod, "_get_active_scene", lambda: scene)
+
+        tracker = HierarchyUndoTracker()
+        tracker.record_rename(obj.id, "Old Name", "New Name")
+
+        mgr = _reset_undo_manager
+        assert mgr.undo_description == "Rename GameObject"
+        mgr.undo()
+        assert obj.name == "Old Name"
+        mgr.redo()
+        assert obj.name == "New Name"
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SelectionManager.set_ids
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1476,7 +1512,13 @@ class TestImmediateDestroyHelpers:
                 self.transform = _FakeTransform()
 
             def serialize_document(self):
-                return {"id": self.id}
+                return {"id": self.id, "components": [], "children": []}
+
+            def get_components(self):
+                return []
+
+            def get_children(self):
+                return []
 
             def get_parent(self):
                 return None

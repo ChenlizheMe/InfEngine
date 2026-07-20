@@ -699,6 +699,12 @@ def render_compact_section_header(
         base_color = Theme.INSPECTOR_HEADER_LIST
         hover_color = Theme.INSPECTOR_HEADER_LIST_HOVERED
         active_color = Theme.INSPECTOR_HEADER_LIST_ACTIVE
+    elif level == "tertiary":
+        frame_pad = Theme.INSPECTOR_HEADER_TERTIARY_FRAME_PAD
+        font_scale = Theme.INSPECTOR_HEADER_TERTIARY_FONT_SCALE
+        base_color = Theme.INSPECTOR_HEADER_TERTIARY
+        hover_color = Theme.INSPECTOR_HEADER_TERTIARY_HOVERED
+        active_color = Theme.INSPECTOR_HEADER_TERTIARY_ACTIVE
     else:
         frame_pad = Theme.INSPECTOR_HEADER_SECONDARY_FRAME_PAD
         font_scale = Theme.INSPECTOR_HEADER_SECONDARY_FONT_SCALE
@@ -706,13 +712,38 @@ def render_compact_section_header(
         hover_color = Theme.INSPECTOR_HEADER_SECONDARY_HOVERED
         active_color = Theme.INSPECTOR_HEADER_SECONDARY_ACTIVE
 
+    native_header = getattr(ctx, "render_compact_section_header", None)
+    if callable(native_header):
+        effective_text_color = text_color if text_color is not None else Theme.TEXT
+        return bool(native_header(
+            label,
+            int(icon_id or 0),
+            bool(default_open),
+            Theme.COND_FIRST_USE_EVER,
+            bool(allow_overlap),
+            frame_pad[0],
+            frame_pad[1],
+            Theme.INSPECTOR_HEADER_ITEM_SPC[0],
+            Theme.INSPECTOR_HEADER_ITEM_SPC[1],
+            Theme.INSPECTOR_HEADER_BORDER_SIZE,
+            level in ("secondary", "list", "tertiary"),
+            font_scale,
+            Theme.INSPECTOR_HEADER_RIGHT_MARGIN,
+            Theme.COMPONENT_ICON_SIZE,
+            base_color,
+            hover_color,
+            active_color,
+            text_color is not None,
+            effective_text_color,
+        ))
+
     ctx.push_style_color(ImGuiCol.Header, *base_color)
     ctx.push_style_color(ImGuiCol.HeaderHovered, *hover_color)
     ctx.push_style_color(ImGuiCol.HeaderActive, *active_color)
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *frame_pad)
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_HEADER_ITEM_SPC)
     ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, Theme.INSPECTOR_HEADER_BORDER_SIZE)
-    if level in ("secondary", "list"):
+    if level in ("secondary", "list", "tertiary"):
         ctx.push_style_var_float(ImGuiStyleVar.IndentSpacing, 0.0)
     ctx.set_window_font_scale(font_scale)
     if text_color is not None:
@@ -734,7 +765,7 @@ def render_compact_section_header(
         ctx.pop_style_color(1)
     ctx.set_window_font_scale(1.0)
     ctx.pop_style_color(3)
-    ctx.pop_style_var(4 if level in ("secondary", "list") else 3)
+    ctx.pop_style_var(4 if level in ("secondary", "list", "tertiary") else 3)
     return header_open
 
 

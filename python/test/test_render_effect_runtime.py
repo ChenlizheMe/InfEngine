@@ -42,6 +42,96 @@ def test_render_effect_has_material_like_typed_parameter_api():
     assert effect.feature_type == "infernux.post.bloom"
 
 
+def test_render_effect_inspector_edit_updates_shared_instance_and_queues_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine.ui.render_effect_inspector import (
+        apply_render_effect_parameter_edit,
+    )
+
+    path = tmp_path / "Bloom.effect"
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.bloom",
+            parameters={"intensity": 0.5, "max_iterations": 3},
+        ),
+        file_path=str(path),
+        guid="bloom-guid",
+    )
+    snapshots = []
+    scheduled = []
+    monkeypatch.setattr(
+        AssetManager,
+        "set_render_effect_save_snapshot",
+        classmethod(lambda _cls, asset_path, text: snapshots.append((asset_path, text))),
+    )
+    monkeypatch.setattr(
+        AssetManager,
+        "schedule_asset_save",
+        classmethod(
+            lambda _cls, category, key, resource, debounce_sec=0.0: scheduled.append(
+                (category, key, resource, debounce_sec)
+            )
+        ),
+    )
+
+    assert apply_render_effect_parameter_edit(effect, "intensity", 1.75)
+
+    assert effect.get_float("intensity") == pytest.approx(1.75)
+    assert effect.revision == 1
+    assert json.loads(snapshots[-1][1])["parameters"]["intensity"] == pytest.approx(1.75)
+    assert scheduled[-1][:3] == ("render_effect", str(path), effect)
+
+
+def test_render_effect_debounced_save_uses_document_store_worker(tmp_path):
+    from Infernux.core.assets import AssetManager
+    from Infernux.core.document_store import DocumentStore
+
+    path = tmp_path / "Bloom.effect"
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.bloom",
+            parameters={"intensity": 0.5, "max_iterations": 3},
+        ),
+        file_path=str(path),
+        guid="bloom-guid",
+    )
+    try:
+        effect.set_float("intensity", 2.25)
+        AssetManager.flush_scheduled_saves(str(path), force=True)
+        DocumentStore.flush(str(path))
+        AssetManager.poll_pending_asset_writes()
+
+        document = json.loads(path.read_text(encoding="utf-8"))
+        assert document["parameters"]["intensity"] == pytest.approx(2.25)
+        assert effect._save_pending is False
+    finally:
+        AssetManager._scheduled_saves.pop(str(path), None)
+        AssetManager._render_effect_save_snapshots.pop(str(path), None)
+        AssetManager._pending_document_writes.pop(str(path), None)
+        RenderEffect._pending_saves.discard(effect)
+
+
+def test_tonemapping_effect_accepts_integer_enum_source_value(tmp_path):
+    RenderEffectArtifactRegistry.clear()
+    path = tmp_path / "Tone.effect"
+    path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.tonemapping",
+                parameters={"mode": 2, "exposure": 1.0, "gamma": 2.2},
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    artifact, _document = RenderEffectArtifactRegistry.compile_and_publish(str(path))
+
+    assert artifact.features[0]["feature_type"] == "infernux.post.tonemapping"
+
+
 def test_render_effect_clone_is_runtime_only_and_parameter_isolated():
     shared = RenderEffect(
         RenderEffectAsset(
@@ -252,23 +342,21 @@ def test_render_stack_structured_slots_round_trip_without_hidden_json():
 
 def test_render_stack_rejects_obsolete_json_binding_field():
     stack = RenderStack()
-    with pytest.raises(ValueError, match="obsolete"):
+    with pytest.raises(ValueError, match="removed fields"):
         stack._deserialize_fields_document({"effect_stage_bindings_json": "{}"})
 
 
 @pytest.mark.parametrize(
-    "mounted_passes",
+    "removed_field",
     [
-        "{}",
-        '[{"class":"BloomEffect","enabled":true}]',
-        '[{"class":"BloomEffect","enabled":true,"order":0,"old":1}]',
+        "effect_stage_bindings_json",
+        "mounted_passes_json",
     ],
 )
-def test_render_stack_rejects_noncanonical_mounted_passes(mounted_passes):
+def test_render_stack_rejects_removed_storage_fields(removed_field):
     stack = RenderStack()
-    stack.mounted_passes_json = mounted_passes
-    with pytest.raises((TypeError, ValueError)):
-        stack.on_after_deserialize()
+    with pytest.raises(ValueError, match=removed_field):
+        stack._deserialize_fields_document({removed_field: "[]"})
 
 
 def test_slot_effect_property_resolves_to_mutable_runtime_asset(tmp_path):
@@ -475,6 +563,47 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
         "infernux.post.tonemapping",
     ]
     assert effects[0].get_float("intensity") == pytest.approx(0.9)
+
+
+def test_effect_group_compiles_without_reentering_its_own_asset_load(tmp_path, monkeypatch):
+    from Infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "_project_root", str(tmp_path))
+    rendering_dir = tmp_path / "Assets" / "Rendering"
+    rendering_dir.mkdir(parents=True)
+    bloom_path = rendering_dir / "Bloom.effect"
+    bloom_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.bloom",
+                parameters={"intensity": 0.5, "max_iterations": 2},
+            )
+        ),
+        encoding="utf-8",
+    )
+    group_path = rendering_dir / "Post.effectgroup"
+    group_path.write_text(
+        dump_render_effect_document(
+            RenderEffectGroupAsset(
+                entries=(
+                    RenderEffectGroupEntry(
+                        "bloom",
+                        EffectAssetReference(path_hint="Assets/Rendering/Bloom.effect"),
+                    ),
+                )
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    artifact, document = RenderEffectArtifactRegistry.compile_and_publish(str(group_path))
+
+    assert isinstance(document, RenderEffectGroupAsset)
+    assert artifact.kind == "group"
+    assert [feature["feature_type"] for feature in artifact.features] == [
+        "infernux.post.bloom"
+    ]
 
 
 def test_effect_group_override_view_tracks_unoverridden_live_parameters():

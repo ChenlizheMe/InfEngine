@@ -50,10 +50,10 @@ def _validate_reference_documents(
         target_id = value.get("object_id")
         if type(target_id) is not int or target_id < 0:
             raise PythonComponentRestoreError(f"{path}: GameObjectRef id must be a non-negative integer")
-        target_exists = (
-            target_id in document_object_ids
-            if document_object_ids is not None
-            else scene.find_by_id(target_id) is not None
+        target_exists = bool(
+            target_id == 0
+            or (document_object_ids is not None and target_id in document_object_ids)
+            or (scene is not None and scene.find_by_id(target_id) is not None)
         )
         if target_id and not target_exists:
             raise PythonComponentRestoreError(f"{path}: GameObjectRef target {target_id} does not exist")
@@ -67,21 +67,24 @@ def _validate_reference_documents(
         if target_id == 0:
             return
         target = scene.find_by_id(target_id) if scene is not None else None
-        target_exists = (
-            target_id in document_object_ids
-            if document_object_ids is not None
-            else target is not None
-        )
+        target_is_local = document_object_ids is not None and target_id in document_object_ids
+        target_exists = bool(target_is_local or target is not None)
         if not target_exists:
             raise PythonComponentRestoreError(f"{path}: ComponentRef GameObject {target_id} does not exist")
         if not type_name:
             raise PythonComponentRestoreError(f"{path}: non-null ComponentRef requires type_name")
-        native_exists = (
-            (target_id, type_name) in document_native_types
-            if document_native_types is not None
-            else target.get_cpp_component(type_name) is not None
+        native_exists = bool(
+            document_native_types is not None
+            and (target_id, type_name) in document_native_types
         )
-        if not native_exists and (target_id, type_name) not in pending_types:
+        python_exists = (target_id, type_name) in pending_types
+        if target is not None and not target_is_local:
+            native_exists = native_exists or target.get_cpp_component(type_name) is not None
+            python_exists = python_exists or any(
+                type(component).__name__ == type_name
+                for component in (target.get_py_components() or ())
+            )
+        if not native_exists and not python_exists:
             raise PythonComponentRestoreError(
                 f"{path}: ComponentRef target {target_id}:{type_name} does not exist"
             )
@@ -247,6 +250,9 @@ def _prepare_python_component_records(
     native_types: set[tuple[int, str]],
     raw_descriptors: list[tuple[Optional[int], str, dict]],
     asset_database=None,
+    *,
+    prefer_loaded_types: bool = False,
+    reference_scene=None,
 ) -> PreparedPythonComponentGraph:
     pending_types: set[tuple[int, str]] = set()
     component_type_counts: dict[tuple[int, str], int] = {}
@@ -301,7 +307,7 @@ def _prepare_python_component_records(
             _validate_reference_documents(
                 fields,
                 f"{document_path}.py_fields",
-                None,
+                reference_scene,
                 pending_types,
                 document_object_ids=object_ids,
                 document_native_types=native_types,
@@ -315,6 +321,7 @@ def _prepare_python_component_records(
                     type_guid,
                     type_name,
                     asset_database,
+                    prefer_loaded_type=prefer_loaded_types,
                 )
             except Exception as exc:
                 construct_error = str(exc)
@@ -454,6 +461,8 @@ def preflight_game_object_python_components(
     asset_database=None,
     *,
     preserve_document_ids: bool,
+    prefer_loaded_types: bool = False,
+    reference_scene=None,
 ) -> PreparedPythonComponentGraph:
     """Preflight one ObjectGraph before deserialize, instantiate, or clone."""
     object_ids: set[int] = set()
@@ -510,6 +519,8 @@ def preflight_game_object_python_components(
         native_types,
         descriptors,
         asset_database,
+        prefer_loaded_types=prefer_loaded_types,
+        reference_scene=reference_scene,
     )
     if not preserve_document_ids:
         for component in prepared.components:
@@ -572,14 +583,14 @@ def _remap_local_reference_document(value, object_id_map: dict[int, int], path: 
         if source_id == 0:
             return dict(value)
         remapped = dict(value)
-        remapped["object_id"] = object_id_map[source_id]
+        remapped["object_id"] = object_id_map.get(source_id, source_id)
         return remapped
     if document_type == COMPONENT_REF:
         source_id = value["game_object_id"]
         if source_id == 0:
             return copy.deepcopy(value)
         remapped = dict(value)
-        remapped["game_object_id"] = object_id_map[source_id]
+        remapped["game_object_id"] = object_id_map.get(source_id, source_id)
         return remapped
     return {
         key: _remap_local_reference_document(item, object_id_map, f"{path}.{key}")
@@ -849,6 +860,7 @@ def deserialize_game_object_document_transactionally(
         document,
         asset_database,
         preserve_document_ids=preserve_document_ids,
+        reference_scene=scene,
     )
     return commit_prepared_game_object_document(
         game_object,
@@ -983,6 +995,7 @@ def instantiate_game_object_document_transactionally(
         document,
         asset_database,
         preserve_document_ids=False,
+        reference_scene=scene,
     )
     return instantiate_prepared_game_object_document(scene, document, prepared, parent)
 
@@ -1015,25 +1028,95 @@ def instantiate_prepared_game_object_document(
     return created
 
 
+def instantiate_prepared_game_object_documents(
+    scene,
+    entries: list[tuple[dict, PreparedPythonComponentGraph, Any]],
+) -> list:
+    """Instantiate multiple ObjectGraphs as one Python-reference transaction."""
+    _require_clean_pending_queue(scene)
+    prepared_graphs = [prepared for _document, prepared, _parent in entries]
+    for prepared in prepared_graphs:
+        prepared.require_open()
+
+    created = []
+    object_id_map: dict[int, int] = {}
+    try:
+        for document, _prepared, parent in entries:
+            instance = scene._instantiate_document(
+                _native_object_graph_document(document), parent
+            )
+            if instance is None:
+                raise PythonComponentRestoreError(
+                    "native ObjectGraph batch instantiate failed"
+                )
+            created.append(instance)
+            entry_map = _build_instantiated_object_id_map(document, instance)
+            overlap = set(object_id_map).intersection(entry_map)
+            if overlap:
+                raise PythonComponentRestoreError(
+                    f"ObjectGraph batch contains duplicate source IDs: {sorted(overlap)}"
+                )
+            object_id_map.update(entry_map)
+
+        combined = PreparedPythonComponentGraph([
+            component
+            for prepared in prepared_graphs
+            for component in prepared.components
+        ])
+        for prepared in prepared_graphs:
+            prepared.consume()
+        publish_prepared_scene_python_components(
+            scene,
+            combined,
+            clear_registries=False,
+            object_id_map=object_id_map,
+        )
+        return created
+    except Exception:
+        for prepared in prepared_graphs:
+            if not prepared._closed:
+                prepared.discard()
+        try:
+            scene.take_pending_py_components()
+        except Exception:
+            pass
+        for instance in reversed(created):
+            scene.destroy_game_object(instance)
+        if created:
+            scene.process_pending_destroys()
+        raise
+
+
 def clone_game_object_transactionally(
     scene,
     source,
     parent=None,
     asset_database=None,
+    *,
+    instantiate_in_world_space: bool = False,
+    configure_created=None,
 ):
     """Preflight a source snapshot before native subtree clone/publish."""
     _require_clean_pending_queue(scene)
-    source_document = source.serialize_document()
+    source_document = serialize_game_object_document_authoritatively(source)
     prepared = preflight_game_object_python_components(
         source_document,
         asset_database,
         preserve_document_ids=False,
+        prefer_loaded_types=True,
+        reference_scene=scene,
     )
-    created = scene._clone_game_object(source, parent)
+    created = scene._clone_game_object(
+        source,
+        parent,
+        bool(instantiate_in_world_space),
+    )
     if created is None:
         prepared.discard()
         return None
     try:
+        if configure_created is not None:
+            configure_created(created)
         object_id_map = _build_instantiated_object_id_map(source_document, created)
         publish_prepared_scene_python_components(
             scene,
@@ -1079,6 +1162,8 @@ def create_component_instance(
     type_guid: str,
     type_name: str,
     asset_database=None,
+    *,
+    prefer_loaded_type: bool = False,
 ):
     """Create a Python component instance from an exact stable identity.
 
@@ -1092,6 +1177,14 @@ def create_component_instance(
 
     instance = None
     loaded_from_asset = False
+    if prefer_loaded_type:
+        from Infernux.components.registry import get_type_by_identity
+
+        component_type = get_type_by_identity(type_name, script_guid, type_guid)
+        if component_type is not None:
+            instance = component_type()
+            instance._script_guid = script_guid
+            return instance, script_path
     if script_path and os.path.exists(script_path):
         loaded_from_asset = True
         if asset_database is not None:

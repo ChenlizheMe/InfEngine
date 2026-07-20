@@ -81,6 +81,9 @@
       "name": "release",
       "configurePreset": "release",
       "configuration": "Release",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
       "targets": [
         "ALL_BUILD",
         "package_and_install_python"

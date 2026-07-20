@@ -63,8 +63,10 @@ def _can_remove_component(obj, comp, type_name, is_native):
 
 
 def _get_add_component_entries():
-    """Build the list of addable component entries (native + engine + scripts)."""
+    """Convert the component registry snapshot to native menu entries."""
     from Infernux.lib import InspectorAddComponentEntry, get_registered_component_types
+    from Infernux.engine.project_context import get_project_root
+    project_root = get_project_root() or ""
 
     entries = []
     from Infernux.components.builtin_component import BuiltinComponent
@@ -79,62 +81,20 @@ def _get_add_component_entries():
         e.is_native = True
         entries.append(e)
 
-    from Infernux.renderstack.render_stack import RenderStack
-    for display_name, _comp_cls in [("RenderStack", RenderStack)]:
-        e = InspectorAddComponentEntry()
-        e.display_name = display_name
-        e.category = "Engine"
-        e.is_native = False
-        e.script_path = ""
-        entries.append(e)
-
-    # Engine-side Python-only components (e.g. SpriteRenderer)
-    from Infernux.components.registry import get_all_types
+    from Infernux.components.registry import get_component_registrations
     seen = {e.display_name for e in entries}
-    for name, cls in get_all_types().items():
-        if name in seen:
+    for registration in get_component_registrations(project_root=project_root):
+        if registration.type_name in seen:
             continue
-        menu_path = getattr(cls, '_component_menu_path_', None)
-        if menu_path:
-            e = InspectorAddComponentEntry()
-            e.display_name = name
-            e.category = getattr(cls, '_component_category_', 'Scripts')
-            e.is_native = False
-            e.script_path = ""
-            entries.append(e)
+        e = InspectorAddComponentEntry()
+        e.display_name = registration.type_name
+        e.category = registration.category
+        e.is_native = False
+        e.script_path = registration.script_path
+        entries.append(e)
+        seen.add(registration.type_name)
 
-    import os
-    from Infernux.engine.project_context import get_project_root
-    from Infernux.components.script_loader import load_component_from_file, ScriptLoadError
-
-    project_root = get_project_root()
-    if project_root and os.path.isdir(project_root):
-        for dirpath, _dirnames, filenames in os.walk(project_root):
-            rel = os.path.relpath(dirpath, project_root)
-            if any(part.startswith('.') or part in (
-                    '__pycache__', 'build', 'Library',
-                    'ProjectSettings', 'Logs', 'Temp')
-                   for part in rel.split(os.sep)):
-                continue
-            for fn in filenames:
-                if not fn.endswith('.py') or fn.startswith('_'):
-                    continue
-                full = os.path.join(dirpath, fn)
-                with open(full, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read(4096)
-                if 'InxComponent' not in content:
-                    continue
-                try:
-                    comp_class = load_component_from_file(full)
-                except (ScriptLoadError, Exception) as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    continue
-                e = InspectorAddComponentEntry()
-                e.display_name = comp_class.__name__
-                e.category = "Scripts"
-                e.is_native = False
-                e.script_path = full
-                entries.append(e)
+    entries.sort(key=lambda entry: (entry.category.casefold(), entry.display_name.casefold()))
     return entries
 
 

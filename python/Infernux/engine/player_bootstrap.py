@@ -25,7 +25,7 @@ from Infernux.engine.engine import Engine, LogLevel
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.engine.play_mode import PlayModeManager
 from Infernux.engine.player_gui import PlayerGUI
-from Infernux.engine.path_utils import safe_path as _safe_path
+from Infernux.engine.path_utils import is_path_within, resolved_path, safe_path as _safe_path
 from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.player")
@@ -38,7 +38,7 @@ def _plog(msg):
         # Fallback: write into Data/Logs/ next to the executable
         import sys as _sys
         _exe = getattr(_sys, 'executable', '') or ''
-        _d = os.path.dirname(os.path.abspath(_exe))
+        _d = os.path.dirname(resolved_path(_exe))
         _logs_dir = os.path.join(_d, "Data", "Logs")
         os.makedirs(_logs_dir, exist_ok=True)
         path = os.path.join(_logs_dir, "player.log")
@@ -166,13 +166,11 @@ class PlayerBootstrap:
         first_scene = scenes[0]
         requested_scene = os.environ.get("_INFERNUX_PLAYER_START_SCENE", "").strip()
         if requested_scene:
-            candidate = os.path.abspath(
+            candidate = resolved_path(
                 requested_scene if os.path.isabs(requested_scene) else os.path.join(self.project_path, requested_scene)
             )
             try:
-                is_inside_project = os.path.commonpath([os.path.abspath(self.project_path), candidate]) == os.path.abspath(
-                    self.project_path
-                )
+                is_inside_project = is_path_within(candidate, self.project_path)
             except ValueError:
                 is_inside_project = False
             if is_inside_project and os.path.splitext(candidate)[1].lower() == ".scene" and os.path.isfile(candidate):

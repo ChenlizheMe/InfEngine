@@ -24,7 +24,7 @@ from typing import Optional, Callable
 
 from Infernux.debug import Debug
 from Infernux.engine.project_context import get_project_root
-from Infernux.engine.path_utils import safe_path as _safe_path
+from Infernux.engine.path_utils import resolved_path, safe_path as _safe_path
 from .scene_manager import (
     PREFAB_MODE_SCENE_NAME,
     PREFAB_RESTORE_SCENE_NAME,
@@ -141,7 +141,7 @@ class ScenePrefabMixin:
             SelectionManager.instance().select(roots[0].id)
 
         self.is_prefab_mode = True
-        self.prefab_mode_path = os.path.abspath(prefab_path)
+        self.prefab_mode_path = resolved_path(prefab_path)
         self._current_scene_path = prefab_path
         self._dirty = False
         if not preserve_undo_history:

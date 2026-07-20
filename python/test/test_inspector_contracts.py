@@ -180,118 +180,6 @@ def test_scalar_batch_descriptor_keeps_its_semantic_identity():
     assert desc["sid"] == "inspector.object.7.component.11.speed"
 
 
-def test_renderstack_field_semantic_uses_component_and_pass_identity():
-    from Infernux.components.serialized_field import FieldType
-    from Infernux.engine.ui.inspector_renderstack import _record_renderstack_field_semantic
-
-    class _Context:
-        semantic_capture_enabled = True
-
-        def __init__(self):
-            self.items = []
-
-        def record_semantic_item(self, *args):
-            self.items.append(args)
-
-    ctx = _Context()
-    stack = SimpleNamespace(game_object=SimpleNamespace(id=69), component_id=232)
-    metadata = SimpleNamespace(
-        field_type=FieldType.FLOAT,
-        slider=False,
-        readonly=False,
-        multiline=False,
-    )
-
-    _record_renderstack_field_semantic(
-        ctx,
-        stack,
-        "pass.BloomEffect.parameter.threshold",
-        "Threshold",
-        metadata,
-        1.1,
-    )
-
-    assert ctx.items == [(
-        "drag_float",
-        "Threshold",
-        True,
-        "inspector.object.69.component.232.renderstack.pass.BloomEffect.parameter.threshold",
-        None,
-        1.1,
-        None,
-    )]
-
-
-def test_renderstack_field_semantic_skips_identity_work_outside_snapshot():
-    from Infernux.components.serialized_field import FieldType
-    from Infernux.engine.ui.inspector_renderstack import _record_renderstack_field_semantic
-
-    class _NoIdentityAccess:
-        @property
-        def game_object(self):
-            raise AssertionError("ordinary frames must not resolve RenderStack semantic identity")
-
-    ctx = SimpleNamespace(semantic_capture_enabled=False)
-    metadata = SimpleNamespace(field_type=FieldType.FLOAT)
-
-    _record_renderstack_field_semantic(
-        ctx,
-        _NoIdentityAccess(),
-        "pass.BloomEffect.parameter.threshold",
-        "Threshold",
-        metadata,
-        1.0,
-    )
-
-
-def test_renderstack_header_and_order_use_distinct_semantic_roles(monkeypatch):
-    import Infernux.engine.ui.inspector_renderstack as module
-
-    class BloomEffect:
-        name = "Bloom"
-
-    class _Context:
-        semantic_capture_enabled = True
-
-        def __init__(self):
-            self.items = []
-
-        def record_semantic_item(self, *args):
-            self.items.append(args)
-
-        def push_id_str(self, _value):
-            pass
-
-        def pop_id(self):
-            pass
-
-        def same_line(self, *_args):
-            pass
-
-        def begin_drag_drop_source(self, _flags):
-            return False
-
-        def begin_popup_context_item(self, _popup_id):
-            return False
-
-    monkeypatch.setattr(module, "render_inspector_checkbox", lambda *_args: True)
-    monkeypatch.setattr(module, "render_compact_section_header", lambda *_args, **_kwargs: False)
-
-    ctx = _Context()
-    stack = SimpleNamespace(game_object=SimpleNamespace(id=69), component_id=232)
-    entry = SimpleNamespace(render_pass=BloomEffect(), enabled=True, order=100)
-
-    module._render_mounted_effect(ctx, stack, entry)
-
-    by_semantic_id = {item[3]: item for item in ctx.items}
-    header_id = "inspector.object.69.component.232.renderstack.pass.BloomEffect.header"
-    order_id = "inspector.object.69.component.232.renderstack.pass.BloomEffect.order"
-    assert by_semantic_id[header_id][0] == "renderstack_pass_header"
-    assert by_semantic_id[order_id][0] == "status"
-    assert by_semantic_id[order_id][2] is False
-    assert by_semantic_id[order_id][5] == 100.0
-
-
 def test_sprite_renderer_exposes_native_shadow_fields_to_inspector():
     from Infernux.components.builtin.sprite_renderer import SpriteRenderer
     from Infernux.engine.ui.inspector_components import _collect_cpp_properties
@@ -614,10 +502,12 @@ def test_texture_preview_uses_live_settings_generation(tmp_path):
     settings.generate_mipmaps = False
     asset_resource_preview._try_get_cpp_texture_preview(native, str(path), settings)
 
-    assert all(call[0][0].startswith("texedit|") for call in native.calls)
+    assert all(call[0][0].startswith("tex|") for call in native.calls)
     assert native.calls[0][0][2] != native.calls[1][0][2]
     assert native.calls[0][1]["max_size"] == 2048
     assert native.calls[0][1]["texture_format"] == "auto"
+    assert native.calls[0][1]["texture_type"] == "default"
+    assert native.calls[0][1]["authoring"] is True
 
 
 def test_texture_live_preview_can_be_released(monkeypatch, tmp_path):
@@ -625,17 +515,17 @@ def test_texture_live_preview_can_be_released(monkeypatch, tmp_path):
 
     class _Native:
         def __init__(self):
-            self.invalidated = []
+            self.released = []
 
-        def invalidate_texture_preview_task(self, key):
-            self.invalidated.append(key)
+        def release_preview_authoring(self, key):
+            self.released.append(key)
 
     native = _Native()
     monkeypatch.setattr(asset_resource_preview, "_resolve_native_engine", lambda _panel: native)
     path = tmp_path / "Released.png"
     asset_resource_preview.invalidate_live_texture_preview(str(path))
 
-    assert native.invalidated == [f"texedit|{os.path.normpath(path)}"]
+    assert native.released == [f"tex|{os.path.normpath(path)}"]
 
 
 def test_material_undo_snapshot_is_decoded_only_when_edit_occurs():
@@ -906,3 +796,10 @@ def test_apply_revert_bar_publishes_stable_enabled_state():
         ("button", "Apply", True, "asset.texture.import.apply"),
         ("button", "Revert", True, "asset.texture.import.revert"),
     ]
+def test_render_effect_asset_category_is_editable():
+    details._ensure_categories()
+
+    category = details._categories["render_effect"]
+
+    assert category.access_mode == details.AssetAccessMode.READ_WRITE_RESOURCE
+    assert category.custom_body_fn is details._render_render_effect_body

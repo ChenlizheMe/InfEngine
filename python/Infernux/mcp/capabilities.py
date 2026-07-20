@@ -8,6 +8,8 @@ import os
 import tempfile
 from typing import Any
 
+from Infernux.engine.path_utils import resolved_path
+
 
 CONFIG_REL_PATH = os.path.join("ProjectSettings", "mcp_capabilities.json")
 
@@ -131,7 +133,7 @@ _PROJECT_PATH = ""
 def configure(project_path: str, *, write_default: bool = True) -> dict[str, Any]:
     """Load, merge, and optionally materialize project MCP capability config."""
     global _CURRENT_CONFIG, _PROJECT_PATH
-    _PROJECT_PATH = os.path.abspath(project_path or "")
+    _PROJECT_PATH = resolved_path(project_path or "")
     config = load_capability_config(_PROJECT_PATH)
     _CURRENT_CONFIG = config
     if write_default and bool(config.get("write_default_config_on_bootstrap", True)):
@@ -148,7 +150,7 @@ def project_path() -> str:
 
 
 def config_path(project_path: str | None = None) -> str:
-    root = os.path.abspath(project_path or _PROJECT_PATH or "")
+    root = resolved_path(project_path or _PROJECT_PATH or "")
     return os.path.join(root, CONFIG_REL_PATH)
 
 

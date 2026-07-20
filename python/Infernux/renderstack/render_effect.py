@@ -106,6 +106,28 @@ class RenderEffect:
     def to_dict(self) -> dict[str, Any]:
         return self.to_asset().to_dict()
 
+    def deserialize_document(self, document) -> bool:
+        """Apply a strict source document to this shared live instance."""
+        try:
+            source = (
+                document
+                if isinstance(document, RenderEffectAsset)
+                else parse_render_effect_document(document)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(source, RenderEffectAsset):
+            return False
+        previous = self.to_asset()
+        if previous == source:
+            return True
+        self._feature_type = source.feature_type
+        self._parameters = copy.deepcopy(dict(source.parameters))
+        self._dependencies = tuple(source.dependencies)
+        self._revision += 1
+        self._schedule_save()
+        return True
+
     def has_parameter(self, name: str) -> bool:
         return str(name) in self._parameters
 
@@ -250,8 +272,11 @@ class RenderEffect:
             return False
 
     def flush(self) -> None:
-        if self._save_pending:
-            self.save()
+        if not self._save_pending or not self._file_path:
+            return
+        from Infernux.core.assets import AssetManager
+
+        AssetManager.flush_scheduled_saves(self._file_path)
 
     @classmethod
     def flush_all_pending(cls) -> None:
@@ -260,14 +285,30 @@ class RenderEffect:
 
     def _mark_parameter_changed(self) -> None:
         self._revision += 1
+        self._schedule_save()
+
+    def _schedule_save(self) -> None:
         if self._suppress_auto_save or not self._file_path:
-            return
-        now = time.monotonic()
-        if now - self._last_save_time >= self._AUTOSAVE_MIN_INTERVAL:
-            self.save()
             return
         self._save_pending = True
         self._pending_saves.add(self)
+        from Infernux.core.assets import AssetManager
+
+        AssetManager.set_render_effect_save_snapshot(
+            self._file_path,
+            dump_render_effect_document(self.to_asset()),
+        )
+        AssetManager.schedule_asset_save(
+            "render_effect",
+            self._file_path,
+            self,
+            debounce_sec=self._AUTOSAVE_MIN_INTERVAL,
+        )
+
+    def _on_save_submitted(self) -> None:
+        self._last_save_time = time.monotonic()
+        self._save_pending = False
+        self._pending_saves.discard(self)
 
     @staticmethod
     def _validate_name(name: str) -> str:

@@ -51,6 +51,7 @@
 #include <iomanip>
 #include <iostream>
 #include <numeric>
+#include <platform/filesystem/InxPath.h>
 #include <platform/window/InxView.h>
 #include <sstream>
 #include <stdexcept>
@@ -1796,6 +1797,7 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.runtimeMaterialCount = materialResidency.runtimeMaterialCount;
     snapshot.assetMaterialCount = materialResidency.assetMaterialCount;
     snapshot.materialDescriptorSetCount = materialResidency.descriptorSetCount;
+    snapshot.pendingMaterialTextureDescriptorSetCount = materialResidency.pendingTextureDescriptorSetCount;
     snapshot.retiredMaterialDescriptorSetCount = materialResidency.retiredDescriptorSetCount;
     snapshot.materialDescriptorPoolCount = materialResidency.descriptorPoolCount;
     snapshot.materialPipelineCount = materialResidency.pipelineCount;
@@ -2836,12 +2838,7 @@ bool InxRenderer::RefreshMaterialsUsingShader(const std::string &shaderId)
                 return true;
             if (name.empty())
                 return false;
-            size_t lastSlash = name.find_last_of("/\\");
-            std::string fileName = (lastSlash != std::string::npos) ? name.substr(lastSlash + 1) : name;
-            size_t dotPos = fileName.find_last_of('.');
-            if (dotPos != std::string::npos)
-                fileName = fileName.substr(0, dotPos);
-            return fileName == shaderId;
+            return PortablePathStem(name) == shaderId;
         };
         bool matches = matchesId(vertName) || matchesId(fragName);
 

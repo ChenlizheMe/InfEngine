@@ -670,10 +670,30 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
         std::string propType = trim(value.substr(firstComma + 1, secondComma - firstComma - 1));
         std::string defaultVal = trim(value.substr(secondComma + 1));
 
+        bool hdr = false;
+        size_t flagsBegin = std::string::npos;
+        if (!defaultVal.empty() && defaultVal.front() == '[') {
+            const size_t bracketEnd = defaultVal.find(']');
+            if (bracketEnd != std::string::npos)
+                flagsBegin = bracketEnd + 1;
+        } else {
+            flagsBegin = defaultVal.find(',');
+        }
+        if (flagsBegin != std::string::npos) {
+            std::string flags = trim(defaultVal.substr(flagsBegin));
+            if (!flags.empty() && flags.front() == ',')
+                flags = trim(flags.substr(1));
+            std::transform(flags.begin(), flags.end(), flags.begin(),
+                           [](unsigned char character) { return static_cast<char>(std::toupper(character)); });
+            hdr = flags == "HDR";
+            defaultVal = trim(defaultVal.substr(0, flagsBegin));
+        }
+
         ShaderProperty prop;
         prop.name = name;
         prop.type = propType;
         prop.defaultValue = defaultVal;
+        prop.hdr = hdr;
 
         if (propType == "Texture2D") {
             prop.isTexture = true;
@@ -1898,10 +1918,7 @@ std::unordered_map<std::string, std::string> InxShaderLoader::BuildShaderIdMap(c
             // Namespace .shadingmodel entries to prevent collision with import resolution.
             const std::string mapKey = (ext == ".shadingmodel") ? ("shadingmodel/" + id) : id;
             if (overwrite || idMap.find(mapKey) == idMap.end()) {
-                std::error_code canonicalError;
-                std::string canonicalPath = FromFsPath(std::filesystem::canonical(entry.path(), canonicalError));
-                if (!canonicalError)
-                    idMap[mapKey] = canonicalPath;
+                idMap[mapKey] = ResolveFilesystemPath(pathStr);
             }
         }
     };

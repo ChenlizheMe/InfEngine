@@ -966,7 +966,7 @@ class TestComponentLifecycle:
 
     def test_renderstack_rejects_obsolete_binding_source(self, scene):
         stack = scene.create_game_object("InvalidEffectBindingRenderStack").add_component(RenderStack)
-        with pytest.raises(ValueError, match="obsolete"):
+        with pytest.raises(ValueError, match="removed"):
             stack._deserialize_fields_document(
                 {"effect_stage_bindings_json": '{"$schema":"broken"}'}
             )

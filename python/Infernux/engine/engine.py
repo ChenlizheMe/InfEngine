@@ -274,6 +274,7 @@ class Engine():
             try:
                 from Infernux.core.assets import AssetManager
                 AssetManager.flush_pending_gpu_texture_reloads()
+                AssetManager.poll_pending_asset_writes()
             except Exception as exc:
                 Debug.log_suppressed("Engine.post_draw_tick.flush_texture_reloads", exc)
 
@@ -490,6 +491,12 @@ class Engine():
         #    destruction can trigger PyComponentProxy::OnDestroy callbacks
         #    on already-invalid Python state, and physics/audio may block.
         self._shutdown_play_mode()
+
+        try:
+            from Infernux.core.assets import AssetManager
+            AssetManager.flush_all_asset_writes()
+        except Exception as exc:
+            Debug.log_error(f"Failed to flush pending asset writes during shutdown: {exc}")
 
         # 1. Stop the observer and commit any events it already delivered while
         #    AssetDatabase, AssetRegistry, renderer, and editor caches are alive.

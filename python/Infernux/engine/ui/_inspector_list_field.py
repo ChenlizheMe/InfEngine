@@ -509,6 +509,15 @@ def _render_list_field(
                 comp._call_on_validate()
         return
 
+    # The header itself remains a complete add/remove/drop target. Avoid
+    # building an empty body and reorder separator until an item exists.
+    if not items:
+        if changed and not metadata.readonly:
+            _record_property(comp, field_name, current_value, items, f"Set {field_name}")
+            if hasattr(comp, '_call_on_validate'):
+                comp._call_on_validate()
+        return
+
     # ── Render items, reorder separators, bottom drop zone ──
     if _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,
                                reference_types, button_spacing, current_value):

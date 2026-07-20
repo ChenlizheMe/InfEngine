@@ -6,6 +6,7 @@
 #include "VkShaderCache.h"
 #include "InxError.h"
 #include "vk/VkCore.h"
+#include <platform/filesystem/InxPath.h>
 
 #include <cstring>
 
@@ -121,8 +122,7 @@ const std::vector<char> *VkShaderCache::FindCodeInMap(const std::unordered_map<s
         return &it->second;
 
     // Extract filename from path
-    size_t lastSlash = path.find_last_of("/\\");
-    std::string filename = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
+    std::string filename = PortablePathFilename(path);
 
     // Try with filename (with extension)
     it = map.find(filename);

@@ -8,6 +8,7 @@ import re
 import time
 from typing import Literal
 
+from Infernux.engine.path_utils import relative_path, resolved_path
 from Infernux.mcp import session
 from Infernux.mcp.tools.common import fail, main_thread, register_tool_metadata
 
@@ -122,14 +123,14 @@ def _artifact_path(source: str, file_name: str) -> str:
         requested = f"{safe_stem}.png"
     else:
         requested = f"{source}-{time.time_ns()}.png"
-    return os.path.abspath(os.path.join(review_dir, requested))
+    return resolved_path(os.path.join(review_dir, requested))
 
 
 def _artifact_uri(output_path: str) -> str:
     if not output_path:
         return ""
     active = session.current()
-    relative = os.path.relpath(os.path.abspath(output_path), active.artifact_root).replace("\\", "/")
+    relative = relative_path(output_path, active.artifact_root)
     return relative
 
 

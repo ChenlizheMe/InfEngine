@@ -133,6 +133,7 @@ struct MaterialDescriptorSet
     std::unordered_map<uint32_t, TextureBinding> textureBindings;
 
     bool isValid = false;
+    bool hasPendingTextures = false;
 };
 
 enum class TextureResolveStatus
@@ -233,6 +234,8 @@ class MaterialDescriptorManager
     void ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,
                                   const std::vector<MergedDescriptorBinding> &bindings);
 
+    [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const;
+
     /**
      * @brief Bind texture to material
      * @param materialName Material name
@@ -302,6 +305,17 @@ class MaterialDescriptorManager
     [[nodiscard]] size_t GetDescriptorSetCount() const noexcept
     {
         return m_descriptorSets.size();
+    }
+    [[nodiscard]] size_t GetPendingTextureDescriptorSetCount() const noexcept
+    {
+        size_t count = 0;
+        for (const auto &[name, descriptorSet] : m_descriptorSets) {
+            (void)name;
+            if (descriptorSet && descriptorSet->isValid && descriptorSet->hasPendingTextures) {
+                ++count;
+            }
+        }
+        return count;
     }
     [[nodiscard]] size_t GetRetiredDescriptorSetCount() const noexcept
     {

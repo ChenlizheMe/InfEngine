@@ -7,6 +7,7 @@
 #include "vk/VkRenderUtils.h"
 #include <algorithm>
 #include <core/log/InxLog.h>
+#include <platform/filesystem/InxPath.h>
 #include <stdexcept>
 
 namespace infernux
@@ -797,13 +798,7 @@ void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &
     auto extractShaderName = [](const std::string &path) -> std::string {
         if (path.empty())
             return "";
-        size_t lastSlash = path.find_last_of("/\\");
-        std::string fileName = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
-        size_t dotPos = fileName.find_last_of('.');
-        if (dotPos != std::string::npos) {
-            return fileName.substr(0, dotPos);
-        }
-        return fileName;
+        return PortablePathStem(path);
     };
 
     std::vector<std::string> materialsToRemove;
@@ -1043,6 +1038,7 @@ MaterialGpuResidencySnapshot MaterialPipelineManager::GetResidencySnapshot() con
     snapshot.renderDataCount = m_renderDataMap.size();
     snapshot.pipelineCount = m_pipelineCache.size();
     snapshot.descriptorSetCount = m_descriptorManager.GetDescriptorSetCount();
+    snapshot.pendingTextureDescriptorSetCount = m_descriptorManager.GetPendingTextureDescriptorSetCount();
     snapshot.retiredDescriptorSetCount = m_descriptorManager.GetRetiredDescriptorSetCount();
     snapshot.descriptorPoolCount = m_descriptorManager.GetDescriptorPoolCount();
     for (const auto &[key, data] : m_renderDataMap) {

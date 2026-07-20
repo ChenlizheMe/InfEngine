@@ -273,8 +273,14 @@ def register_runtime_tools(mcp) -> None:
         presses: list[dict[str, Any]] = []
         releases: list[dict[str, Any]] = []
         pressed_keys: list[str | int] = []
+        automation_input_armed = False
         try:
             if held_keys:
+                _run_on_main(
+                    "runtime_measure_motion.begin_game_input",
+                    _begin_automation_game_input,
+                )
+                automation_input_armed = True
                 from Infernux.mcp.tools.input import perform_key_transition
 
                 for index, key in enumerate(held_keys):
@@ -298,16 +304,23 @@ def register_runtime_tools(mcp) -> None:
                 )
                 trajectory.append({"elapsed_seconds": elapsed, "objects": snapshot})
         finally:
-            if pressed_keys:
-                from Infernux.mcp.tools.input import perform_key_transition
+            try:
+                if pressed_keys:
+                    from Infernux.mcp.tools.input import perform_key_transition
 
-                for index, key in enumerate(reversed(pressed_keys)):
-                    release = perform_key_transition(
-                        key,
-                        False,
-                        trace_name=f"runtime_measure_motion.release.{index}",
+                    for index, key in enumerate(reversed(pressed_keys)):
+                        release = perform_key_transition(
+                            key,
+                            False,
+                            trace_name=f"runtime_measure_motion.release.{index}",
+                        )
+                        releases.append(dict(release.get("data") or {}))
+            finally:
+                if automation_input_armed:
+                    _run_on_main(
+                        "runtime_measure_motion.end_game_input",
+                        _end_automation_game_input,
                     )
-                    releases.append(dict(release.get("data") or {}))
         after_state = _run_on_main("runtime_measure_motion.after_state", _editor_state)
         if duration <= 0.0:
             after = _run_on_main("runtime_measure_motion.after", lambda: _named_transform_snapshots(names, probes))
@@ -340,6 +353,9 @@ def register_runtime_tools(mcp) -> None:
         trigger_timeout: float = 60.0,
         hold_key: str | int | None = None,
         hold_keys: list[str | int] | None = None,
+        hold_mouse_buttons: list[int] | None = None,
+        mouse_x: float = -10_000.0,
+        mouse_y: float = -10_000.0,
         frame_count: int | None = None,
         hold_frame_count: int | None = None,
         wait_frame_count: int | None = None,
@@ -353,7 +369,7 @@ def register_runtime_tools(mcp) -> None:
         """Arm startup sampling before a human-equivalent Play/Pause action.
 
         This is the required tool for the first seconds after entering Play. An
-        Optional SDL keys, a game-frame budget, public component probes, and a
+        Optional SDL keys or mouse buttons, a game-frame budget, public component probes, and a
         declarative stop condition are owned by the same bounded capture window.
         ``hold_frame_count`` plus ``wait_frame_count`` describes a two-stage
         action: hold keys for N game frames, then release them and let the game
@@ -375,12 +391,15 @@ def register_runtime_tools(mcp) -> None:
             raise ValueError("trigger_play_state must be 'playing' or 'paused'")
         timeout = max(0.5, min(float(trigger_timeout), 120.0))
         held_keys = _normalize_hold_keys(hold_key, hold_keys)
+        held_mouse_buttons = _normalize_hold_mouse_buttons(hold_mouse_buttons)
+        pointer_x = _finite_capture_coordinate("mouse_x", mouse_x)
+        pointer_y = _finite_capture_coordinate("mouse_y", mouse_y)
         frames = _normalize_frame_count(frame_count)
         hold_frames, wait_frames, total_frames = _normalize_motion_capture_frame_plan(
             frames,
             hold_frame_count,
             wait_frame_count,
-            held_keys,
+            bool(held_keys or held_mouse_buttons),
         )
         post_release_wait = max(0.0, min(float(wait_seconds), 30.0))
         if post_release_wait and not hold_frames:
@@ -419,6 +438,9 @@ def register_runtime_tools(mcp) -> None:
             "trigger_timeout": timeout,
             "hold_key": hold_key,
             "hold_keys": held_keys,
+            "hold_mouse_buttons": held_mouse_buttons,
+            "mouse_x": pointer_x,
+            "mouse_y": pointer_y,
             "frame_count": total_frames,
             "hold_frame_count": hold_frames,
             "wait_frame_count": wait_frames,
@@ -910,7 +932,7 @@ def _normalize_motion_capture_frame_plan(
     frame_count: int,
     hold_frame_count: int | None,
     wait_frame_count: int | None,
-    held_keys: list[str | int],
+    has_held_input: bool,
 ) -> tuple[int, int, int]:
     """Return hold, settle, and total frame budgets for one owned input action."""
     hold = _normalize_frame_count(hold_frame_count) if hold_frame_count is not None else 0
@@ -924,14 +946,14 @@ def _normalize_motion_capture_frame_plan(
             raise ValueError("wait_frame_count must be between 0 and 120000")
     if wait and not hold:
         raise ValueError("wait_frame_count requires hold_frame_count")
-    if hold and not held_keys:
-        raise ValueError("hold_frame_count requires hold_key or hold_keys")
+    if hold and not has_held_input:
+        raise ValueError("hold_frame_count requires hold_key, hold_keys, or hold_mouse_buttons")
     if frame_count and wait:
         raise ValueError("Use frame_count as the total budget, or use hold_frame_count with wait_frame_count")
     if frame_count:
         if hold > frame_count:
             raise ValueError("hold_frame_count must not exceed frame_count")
-        if held_keys and not hold:
+        if has_held_input and not hold:
             hold = frame_count
         return hold, frame_count - hold, frame_count
     if hold:
@@ -940,6 +962,27 @@ def _normalize_motion_capture_frame_plan(
             raise ValueError("hold_frame_count plus wait_frame_count must not exceed 120000")
         return hold, wait, total
     return 0, 0, 0
+
+
+def _normalize_hold_mouse_buttons(value: list[int] | None) -> list[int]:
+    buttons = list(value or [])
+    if len(buttons) > 5:
+        raise ValueError("hold_mouse_buttons may contain at most 5 buttons")
+    normalized: list[int] = []
+    for button in buttons:
+        if isinstance(button, bool) or int(button) not in range(5):
+            raise ValueError("hold_mouse_buttons must use Unity button indices 0 through 4")
+        normalized.append(int(button))
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("hold_mouse_buttons must not contain duplicate buttons")
+    return normalized
+
+
+def _finite_capture_coordinate(name: str, value: float) -> float:
+    coordinate = float(value)
+    if not math.isfinite(coordinate):
+        raise ValueError(f"{name} must be finite")
+    return coordinate
 
 
 def _pause_active_play_mode() -> bool:
@@ -953,6 +996,18 @@ def _pause_active_play_mode() -> bool:
     if manager.state != PlayModeState.PLAYING:
         return False
     return bool(manager.pause())
+
+
+def _begin_automation_game_input() -> None:
+    from Infernux.input import Input
+
+    Input._begin_automation_game_input()
+
+
+def _end_automation_game_input() -> None:
+    from Infernux.input import Input
+
+    Input._end_automation_game_input()
 
 
 def _arm_debug_frame_pause(
@@ -979,13 +1034,28 @@ def _arm_debug_frame_pause(
     )
 
 
-def _release_motion_capture_input_on_main(capture_id: str, keys: list[str | int], hold_frame_count: int) -> None:
+def _release_motion_capture_input_on_main(
+    capture_id: str,
+    keys: list[str | int],
+    mouse_buttons: list[int],
+    mouse_x: float,
+    mouse_y: float,
+    hold_frame_count: int,
+) -> None:
     """Queue a release exactly on the configured Play-mode frame boundary."""
     from Infernux.mcp.tools import input as input_tools
 
     releases: list[dict[str, Any]] = []
     try:
         native = input_tools._native_engine()
+        for button in reversed(mouse_buttons):
+            sequence = int(native.queue_synthetic_mouse_button_input(button, False, mouse_x, mouse_y))
+            releases.append({
+                "button": button,
+                "pressed": False,
+                "sequence": sequence,
+                "queued_at_hold_frame": int(hold_frame_count),
+            })
         for key in reversed(keys):
             scancode = input_tools._resolve_scancode(key)
             sequence = int(native.queue_synthetic_key_input(scancode, False, False))
@@ -1083,8 +1153,10 @@ def _unregister_motion_capture_trigger(capture_id: str) -> None:
 
 def _motion_capture_worker(capture_id: str) -> None:
     pressed_keys: list[str | int] = []
+    pressed_mouse_buttons: list[int] = []
     releases: list[dict[str, Any]] = []
     frame_gate_armed = False
+    automation_input_armed = False
     try:
         with _MOTION_CAPTURE_LOCK:
             record = _MOTION_CAPTURES.get(capture_id)
@@ -1096,6 +1168,9 @@ def _motion_capture_worker(capture_id: str) -> None:
             trigger_state = str(record["trigger_play_state"])
             trigger_timeout = float(record["trigger_timeout"])
             held_keys = list(record.get("hold_keys") or [])
+            held_mouse_buttons = list(record.get("hold_mouse_buttons") or [])
+            mouse_x = float(record.get("mouse_x", -10_000.0))
+            mouse_y = float(record.get("mouse_y", -10_000.0))
             frame_count = int(record.get("frame_count", 0) or 0)
             hold_frame_count = int(record.get("hold_frame_count", 0) or 0)
             wait_seconds = float(record.get("wait_seconds", 0.0) or 0.0)
@@ -1138,8 +1213,14 @@ def _motion_capture_worker(capture_id: str) -> None:
             record["trigger_state"] = observed_state
 
         presses: list[dict[str, Any]] = []
-        if held_keys:
+        if held_keys or held_mouse_buttons:
+            _run_on_main(
+                "runtime_motion_capture.begin_game_input",
+                _begin_automation_game_input,
+            )
+            automation_input_armed = True
             from Infernux.mcp.tools.input import perform_key_transition
+            from Infernux.mcp.tools.input import perform_mouse_button_transition
 
             for index, key in enumerate(held_keys):
                 press = perform_key_transition(
@@ -1157,6 +1238,24 @@ def _motion_capture_worker(capture_id: str) -> None:
                     )
                     return
                 pressed_keys.append(key)
+            for index, button in enumerate(held_mouse_buttons):
+                press = perform_mouse_button_transition(
+                    button,
+                    True,
+                    x=mouse_x,
+                    y=mouse_y,
+                    trace_name=f"runtime_motion_capture.mouse_press.{index}",
+                )
+                presses.append(dict(press.get("data") or {}))
+                if not press.get("ok"):
+                    _finish_motion_capture(
+                        capture_id,
+                        status="failed",
+                        error=str((press.get("error") or {}).get("message") or "Mouse input press failed."),
+                        input_presses=presses,
+                    )
+                    return
+                pressed_mouse_buttons.append(button)
 
         if frame_count:
             _run_on_main(
@@ -1171,6 +1270,9 @@ def _motion_capture_worker(capture_id: str) -> None:
                         lambda: _release_motion_capture_input_on_main(
                             capture_id,
                             held_keys,
+                            held_mouse_buttons,
+                            mouse_x,
+                            mouse_y,
                             hold_frame_count,
                         )
                     ) if hold_frame_count else None,
@@ -1186,7 +1288,7 @@ def _motion_capture_worker(capture_id: str) -> None:
             if cancel_event.is_set():
                 _finish_motion_capture(capture_id, status="cancelled", trajectory=trajectory)
                 return
-            if hold_frame_count and hold_complete_event.is_set() and pressed_keys:
+            if hold_frame_count and hold_complete_event.is_set() and (pressed_keys or pressed_mouse_buttons):
                 with _MOTION_CAPTURE_LOCK:
                     current = _MOTION_CAPTURES.get(capture_id)
                     released = bool((current or {}).get("_held_input_released"))
@@ -1197,6 +1299,7 @@ def _motion_capture_worker(capture_id: str) -> None:
                     raise RuntimeError(f"Frame-bound input release failed: {release_error}")
                 if released:
                     pressed_keys.clear()
+                    pressed_mouse_buttons.clear()
             objects = _run_on_main(
                 "runtime_motion_capture.sample",
                 lambda: _named_transform_snapshots(names, probes),
@@ -1283,6 +1386,23 @@ def _motion_capture_worker(capture_id: str) -> None:
                         str((release.get("error") or {}).get("message") or "Input release failed.")
                     )
                 pressed_keys.remove(key)
+        if pressed_mouse_buttons:
+            from Infernux.mcp.tools.input import perform_mouse_button_transition
+
+            for index, button in enumerate(reversed(list(pressed_mouse_buttons))):
+                release = perform_mouse_button_transition(
+                    button,
+                    False,
+                    x=mouse_x,
+                    y=mouse_y,
+                    trace_name=f"runtime_motion_capture.mouse_release.{index}",
+                )
+                releases.append(dict(release.get("data") or {}))
+                if not release.get("ok"):
+                    raise RuntimeError(
+                        str((release.get("error") or {}).get("message") or "Mouse input release failed.")
+                    )
+                pressed_mouse_buttons.remove(button)
         after_state = _run_on_main("runtime_motion_capture.after_state", _editor_state)
         _finish_motion_capture(
             capture_id,
@@ -1327,6 +1447,36 @@ def _motion_capture_worker(capture_id: str) -> None:
         if frame_gate_armed:
             try:
                 _run_on_main("runtime_motion_capture.cancel_frame_pause", _cancel_debug_frame_pause)
+            except Exception:
+                pass
+        if pressed_mouse_buttons:
+            try:
+                from Infernux.mcp.tools.input import perform_mouse_button_transition
+
+                for index, button in enumerate(reversed(list(pressed_mouse_buttons))):
+                    release = perform_mouse_button_transition(
+                        button,
+                        False,
+                        x=mouse_x,
+                        y=mouse_y,
+                        trace_name=f"runtime_motion_capture.mouse_release_after_failure.{index}",
+                    )
+                    releases.append(dict((release or {}).get("data") or {}))
+                    if release.get("ok"):
+                        pressed_mouse_buttons.remove(button)
+                _finish_motion_capture(
+                    capture_id,
+                    status=str((_public_motion_capture(capture_id) or {}).get("status") or "failed"),
+                    input_releases=releases,
+                )
+            except Exception:
+                pass
+        if automation_input_armed:
+            try:
+                _run_on_main(
+                    "runtime_motion_capture.end_game_input",
+                    _end_automation_game_input,
+                )
             except Exception:
                 pass
 

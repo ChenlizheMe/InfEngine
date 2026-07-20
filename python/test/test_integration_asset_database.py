@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import shutil
 import time
 import threading
@@ -11,6 +12,7 @@ import pytest
 
 from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, InxMaterial, ResourceType
 from Infernux.core.assets import AssetManager
+from Infernux.engine.path_utils import same_path
 from Infernux.particle import (
     AssetReference,
     ParticleArtifactRegistry,
@@ -315,7 +317,7 @@ def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path)
         runtime = registry.get_point_cache(result.guid)
         assert runtime is not None
         assert runtime.guid == result.guid
-        assert runtime.file_path == str(source)
+        assert same_path(runtime.file_path, source)
         assert runtime.name == "Morph Cache"
         assert runtime.stable_id == "morph-cache"
         assert runtime.bake_basis == "right_handed_y_up"
@@ -775,6 +777,32 @@ def test_asset_database_publishes_concurrent_reader_snapshots(engine, tmp_path: 
     assert retained_meta.get_guid() == stable_guid
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows short-path normalization regression")
+def test_delete_removes_reverse_mapping_after_short_path_source_disappears(engine, tmp_path: Path):
+    import ctypes
+
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "short-path-delete-regression.txt"
+    source.write_text("short path", encoding="utf-8")
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetShortPathNameW(str(source), buffer, len(buffer))
+    if not length or buffer.value == str(source):
+        pytest.skip("8.3 short paths are unavailable on this volume")
+
+    result = asset_db.import_asset(buffer.value)
+    assert result
+    guid = result.guid
+    assert guid
+    assert asset_db.get_guid_from_path(str(source)) == guid
+
+    source.unlink()
+    assert asset_db.delete_asset(str(source))
+    assert not asset_db.contains_guid(guid)
+    assert not asset_db.contains_path(str(source))
+    assert all(entry["guid"] != guid for entry in asset_db.get_directory_catalog(str(tmp_path)))
+
+
 def test_refresh_builds_import_artifacts_only_on_workers(engine):
     asset_db = engine.get_asset_database()
     graph = AssetDependencyGraph.instance()
@@ -1022,7 +1050,7 @@ def test_asset_database_rejects_stale_async_scan(engine, tmp_path: Path):
     assert asset_db.get_guid_from_path(str(mutation)) == guid
 
 
-def test_refresh_prepare_failure_restores_previous_working_set(engine):
+def test_refresh_regenerates_incompatible_metadata(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "prepare-rollback-fixture"
     fixture.mkdir(parents=True, exist_ok=True)
@@ -1032,32 +1060,22 @@ def test_refresh_prepare_failure_restores_previous_working_set(engine):
     try:
         asset_db.refresh()
         guid = asset_db.get_guid_from_path(str(source))
-        metadata_before = asset_db.get_meta_by_guid(guid).serialize_document()
-        generation_before = asset_db.query_generation
         meta_path = Path(f"{source}.meta")
-        valid_meta = meta_path.read_text(encoding="utf-8")
         meta_path.write_text("{ broken metadata", encoding="utf-8")
 
-        asset_db.begin_refresh()
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            try:
-                asset_db.try_commit_refresh()
-            except RuntimeError as error:
-                assert "Invalid metadata file" in str(error)
-                break
-            time.sleep(0.001)
-        else:
-            pytest.fail("invalid metadata did not fail refresh prepare")
-
-        assert asset_db.refresh_pending is False
-        assert asset_db.query_generation == generation_before
-        assert asset_db.get_guid_from_path(str(source)) == guid
-        assert asset_db.get_meta_by_guid(guid).serialize_document() == metadata_before
-
-        meta_path.write_text(valid_meta, encoding="utf-8")
         asset_db.refresh()
         assert asset_db.get_guid_from_path(str(source)) == guid
+        regenerated = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert set(regenerated) == {"metadata"}
+        assert regenerated["metadata"]["guid"]["value"] == guid
+
+        regenerated["meta_version"] = 2
+        meta_path.write_text(json.dumps(regenerated), encoding="utf-8")
+        asset_db.refresh()
+        assert asset_db.get_guid_from_path(str(source)) == guid
+        regenerated = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert set(regenerated) == {"metadata"}
+        assert regenerated["metadata"]["guid"]["value"] == guid
     finally:
         if asset_db.refresh_pending:
             deadline = time.monotonic() + 10.0
@@ -1069,3 +1087,11 @@ def test_refresh_prepare_failure_restores_previous_working_set(engine):
         Path(f"{source}.meta").unlink(missing_ok=True)
         fixture.rmdir()
         asset_db.refresh()
+
+
+def test_builtin_read_only_resources_do_not_create_metadata(engine):
+    from Infernux.resources import resources_path
+
+    resource_root = Path(resources_path)
+    assert engine.get_asset_database().contains_path(str(resource_root / "shaders" / "standard.vert"))
+    assert list(resource_root.rglob("*.meta")) == []

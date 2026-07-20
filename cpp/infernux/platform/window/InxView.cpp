@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 
 #include <imgui_impl_sdl3.h>
@@ -46,6 +47,18 @@ SDL_Keymod MergeKeyModifiers(SDL_Keymod first, SDL_Keymod second)
 SDL_Keymod RemoveKeyModifiers(SDL_Keymod value, SDL_Keymod removed)
 {
     return static_cast<SDL_Keymod>(static_cast<Uint16>(value) & ~static_cast<Uint16>(removed));
+}
+
+void MergeMouseMotion(SDL_Event &accumulated, const SDL_Event &latest)
+{
+    accumulated.motion.timestamp = latest.motion.timestamp;
+    accumulated.motion.windowID = latest.motion.windowID;
+    accumulated.motion.which = latest.motion.which;
+    accumulated.motion.state = latest.motion.state;
+    accumulated.motion.x = latest.motion.x;
+    accumulated.motion.y = latest.motion.y;
+    accumulated.motion.xrel += latest.motion.xrel;
+    accumulated.motion.yrel += latest.motion.yrel;
 }
 } // namespace
 
@@ -254,6 +267,29 @@ void InxView::ProcessEvent()
     // ---- Poll & process all pending events ----
     bool hadInputEvent = false;
 
+    // A high polling-rate mouse can enqueue dozens of consecutive motion
+    // events between frames. ImGui only consumes the final absolute position,
+    // while InputManager needs the accumulated relative delta. Coalesce only
+    // adjacent motion events so button/wheel/key ordering remains exact.
+    std::optional<SDL_Event> pendingMouseMotion;
+    auto flushMouseMotion = [&]() {
+        if (!pendingMouseMotion)
+            return;
+        hadInputEvent = ProcessOneEvent(*pendingMouseMotion) || hadInputEvent;
+        pendingMouseMotion.reset();
+    };
+    auto processQueuedEvent = [&](SDL_Event &queuedEvent) {
+        if (queuedEvent.type == SDL_EVENT_MOUSE_MOTION) {
+            if (pendingMouseMotion)
+                MergeMouseMotion(*pendingMouseMotion, queuedEvent);
+            else
+                pendingMouseMotion = queuedEvent;
+            return;
+        }
+        flushMouseMotion();
+        hadInputEvent = ProcessOneEvent(queuedEvent) || hadInputEvent;
+    };
+
     // Process the event captured by SDL_WaitEventTimeout (if any)
     if (gotFirstEvent) {
         switch (firstEvent.type) {
@@ -279,16 +315,17 @@ void InxView::ProcessEvent()
             pacing.wokeByOtherEvent = true;
             break;
         }
-        hadInputEvent = ProcessOneEvent(firstEvent) || hadInputEvent;
+        processQueuedEvent(firstEvent);
     }
 
     // Drain remaining queued events
     SDL_Event event{};
     while (SDL_PollEvent(&event)) {
-        hadInputEvent = ProcessOneEvent(event) || hadInputEvent;
+        processQueuedEvent(event);
         if (m_closeRequested)
             break;
     }
+    flushMouseMotion();
 
     // Automation events remain distinct from SDL's OS queue, but they are
     // translated into SDL_Event instances and sent through ProcessOneEvent.

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from Infernux.engine.path_utils import path_key, resolved_path
 from .asset import ParticleGraphAsset
 from .hir import ParticleGraphCompiler, ParticleProgramHIR
 from .kernel_ir import ParticleKernelLowerer, ParticleKernelProgram
@@ -57,7 +58,7 @@ class ParticleArtifactRegistry:
 
     @classmethod
     def compile_path(cls, path: str, *, guid: str = "") -> ParticleArtifact:
-        source_path = os.path.abspath(path)
+        source_path = resolved_path(path)
         try:
             source = Path(source_path).read_text(encoding="utf-8")
         except OSError as exc:
@@ -160,7 +161,7 @@ class ParticleArtifactRegistry:
     @staticmethod
     def _source_key(path: str, guid: str = "") -> str:
         identity = str(guid or "").strip()
-        return identity or os.path.normcase(os.path.abspath(path))
+        return identity or path_key(path)
 
     @staticmethod
     def _artifact_path(stable_id: str) -> str:

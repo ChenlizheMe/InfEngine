@@ -125,13 +125,13 @@ class TestProjectPanelCreation:
         AssetManager._prime_material_preview(str(path))
 
         normalized = os.path.normpath(str(path))
-        assert native.queries == [(f"mat|{normalized}", normalized, "", path.stat().st_mtime_ns)]
+        assert native.queries == [(f"mat|{normalized}", normalized, "", path.stat().st_mtime_ns, False)]
         assert native.full_speed_requests == 1
 
         native.queries.clear()
         AssetManager._prime_material_preview(str(path), '{"name":"Fresh"}')
         assert native.queries == [(
-            f"matedit|{normalized}", normalized, '{"name":"Fresh"}', 0,
+            f"mat|{normalized}", normalized, '{"name":"Fresh"}', 0, False,
         )]
 
     def test_create_prefab_links_the_saved_source(self, tmp_path, monkeypatch):

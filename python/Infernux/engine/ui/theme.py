@@ -374,9 +374,11 @@ class Theme:
     # -- Component Header
     INSPECTOR_HEADER_PRIMARY_FRAME_PAD = (4.0, 2.0)  # Primary header frame padding
     INSPECTOR_HEADER_SECONDARY_FRAME_PAD = (4.0, 2.0)  # Secondary header frame padding
+    INSPECTOR_HEADER_TERTIARY_FRAME_PAD = (4.0, 1.0)  # Nested item header frame padding
     INSPECTOR_HEADER_LIST_FRAME_PAD  = (4.0, 2.0)  # List header frame padding
     INSPECTOR_HEADER_PRIMARY_FONT_SCALE= 1.0  # Primary header font scale
     INSPECTOR_HEADER_SECONDARY_FONT_SCALE= 1.0  # Secondary header font scale
+    INSPECTOR_HEADER_TERTIARY_FONT_SCALE= 0.96  # Nested item visual hierarchy
     INSPECTOR_HEADER_LIST_FONT_SCALE = 1.0  # List header font scale
     INSPECTOR_HEADER_ITEM_SPC   = (4.0, 2.0)  # Header item spacing
     INSPECTOR_HEADER_BORDER_SIZE = 0.0  # Header border size
@@ -399,6 +401,9 @@ class Theme:
     INSPECTOR_HEADER_SECONDARY  : RGBA = (0.18,  0.18,  0.18,  1.0)  # Secondary (same scale, darker tone)
     INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.22,  0.20,  0.20,  1.0)
     INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.26,  0.22,  0.22,  1.0)
+    INSPECTOR_HEADER_TERTIARY  : RGBA = (0.125, 0.125, 0.125, 1.0)
+    INSPECTOR_HEADER_TERTIARY_HOVERED : RGBA = (0.18, 0.16, 0.16, 1.0)
+    INSPECTOR_HEADER_TERTIARY_ACTIVE  : RGBA = (0.22, 0.18, 0.18, 1.0)
     INSPECTOR_HEADER_LIST       : RGBA = (0.16,  0.16,  0.16,  1.0)  # List header (distinct from component header)
     INSPECTOR_HEADER_LIST_HOVERED : RGBA = (0.20,  0.18,  0.18,  1.0)
     INSPECTOR_HEADER_LIST_ACTIVE  : RGBA = (0.24,  0.20,  0.20,  1.0)

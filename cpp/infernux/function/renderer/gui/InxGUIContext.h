@@ -66,9 +66,31 @@ struct PropertyChange
     std::string sVal;
 };
 
+struct ObjectFieldInteraction
+{
+    int index = -1;
+    uint32_t flags = 0;
+    bool popupOpen = false;
+    std::string payloadType;
+    std::string payload;
+};
+
 struct PropertyBatchPlan
 {
     std::vector<PropertyDesc> descriptors;
+};
+
+struct MaterialTopInteraction
+{
+    uint32_t vertexFlags = 0;
+    bool vertexPickerOpen = false;
+    std::string vertexPayload;
+    bool vertexListPopupOpen = false;
+    uint32_t fragmentFlags = 0;
+    bool fragmentPickerOpen = false;
+    std::string fragmentPayload;
+    bool fragmentListPopupOpen = false;
+    std::vector<PropertyChange> surfaceChanges;
 };
 
 class InxGUIContext
@@ -77,6 +99,11 @@ class InxGUIContext
     /* DPI scale — set by InxGUI::Init, read by Python/UI code */
     static float s_dpiScale;
     float GetDpiScale() const;
+
+    /// True only while ImGui is inside a frame with an active window.
+    /// Native batch renderers use this to avoid entering widgets from
+    /// selection/change callbacks that can run between panel renders.
+    [[nodiscard]] bool CanRenderWidgets() const;
     /* basic text & labels */
     void Label(const std::string &text);
     void TextWrapped(const std::string &text);
@@ -144,6 +171,12 @@ class InxGUIContext
     void SetNextItemOpen(bool is_open, int cond = 0);
     void SetNextItemAllowOverlap();
     bool CollapsingHeader(const std::string &label);
+    bool RenderCompactSectionHeader(const std::string &label, uint64_t iconId, bool defaultOpen, int openCondition,
+                                    bool allowOverlap, float framePadX, float framePadY, float itemSpacingX,
+                                    float itemSpacingY, float borderSize, bool zeroIndent, float fontScale,
+                                    float rightMargin, float iconSize, const std::array<float, 4> &headerColor,
+                                    const std::array<float, 4> &hoverColor, const std::array<float, 4> &activeColor,
+                                    bool useTextColor, const std::array<float, 4> &textColor);
     bool IsItemClicked(int mouseButton = 0);
 
     /* tab bars */
@@ -155,7 +188,7 @@ class InxGUIContext
     /* main-menu / menus */
     bool BeginMainMenuBar();
     void EndMainMenuBar();
-    bool BeginMenu(const std::string &label, bool enabled = true);
+    bool BeginMenu(const std::string &label, bool enabled = true, const std::string &semanticId = "");
     void EndMenu();
     bool MenuItem(const std::string &label, const std::string &shortcut = "", bool selected = false,
                   bool enabled = true);
@@ -209,6 +242,7 @@ class InxGUIContext
     float GetContentRegionAvailHeight();
     float GetCursorPosX();
     float GetCursorPosY();
+    bool IsVirtualizedRegionVisible(float height);
     void SetCursorPosX(float x);
     void SetCursorPosY(float y);
     float GetWindowPosX();
@@ -314,8 +348,9 @@ class InxGUIContext
     void SetClipboardText(const std::string &text);
     std::string GetClipboardText();
 
-    /* multiline text input (read-only) */
-    void InputTextMultiline(const std::string &label, const std::string &text, float width, float height, int flags);
+    /* editable multiline text input */
+    std::string InputTextMultiline(const std::string &label, const std::string &text, size_t bufferSize, float width,
+                                   float height, int flags);
 
     /* font scale (affects all subsequent ImGui text in the current window) */
     void SetWindowFontScale(float scale);
@@ -363,6 +398,20 @@ class InxGUIContext
     uint32_t RenderObjectFieldChrome(const std::string &fieldId, const std::string &displayText,
                                      const std::string &typeHint, bool selected, bool clickable, bool hasPicker,
                                      uint64_t pickerTextureId, const std::string &semanticId = "");
+    std::vector<ObjectFieldInteraction> RenderMeshRendererInspectorFields(const std::string &meshFieldId,
+                                                                          const std::string &meshLabel,
+                                                                          const std::string &meshDisplay,
+                                                                          const std::vector<std::string> &slotLabels,
+                                                                          const std::vector<std::string> &slotDisplays,
+                                                                          uint64_t pickerTextureId, float labelWidth);
+    MaterialTopInteraction RenderMaterialTop(const std::string &shaderSectionLabel, const std::string &vertexLabel,
+                                             const std::string &vertexDisplay, const std::string &fragmentLabel,
+                                             const std::string &fragmentDisplay, float shaderLabelWidth,
+                                             const std::string &surfaceSectionLabel,
+                                             const PropertyBatchPlan *surfacePlan, float surfaceLabelWidth,
+                                             uint64_t pickerTextureId, uint64_t previewTextureId,
+                                             const std::string &previewUnavailableLabel, bool defaultOpen,
+                                             bool readOnly);
 
   private:
     struct SearchableComboState

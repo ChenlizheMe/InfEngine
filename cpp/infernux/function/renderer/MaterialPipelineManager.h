@@ -167,6 +167,11 @@ class MaterialPipelineManager
      */
     void UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material);
 
+    [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const
+    {
+        return m_descriptorManager.HasPendingTextureProperties(materialName);
+    }
+
     /**
      * @brief Bind a texture to a material
      */

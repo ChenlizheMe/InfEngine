@@ -184,8 +184,12 @@ class BootstrapWiringMixin:
         from Infernux.engine.ui.project_delete_confirmation import (
             ProjectDeleteConfirmationCoordinator,
         )
+        from Infernux.engine.ui.scene_delete_confirmation import (
+            SceneDeleteConfirmationCoordinator,
+        )
         _dirty_panels = DirtyPanelConfirmationCoordinator.instance()
         _project_delete = ProjectDeleteConfirmationCoordinator.instance()
+        _scene_delete = SceneDeleteConfirmationCoordinator.instance()
 
         class _MenuBarFloatingPanels(InxGUIRenderable):
             def on_render(self, ctx: InxGUIContext):
@@ -194,6 +198,7 @@ class BootstrapWiringMixin:
                 _plm.render(ctx)
                 _dirty_panels.render(ctx)
                 _project_delete.render(ctx)
+                _scene_delete.render(ctx)
                 if _sfm:
                     _sfm.render_confirmation_popup(ctx)
                     _sfm.render_save_as_popup(ctx)

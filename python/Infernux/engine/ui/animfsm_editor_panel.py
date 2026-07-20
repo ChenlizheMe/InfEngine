@@ -17,6 +17,7 @@ import re
 import threading
 from typing import Dict, List, Optional, Tuple
 
+from Infernux.engine.path_utils import path_key, relative_path, resolved_path, same_path
 from Infernux.core.anim_state_machine import (
     AnimStateMachine,
     AnimState,
@@ -315,9 +316,8 @@ class AnimFSMEditorPanel(EditorPanel):
         p = (path or "").strip()
         if not p:
             return ""
-        p = os.path.normpath(p)
         if os.path.isabs(p):
-            return p
+            return resolved_path(p)
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -325,8 +325,8 @@ class AnimFSMEditorPanel(EditorPanel):
         except Exception:
             root = None
         if root:
-            return os.path.normpath(os.path.join(root, p))
-        return os.path.abspath(p)
+            return resolved_path(os.path.join(root, p))
+        return resolved_path(p)
 
     def _open_animfsm(self, file_path: str):
         """Load an .animfsm file into the editor."""
@@ -382,22 +382,27 @@ class AnimFSMEditorPanel(EditorPanel):
         if not target_mode or self._mode_switch_waiting_for_save:
             return
 
-        popup_id = "Unsaved State Machine###animfsm_mode_switch_confirm"
-        if self._mode_switch_confirm_requested:
-            ctx.open_popup(popup_id)
-            self._mode_switch_confirm_requested = False
+        from .editor_modal import (
+            EditorModalAction,
+            begin_editor_modal,
+            end_editor_modal,
+            render_editor_modal_actions,
+        )
 
-        if not ctx.begin_popup_modal(popup_id, 64):
+        popup_id = f"{t('animfsm.mode_switch.title')}###animfsm_mode_switch_confirm"
+        request_open = self._mode_switch_confirm_requested
+        self._mode_switch_confirm_requested = False
+        if not begin_editor_modal(
+            ctx,
+            popup_id=popup_id,
+            title=t("animfsm.mode_switch.title"),
+            semantic_id="animfsm.mode_switch.dialog",
+            request_open=request_open,
+        ):
             return
 
-        ctx.record_semantic_window(
-            "modal", "Unsaved State Machine", "animfsm.mode_switch.dialog"
-        )
-        ctx.label("The current state machine has unsaved changes.")
-        ctx.label("Save before switching to a new resource?")
-        ctx.spacing()
-        ctx.separator()
-        ctx.spacing()
+        ctx.text_wrapped(t("animfsm.mode_switch.message"))
+        ctx.text_wrapped(t("animfsm.mode_switch.question"))
 
         def _save() -> None:
             self._mode_switch_waiting_for_save = True
@@ -414,15 +419,16 @@ class AnimFSMEditorPanel(EditorPanel):
             self._cancel_pending_mode_switch()
             ctx.close_current_popup()
 
-        ctx.button("Save##animfsm_mode_switch_save", _save)
-        ctx.record_semantic_item("button", "Save", True, "animfsm.mode_switch.save")
-        ctx.same_line()
-        ctx.button("Discard##animfsm_mode_switch_discard", _discard)
-        ctx.record_semantic_item("button", "Discard", True, "animfsm.mode_switch.discard")
-        ctx.same_line()
-        ctx.button("Cancel##animfsm_mode_switch_cancel", _cancel)
-        ctx.record_semantic_item("button", "Cancel", True, "animfsm.mode_switch.cancel")
-        ctx.end_popup()
+        render_editor_modal_actions(
+            ctx,
+            [
+                EditorModalAction(t("editor.unsaved.save"), "save", _save),
+                EditorModalAction(t("editor.unsaved.dont_save"), "discard", _discard),
+                EditorModalAction(t("editor.unsaved.cancel"), "cancel", _cancel),
+            ],
+            semantic_prefix="animfsm.mode_switch",
+        )
+        end_editor_modal(ctx)
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -503,11 +509,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
                 root = get_project_root()
                 if root:
-                    abs_p = os.path.abspath(fp)
-                    abs_r = os.path.abspath(root)
-                    rel = os.path.relpath(abs_p, abs_r)
-                    if not rel.startswith(".."):
-                        data["file_path_rel"] = rel
+                    data["file_path_rel"] = relative_path(fp, root)
             except (ValueError, OSError):
                 pass
         elif rel_fallback:
@@ -533,7 +535,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
                 root = get_project_root()
                 if root:
-                    cand = os.path.normpath(os.path.join(root, rel.replace("/", os.sep)))
+                    cand = resolved_path(os.path.join(root, rel))
                     if os.path.isfile(cand):
                         return cand
             except (OSError, ValueError):
@@ -1244,7 +1246,7 @@ class AnimFSMEditorPanel(EditorPanel):
         seen: set[str] = set()
         for ext in sorted(MESH_EXTENSIONS):
             for model_path in AssetManager.find_assets(f"*{ext}"):
-                normalized = os.path.normpath(model_path)
+                normalized = path_key(model_path)
                 if normalized in seen:
                     continue
                 seen.add(normalized)
@@ -2579,22 +2581,21 @@ class AnimFSMEditorPanel(EditorPanel):
             from Infernux.components.spirit_animator import SpiritAnimator
             from Infernux.components.skeletal_animator import SkeletalAnimator
             from Infernux.components.timeline_action import TimelineAction
-            norm = os.path.normpath(fsm_path)
             for go in scene.get_all_objects():
                 animator = go.get_component(SpiritAnimator)
-                if animator and animator._fsm and os.path.normpath(
-                        animator._fsm.file_path or "") == norm:
+                if animator and animator._fsm and same_path(
+                        animator._fsm.file_path or "", fsm_path):
                     animator.reload_controller()
                 skel = go.get_component(SkeletalAnimator)
-                if skel and skel._fsm and os.path.normpath(
-                        skel._fsm.file_path or "") == norm:
+                if skel and skel._fsm and same_path(
+                        skel._fsm.file_path or "", fsm_path):
                     skel.reload_controller()
                 ta = go.get_component(TimelineAction)
                 if ta is not None:
                     rt = getattr(ta, "_runtime", None)
                     fsm_obj = getattr(rt, "_fsm", None) if rt is not None else None
-                    if fsm_obj is not None and os.path.normpath(
-                            getattr(fsm_obj, "file_path", "") or "") == norm:
+                    if fsm_obj is not None and same_path(
+                            getattr(fsm_obj, "file_path", "") or "", fsm_path):
                         ta.reload_controller()
         except Exception:
             pass

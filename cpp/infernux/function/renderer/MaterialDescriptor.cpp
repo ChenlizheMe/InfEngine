@@ -61,6 +61,12 @@ void AppendImageWrite(std::vector<VkWriteDescriptorSet> &writes, std::vector<VkD
     writes.push_back(write);
 }
 
+bool HasSameGpuBinding(const MaterialDescriptorSet::TextureBinding &left,
+                       const MaterialDescriptorSet::TextureBinding &right)
+{
+    return left.imageView == right.imageView && left.sampler == right.sampler;
+}
+
 } // namespace
 
 // ============================================================================
@@ -509,6 +515,10 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                             : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding);
                     const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
 
+                    if (!isPlaceholderTexture && resolveStatus == TextureResolveStatus::Pending) {
+                        matDescSet->hasPendingTextures = true;
+                    }
+
                     if (!resolvedExplicit && !TryGetDefaultTextureBinding(binding.name, resolvedBinding)) {
                         matDescSet->textureBindings.erase(binding.binding);
                         break;
@@ -651,7 +661,7 @@ void MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialNam
 }
 
 void MaterialDescriptorManager::ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,
-                                                         const std::vector<MergedDescriptorBinding> &bindings)
+                                                          const std::vector<MergedDescriptorBinding> &bindings)
 {
     if (!m_textureResolver) {
         return;
@@ -663,6 +673,7 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
     }
 
     auto &matDescSet = *it->second;
+    matDescSet.hasPendingTextures = false;
     const auto &properties = material.GetAllProperties();
 
     // Collect all descriptor writes into a single batch
@@ -705,10 +716,19 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                 const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
                 const bool hasBinding = resolvedExplicit || TryGetDefaultTextureBinding(binding.name, resolvedBinding);
 
+                if (!isPlaceholder && resolveStatus == TextureResolveStatus::Pending) {
+                    matDescSet.hasPendingTextures = true;
+                }
+
                 if (hasBinding) {
+                    const auto previous = matDescSet.textureBindings.find(binding.binding);
+                    const bool bindingChanged = previous == matDescSet.textureBindings.end() ||
+                                                !HasSameGpuBinding(previous->second, resolvedBinding);
                     matDescSet.textureBindings[binding.binding] = resolvedBinding;
-                    AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding,
-                                     resolvedBinding.imageView, resolvedBinding.sampler);
+                    if (bindingChanged) {
+                        AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding,
+                                         resolvedBinding.imageView, resolvedBinding.sampler);
+                    }
                     if (resolvedExplicit) {
                         INXLOG_DEBUG("Re-bound texture '", *texturePath, "' to binding ", binding.binding,
                                      " for material '", materialName, "'");
@@ -729,6 +749,12 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
         WaitForGpuIdleBeforeSharedDescriptorWrite();
         vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
+}
+
+bool MaterialDescriptorManager::HasPendingTextureProperties(const std::string &materialName) const
+{
+    const auto it = m_descriptorSets.find(materialName);
+    return it != m_descriptorSets.end() && it->second && it->second->isValid && it->second->hasPendingTextures;
 }
 
 void MaterialDescriptorManager::BindTexture(const std::string &materialName, uint32_t binding, VkImageView imageView,

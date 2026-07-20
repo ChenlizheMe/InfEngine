@@ -16,6 +16,7 @@ import json
 import threading
 import time
 import zlib
+from Infernux.engine.path_utils import path_key, resolved_path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -915,7 +916,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             return
 
         filter_tag, srgb_tag, use_nearest, use_srgb = self._read_texture_sampling(file_path)
-        norm_path = os.path.normpath(file_path)
+        norm_path = resolved_path(file_path)
         resource_key = f"animclip_editor|{srgb_tag}_{filter_tag}|{norm_path}"
         stamp = self._build_texture_stamp(norm_path, filter_tag, srgb_tag)
         if stamp == 0:
@@ -996,7 +997,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             return False
 
         filter_tag, srgb_tag, use_nearest, use_srgb = self._read_texture_sampling(tex.file_path)
-        norm_path = os.path.normpath(tex.file_path)
+        norm_path = resolved_path(tex.file_path)
         resource_key = f"animclip_editor|{srgb_tag}_{filter_tag}|{norm_path}"
         stamp = self._build_texture_stamp(norm_path, filter_tag, srgb_tag)
         if stamp == 0:
@@ -1130,7 +1131,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             return f"guid:{guid}"
         path = (path or "").strip()
         if path:
-            return "path:" + os.path.normcase(os.path.normpath(path))
+            return "path:" + path_key(path)
         return ""
 
     def _current_texture_identity(self) -> str:

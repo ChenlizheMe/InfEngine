@@ -178,15 +178,24 @@ void surface(out SurfaceData s) {
     const std::string legacySource = R"(
 @shader_id: Legacy/Test
 @property: amount, Float, 0.5
+@property: glow, Color, [0.1, 0.2, 0.3, 1.0], HDR
 // void main() { }
 void vertex(inout VertexInput v) { v.position.x += amount; }
 )";
     const auto legacy = compiler.ParseShaderSource(legacySource, "Legacy.vert");
     assert(!legacy.usesStructuredInfo);
     assert(legacy.shaderId == "Legacy/Test");
-    assert(legacy.properties.size() == 1);
+    assert(legacy.properties.size() == 2);
+    assert(legacy.properties[1].defaultValue == "[0.1, 0.2, 0.3, 1.0]");
+    assert(legacy.properties[1].hdr);
     assert(legacy.hasVertexFunc);
     assert(!legacy.hasMainFunc);
+
+    infernux::InxResourceMeta legacyMetadata;
+    compiler.CreateMeta(legacySource.data(), legacySource.size(), "Legacy.vert", legacyMetadata);
+    const nlohmann::json legacyProperties = nlohmann::json::parse(legacyMetadata.GetDataAs<std::string>("properties"));
+    assert(legacyProperties[1]["default"] == nlohmann::json::array({0.1, 0.2, 0.3, 1.0}));
+    assert(legacyProperties[1]["hdr"] == true);
 
     const auto invalid =
         infernux::ParseShaderInfo("ShaderInfo { Version 2 Properties { Float x = 1.0 Float x = 2.0 } }");

@@ -20,6 +20,7 @@ from Infernux import resources as _resources
 from .engine import Engine, LogLevel
 from .play_mode import PlayModeManager, PlayModeState
 from .scene_manager import SceneFileManager
+from .path_utils import resolved_path
 
 from .headless import run_headless
 
@@ -153,7 +154,7 @@ def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
         "token": token,
         "mode": mode,
         "state": "running",
-        "project_path": os.path.abspath(project_path),
+        "project_path": resolved_path(project_path),
     }
     with open(lock_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
@@ -260,7 +261,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         bootstrap.run()
 
         # Set window title to game name (from manifest or folder name)
-        title = game_name or os.path.basename(os.path.normpath(project_path))
+        title = game_name or os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(title)
 
         if display_mode == "fullscreen_borderless":

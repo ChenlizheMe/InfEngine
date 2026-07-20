@@ -218,7 +218,11 @@ class Infernux
     /// @param materialJson  If non-empty, render from this JSON (Inspector live edits).
     /// @param fileMtimeHint If != 0 and materialJson is empty, used to detect file changes (ProjectPanel).
     uint64_t QueryOrScheduleMaterialPreview(const std::string &resourceKey, const std::string &matFilePath,
-                                            const std::string &materialJson = "", uint64_t fileMtimeHint = 0);
+                                            const std::string &materialJson = "", uint64_t fileMtimeHint = 0,
+                                            bool authoring = false);
+
+    /// @brief Release Inspector ownership while preserving the shared preview texture.
+    void ReleasePreviewAuthoring(const std::string &resourceKey);
 
     struct PreviewTaskSnapshot
     {
@@ -285,6 +289,7 @@ class Infernux
                                                                  const std::string &textureFilePath,
                                                                  uint64_t contentStampHint, bool nearest, bool srgb,
                                                                  int maxSize, const std::string &textureFormat,
+                                                                 const std::string &textureType, bool authoring,
                                                                  bool pump);
 
     /// @brief Schedule texture preview from in-memory data (JPEG/PNG/etc.).
@@ -423,6 +428,7 @@ class Infernux
         bool srgb = false;
         int maxSize = 256;
         std::string textureFormat = "auto";
+        std::string textureType = "default";
     };
 
     struct MeshPreviewRequest
@@ -441,6 +447,7 @@ class Infernux
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
+        bool authoring = false;
         uint64_t renderGeneration = 0;
         std::shared_ptr<vk::ImageReadbackTicket> renderTicket;
         std::shared_ptr<InxMaterial> renderMaterial;
@@ -463,6 +470,7 @@ class Infernux
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
+        bool authoring = false;
         int pendingWidth = 0;
         int pendingHeight = 0;
         int readyWidth = 0;
@@ -473,6 +481,7 @@ class Infernux
         bool srgb = false;
         int maxSize = 256;
         std::string textureFormat = "auto";
+        std::string textureType = "default";
         uint64_t pixelGeneration = 0;
         uint64_t pixelHash = 0;
         uint32_t nonTransparentPixelCount = 0;

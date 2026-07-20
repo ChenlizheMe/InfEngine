@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 
 from Infernux import Engine
+from Infernux.engine.path_utils import resolved_path
 from Infernux.lib import (
     ImageReadbackStatus,
     InxMaterial,
@@ -63,7 +64,7 @@ def main() -> int:
         second_texture_path.write_bytes(second_texture_bytes)
         skinned_source = project / "Assets" / "GpuSkinnedProbe.fbx"
         skinned_fixture = (
-            Path(__file__).resolve().parents[3]
+            Path(resolved_path(__file__)).parents[3]
             / "external"
             / "assimp"
             / "test"
@@ -72,7 +73,7 @@ def main() -> int:
             / "animation_with_skeleton.fbx"
         )
         skinned_source.write_bytes(skinned_fixture.read_bytes())
-        lit_shader_path = Path(__file__).resolve().parents[1] / "resources" / "shaders" / "lit.frag"
+        lit_shader_path = Path(resolved_path(__file__)).parents[1] / "resources" / "shaders" / "lit.frag"
         assert lit_shader_path.is_file()
 
         frontend = Engine()

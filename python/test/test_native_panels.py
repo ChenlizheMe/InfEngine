@@ -1,4 +1,6 @@
 """Tests for native StatusBarPanel, ToolbarPanel, MenuBarPanel, and HierarchyPanel."""
+from pathlib import Path
+
 import pytest
 from Infernux.lib import (
     StatusBarPanel,
@@ -347,6 +349,14 @@ class TestWindowTypeInfo:
 
 class TestHierarchyPanel:
 
+    def test_inline_rename_survives_context_menu_dismissal(self):
+        source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/HierarchyPanel.h").read_text(encoding="utf-8")
+
+        assert "m_renameSkipDeactivateFrames = 2;" in source
+        assert "m_renameSkipDeactivateFrames == 0 && ctx->IsItemDeactivated()" in source
+        assert "int m_renameSkipDeactivateFrames = 0;" in header
+
     def test_creation(self):
         hp = HierarchyPanel()
         assert hp is not None
@@ -429,15 +439,18 @@ class TestHierarchyPanel:
         records = []
         hp.undo_record_create = lambda oid, desc: records.append(("create", oid, desc))
         hp.undo_record_delete = lambda oid, desc: records.append(("delete", oid, desc))
+        hp.undo_record_rename = lambda oid, old, new: records.append(("rename", oid, old, new))
         hp.undo_record_move = lambda oid, op, np, oi, ni: records.append(("move", oid, op, np, oi, ni))
 
         hp.undo_record_create(1, "Create")
         hp.undo_record_delete(2, "Delete")
+        hp.undo_record_rename(3, "Old", "New")
         hp.undo_record_move(3, 0, 1, 0, 2)
-        assert len(records) == 3
+        assert len(records) == 4
         assert records[0] == ("create", 1, "Create")
         assert records[1] == ("delete", 2, "Delete")
-        assert records[2] == ("move", 3, 0, 1, 0, 2)
+        assert records[2] == ("rename", 3, "Old", "New")
+        assert records[3] == ("move", 3, 0, 1, 0, 2)
 
     def test_scene_info_callbacks(self):
         hp = HierarchyPanel()

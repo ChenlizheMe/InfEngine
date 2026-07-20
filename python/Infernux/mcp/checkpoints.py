@@ -12,6 +12,8 @@ import time
 from typing import Any
 import uuid
 
+from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path, same_path
+
 
 CHECKPOINT_ROOTS = ("Assets", "ProjectSettings")
 _CHECKPOINT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
@@ -37,7 +39,7 @@ def normalize_checkpoint_id(value: str) -> str:
 
 def checkpoint_directory(artifact_root: str, checkpoint_id: str) -> str:
     safe_id = normalize_checkpoint_id(checkpoint_id)
-    root = os.path.abspath(artifact_root)
+    root = resolved_path(artifact_root)
     return os.path.join(root, "checkpoints", safe_id)
 
 
@@ -54,8 +56,8 @@ def _capture_project_ledger(
     *,
     force_include_paths: set[str] | frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
-    root = os.path.abspath(project_root)
-    forced = {str(path).replace("\\", "/") for path in force_include_paths}
+    root = resolved_path(project_root)
+    forced = {portable_path(str(path)) for path in force_include_paths}
     entries: list[dict[str, Any]] = []
     roots_present: list[str] = []
     for root_name in CHECKPOINT_ROOTS:
@@ -75,7 +77,7 @@ def _capture_project_ledger(
             directories[:] = kept_directories
             for filename in sorted(files):
                 path = os.path.join(current_root, filename)
-                relative = os.path.relpath(path, root).replace("\\", "/")
+                relative = relative_path(path, root)
                 if relative not in forced and _ignore_file(filename, relative):
                     continue
                 _reject_link(path, root)
@@ -110,7 +112,7 @@ def create_checkpoint(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     safe_id = normalize_checkpoint_id(checkpoint_id)
-    project = os.path.abspath(project_root)
+    project = resolved_path(project_root)
     destination = checkpoint_directory(artifact_root, safe_id)
     if os.path.exists(destination):
         raise FileExistsError(f"Managed checkpoint already exists: {safe_id}")
@@ -155,7 +157,7 @@ def load_checkpoint(
     verify_payload: bool = True,
 ) -> dict[str, Any]:
     safe_id = normalize_checkpoint_id(checkpoint_id)
-    project = os.path.abspath(project_root)
+    project = resolved_path(project_root)
     directory = checkpoint_directory(artifact_root, safe_id)
     manifest_path = os.path.join(directory, "manifest.json")
     manifest = _read_json(manifest_path)
@@ -165,8 +167,8 @@ def load_checkpoint(
         raise CheckpointError(f"Managed checkpoint manifest is unsupported: {safe_id}")
     if str(manifest.get("checkpoint_id", "")) != safe_id:
         raise CheckpointError("Checkpoint manifest identifier does not match its directory.")
-    manifest_project = os.path.abspath(str(manifest.get("project_root", "") or ""))
-    if os.path.normcase(manifest_project) != os.path.normcase(project):
+    manifest_project = resolved_path(str(manifest.get("project_root", "") or ""))
+    if not same_path(manifest_project, project):
         raise CheckpointError("Checkpoint belongs to a different project root.")
     expected_session = str(session_id or "")
     if expected_session and str(manifest.get("session_id", "") or "") != expected_session:
@@ -234,7 +236,7 @@ def checkpoint_status(
 
 def list_checkpoints(project_root: str, artifact_root: str, *, session_id: str = "") -> list[dict[str, Any]]:
     """List payload-verified checkpoints without scanning the current project."""
-    root = os.path.join(os.path.abspath(artifact_root), "checkpoints")
+    root = os.path.join(resolved_path(artifact_root), "checkpoints")
     if not os.path.isdir(root):
         return []
 
@@ -273,7 +275,7 @@ def restore_checkpoint(
     *,
     session_id: str,
 ) -> dict[str, Any]:
-    project = os.path.abspath(project_root)
+    project = resolved_path(project_root)
     checkpoint = load_checkpoint(
         project,
         artifact_root,
@@ -285,7 +287,7 @@ def restore_checkpoint(
     recorded_paths = recorded_ledger_paths(expected)
     before = capture_project_ledger(project, force_include_paths=recorded_paths)
     journal = os.path.join(
-        os.path.abspath(artifact_root),
+        resolved_path(artifact_root),
         "checkpoint-restores",
         f"restore-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
     )
@@ -383,14 +385,14 @@ def _delta_has_changes(delta: dict[str, Any]) -> bool:
 
 def recorded_ledger_paths(ledger: dict[str, Any]) -> set[str]:
     return {
-        str(entry.get("path", "") or "").replace("\\", "/")
+        portable_path(str(entry.get("path", "") or ""))
         for entry in ledger.get("entries", [])
     }
 
 
 def _copy_ledger_files(source_root: str, destination_root: str, ledger: dict[str, Any]) -> None:
-    source = os.path.abspath(source_root)
-    destination = os.path.abspath(destination_root)
+    source = resolved_path(source_root)
+    destination = resolved_path(destination_root)
     for root_name in CHECKPOINT_ROOTS:
         os.makedirs(os.path.join(destination, root_name), exist_ok=True)
     for entry in ledger.get("entries", []):
@@ -407,7 +409,7 @@ def _copy_preserved_project_files(
     *,
     recorded_paths: set[str],
 ) -> None:
-    recorded = {path.replace("\\", "/").lower() for path in recorded_paths}
+    recorded = {portable_path(path).lower() for path in recorded_paths}
     for relative in _PRESERVED_PROJECT_PATHS:
         if relative.lower() in recorded:
             continue
@@ -441,15 +443,11 @@ def _rollback_roots(project_root: str, backup_root: str, replaced: list[tuple[st
 
 
 def _safe_relative_path(root: str, relative: str) -> str:
-    normalized = str(relative or "").replace("\\", "/").strip("/")
+    normalized = portable_path(str(relative or "")).strip("/")
     if not normalized or normalized.startswith("../") or "/../" in f"/{normalized}/":
         raise CheckpointError(f"Unsafe checkpoint ledger path: {relative!r}")
-    target = os.path.abspath(os.path.join(root, *normalized.split("/")))
-    try:
-        common = os.path.commonpath([os.path.abspath(root), target])
-    except ValueError as exc:
-        raise CheckpointError(f"Checkpoint path leaves its project root: {relative!r}") from exc
-    if os.path.normcase(common) != os.path.normcase(os.path.abspath(root)):
+    target = resolved_path(os.path.join(root, *normalized.split("/")))
+    if not is_path_within(target, root):
         raise CheckpointError(f"Checkpoint path leaves its project root: {relative!r}")
     return target
 
@@ -462,14 +460,14 @@ def _reject_link(path: str, project_root: str) -> None:
     value = Path(path)
     is_junction = bool(getattr(os.path, "isjunction", lambda _path: False)(path))
     if value.is_symlink() or is_junction:
-        relative = os.path.relpath(path, project_root).replace("\\", "/")
+        relative = relative_path(path, project_root)
         raise CheckpointError(f"Managed checkpoints do not follow links or junctions: {relative}")
 
 
 def _ignore_file(filename: str, relative: str) -> bool:
     if filename in _IGNORED_FILE_NAMES:
         return True
-    if relative.replace("\\", "/").lower() in _IGNORED_PROJECT_PATHS:
+    if portable_path(relative).lower() in _IGNORED_PROJECT_PATHS:
         return True
     lowered = filename.lower()
     return lowered.endswith((".pyc", ".pyo")) or "/__pycache__/" in f"/{relative}/"
