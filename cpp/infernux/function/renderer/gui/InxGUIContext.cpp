@@ -834,6 +834,17 @@ bool InxGUIContext::BeginPopup(const std::string &id)
 
 bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
 {
+    // Detached editor panels are separate native child windows of the main
+    // viewport. A modal merged into the main viewport therefore cannot cover
+    // them, regardless of ImGui's internal display order. Give every modal its
+    // own short-lived platform viewport parented to the main editor window.
+    ImGuiWindowClass modalClass{};
+    modalClass.ClassId = ImHashStr("Infernux.GlobalModal");
+    modalClass.ParentViewportId = ImGui::GetMainViewport()->ID;
+    modalClass.ViewportFlagsOverrideSet =
+        ImGuiViewportFlags_NoAutoMerge | ImGuiViewportFlags_NoTaskBarIcon | ImGuiViewportFlags_NoDecoration;
+    ImGui::SetNextWindowClass(&modalClass);
+
     const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr, static_cast<ImGuiWindowFlags>(flags));
     if (open) {
         ImGuiWindow *window = ImGui::GetCurrentWindow();

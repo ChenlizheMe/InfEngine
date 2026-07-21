@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from Infernux.engine.project_context import clear_panel_tracking, set_panel_dirty
 from Infernux.engine.ui.dirty_panel_confirmation import (
     DirtyPanelConfirmationCoordinator,
@@ -282,7 +284,20 @@ def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
         clear_panel_tracking(panel_id)
 
 
-from pathlib import Path
+def test_native_modals_use_a_dedicated_main_window_child_viewport():
+    source = Path(
+        "cpp/infernux/function/renderer/gui/InxGUIContext.cpp"
+    ).read_text(encoding="utf-8")
+
+    begin = source.index("bool InxGUIContext::BeginPopupModal")
+    end = source.index("bool InxGUIContext::BeginPopupContextItem", begin)
+    implementation = source[begin:end]
+
+    assert "ImGui::SetNextWindowClass(&modalClass)" in implementation
+    assert "modalClass.ParentViewportId = ImGui::GetMainViewport()->ID" in implementation
+    assert "ImGuiViewportFlags_NoAutoMerge" in implementation
+    assert "ImGuiViewportFlags_NoTaskBarIcon" in implementation
+
 
 import Infernux.lib as native
 from Infernux.engine.ui import project_file_ops
