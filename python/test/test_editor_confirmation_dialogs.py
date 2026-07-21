@@ -299,6 +299,28 @@ def test_native_modals_use_a_dedicated_main_window_child_viewport():
     assert "ImGuiViewportFlags_NoTaskBarIcon" in implementation
 
 
+def test_native_modal_is_promoted_after_late_dock_focus_processing():
+    source = Path("cpp/infernux/function/renderer/gui/InxGUI.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    apply_index = source.index("    ApplyPendingDockTabSelections();")
+    promote_index = source.index("    PromoteActiveModal();", apply_index)
+    render_index = source.index("    ImGui::Render();", promote_index)
+    assert apply_index < promote_index < render_index
+
+    apply_begin = source.index("void InxGUI::ApplyPendingDockTabSelections()")
+    promote_begin = source.index("void InxGUI::PromoteActiveModal()", apply_begin)
+    apply_implementation = source[apply_begin:promote_begin]
+    assert "ImGui::GetTopMostPopupModal() != nullptr" in apply_implementation
+    assert "RequestFrame();" in apply_implementation
+
+    promote_end = source.index("void InxGUI::RecordCommand", promote_begin)
+    promote_implementation = source[promote_begin:promote_end]
+    assert "ImGui::BringWindowToFocusFront(modal->RootWindow)" in promote_implementation
+    assert "ImGui::BringWindowToDisplayFront(modal->RootWindowDockTree)" in promote_implementation
+
+
 import Infernux.lib as native
 from Infernux.engine.ui import project_file_ops
 from Infernux.engine.ui.project_delete_confirmation import ProjectDeleteConfirmationCoordinator

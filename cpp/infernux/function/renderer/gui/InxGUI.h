@@ -202,6 +202,7 @@ class InxGUI
 
     void BuildFrameInternal();
     void ApplyPendingDockTabSelections();
+    void PromoteActiveModal();
     void PumpTextureUploads();
     void DeferTextureRelease(ImGuiTextureResource resource);
     void ReleaseTextureResource(ImGuiTextureResource &resource);

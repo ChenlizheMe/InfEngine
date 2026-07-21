@@ -592,6 +592,7 @@ void InxGUI::BuildFrameInternal()
     }
 
     ApplyPendingDockTabSelections();
+    PromoteActiveModal();
     frameGuard.Complete();
     ImGui::Render();
     m_hasDrawData = true;
@@ -612,6 +613,16 @@ void InxGUI::QueueDockTabSelection(const std::string &windowId)
 void InxGUI::ApplyPendingDockTabSelections()
 {
     if (m_pendingDockTabSelections.empty()) {
+        return;
+    }
+
+    // A late dock-tab focus request runs after all GUI renderables, including
+    // Editor-owned confirmation dialogs. Applying it while a modal is open
+    // can move an undocked authoring window back above the confirmation (and
+    // may also disturb the popup stack). Keep the request queued until the
+    // modal transaction has finished.
+    if (ImGui::GetTopMostPopupModal() != nullptr) {
+        RequestFrame();
         return;
     }
 
@@ -640,6 +651,19 @@ void InxGUI::ApplyPendingDockTabSelections()
 
         ImGui::FocusWindow(window);
     }
+}
+
+void InxGUI::PromoteActiveModal()
+{
+    ImGuiWindow *modal = ImGui::GetTopMostPopupModal();
+    if (modal == nullptr)
+        return;
+
+    // This is deliberately the final window-order operation before
+    // ImGui::Render(). It makes modal ordering independent of renderable
+    // registration order and of floating/docked panel focus transitions.
+    ImGui::BringWindowToFocusFront(modal->RootWindow);
+    ImGui::BringWindowToDisplayFront(modal->RootWindowDockTree);
 }
 
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
