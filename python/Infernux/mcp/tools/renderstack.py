@@ -2,13 +2,56 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-from Infernux.mcp.tools.common import main_thread, register_tool_metadata, serialize_value
+from Infernux.engine.path_utils import relative_path
+from Infernux.mcp.tools.common import (
+    get_asset_database,
+    main_thread,
+    register_tool_metadata,
+    resolve_asset_path,
+    serialize_value,
+)
 
 
-def register_renderstack_tools(mcp) -> None:
+def register_renderstack_tools(mcp, project_path: str = "") -> None:
     _register_metadata()
+
+    @mcp.tool(name="render_effect_create")
+    def render_effect_create(path: str, feature_type: str) -> dict:
+        """Create and import a strict reusable RenderEffect asset."""
+
+        def _create_effect():
+            from Infernux.engine.ui.project_file_ops import create_render_effect
+
+            file_path = resolve_asset_path(project_path, path)
+            if not file_path.lower().endswith(".effect"):
+                file_path += ".effect"
+            directory = os.path.dirname(file_path)
+            os.makedirs(directory, exist_ok=True)
+            name = os.path.splitext(os.path.basename(file_path))[0]
+            created, error = create_render_effect(
+                directory,
+                name,
+                str(feature_type),
+                get_asset_database(),
+            )
+            if not created:
+                if os.path.exists(file_path):
+                    raise FileExistsError(error or f"Render Effect already exists: {path}")
+                raise RuntimeError(error or f"Failed to create Render Effect: {path}")
+            return {
+                "path": relative_path(file_path, project_path),
+                "feature_type": str(feature_type),
+                "created": True,
+            }
+
+        return main_thread(
+            "render_effect_create",
+            _create_effect,
+            arguments={"path": path, "feature_type": feature_type},
+        )
 
     @mcp.tool(name="renderstack_find_or_create")
     def renderstack_find_or_create(name: str = "RenderStack", create_if_missing: bool = True) -> dict:
@@ -300,6 +343,7 @@ def _mark_scene_dirty() -> None:
 def _register_metadata() -> None:
     for name, summary in {
         "renderstack_find_or_create": "Find or create the active scene RenderStack.",
+        "render_effect_create": "Create and import a strict reusable RenderEffect asset.",
         "renderstack_inspect": "Inspect the active RenderStack pipeline and EffectStages.",
         "renderstack_list_pipelines": "List discovered RenderPipeline classes.",
         "renderstack_set_pipeline": "Switch the active RenderStack pipeline.",

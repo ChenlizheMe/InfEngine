@@ -282,7 +282,7 @@ class ValueCodecRegistry:
         if field_type == FieldType.COLOR:
             return normalize_rgba(self._require_numbers(value, path, "COLOR"))
         if field_type == FieldType.ENUM:
-            return field_meta_or_type.enum_type[value["name"]]
+            return field_meta_or_type.enum_type.__members__[value["name"]]
 
         if isinstance(value, list):
             return [self.decode(item, FieldType.UNKNOWN, f"{path}[{index}]") for index, item in enumerate(value)]

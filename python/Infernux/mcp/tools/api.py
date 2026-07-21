@@ -98,7 +98,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "Call shader_describe(shader_id, kind='fragment') before binding a material to a custom fragment shader.",
             "Create .frag/.vert through asset_write_text using the ShaderInfo example returned by this guide.",
             "After editing shader files, call asset_refresh and use Shader.reload(shader_id) from scripts if runtime reload is needed.",
-            "For material assets, call material_create and material_set_shader with IDs verified by shader_describe. Runtime scripts may use Material.vert_shader_name/frag_shader_name.",
+            "For material assets, call material_create, material_set_shader, and material_set_render_queue. Runtime scripts may use the corresponding public Material properties.",
         ],
         "common_mistakes": [
             "Do not mix two competing ShaderInfo blocks in one asset. Name is the stable shader ID.",
@@ -190,7 +190,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "Use vert_shader_name and frag_shader_name when vertex/fragment shader IDs differ.",
             "Use set_color/set_float/set_int/set_vector*/set_texture based on the imported ShaderInfo property schema.",
         ],
-        "symbols": ["Material", "shader_describe", "material_create", "material_set_property"],
+        "symbols": ["Material", "shader_describe", "material_create", "material_set_property", "material_set_render_queue"],
     },
     "ui": {
         "summary": "Screen-space UI uses UICanvas plus UIText, UIImage, UIButton, pointer events, and persistent UIEventEntry bindings.",
@@ -862,7 +862,7 @@ def _shader_usage(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     usage = {
         "material_binding": [],
         "notes": [],
-        "next_tools": ["shader_catalog", "asset_create_builtin_resource", "asset_write_text", "asset_refresh", "material_create", "material_set_shader"],
+        "next_tools": ["shader_catalog", "asset_create_builtin_resource", "asset_write_text", "asset_refresh", "material_create", "material_set_shader", "material_set_render_queue"],
     }
     if "vertex" in kinds:
         usage["material_binding"].append("material.vert_shader_name = '<shader_id>'")

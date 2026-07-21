@@ -1,7 +1,13 @@
+from enum import IntEnum
+
+from Infernux.components import InxComponent, serialized_field
 from Infernux.lib import Vector3
 from Infernux.mcp.tools.scene import (
+    _component_snapshot,
     _coerce_component_property_value,
     _coerce_property_value,
+    _find_component,
+    _resolved_component_field_metadata,
 )
 from Infernux.renderstack.effect_slot import EffectSlot
 from Infernux.renderstack.render_stack import RenderStack
@@ -62,3 +68,109 @@ def test_component_coercion_rejects_incomplete_serializable_objects():
         assert "serialized fields mismatch" in str(exc)
     else:
         raise AssertionError("incomplete EffectSlot input must be rejected")
+
+
+def test_component_lookup_prefers_public_wrapper_over_same_native_component():
+    class NativeMeshRenderer:
+        type_name = "MeshRenderer"
+        component_id = 17
+
+    class MeshRenderer:
+        type_name = "MeshRenderer"
+        component_id = 17
+        material_guid = "public-wrapper-field"
+
+    class Object:
+        @staticmethod
+        def get_py_components():
+            return [MeshRenderer()]
+
+        @staticmethod
+        def get_components():
+            return [NativeMeshRenderer()]
+
+    component = _find_component(Object(), "MeshRenderer", 0)
+
+    assert type(component).__name__ == "MeshRenderer"
+    assert component.material_guid == "public-wrapper-field"
+    assert _find_component(Object(), "MeshRenderer", 1) is None
+
+
+def test_component_lookup_promotes_registered_native_component(monkeypatch):
+    from Infernux.components import BuiltinComponent
+
+    class NativeProbe:
+        type_name = "McpNativeProbe"
+        component_id = 23
+
+    class PublicProbe:
+        type_name = "McpNativeProbe"
+        component_id = 23
+        public_value = "wrapped"
+
+    class WrapperFactory:
+        @staticmethod
+        def _get_or_create_wrapper(component, game_object):
+            assert isinstance(component, NativeProbe)
+            assert isinstance(game_object, Object)
+            return PublicProbe()
+
+    class Object:
+        @staticmethod
+        def get_py_components():
+            return []
+
+        @staticmethod
+        def get_components():
+            return [NativeProbe()]
+
+    monkeypatch.setitem(
+        BuiltinComponent._builtin_registry, "McpNativeProbe", WrapperFactory
+    )
+
+    component = _find_component(Object(), "McpNativeProbe", 0)
+
+    assert isinstance(component, PublicProbe)
+    assert component.public_value == "wrapped"
+
+
+def test_component_snapshot_uses_roundtrip_enum_document():
+    class Mode(IntEnum):
+        OFF = 0
+        ON = 1
+
+    class Probe(InxComponent):
+        mode: Mode = serialized_field(default=Mode.ON)
+
+    class Object:
+        id = 41
+        name = "Probe"
+
+    snapshot = _component_snapshot(Object(), Probe())
+
+    assert snapshot["fields"]["mode"] == {
+        "$type": "enum",
+        "enum_type": "test_component_snapshot_uses_roundtrip_enum_document.<locals>.Mode",
+        "name": "ON",
+    }
+
+
+def test_builtin_lazy_enum_metadata_resolves_to_public_enum():
+    from Infernux.components import Light
+    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.lib import LightShadows
+
+    metadata = get_serialized_fields(Light)["shadows"]
+    resolved = _resolved_component_field_metadata(metadata)
+
+    assert metadata.enum_type == "LightShadows"
+    assert resolved.enum_type is LightShadows
+
+    from Infernux.components.value_codec import VALUE_CODECS
+
+    decoded = VALUE_CODECS.decode(
+        {"$type": "enum", "enum_type": "LightShadows", "name": "Soft"},
+        resolved,
+        "Light.shadows",
+    )
+    assert decoded is LightShadows.Soft

@@ -71,6 +71,37 @@ def register_material_tools(mcp, project_path: str) -> None:
 
         return main_thread("material_set_property", _set, arguments={"path": path, "name": name, "value_type": value_type, "knowledge_token": knowledge_token})
 
+    @mcp.tool(name="material_set_render_queue")
+    def material_set_render_queue(
+        path: str,
+        render_queue: int,
+        knowledge_token: str = "",
+    ) -> dict:
+        """Set the material render queue used by pipeline route selectors."""
+
+        def _set():
+            require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
+            file_path = resolve_project_path(project_path, path)
+            mat = _load_material(project_path, path)
+            mat.render_queue = int(render_queue)
+            mat.flush()
+            mat.save(file_path)
+            notify_asset_changed(file_path, "modified")
+            return {
+                "path": relative_path(file_path, project_path),
+                **_material_info(mat),
+            }
+
+        return main_thread(
+            "material_set_render_queue",
+            _set,
+            arguments={
+                "path": path,
+                "render_queue": render_queue,
+                "knowledge_token": knowledge_token,
+            },
+        )
+
     @mcp.tool(name="material_set_shader")
     def material_set_shader(
         path: str,
@@ -185,6 +216,7 @@ def _register_metadata() -> None:
         "material_create": "Create a material asset.",
         "material_get_properties": "Read material shader selection and properties.",
         "material_set_property": "Set a material shader property.",
+        "material_set_render_queue": "Set the material render queue.",
         "material_set_shader": "Select validated vertex and fragment shader IDs for a material.",
     }.items():
         register_tool_metadata(

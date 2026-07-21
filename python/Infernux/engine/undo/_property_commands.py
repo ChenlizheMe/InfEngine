@@ -30,9 +30,27 @@ class SetPropertyCommand(UndoCommand):
         self._target_id: int = _stable_target_id(target)
         self._game_object_id: int = _game_object_id_of(target)
         self._comp_type_name: str = _comp_type_name_of(target) if self._game_object_id else ""
+        self._builtin_wrapper_cls = None
+        try:
+            from Infernux.components.builtin_component import BuiltinComponent
+
+            if isinstance(target, BuiltinComponent):
+                self._builtin_wrapper_cls = type(target)
+        except ImportError:
+            pass
 
     def _live(self):
-        return _resolve_target(self._target, self._game_object_id, self._comp_type_name)
+        target = _resolve_target(self._target, self._game_object_id, self._comp_type_name)
+        wrapper_cls = self._builtin_wrapper_cls
+        if target is None or wrapper_cls is None or isinstance(target, wrapper_cls):
+            return target
+        game_object = getattr(target, "game_object", None)
+        if game_object is None:
+            return target
+        try:
+            return wrapper_cls._get_or_create_wrapper(target, game_object)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            return target
 
     def execute(self) -> None:
         target = self._live()

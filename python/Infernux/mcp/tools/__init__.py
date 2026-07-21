@@ -62,7 +62,7 @@ def register_all_tools(mcp, project_path: str, config: dict[str, Any] | None = N
         register_material_tools(gated_mcp, project_path)
     if _group(config, "renderstack"):
         from Infernux.mcp.tools.renderstack import register_renderstack_tools
-        register_renderstack_tools(gated_mcp)
+        register_renderstack_tools(gated_mcp, project_path)
     if _group(config, "console"):
         from Infernux.mcp.tools.console import register_console_tools
         register_console_tools(gated_mcp)

@@ -81,6 +81,8 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "hierarchy_create_object",
         "component_ensure",
         "ui_bind_click",
+        "material_set_render_queue",
+        "render_effect_create",
     } <= tools
     assert "mcp_report_blocker" not in tools
     assert "input_key" not in tools

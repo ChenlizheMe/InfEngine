@@ -1112,16 +1112,42 @@ def _find_by_path_exact(path: str):
 
 def _find_component(obj, component_type: str, ordinal: int):
     matches = []
+    seen_component_ids: set[int] = set()
+
+    def _append(comp) -> None:
+        type_name = getattr(comp, "type_name", type(comp).__name__)
+        if type_name != component_type and type(comp).__name__ != component_type:
+            return
+        try:
+            from Infernux.components import BuiltinComponent
+
+            if not isinstance(comp, BuiltinComponent):
+                wrapper_cls = BuiltinComponent._builtin_registry.get(type_name)
+                if wrapper_cls is not None:
+                    comp = wrapper_cls._get_or_create_wrapper(comp, obj)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError):
+            # Some native-only components intentionally have no public wrapper.
+            # Keep those available through their pybind surface.
+            pass
+        component_id = int(getattr(comp, "component_id", 0) or 0)
+        if component_id and component_id in seen_component_ids:
+            return
+        if component_id:
+            seen_component_ids.add(component_id)
+        matches.append(comp)
+
+    # Built-in Python wrappers expose the supported public API surface (for
+    # example MeshRenderer.material_guid) while sharing the native component
+    # identity. Prefer them over the raw pybind object and only fall back to
+    # native components when no wrapper exists.
     try:
-        for comp in obj.get_components() or []:
-            if getattr(comp, "type_name", type(comp).__name__) == component_type:
-                matches.append(comp)
+        for comp in obj.get_py_components() or []:
+            _append(comp)
     except Exception:
         pass
     try:
-        for comp in obj.get_py_components() or []:
-            if getattr(comp, "type_name", type(comp).__name__) == component_type or type(comp).__name__ == component_type:
-                matches.append(comp)
+        for comp in obj.get_components() or []:
+            _append(comp)
     except Exception:
         pass
     if ordinal < 0 or ordinal >= len(matches):
@@ -1132,10 +1158,27 @@ def _find_component(obj, component_type: str, ordinal: int):
 def _component_snapshot(obj, comp) -> dict[str, Any]:
     fields = {}
     try:
-        from Infernux.components.serialized_field import get_serialized_fields
-        for name in get_serialized_fields(type(comp)):
+        from Infernux.components.serialized_field import FieldType, get_serialized_fields
+        from Infernux.components.value_codec import VALUE_CODECS
+        from Infernux.components.value_document import make_enum
+
+        for name, metadata in get_serialized_fields(type(comp)).items():
             try:
-                fields[name] = serialize_value(getattr(comp, name))
+                metadata = _resolved_component_field_metadata(metadata)
+                value = getattr(comp, name)
+                if metadata.field_type == FieldType.ENUM:
+                    enum_type = metadata.enum_type
+                    member_name = str(getattr(value, "name", "") or "")
+                    if enum_type is None:
+                        raise TypeError(f"{type(comp).__name__}.{name} has no enum type")
+                    if member_name not in enum_type.__members__:
+                        member_name = enum_type(int(value)).name
+                    fields[name] = make_enum(enum_type.__qualname__, member_name)
+                    continue
+                fields[name] = VALUE_CODECS.encode(
+                    value,
+                    f"{type(comp).__name__}.{name}",
+                )
             except Exception:
                 pass
     except Exception:
@@ -1192,6 +1235,7 @@ def _coerce_component_property_value(
 
     metadata = get_serialized_fields(type(comp)).get(field)
     if metadata is not None:
+        metadata = _resolved_component_field_metadata(metadata)
         if metadata.readonly:
             raise AttributeError(f"{type(comp).__name__}.{field} is readonly")
         value = _coerce_property_value(field, value, current_value)
@@ -1201,6 +1245,22 @@ def _coerce_component_property_value(
             f"{type(comp).__name__}.{field}",
         )
     return _coerce_property_value(field, value, current_value)
+
+
+def _resolved_component_field_metadata(metadata):
+    """Resolve lazy built-in enum names to their public pybind enum class."""
+    from dataclasses import replace
+
+    from Infernux.components.serialized_field import FieldType
+
+    if metadata.field_type != FieldType.ENUM or not isinstance(metadata.enum_type, str):
+        return metadata
+    from Infernux import lib
+
+    enum_type = getattr(lib, metadata.enum_type, None)
+    if enum_type is None or not getattr(enum_type, "__members__", None):
+        raise TypeError(f"Unknown built-in enum type: {metadata.enum_type}")
+    return replace(metadata, enum_type=enum_type)
 
 
 def _is_python_script_component(comp) -> bool:
