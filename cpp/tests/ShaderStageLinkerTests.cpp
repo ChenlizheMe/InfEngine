@@ -470,6 +470,22 @@ void surface(out SurfaceData surface)
     assert(builtinParticleArtifact.key.stages.fragmentShaderId == "unlit");
     assert(builtinParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
+    const auto defaultParticleCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
+        ReadText(shaderRoot + "/particle_unlit.frag"), shaderRoot + "/particle_unlit.frag");
+    if (!defaultParticleCompilation.IsValid()) {
+        for (const auto &error : defaultParticleCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(defaultParticleCompilation.IsValid());
+    const auto defaultParticleArtifact = defaultParticleCompilation.CreateRuntimeArtifact();
+    assert(defaultParticleArtifact.IsValid());
+    assert(defaultParticleArtifact.key.stages.fragmentShaderId == "particle_unlit");
+    assert(defaultParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(defaultParticleCompilation.compiledVariants.size() == 1);
+    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") !=
+           std::string::npos);
+
     const auto builtinLitCompilation =
         compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
                                               ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");

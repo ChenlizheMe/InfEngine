@@ -1063,7 +1063,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleSpriteMaterial");
     material->SetVertShader("particle_sprite");
-    material->SetFragShader("unlit");
+    material->SetFragShader("particle_unlit");
 
     RenderState state;
     state.cullMode = VK_CULL_MODE_NONE;
@@ -1081,6 +1081,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
     material->SetRenderState(state);
     material->SetColor("baseColor", glm::vec4(1.0f));
     material->SetTextureGuid("texSampler", "white");
+    material->SetFloat("softness", 0.18f);
     material->SetBuiltin(true);
     return material;
 }
