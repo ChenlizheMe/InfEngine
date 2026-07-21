@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 import zipfile
@@ -141,6 +142,26 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert Path(result) == (tmp_path / "SafeProject").resolve()
     assert runtime_locations == [Path(result)]
     assert (Path(result) / "Assets").is_dir()
+    assert not (Path(result) / "Assets" / "README.md").exists()
+    assert (Path(result) / "Assets" / "Scenes" / "Start.scene").is_file()
+    assert (Path(result) / "Assets" / "Rendering" / "Bloom.effect").is_file()
+    assert (Path(result) / "Assets" / "Rendering" / "ACES Tone Mapping.effect").is_file()
+    assert (Path(result) / "Assets" / "Rendering" / "Default Post Processing.effectgroup").is_file()
+    build_settings = json.loads(
+        (Path(result) / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8")
+    )
+    assert build_settings["scenes"] == [
+        str(Path(result) / "Assets" / "Scenes" / "Start.scene")
+    ]
+    scene = json.loads(
+        (Path(result) / "Assets" / "Scenes" / "Start.scene").read_text(encoding="utf-8")
+    )
+    assert scene["mainCameraComponentId"] == 2
+    assert [item["name"] for item in scene["objects"]] == [
+        "Main Camera",
+        "Directional Light",
+        "RenderStack",
+    ]
     assert (Path(result) / ".vscode").is_dir()
     assert not list(tmp_path.glob(".infernux-create-*"))
 
