@@ -268,6 +268,10 @@ def _create_default_project_content(
             "window_width": 1280,
         },
     )
+    _write_json_document(
+        os.path.join(staging_dir, "ProjectSettings", "EditorSettings.json"),
+        {"lastOpenedScene": final_scene_path},
+    )
 
 
 def _popen_kwargs(*, capture_output: bool = False) -> dict:

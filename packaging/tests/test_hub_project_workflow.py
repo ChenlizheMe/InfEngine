@@ -153,6 +153,12 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert build_settings["scenes"] == [
         str(Path(result) / "Assets" / "Scenes" / "Start.scene")
     ]
+    editor_settings = json.loads(
+        (Path(result) / "ProjectSettings" / "EditorSettings.json").read_text(encoding="utf-8")
+    )
+    assert editor_settings == {
+        "lastOpenedScene": str(Path(result) / "Assets" / "Scenes" / "Start.scene")
+    }
     scene = json.loads(
         (Path(result) / "Assets" / "Scenes" / "Start.scene").read_text(encoding="utf-8")
     )
