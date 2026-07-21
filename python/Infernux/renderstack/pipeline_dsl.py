@@ -112,6 +112,7 @@ class LayerDefinition:
     display_name: str
     routes: list[RouteDefinition] = field(default_factory=list)
     effects: list[EffectStageDefinition] = field(default_factory=list)
+    operations: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -121,6 +122,7 @@ class DomainDefinition:
     routes: list[RouteDefinition] = field(default_factory=list)
     layers: list[LayerDefinition] = field(default_factory=list)
     effects: list[EffectStageDefinition] = field(default_factory=list)
+    operations: list[tuple[str, str]] = field(default_factory=list)
 
     def all_routes(self) -> tuple[RouteDefinition, ...]:
         routes = list(self.routes)
@@ -284,6 +286,16 @@ class PipelineBuilder:
         return self
 
     def build(self) -> PipelineDefinition:
+        screen_ui_index = next(
+            (
+                index
+                for index, operation in enumerate(self.definition.operations)
+                if operation[0] == "screen_ui"
+            ),
+            -1,
+        )
+        if screen_ui_index >= 0 and screen_ui_index != len(self.definition.operations) - 1:
+            raise ValueError("screen_ui must be the final pipeline operation")
         for domain in self.definition.domains:
             routes = domain.all_routes()
             otherwise = [route for route in routes if route.is_otherwise]
@@ -343,6 +355,7 @@ class _RouteOwner:
         fallback: Optional[Path] = None,
         layer_id: str = "",
         is_otherwise: bool = False,
+        operation_sink: Optional[list[tuple[str, str]]] = None,
     ) -> "RouteBuilder":
         if selector is not None and not isinstance(selector, Queue):
             raise TypeError("route selector must be a Queue")
@@ -356,6 +369,8 @@ class _RouteOwner:
             is_otherwise=is_otherwise,
         )
         destination.append(route)
+        if operation_sink is not None:
+            operation_sink.append(("route", route.route_id))
         return RouteBuilder(self._pipeline, route)
 
 
@@ -375,13 +390,24 @@ class DomainBuilder(_RouteOwner):
             display_name,
         )
         self._domain.layers.append(layer)
+        self._domain.operations.append(("layer", layer.layer_id))
         return LayerBuilder(self._pipeline, self._domain, layer)
 
     def forward(self, selector: Optional[Queue] = None) -> "RouteBuilder":
-        return self._append_route(self._domain.routes, Path.FORWARD, selector)
+        return self._append_route(
+            self._domain.routes,
+            Path.FORWARD,
+            selector,
+            operation_sink=self._domain.operations,
+        )
 
     def forward_plus(self, selector: Optional[Queue] = None) -> "RouteBuilder":
-        return self._append_route(self._domain.routes, Path.FORWARD_PLUS, selector)
+        return self._append_route(
+            self._domain.routes,
+            Path.FORWARD_PLUS,
+            selector,
+            operation_sink=self._domain.operations,
+        )
 
     def deferred(
         self,
@@ -390,17 +416,27 @@ class DomainBuilder(_RouteOwner):
         fallback: Optional[Path] = None,
     ) -> "RouteBuilder":
         return self._append_route(
-            self._domain.routes, Path.DEFERRED, selector, fallback=fallback
+            self._domain.routes,
+            Path.DEFERRED,
+            selector,
+            fallback=fallback,
+            operation_sink=self._domain.operations,
         )
 
     def otherwise(self) -> "OtherwiseBuilder":
-        return OtherwiseBuilder(self._pipeline, self._domain, self._domain.routes)
+        return OtherwiseBuilder(
+            self._pipeline,
+            self._domain,
+            self._domain.routes,
+            self._domain.operations,
+        )
 
     def effects(self, stable_id: str, *, label: str = "") -> EffectStageDefinition:
         stage = self._pipeline._effect(
             stable_id, EffectScope.STAGE, self._domain.domain_id, label
         )
         self._domain.effects.append(stage)
+        self._domain.operations.append(("effect", stage.stable_id))
         return stage
 
 
@@ -422,7 +458,11 @@ class LayerBuilder(_RouteOwner):
 
     def forward(self, selector: Optional[Queue] = None) -> "RouteBuilder":
         return self._append_route(
-            self._layer.routes, Path.FORWARD, selector, layer_id=self._layer.layer_id
+            self._layer.routes,
+            Path.FORWARD,
+            selector,
+            layer_id=self._layer.layer_id,
+            operation_sink=self._layer.operations,
         )
 
     def forward_plus(self, selector: Optional[Queue] = None) -> "RouteBuilder":
@@ -431,6 +471,7 @@ class LayerBuilder(_RouteOwner):
             Path.FORWARD_PLUS,
             selector,
             layer_id=self._layer.layer_id,
+            operation_sink=self._layer.operations,
         )
 
     def deferred(
@@ -445,6 +486,16 @@ class LayerBuilder(_RouteOwner):
             selector,
             fallback=fallback,
             layer_id=self._layer.layer_id,
+            operation_sink=self._layer.operations,
+        )
+
+    def otherwise(self) -> "OtherwiseBuilder":
+        return OtherwiseBuilder(
+            self._pipeline,
+            self._domain,
+            self._layer.routes,
+            self._layer.operations,
+            layer_id=self._layer.layer_id,
         )
 
     def effects(self, stable_id: str, *, label: str = "") -> EffectStageDefinition:
@@ -452,6 +503,7 @@ class LayerBuilder(_RouteOwner):
             stable_id, EffectScope.LAYER, self._layer.layer_id, label
         )
         self._layer.effects.append(stage)
+        self._layer.operations.append(("effect", stage.stable_id))
         return stage
 
 
@@ -461,10 +513,15 @@ class OtherwiseBuilder:
         pipeline: PipelineBuilder,
         domain: DomainDefinition,
         destination: list[RouteDefinition],
+        operation_sink: list[tuple[str, str]],
+        *,
+        layer_id: str = "",
     ):
         self._pipeline = pipeline
         self._domain = domain
         self._destination = destination
+        self._operation_sink = operation_sink
+        self._layer_id = layer_id
 
     def _route(self, path: Path, fallback: Optional[Path] = None) -> "RouteBuilder":
         owner = _RouteOwner(self._pipeline, self._domain)
@@ -473,7 +530,9 @@ class OtherwiseBuilder:
             path,
             None,
             fallback=fallback,
+            layer_id=self._layer_id,
             is_otherwise=True,
+            operation_sink=self._operation_sink,
         )
 
     def forward(self) -> "RouteBuilder":

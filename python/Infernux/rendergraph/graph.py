@@ -565,6 +565,7 @@ class RenderGraph:
         # Optional callback invoked at each pipeline-declared EffectStage.
         self._effect_stage_callback = None
         self._name_scopes: List[str] = []
+        self._effect_resource_scopes: List[Dict[str, TextureHandle]] = []
 
     @property
     def name(self) -> str:
@@ -625,6 +626,40 @@ class RenderGraph:
             yield self
         finally:
             self._name_scopes.pop()
+
+    @contextmanager
+    def effect_resources(self, resources: Mapping[str, TextureHandle]):
+        """Bind semantic resources for EffectStages declared in this scope.
+
+        Queue routes and layers own isolated graph textures whose native names
+        are intentionally private.  Effects still consume the stable semantic
+        names ``color`` and ``depth``.  This context maps those names without
+        mutating graph-global aliases or leaking one route into the next.
+        """
+        if not isinstance(resources, Mapping):
+            raise TypeError("effect resources must be a mapping")
+        normalized: Dict[str, TextureHandle] = {}
+        for name, handle in resources.items():
+            resource_name = str(name or "").strip()
+            if not resource_name:
+                raise ValueError("effect resource names cannot be empty")
+            if not isinstance(handle, TextureHandle):
+                raise TypeError(
+                    f"effect resource {resource_name!r} must be a TextureHandle"
+                )
+            normalized[resource_name] = handle
+        self._effect_resource_scopes.append(normalized)
+        try:
+            yield self
+        finally:
+            self._effect_resource_scopes.pop()
+
+    @property
+    def current_effect_resources(self) -> Mapping[str, TextureHandle]:
+        """Semantic resource mapping active at the current topology point."""
+        if not self._effect_resource_scopes:
+            return {}
+        return dict(self._effect_resource_scopes[-1])
 
     def _scoped_name(self, name: str) -> str:
         raw = str(name)

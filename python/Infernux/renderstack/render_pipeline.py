@@ -211,6 +211,24 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         Args:
             graph: The ``RenderGraph`` builder to populate.
         """
+        from Infernux.renderstack.pipeline_compiler import (
+            compile_pipeline_definition,
+        )
+        from Infernux.renderstack.pipeline_dsl import PipelineBuilder
+
+        builder = PipelineBuilder()
+        self.define(builder)
+        definition = builder.build()
+        self._declarative_definition = definition
+        compile_pipeline_definition(definition, graph)
+
+    def define(self, pipeline) -> None:
+        """Declare a low-nesting pipeline topology.
+
+        New pipelines override this method. Existing pipelines that override
+        :meth:`define_topology` continue to use the lower-level RenderGraph API.
+        """
         raise NotImplementedError(
-            f"{type(self).__name__} must implement define_topology()"
+            f"{type(self).__name__} must implement define(pipeline) or "
+            "define_topology(graph)"
         )

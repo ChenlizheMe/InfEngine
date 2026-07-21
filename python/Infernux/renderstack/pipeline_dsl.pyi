@@ -53,6 +53,7 @@ class LayerDefinition:
     display_name: str
     routes: list[RouteDefinition]
     effects: list[EffectStageDefinition]
+    operations: list[tuple[str, str]]
 
 class DomainDefinition:
     domain_id: str
@@ -60,6 +61,7 @@ class DomainDefinition:
     routes: list[RouteDefinition]
     layers: list[LayerDefinition]
     effects: list[EffectStageDefinition]
+    operations: list[tuple[str, str]]
     def all_routes(self) -> tuple[RouteDefinition, ...]: ...
 
 class PipelineDefinition:
@@ -118,6 +120,7 @@ class LayerBuilder:
     def forward(self, selector: Optional[Queue] = ...) -> RouteBuilder: ...
     def forward_plus(self, selector: Optional[Queue] = ...) -> RouteBuilder: ...
     def deferred(self, selector: Optional[Queue] = ..., *, fallback: Optional[Path] = ...) -> RouteBuilder: ...
+    def otherwise(self) -> OtherwiseBuilder: ...
     def effects(self, stable_id: str, *, label: str = ...) -> EffectStageDefinition: ...
 
 class OtherwiseBuilder:

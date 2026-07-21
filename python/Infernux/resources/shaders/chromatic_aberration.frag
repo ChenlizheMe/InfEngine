@@ -28,8 +28,9 @@ void main() {
     vec2 offset = center * dist * pc.intensity * 0.02;
 
     float r = texture(_SourceTex, inUV - offset).r;
-    float g = texture(_SourceTex, inUV).g;
+    vec4 centerSample = texture(_SourceTex, inUV);
+    float g = centerSample.g;
     float b = texture(_SourceTex, inUV + offset).b;
 
-    outColor = vec4(r, g, b, 1.0);
+    outColor = vec4(r, g, b, centerSample.a);
 }

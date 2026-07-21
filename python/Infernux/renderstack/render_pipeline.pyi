@@ -107,6 +107,10 @@ class RenderPipeline:
         """
         ...
 
+    def define(self, pipeline: Any) -> None:
+        """Declare a low-nesting pipeline topology."""
+        ...
+
     def dispose(self) -> None:
         """Override to release resources when the pipeline is replaced."""
         ...

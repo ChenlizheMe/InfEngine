@@ -47,5 +47,5 @@ void main() {
     float vfactor = 1.0 - smoothstep(1.0 - pc.smoothness, 1.0, dist * pc.intensity);
 
     color.rgb *= vfactor;
-    outColor = vec4(color.rgb, 1.0);
+    outColor = color;
 }

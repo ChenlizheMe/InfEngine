@@ -26,7 +26,8 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     vec3 bloom = texture(_BloomTex, inUV).rgb;
-    vec3 scene = texture(_SceneColor, inUV).rgb;
+    vec4 sceneSample = texture(_SceneColor, inUV);
+    vec3 scene = sceneSample.rgb;
 
     // Apply tint and intensity
     vec3 tint = vec3(pc.tintR, pc.tintG, pc.tintB);
@@ -35,5 +36,5 @@ void main() {
     // Additive blend
     vec3 result = scene + bloom;
 
-    outColor = vec4(result, 1.0);
+    outColor = vec4(result, sceneSample.a);
 }

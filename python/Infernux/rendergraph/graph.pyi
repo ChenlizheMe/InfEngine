@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from typing import Mapping, Optional, Tuple, List, Dict
 
 from Infernux.lib import (
@@ -203,6 +204,12 @@ class RenderGraph:
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Get a texture handle by name, or None if not found."""
         ...
+    def name_scope(self, prefix: str) -> AbstractContextManager[RenderGraph]: ...
+    def effect_resources(
+        self, resources: Mapping[str, TextureHandle]
+    ) -> AbstractContextManager[RenderGraph]: ...
+    @property
+    def current_effect_resources(self) -> Mapping[str, TextureHandle]: ...
     def create_buffer(
         self,
         name: str,

@@ -21,7 +21,8 @@ void main() {
     vec2 texelSize = 1.0 / vec2(textureSize(_SourceTex, 0));
 
     // Sample 3x3 neighborhood (cross pattern for efficiency)
-    vec3 center = texture(_SourceTex, inUV).rgb;
+    vec4 centerSample = texture(_SourceTex, inUV);
+    vec3 center = centerSample.rgb;
     vec3 top    = texture(_SourceTex, inUV + vec2( 0.0, -texelSize.y)).rgb;
     vec3 bottom = texture(_SourceTex, inUV + vec2( 0.0,  texelSize.y)).rgb;
     vec3 left   = texture(_SourceTex, inUV + vec2(-texelSize.x,  0.0)).rgb;
@@ -43,5 +44,5 @@ void main() {
     vec3 average = (top + bottom + left + right) * 0.25;
     vec3 sharpened = center + (center - average) * w * sharpness * -4.0;
 
-    outColor = vec4(clamp(sharpened, 0.0, 1.0), 1.0);
+    outColor = vec4(clamp(sharpened, 0.0, 1.0), centerSample.a);
 }

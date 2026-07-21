@@ -26,7 +26,8 @@ layout(location = 0) in  vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    vec3 color = texture(_SourceTex, inUV).rgb;
+    vec4 source = texture(_SourceTex, inUV);
+    vec3 color = source.rgb;
 
     // Post-exposure (EV units, applied in linear space)
     color *= exp2(pc.postExposure);
@@ -49,5 +50,5 @@ void main() {
         color = hsvToRGB(hsv);
     }
 
-    outColor = vec4(color, 1.0);
+    outColor = vec4(color, source.a);
 }

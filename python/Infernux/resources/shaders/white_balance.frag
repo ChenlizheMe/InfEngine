@@ -61,10 +61,11 @@ vec3 WhiteBalance(vec3 color, float temp, float tin) {
 }
 
 void main() {
-    vec3 color = texture(_SourceTex, inUV).rgb;
+    vec4 source = texture(_SourceTex, inUV);
+    vec3 color = source.rgb;
 
     color = WhiteBalance(color, pc.temperature, pc.tint);
     color = max(color, vec3(0.0));
 
-    outColor = vec4(color, 1.0);
+    outColor = vec4(color, source.a);
 }

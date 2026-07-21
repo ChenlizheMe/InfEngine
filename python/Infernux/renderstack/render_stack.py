@@ -448,8 +448,11 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         def on_effect_stage(stage) -> None:
             from Infernux.renderstack.render_effect_compiler import compile_effect_slots
 
+            semantic_resources = graph.current_effect_resources
             for resource_name in stage.contract.inputs:
-                resource = graph.get_texture(resource_name)
+                resource = semantic_resources.get(resource_name)
+                if resource is None:
+                    resource = graph.get_texture(resource_name)
                 if resource is not None:
                     bus.set(resource_name, resource)
 

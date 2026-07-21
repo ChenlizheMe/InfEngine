@@ -43,5 +43,5 @@ void main() {
     color.rgb += noise * pc.intensity * response;
     color.rgb = max(color.rgb, vec3(0.0));
 
-    outColor = vec4(color.rgb, 1.0);
+    outColor = color;
 }

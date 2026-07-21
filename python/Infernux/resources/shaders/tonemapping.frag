@@ -60,7 +60,8 @@ vec3 Reinhard(vec3 x) {
 }
 
 void main() {
-    vec3 hdr = texture(_SourceTex, inUV).rgb;
+    vec4 source = texture(_SourceTex, inUV);
+    vec3 hdr = source.rgb;
 
     // Apply exposure
     hdr *= pc.exposure;
@@ -79,5 +80,5 @@ void main() {
     // Gamma correction (linear → sRGB)
     ldr = pow(ldr, vec3(1.0 / pc.gamma));
 
-    outColor = vec4(ldr, 1.0);
+    outColor = vec4(ldr, source.a);
 }
