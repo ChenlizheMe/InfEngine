@@ -470,6 +470,21 @@ void surface(out SurfaceData surface)
     assert(builtinParticleArtifact.key.stages.fragmentShaderId == "unlit");
     assert(builtinParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
+    const auto builtinLitCompilation =
+        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
+                                              ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");
+    if (!builtinLitCompilation.IsValid()) {
+        for (const auto &error : builtinLitCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(builtinLitCompilation.IsValid());
+    const auto builtinLitArtifact = builtinLitCompilation.CreateRuntimeArtifact();
+    assert(builtinLitArtifact.IsValid());
+    assert(builtinLitArtifact.key.stages.vertexShaderId == "standard");
+    assert(builtinLitArtifact.key.stages.fragmentShaderId == "lit");
+    assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
+
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo
 {

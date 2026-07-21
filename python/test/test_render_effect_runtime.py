@@ -85,6 +85,37 @@ def test_render_effect_inspector_edit_updates_shared_instance_and_queues_snapsho
     assert scheduled[-1][:3] == ("render_effect", str(path), effect)
 
 
+def test_render_effect_inspector_skips_edit_path_for_unchanged_fields(monkeypatch):
+    from Infernux.engine.ui import render_effect_inspector as inspector
+
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.bloom",
+            parameters={"intensity": 0.5, "max_iterations": 3},
+        )
+    )
+    edit_calls = []
+    monkeypatch.setattr(inspector, "max_label_w", lambda *_args: 80.0)
+    monkeypatch.setattr(
+        inspector,
+        "render_serialized_field",
+        lambda _ctx, _widget, _label, _metadata, current, _width: current,
+    )
+    monkeypatch.setattr(
+        inspector,
+        "apply_render_effect_parameter_edit",
+        lambda *_args: edit_calls.append(_args) or True,
+    )
+    ctx = type(
+        "Context",
+        (),
+        {"is_item_hovered": lambda self: False, "set_tooltip": lambda self, _text: None},
+    )()
+
+    assert inspector.render_render_effect_parameters(ctx, effect) is False
+    assert edit_calls == []
+
+
 def test_render_effect_debounced_save_uses_document_store_worker(tmp_path):
     from Infernux.core.assets import AssetManager
     from Infernux.core.document_store import DocumentStore
@@ -391,11 +422,15 @@ def test_default_pipeline_declares_effect_stages_in_topology_order():
         "after_sky",
         "after_transparent",
         "final",
+        "after_screen_ui",
     ]
 
     topology = stack._build_full_topology_probe().topology_sequence
     assert topology.index(("effect_stage", "final")) < topology.index(
         ("pass", "_ScreenUI_Camera")
+    )
+    assert topology.index(("pass", "_ScreenUI_Overlay")) < topology.index(
+        ("effect_stage", "after_screen_ui")
     )
 
 

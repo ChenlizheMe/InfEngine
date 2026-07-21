@@ -103,6 +103,7 @@ class HierarchyCreationService:
             ("rendering.render_stack", "RenderStack", "Rendering"),
             ("rendering.sprite_renderer", "Sprite Renderer", "Rendering"),
             ("ui.canvas", "Canvas", "UI"),
+            ("ui.image", "Image", "UI"),
             ("ui.text", "Text", "UI"),
             ("ui.button", "Button", "UI"),
         ]
@@ -133,7 +134,7 @@ class HierarchyCreationService:
 
         parent_id = int(parent_id or 0)
         effective_parent_id = parent_id
-        if kind in {"ui.text", "ui.button"}:
+        if kind in {"ui.image", "ui.text", "ui.button"}:
             effective_parent_id = self._find_canvas_parent_id(scene, parent_id)
 
         if effective_parent_id:
@@ -191,6 +192,8 @@ class HierarchyCreationService:
             return self._create_ui_canvas(scene)
         if kind == "ui.text":
             return self._create_ui_text(scene, parent_id)
+        if kind == "ui.image":
+            return self._create_ui_image(scene, parent_id)
         if kind == "ui.button":
             return self._create_ui_button(scene, parent_id)
         raise ValueError(f"Unknown hierarchy create kind: {kind}")
@@ -254,6 +257,18 @@ class HierarchyCreationService:
         obj = scene.create_game_object("Text")
         if obj:
             obj.add_py_component(UITextCls())
+            invalidate_canvas_cache()
+        return obj
+
+    def _create_ui_image(self, scene, parent_id: int):
+        from Infernux.ui import UIImage as UIImageCls
+        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+        obj = scene.create_game_object("Image")
+        if obj:
+            image = UIImageCls()
+            image.width = 100.0
+            image.height = 100.0
+            obj.add_py_component(image)
             invalidate_canvas_cache()
         return obj
 
@@ -333,6 +348,8 @@ class HierarchyCreationService:
             return "Create Canvas"
         if kind == "ui.text":
             return "Create Text"
+        if kind == "ui.image":
+            return "Create Image"
         if kind == "ui.button":
             return "Create Button"
         return "Create GameObject"

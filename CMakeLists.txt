@@ -843,26 +843,21 @@ if(INFERNUX_BUILD_TESTS)
         SKIP_RETURN_CODE 77
     )
 
-    add_test(
-        NAME infernux.physics_profile
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/physics_profile_gate.py
-    )
-    set_tests_properties(infernux.physics_profile PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
-        TIMEOUT 30
-        RUN_SERIAL TRUE
-        LABELS performance
-    )
-
-    add_test(
-        NAME infernux.asset_scan_profile
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/asset_scan_profile_gate.py
-    )
-    set_tests_properties(infernux.asset_scan_profile PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
-        TIMEOUT 180
-        RUN_SERIAL TRUE
-        LABELS performance
+    # Performance diagnostics are intentionally opt-in. Their wall-clock
+    # thresholds depend on the host CPU and filesystem, so they must not make
+    # correctness CI fail on slower remote workers.
+    add_custom_target(infernux_performance_diagnostics
+        COMMAND ${CMAKE_COMMAND} -E env
+                "PYTHONPATH=${CMAKE_SOURCE_DIR}/python"
+                "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/physics_profile_gate.py
+        COMMAND ${CMAKE_COMMAND} -E env
+                "PYTHONPATH=${CMAKE_SOURCE_DIR}/python"
+                "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/asset_scan_profile_gate.py
+        DEPENDS _Infernux
+        USES_TERMINAL
+        VERBATIM
     )
 endif()
 

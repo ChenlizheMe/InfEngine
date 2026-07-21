@@ -11,7 +11,7 @@ import math
 from Infernux.components import serialized_field
 from .inx_ui_component import InxUIComponent
 from .enums import ScreenAlignH, ScreenAlignV
-from .ui_render_revision import mark_runtime_ui_dirty
+from .ui_render_revision import is_unchanged_ui_scalar, mark_runtime_ui_dirty
 
 # Rect cache — avoids repeated hierarchy walks and serialized-field reads.
 # Runtime callers retain it until hierarchy or geometry changes; editor tools
@@ -53,8 +53,9 @@ class InxUIScreenComponent(InxUIComponent):
     })
 
     def __setattr__(self, name, value):
+        unchanged = is_unchanged_ui_scalar(self, name, value)
         super().__setattr__(name, value)
-        if name.startswith("_"):
+        if name.startswith("_") or unchanged:
             return
         object.__setattr__(
             self,

@@ -295,7 +295,8 @@ class InspectorPanel : public EditorPanel
     std::pair<bool, bool> RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
                                                 const std::string &headerId, uint64_t iconId, bool showEnabled,
                                                 bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
-                                                const std::string &semanticId = "");
+                                                const std::string &semanticId = "",
+                                                const std::string &contextPopupId = "");
 
     bool RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value);
 

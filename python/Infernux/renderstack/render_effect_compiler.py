@@ -259,7 +259,6 @@ class RenderEffectFeature:
     type_id: str
     effect_class: type
     topology_parameters: frozenset[str] = frozenset()
-    required_inputs: frozenset[str] = frozenset({"color"})
 
     def instantiate(self, source: RenderEffect):
         from Infernux.components.serialized_field import get_serialized_fields
@@ -293,7 +292,6 @@ def register_render_effect_feature(
     effect_class: type,
     *,
     topology_parameters=(),
-    required_inputs=("color",),
 ) -> RenderEffectFeature:
     """Register one AOT feature implementation for `.effect` sources."""
     normalized = str(type_id or "").strip()
@@ -304,7 +302,6 @@ def register_render_effect_feature(
         normalized,
         effect_class,
         frozenset(str(name) for name in topology_parameters),
-        frozenset(str(name) for name in required_inputs),
     )
     if existing is not None and existing != feature:
         raise ValueError(f"render effect feature {normalized!r} is already registered")
@@ -407,7 +404,6 @@ def compile_effect_slots(stage, slots, graph, bus):
                     graph,
                     bus,
                     binding_id=f"{stage.stable_id}/{slot.slot_id}/{source_index}",
-                    available_inputs=stage.contract.inputs,
                 )
                 if binding.blocks:
                     bindings.append(binding)
@@ -422,14 +418,8 @@ def _compile_effect(
     bus,
     *,
     binding_id: str,
-    available_inputs,
 ) -> CompiledEffectBinding:
     feature = get_render_effect_feature(source.feature_type)
-    missing = sorted(feature.required_inputs - frozenset(available_inputs))
-    if missing:
-        raise RenderEffectCompileError(
-            f"effect feature {feature.type_id!r} requires unavailable stage inputs: {missing}"
-        )
     instance = feature.instantiate(source)
     first_pass = len(graph._passes)
     first_texture = len(graph._textures)

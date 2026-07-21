@@ -460,13 +460,14 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
             ctx, comp.typeName, "comp_" + std::to_string(comp.componentId), comp.iconId,
             /*showEnabled=*/true, comp.enabled, comp.isScript ? " (Script)" : "",
             /*defaultOpen=*/true,
-            "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId));
+            "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
+            comp.isScript ? "py_comp_ctx" : "comp_ctx");
 
         // Right-click context menu — only call Python when popup is open
         bool componentRemoved = false;
         {
             const char *ctxPopupId = comp.isScript ? "py_comp_ctx" : "comp_ctx";
-            if (ImGui::BeginPopupContextItem(ctxPopupId)) {
+            if (ImGui::BeginPopup(ctxPopupId)) {
                 if (renderComponentContextMenu) {
                     componentRemoved =
                         renderComponentContextMenu(ctx, objId, comp.typeName, comp.componentId, comp.isNative);
@@ -1130,7 +1131,8 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
 std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, const std::string &typeName,
                                                             const std::string &headerId, uint64_t iconId,
                                                             bool showEnabled, bool isEnabled, const std::string &suffix,
-                                                            bool defaultOpen, const std::string &semanticId)
+                                                            bool defaultOpen, const std::string &semanticId,
+                                                            const std::string &contextPopupId)
 {
     bool newEnabled = isEnabled;
 
@@ -1175,8 +1177,10 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
     if (ctx && captureSemantics)
         ctx->RecordSemanticItem("component_header", displayName, true, semanticBase);
 
-    float headerMinY = ImGui::GetItemRectMin().y;
-    float headerMaxY = ImGui::GetItemRectMax().y;
+    const ImVec2 headerMin = ImGui::GetItemRectMin();
+    const ImVec2 headerMax = ImGui::GetItemRectMax();
+    float headerMinY = headerMin.y;
+    float headerMaxY = headerMax.y;
     float headerHeight = (std::max)(0.0f, headerMaxY - headerMinY);
 
     // Overlay: icon + checkbox + label on the same row
@@ -1212,6 +1216,22 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(displayName.c_str());
+
+    if (!contextPopupId.empty()) {
+        constexpr float optionsWidth = 24.0f;
+        ImGui::SameLine();
+        const float rightEdge = ImGui::GetWindowContentRegionMax().x;
+        ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(), rightEdge - optionsWidth));
+        if (ImGui::SmallButton("...##component_options"))
+            ImGui::OpenPopup(contextPopupId.c_str());
+        const std::string optionsLabel = Tr("inspector.component_options");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ImGui::SetTooltip("%s", optionsLabel.c_str());
+        if (ctx && captureSemantics)
+            ctx->RecordSemanticItem("component_options", optionsLabel, true, semanticBase + ".options");
+        if (ImGui::IsMouseHoveringRect(headerMin, headerMax) && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            ImGui::OpenPopup(contextPopupId.c_str());
+    }
 
     // Cleanup
     ImGui::SetWindowFontScale(1.0f);

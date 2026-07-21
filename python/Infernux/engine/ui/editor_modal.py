@@ -36,14 +36,17 @@ def begin_editor_modal(
     if request_open:
         ctx.open_popup(popup_id)
 
-    viewport_x, viewport_y, viewport_w, viewport_h = ctx.get_main_viewport_bounds()
-    ctx.set_next_window_pos(
-        viewport_x + viewport_w * 0.5,
-        viewport_y + viewport_h * 0.5,
-        Theme.COND_ALWAYS,
-        0.5,
-        0.5,
-    )
+    get_viewport = getattr(ctx, "get_main_viewport_bounds", None)
+    set_position = getattr(ctx, "set_next_window_pos", None)
+    if callable(get_viewport) and callable(set_position):
+        viewport_x, viewport_y, viewport_w, viewport_h = get_viewport()
+        set_position(
+            viewport_x + viewport_w * 0.5,
+            viewport_y + viewport_h * 0.5,
+            Theme.COND_ALWAYS,
+            0.5,
+            0.5,
+        )
     set_size = getattr(ctx, "set_next_window_size", None)
     if callable(set_size):
         set_size(float(width), float(height), Theme.COND_ALWAYS)
@@ -59,8 +62,17 @@ def render_editor_modal_actions(
     *,
     semantic_prefix: str,
 ) -> None:
-    """Render the standard separator and large command-button row."""
+    """Render the standard bottom-anchored command-button row."""
     action_list = list(actions)
+    get_avail_h = getattr(ctx, "get_content_region_avail_height", None)
+    get_cursor_y = getattr(ctx, "get_cursor_pos_y", None)
+    set_cursor_y = getattr(ctx, "set_cursor_pos_y", None)
+    if callable(get_avail_h) and callable(get_cursor_y) and callable(set_cursor_y):
+        action_block_h = DEFAULT_ACTION_HEIGHT + 24.0
+        remaining = float(get_avail_h())
+        if remaining > action_block_h:
+            set_cursor_y(float(get_cursor_y()) + remaining - action_block_h)
+
     ctx.spacing()
     ctx.separator()
     ctx.spacing()

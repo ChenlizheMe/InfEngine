@@ -500,6 +500,23 @@ def test_runtime_ui_revision_is_stable_and_tracks_visual_state():
     assert runtime_ui_revision(scene, canvases, 1280, 720, 2) != first
 
 
+def test_ui_scalar_reassignment_does_not_invalidate_runtime_commands():
+    from Infernux.ui import UIText
+    from Infernux.ui.ui_render_revision import get_runtime_ui_revision
+
+    text = UIText()
+    initial_global = get_runtime_ui_revision()
+    initial_local = getattr(text, "_ui_render_revision", 0)
+
+    text.text = text.text
+    assert get_runtime_ui_revision() == initial_global
+    assert getattr(text, "_ui_render_revision", 0) == initial_local
+
+    text.text = "Changed"
+    assert get_runtime_ui_revision() == initial_global + 1
+    assert text._ui_render_revision == initial_local + 1
+
+
 def test_persistent_event_combo_preserves_temporarily_unresolved_method():
     from Infernux.engine.ui.inspector_ui_components import _persistent_event_combo_options
 

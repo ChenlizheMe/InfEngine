@@ -667,6 +667,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (activePass.target != ShaderCompileTarget::Forward) {
             const ShaderStagePair stages{owner->GetVertShaderName(), owner->GetFragShaderName()};
             const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
+            if (!artifact && m_shaderProgramArtifactResolver) {
+                m_shaderProgramArtifactResolver(owner);
+                artifact = m_shaderCache.FindProgramArtifact(stages);
+            }
             if (!artifact || !artifact->FindVariant(activePass.target))
                 return {};
             program = m_shaderCache.MaterializeProgramVariant(stages, activePass.target);

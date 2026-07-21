@@ -193,6 +193,10 @@ class InxVkCoreModular
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     CopyShaderProgramArtifact(const ShaderStagePair &stages) const;
+    void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
+    {
+        m_shaderProgramArtifactResolver = std::move(resolver);
+    }
     void UnloadShader(const char *name);
     bool HasShader(const std::string &name, const std::string &type) const;
 
@@ -1118,6 +1122,7 @@ class InxVkCoreModular
 
     // Shader cache (modules, SPIR-V code, render-state annotations, program cache)
     VkShaderCache m_shaderCache;
+    std::function<void(const std::shared_ptr<InxMaterial> &)> m_shaderProgramArtifactResolver;
 
     // Reflection-based material pipeline manager
     MaterialPipelineManager m_materialPipelineManager;

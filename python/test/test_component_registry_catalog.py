@@ -2,10 +2,15 @@ import os
 
 from Infernux.components.registry import (
     get_component_registrations,
+    get_type_by_identity,
     register_component_script,
     unregister_component_script,
 )
-from Infernux.engine.bootstrap_inspector._helpers import _get_add_component_entries
+from Infernux.engine.bootstrap_inspector._helpers import (
+    _get_add_component_entries,
+    _get_component_script_error,
+    _get_py_components_safe,
+)
 
 
 def test_project_component_source_is_registered_without_execution(tmp_path):
@@ -58,3 +63,69 @@ def test_deleted_component_script_leaves_registry(tmp_path):
         entry.type_name != "Removed"
         for entry in get_component_registrations(project_root=str(tmp_path))
     )
+
+
+def test_inspector_does_not_resolve_engine_component_identity_as_asset_guid():
+    class EngineComponent:
+        _script_guid = "intrinsic-guid"
+
+    class Database:
+        def get_path_from_guid(self, _guid):
+            raise AssertionError("engine component identities are not asset GUIDs")
+
+    assert _get_component_script_error(EngineComponent(), Database()) is None
+
+
+def test_inspector_reads_python_components_from_selected_object():
+    components = [object(), object()]
+
+    class SelectedObject:
+        def get_py_components(self):
+            return tuple(components)
+
+    assert _get_py_components_safe(SelectedObject()) == components
+
+
+def test_missing_script_placeholder_does_not_replace_live_registered_type():
+    from Infernux.components import InxComponent
+    from Infernux.components.missing_script import create_missing_script_component
+
+    class LiveComponent(InxComponent):
+        value: int = 1
+
+    script_guid = LiveComponent._get_intrinsic_script_guid()
+    type_guid = LiveComponent._get_type_guid()
+    placeholder = create_missing_script_component(
+        type_name=LiveComponent.__name__,
+        script_guid=script_guid,
+        type_guid="f" * 32,
+        module_name=LiveComponent.__module__,
+        qualified_name=LiveComponent.__qualname__,
+        fields={"__type_name__": LiveComponent.__name__, "value": 1},
+        error="intentional missing script",
+    )
+    try:
+        assert get_type_by_identity(
+            LiveComponent.__name__, script_guid, type_guid
+        ) is LiveComponent
+    finally:
+        placeholder._call_on_destroy()
+
+
+def test_engine_component_catalog_is_explicit_and_complete():
+    registrations = get_component_registrations()
+    engine_types = {
+        entry.type_name for entry in registrations if not entry.project_script
+    }
+    assert engine_types == {
+        "ParticleSystem",
+        "RenderStack",
+        "SkeletalAnimator",
+        "SpriteRenderer",
+        "SpiritAnimator",
+        "TimelineAction",
+        "UIButton",
+        "UICanvas",
+        "UIImage",
+        "UIText",
+    }

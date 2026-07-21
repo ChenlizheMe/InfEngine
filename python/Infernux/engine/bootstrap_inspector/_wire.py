@@ -422,17 +422,8 @@ def _wire_icons_and_body(ctx):
         if _profile_enabled:
             _record_count("bodyPyCheck_count")
         _t0 = _time.perf_counter() if _profile_enabled else 0.0
-        _script_err = None
-        if getattr(comp, '_is_broken', False):
-            _script_err = getattr(comp, '_broken_error', '') or 'Script failed to load'
-        else:
-            _py_guid = getattr(comp, '_script_guid', None)
-            adb = engine.get_asset_database()
-            if _py_guid and adb:
-                from Infernux.components.script_loader import get_script_error_by_path
-                _py_path = adb.get_path_from_guid(_py_guid)
-                if _py_path:
-                    _script_err = get_script_error_by_path(_py_path)
+        from ._helpers import _get_component_script_error
+        _script_err = _get_component_script_error(comp, engine.get_asset_database())
         if _profile_enabled:
             _record_timing("bodyPyCheck", (_time.perf_counter() - _t0) * 1000.0)
         if _script_err:
@@ -851,7 +842,7 @@ def _wire_add_remove_and_drop(ctx):
                     if isinstance(pc, comp_cls):
                         Debug.log_warning(
                             f"Cannot add another '{comp_cls.__name__}' — "
-                            f"only one per scene is allowed")
+                            f"only one per GameObject is allowed")
                         return
             instance = comp_cls()
             before_documents = _get_native_component_documents(obj)

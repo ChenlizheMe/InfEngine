@@ -54,6 +54,11 @@ def wire_creation_callbacks(ctx):
     )
     hp.add_create_entry(
         "UI",
+        "hierarchy.ui_image",
+        lambda parent_id: _create("ui.image", parent_id),
+    )
+    hp.add_create_entry(
+        "UI",
         "hierarchy.ui_text",
         lambda parent_id: _create("ui.text", parent_id),
     )

@@ -2257,10 +2257,13 @@ class AnimFSMEditorPanel(EditorPanel):
             self._selected_uid = ""
 
     def _on_play_mode_changed(self, event):
-        """PlayModeEvent — auto-save dirty FSM before play."""
-        from Infernux.engine.play_mode import PlayModeState
-        if event.new_state == PlayModeState.PLAYING and self._dirty:
-            self._do_save()
+        """Keep editor drafts in memory when Play Mode changes.
+
+        Entering Play must not turn a stale restored draft into an implicit
+        disk write.  The runtime consumes the last explicitly saved asset;
+        Ctrl+S and the panel save controls remain the only persistence paths.
+        """
+        del event
 
     def _on_canvas_drop(self, payload_type: str, payload, gx: float, gy: float):
         """Handle items dropped onto the node graph canvas (clip / timeline file paths)."""

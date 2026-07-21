@@ -1925,6 +1925,8 @@ InxRenderer::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &ma
 void InxRenderer::SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver)
 {
     m_shaderProgramArtifactResolver = std::move(resolver);
+    if (m_vkCore)
+        m_vkCore->SetShaderProgramArtifactResolver(m_shaderProgramArtifactResolver);
 }
 
 void InxRenderer::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,

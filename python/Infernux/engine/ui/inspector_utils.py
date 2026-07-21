@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 import os
+from functools import lru_cache
 from typing import Any
 
 from Infernux.lib import InxGUIContext
@@ -65,6 +66,7 @@ def float_close(a: float, b: float, rel_tol: float = 1e-5,
 #  Naming / formatting
 # ═══════════════════════════════════════════════════════════════════════════
 
+@lru_cache(maxsize=512)
 def format_display_name(name: str, *, title_case: bool = False) -> str:
     """Format identifiers for UI display.
 

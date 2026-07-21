@@ -110,6 +110,10 @@ class _ConfirmationContext:
         pass
 
     @staticmethod
+    def text_wrapped(_text: str) -> None:
+        pass
+
+    @staticmethod
     def spacing() -> None:
         pass
 
@@ -117,7 +121,7 @@ class _ConfirmationContext:
     def separator() -> None:
         pass
 
-    def button(self, label: str, callback) -> bool:
+    def button(self, label: str, callback, **_kwargs) -> bool:
         if label.startswith(self.clicked):
             callback()
             return True
@@ -293,7 +297,7 @@ def test_animfsm_mode_switch_confirmation_is_semantic_and_cancelable():
     panel._pending_mode_switch = "3d"
     panel._mode_switch_confirm_requested = True
     panel._mode_switch_waiting_for_save = False
-    ctx = _ConfirmationContext(clicked="Cancel")
+    ctx = _ConfirmationContext(clicked=animfsm_module.t("editor.unsaved.cancel"))
 
     panel._render_mode_switch_confirmation(ctx)
 
@@ -306,7 +310,11 @@ def test_animfsm_mode_switch_confirmation_is_semantic_and_cancelable():
         "animfsm.mode_switch.cancel",
     }
     assert ctx.semantic_windows == [
-        ("modal", "Unsaved State Machine", "animfsm.mode_switch.dialog")
+        (
+            "modal",
+            animfsm_module.t("animfsm.mode_switch.title"),
+            "animfsm.mode_switch.dialog",
+        )
     ]
 
 
@@ -676,3 +684,15 @@ def test_animfsm_new_document_and_dirty_draft_round_trip():
     assert restored._dirty is True
     assert restored._fsm.name == "Recovered FSM"
     assert [parameter.name for parameter in restored._fsm.parameters] == ["speed"]
+
+
+def test_animfsm_entering_play_does_not_implicitly_save_dirty_draft(monkeypatch):
+    panel = AnimFSMEditorPanel()
+    panel._dirty = True
+    save_calls = []
+    monkeypatch.setattr(panel, "_do_save", lambda: save_calls.append(True))
+
+    panel._on_play_mode_changed(SimpleNamespace(new_state="playing"))
+
+    assert save_calls == []
+    assert panel._dirty is True

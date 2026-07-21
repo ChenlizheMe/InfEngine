@@ -27,7 +27,7 @@ def test_unique_scene_object_name_uses_first_available_unity_style_suffix():
     assert _unique_scene_object_name(scene, "Cube", exclude_id=1) == "Cube"
 
 
-def test_hierarchy_creation_wiring_exposes_canvas_text_and_button(monkeypatch):
+def test_hierarchy_creation_wiring_exposes_all_user_facing_ui_elements(monkeypatch):
     from Infernux.engine.bootstrap_hierarchy import _creation
 
     class _Service:
@@ -57,9 +57,20 @@ def test_hierarchy_creation_wiring_exposes_canvas_text_and_button(monkeypatch):
     ui_entries = [(category, locale_key) for category, locale_key, _callback in hierarchy.entries if category == "UI"]
     assert ui_entries == [
         ("UI", "hierarchy.ui_canvas"),
+        ("UI", "hierarchy.ui_image"),
         ("UI", "hierarchy.ui_text"),
         ("UI", "hierarchy.ui_button"),
     ]
+
+
+def test_hierarchy_creation_catalog_includes_image():
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+
+    service = HierarchyCreationService()
+    kinds = {entry["kind"] for entry in service.list_create_kinds()}
+
+    assert "ui.image" in kinds
+    assert service._description_for("ui.image") == "Create Image"
 
 
 def test_ui_element_creation_uses_the_only_existing_canvas_when_context_parent_is_lost():

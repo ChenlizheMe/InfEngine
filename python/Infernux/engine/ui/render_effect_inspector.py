@@ -77,7 +77,13 @@ def render_render_effect_parameters(ctx, effect, *, widget_prefix: str = "effect
             current_value,
             label_width,
         )
-        if apply_render_effect_parameter_edit(effect, field_name, new_value):
+        # The renderer already has the live value and metadata. Avoid entering
+        # the edit/Undo path (which instantiates the feature again) for every
+        # unchanged field on every Inspector frame.
+        if (
+            has_field_changed(metadata.field_type, current_value, new_value)
+            and apply_render_effect_parameter_edit(effect, field_name, new_value)
+        ):
             changed = True
         if metadata.tooltip and ctx.is_item_hovered():
             ctx.set_tooltip(metadata.tooltip)

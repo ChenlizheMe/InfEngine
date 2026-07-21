@@ -39,6 +39,26 @@ def _get_py_components_safe(obj):
         return []
 
 
+def _get_component_script_error(comp, asset_database):
+    """Resolve project-script diagnostics without probing engine component GUIDs."""
+    if getattr(comp, "_is_broken", False):
+        return getattr(comp, "_broken_error", "") or "Script failed to load"
+
+    script_guid = getattr(comp, "_script_guid", "") or ""
+    asset_guid = getattr(type(comp), "_asset_script_guid_", "") or ""
+    if not script_guid or script_guid != asset_guid:
+        return None
+
+    script_path = getattr(comp, "_script_path", "") or ""
+    if not script_path and asset_database is not None:
+        script_path = asset_database.get_path_from_guid(script_guid) or ""
+    if not script_path:
+        return None
+
+    from Infernux.components.script_loader import get_script_error_by_path
+    return get_script_error_by_path(script_path)
+
+
 def _can_remove_component(obj, comp, type_name, is_native):
     """Check whether *comp* may be removed from *obj*."""
     if is_native:

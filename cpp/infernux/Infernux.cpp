@@ -3101,9 +3101,6 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
     const ShaderDescriptor vertexDescriptor = compiler.ParseShaderSource(vertexSource, vertexPath);
     const ShaderDescriptor fragmentDescriptor = compiler.ParseShaderSource(fragmentSource, fragmentPath);
 
-    if (!vertexDescriptor.usesStructuredInfo && !fragmentDescriptor.usesStructuredInfo)
-        return result;
-
     result.usesLinkedArtifact = true;
     if (vertexDescriptor.shaderId != stages.vertexShaderId || fragmentDescriptor.shaderId != stages.fragmentShaderId) {
         result.success = false;

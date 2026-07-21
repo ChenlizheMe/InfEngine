@@ -855,6 +855,7 @@ class RenderGraph:
             before_post_process       (injection point)
             after_post_process        (injection point)
             _ScreenUI_Overlay         (draw_screen_ui list="overlay")
+            after_screen_ui           (effect stage)
 
         Custom pipelines can call this at the desired topology position.
         This method is **explicit opt-in**: if a pipeline does not call
@@ -884,6 +885,16 @@ class RenderGraph:
             with self.add_pass("_ScreenUI_Overlay") as p:
                 p.write_color("color")
                 p.draw_screen_ui(list="overlay")
+
+        if not self.has_effect_stage("after_screen_ui"):
+            self.effects(
+                "after_screen_ui",
+                scope="composite",
+                display_name="After Screen UI",
+                inputs=res,
+                outputs={"color"},
+                capabilities={"fullscreen"},
+            )
 
     # ---- Pass management ----
 

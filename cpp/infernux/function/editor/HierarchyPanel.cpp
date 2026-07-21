@@ -1283,8 +1283,9 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     } else if (!m_canvasRootIds.empty()) {
         uiDimmed = IsInCanvasTree(obj);
     }
+    const bool inactiveDimmed = !obj->IsActiveInHierarchy();
     int textColorPushed = 0;
-    if (uiDimmed) {
+    if (uiDimmed || inactiveDimmed) {
         ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
                             EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
         textColorPushed = 1;
@@ -1420,8 +1421,9 @@ void HierarchyPanel::RenderGameObjectTree(InxGUIContext *ctx, GameObject *obj)
     // Dim objects that don't belong to the current mode's domain
     bool inCanvas = IsInCanvasTree(obj);
     bool uiDimmed = (m_uiMode && !inCanvas) || (!m_uiMode && inCanvas);
+    const bool inactiveDimmed = !obj->IsActiveInHierarchy();
     int textColorPushed = 0;
-    if (uiDimmed) {
+    if (uiDimmed || inactiveDimmed) {
         ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
                             EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
         textColorPushed = 1;

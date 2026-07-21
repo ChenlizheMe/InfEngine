@@ -67,7 +67,7 @@ _AUTO_INSTALLABLE_PACKAGES = {
 _BuildCancelled = BuildCancelled
 
 
-def _terminate_process_tree(proc: subprocess.Popen, *, timeout: float = 10.0) -> None:
+def _terminate_process_tree(proc: subprocess.Popen, *, timeout: float = 1.0) -> None:
     """Stop the compiler process tree created for one cancelled build."""
     if proc.poll() is not None:
         return
@@ -1957,6 +1957,9 @@ print(json.dumps({{
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Run Nuitka as a subprocess and stream output.  Returns dist dir."""
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuildCancelled()
+
         env = os.environ.copy()
 
         # Redirect TEMP / TMP to an ASCII-safe location so MinGW's

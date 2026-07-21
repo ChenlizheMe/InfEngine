@@ -12,7 +12,7 @@ import importlib.util
 import inspect
 from typing import Type, List, Optional
 
-from Infernux.engine.path_utils import path_key
+from Infernux.engine.path_utils import path_key, resolved_path
 from Infernux.engine.project_context import (
     get_script_module_name,
     resolve_script_path,
@@ -351,6 +351,7 @@ def load_and_create_component(
     from Infernux.components.component_identity import bind_asset_script_guid
     bind_asset_script_guid(component_class, guid)
     instance._script_guid = guid
+    instance._script_path = resolved_path(file_path)
     return instance
 
 

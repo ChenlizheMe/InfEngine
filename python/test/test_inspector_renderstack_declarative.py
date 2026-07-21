@@ -37,9 +37,10 @@ def test_renderstack_topology_exposes_only_pass_rows_and_effect_stage_lists():
         "stage_after_sky",
         "stage_after_transparent",
         "stage_final",
+        "stage_after_screen_ui",
     ]
     assert all(control.accept_drop == "RENDER_EFFECT_FILE" for control in lists)
-    assert len([control for control in controls if isinstance(control, InspectorInlineAssets)]) == 4
+    assert len([control for control in controls if isinstance(control, InspectorInlineAssets)]) == 5
 
 
 def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access():

@@ -18,6 +18,7 @@ Usage:
 
 from dataclasses import dataclass
 import ast
+import importlib
 import os
 import sys
 import threading
@@ -43,15 +44,48 @@ _registration_lock = threading.RLock()
 _type_registrations: dict[str, ComponentRegistration] = {}
 _script_registrations: dict[str, ComponentRegistration] = {}
 _registration_revision = 0
+_engine_catalog_loaded = False
+
+_ENGINE_COMPONENT_MODULES = (
+    "Infernux.components.particle_system",
+    "Infernux.components.skeletal_animator",
+    "Infernux.components.spirit_animator",
+    "Infernux.components.timeline_action",
+    "Infernux.renderstack.render_stack",
+    "Infernux.ui.ui_canvas",
+    "Infernux.ui.ui_text",
+    "Infernux.ui.ui_image",
+    "Infernux.ui.ui_button",
+)
+
+
+def ensure_engine_component_catalog_loaded() -> None:
+    """Load every engine-owned, user-addable Python component exactly once."""
+    global _engine_catalog_loaded
+    with _registration_lock:
+        if _engine_catalog_loaded:
+            return
+        _engine_catalog_loaded = True
+    try:
+        for module_name in _ENGINE_COMPONENT_MODULES:
+            importlib.import_module(module_name)
+    except Exception:
+        with _registration_lock:
+            _engine_catalog_loaded = False
+        raise
 
 
 def _normalized_path(path: str) -> str:
-    return os.path.normcase(os.path.normpath(os.path.abspath(path))) if path else ""
+    from Infernux.engine.path_utils import path_key
+
+    return path_key(path) if path else ""
 
 
 def _module_file(component_type: type) -> str:
+    from Infernux.engine.path_utils import resolved_path
+
     module = sys.modules.get(component_type.__module__)
-    return os.path.abspath(getattr(module, "__file__", "") or "") if module else ""
+    return resolved_path(getattr(module, "__file__", "") or "") if module else ""
 
 
 def _is_project_script(path: str) -> bool:
@@ -71,8 +105,15 @@ def _bump_revision() -> None:
 
 def register_component_type(component_type: Type['InxComponent'], *, script_path: str = "") -> None:
     """Register the newest loaded definition of one Python component type."""
+    if getattr(component_type, "_is_broken", False):
+        return
+    identity = getattr(component_type, "_get_type_guid", None)
+    if not callable(identity):
+        return
+    from Infernux.engine.path_utils import resolved_path
+
     source_path = script_path or _module_file(component_type)
-    path = os.path.abspath(source_path) if source_path else ""
+    path = resolved_path(source_path) if source_path else ""
     project_script = bool(script_path) or _is_project_script(path)
     menu_path = str(getattr(component_type, "_component_menu_path_", "") or "")
     category = str(getattr(component_type, "_component_category_", "") or "")
@@ -86,7 +127,7 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
         component_type=component_type,
         project_script=project_script,
     )
-    type_key = str(component_type._get_type_guid())
+    type_key = str(identity())
     with _registration_lock:
         if project_script and path:
             normalized = _normalized_path(path)
@@ -123,7 +164,9 @@ def _direct_component_declarations(file_path: str) -> tuple[str, ...]:
 
 def register_component_script(file_path: str) -> bool:
     """Index one validated project script in the component registry."""
-    path = os.path.abspath(file_path)
+    from Infernux.engine.path_utils import resolved_path
+
+    path = resolved_path(file_path)
     declarations = _direct_component_declarations(path)
     key = _normalized_path(path)
     with _registration_lock:
@@ -161,6 +204,8 @@ def unregister_component_script(file_path: str) -> None:
 def get_component_registrations(*, project_root: str = "") -> tuple[ComponentRegistration, ...]:
     """Return one stable Add Component snapshot without filesystem work."""
     from Infernux.engine.path_utils import is_path_within
+
+    ensure_engine_component_catalog_loaded()
 
     with _registration_lock:
         engine_entries = [
