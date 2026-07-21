@@ -9,6 +9,8 @@ from Infernux.engine.ui.animclip2d_editor_panel import (
     _ClipState,
     _TextureState,
 )
+from Infernux.engine.ui.event_bus import EditorEvent, EditorEventBus
+from Infernux.engine.path_utils import resolved_path
 
 
 @pytest.fixture(autouse=True)
@@ -148,6 +150,40 @@ def test_frame_palette_publishes_one_stable_target_per_slice():
     by_id = {entry[3]: entry for entry in ctx.semantics}
     assert by_id["animclip2d.palette.frame.0"][1] == "Frame 0: red"
     assert by_id["animclip2d.palette.frame.1"][1] == "Frame 1: green"
+
+
+def test_open_panel_refreshes_sprite_slices_on_asset_change(monkeypatch, tmp_path):
+    texture_path = str(tmp_path / "sheet.png")
+    texture_path_obj = tmp_path / "sheet.png"
+    texture_path_obj.write_bytes(b"png")
+    panel = AnimClip2DEditorPanel()
+    panel._tex = _TextureState(
+        file_path=texture_path,
+        texture_id=1,
+        tex_w=128,
+        tex_h=64,
+        frames=[SpriteFrame(name="frame_0", x=0, y=0, w=128, h=64)],
+    )
+    refreshed = [
+        SpriteFrame(name="frame_0", x=0, y=0, w=64, h=64),
+        SpriteFrame(name="frame_1", x=64, y=0, w=64, h=64),
+    ]
+    monkeypatch.setattr(panel, "_read_texture_sampling", lambda _path: ("POINT", "srgb", True, True))
+    monkeypatch.setattr(panel, "_read_sprite_frames", lambda _path: refreshed)
+    monkeypatch.setattr(panel, "_read_source_dimensions", lambda _path, _frames: (128, 64))
+    monkeypatch.setattr(panel, "_build_texture_stamp", lambda *_args: 99)
+
+    bus = EditorEventBus.instance()
+    panel.on_enable()
+    try:
+        bus.emit(EditorEvent.ASSET_CHANGED, texture_path, "modified")
+    finally:
+        panel.on_disable()
+
+    assert panel._tex is not None
+    assert panel._tex.frames == refreshed
+    assert panel._tex.stamp == 99
+    assert panel._tex.resource_key.endswith(resolved_path(texture_path))
 
 
 def test_loop_round_trips_panel_state_and_saved_clip(monkeypatch, tmp_path):

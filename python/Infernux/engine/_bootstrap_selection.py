@@ -35,9 +35,13 @@ class BootstrapSelectionMixin:
         # Let structural undo commands restore selection via the same
         # pipeline as SelectionCommand (updates inspector, outline, etc.).
         from Infernux.engine.undo import (
-            CreateGameObjectCommand, DeleteGameObjectCommand)
+            CreateGameObjectCommand,
+            DeleteGameObjectCommand,
+            DeleteGameObjectsCommand,
+        )
         CreateGameObjectCommand._selection_restore_fn = self._apply_selection_undo
         DeleteGameObjectCommand._selection_restore_fn = self._apply_selection_undo
+        DeleteGameObjectsCommand._selection_restore_fn = self._apply_selection_undo
 
     def _set_outline(self, object_id: int, object_ids=None):
         native = self.engine.get_native_engine()

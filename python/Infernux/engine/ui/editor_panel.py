@@ -464,20 +464,22 @@ class EditorPanel(ClosablePanel):
 
         # Push window styles.
         self._push_window_style(ctx)
-
-        visible = self._begin_closable_window(ctx, self._window_flags())
-        if visible:
-            self._content_was_visible = True
-            self._on_visible_pre(ctx)
-            self.on_render_content(ctx)
-        else:
-            if self._content_was_visible is not False:
-                self._on_not_visible(ctx)
-            self._content_was_visible = False
-        ctx.end_window()
-
-        # Pop window styles.
-        self._pop_window_style(ctx)
+        try:
+            visible = self._begin_closable_window(ctx, self._window_flags())
+            try:
+                if visible:
+                    self._content_was_visible = True
+                    self._on_visible_pre(ctx)
+                    self.on_render_content(ctx)
+                else:
+                    if self._content_was_visible is not False:
+                        self._on_not_visible(ctx)
+                    self._content_was_visible = False
+            finally:
+                ctx.end_window()
+        finally:
+            # Keep the ImGui style stack balanced even when panel code fails.
+            self._pop_window_style(ctx)
 
         # Fire the close hook when the panel is closed.
         # Also reset _enable_called so a future reopen runs on_enable() again,

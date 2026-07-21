@@ -14,26 +14,28 @@ add_custom_target(prepare_bundled_python_runtime
 )
 
 add_custom_target(infernux_hub
-    COMMAND ${CMAKE_COMMAND} -E echo "Compiling Infernux Hub with Nuitka..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Compiling Infernux Hub with the MSBuild/MSVC release toolchain..."
     COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_SOURCE_DIR}/packaging/build_hub.py"
         --target hub
         --source-root "${CMAKE_SOURCE_DIR}"
         --build-dir "${CMAKE_BINARY_DIR}/hub_build"
         --dist-dir "${CMAKE_SOURCE_DIR}/dist"
+        --cmake-generator "${CMAKE_GENERATOR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
-    COMMENT "Build native-compiled Infernux Hub → dist/Infernux Hub/"
+    COMMENT "Build MSVC-compiled Infernux Hub via MSBuild → dist/Infernux Hub/"
 )
 
 add_custom_target(infernux_hub_installer
-    COMMAND ${CMAKE_COMMAND} -E echo "Building graphical Infernux Hub installer..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Building graphical Infernux Hub installer with MSBuild/MSVC..."
     COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_SOURCE_DIR}/packaging/build_hub.py"
         --target installer
         --source-root "${CMAKE_SOURCE_DIR}"
         --build-dir "${CMAKE_BINARY_DIR}/installer_build"
         --dist-dir "${CMAKE_SOURCE_DIR}/dist"
+        --cmake-generator "${CMAKE_GENERATOR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/packaging"
     DEPENDS infernux_hub
-    COMMENT "Build Nuitka graphical Infernux Hub installer → dist/installer/"
+    COMMENT "Build MSVC graphical Infernux Hub installer via MSBuild → dist/installer/"
 )

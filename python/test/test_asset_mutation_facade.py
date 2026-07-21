@@ -144,6 +144,37 @@ def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
     assert order == ["db-move", "registry-move", "py-evict", "editor-moved"]
 
 
+def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeypatch):
+    order = []
+    database = _Database(order)
+    database.paths = {"old.py": "guid"}
+    _isolate_side_effects(monkeypatch, order)
+
+    class _Resources:
+        @staticmethod
+        def reload_moved_script(old_path, new_path):
+            order.append(("script-reload", old_path, new_path))
+
+    from Infernux.engine.resources_manager import ResourcesManager
+
+    monkeypatch.setattr(
+        ResourcesManager,
+        "instance",
+        classmethod(lambda _cls: _Resources()),
+    )
+
+    result = AssetManager.move_asset("old.py", "new.py", database=database)
+
+    assert result and result.guid == "guid"
+    assert order == [
+        "db-move",
+        "registry-move",
+        "py-evict",
+        "editor-moved",
+        ("script-reload", "old.py", "new.py"),
+    ]
+
+
 def test_shader_reimport_mutates_database_once_before_runtime_compile(monkeypatch):
     order = []
     database = _Database(order)

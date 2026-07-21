@@ -78,6 +78,31 @@ void TestResourceTypeMetadataRoundTrip()
     }
 }
 
+void TestSpriteFramesRequireStructuredMetadata()
+{
+    nlohmann::json legacy = {
+        {"metadata", {{"sprite_frames", {{"type", "string"}, {"value", "[]"}}}}},
+    };
+    infernux::InxResourceMeta metadata;
+    bool rejected = false;
+    try {
+        metadata.DeserializeDocument(legacy);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    Require(rejected, "Resource metadata accepted string-encoded sprite_frames");
+
+    nlohmann::json current = {
+        {"metadata", {{"sprite_frames", {{"type", "json_array"}, {"value", nlohmann::json::array()}}}}},
+    };
+    metadata.DeserializeDocument(current);
+    Require(metadata.SerializeDocument() == current, "Structured sprite_frames failed strict round-trip");
+
+    infernux::InxResourceMeta rebuilt;
+    rebuilt.CopyMetadataIfMissing(metadata, "sprite_frames");
+    Require(rebuilt.SerializeDocument() == current, "Metadata rebuild changed the structured sprite_frames type tag");
+}
+
 void TestMetadataFilePathCanonicalization()
 {
     const auto tempRoot = std::filesystem::temp_directory_path() / "infernux-meta-long-path-stability";
@@ -175,6 +200,7 @@ int main()
 {
     try {
         TestResourceTypeMetadataRoundTrip();
+        TestSpriteFramesRequireStructuredMetadata();
         TestMetadataFilePathCanonicalization();
         TestScaleAndStrictRoundTrip();
         return 0;

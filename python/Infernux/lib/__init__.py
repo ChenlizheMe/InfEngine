@@ -244,6 +244,7 @@ try:
         _cds_register_field,
         _cds_alloc,
         _cds_free,
+        _cds_is_alive,
         _cds_reserve,
         _cds_capacity,
         _cds_alive_count,

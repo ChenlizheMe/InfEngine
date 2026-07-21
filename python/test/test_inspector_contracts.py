@@ -767,6 +767,10 @@ def test_sprite_slice_controls_are_distinct_and_report_values(monkeypatch):
 
     state = details._State()
     state.settings = settings
+    applied = []
+    state.exec_layer = SimpleNamespace(
+        apply_import_settings=lambda value: applied.append(value.copy()) or True,
+    )
     details._render_sprite_body(ctx, None, state)
 
     by_id = {entry[3]: entry for entry in ctx.semantics}
@@ -778,6 +782,9 @@ def test_sprite_slice_controls_are_distinct_and_report_values(monkeypatch):
         (64, 0, 64, 64),
         (128, 0, 64, 64),
     ]
+    assert len(applied) == 1
+    assert applied[0].sprite_frames == settings.sprite_frames
+    assert state.disk_settings == settings
 
 
 def test_apply_revert_bar_publishes_stable_enabled_state():

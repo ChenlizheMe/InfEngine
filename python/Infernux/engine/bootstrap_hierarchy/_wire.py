@@ -248,17 +248,15 @@ def _wire_drop_and_delete(ctx):
 
     def _delete_selected_objects_impl(ids):
         from Infernux.lib import SceneManager
-        from Infernux.engine.undo import CompoundCommand, DeleteGameObjectCommand, UndoManager
+        from Infernux.engine.undo import DeleteGameObjectsCommand, UndoManager
         scene = SceneManager.instance().get_active_scene()
         if not scene:
             return
         if not ids:
             return
-        commands = [DeleteGameObjectCommand(oid, "Delete GameObject") for oid in ids]
         mgr = UndoManager.instance()
         if mgr:
-            cmd = commands[0] if len(commands) == 1 else CompoundCommand(commands, "Delete GameObjects")
-            mgr.execute(cmd)
+            mgr.execute(DeleteGameObjectsCommand(ids))
         else:
             for oid in ids:
                 obj = scene.find_by_id(oid)
@@ -273,24 +271,18 @@ def _wire_drop_and_delete(ctx):
 
     def _delete_selected_objects():
         from Infernux.lib import SceneManager
-        from Infernux.engine.ui.scene_delete_confirmation import SceneDeleteConfirmationCoordinator
 
         scene = SceneManager.instance().get_active_scene()
         ids = list(sel.get_ids())
         if scene is None or not ids:
             return
-        names = []
         valid_ids = []
         for object_id in ids:
             obj = scene.find_by_id(object_id)
             if obj is not None:
-                names.append(str(getattr(obj, "name", "") or ""))
                 valid_ids.append(object_id)
         if valid_ids:
-            SceneDeleteConfirmationCoordinator.instance().request(
-                names,
-                lambda selected_ids=tuple(valid_ids): _delete_selected_objects_impl(list(selected_ids)),
-            )
+            _delete_selected_objects_impl(valid_ids)
 
     hp.delete_selected_objects = _delete_selected_objects
 

@@ -16,7 +16,7 @@ import json
 import threading
 import time
 import zlib
-from Infernux.engine.path_utils import path_key, resolved_path
+from Infernux.engine.path_utils import path_key, resolved_path, same_path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -131,9 +131,20 @@ class AnimClip2DEditorPanel(EditorPanel):
         return (1080, 760)
 
     def on_enable(self):
-        pass
+        from .event_bus import EditorEvent, EditorEventBus
+
+        EditorEventBus.instance().subscribe(
+            EditorEvent.ASSET_CHANGED,
+            self._on_asset_changed,
+        )
 
     def on_disable(self):
+        from .event_bus import EditorEvent, EditorEventBus
+
+        EditorEventBus.instance().unsubscribe(
+            EditorEvent.ASSET_CHANGED,
+            self._on_asset_changed,
+        )
         self._cleanup_texture()
         try:
             from Infernux.engine.project_context import set_panel_dirty
@@ -141,6 +152,46 @@ class AnimClip2DEditorPanel(EditorPanel):
             set_panel_dirty(self.window_id, False)
         except Exception:
             pass
+
+    def _on_asset_changed(self, file_path: str, event_type: str = "modified") -> None:
+        """Publish texture import changes into the open editor immediately."""
+        tex = self._tex
+        if tex is None or not same_path(file_path, tex.file_path):
+            return
+        if event_type == "deleted":
+            self._cleanup_texture()
+            self._tex = None
+            return
+
+        filter_tag, srgb_tag, _, _ = self._read_texture_sampling(tex.file_path)
+        frames = self._read_sprite_frames(tex.file_path)
+        source_w, source_h = self._read_source_dimensions(tex.file_path, frames)
+        if not frames and source_w > 0 and source_h > 0:
+            from Infernux.core.asset_types import SpriteFrame
+
+            frames = [SpriteFrame(
+                name="frame_0",
+                x=0,
+                y=0,
+                w=source_w,
+                h=source_h,
+            )]
+
+        tex.frames = frames
+        if source_w > 0:
+            tex.tex_w = source_w
+        if source_h > 0:
+            tex.tex_h = source_h
+        tex.filter_tag = filter_tag
+        tex.srgb_tag = srgb_tag
+        tex.resource_key = (
+            f"animclip_editor|{srgb_tag}_{filter_tag}|{resolved_path(tex.file_path)}"
+        )
+        tex.stamp = self._build_texture_stamp(
+            tex.file_path,
+            filter_tag,
+            srgb_tag,
+        )
 
     def _window_title_suffix(self) -> str:
         self._recompute_dirty()

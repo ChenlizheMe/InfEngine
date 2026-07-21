@@ -449,6 +449,8 @@ def _load_strict_meta_root(meta_path: str) -> Dict[str, Any]:
         value = entry["value"]
         if type(tag) is not str:
             raise TypeError(f"metadata type tag must be a string: {key}")
+        if key == "sprite_frames" and tag != "json_array":
+            raise TypeError("metadata sprite_frames must use json_array")
         valid = (
             (tag == "string" and type(value) is str)
             or (tag == "int" and type(value) is int)

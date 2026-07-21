@@ -38,6 +38,7 @@ from Infernux.engine.undo._property_commands import (
 from Infernux.engine.undo._structural_commands import (
     CreateGameObjectCommand,
     DeleteGameObjectCommand,
+    DeleteGameObjectsCommand,
     ReparentCommand,
     MoveGameObjectCommand,
     SelectionCommand,
@@ -109,7 +110,7 @@ __all__ = [
     "UndoCommand", "CompoundCommand", "LambdaCommand",
     "SetPropertyCommand", "BuiltinPropertyCommand",
     "GenericComponentCommand", "PythonComponentDocumentCommand", "MaterialDocumentCommand", "ResourceDocumentCommand", "SetMaterialSlotCommand",
-    "CreateGameObjectCommand", "DeleteGameObjectCommand",
+    "CreateGameObjectCommand", "DeleteGameObjectCommand", "DeleteGameObjectsCommand",
     "ReparentCommand", "MoveGameObjectCommand",
     "SelectionCommand", "EditorSelectionCommand", "PrefabModeCommand", "PrefabUnpackCommand",
     "PrefabRevertCommand",

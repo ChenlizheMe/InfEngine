@@ -185,6 +185,17 @@ class DeleteGameObjectCommand(UndoCommand):
     def redo(self) -> None: ...
 
 
+class DeleteGameObjectsCommand(UndoCommand):
+    """Records an atomic multi-selection hierarchy deletion."""
+
+    _selection_restore_fn: Optional[Callable[[list[int]], None]]
+
+    def __init__(self, object_ids: list[int], description: str = "Delete GameObjects") -> None: ...
+    def execute(self) -> None: ...
+    def undo(self) -> None: ...
+    def redo(self) -> None: ...
+
+
 class ReparentCommand(UndoCommand):
     """Records a parent-change operation on a GameObject."""
 

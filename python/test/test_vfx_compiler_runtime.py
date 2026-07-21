@@ -108,6 +108,32 @@ def test_particle_system_runs_multi_emitter_graph_and_controls_each_emitter(
     component._remove_native_batch()
 
 
+def test_particle_system_editor_preview_reuses_runtime_without_play_mode(
+    scene, engine, monkeypatch
+):
+    component = ParticleSystem()
+    component.graph = ParticleGraphAsset(stable_id="editor-preview")
+    game_object = scene.create_game_object("ParticlePreviewProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    assert component.editor_preview_begin() is True
+    assert component._editor_preview_active is True
+    assert component.editor_preview_update(0.25, 0.5) is True
+
+    step = component._runtimes[0].simulation_step
+    assert component.editor_preview_pause() is True
+    component.editor_preview_update(0.25)
+    assert component._runtimes[0].simulation_step == step
+
+    assert component.editor_preview_play() is True
+    assert component.editor_preview_stop() is True
+    assert component._runtimes[0].particle_count == 0
+    component.editor_preview_end()
+    assert component._editor_preview_active is False
+    component._remove_native_batch()
+
+
 class _MixedParticleNative:
     def __init__(self):
         self.program_batches = []

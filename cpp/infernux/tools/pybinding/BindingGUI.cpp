@@ -520,7 +520,10 @@ void RegisterGUIBindings(py::module_ &m)
         .def("is_item_clicked", &InxGUIContext::IsItemClicked, py::arg("mouse_button") = 0)
         .def("begin_tab_bar", &InxGUIContext::BeginTabBar)
         .def("end_tab_bar", &InxGUIContext::EndTabBar)
-        .def("begin_tab_item", &InxGUIContext::BeginTabItem)
+        .def(
+            "begin_tab_item",
+            [](InxGUIContext &context, const std::string &label) { return context.BeginTabItem(label, nullptr); },
+            py::arg("label"))
         .def("end_tab_item", &InxGUIContext::EndTabItem)
         .def("begin_main_menu_bar", &InxGUIContext::BeginMainMenuBar)
         .def("end_main_menu_bar", &InxGUIContext::EndMainMenuBar)

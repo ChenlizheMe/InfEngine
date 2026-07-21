@@ -287,7 +287,6 @@ from pathlib import Path
 import Infernux.lib as native
 from Infernux.engine.ui import project_file_ops
 from Infernux.engine.ui.project_delete_confirmation import ProjectDeleteConfirmationCoordinator
-from Infernux.engine.ui.scene_delete_confirmation import SceneDeleteConfirmationCoordinator
 
 
 class _ProjectDeleteSemanticContext:
@@ -389,28 +388,6 @@ def test_project_delete_modal_confirms_deduplicated_existing_paths(tmp_path):
     assert ctx.closed is True
 
 
-def test_scene_delete_modal_uses_shared_centered_framework_and_defers_delete():
-    deleted: list[str] = []
-    coordinator = SceneDeleteConfirmationCoordinator()
-
-    assert coordinator.request(["Player"], lambda: deleted.append("Player"))
-    assert deleted == []
-    ctx = _ProjectDeleteSemanticContext()
-    coordinator.render(ctx)
-
-    assert ctx.opened[0].endswith("###scene_delete_confirm")
-    assert {
-        "hierarchy.delete.dialog",
-        "hierarchy.delete.confirm",
-        "hierarchy.delete.cancel",
-    }.issubset(ctx.semantics)
-    assert deleted == []
-    next(callback for label, callback in ctx.buttons.items() if label.endswith("##confirm"))()
-    assert deleted == ["Player"]
-    assert coordinator.is_active is False
-    assert ctx.closed is True
-
-
 def test_prefab_asset_detach_marks_scene_dirty(monkeypatch, tmp_path):
     prefab = tmp_path / "Checkpoint.prefab"
     prefab.write_text("prefab", encoding="utf-8")
@@ -471,3 +448,57 @@ def test_project_delete_uses_editor_modal_not_platform_message_box():
     assert "ProjectDeleteConfirmationCoordinator" in source
     assert "MessageBoxW" not in source
     assert "ctypes.windll" not in source
+
+
+def test_project_script_delete_uses_meta_guid_when_database_path_lookup_misses(monkeypatch, tmp_path):
+    script = tmp_path / "Attached.py"
+    script.write_text("class Attached:\n    pass\n", encoding="utf-8")
+    script.with_suffix(".py.meta").write_text(
+        '{"metadata":{"guid":{"type":"string","value":"attached-guid"}}}',
+        encoding="utf-8",
+    )
+
+    class _Database:
+        @staticmethod
+        def get_guid_from_path(_path):
+            return ""
+
+    from Infernux.core.assets import AssetManager
+
+    delete_calls = []
+
+    monkeypatch.setattr(
+        AssetManager,
+        "delete_asset",
+        classmethod(
+            lambda _cls, path, **kwargs: delete_calls.append((path, kwargs)) or True
+        ),
+    )
+
+    assert project_file_ops.delete_item(str(script), _Database()) is True
+    assert not script.exists()
+    assert len(delete_calls) == 1
+    deleted_path, delete_kwargs = delete_calls[0]
+    assert deleted_path == str(script)
+    assert isinstance(delete_kwargs["database"], _Database)
+    assert delete_kwargs["guid_hint"] == "attached-guid"
+
+
+def test_project_script_rename_maps_snake_case_stem_to_pascal_class(tmp_path):
+    old_path = tmp_path / "regression_probe.py"
+    new_path = tmp_path / "regression_probe_renamed.py"
+    old_path.write_text(
+        "from Infernux.components import InxComponent\n"
+        "class RegressionProbe(InxComponent):\n"
+        "    report_after_seconds: float = 2.0\n",
+        encoding="utf-8",
+    )
+
+    project_file_ops._sync_python_script_class_name_on_rename(
+        str(old_path),
+        str(new_path),
+    )
+
+    content = old_path.read_text(encoding="utf-8")
+    assert "class RegressionProbeRenamed(InxComponent):" in content
+    assert "class RegressionProbe(InxComponent):" not in content

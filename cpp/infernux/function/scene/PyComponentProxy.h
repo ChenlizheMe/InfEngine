@@ -21,7 +21,9 @@ struct CollisionInfo;
  * calls to the corresponding Python methods.
  *
  * Ownership: The PyComponentProxy owns a reference to the Python object.
- * When the proxy is destroyed, the Python object's on_destroy is called.
+ * GameObject invokes on_destroy for actual
+ * component destruction; replacing a
+ * proxy during script reload deliberately skips that user lifecycle callback.
  */
 class PyComponentProxy : public Component
 {
@@ -150,6 +152,10 @@ class PyComponentProxy : public Component
     {
         return m_updateForwardCount;
     }
+
+    /// Bind a newly published Python mirror and copy the preserved native
+    /// lifecycle state into it without invoking user lifecycle methods.
+    void RebindPythonMirror();
 
     // ========================================================================
     // Serialization

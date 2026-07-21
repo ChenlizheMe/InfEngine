@@ -119,12 +119,18 @@ class ComponentLifecycleMixin:
         self._cpp_component = None
         self._game_object = None
         self._game_object_ref = None
-        # Release C++ ComponentDataStore slot
+        self._release_component_data_slot()
+
+    def _release_component_data_slot(self):
+        """Relinquish the numeric-field slot exactly once."""
         cds_slot = getattr(self, '_cds_slot', None)
-        if cds_slot is not None:
-            from ._cds_bridge import release_slot as _cds_free
-            _cds_free(self.__class__, cds_slot)
-            self._cds_slot = None
+        cds_class_id = getattr(self, '_cds_class_id', None)
+        self._cds_slot = None
+        self._cds_class_id = None
+        if cds_slot is None or cds_class_id is None:
+            return
+        from ._cds_bridge import release_slot as _cds_free
+        _cds_free(self.__class__, cds_slot, cds_class_id)
 
     def _call_on_enable(self):
         """Internal: Trigger on_enable lifecycle."""

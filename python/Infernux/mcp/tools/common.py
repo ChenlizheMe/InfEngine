@@ -798,6 +798,9 @@ def serialize_component(comp) -> dict[str, Any]:
     script_guid = getattr(comp, "_script_guid", "") if is_python_component else ""
     if script_guid:
         data["script_guid"] = script_guid
+    if bool(getattr(comp, "_is_broken", False)):
+        data["broken_script"] = True
+        data["broken_error"] = str(getattr(comp, "_broken_error", "") or "Script failed to load")
     return data
 
 

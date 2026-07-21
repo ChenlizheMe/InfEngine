@@ -89,6 +89,7 @@ GenericComponentCommand = _undo_mod.GenericComponentCommand
 BuiltinPropertyCommand = _undo_mod.BuiltinPropertyCommand
 CreateGameObjectCommand = _undo_mod.CreateGameObjectCommand
 DeleteGameObjectCommand = _undo_mod.DeleteGameObjectCommand
+DeleteGameObjectsCommand = _undo_mod.DeleteGameObjectsCommand
 ReparentCommand = _undo_mod.ReparentCommand
 MoveGameObjectCommand = _undo_mod.MoveGameObjectCommand
 MaterialDocumentCommand = _undo_mod.MaterialDocumentCommand
@@ -1413,6 +1414,69 @@ class TestDeleteCommandSelectionRestore:
             assert restored == []
         finally:
             DeleteGameObjectCommand._selection_restore_fn = old_fn
+
+
+class TestDeleteGameObjectsCommand:
+    class _Transform:
+        def __init__(self, sibling_index):
+            self._sibling_index = sibling_index
+
+        def get_sibling_index(self):
+            return self._sibling_index
+
+    class _Object:
+        def __init__(self, object_id, sibling_index, parent=None):
+            self.id = object_id
+            self.transform = TestDeleteGameObjectsCommand._Transform(sibling_index)
+            self._parent = parent
+
+        def get_parent(self):
+            return self._parent
+
+    class _Scene:
+        def __init__(self, objects):
+            self.objects = {obj.id: obj for obj in objects}
+
+        def find_by_id(self, object_id):
+            return self.objects.get(object_id)
+
+    def test_filters_selected_descendants_and_restores_sibling_order(self, monkeypatch):
+        first = self._Object(10, 0)
+        parent = self._Object(20, 1)
+        child = self._Object(21, 0, parent)
+        scene = self._Scene([first, parent, child])
+        destroyed = []
+        restored = []
+
+        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        monkeypatch.setattr(_structural_mod, "_get_current_selection_ids", lambda: [20, 21, 10])
+        monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda obj: {"id": obj.id})
+        monkeypatch.setattr(
+            _structural_mod,
+            "_destroy_game_object_immediately",
+            lambda _scene, obj: destroyed.append(obj.id),
+        )
+        monkeypatch.setattr(_structural_mod, "_bump_inspector_structure", lambda: None)
+        monkeypatch.setattr(_structural_mod, "_notify_gizmos_scene_changed", lambda: None)
+
+        old_fn = DeleteGameObjectsCommand._selection_restore_fn
+        DeleteGameObjectsCommand._selection_restore_fn = lambda ids: restored.append(list(ids))
+        try:
+            command = DeleteGameObjectsCommand([20, 21, 10])
+            assert [entry["object_id"] for entry in command._entries] == [20, 10]
+
+            command.execute()
+            assert destroyed == [20, 10]
+
+            with _override_recreate_game_object(
+                lambda document, parent_id, sibling_index: restored.append(
+                    (document["id"], parent_id, sibling_index)
+                )
+            ):
+                command.undo()
+            assert restored == [(10, None, 0), (20, None, 1), [20, 21, 10]]
+        finally:
+            DeleteGameObjectsCommand._selection_restore_fn = old_fn
 
 
 class TestCreateCommandSelectionRestore:

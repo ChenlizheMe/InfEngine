@@ -33,14 +33,21 @@ class PlayModeSerializationMixin:
         Uses the component's ``_serialize_value`` so that ref wrappers
         (GameObjectRef, MaterialRef) are converted to JSON-safe dicts.
         """
-        from Infernux.components.serialized_field import get_serialized_fields
+        from Infernux.components.missing_script import MissingScript
+        from Infernux.components.serialized_field import get_raw_field_value, get_serialized_fields
 
-        from Infernux.components.serialized_field import get_raw_field_value
-        fields = get_serialized_fields(component.__class__)
-        data = {}
-        for name, meta in fields.items():
-            raw = get_raw_field_value(component, name)
-            data[name] = component._serialize_value(raw)
+        if isinstance(component, MissingScript):
+            preserved = component._serialize_fields_document()
+            data = {
+                name: value for name, value in preserved.items()
+                if name not in {"__type_name__", "__component_id__"}
+            }
+        else:
+            fields = get_serialized_fields(component.__class__)
+            data = {}
+            for name, meta in fields.items():
+                raw = get_raw_field_value(component, name)
+                data[name] = component._serialize_value(raw)
 
         script_guid = getattr(component, "_script_guid", None)
         type_guid = component.__class__._get_type_guid()
@@ -49,6 +56,9 @@ class PlayModeSerializationMixin:
             "type_name": getattr(component, "type_name", component.__class__.__name__),
             "script_guid": script_guid,
             "type_guid": type_guid,
+            "component_id": int(getattr(component, "component_id", 0) or 0),
+            "module_name": component.__class__.__module__,
+            "qualified_name": component.__class__.__qualname__,
             "enabled": getattr(component, "enabled", True),
             "fields": data,
         }
@@ -68,6 +78,13 @@ class PlayModeSerializationMixin:
             raise ValueError("Play Mode component script GUID changed during state restore")
         # type_guid may change after a class rename; script GUID is authoritative.
         component.enabled = bool(state.get("enabled", True))
+        component_id = state.get("component_id")
+        if type(component_id) is int and component_id > 0:
+            component._component_id = component_id
+            from Infernux.components.component import InxComponent
+            with InxComponent._id_lock:
+                if InxComponent._next_component_id <= component_id:
+                    InxComponent._next_component_id = component_id + 1
 
         fields = state.get("fields", {})
         

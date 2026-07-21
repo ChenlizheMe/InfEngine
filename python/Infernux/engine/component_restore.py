@@ -341,7 +341,10 @@ def _prepare_python_component_records(
                     error=f"Missing script '{type_name}': {detail}",
                 )
                 from Infernux.debug import Debug
-                Debug.log_error(instance._broken_error)
+                if construct_error:
+                    Debug.log_error(instance._broken_error)
+                else:
+                    Debug.log_internal(instance._broken_error)
             instance_type = type(instance)
             is_broken = bool(getattr(instance, "_is_broken", False))
             # Script file renames change the import module path. Class renames
@@ -1177,15 +1180,20 @@ def create_component_instance(
 
     instance = None
     loaded_from_asset = False
-    if prefer_loaded_type:
-        from Infernux.components.registry import get_type_by_identity
-
-        component_type = get_type_by_identity(type_name, script_guid, type_guid)
+    asset_exists = bool(script_path and os.path.exists(script_path))
+    from Infernux.components.registry import get_type_by_identity
+    registered_type = get_type_by_identity(type_name, script_guid, type_guid)
+    registered_is_builtin = bool(
+        registered_type is not None
+        and not str(getattr(registered_type, "_asset_script_guid_", "") or "").strip()
+    )
+    if prefer_loaded_type and registered_type is not None and (asset_exists or registered_is_builtin):
+        component_type = registered_type
         if component_type is not None:
             instance = component_type()
             instance._script_guid = script_guid
             return instance, script_path
-    if script_path and os.path.exists(script_path):
+    if asset_exists:
         loaded_from_asset = True
         if asset_database is not None:
             from Infernux.components.script_loader import load_and_create_component
@@ -1207,9 +1215,8 @@ def create_component_instance(
                 instance = construct_component(component_type)
         if instance is not None:
             instance._script_guid = script_guid
-    else:
-        from Infernux.components.registry import get_type_by_identity
-        comp_class = get_type_by_identity(type_name, script_guid, type_guid)
+    elif asset_database is None or registered_is_builtin:
+        comp_class = registered_type
         if comp_class:
             instance = comp_class()
             instance._script_guid = script_guid

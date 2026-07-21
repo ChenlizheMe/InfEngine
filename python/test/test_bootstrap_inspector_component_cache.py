@@ -93,3 +93,54 @@ def test_invalidated_builtin_wrapper_is_rebound_from_live_object(monkeypatch):
     assert isinstance(rebound, _CacheProbeBuiltin)
     assert rebound is not first
     assert rebound._get_bound_native_component() is raw
+
+
+def test_python_script_error_lookup_runs_only_when_diagnostics_change(monkeypatch, tmp_path):
+    class _RawPythonComponent:
+        type_name = "CacheProbeScript"
+        component_id = 73
+        enabled = True
+
+        def get_py_component(self):
+            return self
+
+    component = _RawPythonComponent()
+    game_object = _GameObject(component)
+    scene = _Scene(game_object)
+    _SceneManager.current = _SceneManagerInstance(scene)
+
+    lookups = []
+    monkeypatch.setattr(
+        "Infernux.engine.bootstrap_inspector._helpers._get_component_script_error",
+        lambda comp, _database: lookups.append(comp) or None,
+    )
+
+    ctx = SimpleNamespace(
+        SceneManager=_SceneManager,
+        InspectorComponentInfo=_InspectorComponentInfo,
+        InxComponent=__import__(
+            "Infernux.components.component", fromlist=["InxComponent"]
+        ).InxComponent,
+        _inspector_support=SimpleNamespace(
+            get_component_structure_version=lambda: 1,
+        ),
+        get_component_icon_id=lambda *_args: 0,
+        engine=SimpleNamespace(get_asset_database=lambda: None),
+        ip=SimpleNamespace(),
+    )
+    _wire_cache_init(ctx)
+    _wire_component_list(ctx)
+
+    ctx.ip.get_component_list(game_object.id)
+    ctx.ip.get_component_list(game_object.id)
+    assert lookups == [component]
+
+    from Infernux.components.script_loader import _clear_script_error, set_script_error
+
+    changed_script = tmp_path / "changed.py"
+    set_script_error(str(changed_script), "syntax error")
+    try:
+        ctx.ip.get_component_list(game_object.id)
+        assert lookups == [component, component]
+    finally:
+        _clear_script_error(str(changed_script))

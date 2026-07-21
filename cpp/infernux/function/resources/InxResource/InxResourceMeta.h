@@ -36,6 +36,11 @@ class InxResourceMeta
     // Metadata operations
     void AddMetadata(const std::string &key, const std::any &value);
 
+    /// Copy one metadata entry without changing its persisted type tag.
+    /// Returns false when the source has no such key or this instance already
+    /// contains it.
+    bool CopyMetadataIfMissing(const InxResourceMeta &source, const std::string &key);
+
     /// @brief Get metadata value with type registry
     /// @tparam T The type to retrieve
     /// @param key type key to retrieve the value for

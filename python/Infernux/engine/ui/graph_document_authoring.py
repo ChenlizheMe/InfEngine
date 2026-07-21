@@ -8,6 +8,7 @@ adapter is the single conversion boundary used by modern graph editors.
 from __future__ import annotations
 
 import copy
+import uuid
 from collections.abc import Callable, Iterable
 
 from Infernux.core.node_graph import (
@@ -78,13 +79,21 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
             )
         )
     is_root = definition.type_id.startswith("particle.root.")
+    is_particle = definition.type_id.startswith(("particle.", "common."))
     return NodeTypeDef(
         type_id=definition.type_id,
         label=definition.display_name,
         header_color=(0.22, 0.46, 0.38, 1.0) if is_root else (0.28, 0.31, 0.36, 1.0),
         pins=pins,
-        min_width=168.0 if definition.properties else 150.0,
+        min_width=(196.0 if is_root else 178.0) if is_particle else (168.0 if definition.properties else 150.0),
         deletable=not is_root,
+        visual_style="context" if is_root else ("graph" if is_particle else "default"),
+        category_label=(
+            "CONTEXT"
+            if is_root
+            else ("MATH" if definition.type_id.startswith("common.") else "PARTICLE")
+        ),
+        show_header_color_swatch=not is_particle,
     )
 
 
@@ -241,6 +250,230 @@ class GraphDocumentAuthoringModel(NodeGraph):
         return GraphDocument(self._domain, records, tuple(links), self._metadata)
 
 
+class ParticleEmitterGraphAuthoringModel(NodeGraph):
+    """One authoring canvas backed by an emitter's three strict stage documents.
+
+    Stage documents remain the compiler contract.  This adapter namespaces their
+    identities on the mutable canvas, keeps the three context chains independent,
+    and splits them back into strict documents when the editor saves.
+    """
+
+    STAGES = ("init", "update", "rendering")
+    _STAGE_Y = {"init": 0.0, "update": 230.0, "rendering": 460.0}
+    _UID_SEPARATOR = "::"
+
+    def __init__(
+        self,
+        emitter,
+        *,
+        registry: NodeDefinitionRegistry = COMMON_NODE_REGISTRY,
+    ) -> None:
+        super().__init__(graph_kind="particle.emitter")
+        self._definitions = registry
+        self._documents = {stage: getattr(emitter, stage) for stage in self.STAGES}
+        self._creatable_type_ids: list[str] = []
+        self._allowed_stages: dict[str, set[str]] = {}
+        self._authoring_stage = "init"
+
+        for definition in registry.definitions():
+            stages = {
+                stage
+                for stage in self.STAGES
+                if particle_stage_definition_filter(f"particle.{stage}")(definition)
+            }
+            if not stages:
+                continue
+            self.register_type(_canvas_definition(definition))
+            self._allowed_stages[definition.type_id] = stages
+            if not definition.type_id.startswith("particle.root."):
+                self._creatable_type_ids.append(definition.type_id)
+
+        for stage in self.STAGES:
+            document = self._documents[stage]
+            y_offset = self._STAGE_Y[stage]
+            for record in document.nodes:
+                if self.get_type(record.type_id) is None:
+                    definition = registry.get(record.type_id)
+                    if definition is not None:
+                        self.register_type(_canvas_definition(definition))
+                super().add_node(
+                    record.type_id,
+                    record.position[0],
+                    record.position[1] + y_offset,
+                    uid=self._canvas_uid(stage, record.uid),
+                    **copy.deepcopy(dict(record.properties)),
+                )
+            for record in document.links:
+                self.links.append(
+                    self._make_link(
+                        self._canvas_uid(stage, record.source_node),
+                        record.source_port,
+                        self._canvas_uid(stage, record.target_node),
+                        record.target_port,
+                        self._canvas_uid(stage, record.uid),
+                    )
+                )
+
+    @staticmethod
+    def _make_link(source_node, source_pin, target_node, target_pin, uid):
+        return GraphDocumentAuthoringModel._make_link(
+            source_node, source_pin, target_node, target_pin, uid
+        )
+
+    @classmethod
+    def _canvas_uid(cls, stage: str, uid: str) -> str:
+        return f"{stage}{cls._UID_SEPARATOR}{uid}"
+
+    @classmethod
+    def _document_uid(cls, uid: str) -> str:
+        return uid.split(cls._UID_SEPARATOR, 1)[1]
+
+    @classmethod
+    def stage_for_uid(cls, uid: str) -> str:
+        stage = str(uid).split(cls._UID_SEPARATOR, 1)[0]
+        return stage if stage in cls.STAGES else ""
+
+    @property
+    def authoring_stage(self) -> str:
+        return self._authoring_stage
+
+    def set_authoring_stage(self, stage: str) -> None:
+        if stage in self.STAGES:
+            self._authoring_stage = stage
+
+    def registered_types(self) -> list[NodeTypeDef]:
+        return [
+            definition
+            for type_id in self._creatable_type_ids
+            if (definition := self.get_type(type_id)) is not None
+        ]
+
+    def _stage_for_new_node(self, type_id: str, y: float) -> str:
+        allowed = self._allowed_stages.get(type_id, set())
+        if len(allowed) == 1:
+            return next(iter(allowed))
+        if self._authoring_stage in allowed:
+            selected_y = self._STAGE_Y[self._authoring_stage]
+            nearest = min(allowed, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
+            if abs(float(y) - self._STAGE_Y[nearest]) + 40.0 < abs(float(y) - selected_y):
+                return nearest
+            return self._authoring_stage
+        return min(allowed, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
+
+    def add_node(self, type_id: str, x=0.0, y=0.0, uid=None, **data):
+        if type_id not in self._creatable_type_ids:
+            raise ValueError(f"node type {type_id!r} cannot be created in a particle emitter")
+        definition = self._definitions.get(type_id)
+        if definition is None:
+            raise ValueError(f"unknown graph node type {type_id!r}")
+        stage = self._stage_for_new_node(type_id, float(y))
+        properties = {
+            item.id: copy.deepcopy(item.default) for item in definition.properties
+        }
+        properties.update(data)
+        raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
+        canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
+        node = super().add_node(type_id, x, y, uid=canvas_uid, **properties)
+        self._authoring_stage = stage
+        return node
+
+    def remove_node(self, uid: str) -> bool:
+        node = self.find_node(uid)
+        definition = self.get_type(node.type_id) if node is not None else None
+        if definition is not None and not definition.deletable:
+            return False
+        return super().remove_node(uid)
+
+    def validate_link(
+        self,
+        src_node: str,
+        src_pin: str,
+        dst_node: str,
+        dst_pin: str,
+        *,
+        ignore_link_uid: str = "",
+    ) -> LinkValidationResult:
+        source_stage = self.stage_for_uid(src_node)
+        target_stage = self.stage_for_uid(dst_node)
+        if not source_stage or source_stage != target_stage:
+            return LinkValidationResult(
+                False, "cross_stage", "Particle stage chains cannot be connected"
+            )
+        basic = super().validate_link(
+            src_node,
+            src_pin,
+            dst_node,
+            dst_pin,
+            ignore_link_uid=ignore_link_uid,
+        )
+        if not basic:
+            return basic
+        source = self.find_node(src_node)
+        target = self.find_node(dst_node)
+        source_def = self._definitions.get(source.type_id) if source else None
+        target_def = self._definitions.get(target.type_id) if target else None
+        source_port = source_def.port(src_pin) if source_def else None
+        target_port = target_def.port(dst_pin) if target_def else None
+        if source_port is None or target_port is None:
+            return LinkValidationResult(False, "missing_port", "Link endpoint port does not exist")
+        if source_port.kind is not target_port.kind:
+            return LinkValidationResult(False, "kind_mismatch", "Graph port kinds do not match")
+        if (
+            source_port.kind is PortKind.VALUE
+            and source_port.value_type is not None
+            and target_port.value_type is not None
+            and not PORTABLE_TYPE_SYSTEM.can_connect(source_port.value_type, target_port.value_type)
+        ):
+            return LinkValidationResult(False, "type_mismatch", "Graph value types do not match")
+        return LinkValidationResult(True)
+
+    def add_link(self, src_node, src_pin, dst_node, dst_pin, uid=None, **data):
+        stage = self.stage_for_uid(src_node)
+        raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
+        canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
+        return super().add_link(
+            src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
+        )
+
+    def to_documents(self) -> dict[str, GraphDocument]:
+        result = {}
+        for stage in self.STAGES:
+            nodes = tuple(
+                GraphNodeRecord(
+                    self._document_uid(node.uid),
+                    node.type_id,
+                    (node.pos_x, node.pos_y - self._STAGE_Y[stage]),
+                    copy.deepcopy(node.data),
+                )
+                for node in self.nodes
+                if self.stage_for_uid(node.uid) == stage
+            )
+            links = []
+            for link in self.links:
+                if self.stage_for_uid(link.uid) != stage:
+                    continue
+                source = self.find_node(link.source_node)
+                definition = self._definitions.get(source.type_id) if source else None
+                port = definition.port(link.source_pin) if definition else None
+                if port is None:
+                    raise ValueError(f"link {link.uid!r} has an unknown source port")
+                links.append(
+                    GraphLinkRecord(
+                        self._document_uid(link.uid),
+                        self._document_uid(link.source_node),
+                        link.source_pin,
+                        self._document_uid(link.target_node),
+                        link.target_pin,
+                        port.kind,
+                    )
+                )
+            original = self._documents[stage]
+            result[stage] = GraphDocument(
+                original.domain, nodes, tuple(links), copy.deepcopy(dict(original.metadata))
+            )
+        return result
+
+
 def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
     """Return the common/particle node palette allowed in one particle stage."""
 
@@ -259,4 +492,8 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
     return _accept
 
 
-__all__ = ["GraphDocumentAuthoringModel", "particle_stage_definition_filter"]
+__all__ = [
+    "GraphDocumentAuthoringModel",
+    "ParticleEmitterGraphAuthoringModel",
+    "particle_stage_definition_filter",
+]

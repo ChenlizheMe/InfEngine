@@ -545,15 +545,28 @@ class AssetManager:
             cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
         cls._emit_editor_asset_changed(new_path, "moved")
+        if suppress_watcher_echo and new_path.lower().endswith(".py"):
+            from Infernux.engine.resources_manager import ResourcesManager
+
+            resources = ResourcesManager.instance()
+            if resources is not None:
+                resources.reload_moved_script(old_path, new_path)
         return result
 
     @classmethod
-    def delete_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
+    def delete_asset(
+        cls,
+        path: str,
+        *,
+        database=None,
+        suppress_watcher_echo: bool = True,
+        guid_hint: str = "",
+    ):
         """Evict loaded state before deleting the database record and metadata."""
         from Infernux.core.asset_types import MATERIAL_EXTENSIONS
 
         asset_database = cls._mutation_database(database)
-        guid = asset_database.get_guid_from_path(path)
+        guid = asset_database.get_guid_from_path(path) or str(guid_hint or "").strip()
         registry = cls._get_registry()
         if registry and guid:
             registry.remove_asset(guid)
@@ -574,6 +587,12 @@ class AssetManager:
         result = asset_database.delete_asset(path)
         if not result:
             return result
+        if ext == ".py" and guid:
+            from Infernux.engine.play_mode import PlayModeManager
+
+            play_mode = PlayModeManager.instance()
+            if play_mode is not None:
+                play_mode.mark_components_missing_for_script(guid, path)
         cls._clear_deleted_live_references(guid, path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("deleted", path)

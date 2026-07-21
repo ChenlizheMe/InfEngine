@@ -289,6 +289,13 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         # every frame when the mouse hasn't moved.
         self._hover_pick_cache_pos: tuple[float, float] = (-1.0, -1.0)
         self._hover_pick_cache_result: int = 0
+
+        # Edit-mode ParticleSystem preview follows the primary scene selection.
+        self._particle_preview_component = None
+        self._particle_preview_object = None
+        self._particle_preview_speed = 1.0
+        self._particle_preview_playing = False
+        self._particle_preview_prepared = False
     
     def set_engine(self, engine):
         """Set the engine reference for camera control."""
@@ -350,9 +357,17 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._last_frame_time = 0.0
         self._hover_pick_cache_pos = (-1.0, -1.0)
         self._hover_pick_cache_result = 0
+        from .event_bus import EditorEvent
+
+        self.events.subscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        self._restore_particle_preview_selection()
 
     def on_disable(self):
         """Panel closed — shrink render target to save GPU memory."""
+        from .event_bus import EditorEvent
+
+        self.events.unsubscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        self._release_particle_preview_selection()
         self._end_camera_capture(restore_cursor=False)
         self._force_camera_input_release()
         if self._engine:
@@ -452,7 +467,14 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             is_scene_hovered = vp.is_hovered
 
             overlay_hovered = self._render_overlays_and_shortcuts(
-                ctx, vp, cursor_start_x, cursor_start_y, scene_width, delta_time)
+                ctx,
+                vp,
+                cursor_start_x,
+                cursor_start_y,
+                scene_width,
+                scene_height,
+                delta_time,
+            )
 
             gizmo_consumed = self._process_gizmo_and_camera(
                 ctx, vp, delta_time, is_scene_hovered, overlay_hovered)

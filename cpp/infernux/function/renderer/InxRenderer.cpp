@@ -781,7 +781,7 @@ void InxRenderer::DrawFrame()
     if (m_view->IsMinimized()) {
         if (!m_guiPlayerMode && InxGUISemantics::HasPendingCaptureRequest()) {
             const auto guiBuildStart = std::chrono::high_resolution_clock::now();
-            m_gui->BuildFrame();
+            (void)m_gui->BuildFrameIfDue(true);
             m_guiBuildMs =
                 std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - guiBuildStart)
                     .count();
@@ -854,10 +854,13 @@ void InxRenderer::DrawFrame()
 #endif
 
     auto _guiBuildStart = std::chrono::high_resolution_clock::now();
-    m_gui->BuildFrame();
+    const bool forceGuiBuild =
+        m_view->NeedsImmediateGuiRefresh() || (!m_guiPlayerMode && InxGUISemantics::HasPendingCaptureRequest());
+    const bool guiBuilt = m_gui->BuildFrameIfDue(forceGuiBuild);
     auto _guiBuildEnd = std::chrono::high_resolution_clock::now();
-    m_guiBuildMs = std::chrono::duration<double, std::milli>(_guiBuildEnd - _guiBuildStart).count();
-    RecordUIPerformanceFrame();
+    m_guiBuildMs = guiBuilt ? std::chrono::duration<double, std::milli>(_guiBuildEnd - _guiBuildStart).count() : 0.0;
+    if (guiBuilt)
+        RecordUIPerformanceFrame();
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [4] after GUI::BuildFrame (ImGui → Python panels)
 #endif

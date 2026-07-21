@@ -36,7 +36,16 @@ from Infernux.lib._Infernux import (
 class SceneViewOverlaysMixin:
     """SceneViewOverlaysMixin method group for SceneViewPanel."""
 
-    def _render_overlays_and_shortcuts(self, ctx, vp, cursor_start_x, cursor_start_y, scene_width, delta_time):
+    def _render_overlays_and_shortcuts(
+        self,
+        ctx,
+        vp,
+        cursor_start_x,
+        cursor_start_y,
+        scene_width,
+        scene_height,
+        delta_time,
+    ):
         """Draw gizmo/pos overlays, prefab banner, and handle tool/camera shortcuts.
 
         Returns True if an overlay element is hovered.
@@ -65,6 +74,14 @@ class SceneViewOverlaysMixin:
             ctx.pop_style_color(3)
 
         self._draw_pos_overlay(ctx, vp)
+        self._tick_particle_preview(delta_time)
+        overlay_hovered = self._draw_particle_preview_overlay(
+            ctx,
+            cursor_start_x,
+            cursor_start_y,
+            scene_width,
+            scene_height,
+        ) or overlay_hovered
 
         # Unity-style tool switching shortcuts (Q/W/E/R)
         if not ctx.want_text_input() and not ctx.is_mouse_button_down(1):
@@ -82,6 +99,164 @@ class SceneViewOverlaysMixin:
                 self._align_object_to_camera()
 
         return overlay_hovered
+
+    @staticmethod
+    def _particle_component_from_object(game_object):
+        if game_object is None or not hasattr(game_object, "get_py_components"):
+            return None
+        from Infernux.components import ParticleSystem
+
+        try:
+            return next(
+                (
+                    component
+                    for component in (game_object.get_py_components() or ())
+                    if isinstance(component, ParticleSystem)
+                ),
+                None,
+            )
+        except (ReferenceError, RuntimeError):
+            return None
+
+    def _is_particle_preview_edit_mode(self) -> bool:
+        manager = self._play_mode_manager
+        if manager is None:
+            from Infernux.engine.play_mode import PlayModeManager
+
+            manager = PlayModeManager.instance()
+        return manager is None or bool(manager.is_edit_mode)
+
+    def _restore_particle_preview_selection(self) -> None:
+        if not self._engine:
+            return
+        try:
+            from Infernux.lib import SceneManager
+
+            object_id = int(self._engine.get_selected_object_id() or 0)
+            scene = SceneManager.instance().get_active_scene()
+            selected = scene.find_by_id(object_id) if scene and object_id else None
+        except (AttributeError, ReferenceError, RuntimeError):
+            selected = None
+        self._on_particle_preview_selection(selected)
+
+    def _on_particle_preview_selection(self, game_object) -> None:
+        component = self._particle_component_from_object(game_object)
+        if component is self._particle_preview_component:
+            return
+        previous = self._particle_preview_component
+        if previous is not None:
+            try:
+                previous.editor_preview_pause()
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+        self._particle_preview_component = component
+        self._particle_preview_object = game_object if component is not None else None
+        self._particle_preview_playing = component is not None
+        self._particle_preview_prepared = False
+        if component is not None and self._is_particle_preview_edit_mode():
+            try:
+                self._particle_preview_prepared = bool(component.editor_preview_begin())
+                self._particle_preview_playing = self._particle_preview_prepared
+            except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+                Debug.log_suppressed("scene_view.particle_preview.select", exc)
+                self._particle_preview_playing = False
+
+    def _release_particle_preview_selection(self) -> None:
+        component = self._particle_preview_component
+        if component is not None:
+            try:
+                component.editor_preview_end()
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+        self._particle_preview_component = None
+        self._particle_preview_object = None
+        self._particle_preview_playing = False
+        self._particle_preview_prepared = False
+
+    def _tick_particle_preview(self, delta_time: float) -> None:
+        component = self._particle_preview_component
+        if component is None:
+            return
+        if not self._is_particle_preview_edit_mode():
+            if self._particle_preview_prepared:
+                try:
+                    component.editor_preview_end()
+                except (AttributeError, ReferenceError, RuntimeError):
+                    pass
+                self._particle_preview_prepared = False
+            return
+        try:
+            if not self._particle_preview_prepared:
+                self._particle_preview_prepared = bool(component.editor_preview_begin())
+                self._particle_preview_playing = self._particle_preview_prepared
+            if self._particle_preview_prepared and self._particle_preview_playing:
+                component.editor_preview_update(delta_time, self._particle_preview_speed)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            Debug.log_suppressed("scene_view.particle_preview.tick", exc)
+            self._particle_preview_prepared = False
+            self._particle_preview_playing = False
+
+    def _draw_particle_preview_overlay(
+        self,
+        ctx: InxGUIContext,
+        cursor_start_x: float,
+        cursor_start_y: float,
+        scene_width: float,
+        scene_height: float,
+    ) -> bool:
+        component = self._particle_preview_component
+        if component is None or not self._is_particle_preview_edit_mode():
+            return False
+
+        width = min(260.0, max(210.0, scene_width - 24.0))
+        height = 76.0
+        ctx.set_cursor_pos_x(cursor_start_x + scene_width - width - 12.0)
+        ctx.set_cursor_pos_y(cursor_start_y + scene_height - height - 12.0)
+        ctx.push_style_color(ImGuiCol.ChildBg, 0.055, 0.063, 0.082, 0.94)
+        ctx.push_style_color(ImGuiCol.Border, 0.28, 0.30, 0.35, 0.95)
+        ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, 6.0)
+        visible = ctx.begin_child("##particle_preview_controls", width, height, True)
+        try:
+            hovered = bool(ctx.is_window_hovered())
+            if not visible:
+                return hovered
+            speed = float(
+                ctx.drag_float(
+                    f"{t('particle_preview.speed')}##particle_preview_speed",
+                    self._particle_preview_speed,
+                    0.05,
+                    0.05,
+                    4.0,
+                )
+            )
+            self._particle_preview_speed = min(4.0, max(0.05, speed))
+            if self._particle_preview_playing:
+                if ctx.button(t("particle_preview.pause"), width=72.0):
+                    try:
+                        component.editor_preview_pause()
+                    finally:
+                        self._particle_preview_playing = False
+            else:
+                if ctx.button(t("particle_preview.play"), width=72.0):
+                    try:
+                        self._particle_preview_prepared = bool(
+                            component.editor_preview_play()
+                        )
+                        self._particle_preview_playing = self._particle_preview_prepared
+                    except (AttributeError, ReferenceError, RuntimeError):
+                        self._particle_preview_prepared = False
+            ctx.same_line(0, 8.0)
+            if ctx.button(t("particle_preview.stop"), width=72.0):
+                try:
+                    component.editor_preview_stop()
+                finally:
+                    self._particle_preview_playing = False
+                    self._particle_preview_prepared = True
+            return hovered or bool(ctx.is_item_hovered())
+        finally:
+            ctx.end_child()
+            ctx.pop_style_var()
+            ctx.pop_style_color(2)
 
     def _draw_gizmo_overlay(self, ctx: InxGUIContext) -> bool:
         """Draw the top-left gizmo controls and return whether they are hovered."""

@@ -171,8 +171,8 @@ class BootstrapWiringMixin:
         mb.is_preferences_open = lambda: self._preferences.is_open
         mb.is_physics_layer_matrix_open = lambda: self._physics_layer_matrix.is_open
 
-        # Register a secondary renderable that draws the floating sub-panels
-        # and save-confirmation popup after the menu bar.
+        # Register a secondary renderable that draws floating sub-panels and
+        # asset/document confirmations after the menu bar.
         from Infernux.lib import InxGUIRenderable, InxGUIContext
         _bs = self._build_settings
         _pref = self._preferences
@@ -184,12 +184,8 @@ class BootstrapWiringMixin:
         from Infernux.engine.ui.project_delete_confirmation import (
             ProjectDeleteConfirmationCoordinator,
         )
-        from Infernux.engine.ui.scene_delete_confirmation import (
-            SceneDeleteConfirmationCoordinator,
-        )
         _dirty_panels = DirtyPanelConfirmationCoordinator.instance()
         _project_delete = ProjectDeleteConfirmationCoordinator.instance()
-        _scene_delete = SceneDeleteConfirmationCoordinator.instance()
 
         class _MenuBarFloatingPanels(InxGUIRenderable):
             def on_render(self, ctx: InxGUIContext):
@@ -198,7 +194,6 @@ class BootstrapWiringMixin:
                 _plm.render(ctx)
                 _dirty_panels.render(ctx)
                 _project_delete.render(ctx)
-                _scene_delete.render(ctx)
                 if _sfm:
                     _sfm.render_confirmation_popup(ctx)
                     _sfm.render_save_as_popup(ctx)

@@ -2258,12 +2258,11 @@ std::string AssetDatabase::RebuildMetadata(const std::string &path, bool persist
 
     if (fs::exists(fsMetaPath) && meta.GetMetadata().size() > 0) {
         for (const auto &[key, metaPair] : meta.GetMetadata()) {
+            (void)metaPair;
             if (key == "guid") {
                 continue;
             }
-            if (!newMeta.HasKey(key)) {
-                newMeta.AddMetadata(key, metaPair.second);
-            }
+            newMeta.CopyMetadataIfMissing(meta, key);
         }
     }
 

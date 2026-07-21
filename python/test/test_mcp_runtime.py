@@ -346,6 +346,54 @@ def test_runtime_object_state_returns_a_structured_not_found_result_after_scene_
     assert "active scene may have changed" in response["error"]["hint"]
 
 
+def test_runtime_component_state_exposes_missing_script_fields(monkeypatch):
+    from Infernux.components.missing_script import create_missing_script_component
+
+    component = create_missing_script_component(
+        type_name="GoneProbe",
+        script_guid="a" * 32,
+        type_guid="b" * 32,
+        module_name="assets.gone_probe",
+        qualified_name="GoneProbe",
+        fields={
+            "__type_name__": "GoneProbe",
+            "__component_id__": 42,
+            "speed": 3.5,
+        },
+        error="Script asset is missing: gone_probe.py",
+    )
+    component._deserialize_fields_document(component._preserved_fields)
+
+    class _Object:
+        id = 9
+
+        @staticmethod
+        def get_components():
+            return [component]
+
+        @staticmethod
+        def get_py_components():
+            return [component]
+
+    fake = _FakeMcp()
+    runtime.register_runtime_tools(fake)
+    monkeypatch.setattr(runtime, "find_game_object", lambda _object_id: _Object())
+    monkeypatch.setattr(runtime, "_run_on_main", lambda _name, fn: fn())
+
+    response = fake.tools["runtime_get_component_state"](9, "GoneProbe", 0)
+
+    assert response["ok"] is True
+    assert response["data"]["component"] == {
+        "type": "GoneProbe",
+        "python": True,
+        "component_id": 42,
+        "script_guid": "a" * 32,
+        "broken_script": True,
+        "broken_error": "Script asset is missing: gone_probe.py",
+    }
+    assert response["data"]["fields"] == {"speed": 3.5}
+
+
 def test_runtime_find_objects_exposes_name_to_id_resolution(monkeypatch):
     fake = _FakeMcp()
     runtime.register_runtime_tools(fake)

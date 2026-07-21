@@ -231,10 +231,9 @@ foreach(_infernux_target InfernuxRuntime _Infernux)
         $<$<CONFIG:MinSizeRel>:INFERNUX_FILE_LOGGING=1>
         $<$<CONFIG:Release>:INFERNUX_DEFERRED_FILE_LOGGING=1>
         $<$<CONFIG:MinSizeRel>:INFERNUX_DEFERRED_FILE_LOGGING=1>
-        # Vulkan validation layers: on for Debug / RelWithDebInfo (preset "debug"),
-        # off for Release / MinSizeRel (preset "release"). See InxVkCoreModular::Init.
-        $<$<CONFIG:Debug>:INFERNUX_VULKAN_VALIDATION_LAYERS=1>
-        $<$<CONFIG:RelWithDebInfo>:INFERNUX_VULKAN_VALIDATION_LAYERS=1>
+        # Make diagnostics explicit for every configuration. In particular,
+        # Release must not inherit a stale/global validation-layer definition.
+        INFERNUX_VULKAN_VALIDATION_LAYERS=$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>,1,0>
     )
 endforeach()
 
@@ -320,6 +319,17 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_frame_deletion_queue_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.frame_deletion_queue COMMAND infernux_frame_deletion_queue_tests)
+
+    add_executable(infernux_editor_gui_frame_scheduler_tests
+        cpp/tests/EditorGuiFrameSchedulerTests.cpp
+    )
+    target_include_directories(infernux_editor_gui_frame_scheduler_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_editor_gui_frame_scheduler_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.editor_gui_frame_scheduler COMMAND infernux_editor_gui_frame_scheduler_tests)
 
     add_executable(infernux_atomic_file_tests
         cpp/tests/AtomicFileTests.cpp

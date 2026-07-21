@@ -192,6 +192,7 @@ void InxView::ProcessEvent()
     // Begin a new input frame: swap current → previous, clear deltas
     InputManager::Instance().SetWindow(m_window);
     InputManager::Instance().BeginFrame();
+    m_needsImmediateGuiRefresh = false;
 
     // ====================================================================
     // Frame-rate limiter
@@ -365,6 +366,8 @@ bool InxView::ProcessOneEvent(SDL_Event &event)
 
     switch (event.type) {
     case SDL_EVENT_MOUSE_MOTION:
+        hadInputEvent = true;
+        break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
     case SDL_EVENT_MOUSE_WHEEL:
@@ -375,6 +378,7 @@ bool InxView::ProcessOneEvent(SDL_Event &event)
     case SDL_EVENT_DROP_TEXT:
     case SDL_EVENT_QUIT:
         hadInputEvent = true;
+        m_needsImmediateGuiRefresh = true;
         break;
     default:
         break;
@@ -390,12 +394,16 @@ bool InxView::ProcessOneEvent(SDL_Event &event)
     if (event.type == SDL_EVENT_WINDOW_RESTORED || event.type == SDL_EVENT_WINDOW_EXPOSED ||
         event.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
         m_isMinimized = false;
+        m_needsImmediateGuiRefresh = true;
         if (event.type != SDL_EVENT_WINDOW_EXPOSED) {
             hadInputEvent = true;
         }
     }
     if (event.type == SDL_EVENT_WINDOW_OCCLUDED) {
         m_isMinimized = true;
+    }
+    if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+        m_needsImmediateGuiRefresh = true;
     }
     return hadInputEvent;
 }

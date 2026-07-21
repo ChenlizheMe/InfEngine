@@ -20,6 +20,7 @@ from Infernux.core.asset_types import (
     TextureFormat,
     TextureType,
     WrapMode,
+    _load_strict_meta_root,
     _python_type_to_meta_tag,
     asset_category_from_extension,
     IMAGE_EXTENSIONS,
@@ -168,6 +169,17 @@ class TestTextureImportSettings:
         assert settings.srgb is False
         assert settings.format == TextureFormat.RGBA16_FLOAT
         assert settings.compression == TextureCompression.NONE
+
+    def test_meta_rejects_string_encoded_sprite_frames(self, tmp_path):
+        meta_path = tmp_path / "sprite.png.meta"
+        meta_path.write_text(json.dumps({
+            "metadata": {
+                "sprite_frames": {"type": "string", "value": "[]"},
+            },
+        }), encoding="utf-8")
+
+        with pytest.raises(TypeError, match="sprite_frames must use json_array"):
+            _load_strict_meta_root(str(meta_path))
 
     def test_equality_false_for_different(self):
         s1 = TextureImportSettings()

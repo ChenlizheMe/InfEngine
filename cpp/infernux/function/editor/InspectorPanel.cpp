@@ -329,8 +329,8 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool objectChanged = (m_cachedObjInfoId != objId) || (m_cachedComponentListObjId != objId);
     bool refreshSnapshots = objectChanged ||
-                             (valueGeneration != m_cachedValueGeneration) ||
-                             ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
+                            (valueGeneration != m_cachedValueGeneration) ||
+                            ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
 
     if (objectChanged) {
         m_cachedComponentBodyHeights.clear();
@@ -456,9 +456,10 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     for (const auto &comp : components) {
         ImGui::PushID(static_cast<int>(comp.componentId));
 
+        const char *scriptSuffix = comp.isBroken ? " (Missing Script)" : " (Script)";
         auto [headerOpen, newEnabled] = RenderComponentHeader(
             ctx, comp.typeName, "comp_" + std::to_string(comp.componentId), comp.iconId,
-            /*showEnabled=*/true, comp.enabled, comp.isScript ? " (Script)" : "",
+            /*showEnabled=*/true, comp.enabled, comp.isScript ? scriptSuffix : "",
             /*defaultOpen=*/true,
             "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
             comp.isScript ? "py_comp_ctx" : "comp_ctx");
@@ -718,7 +719,11 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             }
 
             if (compOpen) {
-                if (renderMultiComponentBody)
+                if (comp.isBroken && !comp.brokenError.empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
+                    ImGui::TextWrapped("%s", comp.brokenError.c_str());
+                    ImGui::PopStyleColor();
+                } else if (renderMultiComponentBody)
                     renderMultiComponentBody(ctx, ids, comp.typeName, entry.componentIds, comp.isNative);
                 else if (renderComponentBody)
                     renderComponentBody(ctx, ids[0], comp.typeName, comp.componentId, comp.isNative);

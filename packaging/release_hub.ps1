@@ -44,6 +44,11 @@ if (-not ((Get-Content -LiteralPath $UpdateLog -Raw).Contains($Version))) {
     throw "UpdateLog.md must mention release version $Version."
 }
 
+function Test-TrustedSignature([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    return (Get-AuthenticodeSignature -LiteralPath $Path).Status -eq 'Valid'
+}
+
 function Invoke-GhWithRetry([string]$Description, [scriptblock]$Operation) {
     for ($Attempt = 1; $Attempt -le 5; $Attempt++) {
         & $Operation
@@ -116,7 +121,7 @@ $env:INFERNUX_SOURCE_DIR = $Root
 & python -m build --wheel --no-isolation --outdir $ReleaseDir
 if ($LASTEXITCODE -ne 0) { throw 'Wheel build failed.' }
 
-Write-Host "[3/6] Building the Nuitka Hub and installer through the existing preset..." -ForegroundColor Cyan
+Write-Host "[3/6] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
 & cmake --build --preset packaging-installer
 if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
 $HubDir = Join-Path $Root 'dist\Infernux Hub'
@@ -189,6 +194,17 @@ foreach ($AssetName in $RequiredAssets) {
     if (-not (Test-Path -LiteralPath $AssetPath -PathType Leaf) -or (Get-Item -LiteralPath $AssetPath).Length -eq 0) {
         throw "Required release asset is missing or empty: $AssetPath"
     }
+}
+
+$SignatureTargets = @((Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe"))
+if (-not $UploadOnly) {
+    $SignatureTargets += (Join-Path $HubDir 'Infernux Hub.exe')
+}
+$UnsignedTargets = @($SignatureTargets | Where-Object { -not (Test-TrustedSignature $_) })
+if ($UnsignedTargets.Count -gt 0) {
+    $UnsignedList = ($UnsignedTargets -join ', ')
+    $SigningHint = 'Set INFERNUX_SIGN_CERTIFICATE_THUMBPRINT to a publicly trusted Authenticode certificate before building.'
+    Write-Warning "Unsigned or untrusted Windows executables remain: $UnsignedList. $SigningHint"
 }
 
 if ($Publish) {

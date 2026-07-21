@@ -378,6 +378,26 @@ void InxGUI::PumpTextureUploads()
 
 void InxGUI::BuildFrame()
 {
+    (void)m_editorFrameScheduler.Consume(EditorGuiFrameScheduler::Clock::now(), true);
+    BuildFrameInternal();
+}
+
+bool InxGUI::BuildFrameIfDue(bool force)
+{
+    if (!m_editorFrameScheduler.Consume(EditorGuiFrameScheduler::Clock::now(), force || m_playerMode))
+        return false;
+
+    BuildFrameInternal();
+    return true;
+}
+
+void InxGUI::RequestFrame() noexcept
+{
+    m_editorFrameScheduler.Request();
+}
+
+void InxGUI::BuildFrameInternal()
+{
     static auto ctx = std::make_unique<InxGUIContext>();
     ++m_guiFrameCounter;
 
@@ -571,6 +591,8 @@ void InxGUI::BuildFrame()
 
     ApplyPendingDockTabSelections();
     frameGuard.Complete();
+    ImGui::Render();
+    m_hasDrawData = true;
 }
 
 void InxGUI::QueueDockTabSelection(const std::string &windowId)
@@ -581,6 +603,7 @@ void InxGUI::QueueDockTabSelection(const std::string &windowId)
     if (std::find(m_pendingDockTabSelections.begin(), m_pendingDockTabSelections.end(), windowId) ==
         m_pendingDockTabSelections.end()) {
         m_pendingDockTabSelections.push_back(windowId);
+        RequestFrame();
     }
 }
 
@@ -619,8 +642,8 @@ void InxGUI::ApplyPendingDockTabSelections()
 
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 {
-    ImGui::Render();
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdBuf);
+    if (m_hasDrawData)
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdBuf);
 }
 
 void InxGUI::Shutdown()
@@ -674,6 +697,7 @@ void InxGUI::Register(const std::string &name, std::shared_ptr<InxGUIRenderable>
         m_renderableOrder.push_back(name);
     }
     m_renderables_umap[name] = renderable;
+    RequestFrame();
 }
 
 void InxGUI::Unregister(const std::string &name)
@@ -683,6 +707,7 @@ void InxGUI::Unregister(const std::string &name)
         m_renderables_umap.erase(it);
         m_renderableOrder.erase(std::remove(m_renderableOrder.begin(), m_renderableOrder.end(), name),
                                 m_renderableOrder.end());
+        RequestFrame();
     } else {
         INXLOG_WARN("InxGUI::Unregister(): Renderable with name '", name, "' does not exist.");
     }
@@ -741,6 +766,7 @@ void InxGUI::RemoveImGuiTexture(const std::string &name)
         std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name) ==
             m_pendingTextureRemovals.end())
         m_pendingTextureRemovals.push_back(name);
+    RequestFrame();
 }
 
 bool InxGUI::HasImGuiTexture(const std::string &name) const

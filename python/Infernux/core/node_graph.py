@@ -101,6 +101,9 @@ class NodeTypeDef:
     min_width: float = 140.0
     deletable: bool = True
     body_bottom_pad: float = 0.0  # extra height below pins for custom body UI (px at zoom=1)
+    visual_style: str = "default"
+    category_label: str = ""
+    show_header_color_swatch: bool = True
 
     def __post_init__(self) -> None:
         pin_ids = [pin.id for pin in self.pins]

@@ -7,6 +7,7 @@ import pytest
 from Infernux.engine.project_context import clear_panel_tracking
 from Infernux.engine.ui.graph_document_authoring import (
     GraphDocumentAuthoringModel,
+    ParticleEmitterGraphAuthoringModel,
     particle_stage_definition_filter,
 )
 from Infernux.particle.asset import ParticleGraphAsset
@@ -59,7 +60,36 @@ def test_default_rendering_stage_opens_without_overlapping_output():
     assert positions["output.sprite"] == (280.0, 0.0)
 
 
-def test_particle_graph_editor_switches_stages_and_restores_dirty_draft():
+def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
+    emitter = ParticleGraphAsset().emitters[0]
+    model = ParticleEmitterGraphAuthoringModel(emitter)
+
+    assert [node.type_id for node in model.nodes] == [
+        "particle.root.init",
+        "particle.root.update",
+        "particle.root.rendering",
+        "particle.output.sprite",
+    ]
+    assert model.remove_node("init::root.init") is False
+
+    velocity = model.add_node("particle.init.set_velocity", 220.0, 0.0)
+    acceleration = model.add_node("particle.update.acceleration", 220.0, 230.0)
+    assert model.add_link("init::root.init", "out", velocity.uid, "in") is not None
+    assert model.add_link("update::root.update", "out", acceleration.uid, "in") is not None
+    assert not model.validate_link(velocity.uid, "out", acceleration.uid, "in")
+
+    documents = model.to_documents()
+    assert [node.type_id for node in documents["init"].nodes] == [
+        "particle.root.init",
+        "particle.init.set_velocity",
+    ]
+    assert [node.type_id for node in documents["update"].nodes] == [
+        "particle.root.update",
+        "particle.update.acceleration",
+    ]
+
+
+def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
@@ -69,7 +99,7 @@ def test_particle_graph_editor_switches_stages_and_restores_dirty_draft():
         node for node in panel._model.nodes
         if node.type_id == "particle.init.set_velocity"
     )
-    panel._on_link_created("root.init", "out", velocity.uid, "in")
+    panel._on_link_created("init::root.init", "out", velocity.uid, "in")
     panel._select_stage("rendering")
 
     restored = ParticleGraphEditorPanel()
@@ -82,6 +112,9 @@ def test_particle_graph_editor_switches_stages_and_restores_dirty_draft():
         "particle.init.set_velocity",
     ]
     assert [node.type_id for node in restored._model.nodes] == [
+        "particle.root.init",
+        "particle.init.set_velocity",
+        "particle.root.update",
         "particle.root.rendering",
         "particle.output.sprite",
     ]

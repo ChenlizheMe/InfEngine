@@ -684,6 +684,19 @@ def register_runtime_tools(mcp) -> None:
                         pass
             except Exception:
                 pass
+            if data.get("broken_script"):
+                serialize_fields = getattr(comp, "_serialize_fields_document", None)
+                if callable(serialize_fields):
+                    try:
+                        preserved = serialize_fields()
+                    except Exception:
+                        preserved = None
+                    if isinstance(preserved, dict):
+                        fields.update({
+                            str(name): serialize_value(value)
+                            for name, value in preserved.items()
+                            if not str(name).startswith("__")
+                        })
             return {"object_id": int(obj.id), "component": data, "fields": fields}
 
         try:

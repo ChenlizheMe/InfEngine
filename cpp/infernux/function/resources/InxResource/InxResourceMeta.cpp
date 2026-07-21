@@ -123,6 +123,17 @@ void InxResourceMeta::AddMetadata(const std::string &key, const std::any &value)
     m_metadata[key] = std::make_pair(InxTypeRegistry::GetInstance().GetTypeName(value.type()), value);
 }
 
+bool InxResourceMeta::CopyMetadataIfMissing(const InxResourceMeta &source, const std::string &key)
+{
+    if (HasKey(key))
+        return false;
+    const auto sourceEntry = source.m_metadata.find(key);
+    if (sourceEntry == source.m_metadata.end())
+        return false;
+    m_metadata.emplace(key, sourceEntry->second);
+    return true;
+}
+
 const std::string &InxResourceMeta::GetResourceName() const
 {
     static const std::string empty;
@@ -255,6 +266,8 @@ void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
 
         const std::string typeName = entry["type"].get<std::string>();
         const auto &value = entry["value"];
+        if (key == "sprite_frames" && typeName != "json_array")
+            throw std::invalid_argument("metadata sprite_frames must use json_array");
         if (typeName == "string") {
             if (!value.is_string())
                 throw std::invalid_argument("metadata string value expected: " + key);

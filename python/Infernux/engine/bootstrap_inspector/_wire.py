@@ -29,6 +29,7 @@ def _wire_cache_init(ctx):
     """Create component and material caches, invalidation helpers."""
     _component_cache = {
         "object_id": 0, "scene_version": -1, "structure_version": -1,
+        "script_error_revision": -1,
         "items": [], "native_map": {}, "py_map": {},
     }
     _material_section_cache = {
@@ -46,6 +47,7 @@ def _wire_cache_init(ctx):
     def _invalidate_component_cache():
         _component_cache.update(
             object_id=0, scene_version=-1, structure_version=-1,
+            script_error_revision=-1,
             items=[], native_map={}, py_map={})
         _invalidate_material_section_cache()
 
@@ -71,6 +73,14 @@ def _wire_component_list(ctx):
     _invalidate = ctx.invalidate_component_cache
     _versions = ctx.current_scene_and_versions
 
+    def _script_error_revision():
+        from Infernux.components.script_loader import get_script_error_revision
+        return get_script_error_revision()
+
+    def _script_error(component):
+        from ._helpers import _get_component_script_error
+        return _get_component_script_error(component, ctx.engine.get_asset_database())
+
     def _native_wrapper_is_dead(component):
         """Cheaply reject wrappers invalidated by a scene/component rebuild.
 
@@ -93,6 +103,7 @@ def _wire_component_list(ctx):
 
     def _get_component_payload(obj_id):
         scene, scene_ver, struct_ver = _versions()
+        error_revision = _script_error_revision()
         if (
             _component_cache["object_id"] == obj_id
             and _component_cache["scene_version"] == scene_ver
@@ -101,6 +112,7 @@ def _wire_component_list(ctx):
             items = _component_cache["items"]
             native_map = _component_cache["native_map"]
             py_map = _component_cache["py_map"]
+            errors_changed = _component_cache["script_error_revision"] != error_revision
             stale = False
             for item in items:
                 comp = native_map.get(item.component_id) if item.is_native else py_map.get(item.component_id)
@@ -108,13 +120,12 @@ def _wire_component_list(ctx):
                     stale = True
                     break
                 item.enabled = bool(getattr(comp, 'enabled', True))
-                if not item.is_native:
-                    item.is_broken = bool(getattr(comp, '_is_broken', False))
-                    item.broken_error = (
-                        getattr(comp, '_broken_error', '') or ''
-                        if item.is_broken else ''
-                    )
+                if not item.is_native and errors_changed:
+                    error = _script_error(comp)
+                    item.is_broken = bool(error)
+                    item.broken_error = error or ''
             if not stale:
+                _component_cache["script_error_revision"] = error_revision
                 return scene, items, native_map, py_map
 
         obj = scene.find_by_id(obj_id) if scene else None
@@ -144,11 +155,9 @@ def _wire_component_list(ctx):
                 ci.enabled = bool(getattr(py_comp, 'enabled', True))
                 ci.is_native = False
                 ci.is_script = True
-                ci.is_broken = bool(getattr(py_comp, '_is_broken', False))
-                ci.broken_error = (
-                    getattr(py_comp, '_broken_error', '') or ''
-                    if ci.is_broken else ''
-                )
+                error = _script_error(py_comp)
+                ci.is_broken = bool(error)
+                ci.broken_error = error or ''
                 ci.icon_id = ctx.get_component_icon_id(ci.type_name, True)
                 items.append(ci)
                 py_map[cid] = py_comp
@@ -176,15 +185,18 @@ def _wire_component_list(ctx):
         _component_cache.update(
             object_id=obj_id, scene_version=scene_ver,
             structure_version=struct_ver,
+            script_error_revision=error_revision,
             items=items, native_map=native_map, py_map=py_map)
         return scene, items, native_map, py_map
 
     def _get_cached_maps(obj_id):
         scene, scene_ver, struct_ver = _versions()
+        error_revision = _script_error_revision()
         if (
             _component_cache["object_id"] == obj_id
             and _component_cache["scene_version"] == scene_ver
             and _component_cache["structure_version"] == struct_ver
+            and _component_cache["script_error_revision"] == error_revision
         ):
             native_map = _component_cache["native_map"]
             if not any(_native_wrapper_is_dead(comp) for comp in native_map.values()):
@@ -419,26 +431,13 @@ def _wire_icons_and_body(ctx):
             if _profile_enabled:
                 _record_timing("bodyNativeDispatch", (_time.perf_counter() - _t0) * 1000.0)
             return
+        from Infernux.engine.ui.inspector_components import render_py_component
         if _profile_enabled:
-            _record_count("bodyPyCheck_count")
+            _record_count("bodyPyDispatch_count")
         _t0 = _time.perf_counter() if _profile_enabled else 0.0
-        from ._helpers import _get_component_script_error
-        _script_err = _get_component_script_error(comp, engine.get_asset_database())
+        render_py_component(ctx_arg, comp)
         if _profile_enabled:
-            _record_timing("bodyPyCheck", (_time.perf_counter() - _t0) * 1000.0)
-        if _script_err:
-            from Infernux.engine.ui.theme import Theme, ImGuiCol
-            ctx_arg.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
-            ctx_arg.text_wrapped(_script_err)
-            ctx_arg.pop_style_color(1)
-        else:
-            from Infernux.engine.ui.inspector_components import render_py_component
-            if _profile_enabled:
-                _record_count("bodyPyDispatch_count")
-            _t0 = _time.perf_counter() if _profile_enabled else 0.0
-            render_py_component(ctx_arg, comp)
-            if _profile_enabled:
-                _record_timing("bodyPyDispatch", (_time.perf_counter() - _t0) * 1000.0)
+            _record_timing("bodyPyDispatch", (_time.perf_counter() - _t0) * 1000.0)
 
     def _render_component_body(ctx_arg, obj_id, type_name, comp_id, is_native):
         cache_key = (obj_id, comp_id, bool(is_native), type_name)

@@ -12,7 +12,7 @@ from Infernux.debug import Debug
 from Infernux.engine.i18n import t
 from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.graph.registry import COMMON_NODE_REGISTRY
-from Infernux.graph.types import ValueType
+from Infernux.graph.types import CoordinateSpace, ValueType
 from Infernux.lib import InxGUIContext
 from Infernux.particle.asset import (
     EmitterSettings,
@@ -30,8 +30,7 @@ from Infernux.particle.asset import (
 from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
 from .graph_document_authoring import (
-    GraphDocumentAuthoringModel,
-    particle_stage_definition_filter,
+    ParticleEmitterGraphAuthoringModel,
 )
 from .node_graph_view import NodeGraphView
 from .panel_registry import editor_panel
@@ -71,7 +70,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._view.on_node_drag_start = self._on_node_drag_start
         self._view.on_node_drag_end = self._on_node_drag_end
         self._view.on_node_selected = self._on_node_selected
-        self._model: GraphDocumentAuthoringModel | None = None
+        self._model: ParticleEmitterGraphAuthoringModel | None = None
         self._bind_stage()
 
     @property
@@ -88,11 +87,8 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._asset = replace(self._asset, emitters=tuple(emitters))
 
     def _bind_stage(self) -> None:
-        document = getattr(self._selected_emitter(), self._stage)
-        self._model = GraphDocumentAuthoringModel(
-            document,
-            definition_filter=particle_stage_definition_filter(document.domain),
-        )
+        self._model = ParticleEmitterGraphAuthoringModel(self._selected_emitter())
+        self._model.set_authoring_stage(self._stage)
         self._view.graph = self._model
         self._view.reset_interaction_state()
         self._selected_node_uid = ""
@@ -101,16 +97,21 @@ class ParticleGraphEditorPanel(EditorPanel):
         if self._model is None:
             return
         emitter = self._selected_emitter()
-        document = self._model.to_document()
-        if getattr(emitter, self._stage) != document:
-            self._replace_emitter(replace(emitter, **{self._stage: document}))
+        documents = self._model.to_documents()
+        updates = {
+            stage: document
+            for stage, document in documents.items()
+            if getattr(emitter, stage) != document
+        }
+        if updates:
+            self._replace_emitter(replace(emitter, **updates))
 
     def _select_stage(self, stage: str) -> None:
         if stage not in _STAGES or stage == self._stage:
             return
-        self._sync_model_to_asset()
         self._stage = stage
-        self._bind_stage()
+        if self._model is not None:
+            self._model.set_authoring_stage(stage)
 
     def _select_emitter(self, index: int) -> None:
         if not 0 <= index < len(self._asset.emitters) or index == self._emitter_index:
@@ -231,12 +232,17 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     def _on_node_selected(self, node_uid: str) -> None:
         self._selected_node_uid = node_uid
+        if self._model is not None and node_uid:
+            stage = self._model.stage_for_uid(node_uid)
+            if stage:
+                self._select_stage(stage)
 
     def _on_node_add(self, type_id: str, x: float, y: float) -> None:
         if self._model is None or self._model.get_type(type_id) is None:
             return
         before = self._snapshot()
-        self._model.add_node(type_id, x, y)
+        node = self._model.add_node(type_id, x, y)
+        self._stage = self._model.stage_for_uid(node.uid) or self._stage
         self._sync_model_to_asset()
         self._mark_changed()
         self._record("Add Particle Graph node", before)
@@ -424,19 +430,13 @@ class ParticleGraphEditorPanel(EditorPanel):
             if ctx.button(t("particle_graph_editor.remove_emitter")):
                 self._remove_selected_emitter()
 
-    def _render_stage_tabs(self, ctx: InxGUIContext) -> None:
-        if not ctx.begin_tab_bar("##particle_graph_stages"):
-            return
-        for stage in _STAGES:
-            label = t(f"particle_graph_editor.stage_{stage}")
-            if ctx.begin_tab_item(label):
-                self._select_stage(stage)
-                ctx.end_tab_item()
-        ctx.end_tab_bar()
-
     def _render_emitter_settings(self, ctx: InxGUIContext) -> None:
+        ctx.label(t("particle_graph_editor.emitter_settings"))
+        ctx.separator()
         emitter = self._selected_emitter()
-        name = ctx.text_input("Name##particle_emitter_name", emitter.name, 128).strip()
+        name = ctx.text_input(
+            f"{t('particle_graph_editor.name')}##particle_emitter_name", emitter.name, 128
+        ).strip()
         if name and name != emitter.name:
             self._update_emitter(replace(emitter, name=name), "Rename particle emitter")
             emitter = self._selected_emitter()
@@ -444,74 +444,118 @@ class ParticleGraphEditorPanel(EditorPanel):
         settings = emitter.settings
         values = {}
         values["capacity"] = max(
-            1, int(ctx.input_int("Capacity##particle_capacity", settings.capacity))
+            1,
+            int(
+                ctx.input_int(
+                    f"{t('particle_graph_editor.capacity')}##particle_capacity",
+                    settings.capacity,
+                )
+            ),
         )
         targets = list(ExecutionTarget)
         target_index = targets.index(settings.target)
         target_index = ctx.combo(
-            "Target##particle_target", target_index,
-            [item.value.upper() for item in targets], -1,
+            f"{t('particle_graph_editor.target')}##particle_target",
+            target_index,
+            [t(f"particle_graph_editor.target_{item.value}") for item in targets],
+            -1,
         )
         values["target"] = targets[max(0, min(target_index, len(targets) - 1))]
 
         spaces = list(SimulationSpace)
         space_index = spaces.index(settings.simulation_space)
         space_index = ctx.combo(
-            "Simulation Space##particle_space", space_index,
-            [item.value.title() for item in spaces], -1,
+            f"{t('particle_graph_editor.simulation_space')}##particle_space",
+            space_index,
+            [t(f"particle_graph_editor.space_{item.value}") for item in spaces],
+            -1,
         )
         values["simulation_space"] = spaces[max(0, min(space_index, len(spaces) - 1))]
-        values["seed"] = max(0, int(ctx.input_int("Seed##particle_seed", settings.seed)))
+        values["seed"] = max(
+            0,
+            int(
+                ctx.input_int(
+                    f"{t('particle_graph_editor.seed')}##particle_seed", settings.seed
+                )
+            ),
+        )
         values["spawn_rate"] = max(
             0.0,
-            float(ctx.drag_float("Spawn Rate##particle_spawn_rate", settings.spawn_rate, 0.1, 0.0, 1.0e7)),
+            float(
+                ctx.drag_float(
+                    f"{t('particle_graph_editor.spawn_rate')}##particle_spawn_rate",
+                    settings.spawn_rate,
+                    0.1,
+                    0.0,
+                    1.0e7,
+                )
+            ),
         )
 
+        ctx.separator()
+        ctx.label(t("particle_graph_editor.initial_state"))
         life_min = max(
             0.0,
-            float(ctx.drag_float("Lifetime Min##particle_life_min", settings.lifetime.minimum, 0.05, 0.0, 1.0e7)),
+            float(ctx.drag_float(f"{t('particle_graph_editor.lifetime_min')}##particle_life_min", settings.lifetime.minimum, 0.05, 0.0, 1.0e7)),
         )
         life_max = max(
             life_min,
-            float(ctx.drag_float("Lifetime Max##particle_life_max", settings.lifetime.maximum, 0.05, life_min, 1.0e7)),
+            float(ctx.drag_float(f"{t('particle_graph_editor.lifetime_max')}##particle_life_max", settings.lifetime.maximum, 0.05, life_min, 1.0e7)),
         )
         values["lifetime"] = ScalarRange(life_min, life_max)
 
         speed_min = float(
-            ctx.drag_float("Speed Min##particle_speed_min", settings.initial_speed.minimum, 0.05, -1.0e7, 1.0e7)
+            ctx.drag_float(f"{t('particle_graph_editor.speed_min')}##particle_speed_min", settings.initial_speed.minimum, 0.05, -1.0e7, 1.0e7)
         )
         speed_max = max(
             speed_min,
-            float(ctx.drag_float("Speed Max##particle_speed_max", settings.initial_speed.maximum, 0.05, speed_min, 1.0e7)),
+            float(ctx.drag_float(f"{t('particle_graph_editor.speed_max')}##particle_speed_max", settings.initial_speed.maximum, 0.05, speed_min, 1.0e7)),
         )
         values["initial_speed"] = ScalarRange(speed_min, speed_max)
         gravity = tuple(
-            float(ctx.drag_float(f"Gravity {axis}##particle_gravity_{axis}", value, 0.05, -1.0e7, 1.0e7))
+            float(ctx.drag_float(f"{t('particle_graph_editor.gravity')} {axis}##particle_gravity_{axis}", value, 0.05, -1.0e7, 1.0e7))
             for axis, value in zip("XYZ", settings.gravity)
         )
         values["gravity"] = gravity
 
+        ctx.separator()
+        ctx.label(t("particle_graph_editor.emission_shape"))
         shape = settings.shape
         shape_kinds = list(EmitterShapeKind)
         kind_index = ctx.combo(
-            "Shape##particle_shape", shape_kinds.index(shape.kind),
-            [item.value.title() for item in shape_kinds], -1,
+            f"{t('particle_graph_editor.shape')}##particle_shape",
+            shape_kinds.index(shape.kind),
+            [t(f"particle_graph_editor.shape_{item.value}") for item in shape_kinds],
+            -1,
         )
         kind = shape_kinds[max(0, min(kind_index, len(shape_kinds) - 1))]
+        shape_spaces = [CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.WORLD]
+        shape_space_index = ctx.combo(
+            f"{t('particle_graph_editor.shape_space')}##particle_shape_space",
+            shape_spaces.index(shape.space),
+            [t(f"particle_graph_editor.shape_space_{item.value}") for item in shape_spaces],
+            -1,
+        )
+        shape_space = shape_spaces[max(0, min(shape_space_index, len(shape_spaces) - 1))]
         radius = max(
             0.0,
-            float(ctx.drag_float("Radius##particle_shape_radius", shape.radius, 0.05, 0.0, 1.0e7)),
+            float(ctx.drag_float(f"{t('particle_graph_editor.radius')}##particle_shape_radius", shape.radius, 0.05, 0.0, 1.0e7)),
         )
         angle = min(
             180.0,
-            max(0.0, float(ctx.drag_float("Angle##particle_shape_angle", shape.angle_degrees, 0.2, 0.0, 180.0))),
+            max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.angle')}##particle_shape_angle", shape.angle_degrees, 0.2, 0.0, 180.0))),
         )
         dimensions = tuple(
-            max(0.0, float(ctx.drag_float(f"Size {axis}##particle_shape_{axis}", value, 0.05, 0.0, 1.0e7)))
+            max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.size')} {axis}##particle_shape_{axis}", value, 0.05, 0.0, 1.0e7)))
             for axis, value in zip("XYZ", shape.dimensions)
         )
         values["shape"] = replace(
-            shape, kind=kind, radius=radius, angle_degrees=angle, dimensions=dimensions
+            shape,
+            kind=kind,
+            space=shape_space,
+            radius=radius,
+            angle_degrees=angle,
+            dimensions=dimensions,
         )
 
         new_settings = replace(settings, **values)
@@ -524,16 +568,16 @@ class ParticleGraphEditorPanel(EditorPanel):
         changed = False
         remove_index = -1
         for index, burst in enumerate(bursts):
-            ctx.label(f"Burst {index + 1}")
-            time_value = max(0.0, float(ctx.drag_float(f"Time##burst_time_{index}", burst.time, 0.05, 0.0, 1.0e7)))
-            count = max(0, int(ctx.input_int(f"Count##burst_count_{index}", burst.count)))
-            cycles = max(1, int(ctx.input_int(f"Cycles##burst_cycles_{index}", burst.cycles)))
-            interval = max(0.0, float(ctx.drag_float(f"Interval##burst_interval_{index}", burst.interval, 0.05, 0.0, 1.0e7)))
+            ctx.label(f"{t('particle_graph_editor.burst')} {index + 1}")
+            time_value = max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.burst_time')}##burst_time_{index}", burst.time, 0.05, 0.0, 1.0e7)))
+            count = max(0, int(ctx.input_int(f"{t('particle_graph_editor.burst_count')}##burst_count_{index}", burst.count)))
+            cycles = max(1, int(ctx.input_int(f"{t('particle_graph_editor.burst_cycles')}##burst_cycles_{index}", burst.cycles)))
+            interval = max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.burst_interval')}##burst_interval_{index}", burst.interval, 0.05, 0.0, 1.0e7)))
             updated = ParticleBurst(time_value, count, cycles, interval)
             if updated != burst:
                 bursts[index] = updated
                 changed = True
-            if ctx.button(f"Remove##particle_burst_remove_{index}"):
+            if ctx.button(f"{t('particle_graph_editor.remove_burst')}##particle_burst_remove_{index}"):
                 remove_index = index
         if remove_index >= 0:
             del bursts[remove_index]
@@ -553,6 +597,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         definition = COMMON_NODE_REGISTRY.get(node.type_id) if node else None
         if node is None or definition is None:
             return
+        ctx.label(t("particle_graph_editor.node_settings"))
         ctx.separator()
         ctx.label(definition.display_name)
         changed = False
@@ -560,7 +605,10 @@ class ParticleGraphEditorPanel(EditorPanel):
             key = property_def.id
             value = copy.deepcopy(node.data.get(key, property_def.default))
             value_type = property_def.value_type.value_type
-            label = key.replace("_", " ").title()
+            label_key = f"particle_graph_editor.property_{key}"
+            label = t(label_key)
+            if label == label_key:
+                label = key.replace("_", " ").title()
             new_value = value
             if value_type is ValueType.BOOL:
                 new_value = bool(ctx.checkbox(f"{label}##particle_node_{key}", bool(value)))
@@ -584,7 +632,12 @@ class ParticleGraphEditorPanel(EditorPanel):
             elif value_type is ValueType.STRING and key == "sort":
                 options = ["none", "back_to_front", "front_to_back"]
                 current = options.index(value) if value in options else 0
-                current = ctx.combo(f"{label}##particle_node_{key}", current, options, -1)
+                current = ctx.combo(
+                    f"{label}##particle_node_{key}",
+                    current,
+                    [t(f"particle_graph_editor.sort_{option}") for option in options],
+                    -1,
+                )
                 new_value = options[max(0, min(current, len(options) - 1))]
             elif value_type is ValueType.STRING:
                 new_value = ctx.text_input(f"{label}##particle_node_{key}", str(value), 512)
@@ -612,19 +665,29 @@ class ParticleGraphEditorPanel(EditorPanel):
         detail_w = min(280.0, max(210.0, available_w * 0.24))
         graph_w = max(1.0, available_w - sidebar_w - detail_w - 16.0)
 
-        if ctx.begin_child("##particle_emitters", sidebar_w, available_h, True):
-            self._render_emitter_list(ctx)
-        ctx.end_child()
+        emitter_visible = ctx.begin_child("##particle_emitters", sidebar_w, available_h, True)
+        try:
+            if emitter_visible:
+                self._render_emitter_list(ctx)
+        finally:
+            ctx.end_child()
         ctx.same_line()
-        if ctx.begin_child("##particle_graph", graph_w, available_h, False):
-            self._render_stage_tabs(ctx)
-            self._view.render(ctx)
-        ctx.end_child()
+        graph_visible = ctx.begin_child("##particle_graph", graph_w, available_h, False)
+        try:
+            if graph_visible:
+                self._view.render(ctx)
+        finally:
+            ctx.end_child()
         ctx.same_line()
-        if ctx.begin_child("##particle_details", detail_w, available_h, True):
-            self._render_emitter_settings(ctx)
-            self._render_node_properties(ctx)
-        ctx.end_child()
+        details_visible = ctx.begin_child("##particle_details", detail_w, available_h, True)
+        try:
+            if details_visible:
+                if self._selected_node_uid:
+                    self._render_node_properties(ctx)
+                else:
+                    self._render_emitter_settings(ctx)
+        finally:
+            ctx.end_child()
 
         self._save_as_dialog.render(ctx, self._save_to)
 

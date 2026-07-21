@@ -51,6 +51,18 @@ class _StrictSceneComponent(InxComponent):
     value: int = 7
 
 
+class _ReplacementLifecycleSource(InxComponent):
+    value: int = 13
+    destroy_calls = 0
+
+    def on_destroy(self):
+        type(self).destroy_calls += 1
+
+
+class _ReplacementLifecycleTarget(InxComponent):
+    value: int = 0
+
+
 class _AdditiveSceneComponent(InxComponent):
     value: int = 7
     label: str = "default"
@@ -1927,6 +1939,30 @@ class TestSceneSerialization:
         assert qualified_name == component.__class__.__qualname__
         assert len(script_guid) == 32
         assert len(type_guid) == 32
+
+    def test_python_component_replacement_preserves_native_identity_without_destroy(self, scene):
+        root = scene.create_game_object("IdentityPreservingReplacement")
+        source = root.add_py_component(_ReplacementLifecycleSource())
+        source.execution_order = 42
+        source.enabled = False
+        original_id = source.component_id
+        original_handle = source._cpp_component.handle
+        _ReplacementLifecycleSource.destroy_calls = 0
+
+        target = _ReplacementLifecycleTarget()
+        target.value = source.value
+        published = root.replace_py_component(source, target)
+
+        assert published is target
+        assert root.get_py_components() == [target]
+        assert source._cpp_component is None
+        assert source._is_destroyed is True
+        assert _ReplacementLifecycleSource.destroy_calls == 0
+        assert target.component_id == original_id
+        assert target._cpp_component.handle == original_handle
+        assert target.execution_order == 42
+        assert target.enabled is False
+        assert target.value == 13
 
     def test_unified_component_records_preserve_order_and_python_execution_order(self, scene):
         root = scene.create_game_object("UnifiedComponentOrder")

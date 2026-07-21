@@ -64,6 +64,9 @@ _LINK_SEGMENTS = 28
 # NASA-style: near-black panels, neutral gray; selection uses editor theme red
 _BG_COLOR = (0.07, 0.07, 0.08, 1.0)
 _NODE_BODY_COLOR = (0.13, 0.13, 0.14, 1.0)
+_GRAPH_NODE_BODY_COLOR = (0.067, 0.078, 0.106, 0.98)
+_GRAPH_NODE_HEADER_COLOR = (0.094, 0.106, 0.137, 1.0)
+_GRAPH_NODE_CONTEXT_COLOR = (0.105, 0.118, 0.151, 1.0)
 _NODE_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.5)
 _NODE_SELECTED_BORDER = Theme.APPLY_BUTTON
 _NODE_BORDER_COLOR = (0.28, 0.28, 0.30, 1.0)
@@ -545,8 +548,9 @@ class NodeGraphView:
         pin_node, pin_id, _pin_kind = self._hit_test_pin(x, y)
         if pin_id is not None or pin_node:
             return False
-        if self._hit_test_header_color_swatch(x, y):
-            return False
+        if layout := self._layouts.get(uid):
+            if getattr(layout.typedef, "show_header_color_swatch", True) and self._hit_test_header_color_swatch(x, y):
+                return False
         return self._hit_test_node(x, y) == uid
 
     def _find_node_drag_semantic_point(self, uid: str, layout: _NodeLayout) -> Optional[Tuple[float, float]]:
@@ -571,6 +575,7 @@ class NodeGraphView:
         rounding = _NODE_ROUNDING * z
         hdr_h = _NODE_HEADER_H * z
         pad_x = _NODE_PAD_X * z
+        modern_graph = layout.typedef.visual_style in {"graph", "context"}
 
         # Shadow
         sh = 3.0 * z
@@ -580,34 +585,67 @@ class NodeGraphView:
         )
 
         # Body
-        ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *_NODE_BODY_COLOR, rounding)
+        body_color = _GRAPH_NODE_BODY_COLOR if modern_graph else _NODE_BODY_COLOR
+        ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *body_color, rounding)
 
         # Header
-        hdr = self._resolve_node_header_color(layout)
+        accent = self._resolve_node_header_color(layout)
+        hdr = (
+            _GRAPH_NODE_CONTEXT_COLOR
+            if layout.typedef.visual_style == "context"
+            else (_GRAPH_NODE_HEADER_COLOR if modern_graph else accent)
+        )
         ctx.draw_filled_rect(sx, sy, sx + w, sy + hdr_h, *hdr, rounding)
         flat_h = min(rounding, hdr_h * 0.5)
         ctx.draw_filled_rect(sx, sy + hdr_h - flat_h, sx + w, sy + hdr_h, *hdr, 0)
+        if modern_graph:
+            accent_h = max(2.0, 3.0 * z)
+            ctx.draw_filled_rect(
+                sx, sy, sx + w, sy + accent_h, *accent, min(rounding, 3.0 * z)
+            )
 
         # Header label
         label = layout.node.data.get("label", layout.typedef.label)
         font_sz = max(12.5, 15.0 * z)
         sw_x1, sw_y1, sw_x2, sw_y2 = self._node_header_swatch_rect(layout)
+        label_right = (
+            sw_x1 - 6.0 * z
+            if layout.typedef.show_header_color_swatch
+            else (
+                sx + w * 0.60
+                if layout.typedef.category_label
+                else sx + w - pad_x
+            )
+        )
         ctx.draw_text_aligned(
-            sx + pad_x, sy, max(sx + pad_x + 1.0, sw_x1 - 6.0 * z), sy + hdr_h,
+            sx + pad_x, sy, max(sx + pad_x + 1.0, label_right), sy + hdr_h,
             label, *_TEXT_COLOR, 0.0, 0.5, font_sz,
         )
 
-        # Header color swatch (right half)
-        ctx.draw_filled_rect(sw_x1, sw_y1, sw_x2, sw_y2, *hdr, 2.0 * z)
-        ctx.draw_rect(
-            sw_x1,
-            sw_y1,
-            sw_x2,
-            sw_y2,
-            *_HEADER_COLOR_SWATCH_OUTLINE,
-            max(1.0, 1.15 * z),
-            2.0 * z,
-        )
+        if layout.typedef.show_header_color_swatch:
+            ctx.draw_filled_rect(sw_x1, sw_y1, sw_x2, sw_y2, *accent, 2.0 * z)
+            ctx.draw_rect(
+                sw_x1,
+                sw_y1,
+                sw_x2,
+                sw_y2,
+                *_HEADER_COLOR_SWATCH_OUTLINE,
+                max(1.0, 1.15 * z),
+                2.0 * z,
+            )
+        elif layout.typedef.category_label:
+            category_font = max(8.0, 9.0 * z)
+            ctx.draw_text_aligned(
+                sx + w * 0.56,
+                sy,
+                sx + w - pad_x,
+                sy + hdr_h,
+                layout.typedef.category_label,
+                *_TEXT_DIM_COLOR,
+                1.0,
+                0.5,
+                category_font,
+            )
 
         # Subtitle (e.g. clip path)
         subtitle = layout.node.data.get("subtitle", "")
@@ -904,6 +942,8 @@ class NodeGraphView:
     def _hit_test_header_color_swatch(self, mx: float, my: float) -> str:
         for uid in reversed(list(self._layouts)):
             layout = self._layouts[uid]
+            if not getattr(layout.typedef, "show_header_color_swatch", True):
+                continue
             x1, y1, x2, y2 = self._node_header_swatch_rect(layout)
             if x1 <= mx <= x2 and y1 <= my <= y2:
                 return uid

@@ -239,7 +239,7 @@ def test_visible_fps_counter_has_stable_semantic_target(monkeypatch):
     ctx = _FpsContext()
     panel._render_fps_counter(ctx)
 
-    assert ctx.labels == ["FPS: 0 (0.0 ms)"]
+    assert ctx.labels == ["FPS: --"]
     assert ctx.semantic_items == [
-        ("performance", "FPS: 0 (0.0 ms)", False, _GAME_VIEW_FPS_SEMANTIC_ID),
+        ("performance", "FPS: --", False, _GAME_VIEW_FPS_SEMANTIC_ID),
     ]

@@ -2034,7 +2034,7 @@ def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
         "asset.texture.sprite.columns",
     )
 
-    ctx.button(t("sprite.auto_slice"), lambda: _auto_slice(settings, ss))
+    ctx.button(t("sprite.auto_slice"), lambda: _auto_slice_and_save(state, ss))
     ctx.record_semantic_item(
         "button", t("sprite.auto_slice"), True, "asset.texture.sprite.auto_slice",
     )
@@ -2063,6 +2063,14 @@ def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
             idx += 1
     settings.sprite_frames = frames
     ss.selected_frame = -1
+
+
+def _auto_slice_and_save(state: _State, ss: _SpriteEditorState):
+    settings = state.settings
+    if not isinstance(settings, TextureImportSettings):
+        return
+    _auto_slice(settings, ss)
+    _auto_save_sprite(state)
 
 
 def _auto_save_sprite(state: _State):
@@ -2386,6 +2394,7 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
                     _commit_frame_edge_drag(ss, frame, ss.tex_w, ss.tex_h)
                     ss.drag_frame_idx = -1
                     ss.drag_edge = ""
+                    _auto_save_sprite(state)
 
             for idx, frame in enumerate(settings.sprite_frames):
                 if idx == ss.drag_frame_idx and ss.drag_edge:

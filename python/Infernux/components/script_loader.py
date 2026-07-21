@@ -36,6 +36,22 @@ class ScriptLoadError(Exception):
 
 # Maps normalised absolute path → error message string
 _script_errors: dict[str, str] = {}
+_script_error_revision = 0
+
+
+def _set_script_error_key(key: str, message: str | None) -> None:
+    """Update one normalized error entry and advance the change revision."""
+    global _script_error_revision
+    previous = _script_errors.get(key)
+    if message is None:
+        if key not in _script_errors:
+            return
+        _script_errors.pop(key, None)
+    else:
+        if previous == message:
+            return
+        _script_errors[key] = message
+    _script_error_revision += 1
 
 
 def _normalize_script_path(file_path: str) -> str:
@@ -84,7 +100,7 @@ def _record_script_error(file_path: str, exc: Exception) -> None:
     import traceback
     norm = _normalize_script_path(file_path)
     tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    _script_errors[norm] = tb_str
+    _set_script_error_key(norm, tb_str)
     # Also log to Console so the user sees it
     try:
         from Infernux.debug import Debug
@@ -119,12 +135,12 @@ def _load_script_module(file_path: str, module_name: str):
 
 def set_script_error(file_path: str, message: str) -> None:
     """Record an error message for a script (no exception object needed)."""
-    _script_errors[_normalize_script_path(file_path)] = message
+    _set_script_error_key(_normalize_script_path(file_path), message)
 
 
 def _clear_script_error(file_path: str) -> None:
     """Clear any previously recorded error for *file_path*."""
-    _script_errors.pop(_normalize_script_path(file_path), None)
+    _set_script_error_key(_normalize_script_path(file_path), None)
 
 
 def clear_deleted_script_errors(path: str) -> list[str]:
@@ -144,12 +160,12 @@ def clear_deleted_script_errors(path: str) -> list[str]:
         prefix = normalized.rstrip("\\/") + os.sep
         for key in list(_script_errors.keys()):
             if key == normalized or key.startswith(prefix):
-                _script_errors.pop(key, None)
+                _set_script_error_key(key, None)
                 removed.append(key)
         return removed
 
     if normalized in _script_errors:
-        _script_errors.pop(normalized, None)
+        _set_script_error_key(normalized, None)
         removed.append(normalized)
     return removed
 
@@ -162,6 +178,11 @@ def get_script_errors() -> dict[str, str]:
 def has_script_errors() -> bool:
     """Return True if any loaded script has unresolved errors."""
     return bool(_script_errors)
+
+
+def get_script_error_revision() -> int:
+    """Return a monotonic revision changed only when diagnostics change."""
+    return _script_error_revision
 
 
 def get_script_error_by_path(file_path: str) -> Optional[str]:

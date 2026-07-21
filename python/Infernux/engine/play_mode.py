@@ -887,6 +887,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 continue
 
             new_comp._script_guid = target_guid
+            new_comp._script_path = script_path_abs
 
             try:
                 self._apply_py_component_state(new_comp, state)
@@ -895,9 +896,17 @@ class PlayModeManager(PlayModeSerializationMixin):
                     f"Failed to apply state to reloaded component '{target_type_name}': {exc}"
                 )
 
-            if hasattr(obj, "remove_py_component"):
-                obj.remove_py_component(old_comp)
-            obj.add_py_component(new_comp)
+            replace = getattr(obj, "replace_py_component", None)
+            if callable(replace):
+                if replace(old_comp, new_comp) is None:
+                    Debug.log_error(
+                        f"Failed to replace reloaded component '{target_type_name}' on object {object_id}"
+                    )
+                    continue
+            else:
+                if hasattr(obj, "remove_py_component"):
+                    obj.remove_py_component(old_comp)
+                obj.add_py_component(new_comp)
             reloaded_count += 1
 
         if reloaded_count > 0:
@@ -907,6 +916,75 @@ class PlayModeManager(PlayModeSerializationMixin):
             except Exception as exc:
                 Debug.log_suppressed("PlayModeManager.reload_components.bump_inspector_structure", exc)
             Debug.log_internal(f"Reloaded {reloaded_count} component(s) from {os.path.basename(script_path_abs)}")
+
+    def mark_components_missing_for_script(self, script_guid: str, file_path: str) -> int:
+        """Replace live instances of a deleted script with field-preserving placeholders."""
+        target_guid = str(script_guid or "").strip()
+        if not target_guid:
+            return 0
+
+        scene_manager = self._get_scene_manager()
+        scene = scene_manager.get_active_scene() if scene_manager else None
+        if scene is None:
+            return 0
+
+        from Infernux.components.missing_script import MissingScript, create_missing_script_component
+
+        replacements = []
+        for obj in scene.get_all_objects():
+            if not hasattr(obj, "get_py_components"):
+                continue
+            for component in list(obj.get_py_components()):
+                if isinstance(component, MissingScript):
+                    continue
+                if (getattr(component, "_script_guid", "") or "") != target_guid:
+                    continue
+                state = self._serialize_py_component(component)
+                replacements.append((obj.id, component, state))
+
+        replaced = 0
+        for object_id, old_component, state in replacements:
+            obj = scene.find_by_id(object_id)
+            if obj is None:
+                continue
+            fields = dict(state.get("fields", {}))
+            fields["__type_name__"] = state["type_name"]
+            fields["__component_id__"] = state["component_id"]
+            missing = create_missing_script_component(
+                type_name=state["type_name"],
+                script_guid=target_guid,
+                type_guid=state["type_guid"],
+                module_name=state.get("module_name", ""),
+                qualified_name=state.get("qualified_name", ""),
+                fields=fields,
+                error=f"Script asset is missing: {file_path}",
+            )
+            missing.enabled = bool(state.get("enabled", True))
+            missing._script_path = str(file_path or "")
+            missing._deserialize_fields_document(fields, _skip_on_after_deserialize=True)
+            replace = getattr(obj, "replace_py_component", None)
+            if callable(replace):
+                if replace(old_component, missing) is None:
+                    Debug.log_error(
+                        f"Failed to preserve missing component '{state['type_name']}' on object {object_id}"
+                    )
+                    continue
+            else:
+                if hasattr(obj, "remove_py_component"):
+                    obj.remove_py_component(old_component)
+                obj.add_py_component(missing)
+            replaced += 1
+
+        if replaced:
+            try:
+                from Infernux.engine.undo import _bump_inspector_structure
+                _bump_inspector_structure()
+            except Exception as exc:
+                Debug.log_suppressed("PlayModeManager.mark_components_missing.bump_inspector_structure", exc)
+            Debug.log_internal(
+                f"Marked {replaced} component(s) missing after deleting {os.path.basename(file_path)}"
+            )
+        return replaced
 
     # ========================================================================
     # Scene Snapshot (for runtime isolation)

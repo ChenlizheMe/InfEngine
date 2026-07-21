@@ -24,6 +24,10 @@ def has_script_errors() -> bool:
     """Return True if any loaded script has unresolved errors."""
     ...
 
+def get_script_error_revision() -> int:
+    """Return a monotonic revision changed only when diagnostics change."""
+    ...
+
 def get_script_error_by_path(file_path: str) -> Optional[str]:
     """Return the error string for *file_path*, or ``None`` if it loaded OK."""
     ...

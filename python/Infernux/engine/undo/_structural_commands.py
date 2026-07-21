@@ -118,6 +118,92 @@ class DeleteGameObjectCommand(UndoCommand):
             fn([])
 
 
+class DeleteGameObjectsCommand(UndoCommand):
+    """Delete a selection as one hierarchy transaction.
+
+    Selected descendants are covered by their selected ancestor's document and
+    therefore must not be snapshotted or recreated independently.  Restoring
+    roots in ascending sibling order preserves the exact hierarchy ordering.
+    """
+
+    _selection_restore_fn: Optional[Callable[[List[int]], None]] = None
+
+    def __init__(self, object_ids: List[int], description: str = "Delete GameObjects"):
+        super().__init__(description)
+        self._entries: List[dict] = []
+        self._pre_delete_selection_ids = _get_current_selection_ids()
+
+        scene = _get_active_scene()
+        if not scene:
+            return
+
+        selected_ids = {int(object_id) for object_id in object_ids}
+        roots = []
+        for object_id in object_ids:
+            obj = scene.find_by_id(int(object_id))
+            if obj is None:
+                continue
+            parent = obj.get_parent()
+            has_selected_ancestor = False
+            while parent is not None:
+                if int(parent.id) in selected_ids:
+                    has_selected_ancestor = True
+                    break
+                parent = parent.get_parent()
+            if not has_selected_ancestor:
+                roots.append(obj)
+
+        seen = set()
+        for obj in roots:
+            object_id = int(obj.id)
+            if object_id in seen:
+                continue
+            seen.add(object_id)
+            parent = obj.get_parent()
+            transform = getattr(obj, "transform", None)
+            self._entries.append({
+                "object_id": object_id,
+                "document": _snapshot_object(obj),
+                "parent_id": int(parent.id) if parent else None,
+                "sibling_index": int(transform.get_sibling_index()) if transform else 0,
+            })
+
+    @staticmethod
+    def _entry_order(entry: dict) -> tuple[int, int]:
+        parent_id = entry["parent_id"]
+        return (-1 if parent_id is None else int(parent_id), int(entry["sibling_index"]))
+
+    def execute(self) -> None:
+        scene = _get_active_scene()
+        if not scene:
+            return
+        # Destroy from the end of each sibling list so earlier indices do not
+        # shift while the transaction is being applied.
+        for entry in sorted(self._entries, key=self._entry_order, reverse=True):
+            obj = scene.find_by_id(entry["object_id"])
+            if obj is not None:
+                _destroy_game_object_immediately(scene, obj)
+
+    def undo(self) -> None:
+        from Infernux.engine.undo._recreate import _recreate_game_object_from_document
+
+        for entry in sorted(self._entries, key=self._entry_order):
+            _recreate_game_object_from_document(
+                entry["document"], entry["parent_id"], entry["sibling_index"])
+        if self._entries:
+            _bump_inspector_structure()
+            _notify_gizmos_scene_changed()
+        fn = type(self)._selection_restore_fn
+        if fn and self._pre_delete_selection_ids:
+            fn(self._pre_delete_selection_ids)
+
+    def redo(self) -> None:
+        self.execute()
+        fn = type(self)._selection_restore_fn
+        if fn:
+            fn([])
+
+
 class ReparentCommand(UndoCommand):
     """Undo/redo changing the parent of a GameObject."""
 

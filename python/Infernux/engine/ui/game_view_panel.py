@@ -57,12 +57,10 @@ class GameViewPanel(EditorPanel):
         "_last_game_width",
         "_last_game_height",
         "_game_camera_was_enabled",
-        "_fps_accum_time",
-        "_fps_accum_frames",
+        "_fps_sample_time",
+        "_fps_sample_frame",
         "_display_fps",
         "_display_frame_ms",
-        "_game_fps_accum_time",
-        "_game_fps_accum_frames",
         "_display_game_fps",
         "_display_game_frame_ms",
         "_cached_fps_text",
@@ -108,14 +106,13 @@ class GameViewPanel(EditorPanel):
         self._fit_mode = True            # When True, scale auto-adjusts to fill area
         self._settings_loaded = False
 
-        # FPS display uses a 1-second rolling update to avoid noisy per-frame jitter.
-        self._fps_accum_time = 0.0
-        self._fps_accum_frames = 0
+        # Sample the renderer's real frame serial once per second. UI rendering
+        # has its own 60 Hz cadence and must not be counted as engine frames.
+        self._fps_sample_time = None
+        self._fps_sample_frame = None
         self._display_fps = 0.0
         self._display_frame_ms = 0.0
         # Game-only FPS (excludes editor panel overhead)
-        self._game_fps_accum_time = 0.0
-        self._game_fps_accum_frames = 0
         self._display_game_fps = 0.0
         self._display_game_frame_ms = 0.0
 
@@ -382,26 +379,41 @@ class GameViewPanel(EditorPanel):
 
     def _render_fps_counter(self, ctx):
         """FPS counter (right-aligned, Unity-style)."""
-        dt = Time.unscaled_delta_time
-        game_dt = Time.game_delta_time
-        if dt > 0.0:
-            self._fps_accum_time += dt
-            self._fps_accum_frames += 1
-            if game_dt > 0.0:
-                self._game_fps_accum_time += game_dt
-                self._game_fps_accum_frames += 1
-            if self._fps_accum_time >= 1.0:
-                self._display_fps = self._fps_accum_frames / self._fps_accum_time
-                self._display_frame_ms = (self._fps_accum_time / self._fps_accum_frames) * 1000.0
-                self._fps_accum_time = 0.0
-                self._fps_accum_frames = 0
-                if self._game_fps_accum_frames > 0 and self._game_fps_accum_time > 0.0:
-                    self._display_game_frame_ms = (self._game_fps_accum_time / self._game_fps_accum_frames) * 1000.0
-                    self._display_game_fps = 1000.0 / self._display_game_frame_ms
-                self._game_fps_accum_time = 0.0
-                self._game_fps_accum_frames = 0
+        is_playing = self._is_playing()
+        native_engine = getattr(self._engine, '_engine', None)
+        snapshot = getattr(native_engine, 'renderer_frame_snapshot', None) if is_playing else None
+        now = _pc()
+        if snapshot is not None:
+            frame = int(snapshot.get('frame', 0))
+            if self._fps_sample_time is None or frame < self._fps_sample_frame:
+                self._fps_sample_time = now
+                self._fps_sample_frame = frame
+            else:
+                elapsed = now - self._fps_sample_time
+                if elapsed >= 1.0:
+                    completed_frames = frame - self._fps_sample_frame
+                    self._display_fps = completed_frames / elapsed
+                    self._display_frame_ms = (
+                        elapsed * 1000.0 / completed_frames if completed_frames > 0 else 0.0
+                    )
+                    game_frame_ms = float(snapshot.get('game_only_frame_ms', 0.0))
+                    self._display_game_frame_ms = max(game_frame_ms, 0.0)
+                    self._display_game_fps = (
+                        1000.0 / game_frame_ms if game_frame_ms > 0.0 else 0.0
+                    )
+                    self._fps_sample_time = now
+                    self._fps_sample_frame = frame
+        elif not is_playing:
+            self._fps_sample_time = None
+            self._fps_sample_frame = None
+            self._display_fps = 0.0
+            self._display_frame_ms = 0.0
 
-        fps_text = f"FPS: {self._display_fps:.0f} ({self._display_frame_ms:.1f} ms)"
+        fps_text = (
+            f"FPS: {self._display_fps:.0f} ({self._display_frame_ms:.1f} ms)"
+            if is_playing and self._fps_sample_time is not None
+            else "FPS: --"
+        )
         if fps_text != getattr(self, '_cached_fps_text', None):
             self._cached_fps_text = fps_text
             self._cached_fps_text_w, _ = ctx.calc_text_size(fps_text)

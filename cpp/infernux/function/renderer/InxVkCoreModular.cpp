@@ -198,7 +198,7 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     m_deviceConfig.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     m_deviceConfig.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
 
-#if defined(INFERNUX_VULKAN_VALIDATION_LAYERS)
+#if INFERNUX_VULKAN_VALIDATION_LAYERS
     m_deviceConfig.enableValidationLayers = true;
 #endif
 

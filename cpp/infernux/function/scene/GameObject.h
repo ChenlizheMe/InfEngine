@@ -352,6 +352,11 @@ class GameObject
     /// @brief Remove a component instance by pointer
     bool RemoveComponent(Component *component);
 
+    /// Replace one Python proxy in place without running the removed script's
+    /// lifecycle. Script asset deletion and hot reload are identity-preserving
+    /// editor operations, not user-requested component destruction.
+    Component *ReplacePythonComponent(Component *current, std::unique_ptr<Component> replacement);
+
     /// @brief Check whether a component can be removed (not blocked by RequireComponent).
     ///
     /// Returns false when another sibling component declares a requirement (via

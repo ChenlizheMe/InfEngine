@@ -2,6 +2,9 @@
 
 import threading
 
+from Infernux.components import InxComponent
+from Infernux.components.component_identity import bind_asset_script_guid
+from Infernux.components.missing_script import MissingScript
 from Infernux.engine.play_mode import PlayModeState, PlayModeEvent, PlayModeManager
 
 
@@ -10,6 +13,52 @@ class _FakeRuntimeGameObject:
         self.id = object_id
         self.name = name
         self.transform = object()
+
+
+class _FakeScriptGameObject:
+    def __init__(self, object_id: int, component):
+        self.id = object_id
+        self.components = [component]
+        self.remove_calls = 0
+        self.add_calls = 0
+        self.replace_calls = 0
+
+    def get_py_components(self):
+        return list(self.components)
+
+    def remove_py_component(self, component):
+        self.remove_calls += 1
+        self.components.remove(component)
+
+    def add_py_component(self, component):
+        self.add_calls += 1
+        self.components.append(component)
+
+    def replace_py_component(self, old_component, new_component):
+        self.replace_calls += 1
+        index = self.components.index(old_component)
+        new_component._component_id = old_component.component_id
+        self.components[index] = new_component
+        return new_component
+
+
+class _FakeScriptScene:
+    def __init__(self, game_object):
+        self.game_object = game_object
+
+    def get_all_objects(self):
+        return [self.game_object]
+
+    def find_by_id(self, object_id):
+        return self.game_object if object_id == self.game_object.id else None
+
+
+class _FakeScriptSceneManager:
+    def __init__(self, scene):
+        self.scene = scene
+
+    def get_active_scene(self):
+        return self.scene
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -147,6 +196,63 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         mgr.set_asset_database("fake_db")
         assert mgr._asset_database == "fake_db"
+
+    def test_deleted_script_becomes_missing_and_recovers_with_identity(self, tmp_path, monkeypatch):
+        script_guid = "1" * 32
+
+        class ScriptProbe(InxComponent):
+            speed: float = 1.0
+
+        bind_asset_script_guid(ScriptProbe, script_guid)
+        component = ScriptProbe()
+        component._script_guid = script_guid
+        component.speed = 7.5
+        original_id = component.component_id
+
+        game_object = _FakeScriptGameObject(91, component)
+        scene = _FakeScriptScene(game_object)
+        manager = PlayModeManager()
+        monkeypatch.setattr(
+            manager,
+            "_get_scene_manager",
+            lambda: _FakeScriptSceneManager(scene),
+        )
+
+        script = tmp_path / "script_probe.py"
+        assert manager.mark_components_missing_for_script(script_guid, str(script)) == 1
+        missing = game_object.components[0]
+        assert isinstance(missing, MissingScript)
+        assert missing.component_id == original_id
+        assert missing._script_guid == script_guid
+        assert missing._serialize_fields_document()["speed"] == 7.5
+        assert game_object.replace_calls == 1
+        assert game_object.remove_calls == 0
+        assert game_object.add_calls == 0
+
+        script.write_text(
+            "from Infernux.components import InxComponent\n"
+            "class ScriptProbe(InxComponent):\n"
+            "    speed: float = 1.0\n",
+            encoding="utf-8",
+        )
+
+        class _AssetDatabase:
+            def get_guid_from_path(self, path):
+                assert path == str(script.resolve())
+                return script_guid
+
+        manager.set_asset_database(_AssetDatabase())
+        manager.reload_components_from_script(str(script))
+
+        restored = game_object.components[0]
+        assert not isinstance(restored, MissingScript)
+        assert restored.component_id == original_id
+        assert restored._script_guid == script_guid
+        assert restored._script_path == str(script.resolve())
+        assert restored.speed == 7.5
+        assert game_object.replace_calls == 2
+        assert game_object.remove_calls == 0
+        assert game_object.add_calls == 0
 
     def test_register_runtime_hidden_object_tracks_ids(self):
         mgr = PlayModeManager()

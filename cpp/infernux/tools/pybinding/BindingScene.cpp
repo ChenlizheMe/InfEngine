@@ -43,6 +43,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 
@@ -1654,6 +1655,43 @@ void RegisterSceneBindings(py::module_ &m)
                 return false;
             },
             py::arg("component"), "Remove a Python component instance")
+        .def(
+            "replace_py_component",
+            [](GameObject *obj, py::object oldComponent, py::object newComponent) -> py::object {
+                if (!py::hasattr(newComponent, "_bind_native_component")) {
+                    throw py::type_error("replacement Python component requires _bind_native_component");
+                }
+
+                for (const auto &component : obj->GetAllComponents()) {
+                    auto *oldProxy = dynamic_cast<PyComponentProxy *>(component.get());
+                    if (!oldProxy) {
+                        continue;
+                    }
+                    py::object attached = oldProxy->GetPyComponent();
+                    if (attached.is_none() || !attached.is(oldComponent)) {
+                        continue;
+                    }
+
+                    auto replacement = std::make_unique<PyComponentProxy>(newComponent);
+                    Component *published = obj->ReplacePythonComponent(oldProxy, std::move(replacement));
+                    if (!published) {
+                        throw std::runtime_error("attached Python component replacement failed");
+                    }
+
+                    if (py::hasattr(oldComponent, "_detach_native_binding_for_replacement")) {
+                        oldComponent.attr("_detach_native_binding_for_replacement")();
+                    } else if (py::hasattr(oldComponent, "_invalidate_native_binding")) {
+                        oldComponent.attr("_invalidate_native_binding")();
+                    }
+
+                    auto *newProxy = static_cast<PyComponentProxy *>(published);
+                    newProxy->RebindPythonMirror();
+                    return newComponent;
+                }
+                return py::none();
+            },
+            py::arg("old_component"), py::arg("new_component"),
+            "Replace an attached Python component without changing native identity or invoking on_destroy")
         .def("get_parent", &GameObject::GetParent, py::return_value_policy::reference, "Get the parent GameObject")
         .def("set_parent", &GameObject::SetParent, py::arg("parent"), py::arg("world_position_stays") = true,
              "Set the parent GameObject (None for root). world_position_stays preserves world transform.")

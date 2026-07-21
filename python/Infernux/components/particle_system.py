@@ -66,7 +66,14 @@ class ParticleSystem(InxComponent):
     _submitted_batch_ids: set[int]
     _data_interface_overrides: dict[str, AssetReference]
     _playing: bool = False
+    _editor_preview_active: bool = False
+
     def awake(self):
+        if hasattr(self, "_submitted_batch_ids"):
+            self._remove_native_batch()
+        self._initialize_runtime_state(bool(self.play_on_awake))
+
+    def _initialize_runtime_state(self, playing: bool) -> None:
         self._runtimes = []
         self._cpu_emitter_indices = []
         self._gpu_controllers = []
@@ -88,7 +95,12 @@ class ParticleSystem(InxComponent):
         self._batch_id = (int(self.game_object.id) << 16) ^ int(self.component_id)
         if self._batch_id == 0:
             self._batch_id = int(self.component_id) or 1
-        self._playing = bool(self.play_on_awake)
+        self._playing = bool(playing)
+        self._editor_preview_active = False
+
+    def _ensure_runtime_state(self, *, playing: bool = False) -> None:
+        if not hasattr(self, "_submitted_batch_ids"):
+            self._initialize_runtime_state(playing)
 
     def start(self):
         if not self._has_runtime():
@@ -275,6 +287,43 @@ class ParticleSystem(InxComponent):
             self._update_gpu_particle_graph(scaled_delta_time)
         if self._runtimes:
             self._update_particle_graph(scaled_delta_time)
+
+    def editor_preview_begin(self) -> bool:
+        """Prepare this component for Scene View simulation outside Play mode."""
+        self._ensure_runtime_state(playing=True)
+        self._editor_preview_active = True
+        if not self._has_runtime() and not self._compile_asset():
+            return False
+        self.restart()
+        return True
+
+    def editor_preview_update(self, delta_time: float, speed: float = 1.0) -> bool:
+        if not getattr(self, "_editor_preview_active", False):
+            return False
+        self.update(max(0.0, float(delta_time)) * max(0.0, float(speed)))
+        return self._has_runtime()
+
+    def editor_preview_play(self) -> bool:
+        self._ensure_runtime_state(playing=True)
+        self._editor_preview_active = True
+        if not self._has_runtime() and not self._compile_asset():
+            return False
+        return self.play()
+
+    def editor_preview_pause(self) -> bool:
+        if not getattr(self, "_editor_preview_active", False):
+            return False
+        return self.pause()
+
+    def editor_preview_stop(self) -> bool:
+        self._ensure_runtime_state(playing=False)
+        self._editor_preview_active = True
+        return self.stop()
+
+    def editor_preview_end(self) -> None:
+        if getattr(self, "_editor_preview_active", False):
+            self.pause()
+            self._editor_preview_active = False
 
     def on_disable(self):
         self._remove_native_batch()

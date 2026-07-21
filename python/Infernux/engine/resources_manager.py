@@ -165,7 +165,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         elif event.kind is AssetFsEventKind.MODIFIED:
             self._commit_modified(event.path)
         elif event.kind is AssetFsEventKind.DELETED:
-            self._commit_deleted(event.path)
+            self._commit_deleted(event.path, guid_hint=event.guid_hint)
         elif event.kind is AssetFsEventKind.MOVED:
             self._commit_moved(event.path, event.destination)
         elif event.kind is AssetFsEventKind.META_DELETED:
@@ -223,7 +223,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         elif path.lower().endswith((".vert", ".frag")):
             self._notify_shader_reloaded(path)
 
-    def _commit_deleted(self, path: str) -> None:
+    def _commit_deleted(self, path: str, *, guid_hint: str = "") -> None:
         from Infernux.core.assets import AssetManager
         # A replace-in-place write may surface as a delete followed by a move
         # or create. Watcher delivery can be reordered, so never let a stale
@@ -235,6 +235,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             path,
             database=self._asset_database,
             suppress_watcher_echo=False,
+            guid_hint=guid_hint,
         ):
             raise RuntimeError(f"asset deletion failed: {path}")
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
@@ -611,6 +612,18 @@ class ResourcesManager:
                 cb(file_path, event_type)
             except Exception as e:
                 Debug.log_error(f"Script catalog callback failed: {e}")
+
+    def reload_moved_script(self, old_path: str, new_path: str) -> None:
+        """Publish and hot-reload a GUID-stable script move on the main thread."""
+        if self._event_handler is None:
+            return
+        from Infernux.components.script_loader import clear_deleted_script_errors
+        from Infernux.components.registry import unregister_component_script
+
+        clear_deleted_script_errors(old_path)
+        unregister_component_script(old_path)
+        self.notify_script_catalog_changed(new_path, "moved")
+        self._event_handler._check_script(new_path, catalog_event=None)
 
     def register_shader_cache_callback(self, callback):
         """Register a callback to be called when shader cache should be invalidated."""

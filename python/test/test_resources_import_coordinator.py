@@ -9,6 +9,7 @@ import pytest
 
 from Infernux.core.assets import AssetManager
 from Infernux.engine.engine import Engine
+from Infernux.engine.import_coordinator import AssetFsEventKind
 from Infernux.engine.resources_manager import (
     ResourceChangeHandler,
     ResourcesManager,
@@ -124,6 +125,33 @@ def test_python_bytecode_and_cache_sidecars_never_enter_import_queue(tmp_path):
     assert handler.process_pending_reloads(force=True) == 0
     assert database.queries == []
     assert database.mutations == []
+
+
+def test_deleted_script_event_preserves_queued_guid_for_missing_component_replacement(monkeypatch, tmp_path):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    calls = []
+    _patch_asset_manager(monkeypatch, calls)
+    script = tmp_path / "Attached.py"
+    path = str(script.resolve())
+    database.guid_by_path[path] = "attached-guid"
+    marked = []
+
+    class _PlayMode:
+        @staticmethod
+        def mark_components_missing_for_script(guid, deleted_path):
+            marked.append((guid, deleted_path))
+
+    from Infernux.engine.play_mode import PlayModeManager
+    monkeypatch.setattr(PlayModeManager, "instance", classmethod(lambda _cls: _PlayMode()))
+
+    handler._coordinator.submit(
+        AssetFsEventKind.DELETED,
+        path,
+        guid_hint="attached-guid",
+    )
+    assert handler.process_pending_reloads(force=True) == 1
+    assert marked == [("attached-guid", path)]
 
 
 def test_reimport_meta_write_suppresses_meta_deleted_echo(monkeypatch, tmp_path):

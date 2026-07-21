@@ -3,6 +3,7 @@
 #include "../GpuResidency.h"
 
 #include "InxVkCoreModular.h"
+#include "gui/EditorGuiFrameScheduler.h"
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUIRenderable.h"
 #include "gui/InxResourcePreviewer.h"
@@ -37,6 +38,8 @@ class InxGUI
         return m_dpiScale;
     }
     void BuildFrame();
+    [[nodiscard]] bool BuildFrameIfDue(bool force = false);
+    void RequestFrame() noexcept;
 
     void RecordCommand(VkCommandBuffer cmdBuf);
     void Shutdown();
@@ -193,7 +196,10 @@ class InxGUI
     uint64_t m_textureEvictionCount = 0;
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
+    bool m_hasDrawData = false;
+    EditorGuiFrameScheduler m_editorFrameScheduler;
 
+    void BuildFrameInternal();
     void ApplyPendingDockTabSelections();
     void PumpTextureUploads();
     void DeferTextureRelease(ImGuiTextureResource resource);

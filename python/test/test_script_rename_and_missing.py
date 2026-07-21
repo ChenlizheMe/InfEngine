@@ -31,6 +31,27 @@ def test_asset_script_bind_is_stable_across_module_rename(tmp_path):
     assert first.__module__ != second.__module__
 
 
+def test_asset_guid_binding_rekeys_numeric_component_data_store(tmp_path):
+    script = tmp_path / "numeric_probe.py"
+    script.write_text(
+        "from Infernux.components import InxComponent\n"
+        "class NumericProbe(InxComponent):\n"
+        "    speed: float = 1.0\n",
+        encoding="utf-8",
+    )
+    component_type = load_component_class_from_file(str(script), "NumericProbe")
+    bind_asset_script_guid(component_type, "9" * 32)
+
+    instance = component_type()
+    try:
+        assert instance._cds_slot is not None
+        assert instance._cds_class_id is not None
+        instance.speed = 4.25
+        assert instance.speed == 4.25
+    finally:
+        instance._call_on_destroy()
+
+
 def test_create_component_instance_accepts_stale_module_type_guid(tmp_path, monkeypatch):
     script = tmp_path / "jump.py"
     script.write_text(
@@ -93,6 +114,58 @@ def test_create_component_instance_follows_class_rename_in_one_component_script(
     assert instance.__class__._get_type_guid() == component_type_guid(script_guid, "RenamedComponent")
 
 
+def test_deleted_asset_is_not_resurrected_from_loaded_type_registry():
+    from Infernux.components import InxComponent
+
+    class DeletedProbe(InxComponent):
+        pass
+
+    script_guid = "7" * 32
+    type_guid = bind_asset_script_guid(DeletedProbe, script_guid)
+
+    class _DeletedDb:
+        @staticmethod
+        def get_path_from_guid(_guid):
+            return ""
+
+    instance, path = create_component_instance(
+        script_guid,
+        type_guid,
+        "DeletedProbe",
+        asset_database=_DeletedDb(),
+        prefer_loaded_type=True,
+    )
+
+    assert path is None
+    assert instance is None
+
+
+def test_builtin_component_can_use_loaded_type_without_project_asset():
+    from Infernux.components import InxComponent
+
+    class BuiltinProbe(InxComponent):
+        pass
+
+    script_guid = BuiltinProbe._intrinsic_script_guid_
+    type_guid = BuiltinProbe._get_type_guid()
+
+    class _ProjectDb:
+        @staticmethod
+        def get_path_from_guid(_guid):
+            return ""
+
+    instance, path = create_component_instance(
+        script_guid,
+        type_guid,
+        "BuiltinProbe",
+        asset_database=_ProjectDb(),
+        prefer_loaded_type=True,
+    )
+
+    assert path is None
+    assert isinstance(instance, BuiltinProbe)
+
+
 def test_missing_script_placeholder_preserves_identity_and_fields():
     fields = {
         "__type_name__": "Gone",
@@ -115,6 +188,12 @@ def test_missing_script_placeholder_preserves_identity_and_fields():
     encoded = missing._serialize_fields_document()
     assert encoded["speed"] == 3.5
     assert encoded["__type_name__"] == "Gone"
+
+    from Infernux.mcp.tools.common import serialize_component
+
+    snapshot = serialize_component(missing)
+    assert snapshot["broken_script"] is True
+    assert snapshot["broken_error"] == "file missing"
 
 
 def test_vec3_writeback_proxy_is_subscriptable():

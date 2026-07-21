@@ -792,9 +792,16 @@ def delete_item(item_path: str, asset_database=None):
         return False
 
     is_dir = os.path.isdir(item_path)
+    deleted_script_guid = ""
     if is_dir or item_path.lower().endswith('.py'):
         from Infernux.components.script_loader import clear_deleted_script_errors
         clear_deleted_script_errors(item_path)
+    if not is_dir and item_path.lower().endswith('.py'):
+        if asset_database is not None:
+            deleted_script_guid = str(asset_database.get_guid_from_path(item_path) or "").strip()
+        if not deleted_script_guid:
+            from Infernux.core.asset_types import read_meta_guid
+            deleted_script_guid = read_meta_guid(item_path)
 
     # For .prefab files, detach all scene instances BEFORE deleting the asset.
     # This turns prefab instances into regular scene objects instead of leaving
@@ -805,7 +812,11 @@ def delete_item(item_path: str, asset_database=None):
     # Notify BEFORE removing the file — GUID is still resolvable at this point
     if not is_dir:
         from Infernux.core.assets import AssetManager
-        if not AssetManager.delete_asset(item_path, database=asset_database):
+        if not AssetManager.delete_asset(
+            item_path,
+            database=asset_database,
+            guid_hint=deleted_script_guid,
+        ):
             raise RuntimeError(f"AssetDatabase failed to delete '{item_path}'")
 
     try:
@@ -856,7 +867,7 @@ def do_rename(old_path: str, new_name: str, asset_database=None):
 
     if os.path.isfile(old_path):
         _, ext = os.path.splitext(old_path)
-        if ext:
+        if ext and not safe_name.lower().endswith(ext.lower()):
             safe_name += ext
 
     new_path = os.path.join(os.path.dirname(old_path), safe_name)
@@ -898,15 +909,30 @@ def _sync_python_script_class_name_on_rename(old_path: str, new_path: str) -> No
     with open(old_path, "r", encoding="utf-8") as handle:
         content = handle.read()
 
-    pattern = re.compile(
-        rf"^class\s+{re.escape(old_stem)}\b",
-        re.MULTILINE,
-    )
-    matches = list(pattern.finditer(content))
-    if len(matches) != 1:
+    def _pascal_case(stem: str) -> str:
+        return "".join(
+            part[:1].upper() + part[1:]
+            for part in stem.split("_")
+            if part
+        )
+
+    rename_pairs = {
+        old_stem: new_stem,
+        _pascal_case(old_stem): _pascal_case(new_stem),
+    }
+    candidates = []
+    for old_class_name, new_class_name in rename_pairs.items():
+        pattern = re.compile(
+            rf"^class\s+{re.escape(old_class_name)}\b",
+            re.MULTILINE,
+        )
+        matches = list(pattern.finditer(content))
+        candidates.extend((pattern, new_class_name) for _match in matches)
+    if len(candidates) != 1:
         return
 
-    updated = pattern.sub(f"class {new_stem}", content, count=1)
+    pattern, new_class_name = candidates[0]
+    updated = pattern.sub(f"class {new_class_name}", content, count=1)
     if updated == content:
         return
 

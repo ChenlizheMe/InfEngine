@@ -217,12 +217,11 @@ def wire_clipboard(ctx):
         _clipboard["entries"] = entries
         _clipboard["cut"] = bool(cut)
         if cut:
-            from Infernux.engine.undo import CompoundCommand, DeleteGameObjectCommand, UndoManager
-            commands = [DeleteGameObjectCommand(obj.id, "Cut GameObject") for obj in roots]
+            from Infernux.engine.undo import DeleteGameObjectsCommand, UndoManager
             mgr = UndoManager.instance()
             if mgr:
-                cmd = commands[0] if len(commands) == 1 else CompoundCommand(commands, "Cut GameObjects")
-                mgr.execute(cmd)
+                mgr.execute(DeleteGameObjectsCommand(
+                    [obj.id for obj in roots], "Cut GameObjects"))
             else:
                 sfm2 = bs.scene_file_manager
                 for obj in roots:
