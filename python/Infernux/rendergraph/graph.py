@@ -66,12 +66,14 @@ class TextureHandle:
 
     def __init__(self, name: str, format: Format, is_camera_target: bool = False,
                  size: "Optional[Tuple[int, int]]" = None,
-                 size_divisor: int = 0):
+                 size_divisor: int = 0,
+                 samples: int = 1):
         self.name = name
         self.format = format
         self.is_camera_target = is_camera_target
         self.size = size  # (width, height) or None for scene target size
         self.size_divisor = size_divisor  # >1: scene_size / divisor
+        self.samples = samples  # 0 inherits the graph's frame MSAA setting
 
     @property
     def is_depth(self) -> bool:
@@ -138,6 +140,7 @@ class RenderPassBuilder:
         self._buffer_accesses: List[Tuple[str, str]] = []
         self._write_colors: Dict[int, str] = {}  # slot -> texture_name (MRT)
         self._write_depth: Optional[str] = None
+        self._resolve_color: Optional[str] = None
         self._clear_color: Optional[Tuple[float, float, float, float]] = None
         self._clear_depth: Optional[float] = None
         self._action = "none"
@@ -228,6 +231,16 @@ class RenderPassBuilder:
         """
         handle = self._resolve(texture)
         self._write_depth = handle.name
+        return self
+
+    def write_resolve(self, texture) -> "RenderPassBuilder":
+        """Resolve multisampled color slot 0 into a single-sample texture.
+
+        The pass must declare exactly one multisampled color output.  The
+        resolve target must have the same format and extent with ``samples=1``.
+        """
+        handle = self._resolve(texture)
+        self._resolve_color = handle.name
         return self
 
     def read_buffer(self, buffer, usage: str = "storage") -> "RenderPassBuilder":
@@ -691,6 +704,7 @@ class RenderGraph:
         camera_target: bool = False,
         size: "Optional[Tuple[int, int]]" = None,
         size_divisor: int = 0,
+        samples: "Optional[int]" = None,
     ) -> TextureHandle:
         """Create a texture resource.
 
@@ -710,6 +724,9 @@ class RenderGraph:
                 scene render target size. Useful for shadow maps.
             size_divisor: Divide scene resolution by this value (>1).
                 Mutually exclusive with *size*.
+            samples: Texture sample count. ``None`` inherits frame MSAA for
+                the camera target and scene-sized depth; other textures default
+                to one sample. Explicit values are 0 (inherit), 1, 2, 4, or 8.
         """
         if size is not None and size_divisor > 0:
             raise ValueError(
@@ -732,6 +749,21 @@ class RenderGraph:
             raise ValueError(
                 f"Texture '{name}' cannot be a camera_target depth texture"
             )
+        if samples is None:
+            samples = (
+                0
+                if camera_target or (format.is_depth and size is None and size_divisor == 0)
+                else 1
+            )
+        samples = int(samples)
+        if samples not in (0, 1, 2, 4, 8):
+            raise ValueError(
+                f"Texture '{name}' samples must be 0, 1, 2, 4, or 8"
+            )
+        if camera_target and samples not in (0,):
+            raise ValueError(
+                f"Texture '{name}' is a camera target and must inherit frame MSAA"
+            )
 
         resource_name = self._scoped_name(name)
         if (self._find_texture_exact(resource_name) is not None
@@ -741,7 +773,7 @@ class RenderGraph:
             )
 
         handle = TextureHandle(resource_name, format, is_camera_target=camera_target,
-                               size=size, size_divisor=size_divisor)
+                               size=size, size_divisor=size_divisor, samples=samples)
         self._textures.append(handle)
         return handle
 
@@ -1105,6 +1137,7 @@ class RenderGraph:
             )
         if p._pass_type != "raster" and (
             p._write_colors or p._write_depth is not None
+            or p._resolve_color is not None
             or p._clear_color is not None or p._clear_depth is not None
             or (p._pass_type != "compute" and p._reads)
         ):
@@ -1228,6 +1261,61 @@ class RenderGraph:
                     f"Pass '{p._name}' writes color texture '{p._write_depth}' as depth"
                 )
 
+        attachment_names = list(p._write_colors.values())
+        if p._write_depth is not None:
+            attachment_names.append(p._write_depth)
+        attachment_samples = {
+            (
+                self._msaa_samples
+                if texture_map[name].samples == 0 and self._msaa_samples > 0
+                else texture_map[name].samples
+            )
+            for name in attachment_names
+        }
+        known_attachment_samples = {value for value in attachment_samples if value > 0}
+        if len(known_attachment_samples) > 1:
+            raise ValueError(
+                f"Pass '{p._name}' attachments use different sample counts: "
+                f"{sorted(known_attachment_samples)}"
+            )
+
+        if p._resolve_color is not None:
+            resolve = texture_map.get(p._resolve_color)
+            if resolve is None:
+                raise ValueError(
+                    f"Pass '{p._name}' resolves into unknown texture '{p._resolve_color}'"
+                )
+            if resolve.is_depth or resolve.is_camera_target:
+                raise ValueError(
+                    f"Pass '{p._name}' resolve target must be a transient color texture"
+                )
+            if sorted(p._write_colors) != [0]:
+                raise ValueError(
+                    f"Pass '{p._name}' resolve requires exactly one color output at slot 0"
+                )
+            source = texture_map[p._write_colors[0]]
+            source_samples = (
+                self._msaa_samples
+                if source.samples == 0 and self._msaa_samples > 0
+                else source.samples
+            )
+            if source_samples not in (2, 4, 8):
+                raise ValueError(
+                    f"Pass '{p._name}' resolve source must be multisampled"
+                )
+            if resolve.samples != 1:
+                raise ValueError(
+                    f"Pass '{p._name}' resolve target must use samples=1"
+                )
+            if source.format != resolve.format:
+                raise ValueError(
+                    f"Pass '{p._name}' resolve source and target formats must match"
+                )
+            if source.size != resolve.size or source.size_divisor != resolve.size_divisor:
+                raise ValueError(
+                    f"Pass '{p._name}' resolve source and target extents must match"
+                )
+
         for sampler_name, tex_name in p._input_bindings.items():
             if tex_name not in texture_map:
                 raise ValueError(
@@ -1311,6 +1399,7 @@ class RenderGraph:
                 td.height = tex.size[1]
             if tex.size_divisor > 0:
                 td.size_divisor = tex.size_divisor
+            td.samples = tex.samples
             tex_list.append(td)
         desc.textures = tex_list
 
@@ -1364,6 +1453,7 @@ class RenderGraph:
             # MRT support: serialize write_colors as list of (slot, name) pairs
             pd.write_colors = list(p._write_colors.items())
             pd.write_depth = p._write_depth or ""
+            pd.resolve_color = p._resolve_color or ""
             accesses = []
             for resource, access_type in p._buffer_accesses:
                 access = GraphBufferAccessDesc()
@@ -1427,6 +1517,9 @@ class RenderGraph:
                     "format": int(tex.format),
                     "is_backbuffer": tex.is_camera_target,
                     "is_depth": tex.is_depth,
+                    "size": tex.size,
+                    "size_divisor": tex.size_divisor,
+                    "samples": tex.samples,
                 }
                 for tex in self._textures
             ],
@@ -1446,6 +1539,7 @@ class RenderGraph:
                     "buffer_accesses": list(p._buffer_accesses),
                     "write_colors": dict(p._write_colors),
                     "write_depth": p._write_depth or "",
+                    "resolve_color": p._resolve_color or "",
                     "clear_color": p._clear_color,
                     "clear_depth": p._clear_depth,
                     "action": p._action,
@@ -1464,6 +1558,7 @@ class RenderGraph:
                 for p in self._passes
             ],
             "output_texture": self._output,
+            "msaa_samples": self._msaa_samples,
         }
 
     # ---- Debug ----
@@ -1474,7 +1569,8 @@ class RenderGraph:
         lines.append(f"  Textures ({len(self._textures)}):")
         for tex in self._textures:
             tag = " [camera_target]" if tex.is_camera_target else ""
-            lines.append(f"    - {tex.name} ({tex.format.name}){tag}")
+            samples = "frame" if tex.samples == 0 else str(tex.samples)
+            lines.append(f"    - {tex.name} ({tex.format.name}, samples={samples}){tag}")
 
         lines.append(f"  Buffers ({len(self._buffers)}):")
         for buffer in self._buffers:
@@ -1490,6 +1586,8 @@ class RenderGraph:
                     lines.append(f"          writes color[{slot}]: {name}")
             if p._write_depth:
                 lines.append(f"          writes depth: {p._write_depth}")
+            if p._resolve_color:
+                lines.append(f"          resolves color[0]: {p._resolve_color}")
             if p._buffer_accesses:
                 accesses = ", ".join(f"{name}:{access}" for name, access in p._buffer_accesses)
                 lines.append(f"          buffers: {accesses}")

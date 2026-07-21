@@ -1299,7 +1299,10 @@ std::string RenderGraph::GetDebugString() const
         if (!pass.reads.empty()) {
             oss << "    Reads: ";
             for (const auto &read : pass.reads) {
-                oss << m_resources[read.handle.id].name << " ";
+                oss << m_resources[read.handle.id].name << "#" << read.handle.version;
+                if (static_cast<int>(read.usage & ResourceUsage::VersionDependency) != 0)
+                    oss << "[order]";
+                oss << " ";
             }
             oss << "\n";
         }
@@ -1307,7 +1310,7 @@ std::string RenderGraph::GetDebugString() const
         if (!pass.writes.empty()) {
             oss << "    Writes: ";
             for (const auto &write : pass.writes) {
-                oss << m_resources[write.handle.id].name << " ";
+                oss << m_resources[write.handle.id].name << "#" << write.handle.version << " ";
             }
             oss << "\n";
         }

@@ -23,6 +23,7 @@ class TextureHandle:
     is_camera_target: bool
     size: Optional[Tuple[int, int]]
     size_divisor: int
+    samples: int
 
     def __init__(
         self,
@@ -31,6 +32,7 @@ class TextureHandle:
         is_camera_target: bool = ...,
         size: Optional[Tuple[int, int]] = ...,
         size_divisor: int = ...,
+        samples: int = ...,
     ) -> None: ...
     @property
     def is_depth(self) -> bool:
@@ -70,6 +72,9 @@ class RenderPassBuilder:
         ...
     def write_depth(self, texture: str | TextureHandle) -> RenderPassBuilder:
         """Declare a depth attachment output for this pass."""
+        ...
+    def write_resolve(self, texture: str | TextureHandle) -> RenderPassBuilder:
+        """Resolve color slot 0 into a single-sample texture."""
         ...
     def read_buffer(
         self, buffer: str | BufferHandle, usage: str = ...
@@ -198,6 +203,7 @@ class RenderGraph:
         camera_target: bool = ...,
         size: Optional[Tuple[int, int]] = ...,
         size_divisor: int = ...,
+        samples: Optional[int] = ...,
     ) -> TextureHandle:
         """Declare a transient texture resource in the render graph."""
         ...

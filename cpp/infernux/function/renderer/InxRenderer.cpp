@@ -2421,6 +2421,7 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.sceneRenderGraphExecutionCount = m_sceneRenderGraph->GetExecutionCount();
         snapshot.sceneRenderGraphCurrentExecuted = m_sceneRenderGraph->HasExecutedCurrentGraph();
         snapshot.sceneRenderGraphPassNames = m_sceneRenderGraph->GetExecutedPassNames();
+        snapshot.sceneRenderGraphDebug = m_sceneRenderGraph->GetDebugString();
         if (m_sceneRenderGraph->HasCachedDrawCalls())
             snapshot.sceneDrawCallCount = m_sceneRenderGraph->GetCachedDrawCalls().size();
         if (m_sceneRenderGraph->HasCachedShadowDrawCalls())
@@ -2431,6 +2432,7 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.gameRenderGraphExecutionCount = m_gameRenderGraph->GetExecutionCount();
         snapshot.gameRenderGraphCurrentExecuted = m_gameRenderGraph->HasExecutedCurrentGraph();
         snapshot.gameRenderGraphPassNames = m_gameRenderGraph->GetExecutedPassNames();
+        snapshot.gameRenderGraphDebug = m_gameRenderGraph->GetDebugString();
         if (m_gameRenderGraph->HasCachedDrawCalls())
             snapshot.gameDrawCallCount = m_gameRenderGraph->GetCachedDrawCalls().size();
         if (m_gameRenderGraph->HasCachedShadowDrawCalls())

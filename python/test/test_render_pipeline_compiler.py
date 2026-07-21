@@ -85,6 +85,41 @@ def test_compiler_partitions_otherwise_without_drawing_explicit_queues_twice():
     assert sorted(queue_ranges) == [(0, 0), (1, 100), (101, 200), (201, 2500)]
 
 
+def test_msaa_pipeline_resolves_isolated_routes_and_sky_before_effects():
+    pipeline = PipelineBuilder()
+    pipeline.frame(hdr=True, msaa=4)
+    with pipeline.opaque() as opaque:
+        opaque.forward(Queue(1, 100)).effects("route_fx")
+        opaque.otherwise().forward()
+    pipeline.sky()
+
+    graph = RenderGraph("MSAA Routes")
+    compile_pipeline_definition(pipeline.build(), graph)
+    description = graph.build()
+    textures = {texture.name: texture for texture in description.textures}
+    route_draws = [
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name.startswith("route/opaque.")
+        and render_pass.name.split("/")[-1].startswith("Draw_")
+    ]
+    sky = next(
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name == "sky/SkyboxPass"
+    )
+
+    assert route_draws
+    assert all(render_pass.resolve_color.endswith("/color") for render_pass in route_draws)
+    assert all(
+        textures[render_pass.write_colors[0][1]].samples == 4
+        for render_pass in route_draws
+    )
+    assert all(textures[render_pass.resolve_color].samples == 1 for render_pass in route_draws)
+    assert sky.resolve_color == "sky/color"
+    assert textures[sky.write_colors[0][1]].samples == 4
+
+
 @pytest.mark.parametrize("path", [Path.FORWARD_PLUS, Path.DEFERRED])
 def test_compiler_never_silently_substitutes_forward_for_unfinished_paths(path):
     pipeline = PipelineBuilder()

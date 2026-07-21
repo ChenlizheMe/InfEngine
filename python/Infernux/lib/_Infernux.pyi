@@ -1874,6 +1874,7 @@ class GraphTextureDesc:
     width: int
     height: int
     size_divisor: int
+    samples: int
 
     def __init__(self) -> None: ...
 
@@ -1938,6 +1939,7 @@ class GraphPassDesc:
     read_textures: List[str]
     write_colors: List[Tuple[int, str]]
     write_depth: str
+    resolve_color: str
     buffer_accesses: List[GraphBufferAccessDesc]
     side_effect: bool
     clear_color: bool

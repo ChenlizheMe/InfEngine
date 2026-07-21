@@ -10,6 +10,7 @@
 #include "Frustum.h"
 #include "FullscreenRenderer.h"
 #include "InxVkCoreModular.h"
+#include "MsaaPolicy.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
 #include "particle/ParticleGpuBounds.h"
@@ -40,7 +41,17 @@ namespace
 bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
 {
     return a.name == b.name && a.format == b.format && a.isBackbuffer == b.isBackbuffer && a.isDepth == b.isDepth &&
-           a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor;
+           a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor && a.samples == b.samples;
+}
+
+uint32_t EffectiveTextureSamples(const GraphTextureDesc &texture, uint32_t frameSamples)
+{
+    return texture.isBackbuffer || texture.samples == 0 ? frameSamples : texture.samples;
+}
+
+bool TextureExtentsMatch(const GraphTextureDesc &a, const GraphTextureDesc &b)
+{
+    return a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor;
 }
 
 bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
@@ -103,10 +114,10 @@ VkBufferUsageFlags ToVkBufferUsage(uint32_t usage)
 bool PassDescEquals(const GraphPassDesc &a, const GraphPassDesc &b)
 {
     return a.name == b.name && a.type == b.type && a.readTextures == b.readTextures && a.writeColors == b.writeColors &&
-           a.writeDepth == b.writeDepth && a.clearColor == b.clearColor && a.clearDepth == b.clearDepth &&
-           a.clearColorR == b.clearColorR && a.clearColorG == b.clearColorG && a.clearColorB == b.clearColorB &&
-           a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue && a.sideEffect == b.sideEffect &&
-           a.bufferAccesses.size() == b.bufferAccesses.size() &&
+           a.writeDepth == b.writeDepth && a.resolveColor == b.resolveColor && a.clearColor == b.clearColor &&
+           a.clearDepth == b.clearDepth && a.clearColorR == b.clearColorR && a.clearColorG == b.clearColorG &&
+           a.clearColorB == b.clearColorB && a.clearColorA == b.clearColorA && a.clearDepthValue == b.clearDepthValue &&
+           a.sideEffect == b.sideEffect && a.bufferAccesses.size() == b.bufferAccesses.size() &&
            std::equal(a.bufferAccesses.begin(), a.bufferAccesses.end(), b.bufferAccesses.begin(), BufferAccessEquals) &&
            CommandListEquals(a.commands, b.commands);
 }
@@ -140,8 +151,9 @@ bool GraphDescEquals(const RenderGraphDescription &a, const RenderGraphDescripti
     return true;
 }
 
-bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
+bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples)
 {
+    const uint32_t frameSamples = desc.msaaSamples > 0 ? static_cast<uint32_t>(desc.msaaSamples) : activeFrameSamples;
     std::unordered_map<std::string, const GraphTextureDesc *> textures;
     textures.reserve(desc.textures.size());
 
@@ -172,6 +184,16 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
         if (tex.isBackbuffer && tex.isDepth) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
                          "' cannot be both backbuffer and depth");
+            return false;
+        }
+        if (tex.samples != 0 && !IsValidMsaaSampleCount(static_cast<int>(tex.samples))) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name, "' has invalid sample count ",
+                         tex.samples);
+            return false;
+        }
+        if (tex.isBackbuffer && tex.samples != 0) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: backbuffer texture '", tex.name,
+                         "' must inherit the frame sample count");
             return false;
         }
         if (!tex.isBackbuffer && !rhi::IsValidPixelFormat(tex.format)) {
@@ -259,8 +281,8 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
                          "' command does not match its execution domain");
             return false;
         }
-        if (pass.type != GraphPassType::Raster &&
-            (!pass.writeColors.empty() || !pass.writeDepth.empty() || pass.clearColor || pass.clearDepth)) {
+        if (pass.type != GraphPassType::Raster && (!pass.writeColors.empty() || !pass.writeDepth.empty() ||
+                                                   !pass.resolveColor.empty() || pass.clearColor || pass.clearDepth)) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: non-raster pass '", pass.name,
                          "' declares raster attachments");
             return false;
@@ -361,8 +383,15 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
         }
 
         std::unordered_set<int> colorSlots;
-        bool writesBackbuffer = false;
-        bool writesSingleSampleTarget = false;
+        uint32_t attachmentSamples = 0;
+        const auto acceptAttachmentSamples = [&](const GraphTextureDesc &texture) {
+            const uint32_t samples = EffectiveTextureSamples(texture, frameSamples);
+            if (attachmentSamples == 0) {
+                attachmentSamples = samples;
+                return true;
+            }
+            return attachmentSamples == samples;
+        };
 
         for (const auto &[slot, textureName] : pass.writeColors) {
             if (slot < 0 || slot >= 8 || !colorSlots.insert(slot).second) {
@@ -381,8 +410,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
                              textureName, "' as color slot ", slot);
                 return false;
             }
-            writesBackbuffer |= texIt->second->isBackbuffer;
-            writesSingleSampleTarget |= !texIt->second->isBackbuffer;
+            if (!acceptAttachmentSamples(*texIt->second)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' uses color and depth attachments with different sample counts");
+                return false;
+            }
         }
 
         if (!pass.writeDepth.empty()) {
@@ -397,15 +429,14 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
                              pass.writeDepth, "' as depth");
                 return false;
             }
-            if (command && command->type == GraphCommandType::DrawRenderers) {
-                const bool singleSampleDepth =
-                    (texIt->second->width > 0 && texIt->second->height > 0) || texIt->second->sizeDivisor > 1;
-                writesSingleSampleTarget |= singleSampleDepth;
-                writesBackbuffer |= !singleSampleDepth;
+            if (!acceptAttachmentSamples(*texIt->second)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' uses color and depth attachments with different sample counts");
+                return false;
             }
         }
 
-        if (command && command->type == GraphCommandType::DrawRenderers) {
+        if (command && command->type != GraphCommandType::FullscreenQuad) {
             for (const auto &textureName : pass.readTextures) {
                 const bool sampledInput =
                     std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
@@ -415,20 +446,29 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc)
                 auto texIt = textures.find(textureName);
                 if (texIt == textures.end() || !texIt->second->isDepth)
                     continue;
-                const bool singleSampleDepth =
-                    (texIt->second->width > 0 && texIt->second->height > 0) || texIt->second->sizeDivisor > 1;
-                writesSingleSampleTarget |= singleSampleDepth;
-                writesBackbuffer |= !singleSampleDepth;
+                if (!acceptAttachmentSamples(*texIt->second)) {
+                    INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                                 "' uses color and depth attachments with different sample counts");
+                    return false;
+                }
             }
         }
 
-        // A graph that explicitly disables MSAA can safely combine the
-        // camera-sized main depth target with single-sample transient MRTs.
-        // The renderer applies the 1x request before executing the graph.
-        if (writesBackbuffer && writesSingleSampleTarget && desc.msaaSamples != 1) {
-            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                         "' mixes backbuffer-sampled and single-sample transient attachments");
-            return false;
+        if (!pass.resolveColor.empty()) {
+            const auto resolve = textures.find(pass.resolveColor);
+            const auto source = pass.writeColors.size() == 1 && pass.writeColors.front().first == 0
+                                    ? textures.find(pass.writeColors.front().second)
+                                    : textures.end();
+            if (resolve == textures.end() || source == textures.end() || resolve->second->isBackbuffer ||
+                resolve->second->isDepth || pass.resolveColor == pass.writeColors.front().second ||
+                EffectiveTextureSamples(*source->second, frameSamples) <= 1 ||
+                EffectiveTextureSamples(*resolve->second, frameSamples) != 1 ||
+                source->second->format != resolve->second->format ||
+                !TextureExtentsMatch(*source->second, *resolve->second)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' has an invalid MSAA color resolve contract");
+                return false;
+            }
         }
 
         for (const auto &textureName : pass.readTextures) {
@@ -623,7 +663,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return;
     }
 
-    if (topologyChanged && !ValidatePythonGraphDescription(normalizedDesc)) {
+    if (topologyChanged && !ValidatePythonGraphDescription(normalizedDesc, static_cast<uint32_t>(callbackSamples))) {
         return;
     }
 
@@ -658,6 +698,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     m_hasShadowCasterPass = false;
 
     InxVkCoreModular *vkCore = m_vkCore;
+    const uint32_t graphFrameSamples = normalizedDesc.msaaSamples > 0
+                                           ? static_cast<uint32_t>(normalizedDesc.msaaSamples)
+                                           : static_cast<uint32_t>(callbackSamples);
 
     for (const auto &passDesc : normalizedDesc.passes) {
         const GraphCommandDesc *command = PrimaryCommand(passDesc);
@@ -684,10 +727,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(command->shaderTarget);
         if (commandType == GraphCommandType::DrawRenderers) {
             materialPass.colorFormats.clear();
-            bool writesBackbuffer = passDesc.writeColors.empty() &&
-                                    command->shaderTarget != ShaderCompileTarget::Depth &&
-                                    command->shaderTarget != ShaderCompileTarget::Shadow;
-            bool writesSingleSampleTarget = false;
+            uint32_t passSamples = graphFrameSamples;
             auto colorOutputs = passDesc.writeColors;
             std::sort(colorOutputs.begin(), colorOutputs.end(),
                       [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
@@ -697,14 +737,14 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                     normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
                     [&textureName](const GraphTextureDesc &textureDesc) { return textureDesc.name == textureName; });
                 if (texture != normalizedDesc.textures.end()) {
-                    writesBackbuffer |= texture->isBackbuffer;
-                    writesSingleSampleTarget |= !texture->isBackbuffer;
+                    passSamples = EffectiveTextureSamples(*texture, graphFrameSamples);
                     materialPass.colorFormats.push_back(
                         texture->isBackbuffer ? rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat())
                                               : texture->format);
                 }
             }
-            if (colorOutputs.empty() && writesBackbuffer) {
+            if (colorOutputs.empty() && command->shaderTarget != ShaderCompileTarget::Depth &&
+                command->shaderTarget != ShaderCompileTarget::Shadow) {
                 materialPass.colorFormats.push_back(
                     rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat()));
             }
@@ -714,11 +754,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                     [&passDesc](const GraphTextureDesc &desc) { return desc.name == passDesc.writeDepth; });
                 materialPass.depthFormat =
                     depth != normalizedDesc.textures.end() ? depth->format : rhi::PixelFormat::Undefined;
-                if (depth != normalizedDesc.textures.end()) {
-                    const bool singleSampleDepth = (depth->width > 0 && depth->height > 0) || depth->sizeDivisor > 1;
-                    writesSingleSampleTarget |= singleSampleDepth;
-                    writesBackbuffer |= !singleSampleDepth;
-                }
+                if (depth != normalizedDesc.textures.end())
+                    passSamples = EffectiveTextureSamples(*depth, graphFrameSamples);
             } else {
                 materialPass.depthFormat = rhi::PixelFormat::Undefined;
                 for (const std::string &textureName : passDesc.readTextures) {
@@ -733,17 +770,12 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                                                     });
                     if (depth != normalizedDesc.textures.end()) {
                         materialPass.depthFormat = depth->format;
-                        const bool singleSampleDepth =
-                            (depth->width > 0 && depth->height > 0) || depth->sizeDivisor > 1;
-                        writesSingleSampleTarget |= singleSampleDepth;
-                        writesBackbuffer |= !singleSampleDepth;
+                        passSamples = EffectiveTextureSamples(*depth, graphFrameSamples);
                         break;
                     }
                 }
             }
-            materialPass.samples = writesSingleSampleTarget && !writesBackbuffer
-                                       ? rhi::SampleCount::One
-                                       : rhi::FromVkSampleCount(callbackSamples);
+            materialPass.samples = ToRhiSampleCount(static_cast<int>(passSamples));
             m_pythonMaterialPasses[passDesc.name] = materialPass;
         }
 
@@ -1079,7 +1111,7 @@ std::string SceneRenderGraph::GetDebugString() const
     }
 
     // Add underlying RenderGraph debug info
-    if (m_renderGraph && m_graphBuilt) {
+    if (m_renderGraph) {
         result += "\nUnderlying RenderGraph:\n";
         result += m_renderGraph->GetDebugString();
     }
@@ -1199,8 +1231,11 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
                 texW = std::max(1u, width / tex.sizeDivisor);
                 texH = std::max(1u, height / tex.sizeDivisor);
             }
+            const uint32_t requestedSamples =
+                tex.samples == 0 ? static_cast<uint32_t>(m_sceneTarget->GetMsaaSampleCount()) : tex.samples;
             vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
-                tex.name, texW, texH, rhi::ToVkFormat(tex.format), VK_SAMPLE_COUNT_1_BIT, true);
+                tex.name, texW, texH, rhi::ToVkFormat(tex.format),
+                rhi::ToVkSampleCount(ToRhiSampleCount(static_cast<int>(requestedSamples))), true);
             customRTHandles[tex.name] = handle;
         }
     }
@@ -1210,8 +1245,11 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
         if (tex.isDepth && ((tex.width > 0 && tex.height > 0) || tex.sizeDivisor > 1)) {
             uint32_t texW = tex.width > 0 ? tex.width : std::max(1u, width / tex.sizeDivisor);
             uint32_t texH = tex.height > 0 ? tex.height : std::max(1u, height / tex.sizeDivisor);
+            const uint32_t requestedSamples =
+                tex.samples == 0 ? static_cast<uint32_t>(m_sceneTarget->GetMsaaSampleCount()) : tex.samples;
             vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
-                tex.name, texW, texH, rhi::ToVkFormat(tex.format), VK_SAMPLE_COUNT_1_BIT, true);
+                tex.name, texW, texH, rhi::ToVkFormat(tex.format),
+                rhi::ToVkSampleCount(ToRhiSampleCount(static_cast<int>(requestedSamples))), true);
             customRTHandles[tex.name] = handle;
         }
     }
@@ -1985,13 +2023,12 @@ void SceneRenderGraph::BuildRenderGraph()
             bool needsCreateDepth = writesDepth && !sharedDepth.IsValid();
             bool passReadsDepth = readsDepth && !writesDepth;
 
-            // MSAA resolve is performed explicitly after graph execution
-            // (ResolveSceneMsaa) to keep ALL passes compatible with
-            // m_internalRenderPass (which has no resolve attachment).
-            // Using subpass resolve would add a resolve attachment to this
-            // pass's VkRenderPass, making it incompatible with pipelines
-            // created against m_internalRenderPass (attachment count mismatch).
             vk::ResourceHandle resolveTarget;
+            if (!passDesc.resolveColor.empty()) {
+                const auto resolveIt = customRTHandles.find(passDesc.resolveColor);
+                if (resolveIt != customRTHandles.end())
+                    resolveTarget = resolveIt->second;
+            }
 
             // =================================================================
             // FullscreenQuad passes: fullscreen triangle with named shader,
@@ -2142,9 +2179,9 @@ void SceneRenderGraph::BuildRenderGraph()
                     if (slot == 0 && !texName.empty()) {
                         auto texIt = texDescMap.find(texName);
                         if (texIt != texDescMap.end()) {
-                            if (texIt->second->isBackbuffer && msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-                                fsSamples = rhi::FromVkSampleCount(msaaSamples);
-                            }
+                            const uint32_t outputSamples =
+                                EffectiveTextureSamples(*texIt->second, static_cast<uint32_t>(msaaSamples));
+                            fsSamples = ToRhiSampleCount(static_cast<int>(outputSamples));
                             if (!texIt->second->isBackbuffer && texIt->second->format != rhi::PixelFormat::Undefined) {
                                 fsColorFormat = texIt->second->format;
                             }
@@ -2396,13 +2433,20 @@ void SceneRenderGraph::BuildRenderGraph()
                 } else if (!depth.IsValid() && writesDepth && depthForThisPass.IsValid()) {
                     // Later pass that also writes depth (rare)
                     writtenDepthVersion = builder.WriteDepth(depthForThisPass);
-                    if (sharedDepth.IsValid() && writtenDepthVersion.IsValid() &&
-                        sharedDepth.id == writtenDepthVersion.id) {
-                        sharedDepth = writtenDepthVersion;
-                    }
                 } else if (!depth.IsValid() && passReadsDepth && depthForThisPass.IsValid()) {
                     // Pass reads depth (e.g., skybox, transparent) — attach as read-only
                     builder.ReadDepth(depthForThisPass);
+                }
+
+                // Scene-sized depth textures are pre-registered in customRTHandles,
+                // so later writers commonly take the first branch above. Keep the
+                // shared read-only alias on the same SSA version; otherwise skybox
+                // and editor passes keep reading the initial depth after it has been
+                // overwritten, which creates a real physical-resource scheduling
+                // cycle in the versioned RenderGraph.
+                if (sharedDepth.IsValid() && writtenDepthVersion.IsValid() &&
+                    sharedDepth.id == writtenDepthVersion.id) {
+                    sharedDepth = writtenDepthVersion;
                 }
 
                 // ----- Color reads (non-depth textures) -----

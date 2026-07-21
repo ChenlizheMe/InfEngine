@@ -147,6 +147,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
                 depth,
                 shadow_map,
                 stages,
+                definition.frame.msaa,
             )
             scene.composite(domain_image, label=stable_id)
             continue
@@ -154,10 +155,12 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
             _declare_effect(graph, stages[stable_id], scene.effect_resources())
             continue
         if operation == "sky":
-            with graph.add_pass("SkyboxPass") as render_pass:
-                render_pass.read(depth)
-                render_pass.write_color(scene.current)
-                render_pass.draw_skybox()
+            _compile_sky(
+                graph,
+                scene,
+                color_format,
+                definition.frame.msaa,
+            )
             continue
         if operation == "screen_ui":
             _commit_scene_to_camera(graph, scene, camera_color)
@@ -177,6 +180,7 @@ def _compile_domain(
     depth,
     shadow_map,
     stages: dict[str, EffectStageDefinition],
+    msaa_samples: int,
 ):
     routes = {route.route_id: route for route in domain.all_routes()}
     otherwise = next((route for route in routes.values() if route.is_otherwise), None)
@@ -212,6 +216,7 @@ def _compile_domain(
                 shadow_map,
                 stages,
                 inline_target=accumulator.current,
+                msaa_samples=msaa_samples,
             )
             _consume_route_contribution(
                 accumulator,
@@ -231,6 +236,7 @@ def _compile_domain(
                 depth,
                 shadow_map,
                 stages,
+                msaa_samples,
             )
             accumulator.composite(image, label=stable_id)
             continue
@@ -252,6 +258,7 @@ def _compile_layer(
     depth,
     shadow_map,
     stages: dict[str, EffectStageDefinition],
+    msaa_samples: int,
 ):
     del definition, domain
     accumulator = _new_transparent_accumulator(
@@ -272,6 +279,7 @@ def _compile_layer(
                 shadow_map,
                 stages,
                 inline_target=accumulator.current,
+                msaa_samples=msaa_samples,
             )
             _consume_route_contribution(
                 accumulator,
@@ -296,6 +304,7 @@ def _compile_route(
     stages: dict[str, EffectStageDefinition],
     *,
     inline_target,
+    msaa_samples: int,
 ):
     if route.path is not Path.FORWARD:
         raise NotImplementedError(
@@ -310,7 +319,7 @@ def _compile_route(
             f"custom route policy for {route.route_id!r} requires a registered compiler"
         )
 
-    if policy is RoutePolicy.INLINE:
+    if policy is RoutePolicy.INLINE and msaa_samples == 1:
         _draw_route(
             route,
             selectors,
@@ -325,18 +334,28 @@ def _compile_route(
         return None
 
     with graph.name_scope(f"route/{route.route_id}"):
-        route_color = graph.create_texture("color", format=color_format)
+        route_color = graph.create_texture("color", format=color_format, samples=1)
+        draw_color = route_color
+        if msaa_samples > 1:
+            draw_color = graph.create_texture(
+                "color_msaa",
+                format=color_format,
+                samples=msaa_samples,
+            )
         with graph.add_pass("Clear") as render_pass:
-            render_pass.write_color(route_color)
+            render_pass.write_color(draw_color)
+            if draw_color is not route_color:
+                render_pass.write_resolve(route_color)
             render_pass.set_clear(color=_CLEAR_TRANSPARENT)
 
     _draw_route(
         route,
         selectors,
         graph,
-        route_color,
+        draw_color,
         depth,
         shadow_map,
+        resolve=route_color if draw_color is not route_color else None,
     )
 
     original_color = None
@@ -372,6 +391,8 @@ def _draw_route(
     color,
     depth,
     shadow_map,
+    *,
+    resolve=None,
 ) -> None:
     sort_mode = "back_to_front" if route.domain == "transparent" else "front_to_back"
     with graph.name_scope(f"route/{route.route_id}"):
@@ -381,6 +402,8 @@ def _draw_route(
             ) as render_pass:
                 render_pass.write_color(color)
                 render_pass.write_depth(depth)
+                if resolve is not None:
+                    render_pass.write_resolve(resolve)
                 if shadow_map is not None:
                     render_pass.set_texture("shadowMap", shadow_map)
                 render_pass.draw_renderers(
@@ -388,6 +411,45 @@ def _draw_route(
                     sort_mode=sort_mode,
                     material_pass="forward",
                 )
+
+
+def _compile_sky(
+    graph,
+    scene: _ImageAccumulator,
+    color_format,
+    msaa_samples: int,
+) -> None:
+    if msaa_samples == 1:
+        with graph.add_pass("SkyboxPass") as render_pass:
+            render_pass.read(scene.depth)
+            render_pass.write_color(scene.current)
+            render_pass.draw_skybox()
+        return
+
+    previous_current = scene.current
+    with graph.name_scope("sky"):
+        sky_msaa = graph.create_texture(
+            "color_msaa",
+            format=color_format,
+            samples=msaa_samples,
+        )
+        sky_resolved = graph.create_texture(
+            "color",
+            format=color_format,
+            samples=1,
+        )
+        with graph.add_pass("PrimeSceneColor") as render_pass:
+            render_pass.set_texture("_SourceTex", previous_current)
+            render_pass.write_color(sky_msaa)
+            render_pass.fullscreen_quad("fullscreen_blit")
+        with graph.add_pass("SkyboxPass") as render_pass:
+            render_pass.read(scene.depth)
+            render_pass.write_color(sky_msaa)
+            render_pass.write_resolve(sky_resolved)
+            render_pass.draw_skybox()
+
+    scene.current = sky_resolved
+    scene.alternate = previous_current
 
 
 def _effect_resources(color, depth, shadow_map) -> dict:

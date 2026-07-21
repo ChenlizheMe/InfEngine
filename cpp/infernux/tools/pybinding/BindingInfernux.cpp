@@ -971,6 +971,8 @@ PYBIND11_MODULE(_Infernux, m)
                                        snapshot.gameRenderGraphCurrentExecuted;
                                    result["scene_render_graph_pass_names"] = snapshot.sceneRenderGraphPassNames;
                                    result["game_render_graph_pass_names"] = snapshot.gameRenderGraphPassNames;
+                                   result["scene_render_graph_debug"] = snapshot.sceneRenderGraphDebug;
+                                   result["game_render_graph_debug"] = snapshot.gameRenderGraphDebug;
                                    result["game_render_ms"] = snapshot.gameRenderMs;
                                    result["game_only_frame_ms"] = snapshot.gameOnlyFrameMs;
                                    result["scene_update_ms"] = snapshot.sceneUpdateMs;

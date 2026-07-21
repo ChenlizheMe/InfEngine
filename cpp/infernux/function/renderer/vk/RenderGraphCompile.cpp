@@ -354,6 +354,12 @@ bool RenderGraph::TopologicalSort()
     if (m_executionOrder.size() != activePasses.size()) {
         INXLOG_ERROR("RenderGraph::TopologicalSort - Cycle detected! Sorted ", m_executionOrder.size(), " of ",
                      activePasses.size(), " passes. Versioned graph compilation was rejected.");
+        for (uint32_t passId : activePasses) {
+            if (inDegree[passId] != 0) {
+                INXLOG_ERROR("  unresolved pass [", passId, "] '", m_passes[passId].name, "' has remaining in-degree ",
+                             inDegree[passId]);
+            }
+        }
         m_executionOrder.clear();
         return false;
     }
@@ -602,7 +608,7 @@ bool RenderGraph::IsResourceUsedAfter(uint32_t resourceId, uint32_t passIndex) c
 // ============================================================================
 
 size_t RenderGraph::HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, VkSampleCountFlagBits samples,
-                                         bool clearColor, bool clearDepth, bool storeDepth,
+                                         bool clearColor, bool clearDepth, bool storeColor, bool storeDepth,
                                          VkImageLayout colorFinalLayout, bool hasResolve, VkFormat resolveFormat,
                                          bool hasColorAttachments, bool readOnlyDepth)
 {
@@ -614,6 +620,7 @@ size_t RenderGraph::HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, V
     hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(samples)));
     hashCombine(std::hash<bool>{}(clearColor));
     hashCombine(std::hash<bool>{}(clearDepth));
+    hashCombine(std::hash<bool>{}(storeColor));
     hashCombine(std::hash<bool>{}(storeDepth));
     hashCombine(std::hash<bool>{}(readOnlyDepth));
     hashCombine(std::hash<uint32_t>{}(static_cast<uint32_t>(colorFinalLayout)));
@@ -1131,6 +1138,7 @@ bool RenderGraph::CreateVulkanRenderPasses()
         config.hasDepth = effectiveDepth.IsValid();
         config.clearColor = pass.clearColorEnabled;
         config.clearDepth = pass.clearDepthEnabled;
+        config.storeColor = !hasColorOutputs || IsResourceUsedAfter(pass.colorOutputs[0].id, pass.id);
         config.storeDepth = needStoreDepth;
         // Read-only depth: the pass reads depth (depthInput) but never writes it (no depthOutput).
         // This requires DEPTH_STENCIL_READ_ONLY_OPTIMAL layouts throughout.
@@ -1165,9 +1173,10 @@ bool RenderGraph::CreateVulkanRenderPasses()
 
         // Use RenderPass cache
         // Include MRT attachment count + formats in cache key
-        size_t cacheKey = HashRenderPassConfig(
-            colorFormat, depthFormat, sampleCount, config.clearColor, config.clearDepth, config.storeDepth,
-            config.colorFinalLayout, config.hasResolve, config.resolveFormat, hasColorOutputs, config.readOnlyDepth);
+        size_t cacheKey =
+            HashRenderPassConfig(colorFormat, depthFormat, sampleCount, config.clearColor, config.clearDepth,
+                                 config.storeColor, config.storeDepth, config.colorFinalLayout, config.hasResolve,
+                                 config.resolveFormat, hasColorOutputs, config.readOnlyDepth);
         // Fold MRT info into cache key
         {
             auto hashCombine = [&cacheKey](size_t val) {

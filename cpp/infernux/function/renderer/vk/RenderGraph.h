@@ -916,7 +916,7 @@ class RenderGraph
 
     /// @brief Compute hash for RenderPassConfig (for cache lookup)
     static size_t HashRenderPassConfig(VkFormat colorFmt, VkFormat depthFmt, VkSampleCountFlagBits samples,
-                                       bool clearColor, bool clearDepth, bool storeDepth,
+                                       bool clearColor, bool clearDepth, bool storeColor, bool storeDepth,
                                        VkImageLayout colorFinalLayout, bool hasResolve = false,
                                        VkFormat resolveFormat = VK_FORMAT_UNDEFINED, bool hasColorAttachments = true,
                                        bool readOnlyDepth = false);

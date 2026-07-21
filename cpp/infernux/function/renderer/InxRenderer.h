@@ -82,6 +82,8 @@ struct RendererFrameTelemetrySnapshot
     bool gameRenderGraphCurrentExecuted = false;
     std::vector<std::string> sceneRenderGraphPassNames;
     std::vector<std::string> gameRenderGraphPassNames;
+    std::string sceneRenderGraphDebug;
+    std::string gameRenderGraphDebug;
     double gameRenderMs = 0.0;
     double gameOnlyFrameMs = 0.0;
     double sceneUpdateMs = 0.0;

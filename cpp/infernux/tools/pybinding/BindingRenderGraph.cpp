@@ -108,7 +108,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("width", &GraphTextureDesc::width, "Custom width (0 = use scene target size)")
         .def_readwrite("height", &GraphTextureDesc::height, "Custom height (0 = use scene target size)")
         .def_readwrite("size_divisor", &GraphTextureDesc::sizeDivisor,
-                       "Size divisor relative to scene target (>0: actual = scene / divisor)");
+                       "Size divisor relative to scene target (>0: actual = scene / divisor)")
+        .def_readwrite("samples", &GraphTextureDesc::samples, "Sample count (0=inherit frame MSAA, otherwise 1/2/4/8)");
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())
@@ -130,6 +131,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("write_colors", &GraphPassDesc::writeColors,
                        "MRT color outputs: list of (slot, texture_name) pairs")
         .def_readwrite("write_depth", &GraphPassDesc::writeDepth, "Name of depth output texture")
+        .def_readwrite("resolve_color", &GraphPassDesc::resolveColor,
+                       "Optional single-sample resolve target for color slot 0")
         .def_readwrite("buffer_accesses", &GraphPassDesc::bufferAccesses, "Typed buffer accesses")
         .def_readwrite("side_effect", &GraphPassDesc::sideEffect, "Retain the pass for externally observable work")
         .def_readwrite("clear_color", &GraphPassDesc::clearColor, "Whether to clear color buffer")

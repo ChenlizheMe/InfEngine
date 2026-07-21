@@ -29,7 +29,8 @@ namespace infernux
 /**
  * @brief Backend-neutral command recorded by a graph pass.
  *
- * Commands describe engine rendering operations rather than Vulkan calls so
+ * Commands describe engine rendering operations
+ * rather than Vulkan calls so
  * the same graph artifact can be compiled by another RHI backend later.
  */
 enum class GraphCommandType
@@ -126,6 +127,7 @@ struct GraphTextureDesc
     uint32_t width = 0;                                     ///< Custom width (0 = use scene target size)
     uint32_t height = 0;                                    ///< Custom height (0 = use scene target size)
     uint32_t sizeDivisor = 0;                               ///< >0: actual = scene_size / divisor
+    uint32_t samples = 1;                                   ///< 0 = inherit frame MSAA, otherwise 1/2/4/8
 };
 
 struct GraphBufferDesc
@@ -158,7 +160,8 @@ struct GraphPassDesc
     /// MRT color outputs: list of (slot, texture_name) pairs.
     /// Slot 0 is the primary color output; higher slots enable deferred / GBuffer.
     std::vector<std::pair<int, std::string>> writeColors;
-    std::string writeDepth; ///< Name of depth output texture
+    std::string writeDepth;   ///< Name of depth output texture
+    std::string resolveColor; ///< Optional 1x resolve target for color slot 0
     std::vector<GraphBufferAccessDesc> bufferAccesses;
     bool sideEffect = false;
 

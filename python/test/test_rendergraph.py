@@ -411,6 +411,21 @@ class TestGraphTextures:
         with pytest.raises(ValueError):
             g.set_msaa_samples(3)
 
+    def test_texture_sample_defaults_follow_resource_role(self):
+        graph = RenderGraph("Samples")
+        color = graph.create_texture("color", camera_target=True)
+        depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+        transient = graph.create_texture("transient")
+
+        assert color.samples == 0
+        assert depth.samples == 0
+        assert transient.samples == 1
+
+    def test_invalid_texture_sample_count_raises(self):
+        graph = RenderGraph("Samples")
+        with pytest.raises(ValueError, match="samples"):
+            graph.create_texture("bad", samples=3)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # RenderGraph — pass management
@@ -604,6 +619,27 @@ class TestBuild:
         assert desc.output_texture == "color"
         assert graph.has_injection_point("before_post_process")
         assert graph.has_injection_point("after_post_process")
+
+    def test_multisample_color_resolve_is_serialized(self):
+        graph = RenderGraph("Resolve")
+        graph.set_msaa_samples(4)
+        graph.create_texture("depth", format=Format.D32_SFLOAT)
+        graph.create_texture("route_msaa", format=Format.RGBA16_SFLOAT, samples=4)
+        graph.create_texture("route", format=Format.RGBA16_SFLOAT, samples=1)
+        with graph.add_pass("Route") as render_pass:
+            render_pass.write_color("route_msaa")
+            render_pass.write_depth("depth")
+            render_pass.write_resolve("route")
+            render_pass.draw_renderers()
+        graph.set_output("route")
+
+        description = graph.build()
+        textures = {texture.name: texture for texture in description.textures}
+        route_pass = next(item for item in description.passes if item.name == "Route")
+
+        assert textures["route_msaa"].samples == 4
+        assert textures["route"].samples == 1
+        assert route_pass.resolve_color == "route"
 
     def test_shadow_pass_preserves_light_index(self):
         graph = _make_graph()
