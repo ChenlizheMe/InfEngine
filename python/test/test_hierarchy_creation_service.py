@@ -73,6 +73,26 @@ def test_hierarchy_creation_catalog_includes_image():
     assert service._description_for("ui.image") == "Create Image"
 
 
+def test_creation_explicitly_asks_hierarchy_to_reveal_selected_object():
+    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+
+    selected = []
+    revealed = []
+    service = HierarchyCreationService()
+    service.configure(
+        selection_manager=SimpleNamespace(select=lambda object_id: selected.append(object_id)),
+        undo_tracker=None,
+        hierarchy_panel=SimpleNamespace(
+            set_selected_object_by_id=lambda object_id: revealed.append(object_id)
+        ),
+    )
+
+    service._finalize(_Object(42, "Created"), 0, "Create", select=True, record_undo=False)
+
+    assert selected == [42]
+    assert revealed == [42]
+
+
 def test_ui_element_creation_uses_the_only_existing_canvas_when_context_parent_is_lost():
     from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
     from Infernux.ui import UICanvas

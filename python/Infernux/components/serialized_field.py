@@ -257,6 +257,7 @@ class FieldMetadata:
     default: Any
     range: Optional[Tuple[float, float]] = None  # (min, max) for numeric types
     tooltip: str = ""
+    display_name_key: str = ""  # Optional editor i18n key for the field label
     readonly: bool = False
     header: str = ""  # Group header shown above this field
     space: float = 0.0  # Vertical space before this field
@@ -1407,6 +1408,7 @@ def serialized_field(
     asset_type: Optional[str] = None,
     range: Optional[Tuple[float, float]] = None,
     tooltip: str = "",
+    display_name_key: str = "",
     readonly: bool = False,
     header: str = "",
     space: float = 0.0,
@@ -1428,6 +1430,7 @@ def serialized_field(
         field_type: Explicit field type (auto-detected if not provided)
         range: (min, max) tuple for numeric sliders / bounded drag
         tooltip: Hover text shown in inspector
+        display_name_key: Optional i18n key used for the Inspector label.
         readonly: If True, field cannot be modified in inspector
         header: Group header text shown above this field
         space: Vertical spacing before this field in inspector
@@ -1498,6 +1501,7 @@ def serialized_field(
         default=default,
         range=range,
         tooltip=tooltip,
+        display_name_key=display_name_key,
         readonly=readonly,
         header=header,
         space=space,

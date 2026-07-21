@@ -27,10 +27,11 @@ struct ParticleInstance
 class ParticleDrawCallBuffer
 {
   public:
-    void SetBatch(uint64_t batchId, std::vector<ParticleInstance> instances, const std::string &materialGuid);
+    void SetBatch(uint64_t batchId, std::vector<ParticleInstance> instances, const std::string &materialGuid,
+                  uint64_t ownerObjectId = 0);
     void SetBatchInterleaved(uint64_t batchId, const float *instances, size_t instanceCount,
                              const std::string &materialGuid, const glm::vec3 &origin = glm::vec3(0.0f),
-                             bool validate = true);
+                             bool validate = true, uint64_t ownerObjectId = 0);
     void RemoveBatch(uint64_t batchId);
     void Clear();
 
@@ -44,6 +45,7 @@ class ParticleDrawCallBuffer
         std::vector<ParticleInstance> instances;
         std::shared_ptr<InxMaterial> material;
         std::string materialGuid;
+        uint64_t ownerObjectId = 0;
     };
 
     static const std::vector<Vertex> &QuadVertices();

@@ -65,7 +65,7 @@ class InxGUI
         return m_lastPanelSubTimesMs;
     }
 
-    void Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable);
+    void Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void Unregister(const std::string &name);
     void QueueDockTabSelection(const std::string &windowId);
 
@@ -177,6 +177,7 @@ class InxGUI
 
     std::unordered_map<std::string, std::shared_ptr<InxGUIRenderable>> m_renderables_umap;
     std::vector<std::string> m_renderableOrder;
+    std::unordered_map<std::string, int> m_renderablePriorities;
     std::vector<std::string> m_pendingDockTabSelections;
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> m_lastPanelSubTimesMs;

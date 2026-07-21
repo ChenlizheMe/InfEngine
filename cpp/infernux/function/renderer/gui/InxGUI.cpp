@@ -84,12 +84,14 @@ void InxGUI::Init(SDL_Window *window)
     IMGUI_CHECKVERSION();
     m_imguiContext_ptr = ImGui::CreateContext();
     ImGui::SetCurrentContext(m_imguiContext_ptr);
-    m_imguiContext_ptr->ErrorCallback = [](ImGuiContext *, void *, const char *message) {
+    m_imguiContext_ptr->ErrorCallback = [](ImGuiContext *context, void *, const char *message) {
         static thread_local bool handlingError = false;
         if (handlingError)
             return;
         handlingError = true;
-        INXLOG_ERROR("[ImGui] ", message ? message : "unknown recoverable error");
+        const char *windowName =
+            context != nullptr && context->CurrentWindow != nullptr ? context->CurrentWindow->Name : "<no window>";
+        INXLOG_ERROR("[ImGui] [Window: ", windowName, "] ", message ? message : "unknown recoverable error");
         handlingError = false;
     };
     ImGui::StyleColorsDark();
@@ -685,18 +687,30 @@ void InxGUI::Shutdown()
     }
 }
 
-void InxGUI::Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable)
+void InxGUI::Register(const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority)
 {
     auto existing = m_renderables_umap.find(name);
     if (existing != m_renderables_umap.end()) {
         INXLOG_WARN("InxGUI::Register(): Renderable with name '", name, "' already exists. Overwriting.");
-    } else {
-        // Preserve deterministic submission order for ImGui windows.
-        // Dock/tab focus can become unstable when panels are submitted via
-        // unordered_map iteration.
-        m_renderableOrder.push_back(name);
+        const auto oldPriority = m_renderablePriorities.find(name);
+        if (oldPriority != m_renderablePriorities.end() && oldPriority->second == priority) {
+            existing->second = std::move(renderable);
+            RequestFrame();
+            return;
+        }
+        m_renderableOrder.erase(std::remove(m_renderableOrder.begin(), m_renderableOrder.end(), name),
+                                m_renderableOrder.end());
     }
-    m_renderables_umap[name] = renderable;
+
+    // Submit normal panels first and global overlays last. Insertion remains
+    // stable within one priority so dock/tab behavior is deterministic.
+    const auto insertion = std::find_if(m_renderableOrder.begin(), m_renderableOrder.end(), [&](const auto &entry) {
+        const auto found = m_renderablePriorities.find(entry);
+        return found != m_renderablePriorities.end() && found->second > priority;
+    });
+    m_renderableOrder.insert(insertion, name);
+    m_renderablePriorities[name] = priority;
+    m_renderables_umap[name] = std::move(renderable);
     RequestFrame();
 }
 
@@ -707,6 +721,7 @@ void InxGUI::Unregister(const std::string &name)
         m_renderables_umap.erase(it);
         m_renderableOrder.erase(std::remove(m_renderableOrder.begin(), m_renderableOrder.end(), name),
                                 m_renderableOrder.end());
+        m_renderablePriorities.erase(name);
         RequestFrame();
     } else {
         INXLOG_WARN("InxGUI::Unregister(): Renderable with name '", name, "' does not exist.");

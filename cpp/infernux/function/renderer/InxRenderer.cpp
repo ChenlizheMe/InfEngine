@@ -2079,10 +2079,10 @@ float InxRenderer::GetDisplayScale() const
     return 1.0f;
 }
 
-void InxRenderer::RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable)
+void InxRenderer::RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority)
 {
     if (m_gui) {
-        m_gui->Register(name, renderable);
+        m_gui->Register(name, std::move(renderable), priority);
     } else {
         INXLOG_ERROR("InxGUI is not initialized.");
     }
@@ -2241,6 +2241,8 @@ void InxRenderer::InitializeDefaultScene()
     m_componentGizmos = std::make_unique<GizmosDrawCallBuffer>();
     m_particleDrawCalls = std::make_unique<ParticleDrawCallBuffer>();
     m_particleGpuDrawRegistry = std::make_unique<particle::ParticleGpuDrawRegistry>();
+    if (m_scenePickingService)
+        m_scenePickingService->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
 
     // Pass gizmos reference to VkCore for rendering
     if (m_vkCore) {

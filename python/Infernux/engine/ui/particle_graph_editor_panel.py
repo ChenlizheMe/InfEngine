@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import time
 from dataclasses import replace
 from typing import Optional
 
@@ -26,6 +27,7 @@ from Infernux.particle.asset import (
     ScalarRange,
     SimulationSpace,
 )
+from Infernux.particle.artifact import ParticleArtifactRegistry
 
 from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
@@ -34,6 +36,11 @@ from .graph_document_authoring import (
 )
 from .node_graph_view import NodeGraphView
 from .panel_registry import editor_panel
+from ._inspector_references import (
+    _asset_guid_from_path,
+    _picker_assets,
+    render_object_field,
+)
 
 
 _STAGES = ("init", "update", "rendering")
@@ -57,6 +64,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._dirty = True
         self._selected_node_uid = ""
         self._drag_snapshot: Optional[dict] = None
+        self._draft_compile_due_at = 0.0
         self._save_as_dialog = AssetSaveAsDialog(
             "particle_graph.save_as", "particle graph"
         )
@@ -70,6 +78,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._view.on_node_drag_start = self._on_node_drag_start
         self._view.on_node_drag_end = self._on_node_drag_end
         self._view.on_node_selected = self._on_node_selected
+        self._view.on_node_data_changed = self._on_node_data_changed
         self._model: ParticleEmitterGraphAuthoringModel | None = None
         self._bind_stage()
 
@@ -228,7 +237,21 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     def _mark_changed(self) -> None:
         self._dirty = True
+        if self._file_path:
+            self._draft_compile_due_at = time.monotonic() + 0.18
         self._sync_project_dirty_flag()
+
+    def _publish_live_draft_if_due(self) -> None:
+        if not self._file_path or self._draft_compile_due_at <= 0.0:
+            return
+        if time.monotonic() < self._draft_compile_due_at:
+            return
+        self._draft_compile_due_at = 0.0
+        self._sync_model_to_asset()
+        try:
+            ParticleArtifactRegistry.publish_graph_asset(self._asset, self._file_path)
+        except (RuntimeError, TypeError, ValueError) as exc:
+            Debug.log_error(f"Particle Graph draft compile failed: {exc}")
 
     def _on_node_selected(self, node_uid: str) -> None:
         self._selected_node_uid = node_uid
@@ -237,7 +260,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             if stage:
                 self._select_stage(stage)
 
-    def _on_node_add(self, type_id: str, x: float, y: float) -> None:
+    def _on_node_add(self, type_id: str, x: float, y: float):
         if self._model is None or self._model.get_type(type_id) is None:
             return
         before = self._snapshot()
@@ -246,6 +269,19 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._sync_model_to_asset()
         self._mark_changed()
         self._record("Add Particle Graph node", before)
+        return node
+
+    def _on_node_data_changed(self, node_uid: str, key: str, old_value, new_value) -> None:
+        if self._model is None:
+            return
+        node = self._model.find_node(node_uid)
+        if node is None or old_value == new_value:
+            return
+        before = self._snapshot()
+        node.data[key] = copy.deepcopy(new_value)
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record(f"Edit Particle Graph {key}", before)
 
     def _on_nodes_deleted(self, node_uids) -> None:
         if self._model is None:
@@ -625,10 +661,30 @@ class ParticleGraphEditorPanel(EditorPanel):
                 ]
             elif value_type is ValueType.ASSET_REF:
                 reference = dict(value)
-                reference["path_hint"] = ctx.text_input(
-                    f"{label}##particle_node_{key}", reference.get("path_hint", ""), 512
-                ).replace("\\", "/")
-                new_value = reference
+                path_hint = str(reference.get("path_hint", "") or "")
+                display = os.path.basename(path_hint) if path_hint else t("igui.none")
+                selected_reference = []
+
+                def _select_material(path):
+                    normalized = str(path).replace("\\", "/")
+                    selected_reference.append(
+                        {"guid": _asset_guid_from_path(str(path)), "path_hint": normalized}
+                    )
+
+                render_object_field(
+                    ctx,
+                    f"particle_node_{key}",
+                    display,
+                    "Material",
+                    accept_drag_type="MATERIAL_FILE",
+                    on_drop_callback=_select_material,
+                    picker_asset_items=lambda query: _picker_assets(query, "*.mat"),
+                    on_pick=_select_material,
+                    on_clear=lambda: selected_reference.append({"guid": "", "path_hint": ""}),
+                    semantic_id=f"particle_graph.node.{node.uid}.property.{key}",
+                )
+                if selected_reference:
+                    new_value = selected_reference[-1]
             elif value_type is ValueType.STRING and key == "sort":
                 options = ["none", "back_to_front", "front_to_back"]
                 current = options.index(value) if value in options else 0
@@ -649,6 +705,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             self._mark_changed()
 
     def on_render_content(self, ctx: InxGUIContext):
+        self._publish_live_draft_if_due()
         save_label = t("particle_graph_editor.save")
         if ctx.button(save_label):
             self._do_save()

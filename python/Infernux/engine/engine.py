@@ -590,8 +590,10 @@ class Engine():
     def set_log_level(self, engine_log_level):
         self._engine.set_log_level(engine_log_level)
 
-    def register_gui(self, name: str, gui_object: InxGUIRenderable):
-        self._engine.register_gui_renderable(name, gui_object)
+    def register_gui(
+        self, name: str, gui_object: InxGUIRenderable, *, priority: int = 0
+    ):
+        self._engine.register_gui_renderable(name, gui_object, int(priority))
         self._gui_objects[name] = gui_object
 
     def unregister_gui(self, name: str):

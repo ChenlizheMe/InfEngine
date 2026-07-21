@@ -457,8 +457,9 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
         ImGui::PushID(static_cast<int>(comp.componentId));
 
         const char *scriptSuffix = comp.isBroken ? " (Missing Script)" : " (Script)";
+        const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
         auto [headerOpen, newEnabled] = RenderComponentHeader(
-            ctx, comp.typeName, "comp_" + std::to_string(comp.componentId), comp.iconId,
+            ctx, componentLabel, "comp_" + std::to_string(comp.componentId), comp.iconId,
             /*showEnabled=*/true, comp.enabled, comp.isScript ? scriptSuffix : "",
             /*defaultOpen=*/true,
             "inspector.object." + std::to_string(objId) + ".component." + std::to_string(comp.componentId),
@@ -707,8 +708,9 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
             uint64_t iconId =
                 comp.iconId ? comp.iconId : (getComponentIconId ? getComponentIconId(comp.typeName, comp.isScript) : 0);
 
+            const std::string &componentLabel = comp.displayName.empty() ? comp.typeName : comp.displayName;
             auto [compOpen, newEnabled] =
-                RenderComponentHeader(ctx, comp.typeName, "multi_comp_" + std::to_string(comp.componentId), iconId,
+                RenderComponentHeader(ctx, componentLabel, "multi_comp_" + std::to_string(comp.componentId), iconId,
                                       true, comp.enabled, comp.isScript ? " (Script)" : "", true);
 
             if (newEnabled != comp.enabled && setComponentEnabled) {

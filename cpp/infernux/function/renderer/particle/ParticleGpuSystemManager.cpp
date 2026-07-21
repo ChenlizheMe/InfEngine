@@ -84,6 +84,7 @@ struct ParticleGpuSystemManager::Impl
         std::vector<uint64_t> observedVectorFieldGenerations;
         std::vector<uint32_t> billboardVertexShader;
         std::vector<uint32_t> billboardFragmentShader;
+        std::vector<uint32_t> billboardPickingFragmentShader;
         std::vector<Output> outputs;
     };
 
@@ -275,6 +276,8 @@ struct ParticleGpuSystemManager::Impl
         GpuBillboardRendererDesc rendererDesc;
         rendererDesc.vertexShader = {emitter.billboardVertexShader.data(), emitter.billboardVertexShader.size()};
         rendererDesc.fragmentShader = {emitter.billboardFragmentShader.data(), emitter.billboardFragmentShader.size()};
+        rendererDesc.pickingFragmentShader = {emitter.billboardPickingFragmentShader.data(),
+                                              emitter.billboardPickingFragmentShader.size()};
         rendererDesc.shaderProgram = shaderProgram;
         rendererDesc.instances = emitter.runtime->InstanceBuffer();
         rendererDesc.renderIndices = emitter.runtime->RenderIndexBuffer();
@@ -321,6 +324,7 @@ struct ParticleGpuSystemManager::Impl
         emitter->statePreservedOnPublish = program.preserveState;
         emitter->billboardVertexShader = program.billboardVertexShader;
         emitter->billboardFragmentShader = program.billboardFragmentShader;
+        emitter->billboardPickingFragmentShader = program.billboardPickingFragmentShader;
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
@@ -529,6 +533,7 @@ struct ParticleGpuSystemManager::Impl
             for (const auto &output : emitter->outputs) {
                 GpuParticleDrawEntry entry;
                 entry.id = output.id;
+                entry.ownerObjectId = emitter->sourceProgram.ownerObjectId;
                 entry.capacity = emitter->runtime->Capacity();
                 entry.instances = emitter->runtime->InstanceBuffer();
                 entry.renderIndices = output.renderer->RenderIndexBuffer();

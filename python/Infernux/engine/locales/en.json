@@ -788,5 +788,11 @@
   "igui.no_results": "No results",
   "igui.none": "None",
   "igui.tab_scene": "Scene",
-  "igui.tab_assets": "Assets"
+  "igui.tab_assets": "Assets",
+  "node_graph.add_node": "Add Node...",
+  "node_graph.search_nodes": "Search nodes...",
+  "particle_system.graph": "Particle Graph",
+  "particle_system.simulation_speed": "Simulation Speed",
+  "particle_system.play_on_awake": "Play On Awake",
+  "component.particle_system": "Particle System"
 }

@@ -16,6 +16,35 @@ from Infernux.engine.ui.theme import Theme, srgb_to_linear, srgb3, hex_to_linear
 
 # ── theme color utilities ────────────────────────────────────────────────
 
+def test_default_editor_and_game_ui_font_size_is_16px():
+    from Infernux.ui import UIButton, UIText
+
+    assert Theme.UI_DEFAULT_FONT_SIZE == 16.0
+    assert UIText().font_size == 16.0
+    assert UIButton().font_size == 16.0
+
+
+def test_engine_gui_registration_forwards_overlay_priority():
+    from types import SimpleNamespace
+
+    from Infernux.engine.engine import Engine
+
+    calls = []
+    engine = Engine.__new__(Engine)
+    engine._engine = SimpleNamespace(
+        register_gui_renderable=lambda name, renderable, priority: calls.append(
+            (name, renderable, priority)
+        )
+    )
+    engine._gui_objects = {}
+    renderable = object()
+
+    engine.register_gui("global_overlay", renderable, priority=1000)
+
+    assert calls == [("global_overlay", renderable, 1000)]
+    assert engine._gui_objects["global_overlay"] is renderable
+
+
 class TestThemeColorMath:
     def test_srgb_to_linear_low_segment(self):
         assert srgb_to_linear(0.0) == 0.0

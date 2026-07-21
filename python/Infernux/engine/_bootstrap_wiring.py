@@ -171,8 +171,9 @@ class BootstrapWiringMixin:
         mb.is_preferences_open = lambda: self._preferences.is_open
         mb.is_physics_layer_matrix_open = lambda: self._physics_layer_matrix.is_open
 
-        # Register a secondary renderable that draws floating sub-panels and
-        # asset/document confirmations after the menu bar.
+        # Floating utility windows participate in the normal panel layer.
+        # Global confirmations are registered separately at overlay priority
+        # so dynamically-created or undocked editors can never cover them.
         from Infernux.lib import InxGUIRenderable, InxGUIContext
         _bs = self._build_settings
         _pref = self._preferences
@@ -192,6 +193,9 @@ class BootstrapWiringMixin:
                 _bs.render(ctx)
                 _pref.render(ctx)
                 _plm.render(ctx)
+
+        class _EditorGlobalOverlays(InxGUIRenderable):
+            def on_render(self, ctx: InxGUIContext):
                 _dirty_panels.render(ctx)
                 _project_delete.render(ctx)
                 if _sfm:
@@ -200,6 +204,12 @@ class BootstrapWiringMixin:
 
         self._menu_bar_floats = _MenuBarFloatingPanels()
         engine.register_gui("menu_bar_floats", self._menu_bar_floats)
+        self._editor_global_overlays = _EditorGlobalOverlays()
+        engine.register_gui(
+            "editor_global_overlays",
+            self._editor_global_overlays,
+            priority=1000,
+        )
 
     def _wire_toolbar_callbacks(self, engine):
         """Wire C++ ToolbarPanel callbacks to Python PlayModeManager."""

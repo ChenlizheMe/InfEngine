@@ -327,9 +327,14 @@ class HierarchyCreationService:
             self._undo_tracker.record_create(obj.id, description)
 
         hp = self._hierarchy_panel
-        callback = getattr(hp, "on_selection_changed", None) if hp is not None else None
-        if select and callback:
-            callback(obj.id)
+        if select and hp is not None:
+            ensure_visible = getattr(hp, "set_selected_object_by_id", None)
+            if callable(ensure_visible):
+                ensure_visible(obj.id)
+            else:
+                callback = getattr(hp, "on_selection_changed", None)
+                if callback:
+                    callback(obj.id)
 
     def _description_for(self, kind: str) -> str:
         if kind.startswith("primitive."):

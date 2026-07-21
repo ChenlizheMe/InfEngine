@@ -37,14 +37,22 @@ from .serialized_field import get_raw_field_value, serialized_field
 @disallow_multiple
 @add_component_menu("VFX/Particle System")
 class ParticleSystem(InxComponent):
+    _display_name_key = "component.particle_system"
     graph: ParticleGraphRef = serialized_field(
         default=None,
         asset_type="ParticleGraph",
         tooltip="ParticleGraph or ParticleScript asset",
+        display_name_key="particle_system.graph",
     )
-    simulation_target: ExecutionTarget = serialized_field(default=ExecutionTarget.AUTO)
-    simulation_speed: float = serialized_field(default=1.0, range=(0.0, 10.0))
-    play_on_awake: bool = serialized_field(default=True)
+    simulation_speed: float = serialized_field(
+        default=1.0,
+        range=(0.0, 10.0),
+        display_name_key="particle_system.simulation_speed",
+    )
+    play_on_awake: bool = serialized_field(
+        default=True,
+        display_name_key="particle_system.play_on_awake",
+    )
 
     _runtimes: list[NumpyParticleEmitterRuntime]
     _cpu_emitter_indices: list[int]
@@ -318,7 +326,12 @@ class ParticleSystem(InxComponent):
     def editor_preview_stop(self) -> bool:
         self._ensure_runtime_state(playing=False)
         self._editor_preview_active = True
-        return self.stop()
+        had_runtime = self.stop()
+        self._remove_native_batch()
+        self._clear_runtime_state()
+        self._playing = False
+        self._editor_preview_active = True
+        return had_runtime
 
     def editor_preview_end(self) -> None:
         if getattr(self, "_editor_preview_active", False):
@@ -495,7 +508,6 @@ class ParticleSystem(InxComponent):
         return True
 
     def _select_runtime_targets(self, metadata, artifact) -> tuple[ExecutionTarget, ...]:
-        override = ExecutionTarget(get_raw_field_value(self, "simulation_target"))
         native = self._native_engine()
         gpu_available = bool(
             artifact is not None
@@ -506,16 +518,7 @@ class ParticleSystem(InxComponent):
         targets = []
         for index, emitter in enumerate(metadata.emitters):
             declared = emitter.settings.target
-            if (
-                override is not ExecutionTarget.AUTO
-                and declared is not ExecutionTarget.AUTO
-                and override is not declared
-            ):
-                raise RuntimeError(
-                    f"ParticleSystem requests {override.value}, but emitter {index} "
-                    f"({emitter.stable_id}) requires {declared.value}"
-                )
-            target = override if override is not ExecutionTarget.AUTO else declared
+            target = declared
             if target is ExecutionTarget.AUTO:
                 target = ExecutionTarget.GPU if gpu_available else ExecutionTarget.CPU
             if target is ExecutionTarget.GPU and not gpu_available:
@@ -606,6 +609,7 @@ class ParticleSystem(InxComponent):
             programs.append(
                 {
                     "id": emitter_id,
+                    "owner_object_id": int(self.game_object.id),
                     "artifact_revision": artifact.revision,
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,
@@ -711,6 +715,8 @@ class ParticleSystem(InxComponent):
             instances = runtime.tick(delta_time)
             if native is None:
                 continue
+            if emitter.settings.simulation_space.value == "local" and len(instances):
+                instances = self._local_instances_to_world(instances, emitter_to_world)
             for output_index, output in enumerate(emitter.outputs):
                 batch_id = self._output_batch_id(emitter_index, output_index)
                 native.submit_particle_instances(
@@ -718,6 +724,7 @@ class ParticleSystem(InxComponent):
                     instances,
                     self._output_material_guid(output.material),
                     validate=False,
+                    owner_object_id=int(self.game_object.id),
                 )
                 self._submitted_batch_ids.add(batch_id)
 
@@ -759,6 +766,17 @@ class ParticleSystem(InxComponent):
     def _emitter_matrix(self) -> np.ndarray:
         flat = self.transform.local_to_world_matrix()
         return np.asarray(flat, dtype=np.float32).reshape((4, 4), order="F")
+
+    @staticmethod
+    def _local_instances_to_world(instances: np.ndarray, emitter_to_world: np.ndarray) -> np.ndarray:
+        result = np.array(instances, dtype=np.float32, copy=True, order="C")
+        positions = result[:, 0:3]
+        linear = emitter_to_world[0:3, 0:3]
+        translation = emitter_to_world[0:3, 3]
+        result[:, 0:3] = positions @ linear.T + translation
+        axis_scales = np.linalg.norm(linear, axis=0)
+        result[:, 3] *= float(np.max(axis_scales)) if axis_scales.size else 1.0
+        return result
 
     def _gpu_transform_buffer(self, local_simulation: bool) -> np.ndarray:
         cached = self._gpu_transform_buffers.get(local_simulation)

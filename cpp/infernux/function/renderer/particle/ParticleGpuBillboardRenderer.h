@@ -53,6 +53,7 @@ struct GpuBillboardRendererDesc
 {
     ShaderBytecode vertexShader;
     ShaderBytecode fragmentShader;
+    ShaderBytecode pickingFragmentShader;
     std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     rhi::BufferHandle instances;
     rhi::BufferHandle renderIndices;
@@ -100,6 +101,14 @@ class ParticleGpuBillboardRenderer
                                   rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {});
+    [[nodiscard]] bool RecordPickingDraw(
+        const rhi::GraphicsCommandEncoder &encoder,
+        rhi::RenderTargetLayoutHandle renderTargetLayout,
+        const MaterialPassPipelineDescriptor &pass,
+        rhi::BufferHandle indirectArguments,
+        const GpuBillboardViewConstants &view,
+        uint64_t ownerObjectId,
+        rhi::BufferHandle renderIndices = {});
 
   private:
     struct PipelineEntry
@@ -154,6 +163,8 @@ class ParticleGpuBillboardRenderer
     rhi::BufferHandle m_renderIndices;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
+    rhi::ShaderModuleHandle m_pickingVertexShader;
+    rhi::ShaderModuleHandle m_pickingFragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     struct ViewBindGroup

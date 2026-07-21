@@ -20,6 +20,7 @@ Handles:
 
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING, Union
@@ -32,6 +33,7 @@ from Infernux.core.node_graph import (
     PinDef,
     PinKind,
 )
+from Infernux.engine.i18n import t
 from Infernux.engine.ui.theme import Theme
 
 if TYPE_CHECKING:
@@ -64,9 +66,9 @@ _LINK_SEGMENTS = 28
 # NASA-style: near-black panels, neutral gray; selection uses editor theme red
 _BG_COLOR = (0.07, 0.07, 0.08, 1.0)
 _NODE_BODY_COLOR = (0.13, 0.13, 0.14, 1.0)
-_GRAPH_NODE_BODY_COLOR = (0.067, 0.078, 0.106, 0.98)
-_GRAPH_NODE_HEADER_COLOR = (0.094, 0.106, 0.137, 1.0)
-_GRAPH_NODE_CONTEXT_COLOR = (0.105, 0.118, 0.151, 1.0)
+_GRAPH_NODE_BODY_COLOR = (0.075, 0.075, 0.078, 0.98)
+_GRAPH_NODE_HEADER_COLOR = (0.105, 0.105, 0.11, 1.0)
+_GRAPH_NODE_CONTEXT_COLOR = (0.135, 0.135, 0.14, 1.0)
 _NODE_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.5)
 _NODE_SELECTED_BORDER = Theme.APPLY_BUTTON
 _NODE_BORDER_COLOR = (0.28, 0.28, 0.30, 1.0)
@@ -147,6 +149,16 @@ class _NodeLayout:
     output_pins: List[_PinLayout] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class NodeCreationEntry:
+    """One domain-provided item rendered by the shared creation palette."""
+
+    key: str
+    label: str
+    category: str = ""
+    type_id: str = ""
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # View
 # ═══════════════════════════════════════════════════════════════════════════
@@ -208,10 +220,17 @@ class NodeGraphView:
         self.on_link_deleted: Optional[Callable[[str], None]] = None
         self.on_nodes_deleted: Optional[Callable[[List[str]], None]] = None
         self.on_node_add_request: Optional[Callable[[str, float, float], None]] = None
+        self.on_node_creation_entries: Optional[
+            Callable[[dict], List[NodeCreationEntry]]
+        ] = None
+        self.on_node_creation_selected: Optional[
+            Callable[[NodeCreationEntry, dict], object]
+        ] = None
         # Pin drag released over empty canvas: (src_node, src_pin, src_kind, graph_x, graph_y).
         # Hosts can use this to pop a "create node and auto-connect" search menu.
         self.on_link_dropped_empty: Optional[Callable[[str, str, "PinKind", float, float], None]] = None
         self.on_node_selected: Optional[Callable[[str], None]] = None
+        self.on_node_data_changed: Optional[Callable[[str, str, object, object], None]] = None
         # Called immediately before user-driven selection changes (click), so editors can snapshot undo.
         self.on_before_selection_change: Optional[Callable[[], None]] = None
         # Drop handler: (payload_type, payload path str or uint64 id, graph_x, graph_y)
@@ -230,6 +249,14 @@ class NodeGraphView:
         self._open_header_color_popup_next_frame: bool = False
         self._header_color_popup_initial_color: Optional[Tuple[float, float, float, float]] = None
         self._header_color_popup_changed: bool = False
+
+        # Shared Blender-style node creation palette.  It serves both empty
+        # canvas context actions and a connection dropped onto empty space.
+        self._node_create_request: Optional[dict] = None
+        self._node_create_search: str = ""
+        self._node_create_focus: bool = False
+        self._open_node_create_popup_next_frame: bool = False
+        self._inline_control_hovered: bool = False
 
         self._body_renderers: Dict[str, Callable] = {}
 
@@ -256,6 +283,11 @@ class NodeGraphView:
         self._open_header_color_popup_next_frame = False
         self._header_color_popup_initial_color = None
         self._header_color_popup_changed = False
+        self._node_create_request = None
+        self._node_create_search = ""
+        self._node_create_focus = False
+        self._open_node_create_popup_next_frame = False
+        self._inline_control_hovered = False
 
     def register_body_renderer(self, type_id: str, renderer: Callable) -> None:
         self._body_renderers[type_id] = renderer
@@ -395,6 +427,12 @@ class NodeGraphView:
         # Nodes
         self._draw_nodes(ctx)
 
+        # Real ImGui literal controls are overlaid after the draw-list nodes.
+        # They remain part of the shared canvas, so every graph editor gets
+        # the same inline-value behavior.
+        self._inline_control_hovered = False
+        self._draw_inline_fields(ctx)
+
         # Pending connection line
         if self._dragging_pin:
             self._draw_pending_link(ctx)
@@ -432,6 +470,8 @@ class NodeGraphView:
         if ctx.begin_popup_context_window("##node_graph_ctx", 1):
             self._draw_context_menu(ctx)
             ctx.end_popup()
+
+        self._draw_node_create_popup(ctx)
 
         ctx.end_child()
 
@@ -708,6 +748,170 @@ class NodeGraphView:
             body_y = (sy + hdr_h
                       + max(len(layout.input_pins), len(layout.output_pins)) * row_h)
             renderer(ctx, layout.node, sx + pad_x, body_y, w - pad_x * 2)
+
+    def _input_has_link(self, node_uid: str, pin_id: str) -> bool:
+        graph = self.graph
+        return bool(
+            graph
+            and any(
+                link.target_node == node_uid and link.target_pin == pin_id
+                for link in graph.links
+            )
+        )
+
+    def _commit_inline_value(self, node: GraphNode, field_id: str, value) -> None:
+        previous = copy.deepcopy(node.data.get(field_id))
+        if previous == value:
+            return
+        if self.on_node_data_changed is not None:
+            self.on_node_data_changed(node.uid, field_id, previous, copy.deepcopy(value))
+        else:
+            node.data[field_id] = copy.deepcopy(value)
+
+    def _draw_inline_fields(self, ctx) -> None:
+        if self.graph is None or self.zoom < 0.68:
+            return
+        saved_x = ctx.get_cursor_pos_x()
+        saved_y = ctx.get_cursor_pos_y()
+        try:
+            for layout in self._layouts.values():
+                fields = getattr(layout.typedef, "inline_fields", ())
+                if not fields:
+                    continue
+                input_rows = {
+                    pin.pin_def.id: pin.cy for pin in layout.input_pins
+                }
+                detached_index = 0
+                for field_def in fields:
+                    if field_def.data_type == "asset_ref":
+                        continue
+                    row_y = input_rows.get(field_def.id)
+                    detached = row_y is None
+                    if row_y is not None and self._input_has_link(
+                        layout.node.uid, field_def.id
+                    ):
+                        continue
+                    if row_y is None:
+                        row_y = (
+                            layout.sy
+                            + _NODE_HEADER_H * self.zoom
+                            + max(
+                                len(layout.input_pins),
+                                len(layout.output_pins),
+                                1,
+                            )
+                            * _NODE_PIN_ROW_H
+                            * self.zoom
+                            + (detached_index + 0.5) * 24.0 * self.zoom
+                        )
+                        detached_index += 1
+                    self._draw_inline_field(ctx, layout, field_def, row_y, detached=detached)
+        finally:
+            ctx.set_cursor_pos_x(saved_x)
+            ctx.set_cursor_pos_y(saved_y)
+            # SetCursorPos is used here only to restore the canvas layout after
+            # overlaying real ImGui controls on draw-list nodes. ImGui requires
+            # a submitted item after a cursor restore that can touch the child
+            # boundary; otherwise EndChild reports a recoverable layout error.
+            ctx.dummy(0.0, 0.0)
+
+    def _draw_inline_field(
+        self, ctx, layout: _NodeLayout, field_def, row_y: float, *, detached: bool = False
+    ) -> None:
+        value = copy.deepcopy(layout.node.data.get(field_def.id, field_def.default))
+        local_x = layout.sx - self._origin_x
+        local_y = row_y - self._origin_y - 9.0 * self.zoom
+        field_x = local_x + layout.w * 0.42
+        field_w = max(44.0, layout.w * 0.52 - _NODE_PAD_X * self.zoom)
+        if detached:
+            ctx.draw_text_aligned(
+                layout.sx + _NODE_PAD_X * self.zoom,
+                row_y - 10.0 * self.zoom,
+                layout.sx + layout.w * 0.40,
+                row_y + 10.0 * self.zoom,
+                str(field_def.label),
+                *_TEXT_DIM_COLOR,
+                0.0,
+                0.5,
+                max(9.5, 11.0 * self.zoom),
+            )
+        ctx.set_cursor_pos_x(field_x)
+        ctx.set_cursor_pos_y(local_y)
+        ctx.push_id_str(f"inline_{layout.node.uid}_{field_def.id}")
+        try:
+            data_type = str(field_def.data_type)
+            new_value = value
+            if data_type == "bool":
+                new_value = bool(ctx.checkbox("##value", bool(value)))
+            elif data_type in {"i32", "u32"}:
+                ctx.set_next_item_width(field_w)
+                new_value = int(ctx.input_int("##value", int(value or 0)))
+                if data_type == "u32":
+                    new_value = max(0, new_value)
+            elif data_type == "f32":
+                ctx.set_next_item_width(field_w)
+                new_value = float(
+                    ctx.drag_float("##value", float(value or 0.0), 0.05, -1.0e7, 1.0e7)
+                )
+            elif data_type in {"vec2", "vec3", "vec4", "color"}:
+                size = {"vec2": 2, "vec3": 3, "vec4": 4, "color": 4}[data_type]
+                components = list(value or [0.0] * size)[:size]
+                components += [0.0] * (size - len(components))
+                component_w = max(24.0, (field_w - (size - 1) * 3.0) / size)
+                edited = []
+                for index, component in enumerate(components):
+                    slot_x = field_x + index * (component_w + 3.0)
+                    axis_w = min(10.0, component_w * 0.24)
+                    ctx.draw_text_aligned(
+                        self._origin_x + slot_x,
+                        row_y - 9.0 * self.zoom,
+                        self._origin_x + slot_x + axis_w,
+                        row_y + 9.0 * self.zoom,
+                        "XYZW"[index],
+                        *_TEXT_DIM_COLOR,
+                        0.0,
+                        0.5,
+                        max(8.0, 9.0 * self.zoom),
+                    )
+                    ctx.set_cursor_pos_x(slot_x + axis_w)
+                    ctx.set_cursor_pos_y(local_y)
+                    ctx.set_next_item_width(max(16.0, component_w - axis_w))
+                    edited.append(
+                        float(
+                            ctx.drag_float(
+                                f"##{index}",
+                                float(component),
+                                0.05,
+                                -1.0e7,
+                                1.0e7,
+                            )
+                        )
+                    )
+                    self._inline_control_hovered = (
+                        self._inline_control_hovered
+                        or bool(ctx.is_item_hovered())
+                        or bool(ctx.is_item_active())
+                    )
+                new_value = edited
+            elif field_def.enum_values:
+                options = list(field_def.enum_values)
+                index = options.index(value) if value in options else 0
+                ctx.set_next_item_width(field_w)
+                index = ctx.combo("##value", index, options, -1)
+                new_value = options[max(0, min(index, len(options) - 1))]
+            elif data_type == "string":
+                ctx.set_next_item_width(field_w)
+                new_value = ctx.text_input("##value", str(value or ""), 256)
+            else:
+                return
+            self._inline_control_hovered = (
+                self._inline_control_hovered
+                or bool(ctx.is_item_hovered())
+                or bool(ctx.is_item_active())
+            )
+            self._commit_inline_value(layout.node, field_def.id, new_value)
+        finally:
+            ctx.pop_id()
 
     def _record_pin_semantics(self, ctx, layout: _NodeLayout, node_label: str) -> None:
         if not self._semantic_capture_active:
@@ -1119,6 +1323,9 @@ class NodeGraphView:
                 self._panning = False
             return
 
+        if self._inline_control_hovered:
+            return
+
         # Delete key — remove selected nodes or link even when the cursor
         # is no longer hovering the canvas after selection.
         if ctx.is_key_pressed(_KEY_DELETE):
@@ -1334,10 +1541,24 @@ class NodeGraphView:
     def _try_complete_link(self, mx, my):
         target_node, target_pin, target_kind = self._hit_test_pin(mx, my)
         if target_pin is None:
-            if self.on_link_dropped_empty is not None and self._drag_src_node and self._drag_src_pin:
+            if self._drag_src_node and self._drag_src_pin:
                 gx, gy = self.screen_to_graph(mx, my)
-                self.on_link_dropped_empty(
-                    self._drag_src_node, self._drag_src_pin, self._drag_src_kind, gx, gy)
+                if self.on_link_dropped_empty is not None:
+                    self.on_link_dropped_empty(
+                        self._drag_src_node,
+                        self._drag_src_pin,
+                        self._drag_src_kind,
+                        gx,
+                        gy,
+                    )
+                else:
+                    self._request_node_creation(
+                        gx,
+                        gy,
+                        self._drag_src_node,
+                        self._drag_src_pin,
+                        self._drag_src_kind,
+                    )
             return
         if target_kind == self._drag_src_kind:
             return
@@ -1358,6 +1579,190 @@ class NodeGraphView:
 
     # ── Context menu ──────────────────────────────────────────────────
 
+    def _request_node_creation(
+        self,
+        gx: float,
+        gy: float,
+        source_node: str = "",
+        source_pin: str = "",
+        source_kind: PinKind = PinKind.OUTPUT,
+    ) -> None:
+        self._node_create_request = {
+            "gx": float(gx),
+            "gy": float(gy),
+            "source_node": str(source_node),
+            "source_pin": str(source_pin),
+            "source_kind": PinKind(source_kind),
+        }
+        self._node_create_search = ""
+        self._node_create_focus = True
+        self._open_node_create_popup_next_frame = True
+
+    def _compatible_pin_for_type(self, typedef: NodeTypeDef, request: dict):
+        if self.graph is None or not request.get("source_node"):
+            return None
+        source_kind = request["source_kind"]
+        candidates = (
+            typedef.input_pins()
+            if source_kind == PinKind.OUTPUT
+            else typedef.output_pins()
+        )
+        for pin in candidates:
+            # The graph cannot validate a node that does not exist yet.  Pin
+            # category/type checks provide the palette filter; full domain
+            # validation runs immediately after creation.
+            source_node = self.graph.find_node(request["source_node"])
+            source_def = self.graph.get_type(source_node.type_id) if source_node else None
+            source_pin = (
+                next(
+                    (item for item in source_def.pins if item.id == request["source_pin"]),
+                    None,
+                )
+                if source_def
+                else None
+            )
+            if source_pin is None:
+                return None
+            if source_pin.pin_category != pin.pin_category:
+                continue
+            if (
+                source_pin.data_type not in {"", "any"}
+                and pin.data_type not in {"", "any"}
+                and source_pin.data_type != pin.data_type
+                and not (
+                    source_pin.data_type in {"i32", "u32"}
+                    and pin.data_type == "f32"
+                    and source_kind == PinKind.OUTPUT
+                )
+            ):
+                continue
+            return pin
+        return None
+
+    def _default_creation_entries(self, request: dict) -> List[NodeCreationEntry]:
+        if self.graph is None:
+            return []
+        entries: List[NodeCreationEntry] = []
+        for typedef in self.graph.registered_types():
+            if not typedef.deletable:
+                continue
+            if request.get("source_node") and self._compatible_pin_for_type(
+                typedef, request
+            ) is None:
+                continue
+            entries.append(
+                NodeCreationEntry(
+                    key=typedef.type_id,
+                    label=typedef.label,
+                    category=(
+                        typedef.category_label
+                        or typedef.type_id.split(".", 1)[0].upper()
+                    ),
+                    type_id=typedef.type_id,
+                )
+            )
+        return entries
+
+    def _creation_entries(self, request: dict) -> List[NodeCreationEntry]:
+        if self.on_node_creation_entries is None:
+            return self._default_creation_entries(request)
+        return list(self.on_node_creation_entries(dict(request)) or ())
+
+    def _create_from_palette(self, entry: NodeCreationEntry, request: dict) -> None:
+        if self.graph is None:
+            return
+        if self.on_node_creation_selected is not None:
+            self.on_node_creation_selected(entry, dict(request))
+            return
+        typedef = self.graph.get_type(entry.type_id)
+        if typedef is None:
+            return
+        before = {node.uid for node in self.graph.nodes}
+        result = None
+        if self.on_node_add_request:
+            result = self.on_node_add_request(
+                typedef.type_id, request["gx"], request["gy"]
+            )
+        else:
+            result = self.graph.add_node(
+                typedef.type_id, request["gx"], request["gy"]
+            )
+        node_uid = getattr(result, "uid", result if isinstance(result, str) else "")
+        if not node_uid:
+            created = [node for node in self.graph.nodes if node.uid not in before]
+            if created:
+                node_uid = created[-1].uid
+        if not node_uid or not request.get("source_node"):
+            return
+        pin = self._compatible_pin_for_type(typedef, request)
+        if pin is None:
+            return
+        if request["source_kind"] == PinKind.OUTPUT:
+            endpoints = (
+                request["source_node"],
+                request["source_pin"],
+                node_uid,
+                pin.id,
+            )
+        else:
+            endpoints = (
+                node_uid,
+                pin.id,
+                request["source_node"],
+                request["source_pin"],
+            )
+        if not self.graph.validate_link(*endpoints):
+            return
+        if self.on_link_created:
+            self.on_link_created(*endpoints)
+        else:
+            self.graph.add_link(*endpoints)
+
+    def _draw_node_create_popup(self, ctx) -> None:
+        popup_id = "##shared_node_create_palette"
+        if self._open_node_create_popup_next_frame:
+            ctx.open_popup(popup_id)
+            self._open_node_create_popup_next_frame = False
+        request = self._node_create_request
+        if request is None or self.graph is None:
+            return
+        selected: Optional[NodeCreationEntry] = None
+        if ctx.begin_popup(popup_id):
+            if self._node_create_focus:
+                ctx.set_keyboard_focus_here()
+                self._node_create_focus = False
+            self._node_create_search = ctx.input_text_with_hint(
+                "##node_create_search",
+                t("node_graph.search_nodes"),
+                self._node_create_search,
+                160,
+            )
+            query = self._node_create_search.strip().casefold()
+            grouped: Dict[str, List[NodeCreationEntry]] = {}
+            for entry in self._creation_entries(request):
+                haystack = (
+                    f"{entry.label} {entry.key} {entry.type_id} {entry.category}"
+                    .casefold()
+                )
+                if query and query not in haystack:
+                    continue
+                grouped.setdefault(entry.category or "NODE", []).append(entry)
+            for category in sorted(grouped):
+                ctx.label(category)
+                for entry in sorted(
+                    grouped[category], key=lambda item: item.label.casefold()
+                ):
+                    if ctx.selectable(entry.label, False):
+                        selected = entry
+                        ctx.close_current_popup()
+            ctx.end_popup()
+        else:
+            self._node_create_request = None
+        if selected is not None:
+            request = dict(request)
+            self._node_create_request = None
+            self._create_from_palette(selected, request)
+
     def _draw_context_menu(self, ctx) -> None:
         mx = ctx.get_mouse_pos_x()
         my = ctx.get_mouse_pos_y()
@@ -1366,27 +1771,13 @@ class NodeGraphView:
         if self.graph is None:
             return
 
-        # Add node sub-menu
-        add_node_open = ctx.begin_menu("Add Node")
+        add_label = t("node_graph.add_node")
+        add_requested = ctx.menu_item(add_label, "", False, True)
         self._record_semantic_item(
-            ctx, "menu", "Add Node", True, "context.add_node", bool_value=add_node_open
+            ctx, "menu_item", add_label, True, "context.add_node", bool_value=True
         )
-        if add_node_open:
-            for typedef in self.graph.registered_types():
-                added = ctx.menu_item(typedef.label, "", False, True)
-                self._record_semantic_item(
-                    ctx,
-                    "menu_item",
-                    typedef.label,
-                    True,
-                    f"context.add_node.{typedef.type_id}",
-                )
-                if added:
-                    if self.on_node_add_request:
-                        self.on_node_add_request(typedef.type_id, gx, gy)
-                    else:
-                        self.graph.add_node(typedef.type_id, gx, gy)
-            ctx.end_menu()
+        if add_requested:
+            self._request_node_creation(gx, gy)
 
         # Delete selected nodes
         if self.selected_nodes:

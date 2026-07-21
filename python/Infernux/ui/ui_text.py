@@ -31,7 +31,7 @@ class UIText(InxUIScreenComponent):
         group="Typography",
     )
     font_size: float = serialized_field(
-        default=24.0, tooltip="Font size in canvas pixels",
+        default=16.0, tooltip="Font size in canvas pixels",
         group="Typography", range=(4.0, 256.0), slider=False, drag_speed=0.5,
     )
     line_height: float = serialized_field(

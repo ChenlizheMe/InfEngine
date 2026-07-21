@@ -37,8 +37,10 @@ class Engine:
     def set_log_level(self, engine_log_level: LogLevel) -> None:
         """Set the engine log verbosity level."""
         ...
-    def register_gui(self, name: str, gui_object: InxGUIRenderable) -> None:
-        """Register an ImGui renderable panel by name."""
+    def register_gui(
+        self, name: str, gui_object: InxGUIRenderable, *, priority: int = ...
+    ) -> None:
+        """Register an ImGui renderable panel by name and presentation priority."""
         ...
     def unregister_gui(self, name: str) -> None:
         """Unregister an ImGui renderable panel."""

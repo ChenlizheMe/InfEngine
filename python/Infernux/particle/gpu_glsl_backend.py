@@ -95,6 +95,22 @@ void main() {
 }
 """
 
+_BILLBOARD_PICKING_FRAGMENT_GLSL = """#version 450
+
+layout(location = 0) out uvec2 out_object_id;
+
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    uvec4 object_id;
+} view;
+
+void main() {
+    out_object_id = view.object_id.xy;
+}
+"""
+
 
 @dataclass(frozen=True)
 class GpuParticleEmitterSource:
@@ -293,6 +309,28 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
             _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
         billboard[stage] = dict(descriptor)
 
+    picking_key = hashlib.sha256(
+        ("vulkan1.2-spirv1.5\0fragment\0" + _BILLBOARD_PICKING_FRAGMENT_GLSL).encode("utf-8")
+    ).hexdigest()
+    picking_descriptor = _SPIRV_DESCRIPTOR_CACHE.get(picking_key)
+    if picking_descriptor is None:
+        compiled_picking = native._compile_graphics_glsl_batch(
+            {"fragment": _BILLBOARD_PICKING_FRAGMENT_GLSL},
+            "particle:builtin-billboard-picking",
+        )
+        binary = bytes(compiled_picking.get("fragment", b""))
+        if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
+            raise GpuParticleCompileError(
+                "engine graphics compiler returned invalid particle picking SPIR-V"
+            )
+        picking_descriptor = {
+            "byte_size": len(binary),
+            "sha256": hashlib.sha256(binary).hexdigest(),
+            "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
+        }
+        _SPIRV_DESCRIPTOR_CACHE[picking_key] = picking_descriptor
+    billboard["picking_fragment"] = dict(picking_descriptor)
+
     return {
         "$schema": "infernux.particle_gpu_spirv",
         "target": "vulkan1.2-spirv1.5",
@@ -324,7 +362,9 @@ def validate_gpu_particle_spirv(
     ):
         raise GpuParticleCompileError("particle GPU SPIR-V header is incompatible")
     billboard = value["billboard"]
-    if type(billboard) is not dict or set(billboard) != {"vertex", "fragment"}:
+    if type(billboard) is not dict or set(billboard) != {
+        "vertex", "fragment", "picking_fragment"
+    }:
         raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):
         if type(encoded) is not dict or set(encoded) != {"stable_id", "stages"}:
@@ -1280,6 +1320,12 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     position = exports["builtin.position"]
     size = exports["builtin.size"]
     color = exports["builtin.color"]
+    world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
+    world_scale = (
+        "max(length(transforms.simulation_to_world[0].xyz), "
+        "max(length(transforms.simulation_to_world[1].xyz), "
+        "length(transforms.simulation_to_world[2].xyz)))"
+    )
     finite = " && ".join(
         (_finite_expression(position, TypeRef(ValueType.VEC3)),
          _finite_expression(size, TypeRef(ValueType.F32)),
@@ -1300,7 +1346,7 @@ void main() {{
     }}
     uint output_index = atomicAdd(counters.visible_count, 1u);
     if (output_index >= pc.capacity) return;
-    instances[output_index].position_size = vec4({position}, {size});
+    instances[output_index].position_size = vec4({world_position}, ({size}) * {world_scale});
     instances[output_index].color = {color};
     instances[output_index].rotation_custom = vec4(0.0);
     render_indices[output_index] = output_index;

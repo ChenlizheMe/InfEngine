@@ -157,6 +157,9 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
                            m_statusKind);
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + barHeight));
+    // SetCursorScreenPos alone is not a layout item. Submit a zero-sized item
+    // so current ImGui versions can account for the explicit bar boundary.
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float height, const std::string &text,

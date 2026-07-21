@@ -54,7 +54,63 @@ class ParticleArtifactRegistry:
 
     @classmethod
     def get(cls, path: str = "", *, guid: str = "") -> ParticleArtifact | None:
-        return cls._artifacts.get(cls._source_key(path, guid))
+        return cls._artifacts.get(cls._source_key(path, guid)) or cls._artifacts.get(
+            cls._source_key(path)
+        )
+
+    @classmethod
+    def publish_graph_asset(
+        cls,
+        asset: ParticleGraphAsset,
+        path: str,
+        *,
+        guid: str = "",
+    ) -> ParticleArtifact:
+        """Compile and publish an in-memory editor draft without writing it to disk."""
+        if not isinstance(asset, ParticleGraphAsset):
+            raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
+        source_path = resolved_path(path)
+        source = json.dumps(
+            asset.to_dict(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        path_identity = cls._source_key(source_path)
+        key = cls._source_key(source_path, guid)
+        existing = cls._artifacts.get(key) or cls._artifacts.get(path_identity)
+        if existing is not None and existing.source_hash == source_hash:
+            cls._artifacts[key] = existing
+            cls._artifacts[path_identity] = existing
+            return existing
+
+        try:
+            program = ParticleGraphCompiler().compile(asset)
+            hir = _program_to_dict(program)
+            kernel_program = ParticleKernelLowerer().lower(program)
+            kernel_ir = kernel_program.to_dict()
+            gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
+            gpu_glsl = gpu_program.to_dict()
+            gpu_spirv = compile_gpu_particle_spirv(gpu_program)
+        except (TypeError, ValueError) as exc:
+            raise ParticleArtifactError(f"particle draft compile failed: {exc}") from exc
+
+        revision = cls._revision + 1
+        artifact = ParticleArtifact(
+            key,
+            source_hash,
+            "graph",
+            revision,
+            program.semantic_hash,
+            program.behavior_hash,
+            "",
+            hir,
+            kernel_ir,
+            gpu_glsl,
+            gpu_spirv,
+        )
+        cls._revision = revision
+        cls._artifacts[key] = artifact
+        cls._artifacts[path_identity] = artifact
+        return artifact
 
     @classmethod
     def compile_path(cls, path: str, *, guid: str = "") -> ParticleArtifact:
@@ -71,6 +127,7 @@ class ParticleArtifactRegistry:
         if (
             existing is not None
             and existing.source_hash == source_hash
+            and bool(existing.artifact_path)
             and (not guid or existing.source_key == key)
         ):
             cls._artifacts[key] = existing

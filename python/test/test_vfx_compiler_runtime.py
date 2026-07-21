@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
+import pytest
+
 from Infernux.components.particle_system import ParticleSystem
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.core.assets import AssetManager
@@ -128,7 +131,8 @@ def test_particle_system_editor_preview_reuses_runtime_without_play_mode(
 
     assert component.editor_preview_play() is True
     assert component.editor_preview_stop() is True
-    assert component._runtimes[0].particle_count == 0
+    assert component._runtimes == []
+    assert component._gpu_controllers == []
     component.editor_preview_end()
     assert component._editor_preview_active is False
     component._remove_native_batch()
@@ -212,6 +216,7 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert component._runtimes[0].particle_count == 1
     assert component._gpu_controllers[0].simulation_step == 1
     assert len(native.program_batches[-1][0]) == 1
+    assert native.program_batches[-1][0][0]["owner_object_id"] == int(game_object.id)
 
     cpu_step = component._runtimes[0].simulation_step
     gpu_step = component._gpu_controllers[0].simulation_step
@@ -231,6 +236,28 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     component._remove_native_batch()
 
 
+def test_local_particle_instances_follow_emitter_transform_and_scale():
+    instances = np.array(
+        [[1.0, 2.0, 3.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.0]],
+        dtype=np.float32,
+    )
+    emitter_to_world = np.array(
+        [
+            [2.0, 0.0, 0.0, 10.0],
+            [0.0, 3.0, 0.0, 20.0],
+            [0.0, 0.0, 4.0, 30.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+
+    transformed = ParticleSystem._local_instances_to_world(instances, emitter_to_world)
+
+    assert transformed[0, :3].tolist() == pytest.approx([12.0, 26.0, 42.0])
+    assert transformed[0, 3] == pytest.approx(2.0)
+    assert instances[0, :4].tolist() == pytest.approx([1.0, 2.0, 3.0, 0.5])
+
+
 def test_particle_system_hot_switches_to_new_published_artifact_revision(
     scene, engine, monkeypatch, tmp_path
 ):
@@ -242,6 +269,7 @@ def test_particle_system_hot_switches_to_new_published_artifact_revision(
                 stable_id="smoke",
                 settings=EmitterSettings(
                     capacity=8,
+                    target=ExecutionTarget.CPU,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 1),),
                 ),
@@ -251,7 +279,6 @@ def test_particle_system_hot_switches_to_new_published_artifact_revision(
     first.save(str(source))
     component = ParticleSystem()
     component.graph = ParticleGraphRef(path_hint=str(source))
-    component.simulation_target = ExecutionTarget.CPU
     game_object = scene.create_game_object("HotParticleGraphProbe")
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
@@ -269,6 +296,7 @@ def test_particle_system_hot_switches_to_new_published_artifact_revision(
                 stable_id="smoke",
                 settings=EmitterSettings(
                     capacity=8,
+                    target=ExecutionTarget.CPU,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 4),),
                 ),
@@ -293,6 +321,7 @@ def test_particle_system_hot_reload_reorders_emitters_by_stable_id(
             stable_id=stable_id,
             settings=EmitterSettings(
                 capacity=8,
+                target=ExecutionTarget.CPU,
                 spawn_rate=0.0,
                 bursts=(ParticleBurst(0.0, count),),
             ),
@@ -306,7 +335,6 @@ def test_particle_system_hot_reload_reorders_emitters_by_stable_id(
     ).save(str(source))
     component = ParticleSystem()
     component.graph = ParticleGraphRef(path_hint=str(source))
-    component.simulation_target = ExecutionTarget.CPU
     game_object = scene.create_game_object("ReorderedParticleGraphProbe")
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
@@ -346,6 +374,7 @@ def test_particle_system_hot_reload_adds_and_removes_emitters_by_stable_id(
             stable_id=stable_id,
             settings=EmitterSettings(
                 capacity=8,
+                target=ExecutionTarget.CPU,
                 spawn_rate=0.0,
                 bursts=(ParticleBurst(0.0, count),),
             ),
@@ -360,7 +389,6 @@ def test_particle_system_hot_reload_adds_and_removes_emitters_by_stable_id(
     ).save(str(source))
     component = ParticleSystem()
     component.graph = ParticleGraphRef(path_hint=str(source))
-    component.simulation_target = ExecutionTarget.CPU
     game_object = scene.create_game_object("ChangedEmitterSetProbe")
     game_object.add_py_component(component)
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))

@@ -6,6 +6,7 @@ import time as _time
 from typing import TYPE_CHECKING
 
 from Infernux.debug import Debug
+from Infernux.engine.i18n import t
 from Infernux.engine.bootstrap_inspector._helpers import (
     _can_remove_component,
     _get_add_component_entries,
@@ -151,6 +152,8 @@ def _wire_component_list(ctx):
                 cid = getattr(py_comp, 'component_id', id(py_comp))
                 ci = InspectorComponentInfo()
                 ci.type_name = getattr(py_comp, 'type_name', type(py_comp).__name__)
+                display_key = str(getattr(type(py_comp), '_display_name_key', '') or '')
+                ci.display_name = t(display_key) if display_key else ci.type_name
                 ci.component_id = cid
                 ci.enabled = bool(getattr(py_comp, 'enabled', True))
                 ci.is_native = False

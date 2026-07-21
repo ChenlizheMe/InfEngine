@@ -569,8 +569,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (needsInstanceAuxiliary) {
             for (size_t i = 0; i < totalEligible; ++i) {
                 const DrawCall &draw = *m_eligibleScratch[i].dc;
+                const uint64_t pickingId = draw.pickingObjectId != 0 ? draw.pickingObjectId : draw.objectId;
                 (void)WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
-                                             draw.worldMatrix, draw.objectId);
+                                             draw.worldMatrix, pickingId);
             }
         }
 

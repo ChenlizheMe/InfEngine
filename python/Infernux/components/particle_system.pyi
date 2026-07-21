@@ -4,7 +4,6 @@ from Infernux.particle import ExecutionTarget, ParticleRuntimeCompatibility
 
 class ParticleSystem(InxComponent):
     graph: ParticleGraphRef
-    simulation_target: ExecutionTarget
     simulation_speed: float
     play_on_awake: bool
     def play(self, emitter_index: int | None = None) -> bool: ...

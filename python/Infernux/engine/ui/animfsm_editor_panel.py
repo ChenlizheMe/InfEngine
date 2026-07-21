@@ -41,7 +41,7 @@ from Infernux.lib import InxGUIContext
 
 from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
-from .node_graph_view import NodeGraphView
+from .node_graph_view import NodeCreationEntry, NodeGraphView
 from ._inspector_references import render_object_field, _picker_assets
 from .inspector_utils import field_label, max_label_w
 from .panel_registry import editor_panel
@@ -271,7 +271,8 @@ class AnimFSMEditorPanel(EditorPanel):
         self._view.on_link_deleted = self._on_link_deleted
         self._view.on_nodes_deleted = self._on_nodes_deleted
         self._view.on_node_add_request = self._on_node_add_request
-        self._view.on_link_dropped_empty = self._on_link_dropped_empty
+        self._view.on_node_creation_entries = self._node_creation_entries
+        self._view.on_node_creation_selected = self._on_node_creation_selected
         self._view.on_node_selected = self._on_node_selected
         self._view.on_canvas_drop = self._on_canvas_drop
         self._view.on_node_drag_start = self._on_node_drag_start
@@ -290,11 +291,6 @@ class AnimFSMEditorPanel(EditorPanel):
 
         # Guard to avoid re-entrant selection clearing
         self._clearing_selection: bool = False
-
-        # Drag-to-create: pending context + popup search filter
-        self._link_create_ctx: Optional[dict] = None
-        self._open_link_create_popup: bool = False
-        self._link_create_search: str = ""
 
         # Panel persistence: ``load_state`` may run from bootstrap or first render
         self._panel_state_restored_once: bool = False
@@ -744,9 +740,6 @@ class AnimFSMEditorPanel(EditorPanel):
         if ctx.begin_child("##fsm_detail_region", detail_w, avail_h, True):
             self._render_detail_panel(ctx)
         ctx.end_child()
-
-        # Drag-to-create: searchable "create node and connect" menu
-        self._draw_link_create_popup(ctx)
 
         # Accept .animfsm / .timelinefsm file drops
         payload = ctx.accept_drag_drop_payload("ANIMFSM_FILE")
@@ -2126,62 +2119,27 @@ class AnimFSMEditorPanel(EditorPanel):
         self._dirty = True
         self._try_record_undo("Add state", before, self._undo_snapshot())
 
-    # ── Drag-to-create ────────────────────────────────────────────────
-    def _on_link_dropped_empty(self, src_node: str, src_pin: str, src_kind, gx: float, gy: float):
-        """Pin drag released over empty canvas → open a create-and-connect menu."""
-        if self._fsm is None:
-            return
-        # Only outgoing pins start a forward transition into a new node.
-        if src_kind != PinKind.OUTPUT:
-            return
-        self._link_create_ctx = {"src_node": src_node, "gx": float(gx), "gy": float(gy)}
-        self._link_create_search = ""
-        self._link_create_focus = True
-        self._open_link_create_popup = True
-
-    def _draw_link_create_popup(self, ctx: InxGUIContext):
-        popup_id = "##fsm_link_create"
-        if self._open_link_create_popup:
-            ctx.open_popup(popup_id)
-            self._open_link_create_popup = False
-        if self._link_create_ctx is None:
-            return
-        created = None
-        if ctx.begin_popup(popup_id):
-            ctx.label(t("animfsm_editor.create_node_title"))
-            ctx.separator()
-            if getattr(self, "_link_create_focus", False):
-                ctx.set_keyboard_focus_here()
-                self._link_create_focus = False
-            self._link_create_search = ctx.input_text_with_hint(
-                "##fsm_link_create_search", t("animfsm_editor.create_search"),
-                self._link_create_search, 128)
-            flt = (self._link_create_search or "").strip().lower()
-            if self._is_timeline_mode():
-                options = (
-                    (t("animfsm_editor.node_kind_timeline"), "timeline"),
-                )
-            else:
-                options = (
-                    (t("animfsm_editor.node_kind_clip"), "clip"),
-                    (t("animfsm_editor.node_kind_blend"), "blend"),
-                )
-            for idx, (label, kind) in enumerate(options):
-                if flt and flt not in label.lower() and flt not in kind:
-                    continue
-                ctx.push_id(idx)
-                if ctx.selectable(label, False):
-                    created = (kind, self._link_create_ctx)
-                    self._link_create_ctx = None
-                    ctx.close_current_popup()
-                ctx.pop_id()
-            ctx.end_popup()
+    # ── Shared create palette domain adapter ──────────────────────────
+    def _node_creation_entries(self, request: dict) -> list[NodeCreationEntry]:
+        if request.get("source_node") and request.get("source_kind") != PinKind.OUTPUT:
+            return []
+        if self._is_timeline_mode():
+            options = ((t("animfsm_editor.node_kind_timeline"), "timeline"),)
         else:
-            self._link_create_ctx = None
-        # Defer the model mutation + graph rebuild until after the popup is fully
-        # ended, so we never touch the graph while inside ImGui popup scope.
-        if created is not None:
-            self._create_state_from_link(created[0], created[1])
+            options = (
+                (t("animfsm_editor.node_kind_clip"), "clip"),
+                (t("animfsm_editor.node_kind_blend"), "blend"),
+            )
+        category = t("animfsm_editor.create_node_title")
+        return [
+            NodeCreationEntry(key=kind, label=label, category=category)
+            for label, kind in options
+        ]
+
+    def _on_node_creation_selected(
+        self, entry: NodeCreationEntry, request: dict
+    ) -> None:
+        self._create_state_from_link(entry.key, request)
 
     def _create_state_from_link(self, kind: str, ctx_data: dict):
         """Create a new state at the drop point and connect it from the drag source."""
@@ -2190,7 +2148,7 @@ class AnimFSMEditorPanel(EditorPanel):
             return
         gx = float(ctx_data.get("gx", 0.0))
         gy = float(ctx_data.get("gy", 0.0))
-        src_node = str(ctx_data.get("src_node", ""))
+        src_node = str(ctx_data.get("source_node", ctx_data.get("src_node", "")))
         # Resolve the source state name *before* rebuilding (uids change on rebuild).
         from_entry = (src_node == self._entry_uid)
         src_name = "" if from_entry else self._uid_to_name.get(src_node, "")

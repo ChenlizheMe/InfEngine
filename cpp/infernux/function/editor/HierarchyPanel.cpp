@@ -146,9 +146,43 @@ void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
     if (changed && selectId)
         selectId(id);
 
+    // This API represents an explicit single selection. Keep the native
+    // snapshot coherent immediately; push-mode listeners may run before or
+    // after the Python selection callback depending on where the action
+    // originated in the current ImGui frame.
+    m_selIds.clear();
+    m_selOrderedIds.clear();
+    if (id) {
+        m_selIds.insert(id);
+        m_selOrderedIds.push_back(id);
+        m_selCount = 1;
+    } else {
+        m_selCount = 0;
+    }
+    m_selPrimary = id;
+
     // Always expand the parent chain
-    if (id)
+    if (id) {
         ExpandToObject(id);
+        m_scrollToObjectId = id;
+        const bool missingFromCache =
+            std::none_of(m_flatItems.begin(), m_flatItems.end(), [id](const FlatItem &item) {
+                return item.obj && item.obj->GetID() == id;
+            });
+        m_forceRootRefresh = missingFromCache;
+        if (missingFromCache) {
+            Scene *scene = SceneManager::Instance().GetActiveScene();
+            GameObject *selected = scene ? scene->FindByID(id) : nullptr;
+            if (selected) {
+                // Runtime-only IDs can be recycled after leaving Play Mode.
+                // An explicitly revealed live scene object must not inherit a
+                // stale hidden marker from the previous runtime world.
+                m_hiddenIds.erase(id);
+                RefreshRootObjects(scene, false, true);
+                m_forceRootRefresh = false;
+            }
+        }
+    }
 
     if (changed)
         NotifySelectionChanged();
@@ -278,21 +312,25 @@ std::vector<GameObject *> HierarchyPanel::FilterHidden(const std::vector<std::un
     return out;
 }
 
-void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale)
+void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forceRefresh)
 {
     if (!scene) {
         m_cachedRoots.clear();
+        m_cachedRawRootCount = 0;
         return;
     }
     std::string sceneKey = scene->GetName();
     uint64_t ver = scene->GetStructureVersion();
+    const size_t rawRootCount = scene->GetRootObjects().size();
 
     float now = ImGui::GetTime();
     bool canReuseStale = (allowStale && m_cachedSceneKey == sceneKey && !m_cachedRoots.empty() &&
+                          rawRootCount == m_cachedRawRootCount &&
                           static_cast<int>(m_cachedRoots.size()) >= STALE_ROOT_THRESHOLD &&
                           (now - m_lastRootRefreshTime) < STALE_ROOT_INTERVAL);
 
-    if (sceneKey != m_cachedSceneKey || (ver != m_cachedStructureVer && !canReuseStale)) {
+    if (forceRefresh || rawRootCount != m_cachedRawRootCount || sceneKey != m_cachedSceneKey ||
+        (ver != m_cachedStructureVer && !canReuseStale)) {
         m_cachedRoots = FilterHidden(scene->GetRootObjects());
         m_orderedIdsDirty = true;
         m_canvasRootsDirty = true;
@@ -301,6 +339,7 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale)
         m_flatListDirty = true;
         m_cachedSceneKey = sceneKey;
         m_cachedStructureVer = ver;
+        m_cachedRawRootCount = rawRootCount;
         m_lastRootRefreshTime = now;
     }
 }
@@ -1616,6 +1655,18 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
     // Sync selection once per frame
     auto preSelectionStart = Clock::now();
     SyncSelectionCache();
+    if (m_selPrimary != m_lastObservedPrimaryId) {
+        m_lastObservedPrimaryId = m_selPrimary;
+        m_scrollToObjectId = m_selPrimary;
+        if (m_selPrimary) {
+            ExpandToObject(m_selPrimary);
+            const bool selectionMissingFromCache =
+                std::none_of(m_flatItems.begin(), m_flatItems.end(), [this](const FlatItem &item) {
+                    return item.obj && item.obj->GetID() == m_selPrimary;
+                });
+            m_forceRootRefresh = selectionMissingFromCache;
+        }
+    }
     m_subPreSelection += msSince(preSelectionStart);
 
     // Keyboard shortcuts (F2 rename, Delete)
@@ -1753,10 +1804,12 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorTheme::TREE_FRAME_PAD.x, EditorTheme::TREE_FRAME_PAD.y);
         ctx->PushStyleVarFloat(ImGuiStyleVar_IndentSpacing, EditorTheme::TREE_INDENT);
 
-        bool allowStale = !ctx->IsWindowFocused(0) && !ctx->IsWindowHovered() && !m_cachedRoots.empty();
+        bool allowStale = !m_forceRootRefresh && !ctx->IsWindowFocused(0) && !ctx->IsWindowHovered() &&
+                          !m_cachedRoots.empty();
         {
             auto t0 = Clock::now();
-            RefreshRootObjects(scene, allowStale);
+            RefreshRootObjects(scene, allowStale, m_forceRootRefresh);
+            m_forceRootRefresh = false;
             m_subRefreshRoots += msSince(t0);
         }
 
@@ -1802,6 +1855,27 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             RebuildFlatListIfNeeded(visibleRoots);
             m_subFlatBuild += msSince(t0);
         }
+
+        // A live, explicitly selected root must never disappear from the
+        // Hierarchy because a stale structure or runtime-hidden snapshot still
+        // carries the same recycled object ID. This path is intentionally
+        // exceptional and O(n); the normal cached list remains untouched.
+        if (!HasActiveSearch() && m_selPrimary != 0) {
+            const bool selectedVisible =
+                std::any_of(m_flatItems.begin(), m_flatItems.end(), [this](const FlatItem &item) {
+                    return item.obj && item.obj->GetID() == m_selPrimary;
+                });
+            if (!selectedVisible) {
+                GameObject *selected = scene->FindByID(m_selPrimary);
+                if (selected && selected->GetParent() == nullptr) {
+                    const bool hasVisibleChildren = std::any_of(
+                        selected->GetChildren().begin(), selected->GetChildren().end(), [this](const auto &child) {
+                            return child && !IsHidden(child->GetID());
+                        });
+                    m_flatItems.push_back({selected, 0, hasVisibleChildren});
+                }
+            }
+        }
         int nItems = static_cast<int>(m_flatItems.size());
 
         // Root-level insertion line before first root (only when dragging)
@@ -1829,8 +1903,41 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             float itemH = m_cachedItemHeight;
             float indentStep = EditorTheme::TREE_INDENT;
 
+            // Selection can be changed by creation services, undo/redo, scene
+            // picking, or another panel. Ensure a newly selected row is not
+            // discarded by virtual scrolling when it lies outside the current
+            // viewport. Keep this one-shot so normal hierarchy scrolling is
+            // never pulled back to an old selection.
+            if (m_scrollToObjectId != 0) {
+                auto selectedIt = std::find_if(m_flatItems.begin(), m_flatItems.end(), [this](const FlatItem &item) {
+                    return item.obj && item.obj->GetID() == m_scrollToObjectId;
+                });
+                if (selectedIt != m_flatItems.end()) {
+                    const int selectedIndex = static_cast<int>(std::distance(m_flatItems.begin(), selectedIt));
+                    const float rowTop = startY + static_cast<float>(selectedIndex) * itemH;
+                    const float rowBottom = rowTop + itemH;
+                    if (rowTop < scrollY || rowBottom > scrollY + viewportH) {
+                        const float targetY = (std::max)(0.0f, rowTop - (viewportH - itemH) * 0.5f);
+                        ImGui::SetScrollY(targetY);
+                        scrollY = targetY;
+                    }
+                    m_scrollToObjectId = 0;
+                } else if (!HasActiveSearch()) {
+                    // The object no longer exists or is hidden by a collapsed
+                    // branch that could not be expanded.
+                    m_scrollToObjectId = 0;
+                }
+            }
+
+            // ImGui may preserve the previous scroll offset for one frame after
+            // a hierarchy shrinks. Clamp both ends to the current flat list so
+            // that the final object is still rendered instead of producing an
+            // empty clipped range at the bottom.
             int firstVis = (std::max)(0, static_cast<int>((scrollY - startY) / itemH) - 2);
-            int lastVis = (std::min)(nItems - 1, static_cast<int>((scrollY + viewportH - startY) / itemH) + 3);
+            firstVis = (std::min)(nItems - 1, firstVis);
+            int lastVis = (std::min)(nItems - 1,
+                                     static_cast<int>((scrollY + viewportH - startY) / itemH) + 5);
+            lastVis = (std::max)(firstVis, lastVis);
 
             if (firstVis > 0)
                 ctx->Dummy(availW, static_cast<float>(firstVis) * itemH);

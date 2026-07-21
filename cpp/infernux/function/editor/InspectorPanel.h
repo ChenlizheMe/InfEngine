@@ -19,6 +19,7 @@ namespace infernux
 struct ComponentInfo
 {
     std::string typeName;
+    std::string displayName;
     uint64_t componentId = 0;
     bool enabled = true;
     bool isNative = true;

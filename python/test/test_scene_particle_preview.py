@@ -38,6 +38,7 @@ def test_scene_particle_preview_ticks_only_in_edit_mode():
     component.editor_preview_update = lambda delta, speed: calls.append((delta, speed)) or True
     selected = SimpleNamespace(get_py_components=lambda: [component])
     panel._on_particle_preview_selection(selected)
+    panel._particle_preview_is_live = lambda _component, _game_object: True
 
     panel._particle_preview_speed = 1.5
     panel._tick_particle_preview(0.02)

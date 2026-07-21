@@ -73,8 +73,7 @@ InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const st
     const float totalWidth = (std::max)(1.0f, GetContentRegionAvailWidth());
     const float columnPadding = ImGui::GetStyle().CellPadding.x * 4.0f;
     const float usableWidth = (std::max)(2.0f, totalWidth - columnPadding);
-    const float controlsMinWidth =
-        (std::max)(260.0f, (std::max)(shaderLabelWidth, surfaceLabelWidth) + 170.0f);
+    const float controlsMinWidth = (std::max)(260.0f, (std::max)(shaderLabelWidth, surfaceLabelWidth) + 170.0f);
     const float previewColumnWidth = std::clamp(usableWidth - controlsMinWidth, 10.0f, 200.0f);
     const float controlsColumnWidth = (std::max)(1.0f, usableWidth - previewColumnWidth);
     const int tableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
@@ -836,8 +835,13 @@ bool InxGUIContext::BeginPopup(const std::string &id)
 bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
 {
     const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr, static_cast<ImGuiWindowFlags>(flags));
-    if (open)
+    if (open) {
+        // Docking preserves the display order of undocked windows even when
+        // they are submitted before this popup. A modal must remain above
+        // every floating editor window for its entire lifetime.
+        ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
         RecordSemanticWindow("modal", title, title);
+    }
     return open;
 }
 

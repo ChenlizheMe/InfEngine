@@ -125,7 +125,12 @@ class ExpressionCompiler:
                     operands.append(ExpressionOperand(value_type, value_id=value_id))
                 else:
                     value_type = port.value_type or TypeRef(ValueType.F32)
-                    operands.append(ExpressionOperand(value_type, literal=port.default))
+                    operands.append(
+                        ExpressionOperand(
+                            value_type,
+                            literal=node.properties.get(port.id, port.default),
+                        )
+                    )
                 input_types[port.id] = value_type
 
             try:
@@ -192,7 +197,16 @@ class ExpressionCompiler:
                     ExpressionDiagnostic("unknown_node", f"unknown node type {node.type_id!r}", node.uid)
                 )
                 continue
-            unknown = set(node.properties) - {item.id for item in definition.properties}
+            editable_inputs = {
+                port.id
+                for port in definition.ports
+                if port.direction is PortDirection.INPUT
+                and port.kind is PortKind.VALUE
+                and not port.required
+            }
+            unknown = set(node.properties) - (
+                {item.id for item in definition.properties} | editable_inputs
+            )
             if unknown:
                 diagnostics.append(
                     ExpressionDiagnostic(

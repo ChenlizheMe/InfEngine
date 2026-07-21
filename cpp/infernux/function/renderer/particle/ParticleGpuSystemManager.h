@@ -95,6 +95,7 @@ using GpuParticleVectorFieldTextureResolver =
 struct GpuParticleEmitterProgram
 {
     uint64_t id = 0;
+    uint64_t ownerObjectId = 0;
     uint64_t artifactRevision = 0;
     std::string stableId;
     uint32_t capacity = 0;
@@ -113,6 +114,7 @@ struct GpuParticleEmitterProgram
     GpuParticleVectorFieldLayoutProgram vectorFields;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
+    std::vector<uint32_t> billboardPickingFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;
 };
 

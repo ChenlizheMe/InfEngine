@@ -54,6 +54,14 @@ from Infernux.renderstack.render_effect_compiler import (
 from Infernux.renderstack.resource_bus import ResourceBus
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack.render_pipeline import RenderPipeline, RenderPipelineAsset
+from Infernux.renderstack.pipeline_dsl import (
+    Path,
+    PipelineBuilder,
+    PipelineDefinition,
+    Queue,
+    QueueSelector,
+    compile_queue_segments,
+)
 from Infernux.renderstack.geometry_pass import GeometryPass
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
 from Infernux.renderstack.bloom_effect import BloomEffect
@@ -75,6 +83,12 @@ __all__ = [
     "RenderStack",
     "RenderPipeline",
     "RenderPipelineAsset",
+    "Path",
+    "PipelineBuilder",
+    "PipelineDefinition",
+    "Queue",
+    "QueueSelector",
+    "compile_queue_segments",
     "RenderStackPipeline",
     "DefaultForwardPipeline",
     "DefaultDeferredPipeline",

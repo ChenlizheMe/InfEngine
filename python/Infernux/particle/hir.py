@@ -330,7 +330,14 @@ class ParticleGraphCompiler:
             if not opcode:
                 raise ParticleCompileError(f"node {node.type_id!r} has no Particle HIR target")
             properties = {item.id: item.default for item in definition.properties}
-            unknown = set(node.properties) - set(properties)
+            editable_inputs = {
+                port.id
+                for port in definition.ports
+                if port.direction is PortDirection.INPUT
+                and port.kind is PortKind.VALUE
+                and not port.required
+            }
+            unknown = set(node.properties) - (set(properties) | editable_inputs)
             if unknown:
                 raise ParticleCompileError(
                     f"node {node.type_id!r} has unknown properties: {sorted(unknown)}"

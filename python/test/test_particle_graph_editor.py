@@ -165,3 +165,41 @@ def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatc
     assert len(graph.emitters) == 1
     assert compiled == [str(path)]
     assert json.loads(path.read_text(encoding="utf-8"))["$schema"] == "infernux.particle_graph"
+
+
+def test_particle_graph_live_draft_publishes_without_overwriting_source(tmp_path):
+    from dataclasses import replace
+    from Infernux.particle.artifact import ParticleArtifactRegistry
+
+    path = tmp_path / "LiveSmoke.particlegraph"
+    original = ParticleGraphAsset(stable_id="live-smoke")
+    original.save(str(path))
+    source_before = path.read_text(encoding="utf-8")
+    first = ParticleArtifactRegistry.get(str(path))
+
+    emitter = original.emitters[0]
+    draft = replace(
+        original,
+        emitters=(
+            replace(
+                emitter,
+                settings=replace(emitter.settings, spawn_rate=321.0),
+            ),
+        ),
+    )
+    published = ParticleArtifactRegistry.publish_graph_asset(draft, str(path))
+
+    assert published.revision > first.revision
+    assert ParticleArtifactRegistry.get(str(path)) is published
+    assert path.read_text(encoding="utf-8") == source_before
+
+
+def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitter_owned():
+    from Infernux.components.particle_system import ParticleSystem
+    from Infernux.components.serialized_field import get_serialized_fields
+
+    fields = get_serialized_fields(ParticleSystem)
+    assert set(fields) == {"graph", "simulation_speed", "play_on_awake"}
+    assert fields["graph"].display_name_key == "particle_system.graph"
+    assert fields["simulation_speed"].display_name_key == "particle_system.simulation_speed"
+    assert fields["play_on_awake"].display_name_key == "particle_system.play_on_awake"

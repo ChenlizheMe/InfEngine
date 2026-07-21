@@ -399,7 +399,11 @@ def _render_asset_reference_field(
         else:
             _apply_reference_drop(_ft, _comp, _fn, payload)
 
-    field_label(ctx, pretty_field_name(field_name), lw)
+    label_key = str(getattr(metadata, "display_name_key", "") or "")
+    label = t(label_key) if label_key else pretty_field_name(field_name)
+    if label == label_key:
+        label = pretty_field_name(field_name)
+    field_label(ctx, label, lw)
     render_object_field(
         ctx, f"{prefix}_ref_{field_name}", display, type_hint,
         accept_drag_type=drag_type,

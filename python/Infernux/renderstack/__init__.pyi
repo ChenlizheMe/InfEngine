@@ -19,6 +19,12 @@ from Infernux.renderstack.resource_bus import ResourceBus as ResourceBus
 from Infernux.renderstack.render_pass import RenderPass as RenderPass
 from Infernux.renderstack.render_pipeline import RenderPipeline as RenderPipeline
 from Infernux.renderstack.render_pipeline import RenderPipelineAsset as RenderPipelineAsset
+from Infernux.renderstack.pipeline_dsl import Path as Path
+from Infernux.renderstack.pipeline_dsl import PipelineBuilder as PipelineBuilder
+from Infernux.renderstack.pipeline_dsl import PipelineDefinition as PipelineDefinition
+from Infernux.renderstack.pipeline_dsl import Queue as Queue
+from Infernux.renderstack.pipeline_dsl import QueueSelector as QueueSelector
+from Infernux.renderstack.pipeline_dsl import compile_queue_segments as compile_queue_segments
 from Infernux.renderstack.geometry_pass import GeometryPass as GeometryPass
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect as FullScreenEffect
 from Infernux.renderstack.bloom_effect import BloomEffect as BloomEffect
@@ -60,6 +66,12 @@ __all__ = [
     "RenderPass",
     "RenderPipeline",
     "RenderPipelineAsset",
+    "Path",
+    "PipelineBuilder",
+    "PipelineDefinition",
+    "Queue",
+    "QueueSelector",
+    "compile_queue_segments",
     "GeometryPass",
     "FullScreenEffect",
     "BloomEffect",

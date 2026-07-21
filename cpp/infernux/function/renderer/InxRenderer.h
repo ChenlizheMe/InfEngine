@@ -231,7 +231,7 @@ class InxRenderer
 
     void SetGUIFont(const char *fontPath, float fontSize);
     float GetDisplayScale() const;
-    void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable);
+    void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void UnregisterGUIRenderable(const char *name);
     void QueueDockTabSelection(const char *windowId);
     void SetGUIPlayerMode(bool enabled);

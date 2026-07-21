@@ -21,7 +21,7 @@ static_assert(offsetof(ParticleInstance, color) == 4 * sizeof(float));
 static_assert(offsetof(ParticleInstance, rotation) == 8 * sizeof(float));
 
 void ParticleDrawCallBuffer::SetBatch(uint64_t batchId, std::vector<ParticleInstance> instances,
-                                      const std::string &materialGuid)
+                                      const std::string &materialGuid, uint64_t ownerObjectId)
 {
     if (batchId == 0)
         throw std::invalid_argument("particle batch id must be non-zero");
@@ -48,12 +48,12 @@ void ParticleDrawCallBuffer::SetBatch(uint64_t batchId, std::vector<ParticleInst
         throw std::runtime_error("built-in particle billboard material is unavailable");
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_batches[batchId] = Batch{std::move(instances), std::move(material), materialGuid};
+    m_batches[batchId] = Batch{std::move(instances), std::move(material), materialGuid, ownerObjectId};
 }
 
 void ParticleDrawCallBuffer::SetBatchInterleaved(uint64_t batchId, const float *instances, size_t instanceCount,
                                                  const std::string &materialGuid, const glm::vec3 &origin,
-                                                 bool validate)
+                                                 bool validate, uint64_t ownerObjectId)
 {
     if (batchId == 0)
         throw std::invalid_argument("particle batch id must be non-zero");
@@ -99,6 +99,7 @@ void ParticleDrawCallBuffer::SetBatchInterleaved(uint64_t batchId, const float *
     batch.instances.resize(instanceCount);
     batch.material = std::move(material);
     batch.materialGuid = materialGuid;
+    batch.ownerObjectId = ownerObjectId;
     if (origin == glm::vec3(0.0f)) {
         if (instanceCount > 0)
             std::memcpy(batch.instances.data(), instances, instanceCount * sizeof(ParticleInstance));
@@ -159,6 +160,7 @@ DrawCallResult ParticleDrawCallBuffer::GetDrawCalls(const glm::vec3 &cameraRight
             drawCall.worldMatrix = packed;
             drawCall.material = batch.material;
             drawCall.objectId = 0x5041525400000000ULL | batchId;
+            drawCall.pickingObjectId = batch.ownerObjectId;
             drawCall.identity =
                 RenderProxyHandle::Synthetic(RenderDomain::Particle, drawCall.objectId).MakeDrawIdentity();
             drawCall.meshVertices = &QuadVertices();

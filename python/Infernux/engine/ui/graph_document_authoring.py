@@ -14,6 +14,7 @@ from collections.abc import Callable, Iterable
 from Infernux.core.node_graph import (
     LinkValidationResult,
     NodeGraph,
+    NodeInlineFieldDef,
     NodeTypeDef,
     PinCategory,
     PinDef as CanvasPinDef,
@@ -79,22 +80,78 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
             )
         )
     is_root = definition.type_id.startswith("particle.root.")
-    is_particle = definition.type_id.startswith(("particle.", "common."))
+    property_by_id = {item.id: item for item in definition.properties}
+    inline_fields = [
+        NodeInlineFieldDef(
+            item.id,
+            item.id.replace("_", " ").title(),
+            item.value_type.value_type.value,
+            copy.deepcopy(item.default),
+            asset_type="Material" if item.id == "material" else "",
+            enum_values=("none", "back_to_front", "front_to_back")
+            if item.id == "sort"
+            else (),
+        )
+        for item in definition.properties
+    ]
+    for port in definition.ports:
+        if (
+            port.direction is PortDirection.INPUT
+            and port.kind is PortKind.VALUE
+            and not port.required
+            and port.id not in property_by_id
+        ):
+            inline_fields.append(
+                NodeInlineFieldDef(
+                    port.id,
+                    port.id.replace("_", " ").title(),
+                    port.value_type.value_type.value if port.value_type is not None else "f32",
+                    copy.deepcopy(port.default),
+                )
+            )
+    input_ids = {
+        port.id
+        for port in definition.ports
+        if port.direction is PortDirection.INPUT and port.kind is PortKind.VALUE
+    }
+    detached_fields = sum(1 for item in inline_fields if item.id not in input_ids)
+    category = definition.type_id.split(".", 1)[0].upper()
+    if definition.type_id.startswith("common.math."):
+        category = "MATH"
+    elif definition.type_id.startswith("common.vector."):
+        category = "VECTOR"
+    elif definition.type_id.startswith("common.constant."):
+        category = "CONSTANT"
+    elif is_root:
+        category = "CONTEXT"
     return NodeTypeDef(
         type_id=definition.type_id,
         label=definition.display_name,
         header_color=(0.22, 0.46, 0.38, 1.0) if is_root else (0.28, 0.31, 0.36, 1.0),
         pins=pins,
-        min_width=(196.0 if is_root else 178.0) if is_particle else (168.0 if definition.properties else 150.0),
+        min_width=196.0 if is_root else 190.0,
         deletable=not is_root,
-        visual_style="context" if is_root else ("graph" if is_particle else "default"),
-        category_label=(
-            "CONTEXT"
-            if is_root
-            else ("MATH" if definition.type_id.startswith("common.") else "PARTICLE")
-        ),
-        show_header_color_swatch=not is_particle,
+        body_bottom_pad=detached_fields * 24.0,
+        visual_style="context" if is_root else "graph",
+        category_label=category,
+        show_header_color_swatch=False,
+        inline_fields=inline_fields,
     )
+
+
+def _authoring_defaults(definition: NodeDef) -> dict:
+    values = {
+        item.id: copy.deepcopy(item.default) for item in definition.properties
+    }
+    for port in definition.ports:
+        if (
+            port.direction is PortDirection.INPUT
+            and port.kind is PortKind.VALUE
+            and not port.required
+            and port.id not in values
+        ):
+            values[port.id] = copy.deepcopy(port.default)
+    return values
 
 
 class GraphDocumentAuthoringModel(NodeGraph):
@@ -168,10 +225,7 @@ class GraphDocumentAuthoringModel(NodeGraph):
         definition = self._definitions.get(type_id)
         if definition is None:
             raise ValueError(f"unknown graph node type {type_id!r}")
-        properties = {
-            item.id: copy.deepcopy(item.default)
-            for item in definition.properties
-        }
+        properties = _authoring_defaults(definition)
         properties.update(data)
         return super().add_node(type_id, x, y, uid=uid, **properties)
 
@@ -367,9 +421,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if definition is None:
             raise ValueError(f"unknown graph node type {type_id!r}")
         stage = self._stage_for_new_node(type_id, float(y))
-        properties = {
-            item.id: copy.deepcopy(item.default) for item in definition.properties
-        }
+        properties = _authoring_defaults(definition)
         properties.update(data)
         raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
         canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)

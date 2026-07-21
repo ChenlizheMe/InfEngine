@@ -191,7 +191,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.engine.init_renderer(
             width=1600, height=900, project_path=self.project_path
         )
-        self.engine.set_gui_font(_resources.engine_font_path, 15)
+        # Match Unity's default UI text density more closely. Player bootstrap
+        # uses the same base size; explicit project UIText sizes stay unchanged.
+        self.engine.set_gui_font(_resources.engine_font_path, 16)
 
     def _prewarm_material_previews(self):
         """Prewarm material preview textures once at startup.

@@ -89,14 +89,15 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
-    for (const char *field :
-         {"id", "artifact_revision", "stable_id", "capacity", "state_stride", "stages", "billboard", "outputs"}) {
+    for (const char *field : {"id", "owner_object_id", "artifact_revision", "stable_id", "capacity", "state_stride",
+                              "stages", "billboard", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
 
     particle::GpuParticleEmitterProgram program;
     program.id = py::cast<uint64_t>(value["id"]);
+    program.ownerObjectId = py::cast<uint64_t>(value["owner_object_id"]);
     program.artifactRevision = py::cast<uint64_t>(value["artifact_revision"]);
     program.stableId = py::cast<std::string>(value["stable_id"]);
     program.capacity = py::cast<uint32_t>(value["capacity"]);
@@ -261,6 +262,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         throw std::invalid_argument("GPU particle billboard shaders are incomplete");
     program.billboardVertexShader = DecodeParticleSpirv(billboard["vertex"], "particle billboard vertex shader");
     program.billboardFragmentShader = DecodeParticleSpirv(billboard["fragment"], "particle billboard fragment shader");
+    program.billboardPickingFragmentShader =
+        DecodeParticleSpirv(billboard["picking_fragment"], "particle billboard picking fragment shader");
 
     const py::sequence outputs = py::cast<py::sequence>(value["outputs"]);
     program.outputs.reserve(outputs.size());
@@ -1150,12 +1153,12 @@ PYBIND11_MODULE(_Infernux, m)
         .def("set_log_level", &Infernux::SetLogLevel)
         .def(
             "register_gui_renderable",
-            [](Infernux &self, const std::string &name, std::shared_ptr<InxGUIRenderable> renderable) {
+            [](Infernux &self, const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority) {
                 auto *r = self.GetRenderer();
                 if (r)
-                    r->RegisterGUIRenderable(name.c_str(), renderable);
+                    r->RegisterGUIRenderable(name.c_str(), std::move(renderable), priority);
             },
-            py::arg("name"), py::arg("renderable"))
+            py::arg("name"), py::arg("renderable"), py::arg("priority") = 0)
         .def(
             "unregister_gui_renderable",
             [](Infernux &self, const std::string &name) {
@@ -1969,7 +1972,7 @@ PYBIND11_MODULE(_Infernux, m)
         .def(
             "submit_particle_instances",
             [](Infernux &self, uint64_t batchId, py::buffer instanceBuffer, const std::string &materialGuid,
-               float originX, float originY, float originZ, bool validate) {
+                float originX, float originY, float originZ, bool validate, uint64_t ownerObjectId) {
                 auto *renderer = self.GetRenderer();
                 if (!renderer || !renderer->GetParticleDrawCallBuffer())
                     throw std::logic_error("particle submission requires graphical renderer initialization");
@@ -1985,10 +1988,11 @@ PYBIND11_MODULE(_Infernux, m)
 
                 renderer->GetParticleDrawCallBuffer()->SetBatchInterleaved(
                     batchId, static_cast<const float *>(info.ptr), static_cast<size_t>(info.shape[0]), materialGuid,
-                    glm::vec3(originX, originY, originZ), validate);
+                     glm::vec3(originX, originY, originZ), validate, ownerObjectId);
             },
             py::arg("batch_id"), py::arg("instances"), py::arg("material_guid") = "", py::arg("origin_x") = 0.0f,
-            py::arg("origin_y") = 0.0f, py::arg("origin_z") = 0.0f, py::arg("validate") = true,
+             py::arg("origin_y") = 0.0f, py::arg("origin_z") = 0.0f, py::arg("validate") = true,
+             py::arg("owner_object_id") = 0,
             "Submit one contiguous particle instance batch (position3, size, color4, rotation)")
         .def(
             "remove_particle_batch",

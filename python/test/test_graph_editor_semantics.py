@@ -7,7 +7,7 @@ import pytest
 from Infernux.core.anim_state_machine import AnimParameter, AnimStateMachine
 from Infernux.engine.ui import animfsm_editor_panel as animfsm_module
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
-from Infernux.engine.ui.node_graph_view import NodeGraphView
+from Infernux.engine.ui.node_graph_view import NodeCreationEntry, NodeGraphView
 
 
 @pytest.fixture(autouse=True)
@@ -278,6 +278,40 @@ def test_animfsm_parameter_add_exposes_stable_semantic_id():
     assert "animfsm.parameters.add" in {item[3] for item in ctx.semantic_items}
 
 
+def test_node_graph_inline_overlay_submits_layout_item_after_cursor_restore():
+    class _InlineOverlayContext:
+        def __init__(self) -> None:
+            self.cursor_x = 17.0
+            self.cursor_y = 29.0
+            self.dummy_calls: list[tuple[float, float]] = []
+
+        def get_cursor_pos_x(self) -> float:
+            return self.cursor_x
+
+        def get_cursor_pos_y(self) -> float:
+            return self.cursor_y
+
+        def set_cursor_pos_x(self, value: float) -> None:
+            self.cursor_x = value
+
+        def set_cursor_pos_y(self, value: float) -> None:
+            self.cursor_y = value
+
+        def dummy(self, width: float, height: float) -> None:
+            self.dummy_calls.append((width, height))
+
+    view = NodeGraphView()
+    view.graph = SimpleNamespace(nodes=[])
+    view.zoom = 1.0
+    view._layouts = {}
+    ctx = _InlineOverlayContext()
+
+    view._draw_inline_fields(ctx)
+
+    assert (ctx.cursor_x, ctx.cursor_y) == (17.0, 29.0)
+    assert ctx.dummy_calls == [(0.0, 0.0)]
+
+
 def test_animfsm_dirty_mode_switch_defers_to_editor_owned_confirmation():
     panel = AnimFSMEditorPanel.__new__(AnimFSMEditorPanel)
     panel._dirty = True
@@ -458,6 +492,18 @@ def test_node_graph_open_add_menu_preserves_open_state_on_domain_semantic():
 
     by_id = {item[3]: item for item in ctx.semantic_items}
     assert by_id["vfx.graph.context.add_node"][4] == {"bool_value": True}
+
+
+def test_animfsm_uses_shared_node_creation_palette_for_domain_variants():
+    panel = AnimFSMEditorPanel()
+
+    assert panel._view.on_link_dropped_empty is None
+    entries = panel._view._creation_entries(
+        {"source_node": panel._entry_uid, "source_kind": animfsm_module.PinKind.OUTPUT}
+    )
+
+    assert [entry.key for entry in entries] == ["clip", "blend"]
+    assert all(isinstance(entry, NodeCreationEntry) for entry in entries)
 
 
 def test_node_graph_center_view_fits_full_node_bounds_inside_canvas():

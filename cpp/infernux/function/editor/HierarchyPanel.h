@@ -193,6 +193,7 @@ class HierarchyPanel : public EditorPanel
     // ── Root-object cache ────────────────────────────────────────────
     std::string m_cachedSceneKey;
     uint64_t m_cachedStructureVer = UINT64_MAX;
+    size_t m_cachedRawRootCount = 0;
     std::vector<GameObject *> m_cachedRoots;
     float m_lastRootRefreshTime = 0.0f;
     static constexpr float STALE_ROOT_INTERVAL = 0.12f;
@@ -240,6 +241,9 @@ class HierarchyPanel : public EditorPanel
     uint64_t m_pendingSelectId = 0;
     bool m_pendingCtrl = false;
     bool m_pendingShift = false;
+    uint64_t m_lastObservedPrimaryId = 0;
+    uint64_t m_scrollToObjectId = 0;
+    bool m_forceRootRefresh = false;
 
     // ── Pending auto-expand ──────────────────────────────────────────
     uint64_t m_pendingExpandId = 0;
@@ -279,7 +283,7 @@ class HierarchyPanel : public EditorPanel
     // Hidden-object filtering
     [[nodiscard]] bool IsHidden(uint64_t id) const;
     std::vector<GameObject *> FilterHidden(const std::vector<std::unique_ptr<GameObject>> &objects) const;
-    void RefreshRootObjects(Scene *scene, bool allowStale);
+    void RefreshRootObjects(Scene *scene, bool allowStale, bool forceRefresh = false);
 
     // Search
     void SetSearchQuery(const char *text);

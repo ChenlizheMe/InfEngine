@@ -6,6 +6,12 @@
 #include "vk/VkHandle.h"
 #include "vk/VkRenderUtils.h"
 #include "vk/VkResourceManager.h"
+#include "vk/VulkanRhiDevice.h"
+#include "particle/ParticleGpuDrawRegistry.h"
+#include <function/scene/Camera.h>
+#include <function/scene/SceneManager.h>
+
+#include <glm/gtc/matrix_inverse.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -43,6 +49,7 @@ void ScenePickingService::Destroy()
     }
     m_hasPending = false;
     DestroyTarget();
+    m_particleDrawRegistry = nullptr;
     m_core = nullptr;
 }
 
@@ -162,6 +169,9 @@ bool ScenePickingService::EnsureTarget(uint32_t width, uint32_t height)
     renderPassInfo.pDependencies = &dependency;
     if (vkCreateRenderPass(m_core->GetDevice(), &renderPassInfo, nullptr, &m_renderPass) != VK_SUCCESS)
         return false;
+    m_renderTargetLayout = m_core->GetDeviceContext().GetRhiDevice().RegisterRenderTargetLayout(m_renderPass);
+    if (!m_renderTargetLayout.IsValid())
+        return false;
 
     const VkImageView views[] = {m_color->GetView(), m_depth->GetView()};
     VkFramebufferCreateInfo framebufferInfo{};
@@ -182,6 +192,9 @@ bool ScenePickingService::EnsureTarget(uint32_t width, uint32_t height)
 
 void ScenePickingService::DestroyTarget()
 {
+    if (m_core && m_renderTargetLayout.IsValid())
+        m_core->GetDeviceContext().GetRhiDevice().Release(m_renderTargetLayout);
+    m_renderTargetLayout = {};
     if (m_core && m_core->GetDevice() != VK_NULL_HANDLE) {
         if (m_framebuffer != VK_NULL_HANDLE)
             vkDestroyFramebuffer(m_core->GetDevice(), m_framebuffer, nullptr);
@@ -222,6 +235,19 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     }
     std::memset(mapped, 0, static_cast<size_t>(kPickingPixelBytes));
 
+    const auto particleEntries = m_particleDrawRegistry
+                                     ? m_particleDrawRegistry->Snapshot(0, 5000)
+                                     : std::vector<particle::GpuParticleDrawEntry>{};
+    if (!particleEntries.empty()) {
+        VkMemoryBarrier particleBarrier{};
+        particleBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        particleBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        particleBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             0, 1, &particleBarrier, 0, nullptr, 0, nullptr);
+    }
+
     VkClearValue clears[2]{};
     clears[0].color.uint32[0] = 0;
     clears[0].color.uint32[1] = 0;
@@ -241,6 +267,28 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.depthFormat = rhi::FromVkFormat(m_depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
     m_core->DrawSceneFiltered(commandBuffer, m_width, m_height, 0, 5000, "front_to_back", {}, {}, &pickingPass);
+    if (!particleEntries.empty() && m_renderTargetLayout.IsValid()) {
+        Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
+        if (camera) {
+            particle::GpuBillboardViewConstants view;
+            const glm::mat4 cameraView = camera->GetViewMatrix();
+            const glm::mat4 viewProjection = camera->GetProjectionMatrix() * cameraView;
+            const glm::mat4 inverseView = glm::inverse(cameraView);
+            std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
+            std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
+            std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
+            vk::VulkanGraphicsCommandContext graphicsContext;
+            auto encoder = m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(
+                graphicsContext, commandBuffer);
+            for (const auto &entry : particleEntries) {
+                if (!entry.renderer || entry.ownerObjectId == 0)
+                    continue;
+                [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(
+                    encoder, m_renderTargetLayout, pickingPass, entry.indirectArguments, view,
+                    entry.ownerObjectId, entry.renderIndices);
+            }
+        }
+    }
     vkCmdEndRenderPass(commandBuffer);
 
     VkMemoryBarrier renderToTransfer{};

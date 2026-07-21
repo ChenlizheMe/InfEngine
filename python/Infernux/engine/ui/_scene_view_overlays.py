@@ -126,6 +126,28 @@ class SceneViewOverlaysMixin:
             manager = PlayModeManager.instance()
         return manager is None or bool(manager.is_edit_mode)
 
+    @staticmethod
+    def _particle_preview_is_live(component, game_object) -> bool:
+        if component is None or game_object is None:
+            return False
+        try:
+            owner = component.game_object
+            return owner is not None and int(owner.id) == int(game_object.id)
+        except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _discard_invalid_particle_preview(self) -> None:
+        component = self._particle_preview_component
+        if component is not None:
+            try:
+                component._remove_native_batch()
+            except (AttributeError, ReferenceError, RuntimeError):
+                pass
+        self._particle_preview_component = None
+        self._particle_preview_object = None
+        self._particle_preview_playing = False
+        self._particle_preview_prepared = False
+
     def _restore_particle_preview_selection(self) -> None:
         if not self._engine:
             return
@@ -141,7 +163,9 @@ class SceneViewOverlaysMixin:
 
     def _on_particle_preview_selection(self, game_object) -> None:
         component = self._particle_component_from_object(game_object)
-        if component is self._particle_preview_component:
+        if component is self._particle_preview_component and self._particle_preview_is_live(
+            component, game_object
+        ):
             return
         previous = self._particle_preview_component
         if previous is not None:
@@ -177,6 +201,11 @@ class SceneViewOverlaysMixin:
         component = self._particle_preview_component
         if component is None:
             return
+        if not self._particle_preview_is_live(
+            component, self._particle_preview_object
+        ):
+            self._discard_invalid_particle_preview()
+            return
         if not self._is_particle_preview_edit_mode():
             if self._particle_preview_prepared:
                 try:
@@ -186,12 +215,17 @@ class SceneViewOverlaysMixin:
                 self._particle_preview_prepared = False
             return
         try:
-            if not self._particle_preview_prepared:
+            if not self._particle_preview_prepared and self._particle_preview_playing:
                 self._particle_preview_prepared = bool(component.editor_preview_begin())
                 self._particle_preview_playing = self._particle_preview_prepared
             if self._particle_preview_prepared and self._particle_preview_playing:
                 component.editor_preview_update(delta_time, self._particle_preview_speed)
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+            if not self._particle_preview_is_live(
+                component, self._particle_preview_object
+            ):
+                self._discard_invalid_particle_preview()
+                return
             Debug.log_suppressed("scene_view.particle_preview.tick", exc)
             self._particle_preview_prepared = False
             self._particle_preview_playing = False
@@ -212,14 +246,16 @@ class SceneViewOverlaysMixin:
         height = 76.0
         ctx.set_cursor_pos_x(cursor_start_x + scene_width - width - 12.0)
         ctx.set_cursor_pos_y(cursor_start_y + scene_height - height - 12.0)
-        ctx.push_style_color(ImGuiCol.ChildBg, 0.055, 0.063, 0.082, 0.94)
-        ctx.push_style_color(ImGuiCol.Border, 0.28, 0.30, 0.35, 0.95)
+        ctx.push_style_color(ImGuiCol.ChildBg, 0.06, 0.06, 0.065, 0.94)
+        ctx.push_style_color(ImGuiCol.Border, 0.30, 0.30, 0.32, 0.95)
         ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, 6.0)
         visible = ctx.begin_child("##particle_preview_controls", width, height, True)
         try:
             hovered = bool(ctx.is_window_hovered())
             if not visible:
                 return hovered
+            semantic_capture = bool(getattr(ctx, "semantic_capture_enabled", True))
+            record_item = getattr(ctx, "record_semantic_item", None)
             speed = float(
                 ctx.drag_float(
                     f"{t('particle_preview.speed')}##particle_preview_speed",
@@ -230,14 +266,40 @@ class SceneViewOverlaysMixin:
                 )
             )
             self._particle_preview_speed = min(4.0, max(0.05, speed))
+            if semantic_capture and callable(record_item):
+                record_item(
+                    "particle_preview_speed",
+                    t("particle_preview.speed"),
+                    True,
+                    "scene_view.particle_preview.speed",
+                    float_value=self._particle_preview_speed,
+                )
             if self._particle_preview_playing:
-                if ctx.button(t("particle_preview.pause"), width=72.0):
+                pause_label = t("particle_preview.pause")
+                pause_clicked = ctx.button(pause_label, width=72.0)
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "button",
+                        pause_label,
+                        True,
+                        "scene_view.particle_preview.pause",
+                    )
+                if pause_clicked:
                     try:
                         component.editor_preview_pause()
                     finally:
                         self._particle_preview_playing = False
             else:
-                if ctx.button(t("particle_preview.play"), width=72.0):
+                play_label = t("particle_preview.play")
+                play_clicked = ctx.button(play_label, width=72.0)
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "button",
+                        play_label,
+                        True,
+                        "scene_view.particle_preview.play",
+                    )
+                if play_clicked:
                     try:
                         self._particle_preview_prepared = bool(
                             component.editor_preview_play()
@@ -246,12 +308,21 @@ class SceneViewOverlaysMixin:
                     except (AttributeError, ReferenceError, RuntimeError):
                         self._particle_preview_prepared = False
             ctx.same_line(0, 8.0)
-            if ctx.button(t("particle_preview.stop"), width=72.0):
+            stop_label = t("particle_preview.stop")
+            stop_clicked = ctx.button(stop_label, width=72.0)
+            if semantic_capture and callable(record_item):
+                record_item(
+                    "button",
+                    stop_label,
+                    True,
+                    "scene_view.particle_preview.stop",
+                )
+            if stop_clicked:
                 try:
                     component.editor_preview_stop()
                 finally:
                     self._particle_preview_playing = False
-                    self._particle_preview_prepared = True
+                    self._particle_preview_prepared = False
             return hovered or bool(ctx.is_item_hovered())
         finally:
             ctx.end_child()

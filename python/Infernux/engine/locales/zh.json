@@ -788,5 +788,11 @@
   "igui.no_results": "无匹配项",
   "igui.none": "无",
   "igui.tab_scene": "场景",
-  "igui.tab_assets": "资产"
+  "igui.tab_assets": "资产",
+  "node_graph.add_node": "添加节点...",
+  "node_graph.search_nodes": "搜索节点...",
+  "particle_system.graph": "粒子图",
+  "particle_system.simulation_speed": "模拟速度",
+  "particle_system.play_on_awake": "启动时播放",
+  "component.particle_system": "粒子系统"
 }

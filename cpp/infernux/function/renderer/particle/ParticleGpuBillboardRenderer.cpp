@@ -159,6 +159,13 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_fragmentShader = linkedVariant
                            ? device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()})
                            : device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
+    if (desc.vertexShader.words && desc.vertexShader.wordCount &&
+        desc.pickingFragmentShader.words && desc.pickingFragmentShader.wordCount) {
+        m_pickingVertexShader =
+            device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
+        m_pickingFragmentShader = device.CreateShaderModule(
+            {desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
+    }
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid()) {
         Destroy();
         return false;
@@ -238,6 +245,8 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
         m_device->Release(m_layout);
         m_device->Release(m_fragmentShader);
         m_device->Release(m_vertexShader);
+        m_device->Release(m_pickingFragmentShader);
+        m_device->Release(m_pickingVertexShader);
     }
     m_device = nullptr;
     m_material.reset();
@@ -250,6 +259,8 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_renderIndices = {};
     m_vertexShader = {};
     m_fragmentShader = {};
+    m_pickingVertexShader = {};
+    m_pickingFragmentShader = {};
     m_layout = {};
     m_group = {};
     m_viewGroups.clear();
@@ -544,13 +555,49 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     return true;
 }
 
+bool ParticleGpuBillboardRenderer::RecordPickingDraw(
+    const rhi::GraphicsCommandEncoder &encoder,
+    rhi::RenderTargetLayoutHandle renderTargetLayout,
+    const MaterialPassPipelineDescriptor &pass,
+    rhi::BufferHandle indirectArguments,
+    const GpuBillboardViewConstants &view,
+    uint64_t ownerObjectId,
+    rhi::BufferHandle renderIndices)
+{
+    if (!IsValid() || !m_pickingVertexShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
+        ownerObjectId == 0 || !encoder.IsValid() || !indirectArguments.IsValid())
+        return false;
+    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
+    const auto group = ResolveBindGroup(renderIndices);
+    if (!pipeline.IsValid() || !group.IsValid())
+        return false;
+    auto constants = view;
+    const std::array<uint32_t, 4> objectId = {
+        static_cast<uint32_t>(ownerObjectId),
+        static_cast<uint32_t>(ownerObjectId >> 32u),
+        0u,
+        0u,
+    };
+    std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
+    encoder.BindPipeline(pipeline);
+    encoder.BindGroup(pipeline, 0, group);
+    encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
+                          sizeof(constants), &constants);
+    encoder.DrawIndirect(indirectArguments);
+    return true;
+}
+
 rhi::GraphicsPipelineHandle
 ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                   const MaterialPassPipelineDescriptor &pass)
 {
-    if (!renderTargetLayout.IsValid() || !pass.IsValid() || pass.target != ShaderCompileTarget::Forward)
+    if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
+        (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::Picking))
         return {};
-    const auto materialState = ResolveMaterialState();
+    const bool picking = pass.target == ShaderCompileTarget::Picking;
+    const auto materialState = picking
+                                   ? GpuBillboardMaterialState{3000, false, true, true}
+                                   : ResolveMaterialState();
     const uint8_t pipelineStateSignature = PipelineStateSignature(materialState);
     for (const auto &entry : m_pipelines) {
         if (entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
@@ -559,8 +606,8 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     }
 
     rhi::GraphicsPipelineDesc desc;
-    desc.vertexShader = m_vertexShader;
-    desc.fragmentShader = m_fragmentShader;
+    desc.vertexShader = picking ? m_pickingVertexShader : m_vertexShader;
+    desc.fragmentShader = picking ? m_pickingFragmentShader : m_fragmentShader;
     desc.renderTargetLayout = renderTargetLayout;
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = materialState.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;

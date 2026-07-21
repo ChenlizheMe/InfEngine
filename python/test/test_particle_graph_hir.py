@@ -550,13 +550,15 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert set(graph_artifact.gpu_spirv["emitters"][0]["stages"]) == set(
         graph_artifact.gpu_glsl["emitters"][0]["stages"]
     )
-    assert set(graph_artifact.gpu_spirv["billboard"]) == {"vertex", "fragment"}
+    assert set(graph_artifact.gpu_spirv["billboard"]) == {
+        "vertex", "fragment", "picking_fragment"
+    }
     from Infernux.particle import decode_gpu_particle_spirv
 
     decoded = decode_gpu_particle_spirv(graph_artifact.gpu_spirv, 0)
     assert decoded["stable_id"] == "smoke"
     assert set(decoded["stages"]) == set(graph_artifact.gpu_glsl["emitters"][0]["stages"])
-    assert set(decoded["billboard"]) == {"vertex", "fragment"}
+    assert set(decoded["billboard"]) == {"vertex", "fragment", "picking_fragment"}
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["stages"].values())
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["billboard"].values())
     assert script_artifact.hir["emitters"][0]["render_plan"][0][

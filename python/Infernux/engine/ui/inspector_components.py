@@ -1066,6 +1066,15 @@ def _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_valu
         return metadata.default
 
 
+def _serialized_field_label(field_name, metadata) -> str:
+    key = str(getattr(metadata, "display_name_key", "") or "")
+    if key:
+        translated = t(key)
+        if translated != key:
+            return translated
+    return pretty_field_name(field_name)
+
+
 def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw, flush_fn):
     """Render a non-scalar field (list, serializable object, component ref, etc.). Returns True if handled."""
     from Infernux.components.serialized_field import FieldType
@@ -1114,7 +1123,10 @@ def render_py_component(ctx: InxGUIContext, py_comp):
     from Infernux.components.serialized_field import get_serialized_fields, FieldType
 
     fields = get_serialized_fields(py_comp.__class__)
-    lw = max_label_w(ctx, [pretty_field_name(k) for k in fields]) if fields else 0.0
+    lw = max_label_w(
+        ctx,
+        [_serialized_field_label(name, metadata) for name, metadata in fields.items()],
+    ) if fields else 0.0
     cache_entry, refresh_values = _begin_component_value_cache("py", py_comp)
     capture_semantics = semantic_capture_enabled(ctx)
     _record_profile_count("bodyPyGenericTotal_count")
@@ -1172,7 +1184,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
 
         if metadata.readonly and metadata.field_type in (FieldType.INT, FieldType.FLOAT, FieldType.STRING, FieldType.BOOL):
             _flush()
-            field_label(ctx, pretty_field_name(field_name), lw)
+            field_label(ctx, _serialized_field_label(field_name, metadata), lw)
             ctx.label(f"{current_value}")
             _tooltip_and_info(ctx, metadata)
             continue
@@ -1185,7 +1197,7 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         spc = metadata.space if metadata.space and metadata.space > 0 else 0.0
 
         desc = build_scalar_desc(
-            f"##{field_name}", pretty_field_name(field_name), metadata, current_value,
+            f"##{field_name}", _serialized_field_label(field_name, metadata), metadata, current_value,
             header_text=hdr, space_before=spc,
             semantic_id=(inspector_component_semantic_id(py_comp, field_name)
                          if capture_semantics else ""),
@@ -1209,10 +1221,10 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             if spc > 0:
                 ctx.dummy(0, spc)
             new_value = render_serialized_field(
-                ctx, f"##{field_name}", pretty_field_name(field_name), metadata, current_value, lw,
+                ctx, f"##{field_name}", _serialized_field_label(field_name, metadata), metadata, current_value, lw,
             )
             record_inspector_component_item(
-                ctx, py_comp, field_name, "inspector_field", pretty_field_name(field_name),
+                ctx, py_comp, field_name, "inspector_field", _serialized_field_label(field_name, metadata),
             )
             if has_field_changed(metadata.field_type, current_value, new_value) and not metadata.readonly:
                 _record_property(py_comp, field_name, current_value, new_value, f"Set {field_name}")

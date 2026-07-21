@@ -90,6 +90,7 @@ class FieldMetadata:
     default: Any
     range: Optional[Tuple[float, float]] = ...
     tooltip: str = ...
+    display_name_key: str = ...
     readonly: bool = ...
     header: str = ...
     space: float = ...
@@ -168,6 +169,7 @@ def serialized_field(
     asset_type: Optional[str] = ...,
     range: Optional[Tuple[float, float]] = ...,
     tooltip: str = ...,
+    display_name_key: str = ...,
     readonly: bool = ...,
     header: str = ...,
     space: float = ...,
@@ -193,6 +195,7 @@ def serialized_field(
         asset_type: For ASSET fields, the registered asset type name.
         range: ``(min, max)`` tuple for numeric sliders / bounded drag.
         tooltip: Hover text shown in inspector.
+        display_name_key: Optional i18n key used for the Inspector label.
         readonly: If ``True``, field is read-only in inspector.
         header: Group header text shown above this field.
         space: Vertical spacing before this field in inspector.
