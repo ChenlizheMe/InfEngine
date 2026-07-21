@@ -2767,6 +2767,8 @@ class ProjectPanel(EditorPanel):
     create_physic_material: Any
     create_scene: Any
     create_particlegraph: Any
+    create_render_effect: Any
+    create_render_effect_group: Any
     create_prefab_from_hierarchy: Any
     delete_items: Any
     do_rename: Any

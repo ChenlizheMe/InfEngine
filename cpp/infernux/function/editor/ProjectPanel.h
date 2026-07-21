@@ -96,6 +96,11 @@ class ProjectPanel : public EditorPanel
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimFsm;
     /// Create Particle Graph: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createParticleGraph;
+    /// Create Render Effect: (currentPath, name, featureType) → (ok, errorMsg)
+    std::function<std::pair<bool, std::string>(const std::string &, const std::string &, const std::string &)>
+        createRenderEffect;
+    /// Create Render Effect Group: (currentPath, name) → (ok, errorMsg)
+    std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createRenderEffectGroup;
     /// Create transform timeline: (currentPath, name) → (ok, errorMsg)
     std::function<std::pair<bool, std::string>(const std::string &, const std::string &)> createAnimTimeline;
     /// Create timeline state machine: (currentPath, name) → (ok, errorMsg)

@@ -10,6 +10,8 @@ from Infernux.engine.ui.project_file_ops import (
     create_physic_material,
     create_prefab_from_gameobject,
     create_particlegraph,
+    create_render_effect,
+    create_render_effect_group,
 )
 
 
@@ -68,6 +70,43 @@ class TestProjectPanelCreation:
         assert pp.create_particlegraph("/path", "Smoke") == (True, "")
         pp.open_particle_graph("/path/Smoke.particlegraph")
         assert opened == ["/path/Smoke.particlegraph"]
+
+    def test_create_render_effect_assets_write_current_documents(self, tmp_path):
+        from Infernux.renderstack.render_effect_asset import (
+            RenderEffectAsset,
+            RenderEffectGroupAsset,
+            parse_render_effect_document,
+        )
+
+        ok, error = create_render_effect(
+            str(tmp_path), "Blur", "infernux.route.gaussian_blur"
+        )
+        assert ok is True, error
+        effect = parse_render_effect_document(
+            (tmp_path / "Blur.effect").read_text(encoding="utf-8")
+        )
+        assert isinstance(effect, RenderEffectAsset)
+        assert effect.feature_type == "infernux.route.gaussian_blur"
+        assert effect.parameters == {}
+
+        ok, error = create_render_effect_group(str(tmp_path), "Post")
+        assert ok is True, error
+        group = parse_render_effect_document(
+            (tmp_path / "Post.effectgroup").read_text(encoding="utf-8")
+        )
+        assert isinstance(group, RenderEffectGroupAsset)
+        assert group.entries == ()
+
+    def test_create_render_effect_callbacks(self):
+        pp = ProjectPanel()
+        pp.create_render_effect = lambda cur, name, feature: (True, feature)
+        pp.create_render_effect_group = lambda cur, name: (True, name)
+
+        assert pp.create_render_effect("/path", "Blur", "infernux.route.gaussian_blur") == (
+            True,
+            "infernux.route.gaussian_blur",
+        )
+        assert pp.create_render_effect_group("/path", "Post") == (True, "Post")
 
     def test_create_material_writes_current_document(self, tmp_path, engine):
         from Infernux.lib import InxMaterial

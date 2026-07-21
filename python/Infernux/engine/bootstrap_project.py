@@ -84,6 +84,10 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         file_ops.create_animfsm, cur, name, adb)
     pp.create_particlegraph = lambda cur, name: _safe_project_create(
         file_ops.create_particlegraph, cur, name, adb)
+    pp.create_render_effect = lambda cur, name, feature_type: _safe_project_create(
+        file_ops.create_render_effect, cur, name, feature_type, adb)
+    pp.create_render_effect_group = lambda cur, name: _safe_project_create(
+        file_ops.create_render_effect_group, cur, name, adb)
     pp.create_animtimeline = lambda cur, name: _safe_project_create(
         file_ops.create_animtimeline, cur, name, adb)
     pp.create_timelinefsm = lambda cur, name: _safe_project_create(

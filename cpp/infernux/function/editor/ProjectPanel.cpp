@@ -2861,6 +2861,37 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
                 return std::make_pair(false, std::string("No callback"));
             });
         }
+        if (ctx->BeginMenu(Tr("project.create_render_effect"))) {
+            auto effectItem = [this, ctx](const char *labelKey, const char *baseName, const char *featureType) {
+                if (!ctx->Selectable(Tr(labelKey), false))
+                    return;
+                CreateAndRename(baseName, ".effect", [this, featureType](const std::string &name) {
+                    if (createRenderEffect)
+                        return createRenderEffect(m_currentPath, name, featureType);
+                    return std::make_pair(false, std::string("No callback"));
+                });
+            };
+            effectItem("project.effect_bloom", "NewBloom", "infernux.post.bloom");
+            effectItem("project.effect_tonemapping", "NewToneMapping", "infernux.post.tonemapping");
+            effectItem("project.effect_color_adjustments", "NewColorAdjustments", "infernux.post.color_adjustments");
+            effectItem("project.effect_chromatic_aberration", "NewChromaticAberration",
+                       "infernux.post.chromatic_aberration");
+            effectItem("project.effect_film_grain", "NewFilmGrain", "infernux.post.film_grain");
+            effectItem("project.effect_sharpen", "NewSharpen", "infernux.post.sharpen");
+            effectItem("project.effect_vignette", "NewVignette", "infernux.post.vignette");
+            effectItem("project.effect_white_balance", "NewWhiteBalance", "infernux.post.white_balance");
+            ctx->Separator();
+            effectItem("project.effect_grayscale", "NewGrayscale", "infernux.route.grayscale");
+            effectItem("project.effect_gaussian_blur", "NewGaussianBlur", "infernux.route.gaussian_blur");
+            ctx->EndMenu();
+        }
+        if (ctx->Selectable(Tr("project.create_render_effect_group"), false)) {
+            CreateAndRename("NewRenderEffectGroup", ".effectgroup", [this](const std::string &name) {
+                if (createRenderEffectGroup)
+                    return createRenderEffectGroup(m_currentPath, name);
+                return std::make_pair(false, std::string("No callback"));
+            });
+        }
         ctx->EndMenu();
     }
 

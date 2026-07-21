@@ -670,6 +670,79 @@ def create_particlegraph(current_path: str, graph_name: str, asset_database=None
     return True, ""
 
 
+def create_render_effect(
+    current_path: str,
+    effect_name: str,
+    feature_type: str,
+    asset_database=None,
+):
+    """Create and import one strict reusable ``.effect`` source asset."""
+    if not current_path or not effect_name:
+        return False, "Invalid Render Effect name"
+    effect_name = effect_name.strip()
+    if not effect_name:
+        return False, "Render Effect name cannot be empty"
+    if effect_name.lower().endswith(".effect"):
+        effect_name = effect_name[:-len(".effect")]
+
+    from Infernux.renderstack.render_effect_asset import (
+        RenderEffectAsset,
+        dump_render_effect_document,
+    )
+    from Infernux.renderstack.render_effect_compiler import get_render_effect_feature
+
+    try:
+        get_render_effect_feature(feature_type)
+        content = dump_render_effect_document(RenderEffectAsset(feature_type=feature_type))
+    except (TypeError, ValueError) as exc:
+        return False, str(exc)
+
+    file_name = effect_name + ".effect"
+    file_path = os.path.join(current_path, file_name)
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+    written, error = _write_new_text_asset(file_path, content)
+    if not written:
+        return False, error
+    if asset_database:
+        try:
+            _import_new_asset(file_path, asset_database)
+        except Exception as exc:
+            return False, str(exc)
+    return True, ""
+
+
+def create_render_effect_group(current_path: str, group_name: str, asset_database=None):
+    """Create and import one empty strict ``.effectgroup`` source asset."""
+    if not current_path or not group_name:
+        return False, "Invalid Render Effect Group name"
+    group_name = group_name.strip()
+    if not group_name:
+        return False, "Render Effect Group name cannot be empty"
+    if group_name.lower().endswith(".effectgroup"):
+        group_name = group_name[:-len(".effectgroup")]
+
+    from Infernux.renderstack.render_effect_asset import (
+        RenderEffectGroupAsset,
+        dump_render_effect_document,
+    )
+
+    file_name = group_name + ".effectgroup"
+    file_path = os.path.join(current_path, file_name)
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+    content = dump_render_effect_document(RenderEffectGroupAsset())
+    written, error = _write_new_text_asset(file_path, content)
+    if not written:
+        return False, error
+    if asset_database:
+        try:
+            _import_new_asset(file_path, asset_database)
+        except Exception as exc:
+            return False, str(exc)
+    return True, ""
+
+
 def create_animtimeline(current_path: str, timeline_name: str, asset_database=None):
     """Create a ``.animtimeline`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not timeline_name or not current_path:
