@@ -836,10 +836,23 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
 {
     const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr, static_cast<ImGuiWindowFlags>(flags));
     if (open) {
+        ImGuiWindow *window = ImGui::GetCurrentWindow();
         // Docking preserves the display order of undocked windows even when
         // they are submitted before this popup. A modal must remain above
         // every floating editor window for its entire lifetime.
-        ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+        ImGui::BringWindowToDisplayFront(window);
+
+        // Multi-viewport windows are separate native SDL windows, so ImGui's
+        // display order alone cannot raise a modal above an undocked editor.
+        // Give the modal focus when it appears and ask the platform backend to
+        // raise the native window that owns it.
+        if (window->Appearing) {
+            ImGui::FocusWindow(window);
+            ImGuiPlatformIO &platformIO = ImGui::GetPlatformIO();
+            ImGuiViewport *viewport = window->Viewport;
+            if (viewport != nullptr && viewport->PlatformWindowCreated && platformIO.Platform_SetWindowFocus != nullptr)
+                platformIO.Platform_SetWindowFocus(viewport);
+        }
         RecordSemanticWindow("modal", title, title);
     }
     return open;
