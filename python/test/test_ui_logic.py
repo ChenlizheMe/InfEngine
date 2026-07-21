@@ -17,11 +17,15 @@ from Infernux.engine.ui.theme import Theme, srgb_to_linear, srgb3, hex_to_linear
 # ── theme color utilities ────────────────────────────────────────────────
 
 def test_default_editor_and_game_ui_font_size_is_16px():
+    import inspect
+
+    from Infernux.engine.engine import Engine
     from Infernux.ui import UIButton, UIText
 
     assert Theme.UI_DEFAULT_FONT_SIZE == 16.0
     assert UIText().font_size == 16.0
     assert UIButton().font_size == 16.0
+    assert inspect.signature(Engine.set_gui_font).parameters["font_size"].default == 16
 
 
 def test_engine_gui_registration_forwards_overlay_priority():

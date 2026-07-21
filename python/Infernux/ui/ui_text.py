@@ -87,7 +87,7 @@ class UIText(InxUIScreenComponent):
         return 0.0 if self.is_auto_width() else max(1.0, float(self.width))
 
     def get_layout_tolerance(self) -> float:
-        return max(4.0, float(getattr(self, "font_size", 24.0)) * 0.15)
+        return max(4.0, float(getattr(self, "font_size", 16.0)) * 0.15)
 
     def get_editor_wrap_width(self) -> float:
         wrap_width = self.get_wrap_width()

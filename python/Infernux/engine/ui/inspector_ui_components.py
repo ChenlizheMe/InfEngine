@@ -439,7 +439,7 @@ def _render_common_position(ctx, comp):
 
 def _sync_text_layout_from_ctx(ctx, text_comp: UIText):
     text = getattr(text_comp, "text", "")
-    font_size = max(1.0, float(getattr(text_comp, "font_size", 24.0)))
+    font_size = max(1.0, float(getattr(text_comp, "font_size", Theme.UI_DEFAULT_FONT_SIZE)))
     wrap_width = float(text_comp.get_editor_wrap_width()) if hasattr(text_comp, "get_editor_wrap_width") else float(text_comp.get_wrap_width())
     font_path = str(getattr(text_comp, "font_path", "") or "")
     line_height = float(getattr(text_comp, "line_height", 1.2))

@@ -31,7 +31,7 @@ class Engine:
     def tick_play_mode(self, external_delta_time: Optional[float] = ...) -> float:
         """Advance play-mode timing before the native scene update."""
         ...
-    def set_gui_font(self, font_path: str, font_size: int = ...) -> None:
+    def set_gui_font(self, font_path: str, font_size: int = 16) -> None:
         """Set the ImGui font from a TTF file."""
         ...
     def set_log_level(self, engine_log_level: LogLevel) -> None:

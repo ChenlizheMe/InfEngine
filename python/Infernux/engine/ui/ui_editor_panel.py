@@ -257,7 +257,10 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
     def _sync_text_layout(self, ctx: InxGUIContext, text_comp):
         text = getattr(text_comp, "text", "")
-        font_size = max(1.0, float(getattr(text_comp, "font_size", 24.0)))
+        font_size = max(
+            1.0,
+            float(getattr(text_comp, "font_size", Theme.UI_DEFAULT_FONT_SIZE)),
+        )
         wrap_width = float(text_comp.get_editor_wrap_width()) if hasattr(text_comp, "get_editor_wrap_width") else (
             float(text_comp.get_wrap_width()) if hasattr(text_comp, "get_wrap_width") else 0.0
         )

@@ -576,7 +576,7 @@ class Engine():
             Debug.log_suppressed("Engine._confirm_dirty_panels_before_exit", exc)
             return True
 
-    def set_gui_font(self, font_path, font_size=18):
+    def set_gui_font(self, font_path, font_size=16):
         self._engine.set_gui_font(_safe_path(font_path), font_size)
 
     def set_gui_player_mode(self, enabled: bool):
