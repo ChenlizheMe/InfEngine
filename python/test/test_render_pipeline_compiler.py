@@ -7,8 +7,13 @@ from Infernux.renderstack.pipeline_dsl import Path, PipelineBuilder, Queue
 from Infernux.renderstack.pipeline_compiler import compile_pipeline_definition
 from Infernux.renderstack.render_effect import RenderEffect
 from Infernux.renderstack.render_effect_asset import RenderEffectAsset
+from Infernux.renderstack.render_effect_compiler import (
+    RenderEffectCompileError,
+    get_render_effect_feature,
+)
 from Infernux.renderstack.render_pipeline import RenderPipeline
 from Infernux.renderstack.render_stack import RenderStack
+from Infernux.renderstack.route_policy import RoutePolicy, merge_route_policies
 
 
 def _forward_mixed_definition():
@@ -161,3 +166,126 @@ def test_render_stack_mounts_route_effect_against_isolated_route_color():
     assert bindings["_SourceTex"].startswith("route/opaque.")
     assert bindings["_SourceTex"].endswith("/color")
     assert stack.effect_compile_errors == ()
+
+
+class _RouteEffectPipeline(RenderPipeline):
+    name = "Route Policy Test"
+
+    def define(self, pipeline):
+        with pipeline.opaque() as opaque:
+            opaque.forward(Queue(1, 100)).effects("route_fx")
+            opaque.otherwise().forward()
+
+
+def _route_effect_stack(*effects: RenderEffect) -> RenderStack:
+    stack = RenderStack()
+    stack._pipeline = _RouteEffectPipeline()
+    stack._pipeline._render_stack = stack
+    for effect in effects:
+        stack.add_effect_slot("route_fx", RenderEffectRef(effect=effect))
+    return stack
+
+
+def _effect(feature_type: str, **parameters) -> RenderEffect:
+    return RenderEffect(
+        RenderEffectAsset(feature_type=feature_type, parameters=parameters)
+    )
+
+
+def test_builtin_route_effects_declare_their_image_ownership_policy():
+    assert get_render_effect_feature("infernux.post.bloom").route_policy is RoutePolicy.ADDITIVE_EXTRACT
+    assert get_render_effect_feature("infernux.route.grayscale").route_policy is RoutePolicy.MASK_AND_MODIFY
+    assert get_render_effect_feature("infernux.route.gaussian_blur").route_policy is RoutePolicy.ISOLATE_AND_COMPOSITE
+
+
+def test_route_policy_merge_rejects_additive_and_replacement_effects():
+    assert merge_route_policies([]) is RoutePolicy.INLINE
+    assert merge_route_policies(
+        [RoutePolicy.MASK_AND_MODIFY, RoutePolicy.ISOLATE_AND_COMPOSITE]
+    ) is RoutePolicy.ISOLATE_AND_COMPOSITE
+    with pytest.raises(ValueError, match="cannot be mixed"):
+        merge_route_policies(
+            [RoutePolicy.ADDITIVE_EXTRACT, RoutePolicy.MASK_AND_MODIFY]
+        )
+
+
+def test_empty_route_effect_stage_draws_inline_without_an_isolation_target():
+    description = _route_effect_stack().build_graph()
+    names = [render_pass.name for render_pass in description.passes]
+
+    assert "route/opaque.route_1/Clear" not in names
+    assert not any(
+        command.shader_name == "route_alpha_composite"
+        and dict(command.input_bindings).get("_LayerTex", "").endswith(
+            "route/opaque.route_1/color"
+        )
+        for render_pass in description.passes
+        for command in render_pass.commands
+    )
+
+
+def test_grayscale_route_is_committed_without_leaking_into_the_scene_output():
+    description = _route_effect_stack(
+        _effect("infernux.route.grayscale", intensity=0.75)
+    ).build_graph()
+    grayscale = next(
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name.endswith("Grayscale_Apply")
+    )
+    bindings = dict(grayscale.commands[0].input_bindings)
+
+    assert bindings["_SourceTex"].startswith("route/opaque.route_1/")
+    assert not any(
+        render_pass.name == "_FinalCompositeBlit"
+        for render_pass in description.passes
+    )
+    assert description.output_texture == "color"
+
+
+def test_gaussian_route_uses_two_pass_isolation_and_alpha_composite():
+    description = _route_effect_stack(
+        _effect("infernux.route.gaussian_blur", radius=5, sigma=2.0)
+    ).build_graph()
+    names = [render_pass.name for render_pass in description.passes]
+    shaders = [
+        command.shader_name
+        for render_pass in description.passes
+        for command in render_pass.commands
+    ]
+
+    assert any(name.endswith("GaussianBlur_Horizontal") for name in names)
+    assert any(name.endswith("GaussianBlur_Vertical") for name in names)
+    assert "route_alpha_composite" in shaders
+
+
+def test_bloom_route_extracts_only_additive_energy_and_handles_one_mip():
+    description = _route_effect_stack(
+        _effect("infernux.post.bloom", max_iterations=1)
+    ).build_graph()
+    names = [render_pass.name for render_pass in description.passes]
+    composite = next(
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name.endswith("Bloom_Composite")
+    )
+    bindings = dict(composite.commands[0].input_bindings)
+
+    assert "route/opaque.route_1/PreserveOriginal" in names
+    assert "route/opaque.route_1/ExtractAdditiveDelta" in names
+    assert any(
+        command.shader_name == "route_additive_composite"
+        for render_pass in description.passes
+        for command in render_pass.commands
+    )
+    assert bindings["_BloomTex"].endswith("/_bloom_mip0")
+
+
+def test_mixed_additive_and_replacement_route_effects_fail_actionably():
+    stack = _route_effect_stack(
+        _effect("infernux.post.bloom", max_iterations=2),
+        _effect("infernux.route.grayscale", intensity=1.0),
+    )
+
+    with pytest.raises(RenderEffectCompileError, match="incompatible route effect policies"):
+        stack.build_graph()

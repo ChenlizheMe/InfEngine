@@ -17,6 +17,7 @@ from Infernux.renderstack.render_effect_asset import (
     RenderEffectGroupAsset,
     parse_render_effect_document,
 )
+from Infernux.renderstack.route_policy import RoutePolicy
 
 
 class RenderEffectCompileError(ValueError):
@@ -161,6 +162,7 @@ class RenderEffectArtifactRegistry:
                 or payload.get("source_hash") != source_hash
                 or payload.get("kind") not in {"effect", "group"}
                 or type(payload.get("features")) is not list
+                or not _is_current_feature_records(payload.get("features"))
             ):
                 return None
             revision = payload.get("revision")
@@ -197,6 +199,7 @@ class RenderEffectArtifactRegistry:
         passes = _record_feature_passes(source, feature)
         return {
             "feature_type": feature.type_id,
+            "route_policy": feature.route_policy.value,
             "topology": list(feature.topology_signature(source)),
             "passes": [
                 {
@@ -254,11 +257,39 @@ class RenderEffectArtifactRegistry:
         )
 
 
+def _is_current_feature_records(features) -> bool:
+    if type(features) is not list:
+        return False
+    for feature in features:
+        if type(feature) is not dict or set(feature) != {
+            "feature_type",
+            "route_policy",
+            "topology",
+            "passes",
+        }:
+            return False
+        if type(feature["route_policy"]) is not str:
+            return False
+        if type(feature["topology"]) is not list or type(feature["passes"]) is not list:
+            return False
+        for render_pass in feature["passes"]:
+            if type(render_pass) is not dict or set(render_pass) != {
+                "name",
+                "type",
+                "action",
+                "shader",
+                "parameter_layout",
+            }:
+                return False
+    return True
+
+
 @dataclass(frozen=True)
 class RenderEffectFeature:
     type_id: str
     effect_class: type
     topology_parameters: frozenset[str] = frozenset()
+    route_policy: RoutePolicy = RoutePolicy.ISOLATE_AND_COMPOSITE
 
     def instantiate(self, source: RenderEffect):
         from Infernux.components.serialized_field import get_serialized_fields
@@ -292,6 +323,7 @@ def register_render_effect_feature(
     effect_class: type,
     *,
     topology_parameters=(),
+    route_policy=None,
 ) -> RenderEffectFeature:
     """Register one AOT feature implementation for `.effect` sources."""
     normalized = str(type_id or "").strip()
@@ -299,9 +331,10 @@ def register_render_effect_feature(
         raise ValueError("render effect feature type id cannot be empty")
     existing = _FEATURES.get(normalized)
     feature = RenderEffectFeature(
-        normalized,
-        effect_class,
-        frozenset(str(name) for name in topology_parameters),
+        type_id=normalized,
+        effect_class=effect_class,
+        topology_parameters=frozenset(str(name) for name in topology_parameters),
+        route_policy=RoutePolicy(route_policy or RoutePolicy.ISOLATE_AND_COMPOSITE),
     )
     if existing is not None and existing != feature:
         raise ValueError(f"render effect feature {normalized!r} is already registered")
@@ -325,6 +358,8 @@ def _register_builtin_features() -> None:
     from Infernux.renderstack.chromatic_aberration_effect import ChromaticAberrationEffect
     from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
     from Infernux.renderstack.film_grain_effect import FilmGrainEffect
+    from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect
+    from Infernux.renderstack.grayscale_effect import GrayscaleEffect
     from Infernux.renderstack.sharpen_effect import SharpenEffect
     from Infernux.renderstack.tonemapping_effect import ToneMappingEffect
     from Infernux.renderstack.vignette_effect import VignetteEffect
@@ -334,18 +369,82 @@ def _register_builtin_features() -> None:
         "infernux.post.bloom",
         BloomEffect,
         topology_parameters={"max_iterations"},
+        route_policy=RoutePolicy.ADDITIVE_EXTRACT,
     )
-    register_render_effect_feature("infernux.post.tonemapping", ToneMappingEffect)
-    register_render_effect_feature("infernux.post.color_adjustments", ColorAdjustmentsEffect)
+    register_render_effect_feature(
+        "infernux.post.tonemapping",
+        ToneMappingEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.post.color_adjustments",
+        ColorAdjustmentsEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
     register_render_effect_feature(
         "infernux.post.chromatic_aberration",
         ChromaticAberrationEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
     )
-    register_render_effect_feature("infernux.post.film_grain", FilmGrainEffect)
-    register_render_effect_feature("infernux.post.sharpen", SharpenEffect)
-    register_render_effect_feature("infernux.post.vignette", VignetteEffect)
-    register_render_effect_feature("infernux.post.white_balance", WhiteBalanceEffect)
+    register_render_effect_feature(
+        "infernux.post.film_grain",
+        FilmGrainEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.post.sharpen",
+        SharpenEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.post.vignette",
+        VignetteEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.post.white_balance",
+        WhiteBalanceEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.route.grayscale",
+        GrayscaleEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.route.gaussian_blur",
+        GaussianBlurEffect,
+        route_policy=RoutePolicy.ISOLATE_AND_COMPOSITE,
+    )
     _BUILTINS_REGISTERED = True
+
+
+def resolve_effect_stage_route_policy(stage_ids, slot_lookup):
+    """Resolve enabled assets mounted on stages into one route policy."""
+    from Infernux.renderstack.route_policy import merge_route_policies
+
+    policies = []
+    for stage_id in stage_ids:
+        for slot in slot_lookup(stage_id):
+            if not slot.enabled or not slot.effect_ref:
+                continue
+            try:
+                sources = expand_render_effect_reference(slot.effect_ref)
+                policies.extend(
+                    get_render_effect_feature(source.feature_type).route_policy
+                    for source in sources
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                # The normal EffectStage compiler records the actionable asset
+                # error. A failed source must not force a costly route target.
+                continue
+    try:
+        return merge_route_policies(policies)
+    except ValueError as exc:
+        joined = ", ".join(str(stage_id) for stage_id in stage_ids)
+        raise RenderEffectCompileError(
+            f"incompatible route effect policies for stages [{joined}]: {exc}"
+        ) from exc
 
 
 @dataclass(frozen=True)

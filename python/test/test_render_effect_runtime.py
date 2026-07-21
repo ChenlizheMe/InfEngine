@@ -161,6 +161,7 @@ def test_tonemapping_effect_accepts_integer_enum_source_value(tmp_path):
     artifact, _document = RenderEffectArtifactRegistry.compile_and_publish(str(path))
 
     assert artifact.features[0]["feature_type"] == "infernux.post.tonemapping"
+    assert artifact.features[0]["route_policy"] == "mask_and_modify"
 
 
 def test_render_effect_clone_is_runtime_only_and_parameter_isolated():
@@ -304,6 +305,51 @@ def test_render_effect_load_reuses_matching_persisted_artifact(tmp_path, monkeyp
     assert restored.source_hash == published.source_hash
     assert restored.structural_hash == published.structural_hash
     assert restored.artifact_path == published.artifact_path
+
+
+def test_render_effect_rebuilds_artifact_missing_current_route_policy(
+    tmp_path,
+    monkeypatch,
+):
+    from Infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Bloom.effect"
+    path.parent.mkdir()
+    _write_effect(path)
+    published, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+    payload = json.loads(Path(published.artifact_path).read_text(encoding="utf-8"))
+    payload["features"][0].pop("route_policy")
+    Path(published.artifact_path).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    RenderEffectArtifactRegistry.clear()
+
+    original_compile = RenderEffectArtifactRegistry._compile_document
+    compile_calls = []
+
+    def track_compile(_cls, document, source_path, guid):
+        compile_calls.append(source_path)
+        return original_compile(document, source_path, guid)
+
+    monkeypatch.setattr(
+        RenderEffectArtifactRegistry,
+        "_compile_document",
+        classmethod(track_compile),
+    )
+    rebuilt, _ = RenderEffectArtifactRegistry.compile_and_publish(
+        str(path), guid="bloom-guid"
+    )
+    rebuilt_payload = json.loads(
+        Path(rebuilt.artifact_path).read_text(encoding="utf-8")
+    )
+
+    assert compile_calls == [str(path)]
+    assert rebuilt_payload["features"][0]["route_policy"] == "additive_extract"
 
 
 def test_asset_publish_updates_loaded_render_effect_in_place(tmp_path, monkeypatch):

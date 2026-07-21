@@ -25,9 +25,13 @@ from Infernux.renderstack.pipeline_dsl import PipelineDefinition as PipelineDefi
 from Infernux.renderstack.pipeline_dsl import Queue as Queue
 from Infernux.renderstack.pipeline_dsl import QueueSelector as QueueSelector
 from Infernux.renderstack.pipeline_dsl import compile_queue_segments as compile_queue_segments
+from Infernux.renderstack.route_policy import RoutePolicy as RoutePolicy
+from Infernux.renderstack.route_policy import merge_route_policies as merge_route_policies
 from Infernux.renderstack.geometry_pass import GeometryPass as GeometryPass
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect as FullScreenEffect
 from Infernux.renderstack.bloom_effect import BloomEffect as BloomEffect
+from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect as GaussianBlurEffect
+from Infernux.renderstack.grayscale_effect import GrayscaleEffect as GrayscaleEffect
 from Infernux.renderstack.tonemapping_effect import ToneMappingEffect as ToneMappingEffect
 from Infernux.renderstack.vignette_effect import VignetteEffect as VignetteEffect
 from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect as ColorAdjustmentsEffect
@@ -72,9 +76,13 @@ __all__ = [
     "Queue",
     "QueueSelector",
     "compile_queue_segments",
+    "RoutePolicy",
+    "merge_route_policies",
     "GeometryPass",
     "FullScreenEffect",
     "BloomEffect",
+    "GaussianBlurEffect",
+    "GrayscaleEffect",
     "ToneMappingEffect",
     "VignetteEffect",
     "ColorAdjustmentsEffect",

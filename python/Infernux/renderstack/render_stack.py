@@ -440,14 +440,18 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         from Infernux.rendergraph.graph import RenderGraph
 
         graph = RenderGraph("Pipeline+Stack")
-        bus = ResourceBus()
-        self._resource_bus = bus
+        self._resource_bus = ResourceBus()
         compiled_effects = []
         effect_errors = []
 
         def on_effect_stage(stage) -> None:
             from Infernux.renderstack.render_effect_compiler import compile_effect_slots
 
+            # A route/layer/stage/composite mount owns a local semantic image
+            # set. Reusing one bus across mount points leaks the last isolated
+            # route color into the final scene output.
+            bus = ResourceBus()
+            self._resource_bus = bus
             semantic_resources = graph.current_effect_resources
             for resource_name in stage.contract.inputs:
                 resource = semantic_resources.get(resource_name)
@@ -479,6 +483,17 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         graph._effect_stage_callback = on_effect_stage
 
+        from Infernux.renderstack.render_effect_compiler import (
+            resolve_effect_stage_route_policy,
+        )
+
+        graph._effect_route_policy_resolver = lambda stage_ids: (
+            resolve_effect_stage_route_policy(
+                stage_ids,
+                self.get_effect_stage_slots,
+            )
+        )
+
         # Pipeline populates graph with passes + injection points
         self.pipeline.define_topology(graph)
         from Infernux.renderstack.render_effect_compiler import (
@@ -502,36 +517,14 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         # Validate: no injection point before first pass
         graph.validate_no_ip_before_first_pass()
 
-        # If post-processing effects redirected "color" to a different
-        # texture, blit the result back to the original camera target
-        # (backbuffer) so it gets presented to the screen.
-        original_color = graph.get_texture(COLOR_TEXTURE)
-        final_color = bus.get(COLOR_TEXTURE)
-        if (final_color is not None
-                and original_color is not None
-                and final_color is not original_color):
-            # Move _ScreenUI_Overlay (if present) so it renders AFTER the
-            # final blit — otherwise the blit overwrites the overlay UI.
-            overlay_pass = graph.remove_pass("_ScreenUI_Overlay")
-
-            with graph.add_pass("_FinalCompositeBlit") as p:
-                p.set_texture("_SourceTex", final_color)
-                p.write_color(original_color)
-                p.fullscreen_quad("fullscreen_blit")
-
-            # Re-append overlay after the blit
-            if overlay_pass is not None:
-                graph.append_pass(overlay_pass)
-
-            graph.set_output(original_color)
-        elif final_color is not None:
-            graph.set_output(final_color)
-        elif graph._output is None:
+        # Every mounted effect is committed back to the image owned by its
+        # stage. The pipeline therefore remains the sole authority for the
+        # final scene output; a route-local bus must never override it.
+        if graph._output is None:
             # Only override if the pipeline didn't call set_output() itself.
             # Pipelines that use non-standard output names (e.g. "final")
             # will have already set _output inside define_topology().
             graph.set_output(COLOR_TEXTURE)
-        # else: pipeline already called graph.set_output() — respect it.
 
         return graph.build()
 

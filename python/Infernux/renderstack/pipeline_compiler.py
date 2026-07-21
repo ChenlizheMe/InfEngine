@@ -15,6 +15,7 @@ from Infernux.renderstack.pipeline_dsl import (
     RouteDefinition,
     compile_queue_segments,
 )
+from Infernux.renderstack.route_policy import RoutePolicy
 
 
 _CLEAR_TRANSPARENT = (0.0, 0.0, 0.0, 0.0)
@@ -44,11 +45,42 @@ class _ImageAccumulator:
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
+    def add(self, image, *, label: str) -> None:
+        target = self.alternate
+        with self.graph.name_scope(f"additive/{self.stable_id}"):
+            with self.graph.add_pass(f"{self.composite_index:02d}_{label}") as render_pass:
+                render_pass.set_texture("_BaseTex", self.current)
+                render_pass.set_texture("_AdditiveTex", image)
+                render_pass.write_color(target)
+                render_pass.fullscreen_quad("route_additive_composite")
+        self.current, self.alternate = target, self.current
+        self.composite_index += 1
+
     def effect_resources(self) -> dict:
         resources = {"color": self.current, "depth": self.depth}
         if self.shadow_map is not None:
             resources["shadow_map"] = self.shadow_map
         return resources
+
+
+@dataclass(frozen=True)
+class _RouteContribution:
+    color: object | None = None
+    additive: object | None = None
+
+
+def _consume_route_contribution(
+    accumulator: _ImageAccumulator,
+    contribution: _RouteContribution | None,
+    *,
+    label: str,
+) -> None:
+    if contribution is None:
+        return
+    if contribution.color is not None:
+        accumulator.composite(contribution.color, label=label)
+    if contribution.additive is not None:
+        accumulator.add(contribution.additive, label=f"{label}_additive")
 
 
 def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
@@ -171,7 +203,7 @@ def _compile_domain(
     for operation, stable_id in domain.operations:
         if operation == "route":
             route = routes[stable_id]
-            image = _compile_route(
+            contribution = _compile_route(
                 route,
                 selectors[stable_id],
                 graph,
@@ -179,8 +211,13 @@ def _compile_domain(
                 depth,
                 shadow_map,
                 stages,
+                inline_target=accumulator.current,
             )
-            accumulator.composite(image, label=stable_id)
+            _consume_route_contribution(
+                accumulator,
+                contribution,
+                label=stable_id,
+            )
             continue
         if operation == "layer":
             image = _compile_layer(
@@ -226,7 +263,7 @@ def _compile_layer(
     )
     for operation, stable_id in layer.operations:
         if operation == "route":
-            image = _compile_route(
+            contribution = _compile_route(
                 routes[stable_id],
                 selectors[stable_id],
                 graph,
@@ -234,8 +271,13 @@ def _compile_layer(
                 depth,
                 shadow_map,
                 stages,
+                inline_target=accumulator.current,
             )
-            accumulator.composite(image, label=stable_id)
+            _consume_route_contribution(
+                accumulator,
+                contribution,
+                label=stable_id,
+            )
             continue
         if operation == "effect":
             _declare_effect(graph, stages[stable_id], accumulator.effect_resources())
@@ -252,6 +294,8 @@ def _compile_route(
     depth,
     shadow_map,
     stages: dict[str, EffectStageDefinition],
+    *,
+    inline_target,
 ):
     if route.path is not Path.FORWARD:
         raise NotImplementedError(
@@ -259,16 +303,83 @@ def _compile_route(
             "true lighting backend is implemented; ordinary Forward is not used as a silent fallback"
         )
 
+    route_stages = tuple(stages[stage.stable_id] for stage in route.effects)
+    policy = graph.resolve_effect_route_policy(route_stages)
+    if policy is RoutePolicy.CUSTOM_FEATURE:
+        raise NotImplementedError(
+            f"custom route policy for {route.route_id!r} requires a registered compiler"
+        )
+
+    if policy is RoutePolicy.INLINE:
+        _draw_route(
+            route,
+            selectors,
+            graph,
+            inline_target,
+            depth,
+            shadow_map,
+        )
+        resources = _effect_resources(inline_target, depth, shadow_map)
+        for stage in route_stages:
+            _declare_effect(graph, stage, resources, policy=policy)
+        return None
+
     with graph.name_scope(f"route/{route.route_id}"):
         route_color = graph.create_texture("color", format=color_format)
         with graph.add_pass("Clear") as render_pass:
             render_pass.write_color(route_color)
             render_pass.set_clear(color=_CLEAR_TRANSPARENT)
 
-        sort_mode = "back_to_front" if route.domain == "transparent" else "front_to_back"
+    _draw_route(
+        route,
+        selectors,
+        graph,
+        route_color,
+        depth,
+        shadow_map,
+    )
+
+    original_color = None
+    if policy is RoutePolicy.ADDITIVE_EXTRACT:
+        with graph.name_scope(f"route/{route.route_id}"):
+            original_color = graph.create_texture("original", format=color_format)
+            with graph.add_pass("PreserveOriginal") as render_pass:
+                render_pass.set_texture("_SourceTex", route_color)
+                render_pass.write_color(original_color)
+                render_pass.fullscreen_quad("fullscreen_blit")
+
+    resources = _effect_resources(route_color, depth, shadow_map)
+    for stage in route_stages:
+        _declare_effect(graph, stage, resources, policy=policy)
+
+    if policy is not RoutePolicy.ADDITIVE_EXTRACT:
+        return _RouteContribution(color=route_color)
+
+    with graph.name_scope(f"route/{route.route_id}"):
+        additive = graph.create_texture("additive_delta", format=color_format)
+        with graph.add_pass("ExtractAdditiveDelta") as render_pass:
+            render_pass.set_texture("_OriginalTex", original_color)
+            render_pass.set_texture("_ProcessedTex", route_color)
+            render_pass.write_color(additive)
+            render_pass.fullscreen_quad("route_additive_delta")
+    return _RouteContribution(color=original_color, additive=additive)
+
+
+def _draw_route(
+    route: RouteDefinition,
+    selectors: Iterable[Queue],
+    graph,
+    color,
+    depth,
+    shadow_map,
+) -> None:
+    sort_mode = "back_to_front" if route.domain == "transparent" else "front_to_back"
+    with graph.name_scope(f"route/{route.route_id}"):
         for index, selector in enumerate(selectors):
-            with graph.add_pass(f"Draw_{index:02d}_{selector.minimum}_{selector.maximum}") as render_pass:
-                render_pass.write_color(route_color)
+            with graph.add_pass(
+                f"Draw_{index:02d}_{selector.minimum}_{selector.maximum}"
+            ) as render_pass:
+                render_pass.write_color(color)
                 render_pass.write_depth(depth)
                 if shadow_map is not None:
                     render_pass.set_texture("shadowMap", shadow_map)
@@ -278,12 +389,12 @@ def _compile_route(
                     material_pass="forward",
                 )
 
-    resources = {"color": route_color, "depth": depth}
+
+def _effect_resources(color, depth, shadow_map) -> dict:
+    resources = {"color": color, "depth": depth}
     if shadow_map is not None:
         resources["shadow_map"] = shadow_map
-    for stage in route.effects:
-        _declare_effect(graph, stages[stage.stable_id], resources)
-    return route_color
+    return resources
 
 
 def _new_transparent_accumulator(
@@ -309,7 +420,16 @@ def _new_transparent_accumulator(
     )
 
 
-def _declare_effect(graph, stage: EffectStageDefinition, resources: dict) -> None:
+def _declare_effect(
+    graph,
+    stage: EffectStageDefinition,
+    resources: dict,
+    *,
+    policy: RoutePolicy | None = None,
+) -> None:
+    capabilities = {"fullscreen", "isolated_image_set"}
+    if policy is not None:
+        capabilities.add(f"route_policy:{policy.value}")
     with graph.effect_resources(resources):
         graph.effects(
             stage.stable_id,
@@ -317,7 +437,7 @@ def _declare_effect(graph, stage: EffectStageDefinition, resources: dict) -> Non
             display_name=stage.display_name,
             inputs=set(resources),
             outputs={"color"},
-            capabilities={"fullscreen", "isolated_image_set"},
+            capabilities=capabilities,
         )
 
 

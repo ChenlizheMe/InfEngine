@@ -175,9 +175,17 @@ class BloomEffect(FullScreenEffect):
                 p.set_param("scatter", self.scatter)
                 p.fullscreen_quad("bloom_upsample")
 
+        # A one-level pyramid has no upsample pass; its prefiltered mip is the
+        # final bloom source. Larger pyramids finish in up_textures[0].
+        bloom_source = (
+            mip_textures[0]
+            if iterations == 1
+            else up_textures[0]
+        )
+
         # ---- Final pass: Composite (bloom + scene_copy → color_out) ----
         with graph.add_pass("Bloom_Composite") as p:
-            p.set_texture("_BloomTex", up_textures[0])
+            p.set_texture("_BloomTex", bloom_source)
             p.set_texture("_SceneColor", scene_copy)
             p.write_color(color_out)
             p.set_param("intensity", self.intensity)

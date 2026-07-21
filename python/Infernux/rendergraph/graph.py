@@ -564,6 +564,7 @@ class RenderGraph:
         self._injection_callback = None
         # Optional callback invoked at each pipeline-declared EffectStage.
         self._effect_stage_callback = None
+        self._effect_route_policy_resolver = None
         self._name_scopes: List[str] = []
         self._effect_resource_scopes: List[Dict[str, TextureHandle]] = []
 
@@ -660,6 +661,17 @@ class RenderGraph:
         if not self._effect_resource_scopes:
             return {}
         return dict(self._effect_resource_scopes[-1])
+
+    def resolve_effect_route_policy(self, stages):
+        """Resolve mounted route effects without coupling the graph to a scene."""
+        from Infernux.renderstack.route_policy import RoutePolicy
+
+        stage_ids = tuple(getattr(stage, "stable_id", stage) for stage in stages)
+        if not stage_ids:
+            return RoutePolicy.INLINE
+        if self._effect_route_policy_resolver is None:
+            return RoutePolicy.ISOLATE_AND_COMPOSITE
+        return RoutePolicy(self._effect_route_policy_resolver(stage_ids))
 
     def _scoped_name(self, name: str) -> str:
         raw = str(name)
