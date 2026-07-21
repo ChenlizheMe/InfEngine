@@ -136,6 +136,18 @@ PARTICLE_NODE_DEFINITIONS = (
         (PropertyDef("value", TypeRef(ValueType.F32), 5.0),),
     ),
     _operation(
+        "particle.attribute.set_color",
+        "Set Color",
+        "attribute.set_color",
+        (PropertyDef("value", TypeRef(ValueType.COLOR), [1.0, 1.0, 1.0, 1.0]),),
+    ),
+    _operation(
+        "particle.attribute.set_size",
+        "Set Size",
+        "attribute.set_size",
+        (PropertyDef("value", TypeRef(ValueType.F32), 1.0),),
+    ),
+    _operation(
         "particle.update.acceleration",
         "Acceleration",
         "integrate.acceleration",

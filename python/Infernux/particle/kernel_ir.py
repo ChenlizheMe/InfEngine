@@ -610,13 +610,26 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.store("builtin.lifetime", value, source)
+            elif operation.opcode in {"attribute.set_color", "attribute.set_size"}:
+                stable_id = {
+                    "attribute.set_color": "builtin.color",
+                    "attribute.set_size": "builtin.size",
+                }[operation.opcode]
+                value = builder.operation_value(
+                    "value",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types[stable_id],
+                    source,
+                )
+                builder.store(stable_id, value, source)
             else:
                 raise KernelCompileError(f"unsupported Init operation {operation.opcode!r}")
         return builder.finish()
 
     def _lower_update(self, emitter, attribute_types) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.UPDATE, attribute_types)
-        expression_values = builder.lower_expressions(emitter.update)
         delta_time = builder.emit(
             "load_uniform",
             TypeRef(ValueType.F32),
@@ -629,29 +642,45 @@ class ParticleKernelLowerer:
             "add", TypeRef(ValueType.F32), (age, delta_time), {}, KernelSourceRef(operation="update.age")
         )
         builder.store("builtin.age", new_age, KernelSourceRef(operation="update.age"))
+        expression_values = builder.lower_expressions(emitter.update)
 
         for operation in emitter.update.operations:
             source = KernelSourceRef(operation.source_node_uid, operation=f"update.{operation.opcode}")
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
-            if operation.opcode not in {"settings.gravity", "integrate.acceleration"}:
+            if operation.opcode in {"settings.gravity", "integrate.acceleration"}:
+                acceleration = builder.operation_value(
+                    "value",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types["builtin.velocity"],
+                    source,
+                )
+                velocity = builder.load("builtin.velocity", source)
+                delta_velocity = builder.emit(
+                    "multiply", attribute_types["builtin.velocity"], (acceleration, delta_time), {}, source
+                )
+                velocity = builder.emit(
+                    "add", attribute_types["builtin.velocity"], (velocity, delta_velocity), {}, source
+                )
+                builder.store("builtin.velocity", velocity, source)
+            elif operation.opcode in {"attribute.set_color", "attribute.set_size"}:
+                stable_id = {
+                    "attribute.set_color": "builtin.color",
+                    "attribute.set_size": "builtin.size",
+                }[operation.opcode]
+                value = builder.operation_value(
+                    "value",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types[stable_id],
+                    source,
+                )
+                builder.store(stable_id, value, source)
+            else:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
-            acceleration = builder.operation_value(
-                "value",
-                bindings,
-                expression_values,
-                parameters,
-                attribute_types["builtin.velocity"],
-                source,
-            )
-            velocity = builder.load("builtin.velocity", source)
-            delta_velocity = builder.emit(
-                "multiply", attribute_types["builtin.velocity"], (acceleration, delta_time), {}, source
-            )
-            velocity = builder.emit(
-                "add", attribute_types["builtin.velocity"], (velocity, delta_velocity), {}, source
-            )
-            builder.store("builtin.velocity", velocity, source)
 
         position = builder.load("builtin.position", KernelSourceRef(operation="update.integrate_position"))
         velocity = builder.load("builtin.velocity", KernelSourceRef(operation="update.integrate_position"))

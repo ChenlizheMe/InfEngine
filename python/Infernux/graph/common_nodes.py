@@ -55,6 +55,13 @@ COMMON_NODE_DEFINITIONS = (
         {"expression": "constant"},
     ),
     NodeDef(
+        "common.constant.color",
+        "Color",
+        (_output("value", TypeRef(ValueType.COLOR)),),
+        (PropertyDef("value", TypeRef(ValueType.COLOR), [1.0, 1.0, 1.0, 1.0]),),
+        {"expression": "constant"},
+    ),
+    NodeDef(
         "common.math.add",
         "Add",
         (
@@ -63,6 +70,47 @@ COMMON_NODE_DEFINITIONS = (
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "add"},
+    ),
+    NodeDef(
+        "common.math.subtract",
+        "Subtract",
+        (
+            _input("a", variable="T", default=0.0),
+            _input("b", variable="T", default=0.0),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "subtract"},
+    ),
+    NodeDef(
+        "common.math.multiply",
+        "Multiply",
+        (
+            _input("a", variable="T", default=0.0),
+            _input("b", variable="T", default=0.0),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "multiply"},
+    ),
+    NodeDef(
+        "common.math.divide",
+        "Divide",
+        (
+            _input("a", variable="T", default=0.0),
+            _input("b", variable="T", default=1.0),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "divide"},
+    ),
+    NodeDef(
+        "common.math.lerp",
+        "Lerp",
+        (
+            _input("a", variable="T", default=0.0),
+            _input("b", variable="T", default=1.0),
+            _input("t", TypeRef(ValueType.F32), default=0.5),
+            _output("result", variable="T"),
+        ),
+        target_opcodes={"expression": "lerp"},
     ),
     NodeDef(
         "common.vector.normalize",

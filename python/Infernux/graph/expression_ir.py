@@ -243,7 +243,13 @@ class ExpressionCompiler:
     ) -> TypeRef:
         if output.value_type is not None:
             return output.value_type
-        if type_id == "common.math.add":
+        if type_id in {
+            "common.math.add",
+            "common.math.subtract",
+            "common.math.multiply",
+            "common.math.divide",
+            "common.math.lerp",
+        }:
             return self._types.unify_numeric(inputs["a"], inputs["b"])
         raise TypeError(f"cannot resolve type variable {output.type_variable!r} for {type_id}")
 

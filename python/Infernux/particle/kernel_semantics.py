@@ -49,7 +49,10 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "store_attribute": KernelOpcodeSpec(False, 1, frozenset({"attribute"})),
     "load_uniform": KernelOpcodeSpec(True, 0, frozenset({"name"})),
     "add": KernelOpcodeSpec(True, 2),
+    "subtract": KernelOpcodeSpec(True, 2),
     "multiply": KernelOpcodeSpec(True, 2),
+    "divide": KernelOpcodeSpec(True, 2),
+    "lerp": KernelOpcodeSpec(True, 3),
     "normalize": KernelOpcodeSpec(True, 1),
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
     "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
@@ -247,9 +250,11 @@ def _validate_opcode_types(
         expected = KERNEL_RUNTIME_UNIFORMS.get(immediates["name"])
         if expected is None or result_type != expected:
             raise KernelSemanticError("kernel uniform name or result type is invalid")
-    elif opcode == "add":
+    elif opcode in {"add", "subtract", "divide"}:
         if result_type is None or operands != (result_type, result_type):
-            raise KernelSemanticError("kernel add requires two operands matching its result")
+            raise KernelSemanticError(
+                f"kernel {opcode} requires two operands matching its result"
+            )
     elif opcode == "multiply":
         if result_type is None or not (
             operands == (result_type, result_type)
@@ -258,6 +263,11 @@ def _validate_opcode_types(
         ):
             raise KernelSemanticError(
                 "kernel multiply requires matching operands or one f32 scalar"
+            )
+    elif opcode == "lerp":
+        if result_type is None or operands != (result_type, result_type, f32):
+            raise KernelSemanticError(
+                "kernel lerp requires two operands matching its result and one f32 factor"
             )
     elif opcode == "normalize":
         if result_type is None or operands != (result_type,) or result_type.value_type not in {

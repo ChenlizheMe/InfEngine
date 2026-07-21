@@ -857,11 +857,23 @@ def _compile_stage(
             name = f"v{len(values)}"
             lines.append(f"    {name} = context.{immediates['name']}")
             values[instruction.result_id] = name
-        elif opcode in {"add", "multiply", "less_than"}:
+        elif opcode in {"add", "subtract", "multiply", "divide", "less_than"}:
             operands = operand_names(instruction)
             output = result_buffer(instruction)
-            ufunc = {"add": "add", "multiply": "multiply", "less_than": "less"}[opcode]
+            ufunc = {
+                "add": "add",
+                "subtract": "subtract",
+                "multiply": "multiply",
+                "divide": "divide",
+                "less_than": "less",
+            }[opcode]
             lines.append(f"    np.{ufunc}({operands[0]}, {operands[1]}, out={output})")
+        elif opcode == "lerp":
+            operands = operand_names(instruction)
+            output = result_buffer(instruction)
+            lines.append(
+                f"    np.add({operands[0]}, ({operands[1]} - {operands[0]}) * {operands[2]}, out={output})"
+            )
         elif opcode == "normalize":
             source = operand_names(instruction)[0]
             output = result_buffer(instruction)

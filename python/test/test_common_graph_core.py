@@ -92,6 +92,45 @@ def test_common_expression_compiler_rejects_shape_mismatch():
         ExpressionCompiler().compile(document, outputs=(("add", "result"),))
 
 
+def test_common_lifecycle_math_preserves_color_type_and_scalar_factor():
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord(
+                "start",
+                "common.constant.color",
+                properties={"value": [1.0, 0.25, 0.0, 1.0]},
+            ),
+            GraphNodeRecord(
+                "end",
+                "common.constant.color",
+                properties={"value": [0.0, 0.0, 0.0, 0.0]},
+            ),
+            GraphNodeRecord("age", "common.constant.f32", properties={"value": 1.0}),
+            GraphNodeRecord("lifetime", "common.constant.f32", properties={"value": 2.0}),
+            GraphNodeRecord("normalized_age", "common.math.divide"),
+            GraphNodeRecord("color_over_life", "common.math.lerp"),
+        ),
+        links=(
+            GraphLinkRecord("age-link", "age", "value", "normalized_age", "a"),
+            GraphLinkRecord("lifetime-link", "lifetime", "value", "normalized_age", "b"),
+            GraphLinkRecord("start-link", "start", "value", "color_over_life", "a"),
+            GraphLinkRecord("end-link", "end", "value", "color_over_life", "b"),
+            GraphLinkRecord("factor-link", "normalized_age", "result", "color_over_life", "t"),
+        ),
+    )
+
+    program = ExpressionCompiler().compile(
+        document,
+        outputs=(("color_over_life", "result"),),
+    )
+
+    by_result = {instruction.result_id: instruction for instruction in program.instructions}
+    assert by_result["normalized_age.result"].opcode == "divide"
+    assert by_result["color_over_life.result"].opcode == "lerp"
+    assert by_result["color_over_life.result"].result_type.value_type is ValueType.COLOR
+
+
 def test_common_expression_compiler_rejects_bad_literal_and_input_type():
     bad_literal = GraphDocument(
         "particle.expression",

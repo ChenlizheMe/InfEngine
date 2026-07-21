@@ -249,6 +249,64 @@ def test_particle_stage_value_links_use_common_typed_expression_ir():
     assert hir.update.operations[-1].value_bindings == (("value", "normalize.result"),)
 
 
+def test_particle_update_can_author_color_and_size_over_lifetime():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-color", "particle.attribute.set_color"),
+            GraphNodeRecord("set-size", "particle.attribute.set_size"),
+            GraphNodeRecord("age", "particle.attribute.read_f32"),
+            GraphNodeRecord(
+                "lifetime",
+                "particle.attribute.read_f32",
+                properties={"attribute": "builtin.lifetime"},
+            ),
+            GraphNodeRecord("normalized-age", "common.math.divide"),
+            GraphNodeRecord(
+                "start-color",
+                "common.constant.color",
+                properties={"value": [1.0, 0.5, 0.0, 1.0]},
+            ),
+            GraphNodeRecord(
+                "end-color",
+                "common.constant.color",
+                properties={"value": [0.1, 0.0, 0.0, 0.0]},
+            ),
+            GraphNodeRecord("color-over-life", "common.math.lerp"),
+            GraphNodeRecord("size-over-life", "common.math.lerp", properties={"a": 1.0, "b": 0.0}),
+        ),
+        links=(
+            GraphLinkRecord("stream-color", "root.update", "out", "set-color", "in", PortKind.STREAM),
+            GraphLinkRecord("stream-size", "set-color", "out", "set-size", "in", PortKind.STREAM),
+            GraphLinkRecord("age-divide", "age", "value", "normalized-age", "a"),
+            GraphLinkRecord("life-divide", "lifetime", "value", "normalized-age", "b"),
+            GraphLinkRecord("color-a", "start-color", "value", "color-over-life", "a"),
+            GraphLinkRecord("color-b", "end-color", "value", "color-over-life", "b"),
+            GraphLinkRecord("color-t", "normalized-age", "result", "color-over-life", "t"),
+            GraphLinkRecord("size-t", "normalized-age", "result", "size-over-life", "t"),
+            GraphLinkRecord("set-color-value", "color-over-life", "result", "set-color", "value"),
+            GraphLinkRecord("set-size-value", "size-over-life", "result", "set-size", "value"),
+        ),
+    )
+
+    emitter = ParticleEmitterAsset(update=update)
+    program = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
+    hir = program.emitters[0]
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+
+    assert [operation.opcode for operation in hir.update.operations[-2:]] == [
+        "attribute.set_color",
+        "attribute.set_size",
+    ]
+    assert {instruction.opcode for instruction in kernel.update.instructions} >= {
+        "divide",
+        "lerp",
+        "store_attribute",
+    }
+    assert {"builtin.color", "builtin.size"} <= set(kernel.update.written_attributes)
+
+
 def test_particle_behavior_hash_ignores_graph_node_identity_and_layout():
     def make_update(prefix: str, offset: float) -> GraphDocument:
         return GraphDocument(

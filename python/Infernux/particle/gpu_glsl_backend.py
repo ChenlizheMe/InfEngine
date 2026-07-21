@@ -506,8 +506,14 @@ class _StageCompiler:
             expression = "pc.delta_time"
         elif opcode == "add":
             expression = f"({operands[0]} + {operands[1]})"
+        elif opcode == "subtract":
+            expression = f"({operands[0]} - {operands[1]})"
         elif opcode == "multiply":
             expression = f"({operands[0]} * {operands[1]})"
+        elif opcode == "divide":
+            expression = f"({operands[0]} / {operands[1]})"
+        elif opcode == "lerp":
+            expression = f"mix({operands[0]}, {operands[1]}, {operands[2]})"
         elif opcode == "less_than":
             expression = f"({operands[0]} < {operands[1]})"
         elif opcode == "normalize":
