@@ -841,6 +841,7 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
         // they are submitted before this popup. A modal must remain above
         // every floating editor window for its entire lifetime.
         ImGui::BringWindowToDisplayFront(window);
+        ImGui::BringWindowToFocusFront(window->RootWindow);
 
         // Multi-viewport windows are separate native SDL windows, so ImGui's
         // display order alone cannot raise a modal above an undocked editor.

@@ -232,7 +232,7 @@ def test_direct_panel_close_routes_through_shared_confirmation():
         clear_panel_tracking(panel_id)
 
 
-def test_titlebar_close_restores_dirty_dock_tab_before_confirmation():
+def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
     panel_id = "dirty_test_titlebar_close"
     panel = ClosablePanel("Titlebar Close", panel_id)
     panel._dirty = True
@@ -272,7 +272,7 @@ def test_titlebar_close_restores_dirty_dock_tab_before_confirmation():
     try:
         assert panel._begin_closable_window(ctx) is True
         assert panel.is_open is True
-        assert ctx.focus_calls == 1
+        assert ctx.focus_calls == 0
         assert ClosablePanel.get_active_panel_id() == panel_id
         assert coordinator.active_panel_id == panel_id
     finally:
