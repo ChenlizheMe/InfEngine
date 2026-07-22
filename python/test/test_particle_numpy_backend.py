@@ -198,13 +198,14 @@ def test_numpy_aot_executes_authored_random_expression_with_node_seed():
     np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:2], expected)
 
 
-def test_numpy_aot_executes_color_and_size_over_lifetime():
+def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
     update = GraphDocument(
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("set-color", "particle.attribute.set_color"),
             GraphNodeRecord("set-size", "particle.attribute.set_size"),
+            GraphNodeRecord("set-rotation", "particle.attribute.set_rotation"),
             GraphNodeRecord("age", "particle.attribute.read_f32"),
             GraphNodeRecord(
                 "lifetime",
@@ -224,18 +225,36 @@ def test_numpy_aot_executes_color_and_size_over_lifetime():
             ),
             GraphNodeRecord("color-over-life", "common.math.lerp"),
             GraphNodeRecord("size-over-life", "common.math.lerp", properties={"a": 2.0, "b": 0.5}),
+            GraphNodeRecord(
+                "rotation-over-life",
+                "common.math.lerp",
+                properties={"a": 0.0, "b": 3.141592653589793},
+            ),
         ),
         links=(
             GraphLinkRecord("stream-color", "root.update", "out", "set-color", "in", PortKind.STREAM),
             GraphLinkRecord("stream-size", "set-color", "out", "set-size", "in", PortKind.STREAM),
+            GraphLinkRecord(
+                "stream-rotation", "set-size", "out", "set-rotation", "in", PortKind.STREAM
+            ),
             GraphLinkRecord("age-divide", "age", "value", "normalized-age", "a"),
             GraphLinkRecord("life-divide", "lifetime", "value", "normalized-age", "b"),
             GraphLinkRecord("color-a", "start-color", "value", "color-over-life", "a"),
             GraphLinkRecord("color-b", "end-color", "value", "color-over-life", "b"),
             GraphLinkRecord("color-t", "normalized-age", "result", "color-over-life", "t"),
             GraphLinkRecord("size-t", "normalized-age", "result", "size-over-life", "t"),
+            GraphLinkRecord(
+                "rotation-t", "normalized-age", "result", "rotation-over-life", "t"
+            ),
             GraphLinkRecord("set-color-value", "color-over-life", "result", "set-color", "value"),
             GraphLinkRecord("set-size-value", "size-over-life", "result", "set-size", "value"),
+            GraphLinkRecord(
+                "set-rotation-value",
+                "rotation-over-life",
+                "result",
+                "set-rotation",
+                "value",
+            ),
         ),
     )
     settings = EmitterSettings(
@@ -261,6 +280,45 @@ def test_numpy_aot_executes_color_and_size_over_lifetime():
         [0.5, 0.25, 0.0, 0.5],
     )
     assert runtime.attributes["builtin.size"][0] == pytest.approx(1.25)
+    assert runtime.attributes["builtin.rotation"][0] == pytest.approx(np.pi / 2.0)
+    assert runtime.instance_buffer()[0, 8] == pytest.approx(np.pi / 2.0)
+
+
+def test_numpy_rotate_operation_integrates_degrees_per_second():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "rotate",
+                "particle.update.rotate",
+                properties={"degrees_per_second": 180.0},
+            ),
+        ),
+        links=(
+            GraphLinkRecord("stream", "root.update", "out", "rotate", "in", PortKind.STREAM),
+        ),
+    )
+    settings = EmitterSettings(
+        capacity=1,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+        lifetime=ScalarRange(2.0, 2.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(settings=settings, update=update),),
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+    runtime = program.create_runtime()
+
+    runtime.tick(0.0)
+    runtime.tick(0.5)
+
+    assert runtime.attributes["builtin.rotation"][0] == pytest.approx(np.pi / 2.0)
+    assert runtime.instance_buffer()[0, 8] == pytest.approx(np.pi / 2.0)
 
 
 def test_numpy_point_cache_sampling_uses_typed_interface_and_refreshes_generation():

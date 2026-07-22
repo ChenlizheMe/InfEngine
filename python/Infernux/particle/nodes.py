@@ -148,6 +148,18 @@ PARTICLE_NODE_DEFINITIONS = (
         (PropertyDef("value", TypeRef(ValueType.F32), 1.0),),
     ),
     _operation(
+        "particle.attribute.set_rotation",
+        "Set Rotation",
+        "attribute.set_rotation",
+        (PropertyDef("value", TypeRef(ValueType.F32), 0.0),),
+    ),
+    _operation(
+        "particle.update.rotate",
+        "Rotate",
+        "integrate.angular_velocity",
+        (PropertyDef("degrees_per_second", TypeRef(ValueType.F32), 90.0),),
+    ),
+    _operation(
         "particle.update.acceleration",
         "Acceleration",
         "integrate.acceleration",

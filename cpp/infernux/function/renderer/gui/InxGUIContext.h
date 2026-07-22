@@ -128,6 +128,8 @@ class InxGUIContext
     bool InputTextWithHint(const std::string &label, const std::string &hint, char *buffer, size_t bufferSize,
                            int flags = 0);
     bool InputInt(const std::string &label, int *value, int step = 1, int stepFast = 100, int flags = 0);
+    bool InputUInt(const std::string &label, uint32_t *value, uint32_t step = 1, uint32_t stepFast = 100,
+                   int flags = 0);
     bool InputFloat(const std::string &label, float *value, float step = 0.0f, float stepFast = 0.0f, int flags = 0);
 
     void ColorEdit(const std::string &label, float color[4]);

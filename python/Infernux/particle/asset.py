@@ -292,6 +292,8 @@ def default_stage_graph(stage: str) -> GraphDocument:
 def standard_particle_attributes() -> tuple[ParticleAttribute, ...]:
     return (
         ParticleAttribute("builtin.position", "position", TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION), [0.0, 0.0, 0.0]),
+        # Keep the scalar beside position so std430 uses vec3's trailing word instead of growing the state stride.
+        ParticleAttribute("builtin.rotation", "rotation", TypeRef(ValueType.F32), 0.0),
         ParticleAttribute("builtin.velocity", "velocity", TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION), [0.0, 0.0, 0.0]),
         ParticleAttribute("builtin.color", "color", TypeRef(ValueType.COLOR), [1.0, 1.0, 1.0, 1.0]),
         ParticleAttribute("builtin.size", "size", TypeRef(ValueType.F32), 1.0),
@@ -337,15 +339,45 @@ class ParticleEmitterAsset:
         _validate_stage_root("rendering", self.rendering)
         if len({attribute.stable_id for attribute in self.attributes}) != len(self.attributes):
             raise ParticleGraphSchemaError("particle attribute stable ids must be unique")
+        builtins = tuple(
+            attribute for attribute in self.attributes if attribute.stable_id.startswith("builtin.")
+        )
+        standards = standard_particle_attributes()
+        if (
+            len(builtins) != len(standards)
+            or tuple(self.attributes[: len(standards)]) != builtins
+            or any(
+                (actual.stable_id, actual.name, actual.value_type)
+                != (expected.stable_id, expected.name, expected.value_type)
+                for actual, expected in zip(builtins, standards)
+            )
+        ):
+            raise ParticleGraphSchemaError(
+                "particle emitter must use the complete current builtin attribute set"
+            )
         if len({interface.stable_id for interface in data_interfaces}) != len(data_interfaces):
             raise ParticleGraphSchemaError("particle data-interface stable ids must be unique")
 
     def to_dict(self) -> dict[str, Any]:
+        standard_defaults = {
+            attribute.stable_id: attribute.default
+            for attribute in standard_particle_attributes()
+        }
         return {
             "stable_id": self.stable_id,
             "name": self.name,
             "settings": self.settings.to_dict(),
-            "attributes": [attribute.to_dict() for attribute in self.attributes],
+            "attribute_defaults": {
+                attribute.stable_id: attribute.default
+                for attribute in self.attributes
+                if attribute.stable_id.startswith("builtin.")
+                and attribute.default != standard_defaults[attribute.stable_id]
+            },
+            "custom_attributes": [
+                attribute.to_dict()
+                for attribute in self.attributes
+                if not attribute.stable_id.startswith("builtin.")
+            ],
             "data_interfaces": [interface.to_dict() for interface in self.data_interfaces],
             "stages": {
                 "init": self.init.to_dict(),
@@ -362,24 +394,50 @@ class ParticleEmitterAsset:
                 "stable_id",
                 "name",
                 "settings",
-                "attributes",
+                "attribute_defaults",
+                "custom_attributes",
                 "data_interfaces",
                 "stages",
             },
             location,
         )
         _exact_object(value["stages"], {"init", "update", "rendering"}, f"{location}.stages")
-        if type(value["attributes"]) is not list or type(value["data_interfaces"]) is not list:
+        if (
+            type(value["attribute_defaults"]) is not dict
+            or type(value["custom_attributes"]) is not list
+            or type(value["data_interfaces"]) is not list
+        ):
             raise ParticleGraphSchemaError(
-                f"{location}.attributes and data_interfaces must be arrays"
+                f"{location}.attribute_defaults must be an object; custom_attributes and data_interfaces must be arrays"
             )
+        standards = standard_particle_attributes()
+        standard_by_id = {attribute.stable_id: attribute for attribute in standards}
+        unknown_defaults = set(value["attribute_defaults"]) - set(standard_by_id)
+        if unknown_defaults:
+            raise ParticleGraphSchemaError(
+                f"{location}.attribute_defaults contains unknown builtin attributes: {sorted(unknown_defaults)}"
+            )
+        builtin_attributes = tuple(
+            ParticleAttribute(
+                attribute.stable_id,
+                attribute.name,
+                attribute.value_type,
+                value["attribute_defaults"].get(attribute.stable_id, attribute.default),
+            )
+            for attribute in standards
+        )
         return cls(
             stable_id=value["stable_id"],
             name=value["name"],
             settings=EmitterSettings.from_dict(value["settings"], f"{location}.settings"),
-            attributes=tuple(
-                ParticleAttribute.from_dict(item, f"{location}.attributes[{index}]")
-                for index, item in enumerate(value["attributes"])
+            attributes=(
+                *builtin_attributes,
+                *(
+                    ParticleAttribute.from_dict(
+                        item, f"{location}.custom_attributes[{index}]"
+                    )
+                    for index, item in enumerate(value["custom_attributes"])
+                ),
             ),
             data_interfaces=tuple(
                 particle_data_interface_from_dict(

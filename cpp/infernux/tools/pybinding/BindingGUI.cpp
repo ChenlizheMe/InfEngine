@@ -410,6 +410,15 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("label"), py::arg("value"), py::arg("step") = 1, py::arg("step_fast") = 100, py::arg("flags") = 0)
         .def(
+            "input_uint",
+            [](InxGUIContext &ctx, const std::string &label, uint32_t value, uint32_t step, uint32_t step_fast,
+               int flags) {
+                ctx.InputUInt(label, &value, step, step_fast, flags);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("step") = 1u, py::arg("step_fast") = 100u,
+            py::arg("flags") = 0)
+        .def(
             "input_float",
             [](InxGUIContext &ctx, const std::string &label, float value, float step, float step_fast, int flags) {
                 ctx.InputFloat(label, &value, step, step_fast, flags);

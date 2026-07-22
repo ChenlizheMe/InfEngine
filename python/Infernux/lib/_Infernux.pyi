@@ -2021,6 +2021,9 @@ class InxGUIContext:
     def input_int(
         self, label: str, value: int, step: int = 1, step_fast: int = 100, flags: int = 0
     ) -> int: ...
+    def input_uint(
+        self, label: str, value: int, step: int = 1, step_fast: int = 100, flags: int = 0
+    ) -> int: ...
     def input_float(
         self, label: str, value: float, step: float = 0.0, step_fast: float = 0.0, flags: int = 0
     ) -> float: ...

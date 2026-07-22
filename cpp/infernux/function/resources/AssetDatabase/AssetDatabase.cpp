@@ -1969,7 +1969,7 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
             return std::string{};
 
         const auto lookup = [this](const std::filesystem::path &candidate) {
-            return GetGuidFromPath(FromFsPath(candidate.lexically_normal()));
+            return GetGuidFromPath(NormalizeFilesystemPathLexically(FromFsPath(candidate)));
         };
         const std::filesystem::path dependency = ToFsPath(dependencyPath);
         if (dependency.is_absolute())

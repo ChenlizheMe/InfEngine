@@ -538,7 +538,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         values["seed"] = max(
             0,
             int(
-                ctx.input_int(
+                ctx.input_uint(
                     f"{t('particle_graph_editor.seed')}##particle_seed", settings.seed
                 )
             ),

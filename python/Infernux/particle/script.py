@@ -52,7 +52,9 @@ class ParticleStream:
 
     def set_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
+    def set_rotation(self, value) -> None: ...
     def acceleration(self, value) -> None: ...
+    def rotate(self, degrees_per_second) -> None: ...
     def sprite(
         self,
         *,
@@ -77,9 +79,12 @@ class ParticleScriptCompiler:
         "init": {
             "set_velocity": ("particle.init.set_velocity", "value"),
             "set_lifetime": ("particle.init.set_lifetime", "value"),
+            "set_rotation": ("particle.attribute.set_rotation", "value"),
         },
         "update": {
             "acceleration": ("particle.update.acceleration", "value"),
+            "set_rotation": ("particle.attribute.set_rotation", "value"),
+            "rotate": ("particle.update.rotate", "degrees_per_second"),
         },
         "rendering": {
             "sprite": ("particle.output.sprite", ""),

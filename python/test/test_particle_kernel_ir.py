@@ -58,6 +58,7 @@ def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
         "builtin.position",
         "builtin.size",
         "builtin.color",
+        "builtin.rotation",
         "builtin.age",
         "builtin.lifetime",
         "builtin.id",

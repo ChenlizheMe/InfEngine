@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
@@ -610,10 +611,15 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.store("builtin.lifetime", value, source)
-            elif operation.opcode in {"attribute.set_color", "attribute.set_size"}:
+            elif operation.opcode in {
+                "attribute.set_color",
+                "attribute.set_size",
+                "attribute.set_rotation",
+            }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
                     "attribute.set_size": "builtin.size",
+                    "attribute.set_rotation": "builtin.rotation",
                 }[operation.opcode]
                 value = builder.operation_value(
                     "value",
@@ -665,10 +671,15 @@ class ParticleKernelLowerer:
                     "add", attribute_types["builtin.velocity"], (velocity, delta_velocity), {}, source
                 )
                 builder.store("builtin.velocity", velocity, source)
-            elif operation.opcode in {"attribute.set_color", "attribute.set_size"}:
+            elif operation.opcode in {
+                "attribute.set_color",
+                "attribute.set_size",
+                "attribute.set_rotation",
+            }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
                     "attribute.set_size": "builtin.size",
+                    "attribute.set_rotation": "builtin.rotation",
                 }[operation.opcode]
                 value = builder.operation_value(
                     "value",
@@ -679,6 +690,43 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.store(stable_id, value, source)
+            elif operation.opcode == "integrate.angular_velocity":
+                degrees_per_second = builder.operation_value(
+                    "degrees_per_second",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types["builtin.rotation"],
+                    source,
+                )
+                radians_per_degree = builder.constant(
+                    attribute_types["builtin.rotation"],
+                    math.pi / 180.0,
+                    source,
+                )
+                radians_per_second = builder.emit(
+                    "multiply",
+                    attribute_types["builtin.rotation"],
+                    (degrees_per_second, radians_per_degree),
+                    {},
+                    source,
+                )
+                delta_rotation = builder.emit(
+                    "multiply",
+                    attribute_types["builtin.rotation"],
+                    (radians_per_second, delta_time),
+                    {},
+                    source,
+                )
+                rotation = builder.load("builtin.rotation", source)
+                rotation = builder.emit(
+                    "add",
+                    attribute_types["builtin.rotation"],
+                    (rotation, delta_rotation),
+                    {},
+                    source,
+                )
+                builder.store("builtin.rotation", rotation, source)
             else:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
 
@@ -722,6 +770,7 @@ class ParticleKernelLowerer:
             "builtin.position",
             "builtin.size",
             "builtin.color",
+            "builtin.rotation",
             "builtin.age",
             "builtin.lifetime",
             "builtin.id",

@@ -152,13 +152,14 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
     )
 
 
-def test_gpu_lowerer_emits_lifecycle_divide_lerp_and_attribute_stores():
+def test_gpu_lowerer_emits_lifecycle_divide_lerp_rotation_and_attribute_stores():
     update = GraphDocument(
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("set-color", "particle.attribute.set_color"),
             GraphNodeRecord("set-size", "particle.attribute.set_size"),
+            GraphNodeRecord("set-rotation", "particle.attribute.set_rotation"),
             GraphNodeRecord("age", "particle.attribute.read_f32"),
             GraphNodeRecord(
                 "lifetime",
@@ -174,18 +175,36 @@ def test_gpu_lowerer_emits_lifecycle_divide_lerp_and_attribute_stores():
             ),
             GraphNodeRecord("color-over-life", "common.math.lerp"),
             GraphNodeRecord("size-over-life", "common.math.lerp", properties={"a": 1.0, "b": 0.0}),
+            GraphNodeRecord(
+                "rotation-over-life",
+                "common.math.lerp",
+                properties={"a": 0.0, "b": 3.141592653589793},
+            ),
         ),
         links=(
             GraphLinkRecord("stream-color", "root.update", "out", "set-color", "in", PortKind.STREAM),
             GraphLinkRecord("stream-size", "set-color", "out", "set-size", "in", PortKind.STREAM),
+            GraphLinkRecord(
+                "stream-rotation", "set-size", "out", "set-rotation", "in", PortKind.STREAM
+            ),
             GraphLinkRecord("age-divide", "age", "value", "normalized-age", "a"),
             GraphLinkRecord("life-divide", "lifetime", "value", "normalized-age", "b"),
             GraphLinkRecord("color-a", "start-color", "value", "color-over-life", "a"),
             GraphLinkRecord("color-b", "end-color", "value", "color-over-life", "b"),
             GraphLinkRecord("color-t", "normalized-age", "result", "color-over-life", "t"),
             GraphLinkRecord("size-t", "normalized-age", "result", "size-over-life", "t"),
+            GraphLinkRecord(
+                "rotation-t", "normalized-age", "result", "rotation-over-life", "t"
+            ),
             GraphLinkRecord("set-color-value", "color-over-life", "result", "set-color", "value"),
             GraphLinkRecord("set-size-value", "size-over-life", "result", "set-size", "value"),
+            GraphLinkRecord(
+                "set-rotation-value",
+                "rotation-over-life",
+                "result",
+                "set-rotation",
+                "value",
+            ),
         ),
     )
     asset = ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
@@ -196,6 +215,13 @@ def test_gpu_lowerer_emits_lifecycle_divide_lerp_and_attribute_stores():
     assert "mix(" in source
     assert ".a_builtin_color = " in source
     assert ".a_builtin_size = " in source
+    assert ".a_builtin_rotation = " in source
+
+    rendering = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(hir)
+    ).emitters[0].rendering
+    assert "rotation_custom = vec4(" in rendering
+    assert ".a_builtin_rotation" in rendering
 
 
 def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults():

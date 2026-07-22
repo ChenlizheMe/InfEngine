@@ -421,6 +421,14 @@ bool InxGUIContext::InputInt(const std::string &label, int *value, int step, int
     return changed;
 }
 
+bool InxGUIContext::InputUInt(const std::string &label, uint32_t *value, uint32_t step, uint32_t stepFast, int flags)
+{
+    const bool changed = ImGui::InputScalar(label.c_str(), ImGuiDataType_U32, value, &step, &stepFast, "%u", flags);
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("uint_input", label, true, "", std::nullopt, static_cast<double>(*value));
+    return changed;
+}
+
 bool InxGUIContext::InputFloat(const std::string &label, float *value, float step, float stepFast, int flags)
 {
     const bool changed =
@@ -841,9 +849,8 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
     ImGuiWindowClass modalClass{};
     modalClass.ClassId = ImHashStr("Infernux.GlobalModal");
     modalClass.ParentViewportId = ImGui::GetMainViewport()->ID;
-    modalClass.ViewportFlagsOverrideSet =
-        ImGuiViewportFlags_NoAutoMerge | ImGuiViewportFlags_NoTaskBarIcon | ImGuiViewportFlags_NoDecoration |
-        ImGuiViewportFlags_TopMost;
+    modalClass.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge | ImGuiViewportFlags_NoTaskBarIcon |
+                                          ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_TopMost;
     ImGui::SetNextWindowClass(&modalClass);
 
     const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr, static_cast<ImGuiWindowFlags>(flags));

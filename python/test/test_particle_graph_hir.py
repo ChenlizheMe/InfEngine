@@ -45,6 +45,46 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     assert restored.semantic_hash() == asset.semantic_hash()
 
 
+def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attributes():
+    attributes = list(ParticleEmitterAsset().attributes)
+    color_index = next(
+        index
+        for index, attribute in enumerate(attributes)
+        if attribute.stable_id == "builtin.color"
+    )
+    color = attributes[color_index]
+    attributes[color_index] = ParticleAttribute(
+        color.stable_id,
+        color.name,
+        color.value_type,
+        [1.0, 0.25, 0.1, 1.0],
+    )
+    attributes.append(
+        ParticleAttribute("custom.temperature", "temperature", TypeRef(ValueType.F32), 3.5)
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(attributes=tuple(attributes)),)
+    )
+
+    document = asset.to_dict()
+    emitter_document = document["emitters"][0]
+    assert "attributes" not in emitter_document
+    assert emitter_document["attribute_defaults"] == {
+        "builtin.color": [1.0, 0.25, 0.1, 1.0]
+    }
+    assert [item["stable_id"] for item in emitter_document["custom_attributes"]] == [
+        "custom.temperature"
+    ]
+    assert ParticleGraphAsset.from_dict(document) == asset
+
+    stale = copy.deepcopy(document)
+    stale["emitters"][0]["attributes"] = stale["emitters"][0].pop(
+        "custom_attributes"
+    )
+    with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
+        ParticleGraphAsset.from_dict(stale)
+
+
 def test_particle_graph_rejects_unknown_field():
     value = ParticleGraphAsset(stable_id="current-particle").to_dict()
     value["unknown"] = 1
@@ -430,9 +470,11 @@ class SmokeGraph(ParticleScript):
         def init(self, ctx, particles):
             particles.set_velocity((0.0, 1.0, 0.0))
             particles.set_lifetime(6.0)
+            particles.set_rotation(0.25)
 
         def update(self, ctx, particles):
             particles.acceleration((0.0, -0.2, 0.0))
+            particles.rotate(180.0)
 
         def rendering(self, ctx, particles):
             particles.sprite(
@@ -456,8 +498,12 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
         "settings.initialize",
         "attribute.set_velocity",
         "attribute.set_lifetime",
+        "attribute.set_rotation",
     ]
-    assert emitter.update.operations[-1].opcode == "integrate.acceleration"
+    assert [operation.opcode for operation in emitter.update.operations[-2:]] == [
+        "integrate.acceleration",
+        "integrate.angular_velocity",
+    ]
     assert emitter.render_plan.outputs[0].receive_scene_lighting is True
     assert emitter.render_plan.outputs[0].receive_shadows is True
     assert [interface.stable_id for interface in emitter.data_interfaces] == [
@@ -480,6 +526,7 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
         "particle.attribute.read_vec3",
         "particle.vector_field.sample",
         "particle.update.acceleration",
+        "particle.update.rotate",
     ]
     assert any(
         link.source_node.endswith("sample_vector_field")
@@ -560,7 +607,7 @@ def test_particle_output_rejects_invalid_render_semantics(replacement, message):
         ),
         (
             PARTICLE_SCRIPT_SOURCE.replace(
-                "        def update(self, ctx, particles):\n            particles.acceleration((0.0, -0.2, 0.0))\n\n",
+                "        def update(self, ctx, particles):\n            particles.acceleration((0.0, -0.2, 0.0))\n            particles.rotate(180.0)\n\n",
                 "",
             ),
             "missing=['update']",

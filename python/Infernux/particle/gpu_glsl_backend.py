@@ -209,7 +209,7 @@ class GpuParticleGlslLowerer:
         rendering_body, exports = _StageCompiler(emitter, fields, data_interface_layout).compile(
             emitter.rendering
         )
-        required = {"builtin.position", "builtin.size", "builtin.color"}
+        required = {"builtin.position", "builtin.size", "builtin.color", "builtin.rotation"}
         if not required.issubset(exports):
             missing = ", ".join(sorted(required - set(exports)))
             raise GpuParticleCompileError(
@@ -1342,6 +1342,7 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     position = exports["builtin.position"]
     size = exports["builtin.size"]
     color = exports["builtin.color"]
+    rotation = exports["builtin.rotation"]
     world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
     world_scale = (
         "max(length(transforms.simulation_to_world[0].xyz), "
@@ -1351,7 +1352,8 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     finite = " && ".join(
         (_finite_expression(position, TypeRef(ValueType.VEC3)),
          _finite_expression(size, TypeRef(ValueType.F32)),
-         _finite_expression(color, TypeRef(ValueType.COLOR)))
+         _finite_expression(color, TypeRef(ValueType.COLOR)),
+         _finite_expression(rotation, TypeRef(ValueType.F32)))
     )
     return f"""
 void main() {{
@@ -1370,7 +1372,7 @@ void main() {{
     if (output_index >= pc.capacity) return;
     instances[output_index].position_size = vec4({world_position}, ({size}) * {world_scale});
     instances[output_index].color = {color};
-    instances[output_index].rotation_custom = vec4(0.0);
+    instances[output_index].rotation_custom = vec4({rotation}, 0.0, 0.0, 0.0);
     render_indices[output_index] = output_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}

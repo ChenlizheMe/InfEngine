@@ -653,6 +653,7 @@ class NumpyParticleEmitterRuntime:
         position_id = self._render_aliases.get("builtin.position")
         size_id = self._render_aliases.get("builtin.size")
         color_id = self._render_aliases.get("builtin.color")
+        rotation_id = self._render_aliases.get("builtin.rotation")
         position = (
             self.attributes[position_id]
             if position_id is not None
@@ -668,11 +669,16 @@ class NumpyParticleEmitterRuntime:
             if color_id is not None
             else exports.get("builtin.color", self.attributes["builtin.color"])
         )
+        rotation = (
+            self.attributes[rotation_id]
+            if rotation_id is not None
+            else exports.get("builtin.rotation", self.attributes["builtin.rotation"])
+        )
         output = self._instance_buffer[:count]
         np.copyto(output[:, 0:3], position[:count], casting="unsafe")
         np.copyto(output[:, 3], size[:count], casting="unsafe")
         np.copyto(output[:, 4:8], color[:count], casting="unsafe")
-        output[:, 8].fill(0.0)
+        np.copyto(output[:, 8], rotation[:count], casting="unsafe")
         return output
 
     def _refresh_data_interfaces(self) -> None:
