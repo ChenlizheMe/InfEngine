@@ -725,27 +725,13 @@ std::shared_ptr<ImageReadbackTicket> VkResourceManager::BeginImageReadback(VkIma
     AssertReadbackThread();
     if (image == VK_NULL_HANDLE || width == 0 || height == 0)
         throw std::invalid_argument("GPU image readback requires a live image and non-zero dimensions");
-    if (!m_asyncReadback)
-        throw std::logic_error("GPU image readback context is unavailable");
 
-    const ReadbackFormatInfo formatInfo = GetReadbackFormatInfo(format);
-    const uint64_t pixelCount = static_cast<uint64_t>(width) * height;
-    if (pixelCount > std::numeric_limits<size_t>::max() / formatInfo.bytesPerPixel)
-        throw std::overflow_error("GPU image readback byte size overflow");
-
-    auto ticket = std::make_shared<ImageReadbackTicket>();
-    ticket->m_width = width;
-    ticket->m_height = height;
-    ticket->m_channelCount = formatInfo.channels;
-    ticket->m_elementType = formatInfo.elementType;
-    ticket->m_byteSize = static_cast<size_t>(pixelCount * formatInfo.bytesPerPixel);
-    ticket->m_staging = AcquireStagingBuffer(ticket->m_byteSize);
-    if (!ticket->m_staging)
-        throw std::runtime_error("Failed to allocate GPU image readback staging buffer");
-
-    VkCommandBuffer commandBuffer = m_asyncReadback->Begin();
-    if (commandBuffer == VK_NULL_HANDLE)
-        throw std::runtime_error("Failed to begin GPU image readback command buffer");
+    // Render-target captures share the graphics submission path used by the
+    // material and mesh preview renderers. Besides keeping queue submission
+    // externally synchronized, this path waits for the latest upload timeline
+    // value and owns command-buffer/fence recycling in one place.
+    auto recorder = BeginGraphicsImageReadback(width, height, format);
+    VkCommandBuffer commandBuffer = recorder.GetCommandBuffer();
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -770,8 +756,8 @@ std::shared_ptr<ImageReadbackTicket> VkResourceManager::BeginImageReadback(VkIma
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {width, height, 1};
-    vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ticket->m_staging->GetBuffer(),
-                           1, &region);
+    vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, recorder.GetStagingBuffer(), 1,
+                           &region);
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.newLayout = layout;
@@ -780,11 +766,7 @@ std::shared_ptr<ImageReadbackTicket> VkResourceManager::BeginImageReadback(VkIma
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, sourceStage, 0, 0, nullptr, 0, nullptr, 1,
                          &barrier);
 
-    ticket->m_submission = m_asyncReadback->EndAsync(commandBuffer);
-    if (!ticket->m_submission.IsValid())
-        throw std::runtime_error("Failed to submit asynchronous GPU image readback");
-    m_pendingImageReadbacks.push_back(ticket);
-    return ticket;
+    return recorder.Submit();
 }
 
 GraphicsImageReadbackRecorder VkResourceManager::BeginGraphicsImageReadback(uint32_t width, uint32_t height,

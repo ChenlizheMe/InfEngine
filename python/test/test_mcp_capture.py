@@ -180,7 +180,7 @@ def test_capture_metadata_does_not_require_visible_editor_view(monkeypatch):
     capture._register_metadata()
 
     request = metadata["capture_request"]
-    assert "source render target initialized" in request["preconditions"]
+    assert "Game source requires a scene camera" in request["preconditions"]
     assert all("Open the matching" not in message for message in request["recovery"])
 
 
@@ -198,3 +198,13 @@ def test_native_capture_service_cannot_use_platform_screen_capture():
 
     renderer_source = (repo_root / "cpp/infernux/function/renderer/InxRenderer.cpp").read_text(encoding="utf-8")
     assert "RequestRenderTargetReadback(gameView), m_frameCount" in renderer_source
+
+    resource_manager_source = (
+        repo_root / "cpp/infernux/function/renderer/vk/VkResourceManager.cpp"
+    ).read_text(encoding="utf-8")
+    readback_body = resource_manager_source.split(
+        "std::shared_ptr<ImageReadbackTicket> VkResourceManager::BeginImageReadback", 1
+    )[1].split("GraphicsImageReadbackRecorder VkResourceManager::BeginGraphicsImageReadback", 1)[0]
+    assert "BeginGraphicsImageReadback(width, height, format)" in readback_body
+    assert "return recorder.Submit();" in readback_body
+    assert "m_asyncReadback->EndAsync" not in readback_body
