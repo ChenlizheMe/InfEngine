@@ -35,9 +35,9 @@ bool MultiplyFits(uint64_t lhs, uint64_t rhs, uint64_t &result)
 
 bool ForwardPlusGridConfig::IsValid() const noexcept
 {
-    return width > 0 && height > 0 && tileCountX > 0 && tileCountY > 0 && tileCount > 0 && indexStride > 0 &&
+    return width > 0 && height > 0 && tileCountX > 0 && tileCountY > 0 && tileCount > 0 && maskWordStride > 0 &&
            domainMask != 0 && headerBytes >= (static_cast<uint64_t>(tileCount) + 1u) * TileHeaderBytes &&
-           indexBytes >= static_cast<uint64_t>(tileCount) * indexStride * sizeof(uint32_t);
+           maskBytes >= static_cast<uint64_t>(tileCount) * maskWordStride * sizeof(uint32_t);
 }
 
 ForwardPlusGridConfig BuildForwardPlusGridConfig(uint32_t width, uint32_t height, uint32_t localLightCount,
@@ -57,15 +57,16 @@ ForwardPlusGridConfig BuildForwardPlusGridConfig(uint32_t width, uint32_t height
 
     config.tileCount = static_cast<uint32_t>(tileCount);
     config.localLightCount = localLightCount;
-    // A zero-light view still owns a valid one-entry stride, which keeps the
-    // descriptor ABI stable without allocating a dummy resource elsewhere.
-    config.indexStride = std::max(localLightCount, 1u);
+    // One bit represents one local light. A zero-light view still owns one
+    // word, which keeps the descriptor ABI valid without a dummy resource.
+    const uint32_t maskWords = localLightCount / 32u + (localLightCount % 32u != 0u ? 1u : 0u);
+    config.maskWordStride = std::max(maskWords, 1u);
     config.domainMask = domainMask;
     if (!MultiplyFits(tileCount + 1u, TileHeaderBytes, config.headerBytes))
         return {};
-    uint64_t indexCount = 0;
-    if (!MultiplyFits(tileCount, config.indexStride, indexCount) ||
-        !MultiplyFits(indexCount, sizeof(uint32_t), config.indexBytes)) {
+    uint64_t maskWordCount = 0;
+    if (!MultiplyFits(tileCount, config.maskWordStride, maskWordCount) ||
+        !MultiplyFits(maskWordCount, sizeof(uint32_t), config.maskBytes)) {
         return {};
     }
     return config;
@@ -126,13 +127,13 @@ void ForwardPlusLightGrid::Shutdown() noexcept
         for (const auto &retired : m_retired) {
             m_device->Release(retired.bindGroup);
             m_device->Release(retired.consumerBindGroup);
-            m_device->Release(retired.indices);
+            m_device->Release(retired.lightMasks);
             m_device->Release(retired.headers);
         }
         for (auto &frame : m_frames) {
             m_device->Release(frame.bindGroup);
             m_device->Release(frame.consumerBindGroup);
-            m_device->Release(frame.indices);
+            m_device->Release(frame.lightMasks);
             m_device->Release(frame.headers);
         }
         m_device->Release(m_pipeline);
@@ -171,8 +172,8 @@ bool ForwardPlusLightGrid::PrepareFrame(uint32_t frameIndex, uint32_t width, uin
         frame.headerCapacityBytes = capacity;
         resourcesChanged = true;
     }
-    if (!frame.indices.IsValid() || frame.indexCapacityBytes < config.indexBytes) {
-        const uint64_t capacity = GrowCapacity(config.indexBytes);
+    if (!frame.lightMasks.IsValid() || frame.maskCapacityBytes < config.maskBytes) {
+        const uint64_t capacity = GrowCapacity(config.maskBytes);
         const auto replacement = m_device->CreateBuffer({capacity, rhi::BufferUsageFlags::Storage});
         if (!replacement.IsValid())
             return false;
@@ -180,10 +181,10 @@ bool ForwardPlusLightGrid::PrepareFrame(uint32_t frameIndex, uint32_t width, uin
             m_retired.push_back({frame.bindGroup, frame.consumerBindGroup, {}, {}});
         frame.bindGroup = {};
         frame.consumerBindGroup = {};
-        if (frame.indices.IsValid())
-            m_retired.push_back({{}, {}, {}, frame.indices});
-        frame.indices = replacement;
-        frame.indexCapacityBytes = capacity;
+        if (frame.lightMasks.IsValid())
+            m_retired.push_back({{}, {}, {}, frame.lightMasks});
+        frame.lightMasks = replacement;
+        frame.maskCapacityBytes = capacity;
         resourcesChanged = true;
     }
 
@@ -210,8 +211,8 @@ void ForwardPlusLightGrid::Record(uint32_t frameIndex, const rhi::ComputeCommand
     resolved.gridAndLights[1] = frame.config.tileCountY;
     resolved.gridAndLights[2] = frame.config.localLightCount;
     resolved.gridAndLights[3] = TileSize;
-    resolved.domainAndStride[0] = frame.config.domainMask;
-    resolved.domainAndStride[1] = frame.config.indexStride;
+    resolved.domainAndMaskWords[0] = frame.config.domainMask;
+    resolved.domainAndMaskWords[1] = frame.config.maskWordStride;
 
     encoder.BindPipeline(m_pipeline);
     encoder.BindGroup(m_pipeline, 0, frame.bindGroup);
@@ -251,7 +252,7 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
     frame.consumerBindGroup = {};
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const rhi::BufferHandle buffers[] = {canonicalLights, frame.headers, frame.indices};
+    const rhi::BufferHandle buffers[] = {canonicalLights, frame.headers, frame.lightMasks};
     for (uint32_t binding = 0; binding < 3; ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
     groupDesc.bufferCount = 3;
@@ -288,16 +289,14 @@ layout(std430, set = 0, binding = 0) readonly buffer CanonicalLights {
     CanonicalLightData lights[];
 };
 layout(std430, set = 0, binding = 1) buffer TileHeaders { uvec4 tile_headers[]; };
-layout(std430, set = 0, binding = 2) buffer TileIndices { uint tile_indices[]; };
+layout(std430, set = 0, binding = 2) buffer TileLightMasks { uint tile_light_masks[]; };
 
 layout(push_constant) uniform ForwardPlusGridConstants {
     mat4 view_projection;
     vec4 viewport_projection_scale;
     uvec4 grid_lights;
-    uvec4 domain_stride;
+    uvec4 domain_mask_words;
 } pc;
-
-shared uint visible_count;
 
 bool overlaps_tile(CanonicalLightData light, uvec2 tile) {
     vec4 clip = pc.view_projection * vec4(light.position_range.xyz, 1.0);
@@ -322,8 +321,10 @@ bool overlaps_tile(CanonicalLightData light, uvec2 tile) {
 void main() {
     uvec2 tile = gl_WorkGroupID.xy;
     uint tile_index = tile.y * pc.grid_lights.x + tile.x;
-    uint offset = tile_index * pc.domain_stride.y;
-    if (gl_LocalInvocationIndex == 0u) visible_count = 0u;
+    uint offset = tile_index * pc.domain_mask_words.y;
+    for (uint word = gl_LocalInvocationIndex; word < pc.domain_mask_words.y; word += gl_WorkGroupSize.x) {
+        tile_light_masks[offset + word] = 0u;
+    }
     barrier();
 
     uint directional_count = counts_generation.x;
@@ -331,16 +332,16 @@ void main() {
     for (uint local_index = gl_LocalInvocationIndex; local_index < available_local_count;
          local_index += gl_WorkGroupSize.x) {
         CanonicalLightData light = lights[directional_count + local_index];
-        if ((light.metadata.w & pc.domain_stride.x) == 0u || !overlaps_tile(light, tile)) continue;
-        uint slot = atomicAdd(visible_count, 1u);
-        tile_indices[offset + slot] = local_index;
+        if ((light.metadata.w & pc.domain_mask_words.x) == 0u || !overlaps_tile(light, tile)) continue;
+        atomicOr(tile_light_masks[offset + (local_index >> 5u)], 1u << (local_index & 31u));
     }
     barrier();
     if (gl_LocalInvocationIndex == 0u) {
         if (tile_index == 0u) {
-            tile_headers[0] = uvec4(pc.grid_lights.xy, pc.grid_lights.w, pc.domain_stride.x);
+            tile_headers[0] = uvec4(pc.grid_lights.xy, pc.grid_lights.w, pc.domain_mask_words.x);
         }
-        tile_headers[tile_index + 1u] = uvec4(offset, visible_count, 0u, pc.domain_stride.x);
+        tile_headers[tile_index + 1u] =
+            uvec4(offset, pc.domain_mask_words.y, available_local_count, pc.domain_mask_words.x);
     }
 }
 )glsl";

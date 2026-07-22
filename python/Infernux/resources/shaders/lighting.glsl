@@ -278,30 +278,36 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
     }
 
     uvec4 tileHeader = inxForwardPlusTileHeader();
-    for (uint entry = 0u; entry < tileHeader.y; ++entry) {
-        uint localIndex = forwardPlusTileIndices[tileHeader.x + entry];
-        CanonicalLightData light = canonicalLights[directionalCount + localIndex];
-        if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
-        vec3 lightVec = light.positionRange.xyz - worldPos;
-        float distanceToLight = length(lightVec);
-        float range = max(light.positionRange.w, 0.0001);
-        if (distanceToLight <= 0.00001 || distanceToLight >= range) continue;
+    for (uint wordEntry = 0u; wordEntry < tileHeader.y; ++wordEntry) {
+        uint lightMask = forwardPlusTileMasks[tileHeader.x + wordEntry];
+        while (lightMask != 0u) {
+            uint bit = uint(findLSB(lightMask));
+            uint localIndex = wordEntry * 32u + bit;
+            lightMask &= lightMask - 1u;
+            if (localIndex >= tileHeader.z) continue;
+            CanonicalLightData light = canonicalLights[directionalCount + localIndex];
+            if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
+            vec3 lightVec = light.positionRange.xyz - worldPos;
+            float distanceToLight = length(lightVec);
+            float range = max(light.positionRange.w, 0.0001);
+            if (distanceToLight <= 0.00001 || distanceToLight >= range) continue;
 
-        vec3 L = lightVec / distanceToLight;
-        float normalizedDistance = distanceToLight / range;
-        float rangeWindow = max(1.0 - normalizedDistance * normalizedDistance *
-                                      normalizedDistance * normalizedDistance, 0.0);
-        float attenuation = (rangeWindow * rangeWindow) / max(distanceToLight * distanceToLight, 0.01);
-        if (light.metadata.x == 2u) {
-            float cone = dot(L, -normalize(light.directionOuterCos.xyz));
-            attenuation *= smoothstep(light.directionOuterCos.w, light.shadowAndInnerCos.w, cone);
+            vec3 L = lightVec / distanceToLight;
+            float normalizedDistance = distanceToLight / range;
+            float rangeWindow = max(1.0 - normalizedDistance * normalizedDistance *
+                                          normalizedDistance * normalizedDistance, 0.0);
+            float attenuation = (rangeWindow * rangeWindow) / max(distanceToLight * distanceToLight, 0.01);
+            if (light.metadata.x == 2u) {
+                float cone = dot(L, -normalize(light.directionOuterCos.xyz));
+                attenuation *= smoothstep(light.directionOuterCos.w, light.shadowAndInnerCos.w, cone);
+            }
+            if (attenuation <= 0.0001) continue;
+
+            vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation;
+            Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
+                                   roughness, perceptualRoughness,
+                                   F0, f90, energyCompensation);
         }
-        if (attenuation <= 0.0001) continue;
-
-        vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation;
-        Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
-                               roughness, perceptualRoughness,
-                               F0, f90, energyCompensation);
     }
 #else
     for (int i = 0; i < lighting.lightCounts.x && i < MAX_DIRECTIONAL_LIGHTS; ++i) {

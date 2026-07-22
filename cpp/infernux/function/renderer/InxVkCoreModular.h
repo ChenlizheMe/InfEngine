@@ -822,8 +822,8 @@ class InxVkCoreModular
     /// Bind the frame-local canonical lights and tiled Forward+ outputs.
     void UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDescSet, rhi::BufferHandle canonicalLights,
                                          uint64_t canonicalBytes, rhi::BufferHandle tileHeaders,
-                                         uint64_t tileHeaderBytes, rhi::BufferHandle tileIndices,
-                                         uint64_t tileIndexBytes);
+                                         uint64_t tileHeaderBytes, rhi::BufferHandle tileLightMasks,
+                                         uint64_t tileLightMaskBytes);
 
     /// @brief Set the active per-view descriptor set for subsequent draw calls.
     void SetActiveShadowDescriptorSet(VkDescriptorSet descSet)

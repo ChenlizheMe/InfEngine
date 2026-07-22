@@ -2164,16 +2164,16 @@ void InxVkCoreModular::ClearPerViewShadowMap(VkDescriptorSet perViewDescSet)
 void InxVkCoreModular::UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDescSet,
                                                        rhi::BufferHandle canonicalLights, uint64_t canonicalBytes,
                                                        rhi::BufferHandle tileHeaders, uint64_t tileHeaderBytes,
-                                                       rhi::BufferHandle tileIndices, uint64_t tileIndexBytes)
+                                                       rhi::BufferHandle tileLightMasks, uint64_t tileLightMaskBytes)
 {
-    if (perViewDescSet == VK_NULL_HANDLE || canonicalBytes == 0 || tileHeaderBytes == 0 || tileIndexBytes == 0)
+    if (perViewDescSet == VK_NULL_HANDLE || canonicalBytes == 0 || tileHeaderBytes == 0 || tileLightMaskBytes == 0)
         return;
 
     auto &rhiDevice = m_deviceContext.GetRhiDevice();
     const std::array<VkDescriptorBufferInfo, 3> infos = {{
         {rhiDevice.Resolve(canonicalLights), 0, canonicalBytes},
         {rhiDevice.Resolve(tileHeaders), 0, tileHeaderBytes},
-        {rhiDevice.Resolve(tileIndices), 0, tileIndexBytes},
+        {rhiDevice.Resolve(tileLightMasks), 0, tileLightMaskBytes},
     }};
     if (std::any_of(infos.begin(), infos.end(), [](const auto &info) { return info.buffer == VK_NULL_HANDLE; }))
         return;

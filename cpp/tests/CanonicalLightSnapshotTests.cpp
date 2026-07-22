@@ -184,9 +184,16 @@ int main()
         infernux::lighting::BuildForwardPlusGridConfig(1920, 1080, 1000, CanonicalLightAffectsGeometry);
     assert(gridConfig.IsValid());
     assert(gridConfig.tileCountX == 120 && gridConfig.tileCountY == 68 && gridConfig.tileCount == 8160);
-    assert(gridConfig.indexStride == 1000);
+    assert(gridConfig.maskWordStride == 32);
     assert(gridConfig.headerBytes == 8161ull * 16ull);
-    assert(gridConfig.indexBytes == 8160ull * 1000ull * sizeof(uint32_t));
+    assert(gridConfig.maskBytes == 8160ull * 32ull * sizeof(uint32_t));
+    assert(gridConfig.maskBytes * 31ull < 8160ull * 1000ull * sizeof(uint32_t));
+    assert(infernux::lighting::BuildForwardPlusGridConfig(16, 16, 0, CanonicalLightAffectsGeometry).maskWordStride ==
+           1);
+    assert(infernux::lighting::BuildForwardPlusGridConfig(16, 16, 32, CanonicalLightAffectsGeometry).maskWordStride ==
+           1);
+    assert(infernux::lighting::BuildForwardPlusGridConfig(16, 16, 33, CanonicalLightAffectsGeometry).maskWordStride ==
+           2);
 
     FakeDevice device;
     std::array<uint32_t, 5> shaderWords{0x07230203u};
@@ -199,7 +206,7 @@ int main()
     assert(grid.ConsumerLayout().IsValid());
     assert(device.pipelines.size() == 1 && device.pipelines[0].pushConstantBytes == 112);
     assert(device.groups.size() == 4 && device.groups[0].bufferCount == 3 && device.groups[1].bufferCount == 3);
-    assert(grid.Frame(0).headers != grid.Frame(1).headers && grid.Frame(0).indices != grid.Frame(1).indices);
+    assert(grid.Frame(0).headers != grid.Frame(1).headers && grid.Frame(0).lightMasks != grid.Frame(1).lightMasks);
 
     DispatchTrace trace;
     const infernux::rhi::ComputeCommandEncoder::DispatchTable dispatch = {
@@ -212,12 +219,13 @@ int main()
     grid.Record(1, encoder, constants);
     assert(trace.x == 80 && trace.y == 45 && trace.z == 1);
     assert(trace.constants.gridAndLights[2] == 4 && trace.constants.gridAndLights[3] == 16);
-    assert(trace.constants.domainAndStride[0] == CanonicalLightAffectsParticles);
-    assert(trace.constants.domainAndStride[1] == 4);
+    assert(trace.constants.domainAndMaskWords[0] == CanonicalLightAffectsParticles);
+    assert(trace.constants.domainAndMaskWords[1] == 1);
 
     const std::string_view source = infernux::lighting::ForwardPlusLightGrid::ShaderSource();
     assert(source.find("local_size_x = 64") != std::string_view::npos);
-    assert(source.find("metadata.w & pc.domain_stride.x") != std::string_view::npos);
+    assert(source.find("metadata.w & pc.domain_mask_words.x") != std::string_view::npos);
+    assert(source.find("atomicOr(tile_light_masks") != std::string_view::npos);
     assert(source.find("MAX_LIGHTS") == std::string_view::npos);
     grid.Shutdown();
     assert(device.releasedBuffers == 4 && device.releasedGroups == 4);

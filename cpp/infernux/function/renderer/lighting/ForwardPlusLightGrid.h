@@ -19,10 +19,10 @@ struct ForwardPlusGridConfig
     uint32_t tileCountY = 0;
     uint32_t tileCount = 0;
     uint32_t localLightCount = 0;
-    uint32_t indexStride = 0;
+    uint32_t maskWordStride = 0;
     uint32_t domainMask = 0;
     uint64_t headerBytes = 0;
-    uint64_t indexBytes = 0;
+    uint64_t maskBytes = 0;
 
     [[nodiscard]] bool IsValid() const noexcept;
 };
@@ -43,7 +43,7 @@ struct alignas(16) ForwardPlusGridConstants
     float viewProjection[16]{};
     float viewportAndProjectionScale[4]{};
     uint32_t gridAndLights[4]{};
-    uint32_t domainAndStride[4]{};
+    uint32_t domainAndMaskWords[4]{};
 };
 
 static_assert(sizeof(ForwardPlusGridConstants) == 112);
@@ -51,13 +51,13 @@ static_assert(sizeof(ForwardPlusGridConstants) == 112);
 struct ForwardPlusGridFrame
 {
     rhi::BufferHandle headers;
-    rhi::BufferHandle indices;
+    rhi::BufferHandle lightMasks;
     rhi::BindGroupHandle bindGroup;
     rhi::BindGroupHandle consumerBindGroup;
     rhi::BufferHandle canonicalLights;
     ForwardPlusGridConfig config{};
     uint64_t headerCapacityBytes = 0;
-    uint64_t indexCapacityBytes = 0;
+    uint64_t maskCapacityBytes = 0;
 };
 
 struct ForwardPlusRetiredResources
@@ -65,7 +65,7 @@ struct ForwardPlusRetiredResources
     rhi::BindGroupHandle bindGroup;
     rhi::BindGroupHandle consumerBindGroup;
     rhi::BufferHandle headers;
-    rhi::BufferHandle indices;
+    rhi::BufferHandle lightMasks;
 };
 
 /// Per-view, frame-isolated tiled light-list builder. It owns no scene state;

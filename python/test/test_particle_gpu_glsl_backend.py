@@ -345,6 +345,9 @@ def test_gpu_mesh_orientation_uses_spare_instance_words_without_sprite_abi_growt
     assert ".a_builtin_orientation" in emitter.rendering
     assert "instance.rotation_custom.yzw" in gpu_backend._MESH_VERTEX_GLSL
     assert "rotation_z * rotation_y * rotation_x" in gpu_backend._MESH_VERTEX_GLSL
+    assert "ParticleTileLightMasks" in gpu_backend._PARTICLE_FORWARD_PLUS_LIGHTING_GLSL
+    assert "findLSB(light_mask)" in gpu_backend._PARTICLE_FORWARD_PLUS_LIGHTING_GLSL
+    assert "tile_indices" not in gpu_backend._PARTICLE_FORWARD_PLUS_LIGHTING_GLSL
 
     payload = compile_gpu_particle_spirv(program)
     assert validate_gpu_particle_spirv(payload, program) is payload

@@ -140,8 +140,8 @@ layout(set = 1, binding = 0, std430) readonly buffer CanonicalLights {
 layout(set = 1, binding = 1, std430) readonly buffer ParticleTileHeaders {
     uvec4 tile_headers[];
 };
-layout(set = 1, binding = 2, std430) readonly buffer ParticleTileIndices {
-    uint tile_indices[];
+layout(set = 1, binding = 2, std430) readonly buffer ParticleTileLightMasks {
+    uint tile_light_masks[];
 };
 
 vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, vec3 albedo, bool two_sided) {
@@ -163,25 +163,31 @@ vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, vec3 albedo, bo
     uint tile_size = max(grid.z, 1u);
     uvec2 tile = min(uvec2(gl_FragCoord.xy) / tile_size, tile_count - uvec2(1u));
     uvec4 header = tile_headers[1u + tile.y * tile_count.x + tile.x];
-    for (uint entry = 0u; entry < header.y; ++entry) {
-        uint local_index = tile_indices[header.x + entry];
-        CanonicalLightData light = lights[directional_count + local_index];
-        if ((light.metadata.y & object_layer_mask) == 0u) continue;
-        vec3 light_vector = light.position_range.xyz - world_position;
-        float distance_to_light = length(light_vector);
-        float range = max(light.position_range.w, 0.0001);
-        if (distance_to_light <= 0.00001 || distance_to_light >= range) continue;
-        vec3 direction = light_vector / distance_to_light;
-        float normalized_distance = distance_to_light / range;
-        float range_window = max(1.0 - pow(normalized_distance, 4.0), 0.0);
-        float falloff = (range_window * range_window) / max(distance_to_light * distance_to_light, 0.01);
-        if (light.metadata.x == 2u) {
-            float cone = dot(direction, -normalize(light.direction_spot.xyz));
-            falloff *= smoothstep(light.direction_spot.w, light.attenuation.w, cone);
+    for (uint word_entry = 0u; word_entry < header.y; ++word_entry) {
+        uint light_mask = tile_light_masks[header.x + word_entry];
+        while (light_mask != 0u) {
+            uint bit = uint(findLSB(light_mask));
+            uint local_index = word_entry * 32u + bit;
+            light_mask &= light_mask - 1u;
+            if (local_index >= header.z) continue;
+            CanonicalLightData light = lights[directional_count + local_index];
+            if ((light.metadata.y & object_layer_mask) == 0u) continue;
+            vec3 light_vector = light.position_range.xyz - world_position;
+            float distance_to_light = length(light_vector);
+            float range = max(light.position_range.w, 0.0001);
+            if (distance_to_light <= 0.00001 || distance_to_light >= range) continue;
+            vec3 direction = light_vector / distance_to_light;
+            float normalized_distance = distance_to_light / range;
+            float range_window = max(1.0 - pow(normalized_distance, 4.0), 0.0);
+            float falloff = (range_window * range_window) / max(distance_to_light * distance_to_light, 0.01);
+            if (light.metadata.x == 2u) {
+                float cone = dot(direction, -normalize(light.direction_spot.xyz));
+                falloff *= smoothstep(light.direction_spot.w, light.attenuation.w, cone);
+            }
+            float ndotl = dot(normal, direction);
+            ndotl = two_sided ? abs(ndotl) : max(ndotl, 0.0);
+            result += albedo * light.color_intensity.rgb * light.color_intensity.w * falloff * ndotl;
         }
-        float ndotl = dot(normal, direction);
-        ndotl = two_sided ? abs(ndotl) : max(ndotl, 0.0);
-        result += albedo * light.color_intensity.rgb * light.color_intensity.w * falloff * ndotl;
     }
     return result;
 }

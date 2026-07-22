@@ -16,8 +16,8 @@ layout(std430, set = 1, binding = 1) readonly buffer CanonicalLightBuffer {
 layout(std430, set = 1, binding = 2) readonly buffer ForwardPlusTileHeaderBuffer {
     uvec4 forwardPlusTileHeaders[];
 };
-layout(std430, set = 1, binding = 3) readonly buffer ForwardPlusTileIndexBuffer {
-    uint forwardPlusTileIndices[];
+layout(std430, set = 1, binding = 3) readonly buffer ForwardPlusTileMaskBuffer {
+    uint forwardPlusTileMasks[];
 };
 
 layout(location = 15) flat in uint _inx_ObjectLayerMask;

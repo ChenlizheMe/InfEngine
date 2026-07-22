@@ -1084,26 +1084,27 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         return false;
 
     const auto previousHeaders = m_forwardPlusGeometryGrid.Frame(frameIndex).headers;
-    const auto previousIndices = m_forwardPlusGeometryGrid.Frame(frameIndex).indices;
+    const auto previousMasks = m_forwardPlusGeometryGrid.Frame(frameIndex).lightMasks;
     const auto previousLights = m_forwardPlusGeometryGrid.Frame(frameIndex).canonicalLights;
     if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
                                                 CanonicalLightAffectsGeometry, lights->buffer)) {
         return false;
     }
     const auto &frame = m_forwardPlusGeometryGrid.Frame(frameIndex);
-    if (frame.headers != previousHeaders || frame.indices != previousIndices || frame.canonicalLights != previousLights)
+    if (frame.headers != previousHeaders || frame.lightMasks != previousMasks ||
+        frame.canonicalLights != previousLights)
         m_needsRebuild = true;
 
     if (m_forwardPlusParticlesRequired) {
         const auto previousParticleHeaders = m_forwardPlusParticleGrid.Frame(frameIndex).headers;
-        const auto previousParticleIndices = m_forwardPlusParticleGrid.Frame(frameIndex).indices;
+        const auto previousParticleMasks = m_forwardPlusParticleGrid.Frame(frameIndex).lightMasks;
         const auto previousParticleLights = m_forwardPlusParticleGrid.Frame(frameIndex).canonicalLights;
         if (!m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
                                                     CanonicalLightAffectsParticles, lights->buffer)) {
             return false;
         }
         const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
-        if (particleFrame.headers != previousParticleHeaders || particleFrame.indices != previousParticleIndices ||
+        if (particleFrame.headers != previousParticleHeaders || particleFrame.lightMasks != previousParticleMasks ||
             particleFrame.canonicalLights != previousParticleLights) {
             m_needsRebuild = true;
         }
@@ -1112,7 +1113,7 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
     RetireForwardPlusResources();
     const VkDescriptorSet descriptorSet = m_perViewDescSets[frameIndex];
     m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights->buffer, lights->dataBytes, frame.headers,
-                                              frame.config.headerBytes, frame.indices, frame.config.indexBytes);
+                                              frame.config.headerBytes, frame.lightMasks, frame.config.maskBytes);
     return true;
 }
 
@@ -1129,7 +1130,7 @@ void SceneRenderGraph::RetireForwardPlusResources()
         for (const auto &resource : retired) {
             device->Release(resource.bindGroup);
             device->Release(resource.consumerBindGroup);
-            device->Release(resource.indices);
+            device->Release(resource.lightMasks);
             device->Release(resource.headers);
         }
     });
@@ -1907,7 +1908,7 @@ void SceneRenderGraph::BuildRenderGraph()
         {
             vk::ResourceHandle canonicalLights;
             vk::ResourceHandle headers;
-            vk::ResourceHandle indices;
+            vk::ResourceHandle lightMasks;
         };
         std::array<ForwardPlusGraphResources, kMaxFramesInFlight> forwardPlusResources{};
         std::array<ForwardPlusGraphResources, kMaxFramesInFlight> particleForwardPlusResources{};
@@ -1924,17 +1925,17 @@ void SceneRenderGraph::BuildRenderGraph()
                         builder.ImportBuffer(prefix + "/CanonicalLights", lights->buffer, lights->capacityBytes);
                     resources.headers =
                         builder.ImportBuffer(prefix + "/TileHeaders", gridFrame.headers, gridFrame.headerCapacityBytes);
-                    resources.indices =
-                        builder.ImportBuffer(prefix + "/TileIndices", gridFrame.indices, gridFrame.indexCapacityBytes);
+                    resources.lightMasks = builder.ImportBuffer(prefix + "/TileLightMasks", gridFrame.lightMasks,
+                                                                gridFrame.maskCapacityBytes);
                     m_renderGraph->SetResourceInitialState(resources.canonicalLights, rhi::TextureLayout::Undefined,
                                                            rhi::Access::HostWrite, rhi::PipelineStage::Host);
                     m_renderGraph->SetResourceInitialState(resources.headers, rhi::TextureLayout::Undefined,
                                                            rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
-                    m_renderGraph->SetResourceInitialState(resources.indices, rhi::TextureLayout::Undefined,
+                    m_renderGraph->SetResourceInitialState(resources.lightMasks, rhi::TextureLayout::Undefined,
                                                            rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
                     builder.ReadStorageBuffer(resources.canonicalLights);
                     resources.headers = builder.WriteStorageBuffer(resources.headers);
-                    resources.indices = builder.WriteStorageBuffer(resources.indices);
+                    resources.lightMasks = builder.WriteStorageBuffer(resources.lightMasks);
                     return [this, frameIndex](vk::RenderContext &ctx) {
                         const uint32_t activeFrame = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
                         if (activeFrame != frameIndex)
@@ -1961,19 +1962,19 @@ void SceneRenderGraph::BuildRenderGraph()
                             builder.ImportBuffer(prefix + "/CanonicalLights", lights->buffer, lights->capacityBytes);
                         resources.headers = builder.ImportBuffer(prefix + "/TileHeaders", gridFrame.headers,
                                                                  gridFrame.headerCapacityBytes);
-                        resources.indices = builder.ImportBuffer(prefix + "/TileIndices", gridFrame.indices,
-                                                                 gridFrame.indexCapacityBytes);
+                        resources.lightMasks = builder.ImportBuffer(prefix + "/TileLightMasks", gridFrame.lightMasks,
+                                                                    gridFrame.maskCapacityBytes);
                         m_renderGraph->SetResourceInitialState(resources.canonicalLights, rhi::TextureLayout::Undefined,
                                                                rhi::Access::HostWrite, rhi::PipelineStage::Host);
                         m_renderGraph->SetResourceInitialState(resources.headers, rhi::TextureLayout::Undefined,
                                                                rhi::Access::ShaderRead,
                                                                rhi::PipelineStage::FragmentShader);
-                        m_renderGraph->SetResourceInitialState(resources.indices, rhi::TextureLayout::Undefined,
+                        m_renderGraph->SetResourceInitialState(resources.lightMasks, rhi::TextureLayout::Undefined,
                                                                rhi::Access::ShaderRead,
                                                                rhi::PipelineStage::FragmentShader);
                         builder.ReadStorageBuffer(resources.canonicalLights);
                         resources.headers = builder.WriteStorageBuffer(resources.headers);
-                        resources.indices = builder.WriteStorageBuffer(resources.indices);
+                        resources.lightMasks = builder.WriteStorageBuffer(resources.lightMasks);
                         return [this, frameIndex](vk::RenderContext &ctx) {
                             const uint32_t activeFrame =
                                 m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
@@ -2646,12 +2647,12 @@ void SceneRenderGraph::BuildRenderGraph()
                     command->shaderTarget == ShaderCompileTarget::ForwardPlus) {
                     for (const auto &resources : forwardPlusResources) {
                         if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
-                            !resources.indices.IsValid()) {
+                            !resources.lightMasks.IsValid()) {
                             continue;
                         }
                         builder.ReadStorageBuffer(resources.canonicalLights, rhi::PipelineStage::FragmentShader);
                         builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
-                        builder.ReadStorageBuffer(resources.indices, rhi::PipelineStage::FragmentShader);
+                        builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
                     }
                     const bool hasLitParticles =
                         std::any_of(particleEntries.begin(), particleEntries.end(),
@@ -2659,12 +2660,12 @@ void SceneRenderGraph::BuildRenderGraph()
                     if (hasLitParticles) {
                         for (const auto &resources : particleForwardPlusResources) {
                             if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
-                                !resources.indices.IsValid()) {
+                                !resources.lightMasks.IsValid()) {
                                 continue;
                             }
                             builder.ReadStorageBuffer(resources.canonicalLights, rhi::PipelineStage::FragmentShader);
                             builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
-                            builder.ReadStorageBuffer(resources.indices, rhi::PipelineStage::FragmentShader);
+                            builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
                         }
                     }
                 }
