@@ -120,6 +120,61 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     ]
 
 
+def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        _record_scalar_node_property_semantics,
+    )
+    from Infernux.graph.types import ValueType
+
+    class Context:
+        semantic_capture_enabled = True
+
+        def __init__(self):
+            self.items = []
+
+        def record_semantic_item(self, *args, **kwargs):
+            self.items.append((args, kwargs))
+
+    ctx = Context()
+    _record_scalar_node_property_semantics(
+        ctx,
+        node_uid="rendering::output.sprite",
+        key="soft_particles",
+        label="Soft Particles",
+        value_type=ValueType.BOOL,
+        value=True,
+    )
+    _record_scalar_node_property_semantics(
+        ctx,
+        node_uid="rendering::output.sprite",
+        key="soft_distance",
+        label="Fade Distance",
+        value_type=ValueType.F32,
+        value=0.5,
+    )
+
+    assert ctx.items == [
+        (
+            (
+                "checkbox",
+                "Soft Particles",
+                True,
+                "particle_graph.node.rendering::output.sprite.property.soft_particles",
+            ),
+            {"bool_value": True},
+        ),
+        (
+            (
+                "drag_float",
+                "Fade Distance",
+                True,
+                "particle_graph.node.rendering::output.sprite.property.soft_distance",
+            ),
+            {"numeric_value": 0.5},
+        ),
+    ]
+
+
 def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypatch):
     from Infernux.core.assets import AssetManager
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel

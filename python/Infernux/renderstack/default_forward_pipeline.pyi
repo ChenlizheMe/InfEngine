@@ -39,7 +39,7 @@ class DefaultForwardPipeline(RenderPipeline):
 
     Attributes:
         shadow_resolution: Shadow map resolution (default 4096).
-        msaa_samples: Anti-aliasing sample count (default X4).
+        msaa_samples: Anti-aliasing sample count (X1/Off, X2, X4, or X8; default X4).
         enable_screen_ui: Enable screen-space UI rendering.
     """
 

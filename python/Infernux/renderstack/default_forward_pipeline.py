@@ -85,7 +85,8 @@ class DefaultForwardPipeline(RenderPipeline):
 
     msaa_samples: MSAASamples = serialized_field(
         default=MSAASamples.X4,
-        tooltip="Anti-aliasing sample count (OFF=1x, X2=2x, X4=4x, X8=8x)",
+        enum_labels=["X1 (Off)", "X2", "X4", "X8"],
+        tooltip="Anti-aliasing sample count (X1 disables multisample anti-aliasing)",
         header="Anti-Aliasing",
     )
 

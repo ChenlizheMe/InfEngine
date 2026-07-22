@@ -1409,6 +1409,7 @@ def serialized_field(
     range: Optional[Tuple[float, float]] = None,
     tooltip: str = "",
     display_name_key: str = "",
+    enum_labels: Optional[list[str]] = None,
     readonly: bool = False,
     header: str = "",
     space: float = 0.0,
@@ -1431,6 +1432,7 @@ def serialized_field(
         range: (min, max) tuple for numeric sliders / bounded drag
         tooltip: Hover text shown in inspector
         display_name_key: Optional i18n key used for the Inspector label.
+        enum_labels: Optional display labels matching the enum declaration order.
         readonly: If True, field cannot be modified in inspector
         header: Group header text shown above this field
         space: Vertical spacing before this field in inspector
@@ -1506,6 +1508,7 @@ def serialized_field(
         header=header,
         space=space,
         enum_type=enum_type,
+        enum_labels=list(enum_labels) if enum_labels is not None else None,
         element_type=inferred_element_type,
         group=group,
         info_text=info_text,

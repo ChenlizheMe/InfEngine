@@ -27,6 +27,22 @@ def _tooltip_and_info(ctx, metadata):
 # ── GUID / path resolution ──
 
 
+def _portable_asset_path_hint(file_path: str) -> str:
+    from Infernux.engine.path_utils import portable_path, relative_path
+    from Infernux.engine.project_context import get_project_root
+
+    path = str(file_path or "")
+    if not path:
+        return ""
+    project_root = get_project_root()
+    if project_root:
+        try:
+            return relative_path(path, project_root)
+        except ValueError:
+            pass
+    return portable_path(path)
+
+
 def _asset_guid_from_path(file_path: str) -> str:
     from Infernux.debug import Debug
     from Infernux.core.asset_types import read_meta_guid
@@ -57,7 +73,7 @@ def _resolve_guid_and_path(payload: str):
     guid = ""
     path_hint = ""
     if os.path.isfile(payload):
-        path_hint = payload
+        path_hint = _portable_asset_path_hint(payload)
         guid = _asset_guid_from_path(payload)
     else:
         guid = payload
@@ -65,7 +81,7 @@ def _resolve_guid_and_path(payload: str):
             from Infernux.core.assets import AssetManager
             adb = getattr(AssetManager, '_asset_database', None)
             if adb:
-                path_hint = adb.get_path_from_guid(guid) or ""
+                path_hint = _portable_asset_path_hint(adb.get_path_from_guid(guid) or "")
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             pass
@@ -110,15 +126,21 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
         mat = Material.load(file_path)
         if mat is None:
             return None
-        return MaterialRef(mat, path_hint=file_path)
+        return MaterialRef(mat, path_hint=_portable_asset_path_hint(file_path))
 
     if element_type == FieldType.TEXTURE:
         from Infernux.core.asset_ref import TextureRef
-        return TextureRef(guid=_asset_guid_from_path(file_path), path_hint=file_path)
+        return TextureRef(
+            guid=_asset_guid_from_path(file_path),
+            path_hint=_portable_asset_path_hint(file_path),
+        )
 
     if element_type == FieldType.SHADER:
         from Infernux.core.asset_ref import ShaderRef
-        return ShaderRef(guid=_asset_guid_from_path(file_path), path_hint=file_path)
+        return ShaderRef(
+            guid=_asset_guid_from_path(file_path),
+            path_hint=_portable_asset_path_hint(file_path),
+        )
 
     if element_type == FieldType.ASSET:
         guid = _asset_guid_from_path(file_path)
@@ -127,9 +149,15 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
             from Infernux.core.asset_ref import get_asset_type_config
             cfg = get_asset_type_config(asset_type)
             if cfg:
-                return cfg["ref_class"](guid=guid, path_hint=file_path)
+                return cfg["ref_class"](
+                    guid=guid,
+                    path_hint=_portable_asset_path_hint(file_path),
+                )
         from Infernux.core.asset_ref import AudioClipRef
-        return AudioClipRef(guid=guid, path_hint=file_path)
+        return AudioClipRef(
+            guid=guid,
+            path_hint=_portable_asset_path_hint(file_path),
+        )
 
     if element_type == FieldType.COMPONENT:
         from Infernux.lib import SceneManager as _SM
@@ -341,10 +369,16 @@ def _create_asset_ref_from_payload(metadata, file_path: str):
         from Infernux.core.asset_ref import get_asset_type_config
         cfg = get_asset_type_config(asset_type)
         if cfg:
-            return cfg["ref_class"](guid=guid, path_hint=file_path)
+            return cfg["ref_class"](
+                guid=guid,
+                path_hint=_portable_asset_path_hint(file_path),
+            )
     # Fallback
     from Infernux.core.asset_ref import AudioClipRef
-    return AudioClipRef(guid=guid, path_hint=file_path)
+    return AudioClipRef(
+        guid=guid,
+        path_hint=_portable_asset_path_hint(file_path),
+    )
 
 
 def _render_asset_reference_field(

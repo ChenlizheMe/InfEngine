@@ -46,6 +46,34 @@ from ._inspector_references import (
 _STAGES = ("init", "update", "rendering")
 
 
+def _record_scalar_node_property_semantics(
+    ctx: InxGUIContext,
+    *,
+    node_uid: str,
+    key: str,
+    label: str,
+    value_type: ValueType,
+    value,
+) -> None:
+    if not bool(getattr(ctx, "semantic_capture_enabled", True)):
+        return
+    semantic_id = f"particle_graph.node.{node_uid}.property.{key}"
+    if value_type is ValueType.BOOL:
+        ctx.record_semantic_item(
+            "checkbox", label, True, semantic_id, bool_value=bool(value)
+        )
+    elif value_type in {ValueType.I32, ValueType.U32, ValueType.F32}:
+        kind = "drag_float" if value_type is ValueType.F32 else "int_input"
+        ctx.record_semantic_item(
+            kind, label, True, semantic_id, numeric_value=float(value)
+        )
+    elif value_type is ValueType.STRING:
+        kind = "combo" if key == "sort" else "text_input"
+        ctx.record_semantic_item(
+            kind, label, True, semantic_id, string_value=str(value)
+        )
+
+
 @editor_panel(
     "Particle Graph Editor",
     type_id="particle_graph_editor",
@@ -697,6 +725,21 @@ class ParticleGraphEditorPanel(EditorPanel):
                 new_value = options[max(0, min(current, len(options) - 1))]
             elif value_type is ValueType.STRING:
                 new_value = ctx.text_input(f"{label}##particle_node_{key}", str(value), 512)
+            if value_type in {
+                ValueType.BOOL,
+                ValueType.I32,
+                ValueType.U32,
+                ValueType.F32,
+                ValueType.STRING,
+            }:
+                _record_scalar_node_property_semantics(
+                    ctx,
+                    node_uid=node.uid,
+                    key=key,
+                    label=label,
+                    value_type=value_type,
+                    value=new_value,
+                )
             if new_value != value:
                 node.data[key] = new_value
                 changed = True
