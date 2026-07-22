@@ -293,6 +293,44 @@ def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
     ]
 
 
+def test_particle_node_inspector_edits_unconnected_value_input_defaults():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    class Context:
+        semantic_capture_enabled = True
+
+        def __init__(self):
+            self.items = []
+
+        def label(self, _label):
+            pass
+
+        def separator(self):
+            pass
+
+        def drag_float(self, label, value, _speed, _minimum, _maximum):
+            return 1.5 if label.startswith("B##") else value
+
+        def record_semantic_item(self, *args, **kwargs):
+            self.items.append((args, kwargs))
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    panel._on_node_creation_requested({"source_node": "", "gy": 230.0})
+    node = panel._on_node_add("common.compare.greater_than", 400.0, 230.0)
+    panel._selected_node_uid = node.uid
+    ctx = Context()
+
+    panel._render_node_properties(ctx)
+
+    assert node.data["b"] == 1.5
+    semantic_ids = {args[3] for args, _kwargs in ctx.items}
+    assert semantic_ids == {
+        f"particle_graph.node.{node.uid}.property.a",
+        f"particle_graph.node.{node.uid}.property.b",
+    }
+
+
 def test_particle_gradient_editor_uses_hdr_and_channel_semantics():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.graph.ramp import Gradient

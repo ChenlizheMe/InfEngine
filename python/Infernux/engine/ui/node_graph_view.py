@@ -913,6 +913,25 @@ class NodeGraphView:
                 or bool(ctx.is_item_hovered())
                 or bool(ctx.is_item_active())
             )
+            semantic_values = {}
+            semantic_kind = "control"
+            if data_type == "bool":
+                semantic_kind = "checkbox"
+                semantic_values["bool_value"] = bool(new_value)
+            elif data_type in {"i32", "u32", "f32"}:
+                semantic_kind = "drag_float" if data_type == "f32" else "int_input"
+                semantic_values["numeric_value"] = float(new_value)
+            elif data_type == "string":
+                semantic_kind = "text_input"
+                semantic_values["string_value"] = str(new_value)
+            self._record_semantic_item(
+                ctx,
+                semantic_kind,
+                str(field_def.label),
+                True,
+                f"inline.{layout.node.uid}.{field_def.id}",
+                **semantic_values,
+            )
             self._commit_inline_value(layout.node, field_def.id, new_value)
         finally:
             ctx.pop_id()

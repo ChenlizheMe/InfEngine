@@ -12,7 +12,11 @@ from typing import Optional
 from Infernux.debug import Debug
 from Infernux.engine.i18n import t
 from Infernux.engine.path_utils import resolved_path, same_path
-from Infernux.graph.registry import COMMON_NODE_REGISTRY
+from Infernux.graph.registry import (
+    COMMON_NODE_REGISTRY,
+    PortDirection,
+    PortKind,
+)
 from Infernux.graph.ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, Gradient
 from Infernux.graph.types import CoordinateSpace, ValueType
 from Infernux.lib import InxGUIContext
@@ -691,10 +695,26 @@ class ParticleGraphEditorPanel(EditorPanel):
         ctx.separator()
         ctx.label(definition.display_name)
         changed = False
-        for property_def in definition.properties:
-            key = property_def.id
-            value = copy.deepcopy(node.data.get(key, property_def.default))
-            value_type = property_def.value_type.value_type
+        property_ids = {item.id for item in definition.properties}
+        editable_fields = [
+            (item.id, item.value_type.value_type, item.default)
+            for item in definition.properties
+        ]
+        editable_fields.extend(
+            (port.id, port.value_type.value_type, port.default)
+            for port in definition.ports
+            if port.direction is PortDirection.INPUT
+            and port.kind is PortKind.VALUE
+            and not port.required
+            and port.value_type is not None
+            and port.id not in property_ids
+            and not any(
+                link.target_node == node.uid and link.target_pin == port.id
+                for link in self._model.links
+            )
+        )
+        for key, value_type, default in editable_fields:
+            value = copy.deepcopy(node.data.get(key, default))
             label_key = f"particle_graph_editor.property_{key}"
             label = t(label_key)
             if label == label_key:
