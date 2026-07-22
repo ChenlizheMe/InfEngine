@@ -102,6 +102,40 @@ def register_material_tools(mcp, project_path: str) -> None:
             },
         )
 
+    @mcp.tool(name="material_set_surface_type")
+    def material_set_surface_type(
+        path: str,
+        surface_type: str,
+        knowledge_token: str = "",
+    ) -> dict:
+        """Set opaque/transparent render state through the public Material API."""
+
+        def _set():
+            require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
+            normalized = str(surface_type or "").strip().lower()
+            if normalized not in {"opaque", "transparent"}:
+                raise ValueError("surface_type must be 'opaque' or 'transparent'.")
+            file_path = resolve_project_path(project_path, path)
+            mat = _load_material(project_path, path)
+            mat.surface_type = normalized
+            mat.flush()
+            mat.save(file_path)
+            notify_asset_changed(file_path, "modified")
+            return {
+                "path": relative_path(file_path, project_path),
+                **_material_info(mat),
+            }
+
+        return main_thread(
+            "material_set_surface_type",
+            _set,
+            arguments={
+                "path": path,
+                "surface_type": surface_type,
+                "knowledge_token": knowledge_token,
+            },
+        )
+
     @mcp.tool(name="material_set_shader")
     def material_set_shader(
         path: str,
@@ -207,6 +241,9 @@ def _material_info(mat) -> dict[str, Any]:
             "fragment": str(getattr(mat, "frag_shader_name", "") or ""),
         },
         "render_queue": int(getattr(mat, "render_queue", 0) or 0),
+        "surface_type": str(getattr(mat, "surface_type", "opaque") or "opaque"),
+        "blend_enable": bool(getattr(mat, "blend_enable", False)),
+        "depth_write_enable": bool(getattr(mat, "depth_write_enable", True)),
         "properties": _properties(mat),
     }
 
@@ -217,6 +254,7 @@ def _register_metadata() -> None:
         "material_get_properties": "Read material shader selection and properties.",
         "material_set_property": "Set a material shader property.",
         "material_set_render_queue": "Set the material render queue.",
+        "material_set_surface_type": "Set opaque or transparent material render state.",
         "material_set_shader": "Select validated vertex and fragment shader IDs for a material.",
     }.items():
         register_tool_metadata(

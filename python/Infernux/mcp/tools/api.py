@@ -189,8 +189,16 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "Material.create_lit uses default_lit; Material.create_unlit uses default_unlit.",
             "Use vert_shader_name and frag_shader_name when vertex/fragment shader IDs differ.",
             "Use set_color/set_float/set_int/set_vector*/set_texture based on the imported ShaderInfo property schema.",
+            "Use material_set_surface_type for opaque/transparent render state; render queue alone does not enable blending.",
         ],
-        "symbols": ["Material", "shader_describe", "material_create", "material_set_property", "material_set_render_queue"],
+        "symbols": [
+            "Material",
+            "shader_describe",
+            "material_create",
+            "material_set_property",
+            "material_set_render_queue",
+            "material_set_surface_type",
+        ],
     },
     "ui": {
         "summary": "Screen-space UI uses UICanvas plus UIText, UIImage, UIButton, pointer events, and persistent UIEventEntry bindings.",

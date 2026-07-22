@@ -84,6 +84,7 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "component_ensure",
         "ui_bind_click",
         "material_set_render_queue",
+        "material_set_surface_type",
         "render_effect_create",
         "particle_graph_inspect_editor",
         "particle_graph_set_node_asset",
