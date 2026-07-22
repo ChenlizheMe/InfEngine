@@ -9,6 +9,7 @@ from typing import Any
 
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.graph.types import AssetReference
+from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
 
 from .asset import (
     EmitterSettings,
@@ -33,6 +34,8 @@ class ParticleEmitter:
 
 class _ParticleStageContext:
     def sample_vector_field(self, interface: str, position): ...
+    def sample_curve(self, curve: Curve, t: float) -> float: ...
+    def sample_gradient(self, gradient: Gradient, t: float): ...
 
 
 class InitContext(_ParticleStageContext):
@@ -49,10 +52,17 @@ class RenderingContext(_ParticleStageContext):
 
 class ParticleStream:
     position: tuple[float, float, float]
+    age: float
+    lifetime: float
+    size: float
+    rotation: float
+    color: tuple[float, float, float, float]
 
     def set_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
     def set_rotation(self, value) -> None: ...
+    def set_color(self, value) -> None: ...
+    def set_size(self, value) -> None: ...
     def acceleration(self, value) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
     def sprite(
@@ -80,10 +90,14 @@ class ParticleScriptCompiler:
             "set_velocity": ("particle.init.set_velocity", "value"),
             "set_lifetime": ("particle.init.set_lifetime", "value"),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
+            "set_color": ("particle.attribute.set_color", "value"),
+            "set_size": ("particle.attribute.set_size", "value"),
         },
         "update": {
             "acceleration": ("particle.update.acceleration", "value"),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
+            "set_color": ("particle.attribute.set_color", "value"),
+            "set_size": ("particle.attribute.set_size", "value"),
             "rotate": ("particle.update.rotate", "degrees_per_second"),
         },
         "rendering": {
@@ -261,6 +275,10 @@ class ParticleScriptCompiler:
 
     @staticmethod
     def _is_particle_expression(node: ast.AST, context_name: str, stream_name: str) -> bool:
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)
+        ):
+            return True
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             return node.value.id == stream_name
         return (
@@ -282,19 +300,84 @@ class ParticleScriptCompiler:
         nodes: list[GraphNodeRecord],
         links: list[GraphLinkRecord],
     ) -> tuple[tuple[str, str], int]:
+        if isinstance(node, ast.Constant) and type(node.value) in {int, float}:
+            uid = f"{stage}.expr.{expression_index}.constant"
+            nodes.append(
+                GraphNodeRecord(
+                    uid,
+                    "common.constant.f32",
+                    properties={"value": float(node.value)},
+                )
+            )
+            return (uid, "value"), expression_index + 1
+
+        if isinstance(node, ast.BinOp) and isinstance(
+            node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)
+        ):
+            left, expression_index = self._parse_expression(
+                node.left,
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+            )
+            right, expression_index = self._parse_expression(
+                node.right,
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+            )
+            operation = {
+                ast.Add: ("add", "common.math.add"),
+                ast.Sub: ("subtract", "common.math.subtract"),
+                ast.Mult: ("multiply", "common.math.multiply"),
+                ast.Div: ("divide", "common.math.divide"),
+            }[type(node.op)]
+            uid = f"{stage}.expr.{expression_index}.{operation[0]}"
+            nodes.append(GraphNodeRecord(uid, operation[1]))
+            links.extend(
+                (
+                    GraphLinkRecord(
+                        f"{stage}.expr.link.{expression_index}.a",
+                        left[0], left[1], uid, "a", PortKind.VALUE,
+                    ),
+                    GraphLinkRecord(
+                        f"{stage}.expr.link.{expression_index}.b",
+                        right[0], right[1], uid, "b", PortKind.VALUE,
+                    ),
+                )
+            )
+            return (uid, "result"), expression_index + 1
+
         if (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
             and node.value.id == stream_name
         ):
-            if node.attr != "position":
+            attributes = {
+                "position": ("particle.attribute.read_vec3", "builtin.position"),
+                "age": ("particle.attribute.read_f32", "builtin.age"),
+                "lifetime": ("particle.attribute.read_f32", "builtin.lifetime"),
+                "size": ("particle.attribute.read_f32", "builtin.size"),
+                "rotation": ("particle.attribute.read_f32", "builtin.rotation"),
+                "color": ("particle.attribute.read_color", "builtin.color"),
+            }
+            if node.attr not in attributes:
                 raise self._error(source_name, node, f"unsupported particle attribute {node.attr!r}")
-            uid = f"{stage}.expr.{expression_index}.position"
+            type_id, attribute = attributes[node.attr]
+            uid = f"{stage}.expr.{expression_index}.{node.attr}"
             nodes.append(
                 GraphNodeRecord(
                     uid,
-                    "particle.attribute.read_vec3",
-                    properties={"attribute": "builtin.position"},
+                    type_id,
+                    properties={"attribute": attribute},
                 )
             )
             return (uid, "value"), expression_index + 1
@@ -306,6 +389,54 @@ class ParticleScriptCompiler:
             and node.func.value.id == context_name
         ):
             raise self._error(source_name, node, "unsupported particle expression")
+        if node.func.attr in {"sample_curve", "sample_gradient"}:
+            if len(node.args) != 2 or node.keywords:
+                raise self._error(
+                    source_name,
+                    node,
+                    f"{node.func.attr} requires authored keys and one sample input",
+                )
+            literal = self._value(node.args[0])
+            expected_type = Curve if node.func.attr == "sample_curve" else Gradient
+            if not isinstance(literal, expected_type):
+                raise self._error(
+                    source_name,
+                    node.args[0],
+                    f"{node.func.attr} requires a {expected_type.__name__} value",
+                )
+            input_source, expression_index = self._parse_expression(
+                node.args[1],
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+            )
+            uid = f"{stage}.expr.{expression_index}.{node.func.attr}"
+            node_type = (
+                "common.curve.sample"
+                if node.func.attr == "sample_curve"
+                else "common.gradient.sample"
+            )
+            output_port = "value" if node.func.attr == "sample_curve" else "color"
+            property_name = "curve" if node.func.attr == "sample_curve" else "gradient"
+            nodes.append(
+                GraphNodeRecord(
+                    uid,
+                    node_type,
+                    properties={property_name: literal.to_dict()},
+                )
+            )
+            links.append(
+                GraphLinkRecord(
+                    f"{stage}.expr.link.{expression_index}",
+                    input_source[0], input_source[1], uid, "t", PortKind.VALUE,
+                )
+            )
+            return (uid, output_port), expression_index + 1
+
         if node.func.attr != "sample_vector_field":
             raise self._error(source_name, node, f"unsupported particle context expression {node.func.attr!r}")
         if len(node.args) != 2 or node.keywords:
@@ -358,6 +489,10 @@ class ParticleScriptCompiler:
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),
             "PointCache": (),
+            "CurveKey": ("time", "value", "in_tangent", "out_tangent"),
+            "Curve": ("keys", "pre_wrap", "post_wrap"),
+            "GradientKey": ("time", "color"),
+            "Gradient": ("keys", "mode"),
         }[expected_name]
         if len(node.args) > len(positional_names):
             raise ParticleScriptError(f"{expected_name} has too many positional arguments")
@@ -377,6 +512,10 @@ class ParticleScriptCompiler:
             "AssetReference": AssetReference,
             "VectorField": VectorField,
             "PointCache": PointCache,
+            "CurveKey": CurveKey,
+            "Curve": Curve,
+            "GradientKey": GradientKey,
+            "Gradient": Gradient,
         }[expected_name]
         try:
             if expected_name == "VectorField" and type(values.get("texture")) is dict:
@@ -396,6 +535,10 @@ class ParticleScriptCompiler:
             "AssetReference",
             "VectorField",
             "PointCache",
+            "CurveKey",
+            "Curve",
+            "GradientKey",
+            "Gradient",
         }:
             return self._constructor(node, node.func.id)
         if isinstance(node, (ast.List, ast.Tuple)):
@@ -503,7 +646,11 @@ class ParticleScriptCompiler:
 
 __all__ = [
     "AssetReference",
+    "Curve",
+    "CurveKey",
     "InitContext",
+    "Gradient",
+    "GradientKey",
     "ParticleEmitter",
     "ParticleScript",
     "ParticleScriptCompiler",

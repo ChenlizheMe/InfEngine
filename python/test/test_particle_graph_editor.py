@@ -89,6 +89,43 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
     ]
 
 
+def test_curve_and_gradient_use_inspector_properties_and_round_trip_canvas_data():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    curve_type = model.get_type("common.curve.sample")
+    gradient_type = model.get_type("common.gradient.sample")
+
+    assert [field.id for field in curve_type.inline_fields] == ["t"]
+    assert [field.id for field in gradient_type.inline_fields] == ["t"]
+
+    curve = model.add_node("common.curve.sample", 240.0, 230.0)
+    gradient = model.add_node("common.gradient.sample", 480.0, 230.0)
+    curve.data["curve"]["keys"][1]["value"] = 2.0
+    gradient.data["gradient"]["keys"][0]["color"] = [2.0, 0.5, 0.0, 1.0]
+
+    documents = model.to_documents()
+    update_nodes = {node.uid: node for node in documents["update"].nodes}
+    assert update_nodes[curve.uid.split("::", 1)[1]].properties["curve"]["keys"][1]["value"] == 2.0
+    assert update_nodes[gradient.uid.split("::", 1)[1]].properties["gradient"]["keys"][0]["color"] == [2.0, 0.5, 0.0, 1.0]
+
+
+def test_particle_value_input_connection_can_be_replaced_atomically():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    first = model.add_node("common.curve.sample", 240.0, 230.0)
+    second = model.add_node("common.curve.sample", 480.0, 230.0)
+    add = model.add_node("common.math.add", 720.0, 230.0)
+    original = model.add_link(first.uid, "value", add.uid, "a")
+
+    replaced = model.replace_link(
+        original.uid, second.uid, "value", add.uid, "a"
+    )
+
+    assert replaced is original
+    assert replaced.source_node == second.uid
+    assert len(
+        [link for link in model.links if link.target_node == add.uid and link.target_pin == "a"]
+    ) == 1
+
+
 def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
@@ -173,6 +210,59 @@ def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
             {"numeric_value": 0.5},
         ),
     ]
+
+
+def test_particle_gradient_editor_uses_hdr_and_channel_semantics():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.graph.ramp import Gradient
+
+    class Context:
+        def __init__(self):
+            self.hdr = False
+            self.items = []
+
+        def combo(self, _label, value, _options, _popup_height):
+            return value
+
+        def separator(self):
+            pass
+
+        def label(self, _label):
+            pass
+
+        def drag_float(self, _label, value, _speed, _minimum, _maximum):
+            return value
+
+        def color_edit(self, _label, *color, hdr=False):
+            self.hdr = hdr
+            return color
+
+        def button(self, _label):
+            return False
+
+        def record_semantic_item(self, *args, **kwargs):
+            self.items.append((args, kwargs))
+
+    ctx = Context()
+    result = ParticleGraphEditorPanel._render_gradient_property(
+        ctx,
+        "update::sample",
+        "gradient",
+        Gradient().to_dict(),
+    )
+
+    assert result == Gradient().to_dict()
+    assert ctx.hdr is True
+    semantic_ids = {args[3] for args, _kwargs in ctx.items}
+    assert "particle_graph.node.update::sample.property.gradient.key.0.time" in semantic_ids
+    assert (
+        "particle_graph.node.update::sample.property.gradient.key.0.color.r"
+        in semantic_ids
+    )
+    assert (
+        "particle_graph.node.update::sample.property.gradient.key.1.color.a"
+        in semantic_ids
+    )
 
 
 def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypatch):

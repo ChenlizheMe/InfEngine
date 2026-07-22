@@ -10,6 +10,7 @@ from typing import Any, Callable, Collection, Mapping
 import numpy as np
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.ramp import Curve, Gradient
 
 from .asset import EmitterSettings, ExecutionTarget
 from .data_interface import (
@@ -815,6 +816,8 @@ def _compile_stage(
         tuple[_NumpyPointCacheBinding, str, TypeRef, str, str]
     ] = []
     vector_field_samples: list[_NumpyVectorFieldBinding] = []
+    curves: list[tuple[Any, ...]] = []
+    gradients: list[tuple[Any, ...]] = []
     scratch_types: list[TypeRef] = []
     export_types: list[tuple[str, TypeRef]] = []
     export_aliases: list[tuple[str, str]] = []
@@ -890,6 +893,20 @@ def _compile_stage(
             lines.append(
                 f"    _random_range({output}, {low}, {high}, {node_seed}, "
                 f"{emitter_seed}, {immediates['random_slot']}, state, particle_slice, context, workspace)"
+            )
+        elif opcode == "sample_curve":
+            source = operand_names(instruction)[0]
+            output = result_buffer(instruction)
+            curves.append(_prepare_curve(immediates["curve"]))
+            lines.append(
+                f"    _sample_curve({output}, {source}, _curves[{len(curves) - 1}])"
+            )
+        elif opcode == "sample_gradient":
+            source = operand_names(instruction)[0]
+            output = result_buffer(instruction)
+            gradients.append(_prepare_gradient(immediates["gradient"]))
+            lines.append(
+                f"    _sample_gradient({output}, {source}, _gradients[{len(gradients) - 1}])"
             )
         elif opcode.startswith("sample_shape_"):
             output = result_buffer(instruction)
@@ -977,12 +994,16 @@ def _compile_stage(
         "_conversions": tuple(conversions),
         "_point_cache_samples": tuple(point_cache_samples),
         "_vector_field_samples": tuple(vector_field_samples),
+        "_curves": tuple(curves),
+        "_gradients": tuple(gradients),
         "_convert_space": _convert_space,
         "_normalize": _normalize,
         "_random_range": _random_range,
         "_sample_shape": _sample_shape,
         "_sample_point_cache": _sample_point_cache,
         "_sample_vector_field": _sample_vector_field,
+        "_sample_curve": _sample_curve,
+        "_sample_gradient": _sample_gradient,
     }
     exec(compile(source, f"<particle-numpy-{function.stage.value}>", "exec"), namespace)
     return NumpyStageExecutable(
@@ -994,6 +1015,104 @@ def _compile_stage(
             tuple(export_aliases),
         ),
         namespace["_kernel"],
+    )
+
+
+def _prepare_curve(value):
+    curve = Curve.from_dict(value)
+    return (
+        np.asarray([key.time for key in curve.keys], dtype=np.float32),
+        np.asarray([key.value for key in curve.keys], dtype=np.float32),
+        np.asarray([key.in_tangent for key in curve.keys], dtype=np.float32),
+        np.asarray([key.out_tangent for key in curve.keys], dtype=np.float32),
+        curve.pre_wrap,
+        curve.post_wrap,
+    )
+
+
+def _prepare_gradient(value):
+    gradient = Gradient.from_dict(value)
+    return (
+        np.asarray([key.time for key in gradient.keys], dtype=np.float32),
+        np.asarray([key.color for key in gradient.keys], dtype=np.float32),
+        gradient.mode,
+    )
+
+
+def _wrapped_ramp_time(source, first, last, pre_wrap, post_wrap):
+    values = np.asarray(source, dtype=np.float32)
+    result = values.copy()
+    span = np.float32(last - first)
+    if span <= 0.0:
+        result.fill(first)
+        return result
+
+    def apply(mask, mode, clamp_value):
+        if mode == "clamp":
+            np.copyto(result, np.float32(clamp_value), where=mask)
+            return
+        offset = np.mod(values - np.float32(first), span)
+        if mode == "repeat":
+            np.copyto(result, np.float32(first) + offset, where=mask)
+            return
+        period = span * np.float32(2.0)
+        folded = np.mod(values - np.float32(first), period)
+        folded = np.where(folded <= span, folded, period - folded)
+        np.copyto(result, np.float32(first) + folded, where=mask)
+
+    before = values < np.float32(first)
+    apply(before, pre_wrap, first)
+    after = values > np.float32(last)
+    apply(after, post_wrap, last)
+    return result
+
+
+def _sample_curve(output, source, prepared) -> None:
+    times, values, in_tangents, out_tangents, pre_wrap, post_wrap = prepared
+    if len(times) == 1:
+        output.fill(values[0])
+        return
+    source_values = np.broadcast_to(np.asarray(source, dtype=np.float32), output.shape)
+    t = _wrapped_ramp_time(source_values, times[0], times[-1], pre_wrap, post_wrap)
+    indices = np.searchsorted(times, t, side="right") - 1
+    np.clip(indices, 0, len(times) - 2, out=indices)
+    next_indices = indices + 1
+    t0 = times[indices]
+    dt = times[next_indices] - t0
+    u = (t - t0) / dt
+    u2 = u * u
+    u3 = u2 * u
+    np.copyto(
+        output,
+        (2.0 * u3 - 3.0 * u2 + 1.0) * values[indices]
+        + (u3 - 2.0 * u2 + u) * out_tangents[indices] * dt
+        + (-2.0 * u3 + 3.0 * u2) * values[next_indices]
+        + (u3 - u2) * in_tangents[next_indices] * dt,
+        casting="unsafe",
+    )
+
+
+def _sample_gradient(output, source, prepared) -> None:
+    times, colors, mode = prepared
+    source_values = np.broadcast_to(
+        np.asarray(source, dtype=np.float32), (output.shape[0],)
+    )
+    t = np.clip(source_values, times[0], times[-1])
+    if len(times) == 1:
+        np.copyto(output, colors[0])
+        return
+    indices = np.searchsorted(times, t, side="right") - 1
+    np.clip(indices, 0, len(times) - 2, out=indices)
+    if mode == "fixed":
+        np.copyto(output, colors[indices])
+        np.copyto(output, colors[-1], where=(t >= times[-1])[:, None])
+        return
+    next_indices = indices + 1
+    factor = (t - times[indices]) / (times[next_indices] - times[indices])
+    np.copyto(
+        output,
+        colors[indices] + (colors[next_indices] - colors[indices]) * factor[:, None],
+        casting="unsafe",
     )
 
 

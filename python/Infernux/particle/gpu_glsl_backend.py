@@ -11,6 +11,7 @@ from typing import Any
 import zlib
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.ramp import Curve, Gradient
 
 from .data_interface import PointCache, VectorField
 from .kernel_ir import (
@@ -540,6 +541,22 @@ class _StageCompiler:
                 f"{int(immediate['random_slot'])}u, state.{self._field('builtin.id')[1]}, "
                 "state.spawn_generation)"
             )
+        elif opcode == "sample_curve":
+            curve = Curve.from_dict(immediate["curve"])
+            sample_time = f"{result}_time"
+            self._lines.append(
+                f"float {sample_time} = {_glsl_wrapped_curve_time(operands[0], curve)};"
+            )
+            expression = _glsl_curve_sample(sample_time, curve)
+        elif opcode == "sample_gradient":
+            gradient = Gradient.from_dict(immediate["gradient"])
+            sample_time = f"{result}_time"
+            self._lines.append(
+                f"float {sample_time} = clamp({operands[0]}, "
+                f"{_float_literal(gradient.keys[0].time)}, "
+                f"{_float_literal(gradient.keys[-1].time)});"
+            )
+            expression = _glsl_gradient_sample(sample_time, gradient)
         elif opcode.startswith("sample_shape_"):
             mode = "position" if opcode.endswith("position") else "direction"
             slots = immediate["random_slots"]
@@ -607,6 +624,80 @@ class _StageCompiler:
             raise GpuParticleCompileError(
                 f"GPU kernel references unknown attribute {stable_id!r}"
             ) from exc
+
+
+def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
+    span = last - first
+    offset = f"({value} - {_float_literal(first)})"
+    if mode == "repeat":
+        return f"({_float_literal(first)} + mod({offset}, {_float_literal(span)}))"
+    return (
+        f"({_float_literal(first)} + {_float_literal(span)} - "
+        f"abs(mod({offset}, {_float_literal(span * 2.0)}) - {_float_literal(span)}))"
+    )
+
+
+def _glsl_wrapped_curve_time(source: str, curve: Curve) -> str:
+    first = curve.keys[0].time
+    last = curve.keys[-1].time
+    if first == last:
+        return _float_literal(first)
+    before_source = f"({source} < {_float_literal(first)})"
+    after_source = f"({source} > {_float_literal(last)})"
+    before = (
+        _float_literal(first)
+        if curve.pre_wrap == "clamp"
+        else _glsl_curve_wrap(source, first, last, curve.pre_wrap)
+    )
+    after = (
+        _float_literal(last)
+        if curve.post_wrap == "clamp"
+        else _glsl_curve_wrap(source, first, last, curve.post_wrap)
+    )
+    return f"({before_source} ? {before} : ({after_source} ? {after} : {source}))"
+
+
+def _glsl_curve_segment(sample_time: str, left, right) -> str:
+    duration = right.time - left.time
+    u = f"(({sample_time} - {_float_literal(left.time)}) / {_float_literal(duration)})"
+    u2 = f"({u} * {u})"
+    u3 = f"({u2} * {u})"
+    return (
+        f"((2.0 * {u3} - 3.0 * {u2} + 1.0) * {_float_literal(left.value)} + "
+        f"({u3} - 2.0 * {u2} + {u}) * {_float_literal(left.out_tangent * duration)} + "
+        f"(-2.0 * {u3} + 3.0 * {u2}) * {_float_literal(right.value)} + "
+        f"({u3} - {u2}) * {_float_literal(right.in_tangent * duration)})"
+    )
+
+
+def _glsl_curve_sample(sample_time: str, curve: Curve) -> str:
+    if len(curve.keys) == 1:
+        return _float_literal(curve.keys[0].value)
+    expression = _float_literal(curve.keys[-1].value)
+    for left, right in reversed(tuple(zip(curve.keys, curve.keys[1:]))):
+        segment = _glsl_curve_segment(sample_time, left, right)
+        expression = f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
+    return expression
+
+
+def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
+    if len(gradient.keys) == 1:
+        return _vector_literal(gradient.keys[0].color, 4)
+    expression = _vector_literal(gradient.keys[-1].color, 4)
+    for left, right in reversed(tuple(zip(gradient.keys, gradient.keys[1:]))):
+        if gradient.mode == "fixed":
+            segment = _vector_literal(left.color, 4)
+        else:
+            factor = (
+                f"(({sample_time} - {_float_literal(left.time)}) / "
+                f"{_float_literal(right.time - left.time)})"
+            )
+            segment = (
+                f"mix({_vector_literal(left.color, 4)}, "
+                f"{_vector_literal(right.color, 4)}, {factor})"
+            )
+        expression = f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
+    return expression
 
 
 def _data_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:

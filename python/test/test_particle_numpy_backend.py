@@ -321,6 +321,98 @@ def test_numpy_rotate_operation_integrates_degrees_per_second():
     assert runtime.instance_buffer()[0, 8] == pytest.approx(np.pi / 2.0)
 
 
+def test_numpy_aot_samples_curve_and_gradient_without_runtime_graph_dispatch():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-size", "particle.attribute.set_size"),
+            GraphNodeRecord("set-color", "particle.attribute.set_color"),
+            GraphNodeRecord("age", "particle.attribute.read_f32"),
+            GraphNodeRecord("curve", "common.curve.sample", properties={"curve": {
+                "keys": [
+                    {"time": 0.0, "value": 0.0, "in_tangent": 1.0, "out_tangent": 1.0},
+                    {"time": 1.0, "value": 1.0, "in_tangent": 1.0, "out_tangent": 1.0},
+                ],
+                "pre_wrap": "clamp", "post_wrap": "clamp",
+            }}),
+            GraphNodeRecord("gradient", "common.gradient.sample", properties={"gradient": {
+                "keys": [
+                    {"time": 0.0, "color": [1.0, 0.0, 0.0, 1.0]},
+                    {"time": 1.0, "color": [0.0, 0.0, 1.0, 0.0]},
+                ],
+                "mode": "linear",
+            }}),
+        ),
+        links=(
+            GraphLinkRecord("stream-size", "root.update", "out", "set-size", "in", PortKind.STREAM),
+            GraphLinkRecord("stream-color", "set-size", "out", "set-color", "in", PortKind.STREAM),
+            GraphLinkRecord("age-curve", "age", "value", "curve", "t"),
+            GraphLinkRecord("age-gradient", "age", "value", "gradient", "t"),
+            GraphLinkRecord("curve-size", "curve", "value", "set-size", "value"),
+            GraphLinkRecord("gradient-color", "gradient", "color", "set-color", "value"),
+        ),
+    )
+    settings = EmitterSettings(
+        capacity=1, spawn_rate=0.0, bursts=(ParticleBurst(0.0, 1),),
+        lifetime=ScalarRange(2.0, 2.0), initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(emitters=(ParticleEmitterAsset(settings=settings, update=update),))
+    hir = ParticleGraphCompiler().compile(asset)
+    program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+    runtime = program.create_runtime()
+
+    runtime.tick(0.0)
+    runtime.tick(0.5)
+
+    assert runtime.attributes["builtin.size"][0] == pytest.approx(0.5)
+    np.testing.assert_allclose(runtime.attributes["builtin.color"][0], [0.5, 0.0, 0.5, 0.5])
+    assert "_sample_curve" in program.emitters[0].update.source
+    assert "_sample_gradient" in program.emitters[0].update.source
+
+
+def test_numpy_curve_wrap_and_fixed_gradient_follow_portable_contract():
+    from Infernux.particle.numpy_backend import (
+        _prepare_curve,
+        _prepare_gradient,
+        _sample_curve,
+        _sample_gradient,
+    )
+
+    curve = _prepare_curve({
+        "keys": [
+            {"time": 0.0, "value": 0.0, "in_tangent": 1.0, "out_tangent": 1.0},
+            {"time": 1.0, "value": 1.0, "in_tangent": 1.0, "out_tangent": 1.0},
+        ],
+        "pre_wrap": "ping_pong",
+        "post_wrap": "repeat",
+    })
+    curve_output = np.empty(4, dtype=np.float32)
+    _sample_curve(curve_output, np.asarray([-0.25, 0.25, 1.25, 2.25]), curve)
+    np.testing.assert_allclose(curve_output, [0.25, 0.25, 0.25, 0.25])
+
+    gradient = _prepare_gradient({
+        "keys": [
+            {"time": 0.0, "color": [1.0, 0.0, 0.0, 1.0]},
+            {"time": 0.5, "color": [0.0, 1.0, 0.0, 1.0]},
+            {"time": 1.0, "color": [0.0, 0.0, 1.0, 1.0]},
+        ],
+        "mode": "fixed",
+    })
+    gradient_output = np.empty((4, 4), dtype=np.float32)
+    _sample_gradient(gradient_output, np.asarray([-1.0, 0.25, 0.75, 2.0]), gradient)
+    np.testing.assert_array_equal(
+        gradient_output,
+        [
+            [1.0, 0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ],
+    )
+
+
 def test_numpy_point_cache_sampling_uses_typed_interface_and_refreshes_generation():
     init = GraphDocument(
         "particle.init",

@@ -218,6 +218,9 @@ class NodeGraphView:
         # ── Callbacks ─────────────────────────────────────────────────
         self.on_link_created: Optional[Callable[[str, str, str, str], None]] = None
         self.on_link_deleted: Optional[Callable[[str], None]] = None
+        self.on_link_replaced: Optional[
+            Callable[[str, str, str, str, str], None]
+        ] = None
         self.on_nodes_deleted: Optional[Callable[[List[str]], None]] = None
         self.on_node_add_request: Optional[Callable[[str, float, float], None]] = None
         self.on_node_creation_entries: Optional[
@@ -1506,7 +1509,11 @@ class NodeGraphView:
                         endpoints = (
                             uid, pl.pin_def.id, self._drag_src_node, self._drag_src_pin
                         )
-                    if self.graph.validate_link(*endpoints):
+                    existing = self._replaceable_input_link(endpoints)
+                    ignore_uid = existing.uid if existing is not None else ""
+                    if self.graph.validate_link(
+                        *endpoints, ignore_link_uid=ignore_uid
+                    ):
                         return uid, pl.pin_def.id, want_kind
         return "", "", PinKind.OUTPUT
 
@@ -1536,6 +1543,18 @@ class NodeGraphView:
         for lk in self.graph.links:
             if lk.target_node == node_uid and lk.target_pin == pin_id:
                 return lk
+        return None
+
+    def _replaceable_input_link(self, endpoints):
+        if self.graph is None:
+            return None
+        existing = self._find_link_to_input(endpoints[2], endpoints[3])
+        if existing is None:
+            return None
+        if self.on_link_replaced is not None:
+            return existing
+        if self.on_link_created is None and self.on_link_deleted is None:
+            return existing
         return None
 
     def _try_complete_link(self, mx, my):
@@ -1570,12 +1589,23 @@ class NodeGraphView:
         else:
             src_n, src_p = target_node, target_pin
             dst_n, dst_p = self._drag_src_node, self._drag_src_pin
-        if self.graph is not None and not self.graph.validate_link(src_n, src_p, dst_n, dst_p):
+        endpoints = (src_n, src_p, dst_n, dst_p)
+        existing = self._replaceable_input_link(endpoints)
+        ignore_uid = existing.uid if existing is not None else ""
+        if self.graph is not None and not self.graph.validate_link(
+            *endpoints, ignore_link_uid=ignore_uid
+        ):
+            return
+        if existing is not None:
+            if self.on_link_replaced:
+                self.on_link_replaced(existing.uid, *endpoints)
+            elif self.graph:
+                self.graph.replace_link(existing.uid, *endpoints)
             return
         if self.on_link_created:
-            self.on_link_created(src_n, src_p, dst_n, dst_p)
+            self.on_link_created(*endpoints)
         elif self.graph:
-            self.graph.add_link(src_n, src_p, dst_n, dst_p)
+            self.graph.add_link(*endpoints)
 
     # ── Context menu ──────────────────────────────────────────────────
 

@@ -107,6 +107,14 @@ def test_link_validation_enforces_max_connections_on_both_ends():
     assert graph.validate_link(source.uid, "out", second.uid, "value").code == "source_full"
     assert graph.validate_link(other_source.uid, "out", first.uid, "value").code == "target_full"
 
+    original = graph.links[0]
+    replaced = graph.replace_link(
+        original.uid, other_source.uid, "out", first.uid, "value"
+    )
+    assert replaced is original
+    assert replaced.source_node == other_source.uid
+    assert len(graph.links) == 1
+
 
 def test_exec_topology_reachability_stage_grouping_and_cycle_detection():
     graph = NodeGraph()

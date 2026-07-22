@@ -21,6 +21,8 @@ class ValueType(str, Enum):
     MAT4 = "mat4"
     STRING = "string"
     ASSET_REF = "asset_ref"
+    CURVE = "curve"
+    GRADIENT = "gradient"
 
 
 class CoordinateSpace(str, Enum):

@@ -428,13 +428,15 @@ void RegisterGUIBindings(py::module_ &m)
             py::arg("flags") = 0)
         .def(
             "color_edit",
-            [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a) -> py::tuple {
+            [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a,
+               bool hdr) -> py::tuple {
                 float color[4] = {r, g, b, a};
-                ctx.ColorEdit(label, color);
+                ctx.ColorEdit(label, color, hdr);
                 return py::make_tuple(py::float_(color[0]), py::float_(color[1]), py::float_(color[2]),
                                       py::float_(color[3]));
             },
-            py::arg("label"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a") = 1.0f)
+            py::arg("label"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a") = 1.0f,
+            py::arg("hdr") = false)
         .def(
             "color_picker",
             [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a,

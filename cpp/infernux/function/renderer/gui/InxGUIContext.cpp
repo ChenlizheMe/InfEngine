@@ -437,9 +437,12 @@ bool InxGUIContext::InputFloat(const std::string &label, float *value, float ste
         RecordSemanticItem("float_input", label, true, "", std::nullopt, static_cast<double>(*value));
     return changed;
 }
-void InxGUIContext::ColorEdit(const std::string &label, float color[4])
+void InxGUIContext::ColorEdit(const std::string &label, float color[4], bool hdr)
 {
-    ImGui::ColorEdit4(label.c_str(), color);
+    const ImGuiColorEditFlags flags = hdr ? ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float |
+                                                ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_InputRGB
+                                          : ImGuiColorEditFlags_None;
+    ImGui::ColorEdit4(label.c_str(), color, flags);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("color_edit", label);
 }

@@ -15,6 +15,7 @@ from .registry import (
     PortKind,
 )
 from .types import AssetReference, PORTABLE_TYPE_SYSTEM, TypeRef, TypeSystem, ValueType
+from .ramp import Curve, Gradient
 
 
 @dataclass(frozen=True)
@@ -256,6 +257,18 @@ class ExpressionCompiler:
     @staticmethod
     def _literal_error(value_type: TypeRef, value: Any) -> str:
         kind = value_type.value_type
+        if kind is ValueType.CURVE:
+            try:
+                Curve.from_dict(value)
+                return ""
+            except (TypeError, ValueError) as exc:
+                return str(exc)
+        if kind is ValueType.GRADIENT:
+            try:
+                Gradient.from_dict(value)
+                return ""
+            except (TypeError, ValueError) as exc:
+                return str(exc)
         if kind is ValueType.ASSET_REF:
             try:
                 AssetReference.from_dict(value)

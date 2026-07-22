@@ -10,6 +10,7 @@ from .registry import (
     PropertyDef,
 )
 from .types import TypeRef, ValueType
+from .ramp import Curve, Gradient
 
 
 def _input(port_id: str, value_type=None, *, variable="", default=None) -> PortDef:
@@ -131,6 +132,26 @@ COMMON_NODE_DEFINITIONS = (
             _output("value", TypeRef(ValueType.F32)),
         ),
         target_opcodes={"expression": "random_f32"},
+    ),
+    NodeDef(
+        "common.curve.sample",
+        "Sample Curve",
+        (
+            _input("t", TypeRef(ValueType.F32), default=0.0),
+            _output("value", TypeRef(ValueType.F32)),
+        ),
+        (PropertyDef("curve", TypeRef(ValueType.CURVE), Curve().to_dict()),),
+        {"expression": "sample_curve"},
+    ),
+    NodeDef(
+        "common.gradient.sample",
+        "Sample Gradient",
+        (
+            _input("t", TypeRef(ValueType.F32), default=0.0),
+            _output("color", TypeRef(ValueType.COLOR)),
+        ),
+        (PropertyDef("gradient", TypeRef(ValueType.GRADIENT), Gradient().to_dict()),),
+        {"expression": "sample_gradient"},
     ),
 )
 

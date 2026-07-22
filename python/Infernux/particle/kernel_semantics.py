@@ -8,6 +8,7 @@ import math
 from typing import Any, Mapping, Sequence
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.ramp import Curve, Gradient
 
 
 class KernelSemanticError(ValueError):
@@ -55,6 +56,8 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "lerp": KernelOpcodeSpec(True, 3),
     "normalize": KernelOpcodeSpec(True, 1),
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
+    "sample_curve": KernelOpcodeSpec(True, 1, frozenset({"curve"})),
+    "sample_gradient": KernelOpcodeSpec(True, 1, frozenset({"gradient"})),
     "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
     "sample_shape_direction": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
     "sample_point_cache": KernelOpcodeSpec(
@@ -282,6 +285,22 @@ def _validate_opcode_types(
                 "kernel random_f32 requires f32 bounds, a u32 node seed, and an f32 result"
             )
         _validate_u32(immediates["random_slot"], "random_slot")
+    elif opcode == "sample_curve":
+        if result_type != f32 or operands != (f32,):
+            raise KernelSemanticError("curve sampling requires one f32 input and an f32 result")
+        try:
+            Curve.from_dict(immediates["curve"])
+        except (TypeError, ValueError) as exc:
+            raise KernelSemanticError(f"invalid curve literal: {exc}") from exc
+    elif opcode == "sample_gradient":
+        if result_type != TypeRef(ValueType.COLOR) or operands != (f32,):
+            raise KernelSemanticError(
+                "gradient sampling requires one f32 input and a color result"
+            )
+        try:
+            Gradient.from_dict(immediates["gradient"])
+        except (TypeError, ValueError) as exc:
+            raise KernelSemanticError(f"invalid gradient literal: {exc}") from exc
     elif opcode.startswith("sample_shape_"):
         if result_type is None or result_type.value_type is not ValueType.VEC3:
             raise KernelSemanticError("kernel shape sampling requires a vec3 result")

@@ -33,6 +33,7 @@ from Infernux.graph.registry import (
     PortKind,
 )
 from Infernux.graph.types import PORTABLE_TYPE_SYSTEM
+from Infernux.graph.types import ValueType
 
 
 _PIN_COLORS = {
@@ -93,6 +94,7 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
             else (),
         )
         for item in definition.properties
+        if item.value_type.value_type not in {ValueType.CURVE, ValueType.GRADIENT}
     ]
     for port in definition.ports:
         if (

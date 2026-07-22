@@ -224,6 +224,51 @@ def test_gpu_lowerer_emits_lifecycle_divide_lerp_rotation_and_attribute_stores()
     assert ".a_builtin_rotation" in rendering
 
 
+def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-size", "particle.attribute.set_size"),
+            GraphNodeRecord("set-color", "particle.attribute.set_color"),
+            GraphNodeRecord("age", "particle.attribute.read_f32"),
+            GraphNodeRecord(
+                "curve",
+                "common.curve.sample",
+                properties={
+                    "curve": {
+                        "keys": [
+                            {"time": 0.0, "value": 0.0, "in_tangent": 0.0, "out_tangent": 1.0},
+                            {"time": 1.0, "value": 1.0, "in_tangent": 1.0, "out_tangent": 0.0},
+                        ],
+                        "pre_wrap": "ping_pong",
+                        "post_wrap": "repeat",
+                    }
+                },
+            ),
+            GraphNodeRecord("gradient", "common.gradient.sample"),
+        ),
+        links=(
+            GraphLinkRecord("stream-size", "root.update", "out", "set-size", "in", PortKind.STREAM),
+            GraphLinkRecord("stream-color", "set-size", "out", "set-color", "in", PortKind.STREAM),
+            GraphLinkRecord("age-curve", "age", "value", "curve", "t"),
+            GraphLinkRecord("age-gradient", "age", "value", "gradient", "t"),
+            GraphLinkRecord("curve-size", "curve", "value", "set-size", "value"),
+            GraphLinkRecord("gradient-color", "gradient", "color", "set-color", "value"),
+        ),
+    )
+    asset = ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    hir = ParticleGraphCompiler().compile(asset)
+    emitter = GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir)).emitters[0]
+
+    assert "_time =" in emitter.update
+    assert "mix(vec4(" in emitter.update
+    assert "mod(" in emitter.update
+    assert "abs(" in emitter.update
+    compiled = native._compile_compute_glsl_batch({"update": emitter.update}, "particle-curve-gradient-test")
+    assert set(compiled) == {"update"}
+
+
 def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults():
     stable_id = "layout-emitter"
     previous_asset = ParticleGraphAsset(

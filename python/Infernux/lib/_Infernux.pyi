@@ -2028,7 +2028,7 @@ class InxGUIContext:
         self, label: str, value: float, step: float = 0.0, step_fast: float = 0.0, flags: int = 0
     ) -> float: ...
     def color_edit(
-        self, label: str, r: float, g: float, b: float, a: float = 1.0
+        self, label: str, r: float, g: float, b: float, a: float = 1.0, hdr: bool = False
     ) -> Tuple[float, float, float, float]: ...
     def color_picker(
         self, label: str, r: float, g: float, b: float, a: float = 1.0, flags: int = 0

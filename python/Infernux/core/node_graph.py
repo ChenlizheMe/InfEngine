@@ -337,6 +337,29 @@ class NodeGraph:
         self.links.append(link)
         return link
 
+    def replace_link(
+        self,
+        link_uid: str,
+        src_node: str,
+        src_pin: str,
+        dst_node: str,
+        dst_pin: str,
+    ) -> Optional[GraphLink]:
+        link = self.find_link(link_uid)
+        if link is None or not self.validate_link(
+            src_node,
+            src_pin,
+            dst_node,
+            dst_pin,
+            ignore_link_uid=link_uid,
+        ):
+            return None
+        link.source_node = src_node
+        link.source_pin = src_pin
+        link.target_node = dst_node
+        link.target_pin = dst_pin
+        return link
+
     def validate_link(
         self,
         src_node: str,

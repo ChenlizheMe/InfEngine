@@ -151,3 +151,39 @@ def test_common_expression_compiler_rejects_bad_literal_and_input_type():
     )
     with pytest.raises(ExpressionCompileError, match="cannot connect"):
         ExpressionCompiler().compile(bad_input, outputs=(("normal", "result"),))
+
+
+def test_curve_and_gradient_nodes_compile_strict_authored_literals():
+    curve = {
+        "keys": [
+            {"time": 0.0, "value": 0.0, "in_tangent": 0.0, "out_tangent": 1.0},
+            {"time": 1.0, "value": 1.0, "in_tangent": 1.0, "out_tangent": 0.0},
+        ],
+        "pre_wrap": "clamp",
+        "post_wrap": "repeat",
+    }
+    gradient = {
+        "keys": [
+            {"time": 0.0, "color": [1.0, 0.0, 0.0, 1.0]},
+            {"time": 1.0, "color": [0.0, 0.0, 1.0, 0.0]},
+        ],
+        "mode": "linear",
+    }
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord("curve", "common.curve.sample", properties={"curve": curve, "t": 0.25}),
+            GraphNodeRecord("gradient", "common.gradient.sample", properties={"gradient": gradient, "t": 0.75}),
+        ),
+    )
+    program = ExpressionCompiler().compile(document, outputs=(("curve", "value"), ("gradient", "color")))
+
+    assert [instruction.opcode for instruction in program.instructions] == ["sample_curve", "sample_gradient"]
+    assert program.instructions[0].immediate_dict()["curve"] == curve
+    assert program.instructions[1].immediate_dict()["gradient"] == gradient
+
+    invalid = dict(curve)
+    invalid["keys"] = [dict(curve["keys"][0]), dict(curve["keys"][0])]
+    bad_document = GraphDocument("particle.expression", nodes=(GraphNodeRecord("curve", "common.curve.sample", properties={"curve": invalid}),))
+    with pytest.raises(ExpressionCompileError, match="strictly increasing"):
+        ExpressionCompiler().compile(bad_document, outputs=(("curve", "value"),))

@@ -1,6 +1,7 @@
 """Common authored-graph schema, type system, registry and expression IR."""
 
 from .types import AssetReference, CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, TypeSystem, ValueType
+from .ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, CurveKey, Gradient, GradientKey
 from .registry import (
     COMMON_NODE_REGISTRY,
     NodeDef,

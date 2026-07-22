@@ -85,6 +85,40 @@ def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attri
         ParticleGraphAsset.from_dict(stale)
 
 
+@pytest.mark.parametrize(
+    "value_type, default",
+    [
+        (ValueType.STRING, "text"),
+        (ValueType.ASSET_REF, {"guid": "asset-guid"}),
+        (
+            ValueType.CURVE,
+            {
+                "keys": [
+                    {
+                        "time": 0.0,
+                        "value": 1.0,
+                        "in_tangent": 0.0,
+                        "out_tangent": 0.0,
+                    }
+                ],
+                "pre_wrap": "clamp",
+                "post_wrap": "clamp",
+            },
+        ),
+        (
+            ValueType.GRADIENT,
+            {
+                "keys": [{"time": 0.0, "color": [1.0, 1.0, 1.0, 1.0]}],
+                "mode": "linear",
+            },
+        ),
+    ],
+)
+def test_particle_attributes_reject_property_only_types(value_type, default):
+    with pytest.raises(ParticleGraphSchemaError, match="numeric storage type"):
+        ParticleAttribute("custom.invalid", "invalid", TypeRef(value_type), default)
+
+
 def test_particle_graph_rejects_unknown_field():
     value = ParticleGraphAsset(stable_id="current-particle").to_dict()
     value["unknown"] = 1
@@ -543,6 +577,31 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
         if instruction.opcode == "sample_vector_field"
     )
     assert sample.immediate_dict() == {"interface": "wind-field"}
+
+
+def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, ScalarRange, VectorField, PointCache",
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, ScalarRange, VectorField, PointCache, Curve, CurveKey, Gradient, GradientKey",
+    ).replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        """particles.set_size(ctx.sample_curve(
+                Curve(keys=(CurveKey(0.0, 0.0, 1.0, 1.0), CurveKey(1.0, 1.0, 1.0, 1.0))),
+                particles.age / particles.lifetime,
+            ))
+            particles.set_color(ctx.sample_gradient(
+                Gradient(keys=(GradientKey(0.0, (1.0, 0.0, 0.0, 1.0)), GradientKey(1.0, (0.0, 0.0, 1.0, 0.0)))),
+                particles.age / particles.lifetime,
+            ))""",
+    )
+    asset = ParticleScriptCompiler().parse(source, source_name="Ramp.particle.py")
+    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    opcodes = [instruction.opcode for instruction in kernel.emitters[0].update.instructions]
+
+    assert "sample_curve" in opcodes
+    assert "sample_gradient" in opcodes
+    assert opcodes.count("divide") == 2
+    assert opcodes.count("store_attribute") >= 4
 
 
 @pytest.mark.parametrize(

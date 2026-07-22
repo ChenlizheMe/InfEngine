@@ -30,6 +30,20 @@ from .data_interface import (
 
 
 PARTICLE_GRAPH_SCHEMA = "infernux.particle_graph"
+_PARTICLE_STORAGE_TYPES = frozenset(
+    {
+        ValueType.BOOL,
+        ValueType.I32,
+        ValueType.U32,
+        ValueType.F32,
+        ValueType.VEC2,
+        ValueType.VEC3,
+        ValueType.VEC4,
+        ValueType.COLOR,
+        ValueType.MAT3,
+        ValueType.MAT4,
+    }
+)
 
 
 class ParticleGraphSchemaError(ValueError):
@@ -241,6 +255,10 @@ class ParticleAttribute:
             raise ParticleGraphSchemaError("particle attribute name cannot be empty")
         if not isinstance(self.value_type, TypeRef):
             raise ParticleGraphSchemaError("particle attribute type must be a TypeRef")
+        if self.value_type.value_type not in _PARTICLE_STORAGE_TYPES:
+            raise ParticleGraphSchemaError(
+                f"particle attribute {self.name!r} must use a numeric storage type"
+            )
         from Infernux.graph.expression_ir import ExpressionCompiler
 
         error = ExpressionCompiler._literal_error(self.value_type, self.default)

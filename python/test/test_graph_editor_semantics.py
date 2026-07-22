@@ -482,6 +482,48 @@ def test_node_graph_context_menu_uses_the_host_namespace():
     } <= semantic_ids
 
 
+def test_node_graph_drop_on_occupied_input_requests_atomic_replacement():
+    from Infernux.core.node_graph import (
+        NodeGraph,
+        NodeTypeDef,
+        PinDef,
+        PinKind,
+    )
+
+    graph = NodeGraph()
+    graph.register_type(
+        NodeTypeDef(
+            "source",
+            "Source",
+            pins=[PinDef("out", "Out", PinKind.OUTPUT, data_type="float")],
+        )
+    )
+    graph.register_type(
+        NodeTypeDef(
+            "target",
+            "Target",
+            pins=[PinDef("in", "In", PinKind.INPUT, data_type="float")],
+        )
+    )
+    first = graph.add_node("source", uid="first")
+    second = graph.add_node("source", uid="second")
+    target = graph.add_node("target", uid="target")
+    original = graph.add_link(first.uid, "out", target.uid, "in")
+
+    replaced = []
+    view = NodeGraphView()
+    view.graph = graph
+    view.on_link_replaced = lambda *args: replaced.append(args)
+    view._drag_src_node = second.uid
+    view._drag_src_pin = "out"
+    view._drag_src_kind = PinKind.OUTPUT
+    view._hit_test_pin = lambda _x, _y: (target.uid, "in", PinKind.INPUT)
+
+    view._try_complete_link(100.0, 100.0)
+
+    assert replaced == [(original.uid, second.uid, "out", target.uid, "in")]
+
+
 def test_node_graph_open_add_menu_preserves_open_state_on_domain_semantic():
     view = NodeGraphView()
     view.semantic_namespace = "vfx.graph"

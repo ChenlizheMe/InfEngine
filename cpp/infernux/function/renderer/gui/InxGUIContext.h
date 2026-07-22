@@ -132,7 +132,7 @@ class InxGUIContext
                    int flags = 0);
     bool InputFloat(const std::string &label, float *value, float step = 0.0f, float stepFast = 0.0f, int flags = 0);
 
-    void ColorEdit(const std::string &label, float color[4]);
+    void ColorEdit(const std::string &label, float color[4], bool hdr = false);
     bool ColorPicker(const std::string &label, float color[4], int flags = 0);
     void Vector2Control(const std::string &label, float value[2], float speed = 0.1f, float labelWidth = 0.0f,
                         const std::string &axisSemanticBase = "");
