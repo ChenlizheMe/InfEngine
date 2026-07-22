@@ -615,20 +615,36 @@ class ParticleKernelLowerer:
                 "attribute.set_color",
                 "attribute.set_size",
                 "attribute.set_rotation",
+                "attribute.set_orientation",
             }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
                     "attribute.set_size": "builtin.size",
                     "attribute.set_rotation": "builtin.rotation",
+                    "attribute.set_orientation": "builtin.orientation",
                 }[operation.opcode]
+                property_name = "degrees" if operation.opcode == "attribute.set_orientation" else "value"
                 value = builder.operation_value(
-                    "value",
+                    property_name,
                     bindings,
                     expression_values,
                     parameters,
                     attribute_types[stable_id],
                     source,
                 )
+                if operation.opcode == "attribute.set_orientation":
+                    radians_per_degree = builder.constant(
+                        TypeRef(ValueType.F32),
+                        math.pi / 180.0,
+                        source,
+                    )
+                    value = builder.emit(
+                        "multiply",
+                        attribute_types[stable_id],
+                        (value, radians_per_degree),
+                        {},
+                        source,
+                    )
                 builder.store(stable_id, value, source)
             else:
                 raise KernelCompileError(f"unsupported Init operation {operation.opcode!r}")
@@ -675,20 +691,36 @@ class ParticleKernelLowerer:
                 "attribute.set_color",
                 "attribute.set_size",
                 "attribute.set_rotation",
+                "attribute.set_orientation",
             }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
                     "attribute.set_size": "builtin.size",
                     "attribute.set_rotation": "builtin.rotation",
+                    "attribute.set_orientation": "builtin.orientation",
                 }[operation.opcode]
+                property_name = "degrees" if operation.opcode == "attribute.set_orientation" else "value"
                 value = builder.operation_value(
-                    "value",
+                    property_name,
                     bindings,
                     expression_values,
                     parameters,
                     attribute_types[stable_id],
                     source,
                 )
+                if operation.opcode == "attribute.set_orientation":
+                    radians_per_degree = builder.constant(
+                        TypeRef(ValueType.F32),
+                        math.pi / 180.0,
+                        source,
+                    )
+                    value = builder.emit(
+                        "multiply",
+                        attribute_types[stable_id],
+                        (value, radians_per_degree),
+                        {},
+                        source,
+                    )
                 builder.store(stable_id, value, source)
             elif operation.opcode == "integrate.angular_velocity":
                 degrees_per_second = builder.operation_value(
@@ -727,6 +759,43 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.store("builtin.rotation", rotation, source)
+            elif operation.opcode == "integrate.angular_velocity_3d":
+                degrees_per_second = builder.operation_value(
+                    "degrees_per_second",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types["builtin.orientation"],
+                    source,
+                )
+                radians_per_degree = builder.constant(
+                    TypeRef(ValueType.F32),
+                    math.pi / 180.0,
+                    source,
+                )
+                radians_per_second = builder.emit(
+                    "multiply",
+                    attribute_types["builtin.orientation"],
+                    (degrees_per_second, radians_per_degree),
+                    {},
+                    source,
+                )
+                delta_orientation = builder.emit(
+                    "multiply",
+                    attribute_types["builtin.orientation"],
+                    (radians_per_second, delta_time),
+                    {},
+                    source,
+                )
+                orientation = builder.load("builtin.orientation", source)
+                orientation = builder.emit(
+                    "add",
+                    attribute_types["builtin.orientation"],
+                    (orientation, delta_orientation),
+                    {},
+                    source,
+                )
+                builder.store("builtin.orientation", orientation, source)
             elif operation.opcode == "lifecycle.kill_if":
                 condition = builder.operation_value(
                     "condition",
@@ -788,6 +857,7 @@ class ParticleKernelLowerer:
             "builtin.size",
             "builtin.color",
             "builtin.rotation",
+            "builtin.orientation",
             "builtin.age",
             "builtin.lifetime",
             "builtin.id",

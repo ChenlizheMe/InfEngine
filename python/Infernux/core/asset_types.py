@@ -607,7 +607,7 @@ def write_audio_import_settings(asset_path: str, settings: AudioImportSettings) 
 class MeshImportSettings:
     """Import settings for 3D model assets — stored in .meta alongside the source file."""
 
-    scale_factor: float = 0.01
+    scale_factor: float = 1.0
     generate_normals: bool = True
     generate_tangents: bool = True
     # DCC-authored meshes keep model/textures aligned without per-asset UV flipping.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import time
 from dataclasses import replace
@@ -17,6 +18,7 @@ from Infernux.graph.registry import (
     PortDirection,
     PortKind,
 )
+from Infernux.graph.expression_ir import ExpressionCompiler
 from Infernux.graph.ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, Gradient
 from Infernux.graph.types import CoordinateSpace, ValueType
 from Infernux.lib import InxGUIContext
@@ -38,6 +40,7 @@ from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
 from .graph_document_authoring import (
     ParticleEmitterGraphAuthoringModel,
+    particle_stage_definition_filter,
 )
 from .node_graph_view import NodeGraphView
 from .panel_registry import editor_panel
@@ -224,6 +227,125 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._mark_changed()
         self._record(f"Set Particle Graph {key}", before)
         return copy.deepcopy(reference)
+
+    def add_authoring_node(
+        self, stage: str, type_id: str, x: float = 0.0, y: float = 0.0
+    ) -> dict:
+        """Create a node through the same model and Undo path as the canvas."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        stage = str(stage)
+        type_id = str(type_id)
+        if stage not in _STAGES:
+            raise ValueError(f"Unknown Particle Graph stage: {stage!r}")
+        if not math.isfinite(float(x)) or not math.isfinite(float(y)):
+            raise ValueError("Particle Graph node position must be finite")
+        definition = COMMON_NODE_REGISTRY.get(type_id)
+        if definition is None or type_id.startswith("particle.root."):
+            raise ValueError(f"Particle Graph node type cannot be created: {type_id!r}")
+        if not particle_stage_definition_filter(f"particle.{stage}")(definition):
+            raise ValueError(
+                f"Particle Graph node type {type_id!r} is not valid in {stage!r}"
+            )
+
+        self._stage = stage
+        self._model.set_authoring_stage(stage)
+        self._model.prepare_node_creation(stage)
+        node = self._on_node_add(type_id, float(x), float(y))
+        if node is None or self._model.stage_for_uid(node.uid) != stage:
+            raise RuntimeError(f"Particle Graph could not create {type_id!r} in {stage!r}")
+        self._selected_node_uid = node.uid
+        self._view.selected_nodes = [node.uid]
+        return {
+            "uid": str(node.uid),
+            "type_id": str(node.type_id),
+            "stage": stage,
+            "properties": copy.deepcopy(node.data),
+        }
+
+    def set_node_property(self, node_uid: str, property_name: str, value) -> dict:
+        """Set a typed non-asset node property through the canvas edit path."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        node = self._model.find_node(str(node_uid))
+        if node is None:
+            raise KeyError(f"Particle Graph node not found: {node_uid!r}")
+        definition = COMMON_NODE_REGISTRY.get(node.type_id)
+        if definition is None:
+            raise RuntimeError(
+                f"Particle Graph node type is not registered: {node.type_id!r}"
+            )
+        key = str(property_name)
+        field = next((item for item in definition.properties if item.id == key), None)
+        if field is None:
+            raise KeyError(
+                f"Particle Graph node {node_uid!r} has no editable property {key!r}"
+            )
+        if field.value_type.value_type is ValueType.ASSET_REF:
+            raise ValueError(
+                "AssetRef properties must use particle_graph_set_node_asset"
+            )
+        error = ExpressionCompiler._literal_error(field.value_type, value)
+        if error:
+            raise ValueError(
+                f"Particle Graph node {node_uid!r}.{key} {error}"
+            )
+        previous = copy.deepcopy(node.data.get(key, field.default))
+        next_value = copy.deepcopy(value)
+        self._on_node_data_changed(node.uid, key, previous, next_value)
+        self._selected_node_uid = node.uid
+        self._view.selected_nodes = [node.uid]
+        stage = self._model.stage_for_uid(node.uid)
+        if stage:
+            self._select_stage(stage)
+        return {
+            "node_uid": str(node.uid),
+            "property_name": key,
+            "value": copy.deepcopy(node.data.get(key)),
+            "changed": previous != next_value,
+        }
+
+    def connect_stream(self, source_node_uid: str, target_node_uid: str) -> dict:
+        """Connect two stream endpoints through the strict graph model."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        source_uid = str(source_node_uid)
+        target_uid = str(target_node_uid)
+        source = self._model.find_node(source_uid)
+        target = self._model.find_node(target_uid)
+        if source is None or target is None:
+            raise KeyError(
+                f"Particle Graph stream endpoint not found: {source_uid!r} -> {target_uid!r}"
+            )
+        for link in self._model.links:
+            if (
+                link.source_node == source_uid
+                and link.source_pin == "out"
+                and link.target_node == target_uid
+                and link.target_pin == "in"
+            ):
+                return {"link_uid": str(link.uid), "changed": False}
+        validation = self._model.validate_link(source_uid, "out", target_uid, "in")
+        if not validation:
+            raise ValueError(
+                f"Particle Graph stream connection is invalid ({validation.code}): "
+                f"{validation.message}"
+            )
+        before = self._snapshot()
+        created = self._model.add_link(source_uid, "out", target_uid, "in")
+        if created is None:
+            raise RuntimeError(
+                f"Particle Graph could not connect {source_uid!r} to {target_uid!r}"
+            )
+        self._selected_node_uid = target_uid
+        self._view.selected_nodes = [target_uid]
+        stage = self._model.stage_for_uid(target_uid)
+        if stage:
+            self._select_stage(stage)
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record("Connect Particle Graph stream", before)
+        return {"link_uid": str(created.uid), "changed": True}
 
     def set_rendering_output(self, node_uid: str) -> dict:
         """Route the Rendering root stream to one output through the authoring model."""

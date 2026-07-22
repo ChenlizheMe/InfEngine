@@ -159,6 +159,30 @@ def test_numpy_random_matches_portable_scalar_golden_for_every_particle():
     np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:4], expected)
 
 
+def test_numpy_cone_initial_velocity_broadcasts_per_particle_speed():
+    settings = EmitterSettings(
+        capacity=8,
+        seed=42,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 4),),
+        lifetime=ScalarRange(2.0, 2.0),
+        initial_speed=ScalarRange(1.0, 3.0),
+        gravity=(0.0, 0.0, 0.0),
+        shape=EmitterShape(kind="cone", radius=0.2, angle_degrees=40.0),
+    )
+    _program, runtime = _compile_runtime(settings, system_seed=7)
+
+    runtime.tick(0.0)
+
+    velocity = runtime.attributes["builtin.velocity"][:4]
+    speed = np.linalg.norm(velocity, axis=1)
+    assert runtime.particle_count == 4
+    assert np.isfinite(velocity).all()
+    assert np.all(speed >= 1.0)
+    assert np.all(speed <= 3.0)
+    assert np.unique(speed).size > 1
+
+
 def test_numpy_aot_executes_authored_random_expression_with_node_seed():
     init = GraphDocument(
         "particle.init",
@@ -361,9 +385,9 @@ def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
         ),
     )
     settings = EmitterSettings(
-        capacity=1,
+        capacity=4,
         spawn_rate=0.0,
-        bursts=(ParticleBurst(0.0, 1),),
+        bursts=(ParticleBurst(0.0, 4),),
         lifetime=ScalarRange(2.0, 2.0),
         initial_speed=ScalarRange(0.0, 0.0),
         gravity=(0.0, 0.0, 0.0),
@@ -379,12 +403,14 @@ def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
     runtime.tick(1.0)
 
     np.testing.assert_allclose(
-        runtime.attributes["builtin.color"][0],
-        [0.5, 0.25, 0.0, 0.5],
+        runtime.attributes["builtin.color"][:4],
+        [[0.5, 0.25, 0.0, 0.5]] * 4,
     )
-    assert runtime.attributes["builtin.size"][0] == pytest.approx(1.25)
-    assert runtime.attributes["builtin.rotation"][0] == pytest.approx(np.pi / 2.0)
-    assert runtime.instance_buffer()[0, 8] == pytest.approx(np.pi / 2.0)
+    assert runtime.attributes["builtin.size"][:4] == pytest.approx([1.25] * 4)
+    assert runtime.attributes["builtin.rotation"][:4] == pytest.approx(
+        [np.pi / 2.0] * 4
+    )
+    assert runtime.instance_buffer()[:4, 8] == pytest.approx([np.pi / 2.0] * 4)
 
 
 def test_numpy_rotate_operation_integrates_degrees_per_second():
@@ -422,6 +448,57 @@ def test_numpy_rotate_operation_integrates_degrees_per_second():
 
     assert runtime.attributes["builtin.rotation"][0] == pytest.approx(np.pi / 2.0)
     assert runtime.instance_buffer()[0, 8] == pytest.approx(np.pi / 2.0)
+
+
+def test_numpy_mesh_orientation_matches_gpu_degree_semantics():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "orientation",
+                "particle.attribute.set_orientation",
+                properties={"degrees": [10.0, 20.0, 30.0]},
+            ),
+        ),
+        links=(GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM),),
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "rotate",
+                "particle.update.rotate_orientation",
+                properties={"degrees_per_second": [90.0, 180.0, 270.0]},
+            ),
+        ),
+        links=(GraphLinkRecord("update-stream", "root.update", "out", "rotate", "in", PortKind.STREAM),),
+    )
+    settings = EmitterSettings(
+        capacity=1,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+        lifetime=ScalarRange(2.0, 2.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(settings=settings, init=init, update=update),)
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+    runtime = program.create_runtime()
+
+    runtime.tick(0.0)
+    runtime.tick(0.5)
+
+    np.testing.assert_allclose(
+        runtime.attributes["builtin.orientation"][0],
+        np.radians([55.0, 110.0, 165.0]),
+        rtol=1e-6,
+        atol=1e-6,
+    )
 
 
 def test_numpy_aot_samples_curve_and_gradient_without_runtime_graph_dispatch():

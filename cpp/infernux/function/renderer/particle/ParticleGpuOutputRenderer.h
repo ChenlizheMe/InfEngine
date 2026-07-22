@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace infernux::particle
 {
@@ -18,6 +19,12 @@ struct alignas(16) GpuParticleViewConstants
     std::array<float, 4> depthReconstruct{};
 };
 
+struct GpuParticleStaticBuffer
+{
+    rhi::BufferHandle buffer;
+    uint64_t byteSize = 0;
+};
+
 class ParticleGpuOutputRenderer
 {
   public:
@@ -29,6 +36,11 @@ class ParticleGpuOutputRenderer
     [[nodiscard]] virtual uint32_t VertexCount() const noexcept = 0;
     [[nodiscard]] virtual rhi::BufferHandle InstanceBuffer() const noexcept = 0;
     [[nodiscard]] virtual rhi::BufferHandle RenderIndexBuffer() const noexcept = 0;
+    [[nodiscard]] virtual const std::vector<GpuParticleStaticBuffer> &StaticVertexStorageBuffers() const noexcept
+    {
+        static const std::vector<GpuParticleStaticBuffer> empty;
+        return empty;
+    }
 
     [[nodiscard]] virtual bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                           rhi::RenderTargetLayoutHandle renderTargetLayout,

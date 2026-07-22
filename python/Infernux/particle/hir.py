@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from Infernux.graph.registry import COMMON_NODE_REGISTRY, PortDirection, PortKind
 from Infernux.graph.expression_ir import ExpressionCompileError, ExpressionCompiler, ExpressionProgram
-from Infernux.graph.types import AssetReference
+from Infernux.graph.types import AssetReference, TypeRef, ValueType
 
 from .asset import EmitterSettings, ParticleAttribute, ParticleGraphAsset
 from .data_interface import ParticleDataInterface
@@ -267,11 +267,31 @@ class ParticleGraphCompiler:
                 f"particle mesh output {unsupported_mesh_semantics.output_id!r} currently "
                 "supports unlit, unsorted, non-soft rendering only"
             )
+        orientation_opcodes = {
+            "attribute.set_orientation",
+            "integrate.angular_velocity_3d",
+        }
+        needs_orientation = any(output.output_type == "mesh" for output in outputs) or any(
+            operation.opcode in orientation_opcodes
+            for stage in (init, update)
+            for operation in stage.operations
+        )
+        attributes = emitter.attributes
+        if needs_orientation:
+            attributes = (
+                *attributes,
+                ParticleAttribute(
+                    "builtin.orientation",
+                    "orientation",
+                    TypeRef(ValueType.VEC3),
+                    [0.0, 0.0, 0.0],
+                ),
+            )
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,
             emitter.settings,
-            emitter.attributes,
+            attributes,
             init,
             update,
             rendering,

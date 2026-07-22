@@ -1171,6 +1171,11 @@ int main()
         assert(meshRenderer.IsValid() && meshRenderer.VertexCount() == 3 && meshRenderer.RenderQueue() == 2450);
         assert(meshRenderer.InstanceBuffer() == instanceBuffer &&
                meshRenderer.RenderIndexBuffer() == renderIndexBuffer);
+        const auto staticMeshBuffers = meshRenderer.StaticVertexStorageBuffers();
+        assert(staticMeshBuffers.size() == 2 && staticMeshBuffers[0].buffer == meshDesc.meshVertices &&
+               staticMeshBuffers[0].byteSize == 3 * 5 * sizeof(glm::vec4) &&
+               staticMeshBuffers[1].buffer == meshDesc.meshIndices &&
+               staticMeshBuffers[1].byteSize == 3 * sizeof(uint32_t));
         assert(meshDevice.buffers.size() == 2 && meshDevice.initialBufferBytes.size() == 2);
         assert(meshDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage &&
                meshDevice.buffers[0].byteSize == 3 * 5 * sizeof(glm::vec4));
@@ -1187,6 +1192,9 @@ int main()
         const rhi::GraphicsCommandEncoder meshEncoder(&meshTrace, &meshGraphicsDispatch);
         assert(meshRenderer.RecordDraw(meshEncoder, firstTarget, forwardPass, indirectBuffer, view));
         assert(meshTrace.indirectBuffers == std::vector<rhi::BufferHandle>({indirectBuffer}));
+        assert(meshDevice.graphicsPipelineDescs.size() == 1 &&
+               meshDevice.graphicsPipelineDescs[0].raster.cullMode == rhi::CullMode::Back &&
+               meshDevice.graphicsPipelineDescs[0].raster.frontFace == rhi::FrontFace::Clockwise);
         const std::array<float, 4> expectedMeshTint = {0.2f, 0.4f, 0.8f, 0.75f};
         assert(meshTrace.constants.size() == 1 && meshTrace.constants[0].materialTint == expectedMeshTint);
 

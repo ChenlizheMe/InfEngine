@@ -381,6 +381,49 @@ def test_particle_graph_editor_rejects_wrong_asset_kind(tmp_path):
         panel.set_node_asset_reference(node.uid, "mesh", str(texture_path))
 
 
+def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+
+    initial = panel.add_authoring_node(
+        "init", "particle.attribute.set_orientation", 240.0, 40.0
+    )
+    changed = panel.set_node_property(
+        initial["uid"], "degrees", [15.0, 30.0, 45.0]
+    )
+    initial_link = panel.connect_stream("init::root.init", initial["uid"])
+    angular = panel.add_authoring_node(
+        "update", "particle.update.rotate_orientation", 240.0, 400.0
+    )
+    panel.set_node_property(
+        angular["uid"], "degrees_per_second", [130.0, 220.0, 310.0]
+    )
+    update_link = panel.connect_stream("update::root.update", angular["uid"])
+
+    assert changed == {
+        "node_uid": initial["uid"],
+        "property_name": "degrees",
+        "value": [15.0, 30.0, 45.0],
+        "changed": True,
+    }
+    assert initial_link["changed"] is True
+    assert update_link["changed"] is True
+    assert panel._dirty is True
+    snapshot = panel.authoring_snapshot()
+    nodes = {node["uid"]: node for node in snapshot["nodes"]}
+    assert nodes[initial["uid"]]["properties"]["degrees"] == [15.0, 30.0, 45.0]
+    assert nodes[angular["uid"]]["properties"]["degrees_per_second"] == [
+        130.0,
+        220.0,
+        310.0,
+    ]
+
+    with pytest.raises(ValueError, match="cross_stage"):
+        panel.connect_stream(initial["uid"], angular["uid"])
+
+
 def test_particle_node_inspector_edits_unconnected_value_input_defaults():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 

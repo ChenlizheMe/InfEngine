@@ -223,7 +223,7 @@ class TestAudioImportSettings:
 class TestMeshImportSettings:
     def test_defaults(self):
         s = MeshImportSettings()
-        assert s.scale_factor == 0.01
+        assert s.scale_factor == 1.0
         assert s.generate_normals is True
 
     def test_to_dict_round_trip(self):

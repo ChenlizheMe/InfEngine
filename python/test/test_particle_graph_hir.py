@@ -44,6 +44,10 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     restored = ParticleGraphAsset.from_json(asset.canonical_json())
     assert restored == asset
     assert restored.semantic_hash() == asset.semantic_hash()
+    hir = ParticleGraphCompiler().compile(asset)
+    assert "builtin.orientation" not in {
+        attribute.stable_id for attribute in hir.emitters[0].attributes
+    }
 
 
 def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attributes():
@@ -294,7 +298,8 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     program = ParticleGraphCompiler().compile(
         ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
     )
-    output = program.emitters[0].render_plan.outputs[0]
+    compiled_emitter = program.emitters[0]
+    output = compiled_emitter.render_plan.outputs[0]
 
     assert output.output_type == "mesh"
     assert output.mesh == AssetReference(
@@ -303,6 +308,13 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     assert output.material == AssetReference(guid="debris-material-guid")
     assert output.soft_particles is False
     assert output.sort_mode == "none"
+    orientation = next(
+        attribute
+        for attribute in compiled_emitter.attributes
+        if attribute.stable_id == "builtin.orientation"
+    )
+    assert orientation.value_type == TypeRef(ValueType.VEC3)
+    assert orientation.default == [0.0, 0.0, 0.0]
 
 
 def test_particle_graph_rejects_static_mesh_output_without_mesh_asset():
@@ -676,15 +688,28 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
                 sort="none",
             )''',
     )
+    source = source.replace(
+        "particles.set_rotation(0.25)",
+        "particles.set_orientation((10.0, 20.0, 30.0))",
+    ).replace(
+        "particles.rotate(180.0)",
+        "particles.rotate_orientation((90.0, 180.0, 270.0))",
+    )
 
-    output = ParticleScriptCompiler().compile(
+    emitter = ParticleScriptCompiler().compile(
         source, source_name="MeshOutput.particle.py"
-    ).emitters[0].render_plan.outputs[0]
+    ).emitters[0]
+    output = emitter.render_plan.outputs[0]
 
     assert output.output_type == "mesh"
     assert output.mesh.guid == "mesh-guid"
     assert output.material.guid == "debris-material-guid"
     assert output.sort_mode == "none"
+    assert emitter.init.operations[-1].opcode == "attribute.set_orientation"
+    assert emitter.update.operations[-1].opcode == "integrate.angular_velocity_3d"
+    assert "builtin.orientation" in {
+        attribute.stable_id for attribute in emitter.attributes
+    }
 
 
 def test_particle_script_vector_field_expression_matches_graph_kernel_contract():

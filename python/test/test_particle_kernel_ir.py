@@ -66,6 +66,78 @@ def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
     ]
 
 
+def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "orientation",
+                "particle.attribute.set_orientation",
+                properties={"degrees": [10.0, 20.0, 30.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "angular-velocity",
+                "particle.update.rotate_orientation",
+                properties={"degrees_per_second": [90.0, 180.0, 270.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "update-stream", "root.update", "out", "angular-velocity", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "mesh",
+                "particle.output.mesh",
+                properties={"mesh": AssetReference(guid="mesh-guid").to_dict()},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "render-stream", "root.rendering", "out", "mesh", "in", PortKind.STREAM
+            ),
+        ),
+    )
+
+    emitter = _lower(
+        ParticleGraphAsset(
+            emitters=(ParticleEmitterAsset(init=init, update=update, rendering=rendering),)
+        )
+    ).emitters[0]
+
+    assert emitter.attributes[-1] == (
+        "builtin.orientation",
+        TypeRef(ValueType.VEC3),
+        [0.0, 0.0, 0.0],
+    )
+    assert "builtin.orientation" in emitter.init.written_attributes
+    assert "builtin.orientation" in emitter.update.written_attributes
+    exports = [
+        instruction.immediate_dict()["attribute"]
+        for instruction in emitter.rendering.instructions
+        if instruction.opcode == "export_attribute"
+    ]
+    assert "builtin.orientation" in exports
+    assert sum(instruction.opcode == "multiply" for instruction in emitter.update.instructions) >= 4
+
+
 def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
     first_emitter = ParticleEmitterAsset(
         stable_id="data-emitter",

@@ -57,6 +57,10 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     {
         return m_renderIndices;
     }
+    [[nodiscard]] const std::vector<GpuParticleStaticBuffer> &StaticVertexStorageBuffers() const noexcept override
+    {
+        return m_staticVertexStorageBuffers;
+    }
 
     [[nodiscard]] bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                   rhi::RenderTargetLayoutHandle renderTargetLayout,
@@ -100,6 +104,7 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     rhi::BufferHandle m_renderIndices;
     rhi::BufferHandle m_meshVertices;
     rhi::BufferHandle m_meshIndices;
+    std::vector<GpuParticleStaticBuffer> m_staticVertexStorageBuffers;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;

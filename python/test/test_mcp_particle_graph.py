@@ -37,6 +37,28 @@ class _Panel:
         self.calls.append((node_uid, property_name, file_path))
         return {"guid": "mesh-guid", "path_hint": "Assets/Models/Shard.obj"}
 
+    def add_authoring_node(self, stage, type_id, x, y):
+        self.calls.append(("add", stage, type_id, x, y))
+        return {
+            "uid": f"{stage}::new-node",
+            "type_id": type_id,
+            "stage": stage,
+            "properties": {},
+        }
+
+    def set_node_property(self, node_uid, property_name, value):
+        self.calls.append(("property", node_uid, property_name, value))
+        return {
+            "node_uid": node_uid,
+            "property_name": property_name,
+            "value": value,
+            "changed": True,
+        }
+
+    def connect_stream(self, source_node_uid, target_node_uid):
+        self.calls.append(("connect", source_node_uid, target_node_uid))
+        return {"link_uid": "update::new-link", "changed": True}
+
     def set_rendering_output(self, node_uid):
         self.calls.append(("output", node_uid))
         return {"node_uid": node_uid, "link_uid": "rendering::mesh-link", "changed": True}
@@ -56,6 +78,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     graph_path.write_text("{}", encoding="utf-8")
     panel = _Panel(graph_path)
     monkeypatch.setattr(module, "_require_particle_graph_panel", lambda: panel)
+    monkeypatch.setattr(module, "_open_particle_graph_panel", lambda _path: panel)
     monkeypatch.setattr(
         module,
         "main_thread",
@@ -64,22 +87,44 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     mcp = _FakeMcp()
     module.register_particle_tools(mcp, str(tmp_path))
 
+    opened = mcp.tools["particle_graph_open_asset"]("Assets/Sparks.particlegraph")
     inspected = mcp.tools["particle_graph_inspect_editor"]()
     changed = mcp.tools["particle_graph_set_node_asset"](
         "rendering::mesh-output", "mesh", "Assets/Models/Shard.obj"
+    )
+    added = mcp.tools["particle_graph_add_node"](
+        "update", "particle.update.rotate_orientation", 120.0, 40.0
+    )
+    property_changed = mcp.tools["particle_graph_set_node_property"](
+        "update::new-node", "degrees_per_second", [1.0, 2.0, 3.0]
+    )
+    connected = mcp.tools["particle_graph_connect_stream"](
+        "update::root.update", "update::new-node"
     )
     routed = mcp.tools["particle_graph_set_rendering_output"](
         "rendering::mesh-output"
     )
     reloaded = mcp.tools["particle_graph_reload_editor"]()
 
+    assert opened["file_path"] == "Assets/Sparks.particlegraph"
     assert inspected["file_path"] == "Assets/Sparks.particlegraph"
     assert changed["asset"]["guid"] == "mesh-guid"
     assert changed["editor"]["dirty"] is True
+    assert added["node"]["uid"] == "update::new-node"
+    assert property_changed["value"] == [1.0, 2.0, 3.0]
+    assert connected["link_uid"] == "update::new-link"
     assert routed["changed"] is True
     assert reloaded["file_path"] == "Assets/Sparks.particlegraph"
     assert panel.calls == [
         ("rendering::mesh-output", "mesh", str(mesh_path.resolve())),
+        ("add", "update", "particle.update.rotate_orientation", 120.0, 40.0),
+        (
+            "property",
+            "update::new-node",
+            "degrees_per_second",
+            [1.0, 2.0, 3.0],
+        ),
+        ("connect", "update::root.update", "update::new-node"),
         ("output", "rendering::mesh-output"),
         ("reload",),
     ]
@@ -104,3 +149,20 @@ def test_particle_graph_panel_visibility_uses_the_panel_property(monkeypatch):
     panel._is_open = False
     with pytest.raises(RuntimeError, match="not open"):
         module._require_particle_graph_panel()
+
+
+def test_particle_graph_open_asset_rejects_non_graph_files(tmp_path, monkeypatch):
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    material = assets / "Surface.mat"
+    material.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    mcp = _FakeMcp()
+    module.register_particle_tools(mcp, str(tmp_path))
+
+    with pytest.raises(ValueError, match=r"requires a \.particlegraph"):
+        mcp.tools["particle_graph_open_asset"]("Assets/Surface.mat")

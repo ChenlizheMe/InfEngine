@@ -7,6 +7,8 @@ import subprocess
 
 import pytest
 
+import Infernux.particle.gpu_glsl_backend as gpu_backend
+
 from Infernux.lib import _Infernux as native
 from Infernux.particle import (
     GpuParticleGlslLowerer,
@@ -288,6 +290,64 @@ def test_gpu_lowerer_emits_lifecycle_divide_lerp_rotation_and_attribute_stores()
     ).emitters[0].rendering
     assert "rotation_custom = vec4(" in rendering
     assert ".a_builtin_rotation" in rendering
+
+
+def test_gpu_mesh_orientation_uses_spare_instance_words_without_sprite_abi_growth():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "orientation",
+                "particle.attribute.set_orientation",
+                properties={"degrees": [10.0, 20.0, 30.0]},
+            ),
+        ),
+        links=(GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM),),
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "rotate",
+                "particle.update.rotate_orientation",
+                properties={"degrees_per_second": [90.0, 180.0, 270.0]},
+            ),
+        ),
+        links=(GraphLinkRecord("update-stream", "root.update", "out", "rotate", "in", PortKind.STREAM),),
+    )
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "mesh",
+                "particle.output.mesh",
+                properties={"mesh": AssetReference(guid="mesh-guid").to_dict()},
+            ),
+        ),
+        links=(GraphLinkRecord("render-stream", "root.rendering", "out", "mesh", "in", PortKind.STREAM),),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            emitters=(ParticleEmitterAsset(init=init, update=update, rendering=rendering),)
+        )
+    )
+    program = GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    emitter = program.emitters[0]
+
+    assert _gpu_source().emitters[0].state_stride == 80
+    assert emitter.state_stride == 96
+    assert ".a_builtin_orientation" in emitter.init
+    assert ".a_builtin_orientation" in emitter.update
+    assert "rotation_custom = vec4(" in emitter.rendering
+    assert ".a_builtin_orientation" in emitter.rendering
+    assert "instance.rotation_custom.yzw" in gpu_backend._MESH_VERTEX_GLSL
+    assert "rotation_z * rotation_y * rotation_x" in gpu_backend._MESH_VERTEX_GLSL
+
+    payload = compile_gpu_particle_spirv(program)
+    assert validate_gpu_particle_spirv(payload, program) is payload
 
 
 def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():

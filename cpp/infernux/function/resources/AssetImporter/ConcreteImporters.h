@@ -285,7 +285,7 @@ class ModelImporter final : public AssetImporter
     void EnsureDefaultSettings(InxResourceMeta &meta) const override
     {
         if (!meta.HasKey("scale_factor"))
-            meta.AddMetadata("scale_factor", 0.01f);
+            meta.AddMetadata("scale_factor", 1.0f);
         if (!meta.HasKey("generate_normals"))
             meta.AddMetadata("generate_normals", true);
         if (!meta.HasKey("generate_tangents"))

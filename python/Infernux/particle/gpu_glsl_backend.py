@@ -173,13 +173,25 @@ void main() {
     uint particle_index = render_indices[gl_InstanceIndex];
     ParticleInstance instance = instances[particle_index];
     ParticleMeshVertex vertex = mesh_vertices[mesh_indices[gl_VertexIndex]];
-    float cosine = cos(instance.rotation_custom.x);
-    float sine = sin(instance.rotation_custom.x);
-    mat3 rotation = mat3(
-        cosine, sine, 0.0,
-        -sine, cosine, 0.0,
+    vec3 angles = instance.rotation_custom.yzw;
+    vec3 cosine = cos(angles);
+    vec3 sine = sin(angles);
+    mat3 rotation_x = mat3(
+        1.0, 0.0, 0.0,
+        0.0, cosine.x, sine.x,
+        0.0, -sine.x, cosine.x
+    );
+    mat3 rotation_y = mat3(
+        cosine.y, 0.0, -sine.y,
+        0.0, 1.0, 0.0,
+        sine.y, 0.0, cosine.y
+    );
+    mat3 rotation_z = mat3(
+        cosine.z, sine.z, 0.0,
+        -sine.z, cosine.z, 0.0,
         0.0, 0.0, 1.0
     );
+    mat3 rotation = rotation_z * rotation_y * rotation_x;
     vec3 world_position = instance.position_size.xyz +
         rotation * vertex.position.xyz * instance.position_size.w;
     gl_Position = view.view_projection * vec4(world_position, 1.0);
@@ -1623,6 +1635,7 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     size = exports["builtin.size"]
     color = exports["builtin.color"]
     rotation = exports["builtin.rotation"]
+    orientation = exports.get("builtin.orientation", "vec3(0.0)")
     world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
     world_scale = (
         "max(length(transforms.simulation_to_world[0].xyz), "
@@ -1633,7 +1646,8 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
         (_finite_expression(position, TypeRef(ValueType.VEC3)),
          _finite_expression(size, TypeRef(ValueType.F32)),
          _finite_expression(color, TypeRef(ValueType.COLOR)),
-         _finite_expression(rotation, TypeRef(ValueType.F32)))
+         _finite_expression(rotation, TypeRef(ValueType.F32)),
+         _finite_expression(orientation, TypeRef(ValueType.VEC3)))
     )
     return f"""
 void main() {{
@@ -1652,7 +1666,7 @@ void main() {{
     if (output_index >= pc.capacity) return;
     instances[output_index].position_size = vec4({world_position}, ({size}) * {world_scale});
     instances[output_index].color = {color};
-    instances[output_index].rotation_custom = vec4({rotation}, 0.0, 0.0, 0.0);
+    instances[output_index].rotation_custom = vec4({rotation}, {orientation});
     render_indices[output_index] = output_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}

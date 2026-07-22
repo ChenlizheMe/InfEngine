@@ -2445,6 +2445,19 @@ void SceneRenderGraph::BuildRenderGraph()
                         continue;
                     builder.ReadStorageBuffer(instances, rhi::PipelineStage::VertexShader);
                     builder.ReadStorageBuffer(renderIndices, rhi::PipelineStage::VertexShader);
+                    uint32_t staticBufferIndex = 0;
+                    for (const auto &staticBuffer : entry.renderer->StaticVertexStorageBuffers()) {
+                        const std::string name = "GpuParticle/" + std::to_string(entry.id) + "/StaticVertex" +
+                                                 std::to_string(staticBufferIndex++);
+                        const auto handle =
+                            builder.ImportBuffer(name, staticBuffer.buffer, staticBuffer.byteSize);
+                        if (!handle.IsValid())
+                            continue;
+                        m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined,
+                                                               rhi::Access::TransferWrite,
+                                                               rhi::PipelineStage::Transfer);
+                        builder.ReadStorageBuffer(handle, rhi::PipelineStage::VertexShader);
+                    }
                     builder.ReadIndirectBuffer(indirectArguments);
                     particlePackets.push_back(
                         {entry.renderer, instances, renderIndices, indirectArguments, drawRenderIndices});

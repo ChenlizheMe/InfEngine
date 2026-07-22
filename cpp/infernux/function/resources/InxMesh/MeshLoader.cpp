@@ -56,7 +56,7 @@ std::string ReadArtifactBytes(const std::string &path, std::string_view label)
 
 struct MeshImportSettings
 {
-    float scaleFactor = 0.01f;
+    float scaleFactor = 1.0f;
     bool generateNormals = true;
     bool generateTangents = true;
     bool flipUVs = true;

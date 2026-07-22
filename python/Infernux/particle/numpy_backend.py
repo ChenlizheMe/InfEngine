@@ -846,6 +846,14 @@ def _compile_stage(
         except KeyError as exc:
             raise KernelCompileError("NumPy AOT compiler received invalid SSA ordering") from exc
 
+    def broadcast_operand(instruction, index: int, name: str) -> str:
+        if (
+            _component_count(instruction.result_type) > 1
+            and _component_count(instruction.operands[index].value_type) == 1
+        ):
+            return f"_broadcast_particle_scalar({name})"
+        return name
+
     for instruction in function.instructions:
         opcode = instruction.opcode
         immediates = instruction.immediate_dict()
@@ -888,12 +896,17 @@ def _compile_stage(
                 "greater_than": "greater",
                 "greater_equal": "greater_equal",
             }[opcode]
-            lines.append(f"    np.{ufunc}({operands[0]}, {operands[1]}, out={output})")
+            left = broadcast_operand(instruction, 0, operands[0])
+            right = broadcast_operand(instruction, 1, operands[1])
+            lines.append(f"    np.{ufunc}({left}, {right}, out={output})")
         elif opcode == "lerp":
             operands = operand_names(instruction)
             output = result_buffer(instruction)
+            first = broadcast_operand(instruction, 0, operands[0])
+            second = broadcast_operand(instruction, 1, operands[1])
+            factor = broadcast_operand(instruction, 2, operands[2])
             lines.append(
-                f"    np.add({operands[0]}, ({operands[1]} - {operands[0]}) * {operands[2]}, out={output})"
+                f"    np.add({first}, ({second} - {first}) * {factor}, out={output})"
             )
         elif opcode == "logical_not":
             source = operand_names(instruction)[0]
@@ -1032,6 +1045,7 @@ def _compile_stage(
         "_sample_gradient": _sample_gradient,
         "_value_noise_3d": _value_noise_3d,
         "_vector_noise_3d": _vector_noise_3d,
+        "_broadcast_particle_scalar": _broadcast_particle_scalar,
     }
     exec(compile(source, f"<particle-numpy-{function.stage.value}>", "exec"), namespace)
     return NumpyStageExecutable(
@@ -1044,6 +1058,12 @@ def _compile_stage(
         ),
         namespace["_kernel"],
     )
+
+
+def _broadcast_particle_scalar(value):
+    if isinstance(value, np.ndarray) and value.ndim == 1:
+        return value[:, None]
+    return value
 
 
 def _prepare_curve(value):

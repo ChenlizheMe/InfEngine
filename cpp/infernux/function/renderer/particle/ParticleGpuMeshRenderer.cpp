@@ -51,6 +51,10 @@ bool ParticleGpuMeshRenderer::Create(rhi::Device &device, const GpuMeshRendererD
     m_renderIndices = desc.renderIndices;
     m_meshVertices = desc.meshVertices;
     m_meshIndices = desc.meshIndices;
+    m_staticVertexStorageBuffers = {
+        GpuParticleStaticBuffer{m_meshVertices, sourceVertices.size() * 5u * sizeof(std::array<float, 4>)},
+        GpuParticleStaticBuffer{m_meshIndices, sourceIndices.size() * sizeof(uint32_t)},
+    };
 
     m_vertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
     m_fragmentShader = device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
@@ -97,6 +101,7 @@ void ParticleGpuMeshRenderer::Destroy() noexcept
     m_renderIndices = {};
     m_meshVertices = {};
     m_meshIndices = {};
+    m_staticVertexStorageBuffers.clear();
     m_vertexShader = {};
     m_fragmentShader = {};
     m_pickingFragmentShader = {};
@@ -237,6 +242,7 @@ ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle rende
     desc.fragmentShader = picking ? m_pickingFragmentShader : m_fragmentShader;
     desc.renderTargetLayout = renderTargetLayout;
     desc.raster.cullMode = rhi::CullMode::Back;
+    desc.raster.frontFace = rhi::FrontFace::Clockwise;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.depth.writeEnabled = state.depthWriteEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.samples = pass.samples;

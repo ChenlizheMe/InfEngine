@@ -58,15 +58,18 @@ class ParticleStream:
     lifetime: float
     size: float
     rotation: float
+    orientation: tuple[float, float, float]
     color: tuple[float, float, float, float]
 
     def set_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
     def set_rotation(self, value) -> None: ...
+    def set_orientation(self, degrees) -> None: ...
     def set_color(self, value) -> None: ...
     def set_size(self, value) -> None: ...
     def acceleration(self, value) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
+    def rotate_orientation(self, degrees_per_second) -> None: ...
     def kill_if(self, condition: bool) -> None: ...
     def sprite(
         self,
@@ -102,15 +105,21 @@ class ParticleScriptCompiler:
             "set_velocity": ("particle.init.set_velocity", "value"),
             "set_lifetime": ("particle.init.set_lifetime", "value"),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
+            "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),
             "set_size": ("particle.attribute.set_size", "value"),
         },
         "update": {
             "acceleration": ("particle.update.acceleration", "value"),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
+            "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),
             "set_size": ("particle.attribute.set_size", "value"),
             "rotate": ("particle.update.rotate", "degrees_per_second"),
+            "rotate_orientation": (
+                "particle.update.rotate_orientation",
+                "degrees_per_second",
+            ),
             "kill_if": ("particle.update.kill_if", "condition"),
         },
         "rendering": {
