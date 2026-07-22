@@ -185,6 +185,19 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
         {"particle_hir": "render.sprite"},
     ),
+    NodeDef(
+        "particle.output.mesh",
+        "Static Mesh Output",
+        (_stream("in", PortDirection.INPUT),),
+        (
+            PropertyDef("mesh", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
+            PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
+            PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
+            PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
+            PropertyDef("sort", TypeRef(ValueType.STRING), "none"),
+        ),
+        {"particle_hir": "render.mesh"},
+    ),
     _point_cache_sample(
         "particle.point_cache.sample_f32",
         "Sample Point Cache Float",

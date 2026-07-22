@@ -434,6 +434,18 @@ class EditorPanel(ClosablePanel):
             raise ValueError("editor panel state requires the canonical __auto_state__ document")
         self._apply_auto_state(data["__auto_state__"])
 
+    def _persist_panel_state(self) -> None:
+        """Persist this panel immediately after an explicit document action."""
+        from . import panel_state
+
+        key = f"panel:{self.window_id}"
+        data = self.save_state()
+        if data:
+            panel_state.put(key, data)
+        else:
+            panel_state.delete(key)
+        panel_state.save()
+
     # ------------------------------------------------------------------
     # Unified Render Frame
     # ------------------------------------------------------------------

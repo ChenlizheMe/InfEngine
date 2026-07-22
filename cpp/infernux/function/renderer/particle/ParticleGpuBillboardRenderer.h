@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ParticleGpuOutputRenderer.h"
 #include "ParticleGpuRuntime.h"
 #include "ParticleOutputSemantics.h"
 
@@ -66,22 +67,13 @@ struct GpuBillboardRendererDesc
     FrameDeletionQueue *deletionQueue = nullptr;
 };
 
-struct alignas(16) GpuBillboardViewConstants
-{
-    std::array<float, 16> viewProjection{};
-    std::array<float, 4> cameraRight{};
-    std::array<float, 4> cameraUp{};
-    std::array<float, 4> materialTint{1.0f, 1.0f, 1.0f, 1.0f};
-    // Projection coefficients (m22, m32, m23, m33) reconstruct linear eye depth
-    // for both perspective and orthographic cameras without a second matrix.
-    std::array<float, 4> depthReconstruct{};
-};
+using GpuBillboardViewConstants = GpuParticleViewConstants;
 
-class ParticleGpuBillboardRenderer
+class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
 {
   public:
     ParticleGpuBillboardRenderer() = default;
-    ~ParticleGpuBillboardRenderer();
+    ~ParticleGpuBillboardRenderer() override;
 
     ParticleGpuBillboardRenderer(const ParticleGpuBillboardRenderer &) = delete;
     ParticleGpuBillboardRenderer &operator=(const ParticleGpuBillboardRenderer &) = delete;
@@ -91,17 +83,21 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] bool Create(rhi::Device &device, const GpuBillboardRendererDesc &desc);
     void Destroy() noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] int32_t RenderQueue() const noexcept;
-    [[nodiscard]] bool RequiresSceneDepth() const noexcept
+    [[nodiscard]] bool IsValid() const noexcept override;
+    [[nodiscard]] int32_t RenderQueue() const noexcept override;
+    [[nodiscard]] bool RequiresSceneDepth() const noexcept override
     {
         return m_semantics.softParticles;
     }
-    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
+    [[nodiscard]] uint32_t VertexCount() const noexcept override
+    {
+        return 6;
+    }
+    [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept override
     {
         return m_instances;
     }
-    [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept
+    [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept override
     {
         return m_renderIndices;
     }
@@ -110,12 +106,12 @@ class ParticleGpuBillboardRenderer
                                   rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {},
-                                  rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true);
+                                  rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true) override;
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                          rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
                                          rhi::BufferHandle indirectArguments, const GpuBillboardViewConstants &view,
-                                         uint64_t ownerObjectId, rhi::BufferHandle renderIndices = {});
+                                         uint64_t ownerObjectId, rhi::BufferHandle renderIndices = {}) override;
 
   private:
     struct PipelineEntry
@@ -196,7 +192,5 @@ class ParticleGpuBillboardRenderer
     bool m_supportsSceneDepth = false;
     std::vector<PipelineEntry> m_pipelines;
 };
-
-static_assert(sizeof(GpuBillboardViewConstants) == 128);
 
 } // namespace infernux::particle

@@ -74,6 +74,8 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "mcp_supervisor_shutdown",
         "mcp_attempt_start",
         "mcp_attempt_stop",
+        "editor_save_focused",
+        "editor_save_document",
         "project_script_write",
         "public_api_validate_script",
         "scene_new",
@@ -83,6 +85,13 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "ui_bind_click",
         "material_set_render_queue",
         "render_effect_create",
+        "particle_graph_inspect_editor",
+        "particle_graph_set_node_asset",
+        "particle_graph_set_rendering_output",
+        "particle_graph_reload_editor",
+        "runtime_wait",
+        "runtime_run_for",
+        "runtime_read_errors",
     } <= tools
     assert "mcp_report_blocker" not in tools
     assert "input_key" not in tools

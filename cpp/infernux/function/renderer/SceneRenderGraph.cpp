@@ -1397,6 +1397,7 @@ void SceneRenderGraph::BuildRenderGraph()
         activeCullers.insert(entry.id);
         auto existing = m_particleCullers.find(entry.id);
         if (existing != m_particleCullers.end() && existing->second && existing->second->Capacity() == entry.capacity &&
+            existing->second->VertexCount() == entry.renderer->VertexCount() &&
             existing->second->InstanceBuffer() == entry.instances &&
             existing->second->SourceIndirectBuffer() == entry.indirectArguments &&
             existing->second->BoundsBuffer() == entry.bounds) {
@@ -1406,6 +1407,7 @@ void SceneRenderGraph::BuildRenderGraph()
         auto culler = std::make_shared<particle::ParticleGpuCuller>();
         particle::GpuParticleCullerDesc desc;
         desc.capacity = entry.capacity;
+        desc.vertexCount = entry.renderer->VertexCount();
         desc.instances = entry.instances;
         desc.sourceIndirectArguments = entry.indirectArguments;
         desc.bounds = entry.bounds;
@@ -2402,7 +2404,7 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 struct ParticlePacket
                 {
-                    std::shared_ptr<particle::ParticleGpuBillboardRenderer> renderer;
+                    std::shared_ptr<particle::ParticleGpuOutputRenderer> renderer;
                     vk::ResourceHandle instances;
                     vk::ResourceHandle renderIndices;
                     vk::ResourceHandle indirectArguments;
@@ -2609,7 +2611,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     if (callback)
                         callback(ctx, passWidth, passHeight);
                     if (!particlePackets.empty()) {
-                        particle::GpuBillboardViewConstants view;
+                        particle::GpuParticleViewConstants view;
                         const glm::mat4 viewProjection = m_cachedProj * m_cachedView;
                         const glm::mat4 inverseView = glm::inverse(m_cachedView);
                         std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));

@@ -47,7 +47,7 @@ layout(std430, set = 0, binding = 5) readonly buffer Bounds {
 layout(push_constant) uniform CullConstants {
     vec4 frustum_planes[6];
     uint capacity;
-    uint reserved0;
+    uint vertex_count;
     uint reserved1;
     uint reserved2;
 } pc;
@@ -75,7 +75,7 @@ std::string_view GpuParticleCullShaderSources::Reset() noexcept
 {
     static const std::string Source = BuildShader("layout(local_size_x = 1) in;\n", R"glsl(
 void main() {
-    draw_vertex_count = source_vertex_count;
+    draw_vertex_count = pc.vertex_count;
     draw_instance_count = 0u;
     draw_first_vertex = source_first_vertex;
     draw_first_instance = source_first_instance;
@@ -190,13 +190,14 @@ ParticleGpuCuller::~ParticleGpuCuller()
 bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc &desc)
 {
     Destroy();
-    if (desc.capacity == 0 || !desc.instances.IsValid() || !desc.sourceIndirectArguments.IsValid() ||
-        !desc.bounds.IsValid() || !desc.program.IsValid()) {
+    if (desc.capacity == 0 || desc.vertexCount == 0 || !desc.instances.IsValid() ||
+        !desc.sourceIndirectArguments.IsValid() || !desc.bounds.IsValid() || !desc.program.IsValid()) {
         return false;
     }
 
     m_device = &device;
     m_capacity = desc.capacity;
+    m_vertexCount = desc.vertexCount;
     m_instances = desc.instances;
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
     m_bounds = desc.bounds;
@@ -273,6 +274,7 @@ void ParticleGpuCuller::Destroy() noexcept
     }
     m_device = nullptr;
     m_capacity = 0;
+    m_vertexCount = 0;
     m_instances = {};
     m_sourceIndirectArguments = {};
     m_bounds = {};
@@ -288,10 +290,10 @@ void ParticleGpuCuller::Destroy() noexcept
 
 bool ParticleGpuCuller::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_instances.IsValid() && m_sourceIndirectArguments.IsValid() &&
-           m_bounds.IsValid() && m_visibleIndices.IsValid() && m_drawIndirectArguments.IsValid() &&
-           m_sortDispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_resetPipeline.IsValid() &&
-           m_cullPipeline.IsValid() && m_finalizePipeline.IsValid();
+    return m_device && m_capacity > 0 && m_vertexCount > 0 && m_instances.IsValid() &&
+           m_sourceIndirectArguments.IsValid() && m_bounds.IsValid() && m_visibleIndices.IsValid() &&
+           m_drawIndirectArguments.IsValid() && m_sortDispatchArguments.IsValid() && m_layout.IsValid() &&
+           m_group.IsValid() && m_resetPipeline.IsValid() && m_cullPipeline.IsValid() && m_finalizePipeline.IsValid();
 }
 
 void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder,
@@ -300,6 +302,7 @@ void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder,
     GpuParticleCullConstants constants;
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
+    constants.vertexCount = m_vertexCount;
     Record(encoder, m_resetPipeline, constants, 1);
 }
 
@@ -309,6 +312,7 @@ void ParticleGpuCuller::RecordCull(const rhi::ComputeCommandEncoder &encoder,
     GpuParticleCullConstants constants;
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
+    constants.vertexCount = m_vertexCount;
     if (!IsValid() || !encoder.IsValid() || !m_cullPipeline.IsValid())
         return;
     encoder.BindPipeline(m_cullPipeline);
@@ -321,6 +325,7 @@ void ParticleGpuCuller::RecordFinalize(const rhi::ComputeCommandEncoder &encoder
 {
     GpuParticleCullConstants constants;
     constants.capacity = m_capacity;
+    constants.vertexCount = m_vertexCount;
     Record(encoder, m_finalizePipeline, constants, 1);
 }
 

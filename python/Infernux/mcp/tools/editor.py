@@ -2,10 +2,39 @@
 
 from __future__ import annotations
 
-from Infernux.mcp.tools.common import main_thread, scene_status
+from Infernux.mcp.tools.common import main_thread, register_tool_metadata, scene_status
 
 
 def register_editor_tools(mcp) -> None:
+    register_tool_metadata(
+        "editor_save_focused",
+        summary="Save the active editor document through the same focus-aware route as Ctrl+S.",
+        category="editor/documents",
+        tags=["editor", "save", "document", "asset"],
+        aliases=["save focused", "save active document", "保存当前文档"],
+        preconditions=["The document or scene to save must be open in the Editor."],
+        side_effects=[
+            "Saves the focused editor document, or the active scene when no document panel owns focus."
+        ],
+        recovery=[
+            "Focus the intended editor panel and retry; inspect dirty_after when a Save As dialog is required."
+        ],
+        next_suggested_tools=["editor_get_state", "scene_status"],
+    )
+    register_tool_metadata(
+        "editor_save_document",
+        summary="Save a named open editor document without changing user focus.",
+        category="editor/documents",
+        tags=["editor", "save", "document", "background"],
+        aliases=["save panel", "save document by id", "后台保存文档"],
+        preconditions=[
+            "panel_id must identify an open editor panel with a document save handler."
+        ],
+        side_effects=["Saves the specified editor document through its normal panel handler."],
+        recovery=["Inspect the authoring tool snapshot for its panel_id and retry."],
+        next_suggested_tools=["editor_get_state"],
+    )
+
     @mcp.tool(name="editor_get_state")
     def editor_get_state() -> dict:
         """Return lightweight editor state."""
@@ -30,6 +59,90 @@ def register_editor_tools(mcp) -> None:
             }
 
         return main_thread("editor_get_state", _read)
+
+    @mcp.tool(name="editor_save_focused")
+    def editor_save_focused() -> dict:
+        """Save the focused document, falling back to the active scene."""
+
+        def _save():
+            from Infernux.engine._bootstrap_wiring import BootstrapWiringMixin
+            from Infernux.engine.project_context import is_panel_dirty
+            from Infernux.engine.scene_manager import SceneFileManager
+            from Infernux.engine.ui.closable_panel import ClosablePanel
+            from Infernux.engine.ui.window_manager import WindowManager
+
+            window_manager = WindowManager.instance()
+            scene_manager = SceneFileManager.instance()
+            if window_manager is None or scene_manager is None:
+                raise RuntimeError("Editor save services are not available.")
+
+            panel_id = str(ClosablePanel.get_active_panel_id() or "")
+            panel = window_manager.get_window_instance(panel_id) if panel_id else None
+            handler = getattr(panel, "handle_save_command", None)
+            document_target = bool(panel_id and callable(handler))
+            dirty_before = (
+                bool(is_panel_dirty(panel_id))
+                if document_target
+                else bool(scene_manager.is_dirty)
+            )
+
+            BootstrapWiringMixin._save_focused_document(window_manager, scene_manager)
+
+            dirty_after = (
+                bool(is_panel_dirty(panel_id))
+                if document_target
+                else bool(scene_manager.is_dirty)
+            )
+            return {
+                "target": "document" if document_target else "scene",
+                "panel_id": panel_id if document_target else "",
+                "dirty_before": dirty_before,
+                "dirty_after": dirty_after,
+                "saved": not dirty_after,
+                "save_as_required": bool(dirty_after),
+            }
+
+        return main_thread("editor_save_focused", _save)
+
+    @mcp.tool(name="editor_save_document")
+    def editor_save_document(panel_id: str) -> dict:
+        """Save one open document panel without taking keyboard focus."""
+
+        def _save():
+            from Infernux.engine.project_context import is_panel_dirty
+            from Infernux.engine.ui.window_manager import WindowManager
+
+            target_id = str(panel_id).strip()
+            if not target_id:
+                raise ValueError("panel_id is required")
+            window_manager = WindowManager.instance()
+            if window_manager is None:
+                raise RuntimeError("WindowManager is not available.")
+            panel = window_manager.get_window_instance(target_id)
+            if panel is None or not window_manager.is_window_open(target_id):
+                raise RuntimeError(f"Editor document panel is not open: {target_id!r}")
+            handler = getattr(panel, "handle_save_command", None)
+            if not callable(handler):
+                raise RuntimeError(
+                    f"Editor panel does not own a savable document: {target_id!r}"
+                )
+
+            dirty_before = bool(is_panel_dirty(target_id))
+            handled = bool(handler(save_as=False))
+            dirty_after = bool(is_panel_dirty(target_id))
+            return {
+                "target": "document",
+                "panel_id": target_id,
+                "handled": handled,
+                "dirty_before": dirty_before,
+                "dirty_after": dirty_after,
+                "saved": handled and not dirty_after,
+                "save_as_required": handled and dirty_after,
+            }
+
+        return main_thread(
+            "editor_save_document", _save, arguments={"panel_id": panel_id}
+        )
 
     @mcp.tool(name="editor_play")
     def editor_play() -> dict:

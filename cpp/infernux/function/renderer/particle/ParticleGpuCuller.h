@@ -38,6 +38,7 @@ struct GpuParticleCullShaderSources
 struct GpuParticleCullerDesc
 {
     uint32_t capacity = 0;
+    uint32_t vertexCount = 0;
     rhi::BufferHandle instances;
     rhi::BufferHandle sourceIndirectArguments;
     rhi::BufferHandle bounds;
@@ -48,7 +49,7 @@ struct alignas(16) GpuParticleCullConstants
 {
     std::array<float, 24> frustumPlanes{};
     uint32_t capacity = 0;
-    uint32_t reserved0 = 0;
+    uint32_t vertexCount = 0;
     uint32_t reserved1 = 0;
     uint32_t reserved2 = 0;
 };
@@ -76,6 +77,10 @@ class ParticleGpuCuller
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
         return m_capacity;
+    }
+    [[nodiscard]] uint32_t VertexCount() const noexcept
+    {
+        return m_vertexCount;
     }
     [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
     {
@@ -114,6 +119,7 @@ class ParticleGpuCuller
 
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
+    uint32_t m_vertexCount = 0;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_sourceIndirectArguments;
     rhi::BufferHandle m_bounds;

@@ -78,6 +78,15 @@ class ParticleStream:
         soft_distance: float = 1.0,
         sort: str = "back_to_front",
     ) -> None: ...
+    def mesh(
+        self,
+        *,
+        mesh: AssetReference,
+        material: AssetReference = AssetReference(),
+        receive_scene_lighting: bool = False,
+        receive_shadows: bool = False,
+        sort: str = "none",
+    ) -> None: ...
 
 
 class ParticleScriptError(ValueError):
@@ -106,6 +115,7 @@ class ParticleScriptCompiler:
         },
         "rendering": {
             "sprite": ("particle.output.sprite", ""),
+            "mesh": ("particle.output.mesh", ""),
         },
     }
 

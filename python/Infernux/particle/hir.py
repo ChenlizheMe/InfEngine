@@ -50,6 +50,7 @@ class ParticleStageHIR:
 class ParticleOutputDescriptor:
     output_id: str
     output_type: str
+    mesh: AssetReference
     material: AssetReference
     receive_scene_lighting: bool
     receive_shadows: bool
@@ -164,6 +165,7 @@ class ParticleGraphCompiler:
                     "outputs": [
                         {
                             "type": output.output_type,
+                            "mesh": output.mesh.to_dict(),
                             "material": output.material.to_dict(),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
@@ -187,18 +189,9 @@ class ParticleGraphCompiler:
             emitter.settings,
         )
         outputs = tuple(
-            ParticleOutputDescriptor(
-                operation.source_node_uid,
-                "sprite",
-                AssetReference.from_dict(operation.parameter_dict()["material"]),
-                bool(operation.parameter_dict()["receive_scene_lighting"]),
-                bool(operation.parameter_dict()["receive_shadows"]),
-                bool(operation.parameter_dict()["soft_particles"]),
-                float(operation.parameter_dict()["soft_distance"]),
-                str(operation.parameter_dict()["sort"]),
-            )
+            self._compile_output(operation)
             for operation in rendering.operations
-            if operation.opcode == "render.sprite"
+            if operation.opcode in {"render.sprite", "render.mesh"}
         )
         if not outputs:
             raise ParticleCompileError(
@@ -242,6 +235,38 @@ class ParticleGraphCompiler:
             raise ParticleCompileError(
                 f"particle output {invalid_soft_distance.output_id!r} soft distance must be finite and positive"
             )
+        missing_mesh = next(
+            (
+                output
+                for output in outputs
+                if output.output_type == "mesh"
+                and not (output.mesh.guid or output.mesh.path_hint)
+            ),
+            None,
+        )
+        if missing_mesh is not None:
+            raise ParticleCompileError(
+                f"particle mesh output {missing_mesh.output_id!r} requires a mesh asset"
+            )
+        unsupported_mesh_semantics = next(
+            (
+                output
+                for output in outputs
+                if output.output_type == "mesh"
+                and (
+                    output.receive_scene_lighting
+                    or output.receive_shadows
+                    or output.soft_particles
+                    or output.sort_mode != "none"
+                )
+            ),
+            None,
+        )
+        if unsupported_mesh_semantics is not None:
+            raise ParticleCompileError(
+                f"particle mesh output {unsupported_mesh_semantics.output_id!r} currently "
+                "supports unlit, unsorted, non-soft rendering only"
+            )
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,
@@ -252,6 +277,24 @@ class ParticleGraphCompiler:
             rendering,
             ParticleRenderPlan(outputs),
             emitter.data_interfaces,
+        )
+
+    @staticmethod
+    def _compile_output(operation: ParticleOperation) -> ParticleOutputDescriptor:
+        parameters = operation.parameter_dict()
+        output_type = "sprite" if operation.opcode == "render.sprite" else "mesh"
+        return ParticleOutputDescriptor(
+            operation.source_node_uid,
+            output_type,
+            AssetReference.from_dict(
+                parameters.get("mesh", AssetReference().to_dict())
+            ),
+            AssetReference.from_dict(parameters["material"]),
+            bool(parameters["receive_scene_lighting"]),
+            bool(parameters["receive_shadows"]),
+            bool(parameters.get("soft_particles", False)),
+            float(parameters.get("soft_distance", 1.0)),
+            str(parameters["sort"]),
         )
 
     def _compile_stage(

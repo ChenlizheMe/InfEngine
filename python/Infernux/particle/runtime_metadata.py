@@ -126,6 +126,7 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
     if type(value) is not dict or set(value) != {
         "output_id",
         "output_type",
+        "mesh",
         "material",
         "receive_scene_lighting",
         "receive_shadows",
@@ -151,6 +152,7 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
     return ParticleOutputDescriptor(
         value["output_id"],
         value["output_type"],
+        AssetReference.from_dict(value["mesh"]),
         AssetReference.from_dict(value["material"]),
         value["receive_scene_lighting"],
         value["receive_shadows"],

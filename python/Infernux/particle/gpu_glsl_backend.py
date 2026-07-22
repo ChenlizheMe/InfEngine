@@ -128,6 +128,87 @@ void main() {
 }
 """
 
+_MESH_VERTEX_GLSL = """#version 450
+
+struct ParticleInstance {
+    vec4 position_size;
+    vec4 color;
+    vec4 rotation_custom;
+};
+
+struct ParticleMeshVertex {
+    vec4 position;
+    vec4 normal;
+    vec4 tangent;
+    vec4 color;
+    vec4 uv;
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer Instances {
+    ParticleInstance instances[];
+};
+layout(set = 0, binding = 1, std430) readonly buffer RenderIndices {
+    uint render_indices[];
+};
+layout(set = 0, binding = 2, std430) readonly buffer MeshVertices {
+    ParticleMeshVertex mesh_vertices[];
+};
+layout(set = 0, binding = 3, std430) readonly buffer MeshIndices {
+    uint mesh_indices[];
+};
+
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    vec4 material_tint;
+    vec4 depth_reconstruct;
+} view;
+
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec3 out_normal;
+layout(location = 2) out vec2 out_uv;
+
+void main() {
+    uint particle_index = render_indices[gl_InstanceIndex];
+    ParticleInstance instance = instances[particle_index];
+    ParticleMeshVertex vertex = mesh_vertices[mesh_indices[gl_VertexIndex]];
+    float cosine = cos(instance.rotation_custom.x);
+    float sine = sin(instance.rotation_custom.x);
+    mat3 rotation = mat3(
+        cosine, sine, 0.0,
+        -sine, cosine, 0.0,
+        0.0, 0.0, 1.0
+    );
+    vec3 world_position = instance.position_size.xyz +
+        rotation * vertex.position.xyz * instance.position_size.w;
+    gl_Position = view.view_projection * vec4(world_position, 1.0);
+    out_color = instance.color * vertex.color;
+    out_normal = normalize(rotation * vertex.normal.xyz);
+    out_uv = vertex.uv.xy;
+}
+"""
+
+_MESH_FRAGMENT_GLSL = """#version 450
+
+layout(location = 0) in vec4 in_color;
+layout(location = 1) in vec3 in_normal;
+layout(location = 2) in vec2 in_uv;
+layout(location = 0) out vec4 out_color;
+
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    vec4 material_tint;
+    vec4 depth_reconstruct;
+} view;
+
+void main() {
+    out_color = in_color * view.material_tint;
+}
+"""
+
 
 @dataclass(frozen=True)
 class GpuParticleEmitterSource:
@@ -348,12 +429,55 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         _SPIRV_DESCRIPTOR_CACHE[picking_key] = picking_descriptor
     billboard["picking_fragment"] = dict(picking_descriptor)
 
+    mesh_sources = {
+        "vertex": _MESH_VERTEX_GLSL,
+        "fragment": _MESH_FRAGMENT_GLSL,
+    }
+    mesh_keys = {
+        stage: hashlib.sha256(
+            (f"vulkan1.2-spirv1.5\0{stage}\0" + source).encode("utf-8")
+        ).hexdigest()
+        for stage, source in mesh_sources.items()
+    }
+    missing_mesh = {
+        stage: mesh_sources[stage]
+        for stage, key in mesh_keys.items()
+        if key not in _SPIRV_DESCRIPTOR_CACHE
+    }
+    compiled_mesh = (
+        native._compile_graphics_glsl_batch(missing_mesh, "particle:builtin-mesh")
+        if missing_mesh
+        else {}
+    )
+    if set(compiled_mesh) != set(missing_mesh):
+        raise GpuParticleCompileError(
+            "engine graphics compiler returned incomplete particle mesh stages"
+        )
+    mesh = {}
+    for stage, key in sorted(mesh_keys.items()):
+        descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
+        if descriptor is None:
+            binary = bytes(compiled_mesh[stage])
+            if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
+                raise GpuParticleCompileError(
+                    f"engine graphics compiler returned invalid mesh SPIR-V for {stage}"
+                )
+            descriptor = {
+                "byte_size": len(binary),
+                "sha256": hashlib.sha256(binary).hexdigest(),
+                "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
+            }
+            _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
+        mesh[stage] = dict(descriptor)
+    mesh["picking_fragment"] = dict(picking_descriptor)
+
     return {
         "$schema": "infernux.particle_gpu_spirv",
         "target": "vulkan1.2-spirv1.5",
         "kernel_hash": program.kernel_hash,
         "emitters": emitters,
         "billboard": billboard,
+        "mesh": mesh,
     }
 
 
@@ -367,6 +491,7 @@ def validate_gpu_particle_spirv(
         "kernel_hash",
         "emitters",
         "billboard",
+        "mesh",
     }
     if type(value) is not dict or set(value) != expected_top:
         raise GpuParticleCompileError("particle GPU SPIR-V payload is invalid")
@@ -383,6 +508,11 @@ def validate_gpu_particle_spirv(
         "vertex", "fragment", "picking_fragment"
     }:
         raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
+    mesh = value["mesh"]
+    if type(mesh) is not dict or set(mesh) != {
+        "vertex", "fragment", "picking_fragment"
+    }:
+        raise GpuParticleCompileError("particle GPU mesh binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):
         if type(encoded) is not dict or set(encoded) != {"stable_id", "stages"}:
             raise GpuParticleCompileError("particle GPU emitter binary entry is invalid")
@@ -395,6 +525,8 @@ def validate_gpu_particle_spirv(
             _validate_spirv_descriptor(descriptor, stage)
     for stage, descriptor in billboard.items():
         _validate_spirv_descriptor(descriptor, f"billboard.{stage}")
+    for stage, descriptor in mesh.items():
+        _validate_spirv_descriptor(descriptor, f"mesh.{stage}")
     return value
 
 
@@ -434,12 +566,14 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
         raise GpuParticleCompileError("particle GPU emitter index is invalid")
     emitters = value.get("emitters") if type(value) is dict else None
     billboard = value.get("billboard") if type(value) is dict else None
+    mesh = value.get("mesh") if type(value) is dict else None
     if (
         type(emitters) is not list
         or emitter_index >= len(emitters)
         or type(emitters[emitter_index]) is not dict
         or type(emitters[emitter_index].get("stages")) is not dict
         or type(billboard) is not dict
+        or type(mesh) is not dict
     ):
         raise GpuParticleCompileError("particle GPU emitter payload is invalid")
 
@@ -459,6 +593,10 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
         "billboard": {
             stage: decode(descriptor, f"billboard.{stage}")
             for stage, descriptor in billboard.items()
+        },
+        "mesh": {
+            stage: decode(descriptor, f"mesh.{stage}")
+            for stage, descriptor in mesh.items()
         },
     }
 

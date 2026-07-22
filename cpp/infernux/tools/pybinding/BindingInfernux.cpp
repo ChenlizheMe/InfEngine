@@ -90,7 +90,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
     for (const char *field : {"id", "owner_object_id", "artifact_revision", "stable_id", "capacity", "state_stride",
-                              "stages", "billboard", "outputs"}) {
+                              "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -265,20 +265,41 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     program.billboardPickingFragmentShader =
         DecodeParticleSpirv(billboard["picking_fragment"], "particle billboard picking fragment shader");
 
+    const py::dict meshShaders = py::cast<py::dict>(value["mesh_shaders"]);
+    for (const char *field : {"vertex", "fragment", "picking_fragment"}) {
+        if (!meshShaders.contains(field))
+            throw std::invalid_argument(std::string("GPU particle mesh shaders are missing ") + field);
+    }
+    program.meshVertexShader = DecodeParticleSpirv(meshShaders["vertex"], "particle mesh vertex shader");
+    program.meshFragmentShader = DecodeParticleSpirv(meshShaders["fragment"], "particle mesh fragment shader");
+    program.meshPickingFragmentShader =
+        DecodeParticleSpirv(meshShaders["picking_fragment"], "particle mesh picking fragment shader");
+
     const py::sequence outputs = py::cast<py::sequence>(value["outputs"]);
     program.outputs.reserve(outputs.size());
     for (const py::handle item : outputs) {
         if (!py::isinstance<py::dict>(item))
             throw std::invalid_argument("GPU particle outputs must contain dictionaries");
         const py::dict output = py::reinterpret_borrow<py::dict>(item);
-        for (const char *field : {"id", "stable_id", "material", "receive_scene_lighting", "receive_shadows",
-                                  "soft_particles", "soft_distance", "sort_mode"}) {
+        for (const char *field : {"id", "stable_id", "output_type", "mesh", "material", "receive_scene_lighting",
+                                  "receive_shadows", "soft_particles", "soft_distance", "sort_mode"}) {
             if (!output.contains(field))
                 throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
         }
         particle::GpuParticleOutputProgram decoded;
         decoded.id = py::cast<uint64_t>(output["id"]);
         decoded.stableId = py::cast<std::string>(output["stable_id"]);
+        const std::string outputType = py::cast<std::string>(output["output_type"]);
+        if (outputType == "sprite") {
+            decoded.type = particle::GpuParticleOutputType::Sprite;
+        } else if (outputType == "mesh") {
+            decoded.type = particle::GpuParticleOutputType::Mesh;
+            if (output["mesh"].is_none())
+                throw std::invalid_argument("GPU particle Mesh Output requires a native mesh");
+            decoded.mesh = py::cast<std::shared_ptr<InxMesh>>(output["mesh"]);
+        } else {
+            throw std::invalid_argument("GPU particle output_type must be 'sprite' or 'mesh'");
+        }
         decoded.semantics.receiveSceneLighting = py::cast<bool>(output["receive_scene_lighting"]);
         decoded.semantics.receiveShadows = py::cast<bool>(output["receive_shadows"]);
         decoded.semantics.softParticles = py::cast<bool>(output["soft_particles"]);

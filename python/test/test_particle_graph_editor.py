@@ -238,6 +238,30 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     ]
 
 
+def test_particle_graph_save_replaces_persisted_dirty_draft(tmp_path, monkeypatch):
+    from Infernux.engine.ui import panel_state
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    layout = tmp_path / "layout"
+    panel_state.init(str(layout))
+    target = tmp_path / "Sparks.particlegraph"
+    panel = ParticleGraphEditorPanel()
+    panel._file_path = str(target)
+    panel._dirty = True
+    panel._persist_panel_state()
+    assert panel_state.get("panel:particle_graph_editor")["dirty"] is True
+
+    def save_asset(asset, path):
+        target.write_text(json.dumps(asset.to_dict()), encoding="utf-8")
+
+    monkeypatch.setattr(ParticleGraphAsset, "save", save_asset)
+
+    assert panel._save_to(str(target)) is True
+    persisted = panel_state.get("panel:particle_graph_editor")
+    assert persisted["dirty"] is False
+    assert "draft" not in persisted
+
+
 def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
     from Infernux.engine.ui.particle_graph_editor_panel import (
         _record_scalar_node_property_semantics,
@@ -291,6 +315,70 @@ def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
             {"numeric_value": 0.5},
         ),
     ]
+
+
+def test_particle_graph_editor_sets_mesh_asset_through_live_authoring_model(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    mesh_path = tmp_path / "ParticleShard.obj"
+    mesh_path.write_text("o ParticleShard\nv 0 0 0\n", encoding="utf-8")
+    monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "mesh-guid")
+    monkeypatch.setattr(
+        module, "_portable_asset_path_hint", lambda _path: "Assets/Models/ParticleShard.obj"
+    )
+
+    panel = module.ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    panel._model.prepare_node_creation("rendering")
+    node = panel._on_node_add("particle.output.mesh", 540.0, 460.0)
+
+    reference = panel.set_node_asset_reference(node.uid, "mesh", str(mesh_path))
+    routed = panel.set_rendering_output(node.uid)
+
+    assert reference == {
+        "guid": "mesh-guid",
+        "path_hint": "Assets/Models/ParticleShard.obj",
+    }
+    assert node.data["mesh"] == reference
+    assert panel._selected_node_uid == node.uid
+    assert panel._view.selected_nodes == [node.uid]
+    assert panel._dirty is True
+    snapshot = panel.authoring_snapshot()
+    assert snapshot["panel_id"] == "particle_graph_editor"
+    saved_node = next(item for item in snapshot["nodes"] if item["uid"] == node.uid)
+    assert saved_node["properties"]["mesh"] == reference
+    assert routed["changed"] is True
+    output_links = [
+        link
+        for link in snapshot["links"]
+        if link["source_node"] == "rendering::root.rendering"
+        and link["source_port"] == "out"
+    ]
+    assert output_links == [
+        {
+            "uid": routed["link_uid"],
+            "source_node": "rendering::root.rendering",
+            "source_port": "out",
+            "target_node": node.uid,
+            "target_port": "in",
+        }
+    ]
+
+
+def test_particle_graph_editor_rejects_wrong_asset_kind(tmp_path):
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    texture_path = tmp_path / "not-a-mesh.png"
+    texture_path.write_bytes(b"png")
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    panel._model.prepare_node_creation("rendering")
+    node = panel._on_node_add("particle.output.mesh", 540.0, 460.0)
+
+    with pytest.raises(ValueError, match="requires a model asset"):
+        panel.set_node_asset_reference(node.uid, "mesh", str(texture_path))
 
 
 def test_particle_node_inspector_edits_unconnected_value_input_defaults():
@@ -406,6 +494,8 @@ def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypat
     reopened = ParticleGraphEditorPanel()
     assert reopened._open_particlegraph(str(path)) is True
     assert reopened.asset.name == "Smoke"
+    assert reopened._dirty is False
+    assert reopened.reload_from_disk() is True
     assert reopened._dirty is False
 
 

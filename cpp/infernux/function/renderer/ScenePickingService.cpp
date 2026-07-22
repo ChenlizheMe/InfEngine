@@ -2,12 +2,12 @@
 
 #include "InxVkCoreModular.h"
 #include "MaterialPassPipeline.h"
+#include "particle/ParticleGpuDrawRegistry.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkHandle.h"
 #include "vk/VkRenderUtils.h"
 #include "vk/VkResourceManager.h"
 #include "vk/VulkanRhiDevice.h"
-#include "particle/ParticleGpuDrawRegistry.h"
 #include <function/scene/Camera.h>
 #include <function/scene/SceneManager.h>
 
@@ -235,17 +235,16 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     }
     std::memset(mapped, 0, static_cast<size_t>(kPickingPixelBytes));
 
-    const auto particleEntries = m_particleDrawRegistry
-                                     ? m_particleDrawRegistry->Snapshot(0, 5000)
-                                     : std::vector<particle::GpuParticleDrawEntry>{};
+    const auto particleEntries = m_particleDrawRegistry ? m_particleDrawRegistry->Snapshot(0, 5000)
+                                                        : std::vector<particle::GpuParticleDrawEntry>{};
     if (!particleEntries.empty()) {
         VkMemoryBarrier particleBarrier{};
         particleBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         particleBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         particleBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-                             0, 1, &particleBarrier, 0, nullptr, 0, nullptr);
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                             &particleBarrier, 0, nullptr, 0, nullptr);
     }
 
     VkClearValue clears[2]{};
@@ -270,7 +269,7 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     if (!particleEntries.empty() && m_renderTargetLayout.IsValid()) {
         Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
         if (camera) {
-            particle::GpuBillboardViewConstants view;
+            particle::GpuParticleViewConstants view;
             const glm::mat4 cameraView = camera->GetViewMatrix();
             const glm::mat4 viewProjection = camera->GetProjectionMatrix() * cameraView;
             const glm::mat4 inverseView = glm::inverse(cameraView);
@@ -278,14 +277,14 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
             std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
             std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
             vk::VulkanGraphicsCommandContext graphicsContext;
-            auto encoder = m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(
-                graphicsContext, commandBuffer);
+            auto encoder =
+                m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(graphicsContext, commandBuffer);
             for (const auto &entry : particleEntries) {
                 if (!entry.renderer || entry.ownerObjectId == 0)
                     continue;
                 [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(
-                    encoder, m_renderTargetLayout, pickingPass, entry.indirectArguments, view,
-                    entry.ownerObjectId, entry.renderIndices);
+                    encoder, m_renderTargetLayout, pickingPass, entry.indirectArguments, view, entry.ownerObjectId,
+                    entry.renderIndices);
             }
         }
     }

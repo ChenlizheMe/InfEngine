@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ParticleGpuBillboardRenderer.h"
+#include "ParticleGpuOutputRenderer.h"
 #include "ParticleOutputSemantics.h"
 
 #include <cstdint>
@@ -23,7 +23,7 @@ struct GpuParticleDrawEntry
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle indirectArguments;
     rhi::BufferHandle bounds;
-    std::shared_ptr<ParticleGpuBillboardRenderer> renderer;
+    std::shared_ptr<ParticleGpuOutputRenderer> renderer;
     std::shared_ptr<const GpuParticleCullProgramStorage> cullProgram;
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     ParticleOutputSemantics semantics;

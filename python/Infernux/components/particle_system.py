@@ -570,8 +570,8 @@ class ParticleSystem(InxComponent):
         ):
             if targets[index] is not ExecutionTarget.GPU:
                 continue
-            if any(output.output_type != "sprite" for output in emitter.outputs):
-                raise RuntimeError("the current GPU particle renderer supports Sprite Output only")
+            if any(output.output_type not in {"sprite", "mesh"} for output in emitter.outputs):
+                raise RuntimeError("the GPU particle renderer received an unsupported output type")
             if (
                 type(glsl_emitter) is not dict
                 or glsl_emitter.get("stable_id") != emitter.stable_id
@@ -621,10 +621,13 @@ class ParticleSystem(InxComponent):
                     ),
                     "stages": decoded["stages"],
                     "billboard": decoded["billboard"],
+                    "mesh_shaders": decoded["mesh"],
                     "outputs": [
                         {
                             "id": self._gpu_output_id(emitter.stable_id, output.output_id),
                             "stable_id": output.output_id,
+                            "output_type": output.output_type,
+                            "mesh": self._gpu_mesh_binding(output),
                             "material": self._gpu_material_binding(output),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
@@ -896,6 +899,23 @@ class ParticleSystem(InxComponent):
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             pass
         return state
+
+    @classmethod
+    def _gpu_mesh_binding(cls, output) -> object:
+        if output.output_type != "mesh":
+            return None
+        from Infernux.lib import AssetRegistry
+
+        reference = output.mesh
+        registry = AssetRegistry.instance()
+        native = registry.load_mesh_by_guid(reference.guid) if reference.guid else None
+        path = cls._absolute_project_path(reference.path_hint)
+        if native is None and path:
+            native = registry.load_mesh(path)
+        if native is None:
+            identity = reference.guid or reference.path_hint or "<empty reference>"
+            raise RuntimeError(f"ParticleGraph Mesh Output cannot load {identity!r}")
+        return native
 
     def _gpu_data_interface_layout(self, emitter, glsl_emitter) -> dict[str, object]:
         layout = glsl_emitter.get("data_interface_layout")

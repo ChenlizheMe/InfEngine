@@ -3,6 +3,7 @@
 #include "ParticleGpuBillboardRenderer.h"
 #include "ParticleGpuBounds.h"
 #include "ParticleGpuCuller.h"
+#include "ParticleGpuMeshRenderer.h"
 #include "ParticleGpuMigrator.h"
 #include "ParticleGpuSorter.h"
 #include "ParticleOutputSemantics.h"
@@ -38,10 +39,18 @@ namespace particle
 
 class ParticleGpuDrawRegistry;
 
+enum class GpuParticleOutputType : uint8_t
+{
+    Sprite,
+    Mesh,
+};
+
 struct GpuParticleOutputProgram
 {
     uint64_t id = 0;
     std::string stableId;
+    GpuParticleOutputType type = GpuParticleOutputType::Sprite;
+    std::shared_ptr<InxMesh> mesh;
     std::shared_ptr<InxMaterial> material;
     std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     GpuBillboardMaterialState fallbackMaterial;
@@ -115,6 +124,9 @@ struct GpuParticleEmitterProgram
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
     std::vector<uint32_t> billboardPickingFragmentShader;
+    std::vector<uint32_t> meshVertexShader;
+    std::vector<uint32_t> meshFragmentShader;
+    std::vector<uint32_t> meshPickingFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;
 };
 

@@ -27,6 +27,7 @@ PROFILE_TOOL_GROUPS: dict[str, frozenset[str] | None] = {
         "renderstack",
         "console",
         "camera",
+        "runtime",
         "ui",
         "transactions",
         "session",

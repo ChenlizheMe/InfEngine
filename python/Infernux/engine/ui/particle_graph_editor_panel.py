@@ -44,6 +44,7 @@ from .panel_registry import editor_panel
 from ._inspector_references import (
     _asset_guid_from_path,
     _picker_assets,
+    _portable_asset_path_hint,
     render_object_field,
 )
 
@@ -122,6 +123,168 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._sync_model_to_asset()
         return self._asset
 
+    def authoring_snapshot(self) -> dict:
+        """Return the currently open editor document, not a disk reparse."""
+        self._sync_model_to_asset()
+        nodes = []
+        links = []
+        if self._model is not None:
+            for node in self._model.nodes:
+                nodes.append(
+                    {
+                        "uid": str(node.uid),
+                        "type_id": str(node.type_id),
+                        "stage": str(self._model.stage_for_uid(node.uid) or ""),
+                        "properties": copy.deepcopy(node.data),
+                    }
+                )
+            for link in self._model.links:
+                links.append(
+                    {
+                        "uid": str(link.uid),
+                        "source_node": str(link.source_node),
+                        "source_port": str(link.source_pin),
+                        "target_node": str(link.target_node),
+                        "target_port": str(link.target_pin),
+                    }
+                )
+        return {
+            "panel_id": self.window_id,
+            "file_path": str(self._file_path),
+            "dirty": bool(self._dirty),
+            "emitter_index": int(self._emitter_index),
+            "selected_node_uid": str(self._selected_node_uid),
+            "nodes": nodes,
+            "links": links,
+        }
+
+    def set_node_asset_reference(
+        self, node_uid: str, property_name: str, file_path: str
+    ) -> dict:
+        """Edit an AssetRef through the live authoring model and undo stack."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        node = self._model.find_node(str(node_uid))
+        if node is None:
+            raise KeyError(f"Particle Graph node not found: {node_uid!r}")
+        definition = COMMON_NODE_REGISTRY.get(node.type_id)
+        if definition is None:
+            raise RuntimeError(
+                f"Particle Graph node type is not registered: {node.type_id!r}"
+            )
+        key = str(property_name)
+        field = next((item for item in definition.properties if item.id == key), None)
+        if field is None or field.value_type.value_type is not ValueType.ASSET_REF:
+            valid = [
+                item.id
+                for item in definition.properties
+                if item.value_type.value_type is ValueType.ASSET_REF
+            ]
+            raise KeyError(
+                f"Particle Graph node {node_uid!r} has no AssetRef property {key!r}; "
+                f"valid properties: {valid}"
+            )
+
+        target = resolved_path(file_path)
+        if not os.path.isfile(target):
+            raise FileNotFoundError(f"Particle Graph asset reference not found: {file_path}")
+        extension = os.path.splitext(target)[1].lower()
+        if key == "mesh":
+            from Infernux.core.asset_types import MESH_EXTENSIONS
+
+            if extension not in MESH_EXTENSIONS:
+                raise ValueError(
+                    f"Particle Graph Mesh property requires a model asset; got {extension!r}"
+                )
+        elif key == "material" and extension != ".mat":
+            raise ValueError(
+                f"Particle Graph Material property requires a .mat asset; got {extension!r}"
+            )
+
+        guid = _asset_guid_from_path(target)
+        if not guid:
+            raise RuntimeError(
+                f"Particle Graph asset reference is not imported and has no GUID: {file_path}"
+            )
+        reference = {
+            "guid": guid,
+            "path_hint": _portable_asset_path_hint(target),
+        }
+        if node.data.get(key) == reference:
+            return copy.deepcopy(reference)
+
+        before = self._snapshot()
+        node.data[key] = copy.deepcopy(reference)
+        self._selected_node_uid = node.uid
+        self._view.selected_nodes = [node.uid]
+        stage = self._model.stage_for_uid(node.uid)
+        if stage:
+            self._select_stage(stage)
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record(f"Set Particle Graph {key}", before)
+        return copy.deepcopy(reference)
+
+    def set_rendering_output(self, node_uid: str) -> dict:
+        """Route the Rendering root stream to one output through the authoring model."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        node = self._model.find_node(str(node_uid))
+        if node is None:
+            raise KeyError(f"Particle Graph node not found: {node_uid!r}")
+        if (
+            self._model.stage_for_uid(node.uid) != "rendering"
+            or not str(node.type_id).startswith("particle.output.")
+        ):
+            raise ValueError(
+                f"Particle Graph node {node_uid!r} is not a Rendering output"
+            )
+
+        root_uid = "rendering::root.rendering"
+        output_links = [
+            link
+            for link in self._model.links
+            if link.source_node == root_uid and link.source_pin == "out"
+        ]
+        if (
+            len(output_links) == 1
+            and output_links[0].target_node == node.uid
+            and output_links[0].target_pin == "in"
+        ):
+            return {
+                "node_uid": node.uid,
+                "link_uid": output_links[0].uid,
+                "changed": False,
+            }
+
+        before = self._snapshot()
+        for link in output_links:
+            self._model.remove_link(link.uid)
+        created = self._model.add_link(root_uid, "out", node.uid, "in")
+        if created is None:
+            self._apply_snapshot(before)
+            raise RuntimeError(
+                f"Particle Graph could not route Rendering to output {node_uid!r}"
+            )
+        self._selected_node_uid = node.uid
+        self._view.selected_nodes = [node.uid]
+        self._select_stage("rendering")
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record("Set Particle Graph rendering output", before)
+        return {"node_uid": node.uid, "link_uid": created.uid, "changed": True}
+
+    def reload_from_disk(self) -> bool:
+        """Reload the current document after it has been saved cleanly."""
+        if self._dirty:
+            raise RuntimeError("Particle Graph must be saved before it can be reloaded")
+        if not self._file_path:
+            raise RuntimeError("Particle Graph has no source file to reload")
+        reloaded = self._open_particlegraph(self._file_path)
+        if reloaded:
+            self._persist_panel_state()
+        return reloaded
+
     def _selected_emitter(self) -> ParticleEmitterAsset:
         return self._asset.emitters[self._emitter_index]
 
@@ -197,6 +360,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._file_path = target
         self._dirty = False
         self._sync_project_dirty_flag()
+        self._persist_panel_state()
         try:
             from Infernux.core.assets import AssetManager
 
@@ -232,13 +396,17 @@ class ParticleGraphEditorPanel(EditorPanel):
 
     def _discard_unsaved_changes(self) -> bool:
         if self._file_path:
-            return self._open_particlegraph(self._file_path)
+            discarded = self._open_particlegraph(self._file_path)
+            if discarded:
+                self._persist_panel_state()
+            return discarded
         self._asset = ParticleGraphAsset()
         self._emitter_index = 0
         self._stage = "init"
         self._dirty = False
         self._bind_stage()
         self._sync_project_dirty_flag()
+        self._persist_panel_state()
         return True
 
     def _snapshot(self) -> dict:
@@ -740,21 +908,37 @@ class ParticleGraphEditorPanel(EditorPanel):
                 display = os.path.basename(path_hint) if path_hint else t("igui.none")
                 selected_reference = []
 
-                def _select_material(path):
+                is_mesh = key == "mesh"
+                asset_kind = "Mesh" if is_mesh else "Material"
+                drag_types = (
+                    ("MODEL_GUID", "MODEL_FILE") if is_mesh else "MATERIAL_FILE"
+                )
+
+                def _select_asset(path):
                     normalized = str(path).replace("\\", "/")
                     selected_reference.append(
                         {"guid": _asset_guid_from_path(str(path)), "path_hint": normalized}
                     )
 
+                def _picker(query):
+                    if not is_mesh:
+                        return _picker_assets(query, "*.mat")
+                    from Infernux.core.asset_types import MESH_EXTENSIONS
+
+                    items = []
+                    for extension in sorted(MESH_EXTENSIONS):
+                        items.extend(_picker_assets(query, f"*{extension}"))
+                    return items
+
                 render_object_field(
                     ctx,
                     f"particle_node_{key}",
                     display,
-                    "Material",
-                    accept_drag_type="MATERIAL_FILE",
-                    on_drop_callback=_select_material,
-                    picker_asset_items=lambda query: _picker_assets(query, "*.mat"),
-                    on_pick=_select_material,
+                    asset_kind,
+                    accept_drag_type=drag_types,
+                    on_drop_callback=_select_asset,
+                    picker_asset_items=_picker,
+                    on_pick=_select_asset,
                     on_clear=lambda: selected_reference.append({"guid": "", "path_hint": ""}),
                     semantic_id=f"particle_graph.node.{node.uid}.property.{key}",
                 )

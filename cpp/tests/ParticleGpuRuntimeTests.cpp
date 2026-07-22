@@ -4,6 +4,7 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
+#include <function/renderer/particle/ParticleGpuMeshRenderer.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
@@ -749,6 +750,7 @@ int main()
         shader[0] = 0x07230203u;
     particle::GpuParticleCullerDesc cullerDesc;
     cullerDesc.capacity = runtime.Capacity();
+    cullerDesc.vertexCount = 6;
     cullerDesc.instances = runtime.InstanceBuffer();
     cullerDesc.sourceIndirectArguments = runtime.IndirectBuffer();
     cullerDesc.bounds = {800, 1};
@@ -1129,6 +1131,89 @@ int main()
     linkedBillboard.Destroy();
     assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 4 && linkedDevice.textureReleases == 3 &&
            linkedDevice.samplerReleases == 3);
+
+    {
+        FakeDevice meshDevice;
+        std::array<uint32_t, 4> meshVertexShader = {0x07230203};
+        std::array<uint32_t, 4> meshFragmentShader = {0x07230203};
+        std::array<uint32_t, 4> meshPickingShader = {0x07230203};
+        auto mesh = std::make_shared<InxMesh>("particle-triangle");
+        std::vector<Vertex> vertices(3);
+        vertices[0].pos = {-0.5f, -0.5f, 0.0f};
+        vertices[1].pos = {0.5f, -0.5f, 0.0f};
+        vertices[2].pos = {0.0f, 0.5f, 0.0f};
+        for (auto &vertex : vertices) {
+            vertex.normal = {0.0f, 0.0f, 1.0f};
+            vertex.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
+        }
+        SubMesh triangleSubMesh;
+        triangleSubMesh.indexCount = 3;
+        triangleSubMesh.vertexCount = 3;
+        mesh->SetData(std::move(vertices), {0, 1, 2}, {triangleSubMesh});
+
+        particle::GpuMeshRendererDesc meshDesc;
+        meshDesc.vertexShader = {meshVertexShader.data(), meshVertexShader.size()};
+        meshDesc.fragmentShader = {meshFragmentShader.data(), meshFragmentShader.size()};
+        meshDesc.pickingFragmentShader = {meshPickingShader.data(), meshPickingShader.size()};
+        meshDesc.instances = instanceBuffer;
+        meshDesc.renderIndices = renderIndexBuffer;
+        meshDesc.mesh = mesh;
+        meshDesc.meshVertices = meshDevice.CreateBuffer({3 * 5 * sizeof(glm::vec4), rhi::BufferUsageFlags::Storage});
+        meshDesc.meshIndices = meshDevice.CreateBuffer({3 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
+        meshDesc.indexCount = 3;
+        meshDesc.meshBufferKeepAlive = std::make_shared<int>(1);
+        meshDesc.material = std::make_shared<InxMaterial>("particle-mesh-material");
+        meshDesc.material->SetRenderQueue(2450);
+        meshDesc.material->SetColor("baseColor", glm::vec4(0.2f, 0.4f, 0.8f, 0.75f));
+
+        particle::ParticleGpuMeshRenderer meshRenderer;
+        assert(meshRenderer.Create(meshDevice, meshDesc));
+        assert(meshRenderer.IsValid() && meshRenderer.VertexCount() == 3 && meshRenderer.RenderQueue() == 2450);
+        assert(meshRenderer.InstanceBuffer() == instanceBuffer &&
+               meshRenderer.RenderIndexBuffer() == renderIndexBuffer);
+        assert(meshDevice.buffers.size() == 2 && meshDevice.initialBufferBytes.size() == 2);
+        assert(meshDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage &&
+               meshDevice.buffers[0].byteSize == 3 * 5 * sizeof(glm::vec4));
+        assert(meshDevice.buffers[1].usage == rhi::BufferUsageFlags::Storage &&
+               meshDevice.buffers[1].byteSize == 3 * sizeof(uint32_t));
+        assert(meshDevice.initialBufferBytes[0].empty() && meshDevice.initialBufferBytes[1].empty());
+        assert(meshDevice.layoutEntryCounts == std::vector<uint32_t>({4}) &&
+               meshDevice.groupBufferCounts == std::vector<uint32_t>({4}));
+
+        GraphicsTrace meshTrace;
+        const rhi::GraphicsCommandEncoder::Dispatch meshGraphicsDispatch = {
+            &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants,
+            &GraphicsTrace::Draw, &GraphicsTrace::DrawIndirect};
+        const rhi::GraphicsCommandEncoder meshEncoder(&meshTrace, &meshGraphicsDispatch);
+        assert(meshRenderer.RecordDraw(meshEncoder, firstTarget, forwardPass, indirectBuffer, view));
+        assert(meshTrace.indirectBuffers == std::vector<rhi::BufferHandle>({indirectBuffer}));
+        const std::array<float, 4> expectedMeshTint = {0.2f, 0.4f, 0.8f, 0.75f};
+        assert(meshTrace.constants.size() == 1 && meshTrace.constants[0].materialTint == expectedMeshTint);
+
+        auto pickingPass = forwardPass;
+        pickingPass.target = ShaderCompileTarget::Picking;
+        pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
+        pickingPass.samples = rhi::SampleCount::One;
+        assert(meshRenderer.RecordPickingDraw(meshEncoder, {101, 1}, pickingPass, indirectBuffer, view,
+                                              0x123456789abcdef0ull));
+        assert(meshDevice.graphicsPipelineCreates == 2 && meshTrace.indirectBuffers.size() == 2);
+        std::array<uint32_t, 4> encodedObjectId{};
+        std::memcpy(encodedObjectId.data(), meshTrace.constants.back().materialTint.data(), sizeof(encodedObjectId));
+        assert(encodedObjectId[0] == 0x9abcdef0u && encodedObjectId[1] == 0x12345678u);
+
+        meshRenderer.Destroy();
+        assert(!meshRenderer.IsValid() && meshDevice.bufferReleases == 0 && meshDevice.shaderReleases == 3 &&
+               meshDevice.layoutReleases == 1 && meshDevice.groupReleases == 1 &&
+               meshDevice.graphicsPipelineReleases == 2);
+
+        auto invalidMesh = std::make_shared<InxMesh>("invalid-particle-mesh");
+        invalidMesh->SetData(std::vector<Vertex>(1), {1}, {});
+        meshDesc.mesh = invalidMesh;
+        meshDesc.indexCount = 1;
+        assert(!meshRenderer.Create(meshDevice, meshDesc));
+        meshDevice.Release(meshDesc.meshIndices);
+        meshDevice.Release(meshDesc.meshVertices);
+    }
 
     {
         auto registryBillboardDesc = billboardDesc;

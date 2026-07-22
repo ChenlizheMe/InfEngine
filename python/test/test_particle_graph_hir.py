@@ -260,6 +260,120 @@ def test_particle_graph_compiler_rejects_rendering_without_output():
         ParticleGraphCompiler().compile(asset)
 
 
+def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "output.mesh",
+                "particle.output.mesh",
+                properties={
+                    "mesh": AssetReference(
+                        guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"
+                    ).to_dict(),
+                    "material": AssetReference(guid="debris-material-guid").to_dict(),
+                    "receive_scene_lighting": False,
+                    "receive_shadows": False,
+                    "sort": "none",
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-to-mesh",
+                "root.rendering",
+                "out",
+                "output.mesh",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+    )
+    output = program.emitters[0].render_plan.outputs[0]
+
+    assert output.output_type == "mesh"
+    assert output.mesh == AssetReference(
+        guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"
+    )
+    assert output.material == AssetReference(guid="debris-material-guid")
+    assert output.soft_particles is False
+    assert output.sort_mode == "none"
+
+
+def test_particle_graph_rejects_static_mesh_output_without_mesh_asset():
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord("output.mesh", "particle.output.mesh"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-to-mesh",
+                "root.rendering",
+                "out",
+                "output.mesh",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    with pytest.raises(ParticleCompileError, match="requires a mesh asset"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+        )
+
+
+@pytest.mark.parametrize(
+    "unsupported_properties",
+    (
+        {"receive_scene_lighting": True},
+        {"receive_scene_lighting": True, "receive_shadows": True},
+        {"sort": "back_to_front"},
+    ),
+)
+def test_particle_graph_rejects_unimplemented_static_mesh_output_semantics(
+    unsupported_properties,
+):
+    properties = {
+        "mesh": AssetReference(guid="mesh-guid").to_dict(),
+        **unsupported_properties,
+    }
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "output.mesh", "particle.output.mesh", properties=properties
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-to-mesh",
+                "root.rendering",
+                "out",
+                "output.mesh",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ParticleCompileError,
+        match="currently supports unlit, unsorted, non-soft rendering only",
+    ):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+        )
+
+
 def test_particle_graph_stream_order_lowers_to_stage_operations():
     init = GraphDocument(
         "particle.init",
@@ -548,6 +662,31 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert program.behavior_hash == ParticleGraphCompiler().compile(asset).behavior_hash
 
 
+def test_particle_script_static_mesh_output_matches_graph_contract():
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        '''particles.sprite(
+                material=AssetReference(guid="six-way-smoke-guid"),
+                receive_scene_lighting=True,
+                receive_shadows=True,
+                sort="back_to_front",
+            )''',
+        '''particles.mesh(
+                mesh=AssetReference(guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"),
+                material=AssetReference(guid="debris-material-guid"),
+                sort="none",
+            )''',
+    )
+
+    output = ParticleScriptCompiler().compile(
+        source, source_name="MeshOutput.particle.py"
+    ).emitters[0].render_plan.outputs[0]
+
+    assert output.output_type == "mesh"
+    assert output.mesh.guid == "mesh-guid"
+    assert output.material.guid == "debris-material-guid"
+    assert output.sort_mode == "none"
+
+
 def test_particle_script_vector_field_expression_matches_graph_kernel_contract():
     source = PARTICLE_SCRIPT_SOURCE.replace(
         "particles.acceleration((0.0, -0.2, 0.0))",
@@ -764,14 +903,19 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert set(graph_artifact.gpu_spirv["billboard"]) == {
         "vertex", "fragment", "picking_fragment"
     }
+    assert set(graph_artifact.gpu_spirv["mesh"]) == {
+        "vertex", "fragment", "picking_fragment"
+    }
     from Infernux.particle import decode_gpu_particle_spirv
 
     decoded = decode_gpu_particle_spirv(graph_artifact.gpu_spirv, 0)
     assert decoded["stable_id"] == "smoke"
     assert set(decoded["stages"]) == set(graph_artifact.gpu_glsl["emitters"][0]["stages"])
     assert set(decoded["billboard"]) == {"vertex", "fragment", "picking_fragment"}
+    assert set(decoded["mesh"]) == {"vertex", "fragment", "picking_fragment"}
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["stages"].values())
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["billboard"].values())
+    assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["mesh"].values())
     assert script_artifact.hir["emitters"][0]["render_plan"][0][
         "receive_scene_lighting"
     ] is True

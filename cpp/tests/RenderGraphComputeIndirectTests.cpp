@@ -1197,6 +1197,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuCuller managedViewCuller;
     infernux::particle::GpuParticleCullerDesc managedCullerDesc;
     managedCullerDesc.capacity = managedEntry.capacity;
+    managedCullerDesc.vertexCount = 6;
     managedCullerDesc.instances = managedEntry.instances;
     managedCullerDesc.sourceIndirectArguments = managedEntry.indirectArguments;
     managedCullerDesc.bounds = managedEntry.bounds;
