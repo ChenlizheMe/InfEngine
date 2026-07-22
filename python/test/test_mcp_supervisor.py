@@ -523,7 +523,15 @@ def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeyp
     expected_runtime = executable.parent / "Pilot_Data" / "Runtime" / "InfernuxPlayer.exe"
     assert captured["argv"] == [str(expected_runtime)]
     assert captured["env"]["_INFERNUX_PLAYER_CONTROL_TOKEN"] == supervisor._player_control_token
+    assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(expected_runtime.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_runtime.parent.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_MODULE_ROOT"] == str(
+        expected_runtime.parent.parent / "RuntimeModules"
+    )
     assert "_INFERNUX_PLAYER_DEBUG_BUILD" not in captured["env"]
+    assert supervisor.player_runtime_log_path == str(
+        expected_runtime.parent.parent / "Logs" / "player.log"
+    )
     supervisor._close_player_log()
 
 
@@ -579,7 +587,10 @@ def test_supervisor_stops_player_through_authenticated_control_without_force(tmp
     supervisor.prepare_project()
     supervisor._attached_player_pid = 9559
     supervisor._player_control_token = "private-player-control-token"
-    supervisor._player_executable = str(_write_debug_player_output(tmp_path, project))
+    launcher = _write_debug_player_output(tmp_path, project)
+    supervisor._player_executable = str(
+        launcher.parent / "Pilot_Data" / "Runtime" / "InfernuxPlayer.exe"
+    )
     supervisor._player_ready = True
     alive = {"value": True}
     original_write_json = supervisor_module._write_json

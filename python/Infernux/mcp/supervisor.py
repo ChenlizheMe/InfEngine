@@ -113,20 +113,22 @@ class SupervisorSession:
     def player_runtime_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        return os.path.join(os.path.dirname(self._player_executable), "Data", "Logs", "player.log")
+        return os.path.join(_player_data_root(self._player_executable), "Logs", "player.log")
 
     @property
     def player_debug_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        stem = os.path.splitext(os.path.basename(self._player_executable))[0]
-        return os.path.join(os.path.dirname(self._player_executable), f"{stem}_debug.log")
+        data_root = _player_data_root(self._player_executable)
+        data_name = os.path.basename(data_root)
+        game_name = data_name[:-5] if data_name.endswith("_Data") else data_name
+        return os.path.join(data_root, f"{game_name}_debug.log")
 
     @property
     def player_crash_log_path(self) -> str:
         if not self._player_executable:
             return ""
-        return os.path.join(os.path.dirname(self._player_executable), "Data", "Logs", "crash.log")
+        return os.path.join(_player_data_root(self._player_executable), "Logs", "crash.log")
 
     @classmethod
     def resume(
@@ -345,6 +347,10 @@ class SupervisorSession:
         env["_INFERNUX_PLAYER_CONTROL_FILE"] = self.player_control_path
         env["_INFERNUX_PLAYER_RESPONSE_FILE"] = self.player_response_path
         env["_INFERNUX_PLAYER_CONTROL_TOKEN"] = self._player_control_token
+        data_root = _player_data_root(self._player_executable)
+        env["_INFERNUX_PLAYER_RUNTIME_ROOT"] = os.path.dirname(self._player_executable)
+        env["_INFERNUX_PLAYER_DATA_ROOT"] = data_root
+        env["_INFERNUX_PLAYER_MODULE_ROOT"] = os.path.join(data_root, "RuntimeModules")
         if self._player_start_scene:
             env["_INFERNUX_PLAYER_START_SCENE"] = self._player_start_scene
         try:
@@ -1455,6 +1461,17 @@ def _validate_player_executable(executable_path: str, project_root: str) -> tupl
     if not bool(manifest.get("debug_build", False)):
         raise RuntimeError("Supervisor validation control is available only in a Debug Player build.")
     return runtime_executable, manifest
+
+
+def _player_data_root(runtime_executable: str) -> str:
+    runtime = resolved_path(str(runtime_executable or ""))
+    runtime_directory = os.path.dirname(runtime)
+    if os.path.basename(runtime_directory) != "Runtime":
+        raise ValueError("Player runtime executable is not inside the current organized Player layout.")
+    data_root = resolved_path(os.path.dirname(runtime_directory))
+    if not os.path.basename(data_root).endswith("_Data"):
+        raise ValueError("Player runtime data directory is invalid.")
+    return data_root
 
 
 def _resolve_player_start_scene(start_scene: str, project_root: str, manifest: dict[str, Any]) -> str:
