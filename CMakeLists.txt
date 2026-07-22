@@ -413,6 +413,7 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_canonical_light_snapshot_tests
         cpp/tests/CanonicalLightSnapshotTests.cpp
+        cpp/infernux/function/renderer/lighting/ForwardPlusLightGrid.cpp
     )
     target_include_directories(infernux_canonical_light_snapshot_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
