@@ -89,6 +89,10 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
             stack.set_pipeline(new_pipeline)
 
     def pipeline_parameter_changed(target, field_name, old_value, new_value) -> None:
+        # Pipeline instances are not scene components themselves. Mirror their
+        # live values into the owning RenderStack immediately so dirty-state,
+        # save, undo and MCP inspection all observe the same value.
+        stack.sync_pipeline_parameters()
         stack.invalidate_graph()
         from Infernux.engine.undo import RenderStackFieldCommand, UndoManager
 

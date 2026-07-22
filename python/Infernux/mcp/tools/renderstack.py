@@ -120,6 +120,42 @@ def register_renderstack_tools(mcp, project_path: str = "") -> None:
 
         return main_thread("renderstack_set_pipeline", _set, arguments={"pipeline": pipeline})
 
+    @mcp.tool(name="renderstack_set_pipeline_parameter")
+    def renderstack_set_pipeline_parameter(field: str, value: Any) -> dict:
+        """Set one exposed parameter on the active RenderStack pipeline."""
+
+        def _set_parameter():
+            from Infernux.components.serialized_field import get_serialized_fields
+
+            stack = _require_stack()
+            pipeline = stack.pipeline
+            fields = get_serialized_fields(type(pipeline))
+            field_name = str(field)
+            metadata = fields.get(field_name)
+            if metadata is None:
+                raise AttributeError(
+                    f"Pipeline '{pipeline.name}' has no exposed parameter "
+                    f"{field_name!r}; valid parameters: {sorted(fields)}"
+                )
+            if metadata.readonly:
+                raise AttributeError(
+                    f"Pipeline parameter '{pipeline.name}.{field_name}' is readonly"
+                )
+            coerced = _coerce_pipeline_parameter(
+                value, metadata, f"{pipeline.name}.{field_name}"
+            )
+            setattr(pipeline, field_name, coerced)
+            stack.sync_pipeline_parameters()
+            stack.invalidate_graph()
+            _mark_scene_dirty()
+            return _stack_snapshot(stack)
+
+        return main_thread(
+            "renderstack_set_pipeline_parameter",
+            _set_parameter,
+            arguments={"field": field},
+        )
+
     @mcp.tool(name="renderstack_list_effect_stages")
     def renderstack_list_effect_stages() -> dict:
         """List pipeline EffectStages and their ordered asset slots."""
@@ -250,10 +286,68 @@ def _stack_snapshot(stack, *, include_catalog: bool = False) -> dict[str, Any]:
         "effect_stages": _effect_stages(stack),
         "effect_compile_errors": list(getattr(stack, "effect_compile_errors", ()) or ()),
         "build_failed": bool(getattr(stack, "_build_failed", False)),
+        "pipeline_parameters": _pipeline_parameters(stack),
     }
     if include_catalog:
         data["available_pipelines"] = _available_pipelines()
     return data
+
+
+def _pipeline_parameters(stack) -> list[dict[str, Any]]:
+    from Infernux.components.serialized_field import get_serialized_fields
+
+    pipeline = stack.pipeline
+    parameters = []
+    for name, metadata in get_serialized_fields(type(pipeline)).items():
+        parameters.append({
+            "name": str(name),
+            "type": getattr(metadata.field_type, "name", str(metadata.field_type)),
+            "value": _serialize_pipeline_parameter(getattr(pipeline, name)),
+            "default": _serialize_pipeline_parameter(metadata.default),
+            "readonly": bool(metadata.readonly),
+        })
+    return parameters
+
+
+def _serialize_pipeline_parameter(value: Any) -> Any:
+    from enum import Enum
+
+    if isinstance(value, Enum):
+        return {"name": value.name, "value": value.value}
+    return serialize_value(value)
+
+
+def _coerce_pipeline_parameter(value: Any, metadata, path: str) -> Any:
+    from Infernux.components.serialized_field import (
+        FieldType,
+        coerce_serialized_field_input,
+    )
+
+    if metadata.field_type == FieldType.ENUM:
+        enum_type = metadata.enum_type
+        if enum_type is None:
+            raise TypeError(f"{path}: enum type is unavailable")
+        if isinstance(value, enum_type):
+            return value
+        if isinstance(value, dict) and "name" in value:
+            value = value["name"]
+        if isinstance(value, str):
+            lookup = {name.casefold(): member for name, member in enum_type.__members__.items()}
+            member = lookup.get(value.casefold())
+            if member is None:
+                raise ValueError(
+                    f"{path}: unknown enum member {value!r}; "
+                    f"valid values: {list(enum_type.__members__)}"
+                )
+            return member
+        try:
+            return enum_type(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{path}: invalid enum value {value!r}; "
+                f"valid values: {list(enum_type.__members__)}"
+            ) from exc
+    return coerce_serialized_field_input(value, metadata, path)
 
 
 def _effect_stages(stack) -> list[dict[str, Any]]:
@@ -347,6 +441,7 @@ def _register_metadata() -> None:
         "renderstack_inspect": "Inspect the active RenderStack pipeline and EffectStages.",
         "renderstack_list_pipelines": "List discovered RenderPipeline classes.",
         "renderstack_set_pipeline": "Switch the active RenderStack pipeline.",
+        "renderstack_set_pipeline_parameter": "Set one exposed parameter on the active RenderStack pipeline.",
         "renderstack_list_effect_stages": "List pipeline EffectStages and mounted Effect assets.",
         "renderstack_add_effect": "Mount a RenderEffect or EffectGroup asset in an EffectStage.",
         "renderstack_remove_effect": "Remove one mounted EffectStage asset slot.",

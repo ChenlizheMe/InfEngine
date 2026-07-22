@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from Infernux.core.asset_ref import RenderEffectRef
 from Infernux.mcp.tools import renderstack as module
 from Infernux.renderstack.effect_slot import EffectSlot
+from Infernux.renderstack.default_forward_pipeline import MSAASamples
+from Infernux.renderstack.render_stack import RenderStack
 
 
 class _Stack:
@@ -50,3 +52,24 @@ def test_effect_stage_snapshot_preserves_order_and_asset_identity():
             ],
         }
     ]
+
+
+def test_pipeline_snapshot_reports_live_values_separately_from_defaults():
+    stack = RenderStack()
+    stack.pipeline.msaa_samples = MSAASamples.X2
+
+    parameters = {
+        item["name"]: item for item in module._pipeline_parameters(stack)
+    }
+
+    assert parameters["msaa_samples"]["value"] == {"name": "X2", "value": 2}
+    assert parameters["msaa_samples"]["default"] == {"name": "X4", "value": 4}
+
+
+def test_pipeline_parameter_coercion_accepts_enum_name_for_agent_editing():
+    from Infernux.components.serialized_field import get_serialized_fields
+    from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+
+    metadata = get_serialized_fields(DefaultForwardPipeline)["msaa_samples"]
+
+    assert module._coerce_pipeline_parameter("X8", metadata, "msaa") is MSAASamples.X8

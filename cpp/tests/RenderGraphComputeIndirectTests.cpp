@@ -2155,6 +2155,41 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Soft-particle scene-depth dependency did not retain its producer"))
         return false;
 
+    RenderGraph resolvedDepthGraph;
+    resolvedDepthGraph.Initialize(&resources.context, &resources.pipelines);
+    ResourceHandle multisampledDepth;
+    ResourceHandle resolvedDepth;
+    ResourceHandle resolvedDepthOutput;
+    resolvedDepthGraph.AddPass("WriteMultisampledDepth", [&](PassBuilder &builder) {
+        multisampledDepth =
+            builder.CreateDepthStencil("MultisampledDepth", 8, 8, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_4_BIT);
+        multisampledDepth = builder.WriteDepth(multisampledDepth);
+        builder.SetRenderArea(8, 8);
+        builder.SetClearDepth(1.0f, 0);
+        return [](RenderContext &) {};
+    });
+    resolvedDepthGraph.AddComputePass("ResolveDepth", [&](PassBuilder &builder) {
+        builder.ReadSampledDepth(multisampledDepth, infernux::rhi::PipelineStage::ComputeShader);
+        resolvedDepth = builder.CreateTexture("ResolvedDepth", 8, 8, VK_FORMAT_R32_SFLOAT);
+        resolvedDepth = builder.WriteStorageTexture(resolvedDepth);
+        return [](RenderContext &) {};
+    });
+    resolvedDepthGraph.AddPass("SampleResolvedDepth", [&](PassBuilder &builder) {
+        builder.Read(resolvedDepth, infernux::rhi::PipelineStage::FragmentShader);
+        resolvedDepthOutput = builder.CreateTexture("ResolvedDepthOutput", 8, 8, VK_FORMAT_R8G8B8A8_UNORM);
+        resolvedDepthOutput = builder.WriteColor(resolvedDepthOutput);
+        builder.SetRenderArea(8, 8);
+        return [](RenderContext &) {};
+    });
+    resolvedDepthGraph.SetOutput(resolvedDepthOutput);
+    if (!Require(resolvedDepthGraph.Compile(),
+                 "MSAA scene depth could not resolve through a backend-neutral storage texture"))
+        return false;
+    if (!Require(resolvedDepthGraph.GetExecutionPassNames() ==
+                     std::vector<std::string>{"WriteMultisampledDepth", "ResolveDepth", "SampleResolvedDepth"},
+                 "Resolved scene-depth dependency did not retain its compute producer"))
+        return false;
+
     // Two logical versions share one physical image. A final pass cannot read
     // both sides of an overwrite without a copy, because it would need to run
     // both before and after that overwrite. Reject the cycle instead of

@@ -415,7 +415,8 @@ bool ParticleGpuBillboardRenderer::RefreshMaterialBuffer(bool force)
 
 rhi::BindGroupHandle ParticleGpuBillboardRenderer::CreateBindGroup(const std::vector<TextureBindingState> &textures,
                                                                    rhi::BufferHandle renderIndices,
-                                                                   rhi::TextureViewHandle sceneDepth) const
+                                                                   rhi::TextureViewHandle sceneDepth,
+                                                                   bool sceneDepthIsDepth) const
 {
     if (!m_device || !m_layout.IsValid())
         return {};
@@ -452,7 +453,7 @@ rhi::BindGroupHandle ParticleGpuBillboardRenderer::CreateBindGroup(const std::ve
         return {};
     }
     groupDesc.textures[groupDesc.textureCount++] = {15, rhi::BindingType::CombinedTextureSampler, depthTexture,
-                                                    fallbackSampler, readsSceneDepth};
+                                                    fallbackSampler, readsSceneDepth && sceneDepthIsDepth};
     return m_device->CreateBindGroup(groupDesc);
 }
 
@@ -475,19 +476,21 @@ void ParticleGpuBillboardRenderer::RetireViewBindGroups()
 }
 
 rhi::BindGroupHandle ParticleGpuBillboardRenderer::ResolveBindGroup(rhi::BufferHandle renderIndices,
-                                                                    rhi::TextureViewHandle sceneDepth)
+                                                                    rhi::TextureViewHandle sceneDepth,
+                                                                    bool sceneDepthIsDepth)
 {
     if ((!UsesLinkedProgram() || !renderIndices.IsValid() || renderIndices == m_renderIndices) && !sceneDepth.IsValid())
         return m_group;
     const auto existing = std::find_if(m_viewGroups.begin(), m_viewGroups.end(), [&](const auto &entry) {
-        return entry.renderIndices == renderIndices && entry.sceneDepth == sceneDepth;
+        return entry.renderIndices == renderIndices && entry.sceneDepth == sceneDepth &&
+               entry.sceneDepthIsDepth == sceneDepthIsDepth;
     });
     if (existing != m_viewGroups.end())
         return existing->group;
     const auto resolvedIndices = UsesLinkedProgram() && renderIndices.IsValid() ? renderIndices : m_renderIndices;
-    const auto group = CreateBindGroup(m_textures, resolvedIndices, sceneDepth);
+    const auto group = CreateBindGroup(m_textures, resolvedIndices, sceneDepth, sceneDepthIsDepth);
     if (group.IsValid())
-        m_viewGroups.push_back({renderIndices, sceneDepth, group});
+        m_viewGroups.push_back({renderIndices, sceneDepth, sceneDepthIsDepth, group});
     return group;
 }
 
@@ -585,17 +588,17 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
                                               const MaterialPassPipelineDescriptor &pass,
                                               rhi::BufferHandle indirectArguments,
                                               const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices,
-                                              rhi::TextureViewHandle sceneDepth)
+                                              rhi::TextureViewHandle sceneDepth, bool sceneDepthIsDepth)
 {
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || !RefreshMaterialBuffer(false) ||
         !RefreshTextureBindings(false))
         return false;
-    if (m_semantics.softParticles && (!sceneDepth.IsValid() || pass.samples != rhi::SampleCount::One))
+    if (m_semantics.softParticles && !sceneDepth.IsValid())
         return false;
     const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
     if (!pipeline.IsValid())
         return false;
-    const auto group = ResolveBindGroup(renderIndices, sceneDepth);
+    const auto group = ResolveBindGroup(renderIndices, sceneDepth, sceneDepthIsDepth);
     if (!group.IsValid())
         return false;
     auto constants = view;

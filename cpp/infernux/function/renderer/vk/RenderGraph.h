@@ -104,6 +104,7 @@ enum class ResourceUsage
     VersionDependency = 1 << 8, ///< Graph ordering only; emits no backend access or barrier
     Present = 1 << 9,           ///< Final presentation/export read
     RendererListRead = 1 << 10, ///< Host-side renderer list consumed by a raster callback
+    Storage = 1 << 11,          ///< Storage image/buffer access in GENERAL layout
 };
 
 inline ResourceUsage operator|(ResourceUsage a, ResourceUsage b)
@@ -380,6 +381,9 @@ class PassBuilder
 
     /// Write a storage buffer from a compute shader.
     ResourceHandle WriteStorageBuffer(ResourceHandle handle);
+
+    /// Write a storage texture from a compute shader.
+    ResourceHandle WriteStorageTexture(ResourceHandle handle);
 
     /// Consume a buffer as graphics indirect draw arguments.
     ResourceHandle ReadIndirectBuffer(ResourceHandle handle);

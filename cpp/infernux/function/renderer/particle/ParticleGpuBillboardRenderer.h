@@ -110,7 +110,7 @@ class ParticleGpuBillboardRenderer
                                   rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {},
-                                  rhi::TextureViewHandle sceneDepth = {});
+                                  rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true);
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                          rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
@@ -152,9 +152,11 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] bool RefreshTextureBindings(bool force);
     [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures,
                                                        rhi::BufferHandle renderIndices,
-                                                       rhi::TextureViewHandle sceneDepth = {}) const;
+                                                       rhi::TextureViewHandle sceneDepth = {},
+                                                       bool sceneDepthIsDepth = true) const;
     [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices,
-                                                        rhi::TextureViewHandle sceneDepth = {});
+                                                        rhi::TextureViewHandle sceneDepth = {},
+                                                        bool sceneDepthIsDepth = true);
     [[nodiscard]] bool RebuildBindGroup();
     void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
@@ -181,6 +183,7 @@ class ParticleGpuBillboardRenderer
     {
         rhi::BufferHandle renderIndices;
         rhi::TextureViewHandle sceneDepth;
+        bool sceneDepthIsDepth = true;
         rhi::BindGroupHandle group;
     };
     std::vector<ViewBindGroup> m_viewGroups;

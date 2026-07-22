@@ -5,6 +5,7 @@ from Infernux.engine.ui.inspector_declarative import (
     InspectorModel,
     InspectorReadOnlyRow,
     InspectorSection,
+    InspectorSerializedTarget,
     render_inspector_model,
 )
 from Infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
@@ -33,6 +34,25 @@ def test_forward_pipeline_labels_single_sample_msaa_explicitly():
     metadata = get_serialized_fields(DefaultForwardPipeline)["msaa_samples"]
 
     assert metadata.enum_labels == ["X1 (Off)", "X2", "X4", "X8"]
+
+
+def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
+    from Infernux.renderstack.default_forward_pipeline import MSAASamples
+
+    stack = RenderStack()
+    model = build_renderstack_inspector_model(stack)
+    control = next(
+        item
+        for item in model.sections[0].controls
+        if isinstance(item, InspectorSerializedTarget)
+    )
+    pipeline = control.target()
+
+    old_value = pipeline.msaa_samples
+    pipeline.msaa_samples = MSAASamples.X2
+    control.on_change(pipeline, "msaa_samples", old_value, pipeline.msaa_samples)
+
+    assert '"msaa_samples": {"__enum_name__": "X2"}' in stack.pipeline_params_json
 
 
 def test_renderstack_topology_exposes_only_pass_rows_and_effect_stage_lists():

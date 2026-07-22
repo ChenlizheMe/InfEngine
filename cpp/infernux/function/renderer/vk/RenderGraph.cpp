@@ -431,6 +431,25 @@ ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)
     return next;
 }
 
+ResourceHandle PassBuilder::WriteStorageTexture(ResourceHandle handle)
+{
+    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type == ResourceType::Buffer ||
+        m_graph->m_resources[handle.id].type == ResourceType::RendererList) {
+        return {};
+    }
+
+    ResourceHandle next = m_graph->AdvanceResourceVersion(handle);
+    if (!next.IsValid())
+        return {};
+
+    auto &pass = m_graph->m_passes[m_passId];
+    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::VersionDependency, rhi::PipelineStage::None,
+                          rhi::Access::None, rhi::TextureLayout::Undefined});
+    pass.writes.push_back({next, ResourceUsage::Write | ResourceUsage::Storage, rhi::PipelineStage::ComputeShader,
+                           rhi::Access::ShaderWrite, rhi::TextureLayout::General});
+    return next;
+}
+
 ResourceHandle PassBuilder::ReadIndirectBuffer(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)

@@ -1,4 +1,5 @@
 #include <function/renderer/FrameDeletionQueue.h>
+#include <function/renderer/SceneDepthResolver.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
@@ -205,6 +206,36 @@ struct CommandTrace
     }
 };
 
+struct DepthResolveTrace
+{
+    rhi::ComputePipelineHandle pipeline;
+    rhi::BindGroupHandle group;
+    std::array<uint32_t, 4> constants{};
+    std::array<uint32_t, 3> dispatch{};
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<DepthResolveTrace *>(context)->pipeline = pipeline;
+    }
+    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0);
+        static_cast<DepthResolveTrace *>(context)->group = group;
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == 16);
+        std::memcpy(static_cast<DepthResolveTrace *>(context)->constants.data(), data, byteSize);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        static_cast<DepthResolveTrace *>(context)->dispatch = {x, y, z};
+    }
+    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    {
+    }
+};
+
 struct GraphicsTrace
 {
     std::vector<rhi::GraphicsPipelineHandle> pipelines;
@@ -384,6 +415,36 @@ struct BoundsTrace
 
 int main()
 {
+    {
+        FakeDevice resolveDevice;
+        std::array<uint32_t, 5> shader = {0x07230203u, 0u, 0u, 0u, 0u};
+        SceneDepthResolver resolver;
+        assert(resolver.Initialize(resolveDevice, shader.data(), shader.size()));
+        assert(resolveDevice.layouts.size() == 1 && resolveDevice.layouts[0].entryCount == 2);
+        assert(resolveDevice.layouts[0].entries[0].type == rhi::BindingType::CombinedTextureSampler);
+        assert(resolveDevice.layouts[0].entries[1].type == rhi::BindingType::StorageTexture);
+
+        DepthResolveTrace trace;
+        const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
+            &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup, &DepthResolveTrace::PushConstants,
+            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect};
+        const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
+        const rhi::TextureViewHandle source{101, 1};
+        const rhi::TextureViewHandle destination{102, 1};
+        assert(resolver.Record(encoder, source, destination, 1919, 1079, 4));
+        assert(resolveDevice.groupCreates == 1 && resolveDevice.bindGroups[0].textureCount == 2);
+        assert(resolveDevice.bindGroups[0].textures[0].depthRead);
+        assert(resolveDevice.bindGroups[0].textures[1].type == rhi::BindingType::StorageTexture);
+        assert((trace.constants == std::array<uint32_t, 4>{1919, 1079, 4, 0}));
+        assert((trace.dispatch == std::array<uint32_t, 3>{240, 135, 1}));
+        assert(resolver.Record(encoder, source, destination, 1919, 1079, 4));
+        assert(resolveDevice.groupCreates == 1);
+        const auto groups = resolver.TakeBindGroups();
+        assert(groups.size() == 1 && groups[0].IsValid());
+        resolveDevice.Release(groups[0]);
+        resolver.Destroy();
+    }
+
     {
         FakeDevice migrationDevice;
         std::array<std::array<uint32_t, 5>, 2> migrationWords{};
@@ -936,8 +997,9 @@ int main()
     particle::ParticleGpuBillboardRenderer softBillboard;
     assert(softBillboard.Create(softDevice, softDesc) && softBillboard.RequiresSceneDepth());
     const rhi::TextureViewHandle sceneDepthView{990, 1};
-    assert(
-        !softBillboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, sceneDepthView));
+    assert(softBillboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, sceneDepthView,
+                                    false));
+    assert(!softDevice.bindGroups.back().textures[1].depthRead);
     auto singleSamplePass = forwardPass;
     singleSamplePass.samples = rhi::SampleCount::One;
     assert(!softBillboard.RecordDraw(graphicsEncoder, firstTarget, singleSamplePass, indirectBuffer, view));
@@ -945,7 +1007,7 @@ int main()
     const rhi::GraphicsCommandEncoder softEncoder(&softTrace, &graphicsDispatch);
     assert(
         softBillboard.RecordDraw(softEncoder, firstTarget, singleSamplePass, indirectBuffer, view, {}, sceneDepthView));
-    assert(softDevice.bindGroups.size() == 2 && softDevice.bindGroups.back().textureCount == 2);
+    assert(softDevice.bindGroups.size() == 3 && softDevice.bindGroups.back().textureCount == 2);
     assert(softDevice.bindGroups.back().textures[1].binding == 15 &&
            softDevice.bindGroups.back().textures[1].texture == sceneDepthView &&
            softDevice.bindGroups.back().textures[1].depthRead);

@@ -519,6 +519,8 @@ rhi::TextureLayout RenderGraph::UsageToLayout(ResourceUsage usage, ResourceType 
         return rhi::TextureLayout::ShaderReadOnly;
     if (static_cast<int>(usage & ResourceUsage::Transfer) != 0)
         return rhi::TextureLayout::TransferSource;
+    if (static_cast<int>(usage & ResourceUsage::Storage) != 0)
+        return rhi::TextureLayout::General;
     if (static_cast<int>(usage & ResourceUsage::ReadWrite) != 0)
         return rhi::TextureLayout::General;
     return rhi::TextureLayout::Undefined;
@@ -539,6 +541,8 @@ rhi::Access RenderGraph::UsageToAccessMask(ResourceUsage usage)
         flags = flags | rhi::Access::TransferRead;
     if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
         flags = flags | rhi::Access::IndirectRead;
+    if (static_cast<int>(usage & ResourceUsage::Storage) != 0)
+        flags = flags | rhi::Access::ShaderRead | rhi::Access::ShaderWrite;
     if (static_cast<int>(usage & (ResourceUsage::ReadWrite)) != 0)
         flags = flags | rhi::Access::ShaderRead | rhi::Access::ShaderWrite;
     if (static_cast<int>(usage & ResourceUsage::Read) != 0 && static_cast<int>(usage & ResourceUsage::Write) == 0 &&
@@ -562,6 +566,8 @@ rhi::PipelineStage RenderGraph::UsageToStageFlags(ResourceUsage usage)
         flags = flags | rhi::PipelineStage::Transfer;
     if (static_cast<int>(usage & ResourceUsage::IndirectArgument) != 0)
         flags = flags | rhi::PipelineStage::DrawIndirect;
+    if (static_cast<int>(usage & ResourceUsage::Storage) != 0)
+        flags = flags | rhi::PipelineStage::ComputeShader;
     if (flags == rhi::PipelineStage::None)
         flags = rhi::PipelineStage::AllGraphics;
     return flags;
@@ -752,6 +758,19 @@ bool RenderGraph::AllocateResources()
                     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
                 } else {
                     imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+                }
+            }
+
+            for (const auto &pass : m_passes) {
+                if (pass.culled)
+                    continue;
+                const auto usesStorage = [ri](const ResourceAccess &access) {
+                    return access.handle.id == ri && static_cast<int>(access.usage & ResourceUsage::Storage) != 0;
+                };
+                if (std::any_of(pass.reads.begin(), pass.reads.end(), usesStorage) ||
+                    std::any_of(pass.writes.begin(), pass.writes.end(), usesStorage)) {
+                    imageInfo.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+                    break;
                 }
             }
 

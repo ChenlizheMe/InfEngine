@@ -204,8 +204,14 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
     def on_before_serialize(self) -> None:
         """Persist the current pipeline parameter snapshot."""
+        self.sync_pipeline_parameters()
+
+    def sync_pipeline_parameters(self) -> None:
+        """Mirror live pipeline parameters into the serialized component state."""
         self._save_current_pipeline_params()
-        self.pipeline_params_json = _json.dumps(self._pipeline_param_store)
+        serialized = _json.dumps(self._pipeline_param_store)
+        if self.pipeline_params_json != serialized:
+            self.pipeline_params_json = serialized
 
     def _deserialize_fields_document(
         self, data: dict, *, _skip_on_after_deserialize: bool = False

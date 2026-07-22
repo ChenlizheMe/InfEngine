@@ -21,6 +21,7 @@
 #include "MaterialPassPipeline.h"
 #include "RenderGraphDescription.h"
 #include "RendererList.h"
+#include "SceneDepthResolver.h"
 #include "vk/RenderGraph.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -630,6 +631,7 @@ class SceneRenderGraph
     // Fullscreen effect renderer — manages pipeline cache, descriptor pool,
     // and linear sampler for FullscreenQuad graph passes.
     FullscreenRenderer m_fullscreenRenderer;
+    SceneDepthResolver m_sceneDepthResolver;
 };
 
 } // namespace infernux

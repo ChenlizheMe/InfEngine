@@ -26,6 +26,7 @@
 #include <core/config/EngineConfig.h>
 #include <core/error/InxError.h>
 #include <cstring>
+#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Camera.h>
 #include <limits>
@@ -549,6 +550,27 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     // Initialize fullscreen effect renderer for FullscreenQuad passes
     m_fullscreenRenderer.Initialize(vkCore);
 
+    const auto depthResolveSupport = vkCore->GetDeviceContext().GetCapabilities().CheckFormat(
+        rhi::PixelFormat::R32SFloat, rhi::FormatFeature::Sampled | rhi::FormatFeature::Storage);
+    if (depthResolveSupport.IsSupported()) {
+        InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+        const auto bytes = compiler.CompileComputeGlsl(std::string(SceneDepthResolver::ShaderSource()),
+                                                       "Infernux/SceneDepthResolve.comp");
+        if (bytes.size() >= 5 * sizeof(uint32_t) && bytes.size() % sizeof(uint32_t) == 0) {
+            std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
+            std::memcpy(spirv.data(), bytes.data(), bytes.size());
+            if (!m_sceneDepthResolver.Initialize(vkCore->GetDeviceContext().GetRhiDevice(), spirv.data(),
+                                                 spirv.size())) {
+                INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI scene-depth resolver");
+            }
+        } else {
+            INXLOG_ERROR("SceneRenderGraph: failed to compile the RHI scene-depth resolve shader");
+        }
+    } else {
+        INXLOG_WARN("SceneRenderGraph: R32SFloat sampled-storage textures are unavailable; MSAA soft particles are "
+                    "disabled on this adapter");
+    }
+
     return true;
 }
 
@@ -575,6 +597,7 @@ void SceneRenderGraph::Destroy()
     m_particleCullers.clear();
     m_particleSorters.clear();
     m_fullscreenRenderer.Destroy();
+    m_sceneDepthResolver.Destroy();
     m_transientResources.clear();
     m_parameterBlocks.clear();
 
@@ -1320,6 +1343,14 @@ void SceneRenderGraph::BuildRenderGraph()
         return;
     }
 
+    auto retiredDepthResolveGroups = m_sceneDepthResolver.TakeBindGroups();
+    if (!retiredDepthResolveGroups.empty()) {
+        rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
+        m_vkCore->GetDeletionQueue().Push([device, groups = std::move(retiredDepthResolveGroups)]() mutable {
+            for (const auto group : groups)
+                device->Release(group);
+        });
+    }
     m_renderGraph->Reset();
     // The renderer has waited only for the current frame slot. Leave the
     // other descriptor set untouched until its own fence is observed; the
@@ -1717,6 +1748,9 @@ void SceneRenderGraph::BuildRenderGraph()
         // must resolve it again whenever a preceding pass wrote new MSAA data.
         bool backbufferDirtySinceResolve = false;
         uint32_t msaaResolvePassCounter = 0;
+        uint32_t depthResolvePassCounter = 0;
+        vk::ResourceHandle resolvedParticleSceneDepth;
+        vk::ResourceHandle resolvedParticleDepthSource;
 
         for (const auto &passDesc : sortedPasses) {
             const GraphCommandDesc *command = PrimaryCommand(passDesc);
@@ -2023,18 +2057,42 @@ void SceneRenderGraph::BuildRenderGraph()
             bool needsCreateDepth = writesDepth && !sharedDepth.IsValid();
             bool passReadsDepth = readsDepth && !writesDepth;
             vk::ResourceHandle particleSceneDepth;
+            bool particleSceneDepthIsDepth = true;
             const bool hasSoftParticleOutputs =
                 std::any_of(particleEntries.begin(), particleEntries.end(),
                             [](const auto &entry) { return entry.semantics.softParticles; });
             if (hasSoftParticleOutputs) {
-                const bool validDepthContract = passReadsDepth && depthForThisPass.IsValid() &&
-                                                particlePass.depthFormat != rhi::PixelFormat::Undefined &&
-                                                particlePass.samples == rhi::SampleCount::One;
-                if (validDepthContract) {
+                const bool hasDepthContract = passReadsDepth && depthForThisPass.IsValid() &&
+                                              particlePass.depthFormat != rhi::PixelFormat::Undefined;
+                if (hasDepthContract && msaaSamples == VK_SAMPLE_COUNT_1_BIT) {
                     particleSceneDepth = depthForThisPass;
+                } else if (hasDepthContract && m_sceneDepthResolver.IsValid()) {
+                    if (!resolvedParticleSceneDepth.IsValid() || resolvedParticleDepthSource != depthForThisPass) {
+                        const auto sourceDepth = depthForThisPass;
+                        const std::string resolvePassName =
+                            "_SceneDepthResolve/" + std::to_string(depthResolvePassCounter++);
+                        m_renderGraph->AddComputePass(resolvePassName, [&, sourceDepth](vk::PassBuilder &builder) {
+                            builder.ReadSampledDepth(sourceDepth, rhi::PipelineStage::ComputeShader);
+                            auto target = builder.CreateTexture("SceneDepthResolved", width, height,
+                                                                VK_FORMAT_R32_SFLOAT, VK_SAMPLE_COUNT_1_BIT);
+                            resolvedParticleSceneDepth = builder.WriteStorageTexture(target);
+                            const auto outputDepth = resolvedParticleSceneDepth;
+                            return [this, sourceDepth, outputDepth, width, height,
+                                    sampleCount = static_cast<uint32_t>(msaaSamples)](vk::RenderContext &ctx) {
+                                const bool recorded = m_sceneDepthResolver.Record(
+                                    ctx.GetComputeCommandEncoder(), ctx.GetTextureView(sourceDepth),
+                                    ctx.GetTextureView(outputDepth), width, height, sampleCount);
+                                if (!recorded)
+                                    INXLOG_ERROR("SceneRenderGraph: failed to record the MSAA scene-depth resolve");
+                            };
+                        });
+                        resolvedParticleDepthSource = sourceDepth;
+                    }
+                    particleSceneDepth = resolvedParticleSceneDepth;
+                    particleSceneDepthIsDepth = false;
                 } else {
                     INXLOG_ERROR("SceneRenderGraph: soft particle outputs in pass '", passDesc.name,
-                                 "' require a single-sample read-only scene depth attachment");
+                                 "' require a readable scene depth and an available single-sample resolve path");
                     particleEntries.erase(
                         std::remove_if(particleEntries.begin(), particleEntries.end(),
                                        [](const auto &entry) { return entry.semantics.softParticles; }),
@@ -2456,8 +2514,12 @@ void SceneRenderGraph::BuildRenderGraph()
                     // Pass reads depth (e.g., skybox, transparent) — attach as read-only
                     builder.ReadDepth(depthForThisPass);
                 }
-                if (particleSceneDepth.IsValid())
-                    builder.ReadSampledDepth(particleSceneDepth, rhi::PipelineStage::FragmentShader);
+                if (particleSceneDepth.IsValid()) {
+                    if (particleSceneDepthIsDepth)
+                        builder.ReadSampledDepth(particleSceneDepth, rhi::PipelineStage::FragmentShader);
+                    else
+                        builder.Read(particleSceneDepth, rhi::PipelineStage::FragmentShader);
+                }
 
                 // Scene-sized depth textures are pre-registered in customRTHandles,
                 // so later writers commonly take the first branch above. Keep the
@@ -2523,7 +2585,7 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 return [this, callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
                         usesShadowRendererList, localVkCore, particlePackets, particlePass, particleSceneDepth,
-                        passName = passDesc.name](vk::RenderContext &ctx) {
+                        particleSceneDepthIsDepth, passName = passDesc.name](vk::RenderContext &ctx) {
                     if (rendererListHandle.IsValid()) {
                         const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
                         if (usesShadowRendererList) {
@@ -2553,7 +2615,8 @@ void SceneRenderGraph::BuildRenderGraph()
                             [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
                                 encoder, renderTargetLayout, particlePass,
                                 ctx.GetBufferHandle(packet.indirectArguments), view, packet.drawRenderIndices,
-                                packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{});
+                                packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
+                                particleSceneDepthIsDepth);
                         }
                     }
                 };
