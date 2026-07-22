@@ -578,6 +578,7 @@ class RenderGraph:
         # Optional callback invoked at each pipeline-declared EffectStage.
         self._effect_stage_callback = None
         self._effect_route_policy_resolver = None
+        self._effect_stage_active_resolver = None
         self._name_scopes: List[str] = []
         self._effect_resource_scopes: List[Dict[str, TextureHandle]] = []
 
@@ -685,6 +686,24 @@ class RenderGraph:
         if self._effect_route_policy_resolver is None:
             return RoutePolicy.ISOLATE_AND_COMPOSITE
         return RoutePolicy(self._effect_route_policy_resolver(stage_ids))
+
+    def is_effect_stage_active(self, stage) -> bool:
+        """Return whether a declared mount point has any enabled slot.
+
+        Activity is intentionally separate from route ownership policy. A
+        composite EffectGroup may legally contain additive and replacement
+        effects even though that combination is ambiguous for an isolated
+        render-queue route.
+        """
+        stable_id = getattr(stage, "stable_id", stage)
+        if self._effect_stage_active_resolver is not None:
+            return bool(self._effect_stage_active_resolver(stable_id))
+        try:
+            from Infernux.renderstack.route_policy import RoutePolicy
+
+            return self.resolve_effect_route_policy((stage,)) is not RoutePolicy.INLINE
+        except ValueError:
+            return True
 
     def _scoped_name(self, name: str) -> str:
         raw = str(name)

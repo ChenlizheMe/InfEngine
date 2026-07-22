@@ -82,6 +82,21 @@ class _RouteContribution:
     additive: object | None = None
 
 
+@dataclass(frozen=True)
+class _ScopeImage:
+    """A scope's ordinary image plus effect pixels that must stay on top.
+
+    Isolated route effects can create color outside their source geometry.  A
+    later opaque draw has no depth at those pixels and would overwrite that
+    overflow if it were committed immediately.  Keeping those contributions
+    separate until the scope's ordinary geometry is complete gives them the
+    same useful semantics as a local post-process layer.
+    """
+
+    base: object
+    overlays: tuple[_RouteContribution, ...] = ()
+
+
 def _consume_route_contribution(
     accumulator: _ImageAccumulator,
     contribution: _RouteContribution | None,
@@ -94,6 +109,15 @@ def _consume_route_contribution(
         accumulator.composite(contribution.color, label=label)
     if contribution.additive is not None:
         accumulator.add(contribution.additive, label=f"{label}_additive")
+
+
+def _flush_route_contributions(
+    accumulator: _ImageAccumulator,
+    contributions: list[tuple[str, _RouteContribution]],
+) -> None:
+    for label, contribution in contributions:
+        _consume_route_contribution(accumulator, contribution, label=label)
+    contributions.clear()
 
 
 def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
@@ -145,6 +169,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
         depth,
         shadow_map,
     )
+    pending_scene_overlays: list[tuple[str, _RouteContribution]] = []
     domains = {domain.domain_id: domain for domain in definition.domains}
     stages = {stage.stable_id: stage for stage in definition.effect_stages}
 
@@ -152,9 +177,15 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
         if operation in {"frame", "shadows", "lighting"}:
             continue
         if operation == "domain":
+            domain = domains[stable_id]
+            # Transparent geometry is authored after opaque scene effects and
+            # must blend over them, so finish any deferred opaque overflow
+            # before entering the transparent domain.
+            if domain.domain_id == "transparent":
+                _flush_route_contributions(scene, pending_scene_overlays)
             domain_image = _compile_domain(
                 definition,
-                domains[stable_id],
+                domain,
                 graph,
                 color_format,
                 depth,
@@ -162,10 +193,17 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
                 stages,
                 definition.frame.msaa,
             )
-            scene.composite(domain_image, label=stable_id)
+            scene.composite(domain_image.base, label=stable_id)
+            pending_scene_overlays.extend(
+                (f"{stable_id}_{index:02d}", contribution)
+                for index, contribution in enumerate(domain_image.overlays)
+            )
             continue
         if operation == "effect":
-            _declare_effect(graph, stages[stable_id], scene.effect_resources())
+            stage = stages[stable_id]
+            if _effect_stage_is_active(graph, stage):
+                _flush_route_contributions(scene, pending_scene_overlays)
+            _declare_effect(graph, stage, scene.effect_resources())
             continue
         if operation == "sky":
             _compile_sky(
@@ -174,13 +212,16 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
                 color_format,
                 definition.frame.msaa,
             )
+            _flush_route_contributions(scene, pending_scene_overlays)
             continue
         if operation == "screen_ui":
+            _flush_route_contributions(scene, pending_scene_overlays)
             _commit_scene_to_camera(graph, scene, camera_color)
             graph.screen_ui_section(resources={"color"})
             continue
         raise ValueError(f"unknown pipeline operation: {operation!r}")
 
+    _flush_route_contributions(scene, pending_scene_overlays)
     _commit_scene_to_camera(graph, scene, camera_color)
     graph.set_output(camera_color)
 
@@ -215,6 +256,7 @@ def _compile_domain(
         depth,
         shadow_map,
     )
+    pending_overlays: list[tuple[str, _RouteContribution]] = []
     layers = {layer.layer_id: layer for layer in domain.layers}
 
     for operation, stable_id in domain.operations:
@@ -231,11 +273,8 @@ def _compile_domain(
                 inline_target=accumulator.current,
                 msaa_samples=msaa_samples,
             )
-            _consume_route_contribution(
-                accumulator,
-                contribution,
-                label=stable_id,
-            )
+            if contribution is not None:
+                pending_overlays.append((stable_id, contribution))
             continue
         if operation == "layer":
             image = _compile_layer(
@@ -251,13 +290,23 @@ def _compile_domain(
                 stages,
                 msaa_samples,
             )
-            accumulator.composite(image, label=stable_id)
+            accumulator.composite(image.base, label=stable_id)
+            pending_overlays.extend(
+                (f"{stable_id}_{index:02d}", contribution)
+                for index, contribution in enumerate(image.overlays)
+            )
             continue
         if operation == "effect":
-            _declare_effect(graph, stages[stable_id], accumulator.effect_resources())
+            stage = stages[stable_id]
+            if _effect_stage_is_active(graph, stage):
+                _flush_route_contributions(accumulator, pending_overlays)
+            _declare_effect(graph, stage, accumulator.effect_resources())
             continue
         raise ValueError(f"unknown {domain.domain_id} operation: {operation!r}")
-    return accumulator.current
+    return _ScopeImage(
+        base=accumulator.current,
+        overlays=tuple(contribution for _, contribution in pending_overlays),
+    )
 
 
 def _compile_layer(
@@ -281,6 +330,7 @@ def _compile_layer(
         depth,
         shadow_map,
     )
+    pending_overlays: list[tuple[str, _RouteContribution]] = []
     for operation, stable_id in layer.operations:
         if operation == "route":
             contribution = _compile_route(
@@ -294,17 +344,20 @@ def _compile_layer(
                 inline_target=accumulator.current,
                 msaa_samples=msaa_samples,
             )
-            _consume_route_contribution(
-                accumulator,
-                contribution,
-                label=stable_id,
-            )
+            if contribution is not None:
+                pending_overlays.append((stable_id, contribution))
             continue
         if operation == "effect":
-            _declare_effect(graph, stages[stable_id], accumulator.effect_resources())
+            stage = stages[stable_id]
+            if _effect_stage_is_active(graph, stage):
+                _flush_route_contributions(accumulator, pending_overlays)
+            _declare_effect(graph, stage, accumulator.effect_resources())
             continue
         raise ValueError(f"unknown {layer.layer_id} operation: {operation!r}")
-    return accumulator.current
+    return _ScopeImage(
+        base=accumulator.current,
+        overlays=tuple(contribution for _, contribution in pending_overlays),
+    )
 
 
 def _compile_route(
@@ -502,6 +555,10 @@ def _declare_effect(
             outputs={"color"},
             capabilities=capabilities,
         )
+
+
+def _effect_stage_is_active(graph, stage: EffectStageDefinition) -> bool:
+    return graph.is_effect_stage_active(stage)
 
 
 def _commit_scene_to_camera(graph, scene: _ImageAccumulator, camera_color) -> None:

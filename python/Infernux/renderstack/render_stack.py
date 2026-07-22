@@ -499,6 +499,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 self.get_effect_stage_slots,
             )
         )
+        graph._effect_stage_active_resolver = lambda stage_id: any(
+            slot.enabled for slot in self.get_effect_stage_slots(stage_id)
+        )
 
         # Pipeline populates graph with passes + injection points
         self.pipeline.define_topology(graph)

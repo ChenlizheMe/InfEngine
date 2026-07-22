@@ -133,6 +133,51 @@ def test_msaa_pipeline_resolves_isolated_routes_and_sky_before_effects():
     assert sky_under.commands[0].input_bindings[0] == ("_BaseTex", "sky/color")
 
 
+def test_opaque_route_effect_overflow_is_composited_after_ordinary_background():
+    pipeline = PipelineBuilder()
+    with pipeline.opaque() as opaque:
+        with opaque.layer("Effects") as layer:
+            layer.forward(Queue(1, 100)).effects("blurred")
+        opaque.otherwise().forward()
+    pipeline.effects("empty_after_opaque")
+    pipeline.sky()
+
+    graph = RenderGraph("Deferred Route Overflow")
+    graph._effect_route_policy_resolver = lambda stage_ids: (
+        RoutePolicy.ISOLATE_AND_COMPOSITE
+        if "blurred" in stage_ids
+        else RoutePolicy.INLINE
+    )
+    compile_pipeline_definition(pipeline.build(), graph)
+    description = graph.build()
+    names = [render_pass.name for render_pass in description.passes]
+
+    ordinary_draw = next(
+        index
+        for index, name in enumerate(names)
+        if name.startswith("route/opaque.route_2/") and "/Draw_" in name
+    )
+    overflow_composite = next(
+        index
+        for index, render_pass in enumerate(description.passes)
+        if any(
+            command.shader_name == "route_alpha_composite"
+            and dict(command.input_bindings).get("_LayerTex", "").endswith(
+                "route/opaque.route_1/color"
+            )
+            for command in render_pass.commands
+        )
+    )
+    sky_under = next(
+        index
+        for index, name in enumerate(names)
+        if name.startswith("under/scene/")
+    )
+
+    assert ordinary_draw < overflow_composite
+    assert sky_under < overflow_composite
+
+
 @pytest.mark.parametrize("path", [Path.FORWARD_PLUS, Path.DEFERRED])
 def test_compiler_never_silently_substitutes_forward_for_unfinished_paths(path):
     pipeline = PipelineBuilder()
@@ -256,6 +301,17 @@ def test_route_policy_merge_rejects_additive_and_replacement_effects():
         merge_route_policies(
             [RoutePolicy.ADDITIVE_EXTRACT, RoutePolicy.MASK_AND_MODIFY]
         )
+
+
+def test_composite_stage_activity_does_not_merge_route_policies():
+    graph = RenderGraph("Composite Activity")
+    graph._effect_stage_active_resolver = lambda stage_id: stage_id == "final"
+    graph._effect_route_policy_resolver = lambda stage_ids: (_ for _ in ()).throw(
+        AssertionError("composite activity must not query route policy")
+    )
+
+    assert graph.is_effect_stage_active("final") is True
+    assert graph.is_effect_stage_active("empty") is False
 
 
 def test_empty_route_effect_stage_draws_inline_without_an_isolation_target():

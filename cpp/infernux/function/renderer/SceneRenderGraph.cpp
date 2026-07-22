@@ -1019,9 +1019,7 @@ void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
 
     if (m_graphBuilt) {
         if (m_hasCameraClearOverride && !m_mainClearPassName.empty()) {
-            if (m_cameraClearFlags == CameraClearFlags::Skybox) {
-                m_renderGraph->UpdatePassClearColor(m_mainClearPassName, 0.0f, 0.0f, 0.0f, 1.0f);
-            } else if (m_cameraClearFlags == CameraClearFlags::SolidColor) {
+            if (m_cameraClearFlags == CameraClearFlags::SolidColor) {
                 m_renderGraph->UpdatePassClearColor(m_mainClearPassName, m_cameraBgColor.r, m_cameraBgColor.g,
                                                     m_cameraBgColor.b, m_cameraBgColor.a);
             }
@@ -2033,10 +2031,10 @@ void SceneRenderGraph::BuildRenderGraph()
                 case CameraClearFlags::Skybox:
                     clearColor = true;
                     clearDepth = true;
-                    clearColorR = 0.0f;
-                    clearColorG = 0.0f;
-                    clearColorB = 0.0f;
-                    clearColorA = 1.0f;
+                    // Preserve the graph-authored clear color. Declarative
+                    // pipelines use transparent scene accumulators and place
+                    // the sky underneath them later; forcing opaque black here
+                    // makes the real sky impossible to composite back in.
                     break;
                 case CameraClearFlags::SolidColor:
                     clearColor = true;
