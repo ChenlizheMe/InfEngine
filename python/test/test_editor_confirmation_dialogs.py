@@ -325,6 +325,24 @@ def test_native_modal_is_promoted_after_late_dock_focus_processing():
     assert "ImGui::BringWindowToDisplayFront(modal)" in promote_implementation
 
 
+def test_imgui_renders_modals_in_the_overlay_layer():
+    source = Path("cpp/infernux/function/renderer/gui/InxGUI.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    begin = source.index("    ApplyPendingDockTabSelections();")
+    end = source.index("    m_hasDrawData = true;", begin)
+    implementation = source[begin:end]
+
+    promote_index = implementation.index("    PromoteActiveModal();")
+    overlay_index = implementation.index(
+        "activeModal->Flags |= ImGuiWindowFlags_Tooltip;"
+    )
+    render_index = implementation.index("    ImGui::Render();")
+    restore_index = implementation.index("activeModal->Flags = activeModalFlags;")
+    assert promote_index < overlay_index < render_index < restore_index
+
+
 import Infernux.lib as native
 from Infernux.engine.ui import project_file_ops
 from Infernux.engine.ui.project_delete_confirmation import ProjectDeleteConfirmationCoordinator

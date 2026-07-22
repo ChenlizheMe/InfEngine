@@ -593,8 +593,21 @@ void InxGUI::BuildFrameInternal()
 
     ApplyPendingDockTabSelections();
     PromoteActiveModal();
+
+    // ImGui normally renders modals in the regular window layer and relies on
+    // root-window ordering alone. A floating dock host can still be emitted
+    // over a close confirmation in that model. Use ImGui's overlay layer only
+    // while draw data is assembled, then restore the semantic window flags so
+    // modal layout and input behavior remain unchanged on the next frame.
+    ImGuiWindow *activeModal = ImGui::GetTopMostPopupModal();
+    const ImGuiWindowFlags activeModalFlags = activeModal != nullptr ? activeModal->Flags : ImGuiWindowFlags_None;
+    if (activeModal != nullptr)
+        activeModal->Flags |= ImGuiWindowFlags_Tooltip;
+
     frameGuard.Complete();
     ImGui::Render();
+    if (activeModal != nullptr)
+        activeModal->Flags = activeModalFlags;
     m_hasDrawData = true;
 }
 
