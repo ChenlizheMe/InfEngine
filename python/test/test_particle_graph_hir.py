@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -604,6 +605,46 @@ def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations(
     assert opcodes.count("store_attribute") >= 4
 
 
+def test_particle_script_comparisons_and_kill_if_lower_to_composable_lifecycle_ops():
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        "particles.kill_if(particles.age >= 0.5)",
+    )
+
+    asset = ParticleScriptCompiler().parse(source, source_name="Kill.particle.py")
+    update = asset.emitters[0].update
+    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    opcodes = [instruction.opcode for instruction in kernel.emitters[0].update.instructions]
+
+    assert any(node.type_id == "common.compare.greater_equal" for node in update.nodes)
+    assert any(node.type_id == "particle.update.kill_if" for node in update.nodes)
+    assert "greater_equal" in opcodes
+    assert opcodes.count("kill_if") == 2
+
+
+def test_particle_script_noise_compiles_to_the_shared_portable_kernel_ops():
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        "particles.acceleration(ctx.vector_noise_3d(particles.position, frequency=2.5, seed=17))",
+    ).replace(
+        "particles.rotate(180.0)",
+        "particles.set_size(ctx.value_noise_3d(particles.position, 4.0, 23))",
+    )
+
+    asset = ParticleScriptCompiler().parse(source, source_name="Noise.particle.py")
+    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    opcodes = [instruction.opcode for instruction in kernel.emitters[0].update.instructions]
+
+    assert "vector_noise_3d" in opcodes
+    assert "value_noise_3d" in opcodes
+    vector_noise = next(
+        node
+        for node in asset.emitters[0].update.nodes
+        if node.type_id == "common.noise.vector3d"
+    )
+    assert vector_noise.properties == {"frequency": 2.5, "seed": 17}
+
+
 @pytest.mark.parametrize(
     ("replacement", "message"),
     [
@@ -767,6 +808,50 @@ def test_particle_aot_failure_preserves_last_known_good_and_cache_hit(tmp_path, 
 
     assert restored.source_hash == current.source_hash
     assert restored.behavior_hash == current.behavior_hash
+
+
+def test_particle_graph_save_does_not_replace_valid_source_with_invalid_draft(tmp_path):
+    path = tmp_path / "Smoke.particlegraph"
+    valid = ParticleGraphAsset(stable_id="atomic-particle-save")
+    valid.save(str(path))
+    source_before = path.read_bytes()
+
+    emitter = valid.emitters[0]
+    update = emitter.update
+    invalid_update = GraphDocument(
+        update.domain,
+        update.nodes
+        + (
+            GraphNodeRecord("noise", "common.noise.vector3d", properties={}),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+        ),
+        update.links
+        + (
+            GraphLinkRecord(
+                "root-to-acceleration",
+                "root.update",
+                "out",
+                "acceleration",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "noise-to-acceleration",
+                "noise",
+                "value",
+                "acceleration",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+        update.metadata,
+    )
+    invalid = replace(valid, emitters=(replace(emitter, update=invalid_update),))
+
+    with pytest.raises(ParticleArtifactError, match="required input noise.position"):
+        invalid.save(str(path))
+
+    assert path.read_bytes() == source_before
 
 
 def test_particle_aot_rebuilds_persisted_artifact_with_stale_hir_contract(

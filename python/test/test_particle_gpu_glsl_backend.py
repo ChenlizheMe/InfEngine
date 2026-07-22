@@ -35,6 +35,72 @@ def _gpu_source():
     return GpuParticleGlslLowerer().lower(kernel)
 
 
+def _kill_if_gpu_source():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("kill", "particle.update.kill_if"),
+            GraphNodeRecord("age", "particle.attribute.read_f32"),
+            GraphNodeRecord("limit", "common.constant.f32", properties={"value": 0.5}),
+            GraphNodeRecord("older", "common.compare.greater_than"),
+        ),
+        links=(
+            GraphLinkRecord("stream", "root.update", "out", "kill", "in", PortKind.STREAM),
+            GraphLinkRecord("a", "age", "value", "older", "a", PortKind.VALUE),
+            GraphLinkRecord("b", "limit", "value", "older", "b", PortKind.VALUE),
+            GraphLinkRecord("condition", "older", "result", "kill", "condition", PortKind.VALUE),
+        ),
+    )
+    emitter = ParticleEmitterAsset(stable_id="kill", update=update)
+    hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
+    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+
+
+def _noise_gpu_source():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord(
+                "noise",
+                "common.noise.vector3d",
+                properties={"frequency": 2.0, "seed": 17},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "acceleration", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord("position", "position", "value", "noise", "position"),
+            GraphLinkRecord("noise", "noise", "value", "acceleration", "value"),
+        ),
+    )
+    emitter = ParticleEmitterAsset(stable_id="noise", update=update)
+    hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
+    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+
+
+def test_gpu_kill_if_accumulates_death_and_feeds_the_existing_free_list():
+    source = _kill_if_gpu_source().emitters[0].update
+
+    assert "particle_alive = particle_alive && !(" in source
+    assert " > " in source
+    assert "inx_push_free" in source
+
+
+def test_gpu_vector_noise_uses_the_portable_hash_and_compiles_to_spirv():
+    source = _noise_gpu_source()
+    update = source.emitters[0].update
+
+    assert "inx_noise_hash" in update
+    assert "inx_vector_noise_3d" in update
+    payload = compile_gpu_particle_spirv(source)
+    assert validate_gpu_particle_spirv(payload, source) is payload
+
+
 def _point_cache_gpu_source():
     init = GraphDocument(
         "particle.init",

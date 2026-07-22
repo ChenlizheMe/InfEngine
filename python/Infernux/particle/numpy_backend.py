@@ -866,7 +866,16 @@ def _compile_stage(
             name = f"v{len(values)}"
             lines.append(f"    {name} = context.{immediates['name']}")
             values[instruction.result_id] = name
-        elif opcode in {"add", "subtract", "multiply", "divide", "less_than"}:
+        elif opcode in {
+            "add",
+            "subtract",
+            "multiply",
+            "divide",
+            "less_than",
+            "less_equal",
+            "greater_than",
+            "greater_equal",
+        }:
             operands = operand_names(instruction)
             output = result_buffer(instruction)
             ufunc = {
@@ -875,6 +884,9 @@ def _compile_stage(
                 "multiply": "multiply",
                 "divide": "divide",
                 "less_than": "less",
+                "less_equal": "less_equal",
+                "greater_than": "greater",
+                "greater_equal": "greater_equal",
             }[opcode]
             lines.append(f"    np.{ufunc}({operands[0]}, {operands[1]}, out={output})")
         elif opcode == "lerp":
@@ -883,6 +895,10 @@ def _compile_stage(
             lines.append(
                 f"    np.add({operands[0]}, ({operands[1]} - {operands[0]}) * {operands[2]}, out={output})"
             )
+        elif opcode == "logical_not":
+            source = operand_names(instruction)[0]
+            output = result_buffer(instruction)
+            lines.append(f"    np.logical_not({source}, out={output})")
         elif opcode == "normalize":
             source = operand_names(instruction)[0]
             output = result_buffer(instruction)
@@ -907,6 +923,13 @@ def _compile_stage(
             gradients.append(_prepare_gradient(immediates["gradient"]))
             lines.append(
                 f"    _sample_gradient({output}, {source}, _gradients[{len(gradients) - 1}])"
+            )
+        elif opcode in {"value_noise_3d", "vector_noise_3d"}:
+            position, frequency, seed = operand_names(instruction)
+            output = result_buffer(instruction)
+            helper = "_value_noise_3d" if opcode == "value_noise_3d" else "_vector_noise_3d"
+            lines.append(
+                f"    {helper}({output}, {position}, {frequency}, {seed}, workspace, count)"
             )
         elif opcode.startswith("sample_shape_"):
             output = result_buffer(instruction)
@@ -968,9 +991,12 @@ def _compile_stage(
                 f"    np.copyto(state.attributes[_attributes[{len(attributes) - 1}]][particle_slice], "
                 f"{source}, casting='unsafe')"
             )
-        elif opcode == "set_alive":
+        elif opcode == "kill_if":
             source = operand_names(instruction)[0]
-            lines.append(f"    np.copyto(state.alive[particle_slice], {source}, casting='unsafe')")
+            lines.append(
+                f"    np.logical_and(state.alive[particle_slice], np.logical_not({source}), "
+                f"out=state.alive[particle_slice])"
+            )
         elif opcode == "export_attribute":
             source = operand_names(instruction)[0]
             stable_id = immediates["attribute"]
@@ -1004,6 +1030,8 @@ def _compile_stage(
         "_sample_vector_field": _sample_vector_field,
         "_sample_curve": _sample_curve,
         "_sample_gradient": _sample_gradient,
+        "_value_noise_3d": _value_noise_3d,
+        "_vector_noise_3d": _vector_noise_3d,
     }
     exec(compile(source, f"<particle-numpy-{function.stage.value}>", "exec"), namespace)
     return NumpyStageExecutable(
@@ -1114,6 +1142,92 @@ def _sample_gradient(output, source, prepared) -> None:
         colors[indices] + (colors[next_indices] - colors[indices]) * factor[:, None],
         casting="unsafe",
     )
+
+
+def _noise_hash(output, temporary, float_output, coordinates, seed, seed_xor) -> None:
+    np.copyto(output, coordinates[:, 0], casting="unsafe")
+    np.multiply(output, np.uint32(0x8DA6B343), out=output)
+    np.copyto(temporary, coordinates[:, 1], casting="unsafe")
+    np.multiply(temporary, np.uint32(0xD8163841), out=temporary)
+    np.bitwise_xor(output, temporary, out=output)
+    np.copyto(temporary, coordinates[:, 2], casting="unsafe")
+    np.multiply(temporary, np.uint32(0xCB1AB31F), out=temporary)
+    np.bitwise_xor(output, temporary, out=output)
+    np.bitwise_xor(output, seed, out=output)
+    if seed_xor:
+        np.bitwise_xor(output, np.uint32(seed_xor), out=output)
+    np.right_shift(output, np.uint32(16), out=temporary)
+    np.bitwise_xor(output, temporary, out=output)
+    np.multiply(output, np.uint32(0x7FEB352D), out=output)
+    np.right_shift(output, np.uint32(15), out=temporary)
+    np.bitwise_xor(output, temporary, out=output)
+    np.multiply(output, np.uint32(0x846CA68B), out=output)
+    np.right_shift(output, np.uint32(16), out=temporary)
+    np.bitwise_xor(output, temporary, out=output)
+    np.right_shift(output, np.uint32(8), out=temporary)
+    np.copyto(float_output, temporary, casting="unsafe")
+    np.multiply(float_output, np.float32(1.0 / 16777216.0), out=float_output)
+
+
+def _value_noise_3d(output, position, frequency, seed, workspace, count, seed_xor=0) -> None:
+    fraction = workspace.field_fraction[:count]
+    floor_values = workspace.field_coordinates[:count]
+    base = workspace.field_base[:count]
+    corner = workspace.field_corner[:count]
+    smooth = workspace.sample_vector[:count]
+    values = tuple(value[:count] for value in workspace.random_float)
+    hash_value = workspace.random_u32_a[:count]
+    hash_temporary = workspace.random_u32_b[:count]
+
+    frequency_values = np.asarray(frequency)
+    if frequency_values.ndim:
+        frequency_values = frequency_values[:, None]
+    np.multiply(position, frequency_values, out=fraction)
+    np.floor(fraction, out=floor_values)
+    np.copyto(base, floor_values, casting="unsafe")
+    np.subtract(fraction, floor_values, out=fraction)
+    np.multiply(fraction, fraction, out=smooth)
+    np.multiply(fraction, np.float32(-2.0), out=floor_values)
+    np.add(floor_values, np.float32(3.0), out=floor_values)
+    np.multiply(smooth, floor_values, out=smooth)
+
+    for index, (y_offset, z_offset) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
+        np.copyto(corner, base)
+        if y_offset:
+            np.add(corner[:, 1], 1, out=corner[:, 1])
+        if z_offset:
+            np.add(corner[:, 2], 1, out=corner[:, 2])
+        _noise_hash(hash_value, hash_temporary, values[4], corner, seed, seed_xor)
+        np.add(corner[:, 0], 1, out=corner[:, 0])
+        _noise_hash(hash_value, hash_temporary, values[5], corner, seed, seed_xor)
+        np.subtract(values[5], values[4], out=values[5])
+        np.multiply(values[5], smooth[:, 0], out=values[5])
+        np.add(values[4], values[5], out=values[index])
+
+    np.subtract(values[1], values[0], out=values[4])
+    np.multiply(values[4], smooth[:, 1], out=values[4])
+    np.add(values[0], values[4], out=values[4])
+    np.subtract(values[3], values[2], out=values[5])
+    np.multiply(values[5], smooth[:, 1], out=values[5])
+    np.add(values[2], values[5], out=values[5])
+    np.subtract(values[5], values[4], out=output)
+    np.multiply(output, smooth[:, 2], out=output)
+    np.add(output, values[4], out=output)
+
+
+def _vector_noise_3d(output, position, frequency, seed, workspace, count) -> None:
+    for component, seed_xor in enumerate((0x00000000, 0x9E3779B9, 0x85EBCA6B)):
+        _value_noise_3d(
+            output[:, component],
+            position,
+            frequency,
+            seed,
+            workspace,
+            count,
+            seed_xor,
+        )
+    np.multiply(output, np.float32(2.0), out=output)
+    np.subtract(output, np.float32(1.0), out=output)
 
 
 def _random_range(

@@ -13,13 +13,20 @@ from .types import TypeRef, ValueType
 from .ramp import Curve, Gradient
 
 
-def _input(port_id: str, value_type=None, *, variable="", default=None) -> PortDef:
+def _input(
+    port_id: str,
+    value_type=None,
+    *,
+    variable="",
+    default=None,
+    required=False,
+) -> PortDef:
     return PortDef(
         port_id,
         PortDirection.INPUT,
         value_type=value_type,
         type_variable=variable,
-        required=False,
+        required=required,
         default=default,
     )
 
@@ -114,6 +121,55 @@ COMMON_NODE_DEFINITIONS = (
         target_opcodes={"expression": "lerp"},
     ),
     NodeDef(
+        "common.compare.less_than",
+        "Less Than",
+        (
+            _input("a", TypeRef(ValueType.F32), default=0.0),
+            _input("b", TypeRef(ValueType.F32), default=0.0),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "less_than"},
+    ),
+    NodeDef(
+        "common.compare.less_equal",
+        "Less Than Or Equal",
+        (
+            _input("a", TypeRef(ValueType.F32), default=0.0),
+            _input("b", TypeRef(ValueType.F32), default=0.0),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "less_equal"},
+    ),
+    NodeDef(
+        "common.compare.greater_than",
+        "Greater Than",
+        (
+            _input("a", TypeRef(ValueType.F32), default=0.0),
+            _input("b", TypeRef(ValueType.F32), default=0.0),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "greater_than"},
+    ),
+    NodeDef(
+        "common.compare.greater_equal",
+        "Greater Than Or Equal",
+        (
+            _input("a", TypeRef(ValueType.F32), default=0.0),
+            _input("b", TypeRef(ValueType.F32), default=0.0),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "greater_equal"},
+    ),
+    NodeDef(
+        "common.logic.not",
+        "Not",
+        (
+            _input("value", TypeRef(ValueType.BOOL), default=False),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "logical_not"},
+    ),
+    NodeDef(
         "common.vector.normalize",
         "Normalize",
         (
@@ -132,6 +188,28 @@ COMMON_NODE_DEFINITIONS = (
             _output("value", TypeRef(ValueType.F32)),
         ),
         target_opcodes={"expression": "random_f32"},
+    ),
+    NodeDef(
+        "common.noise.value3d",
+        "Value Noise 3D",
+        (
+            _input("position", variable="P", required=True),
+            _input("frequency", TypeRef(ValueType.F32), default=1.0),
+            _input("seed", TypeRef(ValueType.U32), default=0),
+            _output("value", TypeRef(ValueType.F32)),
+        ),
+        target_opcodes={"expression": "value_noise_3d"},
+    ),
+    NodeDef(
+        "common.noise.vector3d",
+        "Vector Noise 3D",
+        (
+            _input("position", variable="P", required=True),
+            _input("frequency", TypeRef(ValueType.F32), default=1.0),
+            _input("seed", TypeRef(ValueType.U32), default=0),
+            _output("value", variable="P"),
+        ),
+        target_opcodes={"expression": "vector_noise_3d"},
     ),
     NodeDef(
         "common.curve.sample",

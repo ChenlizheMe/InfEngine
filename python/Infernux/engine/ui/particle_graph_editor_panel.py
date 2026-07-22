@@ -101,6 +101,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._view = NodeGraphView()
         self._view.semantic_namespace = "particle_graph.canvas"
         self._view.on_node_add_request = self._on_node_add
+        self._view.on_node_creation_requested = self._on_node_creation_requested
         self._view.on_nodes_deleted = self._on_nodes_deleted
         self._view.on_link_created = self._on_link_created
         self._view.on_link_deleted = self._on_link_deleted
@@ -289,6 +290,16 @@ class ParticleGraphEditorPanel(EditorPanel):
             stage = self._model.stage_for_uid(node_uid)
             if stage:
                 self._select_stage(stage)
+
+    def _on_node_creation_requested(self, request: dict) -> None:
+        if self._model is None:
+            return
+        stage = self._model.stage_for_uid(str(request.get("source_node", "")))
+        if not stage:
+            stage = self._model.stage_nearest_y(float(request.get("gy", 0.0)))
+        self._stage = stage
+        self._model.set_authoring_stage(stage)
+        self._model.prepare_node_creation(stage)
 
     def _on_node_add(self, type_id: str, x: float, y: float):
         if self._model is None or self._model.get_type(type_id) is None:

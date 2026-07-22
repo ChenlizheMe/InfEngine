@@ -52,6 +52,34 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     assert restored.links[0].kind.value == "stream"
 
 
+def test_particle_data_expression_nodes_are_creatable_in_simulation_stages():
+    emitter = ParticleGraphAsset().emitters[0]
+    init_types = {
+        definition.type_id for definition in _stage_model(emitter.init).registered_types()
+    }
+    update_types = {
+        definition.type_id for definition in _stage_model(emitter.update).registered_types()
+    }
+    rendering_types = {
+        definition.type_id
+        for definition in _stage_model(emitter.rendering).registered_types()
+    }
+
+    for type_id in (
+        "particle.attribute.read_vec3",
+        "particle.point_cache.sample_position",
+        "particle.vector_field.sample",
+    ):
+        assert type_id in init_types
+        assert type_id in update_types
+        assert type_id not in rendering_types
+
+    model = ParticleEmitterGraphAuthoringModel(emitter)
+    model.prepare_node_creation("update")
+    position = model.add_node("particle.attribute.read_vec3", 200.0, 230.0)
+    assert position.uid.startswith("update::")
+
+
 def test_default_rendering_stage_opens_without_overlapping_output():
     rendering = ParticleGraphAsset().emitters[0].rendering
     positions = {node.uid: node.position for node in rendering.nodes}
@@ -86,6 +114,59 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
     assert [node.type_id for node in documents["update"].nodes] == [
         "particle.root.update",
         "particle.update.acceleration",
+    ]
+
+
+def test_particle_common_node_creation_keeps_the_requested_stage():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("update")
+
+    noise = model.add_node("common.noise.vector3d", 200.0, 460.0)
+
+    assert noise.uid.startswith("update::")
+    assert model.authoring_stage == "update"
+
+
+def test_particle_graph_palette_request_freezes_source_or_canvas_stage():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    panel._on_node_creation_requested(
+        {"source_node": "update::root.update", "gy": 460.0}
+    )
+    linked_creation = panel._on_node_add("common.noise.vector3d", 200.0, 460.0)
+    panel._on_node_creation_requested({"source_node": "", "gy": 230.0})
+    canvas_creation = panel._on_node_add("common.compare.greater_than", 400.0, 230.0)
+
+    assert linked_creation.uid.startswith("update::")
+    assert canvas_creation.uid.startswith("update::")
+    assert panel._stage == "update"
+
+
+def test_shared_palette_notifies_host_with_the_complete_creation_request():
+    from Infernux.engine.ui.node_graph_view import NodeGraphView, PinKind
+
+    view = NodeGraphView()
+    requests = []
+    view.on_node_creation_requested = requests.append
+
+    view._request_node_creation(
+        12.0,
+        34.0,
+        "update::root.update",
+        "out",
+        PinKind.OUTPUT,
+    )
+
+    assert requests == [
+        {
+            "gx": 12.0,
+            "gy": 34.0,
+            "source_node": "update::root.update",
+            "source_pin": "out",
+            "source_kind": PinKind.OUTPUT,
+        }
     ]
 
 

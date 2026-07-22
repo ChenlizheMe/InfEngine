@@ -533,6 +533,14 @@ class _StageCompiler:
             expression = f"mix({operands[0]}, {operands[1]}, {operands[2]})"
         elif opcode == "less_than":
             expression = f"({operands[0]} < {operands[1]})"
+        elif opcode == "less_equal":
+            expression = f"({operands[0]} <= {operands[1]})"
+        elif opcode == "greater_than":
+            expression = f"({operands[0]} > {operands[1]})"
+        elif opcode == "greater_equal":
+            expression = f"({operands[0]} >= {operands[1]})"
+        elif opcode == "logical_not":
+            expression = f"!({operands[0]})"
         elif opcode == "normalize":
             expression = f"inx_safe_normalize({operands[0]})"
         elif opcode == "random_f32":
@@ -557,6 +565,10 @@ class _StageCompiler:
                 f"{_float_literal(gradient.keys[-1].time)});"
             )
             expression = _glsl_gradient_sample(sample_time, gradient)
+        elif opcode == "value_noise_3d":
+            expression = f"inx_value_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
+        elif opcode == "vector_noise_3d":
+            expression = f"inx_vector_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
         elif opcode.startswith("sample_shape_"):
             mode = "position" if opcode.endswith("position") else "direction"
             slots = immediate["random_slots"]
@@ -601,8 +613,8 @@ class _StageCompiler:
                 value = f"({value} ? 1u : 0u)"
             self._lines.append(f"state.{field} = {value};")
             return
-        elif opcode == "set_alive":
-            self._lines.append(f"particle_alive = {operands[0]};")
+        elif opcode == "kill_if":
+            self._lines.append(f"particle_alive = particle_alive && !({operands[0]});")
             return
         elif opcode == "export_attribute":
             self._exports[immediate["attribute"]] = operands[0]
@@ -1301,6 +1313,45 @@ float inx_random01(uint node_seed, uint random_slot, uint particle_id, uint gene
 
 float inx_random_range(float low, float high, uint node_seed, uint random_slot, uint particle_id, uint generation) {{
     return low + inx_random01(node_seed, random_slot, particle_id, generation) * (high - low);
+}}
+
+uint inx_noise_hash(uvec3 cell, uint seed) {{
+    uint value = cell.x * 0x8da6b343u;
+    value ^= cell.y * 0xd8163841u;
+    value ^= cell.z * 0xcb1ab31fu;
+    value ^= seed;
+    value ^= value >> 16u; value *= 0x7feb352du; value ^= value >> 15u;
+    value *= 0x846ca68bu; value ^= value >> 16u;
+    return value;
+}}
+
+float inx_noise_corner(ivec3 cell, uint seed) {{
+    return float(inx_noise_hash(uvec3(cell), seed) >> 8u) * (1.0 / 16777216.0);
+}}
+
+float inx_value_noise_3d(vec3 position, float frequency, uint seed) {{
+    vec3 scaled = position * frequency;
+    ivec3 base = ivec3(floor(scaled));
+    vec3 fraction = fract(scaled);
+    vec3 smooth_value = fraction * fraction * (vec3(3.0) - vec3(2.0) * fraction);
+    float z0y0 = mix(inx_noise_corner(base + ivec3(0, 0, 0), seed),
+                      inx_noise_corner(base + ivec3(1, 0, 0), seed), smooth_value.x);
+    float z0y1 = mix(inx_noise_corner(base + ivec3(0, 1, 0), seed),
+                      inx_noise_corner(base + ivec3(1, 1, 0), seed), smooth_value.x);
+    float z1y0 = mix(inx_noise_corner(base + ivec3(0, 0, 1), seed),
+                      inx_noise_corner(base + ivec3(1, 0, 1), seed), smooth_value.x);
+    float z1y1 = mix(inx_noise_corner(base + ivec3(0, 1, 1), seed),
+                      inx_noise_corner(base + ivec3(1, 1, 1), seed), smooth_value.x);
+    return mix(mix(z0y0, z0y1, smooth_value.y),
+               mix(z1y0, z1y1, smooth_value.y), smooth_value.z);
+}}
+
+vec3 inx_vector_noise_3d(vec3 position, float frequency, uint seed) {{
+    return vec3(
+        inx_value_noise_3d(position, frequency, seed),
+        inx_value_noise_3d(position, frequency, seed ^ 0x9e3779b9u),
+        inx_value_noise_3d(position, frequency, seed ^ 0x85ebca6bu)
+    ) * 2.0 - vec3(1.0);
 }}
 
 vec2 inx_safe_normalize(vec2 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec2(0.0); }}

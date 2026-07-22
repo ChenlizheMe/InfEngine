@@ -58,6 +58,8 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
     "sample_curve": KernelOpcodeSpec(True, 1, frozenset({"curve"})),
     "sample_gradient": KernelOpcodeSpec(True, 1, frozenset({"gradient"})),
+    "value_noise_3d": KernelOpcodeSpec(True, 3),
+    "vector_noise_3d": KernelOpcodeSpec(True, 3),
     "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
     "sample_shape_direction": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
     "sample_point_cache": KernelOpcodeSpec(
@@ -73,7 +75,11 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         _ALL_STAGES,
     ),
     "less_than": KernelOpcodeSpec(True, 2),
-    "set_alive": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
+    "less_equal": KernelOpcodeSpec(True, 2),
+    "greater_than": KernelOpcodeSpec(True, 2),
+    "greater_equal": KernelOpcodeSpec(True, 2),
+    "logical_not": KernelOpcodeSpec(True, 1),
+    "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
     "export_attribute": KernelOpcodeSpec(
         False, 1, frozenset({"attribute"}), _RENDER_ONLY
     ),
@@ -301,6 +307,20 @@ def _validate_opcode_types(
             Gradient.from_dict(immediates["gradient"])
         except (TypeError, ValueError) as exc:
             raise KernelSemanticError(f"invalid gradient literal: {exc}") from exc
+    elif opcode in {"value_noise_3d", "vector_noise_3d"}:
+        if (
+            len(operands) != 3
+            or operands[0].value_type is not ValueType.VEC3
+            or operands[1:] != (f32, TypeRef(ValueType.U32))
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires vec3 position, f32 frequency and u32 seed"
+            )
+        expected = f32 if opcode == "value_noise_3d" else operands[0]
+        if result_type != expected:
+            raise KernelSemanticError(
+                f"kernel {opcode} has an invalid result type"
+            )
     elif opcode.startswith("sample_shape_"):
         if result_type is None or result_type.value_type is not ValueType.VEC3:
             raise KernelSemanticError("kernel shape sampling requires a vec3 result")
@@ -372,16 +392,19 @@ def _validate_opcode_types(
             )
         if type(immediates["interface"]) is not str or not immediates["interface"].strip():
             raise KernelSemanticError("vector field interface cannot be empty")
-    elif opcode == "less_than":
+    elif opcode in {"less_than", "less_equal", "greater_than", "greater_equal"}:
         if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
             ValueType.I32,
             ValueType.U32,
             ValueType.F32,
         }:
-            raise KernelSemanticError("kernel less_than requires matching scalar operands")
-    elif opcode == "set_alive":
+            raise KernelSemanticError(f"kernel {opcode} requires matching scalar operands")
+    elif opcode == "logical_not":
+        if result_type != bool_type or operands != (bool_type,):
+            raise KernelSemanticError("kernel logical_not requires and produces one bool")
+    elif opcode == "kill_if":
         if operands != (bool_type,):
-            raise KernelSemanticError("kernel set_alive requires one bool operand")
+            raise KernelSemanticError("kernel kill_if requires one bool operand")
     elif opcode == "convert_space":
         if result_type is None or operands[0].value_type != result_type.value_type:
             raise KernelSemanticError("kernel space conversion must preserve value type")

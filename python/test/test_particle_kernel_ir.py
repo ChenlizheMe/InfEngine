@@ -47,8 +47,9 @@ def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
     update_opcodes = [instruction.opcode for instruction in emitter.update.instructions]
     assert update_opcodes.count("load_uniform") == 1
     assert "store_attribute" in update_opcodes
-    assert "set_alive" in update_opcodes
-    assert update_opcodes[-1] == "set_alive"
+    assert "kill_if" in update_opcodes
+    assert update_opcodes[-1] == "kill_if"
+    assert update_opcodes[-2] == "logical_not"
     render_exports = [
         instruction.immediate_dict()["attribute"]
         for instruction in emitter.rendering.instructions
@@ -384,7 +385,7 @@ def test_kernel_opcode_contract_rejects_unknown_or_stage_invalid_operations():
             KernelStage.INIT,
             (
                 KernelInstruction(
-                    "set_alive",
+                    "kill_if",
                     operands=(KernelOperand(TypeRef(ValueType.BOOL), literal=True),),
                 ),
             ),

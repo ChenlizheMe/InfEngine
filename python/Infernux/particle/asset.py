@@ -520,6 +520,9 @@ class ParticleGraphAsset:
         from Infernux.core.document_store import write_document_text
         from .artifact import ParticleArtifactRegistry
 
+        # Never replace the last valid source with a graph that cannot become a
+        # portable runtime artifact. write_document_text performs the atomic swap.
+        ParticleArtifactRegistry.validate_graph_asset(self)
         write_document_text(
             path,
             json.dumps(self.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",

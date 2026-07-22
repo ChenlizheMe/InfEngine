@@ -36,6 +36,8 @@ class _ParticleStageContext:
     def sample_vector_field(self, interface: str, position): ...
     def sample_curve(self, curve: Curve, t: float) -> float: ...
     def sample_gradient(self, gradient: Gradient, t: float): ...
+    def value_noise_3d(self, position, frequency: float = 1.0, seed: int = 0) -> float: ...
+    def vector_noise_3d(self, position, frequency: float = 1.0, seed: int = 0): ...
 
 
 class InitContext(_ParticleStageContext):
@@ -65,6 +67,7 @@ class ParticleStream:
     def set_size(self, value) -> None: ...
     def acceleration(self, value) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
+    def kill_if(self, condition: bool) -> None: ...
     def sprite(
         self,
         *,
@@ -99,6 +102,7 @@ class ParticleScriptCompiler:
             "set_color": ("particle.attribute.set_color", "value"),
             "set_size": ("particle.attribute.set_size", "value"),
             "rotate": ("particle.update.rotate", "degrees_per_second"),
+            "kill_if": ("particle.update.kill_if", "condition"),
         },
         "rendering": {
             "sprite": ("particle.output.sprite", ""),
@@ -279,6 +283,8 @@ class ParticleScriptCompiler:
             node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)
         ):
             return True
+        if isinstance(node, ast.Compare):
+            return True
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             return node.value.id == stream_name
         return (
@@ -342,6 +348,53 @@ class ParticleScriptCompiler:
             }[type(node.op)]
             uid = f"{stage}.expr.{expression_index}.{operation[0]}"
             nodes.append(GraphNodeRecord(uid, operation[1]))
+            links.extend(
+                (
+                    GraphLinkRecord(
+                        f"{stage}.expr.link.{expression_index}.a",
+                        left[0], left[1], uid, "a", PortKind.VALUE,
+                    ),
+                    GraphLinkRecord(
+                        f"{stage}.expr.link.{expression_index}.b",
+                        right[0], right[1], uid, "b", PortKind.VALUE,
+                    ),
+                )
+            )
+            return (uid, "result"), expression_index + 1
+
+        if isinstance(node, ast.Compare):
+            if len(node.ops) != 1 or len(node.comparators) != 1:
+                raise self._error(source_name, node, "chained particle comparisons are unsupported")
+            comparison = {
+                ast.Lt: ("less_than", "common.compare.less_than"),
+                ast.LtE: ("less_equal", "common.compare.less_equal"),
+                ast.Gt: ("greater_than", "common.compare.greater_than"),
+                ast.GtE: ("greater_equal", "common.compare.greater_equal"),
+            }.get(type(node.ops[0]))
+            if comparison is None:
+                raise self._error(source_name, node, "particle comparisons support <, <=, > and >=")
+            left, expression_index = self._parse_expression(
+                node.left,
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+            )
+            right, expression_index = self._parse_expression(
+                node.comparators[0],
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+            )
+            uid = f"{stage}.expr.{expression_index}.{comparison[0]}"
+            nodes.append(GraphNodeRecord(uid, comparison[1]))
             links.extend(
                 (
                     GraphLinkRecord(
@@ -436,6 +489,50 @@ class ParticleScriptCompiler:
                 )
             )
             return (uid, output_port), expression_index + 1
+
+        if node.func.attr in {"value_noise_3d", "vector_noise_3d"}:
+            if not 1 <= len(node.args) <= 3:
+                raise self._error(
+                    source_name,
+                    node,
+                    f"{node.func.attr} requires position and optional frequency/seed",
+                )
+            properties = {}
+            positional_names = ("frequency", "seed")
+            for name, value_node in zip(positional_names, node.args[1:]):
+                properties[name] = self._value(value_node)
+            for keyword in node.keywords:
+                if keyword.arg not in positional_names or keyword.arg in properties:
+                    raise self._error(source_name, keyword, "invalid or duplicate noise argument")
+                properties[keyword.arg] = self._value(keyword.value)
+            position_source, expression_index = self._parse_expression(
+                node.args[0],
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+            )
+            uid = f"{stage}.expr.{expression_index}.{node.func.attr}"
+            type_id = (
+                "common.noise.value3d"
+                if node.func.attr == "value_noise_3d"
+                else "common.noise.vector3d"
+            )
+            nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
+            links.append(
+                GraphLinkRecord(
+                    f"{stage}.expr.link.{expression_index}",
+                    position_source[0],
+                    position_source[1],
+                    uid,
+                    "position",
+                    PortKind.VALUE,
+                )
+            )
+            return (uid, "value"), expression_index + 1
 
         if node.func.attr != "sample_vector_field":
             raise self._error(source_name, node, f"unsupported particle context expression {node.func.attr!r}")

@@ -187,3 +187,45 @@ def test_curve_and_gradient_nodes_compile_strict_authored_literals():
     bad_document = GraphDocument("particle.expression", nodes=(GraphNodeRecord("curve", "common.curve.sample", properties={"curve": invalid}),))
     with pytest.raises(ExpressionCompileError, match="strictly increasing"):
         ExpressionCompiler().compile(bad_document, outputs=(("curve", "value"),))
+
+
+def test_shared_noise_nodes_preserve_vector_space_and_require_coordinates():
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord(
+                "position",
+                "common.constant.vec3",
+                properties={"value": [1.25, -2.0, 0.5]},
+            ),
+            GraphNodeRecord(
+                "value-noise",
+                "common.noise.value3d",
+                properties={"frequency": 2.0, "seed": 9},
+            ),
+            GraphNodeRecord("vector-noise", "common.noise.vector3d"),
+        ),
+        links=(
+            GraphLinkRecord("value-position", "position", "value", "value-noise", "position"),
+            GraphLinkRecord("vector-position", "position", "value", "vector-noise", "position"),
+        ),
+    )
+
+    program = ExpressionCompiler().compile(
+        document,
+        outputs=(("value-noise", "value"), ("vector-noise", "value")),
+    )
+
+    assert [item.opcode for item in program.instructions][-2:] == [
+        "value_noise_3d",
+        "vector_noise_3d",
+    ]
+    assert program.outputs[0][1].value_type is ValueType.F32
+    assert program.outputs[1][1].value_type is ValueType.VEC3
+
+    missing = GraphDocument(
+        "particle.expression",
+        nodes=(GraphNodeRecord("noise", "common.noise.value3d"),),
+    )
+    with pytest.raises(ExpressionCompileError, match="required input"):
+        ExpressionCompiler().compile(missing, outputs=(("noise", "value"),))

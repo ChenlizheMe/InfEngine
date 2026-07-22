@@ -125,6 +125,16 @@ class ExpressionCompiler:
                         )
                     operands.append(ExpressionOperand(value_type, value_id=value_id))
                 else:
+                    if port.required:
+                        raise ExpressionCompileError(
+                            [
+                                ExpressionDiagnostic(
+                                    "missing_input",
+                                    f"required input {node_uid}.{port.id} is not connected",
+                                    node_uid,
+                                )
+                            ]
+                        )
                     value_type = port.value_type or TypeRef(ValueType.F32)
                     operands.append(
                         ExpressionOperand(
@@ -252,6 +262,11 @@ class ExpressionCompiler:
             "common.math.lerp",
         }:
             return self._types.unify_numeric(inputs["a"], inputs["b"])
+        if type_id == "common.noise.vector3d":
+            position_type = inputs["position"]
+            if position_type.value_type is not ValueType.VEC3:
+                raise TypeError("Vector Noise 3D requires a vec3 position")
+            return position_type
         raise TypeError(f"cannot resolve type variable {output.type_variable!r} for {type_id}")
 
     @staticmethod

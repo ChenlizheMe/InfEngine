@@ -229,6 +229,7 @@ class NodeGraphView:
         self.on_node_creation_selected: Optional[
             Callable[[NodeCreationEntry, dict], object]
         ] = None
+        self.on_node_creation_requested: Optional[Callable[[dict], None]] = None
         # Pin drag released over empty canvas: (src_node, src_pin, src_kind, graph_x, graph_y).
         # Hosts can use this to pop a "create node and auto-connect" search menu.
         self.on_link_dropped_empty: Optional[Callable[[str, str, "PinKind", float, float], None]] = None
@@ -1624,6 +1625,8 @@ class NodeGraphView:
             "source_pin": str(source_pin),
             "source_kind": PinKind(source_kind),
         }
+        if self.on_node_creation_requested is not None:
+            self.on_node_creation_requested(dict(self._node_create_request))
         self._node_create_search = ""
         self._node_create_focus = True
         self._open_node_create_popup_next_frame = True
@@ -1782,7 +1785,16 @@ class NodeGraphView:
                 for entry in sorted(
                     grouped[category], key=lambda item: item.label.casefold()
                 ):
-                    if ctx.selectable(entry.label, False):
+                    entry_selected = ctx.selectable(entry.label, False)
+                    self._record_semantic_item(
+                        ctx,
+                        "selectable",
+                        entry.label,
+                        True,
+                        f"create.{entry.type_id}",
+                        string_value=entry.type_id,
+                    )
+                    if entry_selected:
                         selected = entry
                         ctx.close_current_popup()
             ctx.end_popup()

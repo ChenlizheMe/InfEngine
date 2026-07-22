@@ -727,6 +727,16 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.store("builtin.rotation", rotation, source)
+            elif operation.opcode == "lifecycle.kill_if":
+                condition = builder.operation_value(
+                    "condition",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    TypeRef(ValueType.BOOL),
+                    source,
+                )
+                builder.emit_void("kill_if", (condition,), {}, source)
             else:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
 
@@ -755,9 +765,16 @@ class ParticleKernelLowerer:
             {},
             KernelSourceRef(operation="update.kill_expired"),
         )
-        builder.emit_void(
-            "set_alive",
+        expired = builder.emit(
+            "logical_not",
+            TypeRef(ValueType.BOOL),
             (alive,),
+            {},
+            KernelSourceRef(operation="update.kill_expired"),
+        )
+        builder.emit_void(
+            "kill_if",
+            (expired,),
             {},
             KernelSourceRef(operation="update.kill_expired"),
         )

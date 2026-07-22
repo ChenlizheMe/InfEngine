@@ -330,6 +330,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         self._creatable_type_ids: list[str] = []
         self._allowed_stages: dict[str, set[str]] = {}
         self._authoring_stage = "init"
+        self._pending_creation_stage = ""
 
         for definition in registry.definitions():
             stages = {
@@ -397,6 +398,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if stage in self.STAGES:
             self._authoring_stage = stage
 
+    def prepare_node_creation(self, stage: str) -> None:
+        self._pending_creation_stage = stage if stage in self.STAGES else ""
+
+    def stage_nearest_y(self, y: float) -> str:
+        return min(self.STAGES, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
+
     def registered_types(self) -> list[NodeTypeDef]:
         return [
             definition
@@ -408,6 +415,8 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         allowed = self._allowed_stages.get(type_id, set())
         if len(allowed) == 1:
             return next(iter(allowed))
+        if self._pending_creation_stage in allowed:
+            return self._pending_creation_stage
         if self._authoring_stage in allowed:
             selected_y = self._STAGE_Y[self._authoring_stage]
             nearest = min(allowed, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
@@ -423,6 +432,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if definition is None:
             raise ValueError(f"unknown graph node type {type_id!r}")
         stage = self._stage_for_new_node(type_id, float(y))
+        self._pending_creation_stage = ""
         properties = _authoring_defaults(definition)
         properties.update(data)
         raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
@@ -536,6 +546,10 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
     def _accept(definition: NodeDef) -> bool:
         type_id = definition.type_id
         if type_id.startswith("common."):
+            return True
+        if stage in {"init", "update"} and type_id.startswith(
+            ("particle.attribute.", "particle.point_cache.", "particle.vector_field.")
+        ):
             return True
         if type_id == f"particle.root.{stage}":
             return True

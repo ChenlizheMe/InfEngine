@@ -198,6 +198,109 @@ def test_numpy_aot_executes_authored_random_expression_with_node_seed():
     np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:2], expected)
 
 
+def test_numpy_kill_if_is_composable_and_cannot_resurrect_a_dead_particle():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("kill-old", "particle.update.kill_if"),
+            GraphNodeRecord("kill-impossible", "particle.update.kill_if"),
+            GraphNodeRecord("age", "particle.attribute.read_f32"),
+            GraphNodeRecord("half", "common.constant.f32", properties={"value": 0.5}),
+            GraphNodeRecord("minus-one", "common.constant.f32", properties={"value": -1.0}),
+            GraphNodeRecord("older", "common.compare.greater_than"),
+            GraphNodeRecord("impossible", "common.compare.less_than"),
+        ),
+        links=(
+            GraphLinkRecord("stream-a", "root.update", "out", "kill-old", "in", PortKind.STREAM),
+            GraphLinkRecord("stream-b", "kill-old", "out", "kill-impossible", "in", PortKind.STREAM),
+            GraphLinkRecord("older-a", "age", "value", "older", "a", PortKind.VALUE),
+            GraphLinkRecord("older-b", "half", "value", "older", "b", PortKind.VALUE),
+            GraphLinkRecord("kill-a", "older", "result", "kill-old", "condition", PortKind.VALUE),
+            GraphLinkRecord("impossible-a", "age", "value", "impossible", "a", PortKind.VALUE),
+            GraphLinkRecord("impossible-b", "minus-one", "value", "impossible", "b", PortKind.VALUE),
+            GraphLinkRecord(
+                "kill-b", "impossible", "result", "kill-impossible", "condition", PortKind.VALUE
+            ),
+        ),
+    )
+    settings = EmitterSettings(
+        capacity=4,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+        lifetime=ScalarRange(10.0, 10.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(stable_id="kill", settings=settings, update=update),)
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+    runtime = program.create_runtime()
+
+    runtime.tick(0.0)
+    assert runtime.particle_count == 1
+    runtime.tick(0.6)
+
+    assert runtime.particle_count == 0
+    assert "logical_and" in program.emitters[0].update.source
+
+
+def test_numpy_vector_noise_is_deterministic_finite_and_has_no_particle_loop():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord("age", "particle.attribute.read_f32"),
+            GraphNodeRecord(
+                "noise",
+                "common.noise.vector3d",
+                properties={"seed": 41},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "acceleration", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord("position", "position", "value", "noise", "position"),
+            GraphLinkRecord("frequency", "age", "value", "noise", "frequency"),
+            GraphLinkRecord("noise", "noise", "value", "acceleration", "value"),
+        ),
+    )
+    settings = EmitterSettings(
+        capacity=4,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 2),),
+        lifetime=ScalarRange(10.0, 10.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(stable_id="noise", settings=settings, update=update),)
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+    first = program.create_runtime(system_seed=3)
+    second = program.create_runtime(system_seed=3)
+
+    first.tick(0.0)
+    second.tick(0.0)
+    first.tick(0.25)
+    second.tick(0.25)
+
+    assert np.isfinite(first.attributes["builtin.position"][:2]).all()
+    np.testing.assert_array_equal(
+        first.attributes["builtin.position"][:2],
+        second.attributes["builtin.position"][:2],
+    )
+    assert not np.allclose(first.attributes["builtin.position"][:2], 0.0)
+    assert "_vector_noise_3d" in program.emitters[0].update.source
+    assert "for instruction" not in program.emitters[0].update.source
+
+
 def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
     update = GraphDocument(
         "particle.update",

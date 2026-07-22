@@ -165,6 +165,12 @@ PARTICLE_NODE_DEFINITIONS = (
         "integrate.acceleration",
         (PropertyDef("value", TypeRef(ValueType.VEC3), [0.0, -9.81, 0.0]),),
     ),
+    _operation(
+        "particle.update.kill_if",
+        "Kill If",
+        "lifecycle.kill_if",
+        (PropertyDef("condition", TypeRef(ValueType.BOOL), False),),
+    ),
     NodeDef(
         "particle.output.sprite",
         "Sprite Output",

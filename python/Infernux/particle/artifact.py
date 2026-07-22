@@ -59,6 +59,19 @@ class ParticleArtifactRegistry:
             cls._source_key(path)
         )
 
+    @staticmethod
+    def validate_graph_asset(asset: ParticleGraphAsset) -> None:
+        """Run the complete portable AOT pipeline without publishing or writing files."""
+        if not isinstance(asset, ParticleGraphAsset):
+            raise ParticleArtifactError("particle draft must be a ParticleGraphAsset")
+        try:
+            program = ParticleGraphCompiler().compile(asset)
+            kernel_program = ParticleKernelLowerer().lower(program)
+            gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
+            compile_gpu_particle_spirv(gpu_program)
+        except (TypeError, ValueError) as exc:
+            raise ParticleArtifactError(f"particle draft compile failed: {exc}") from exc
+
     @classmethod
     def publish_graph_asset(
         cls,
