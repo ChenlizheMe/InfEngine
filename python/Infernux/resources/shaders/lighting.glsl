@@ -211,6 +211,20 @@ float calculateShadow(vec3 worldPos, vec3 normal, float fragViewDepthVal) {
  */
 Light getMainLight(vec3 worldPos, vec3 normal, float fragViewDepthVal) {
     Light l;
+#ifdef INX_FORWARD_PLUS_PASS
+    if (canonicalLightCountsAndGeneration.x > 0u) {
+        CanonicalLightData dl = canonicalLights[0];
+        l.direction = normalize(-dl.directionOuterCos.xyz);
+        l.color = dl.colorIntensity.rgb * dl.colorIntensity.w;
+        l.attenuation = 1.0;
+        l.shadow = calculateShadow(worldPos, normal, fragViewDepthVal);
+    } else {
+        l.direction = vec3(0.0, 1.0, 0.0);
+        l.color = vec3(0.0);
+        l.attenuation = 0.0;
+        l.shadow = 1.0;
+    }
+#else
     if (lighting.lightCounts.x > 0) {
         DirectionalLightData dl = lighting.directionalLights[0];
         l.direction = normalize(-dl.direction.xyz);
@@ -223,6 +237,7 @@ Light getMainLight(vec3 worldPos, vec3 normal, float fragViewDepthVal) {
         l.attenuation = 0.0;
         l.shadow = 1.0;
     }
+#endif
     return l;
 }
 
@@ -248,6 +263,45 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
     vec3 Lo = vec3(0.0);
 
     // Directional lights
+#ifdef INX_FORWARD_PLUS_PASS
+    uint directionalCount = canonicalLightCountsAndGeneration.x;
+    for (uint i = 0u; i < directionalCount; ++i) {
+        CanonicalLightData light = canonicalLights[i];
+        if ((light.metadata.w & 1u) == 0u) continue;
+        vec3 L = normalize(-light.directionOuterCos.xyz);
+        vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w;
+        float lightShadow = (i == 0u) ? shadow : 1.0;
+        Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
+                               roughness, perceptualRoughness,
+                               F0, f90, energyCompensation) * lightShadow;
+    }
+
+    uvec4 tileHeader = inxForwardPlusTileHeader();
+    for (uint entry = 0u; entry < tileHeader.y; ++entry) {
+        uint localIndex = forwardPlusTileIndices[tileHeader.x + entry];
+        CanonicalLightData light = canonicalLights[directionalCount + localIndex];
+        vec3 lightVec = light.positionRange.xyz - worldPos;
+        float distanceToLight = length(lightVec);
+        float range = max(light.positionRange.w, 0.0001);
+        if (distanceToLight <= 0.00001 || distanceToLight >= range) continue;
+
+        vec3 L = lightVec / distanceToLight;
+        float normalizedDistance = distanceToLight / range;
+        float rangeWindow = max(1.0 - normalizedDistance * normalizedDistance *
+                                      normalizedDistance * normalizedDistance, 0.0);
+        float attenuation = (rangeWindow * rangeWindow) / max(distanceToLight * distanceToLight, 0.01);
+        if (light.metadata.x == 2u) {
+            float cone = dot(L, -normalize(light.directionOuterCos.xyz));
+            attenuation *= smoothstep(light.directionOuterCos.w, light.shadowAndInnerCos.w, cone);
+        }
+        if (attenuation <= 0.0001) continue;
+
+        vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation;
+        Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
+                               roughness, perceptualRoughness,
+                               F0, f90, energyCompensation);
+    }
+#else
     for (int i = 0; i < lighting.lightCounts.x && i < MAX_DIRECTIONAL_LIGHTS; ++i) {
         DirectionalLightData light = lighting.directionalLights[i];
         vec3 L        = normalize(-light.direction.xyz);
@@ -295,6 +349,7 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
             }
         }
     }
+#endif
 
     return Lo;
 }

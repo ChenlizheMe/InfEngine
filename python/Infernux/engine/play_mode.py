@@ -748,9 +748,15 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         from Infernux.renderstack.render_stack import RenderStack
 
+        def before_commit():
+            # The incoming scene owns a fresh RenderStack instance. Clear the
+            # previous scene's singleton before component deserialization so
+            # on_after_deserialize() can promote the replacement naturally.
+            RenderStack._active_instance = None
+
         def after_publish():
             self.clear_runtime_hidden_object_ids()
-            RenderStack._active_instance = None
+            RenderStack.refresh_active_instance(scene)
             if for_play:
                 scene.set_playing(True)
             try:
@@ -766,6 +772,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             asset_database=self._asset_database,
             clear_registries=True,
             borrow_document=True,
+            before_commit=before_commit,
             after_publish=after_publish,
         )
         if not transaction.run_to_completion(raise_on_failure=False):

@@ -322,12 +322,14 @@ void InxVkCoreModular::PreparePipeline()
     m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
     INXLOG_INFO("Created default flat normal texture: _default_normal");
 
-    // Initialize material system (default material + pipelines)
-    InitializeMaterialSystem();
+    // Register the canonical per-view ABI before any ShaderProgram creates a
+    // pipeline layout. Descriptor sets are allocated later, after the default
+    // textures needed to initialize their shadow binding already exist.
+    if (!CreatePerViewDescriptorResources())
+        throw std::runtime_error("Failed to create per-view descriptor resources");
 
-    // Create per-view descriptor set layout and pool (multi-camera shadow isolation).
-    // Must be after InitializeMaterialSystem so default textures are available.
-    CreatePerViewDescriptorResources();
+    // Initialize material system (default material + pipelines).
+    InitializeMaterialSystem();
 
     // Create shadow depth sampler eagerly so that it is available when
     // RefreshPerViewShadowDescriptor runs (before the first DrawShadowCasters).

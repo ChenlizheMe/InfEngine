@@ -35,6 +35,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
 
     py::enum_<ShaderCompileTarget>(m, "MaterialPassType", "Material shader program selected by a render pass")
         .value("FORWARD", ShaderCompileTarget::Forward)
+        .value("FORWARD_PLUS", ShaderCompileTarget::ForwardPlus)
         .value("GBUFFER", ShaderCompileTarget::GBuffer)
         .value("SHADOW", ShaderCompileTarget::Shadow)
         .value("DEPTH", ShaderCompileTarget::Depth)

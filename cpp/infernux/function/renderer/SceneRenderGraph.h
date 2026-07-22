@@ -22,6 +22,7 @@
 #include "RenderGraphDescription.h"
 #include "RendererList.h"
 #include "SceneDepthResolver.h"
+#include "lighting/ForwardPlusLightGrid.h"
 #include "vk/RenderGraph.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -524,6 +525,9 @@ class SceneRenderGraph
 
     /// @brief Update this frame's per-view shadow descriptor before recording.
     void RefreshPerViewShadowDescriptor();
+    [[nodiscard]] bool UsesForwardPlus() const;
+    [[nodiscard]] bool PrepareForwardPlusFrame();
+    void RetireForwardPlusResources();
 
     InxVkCoreModular *m_vkCore = nullptr;
     SceneRenderTarget *m_sceneTarget = nullptr;
@@ -632,6 +636,7 @@ class SceneRenderGraph
     // and linear sampler for FullscreenQuad graph passes.
     FullscreenRenderer m_fullscreenRenderer;
     SceneDepthResolver m_sceneDepthResolver;
+    lighting::ForwardPlusLightGrid m_forwardPlusGeometryGrid;
 };
 
 } // namespace infernux

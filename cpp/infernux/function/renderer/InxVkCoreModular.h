@@ -49,8 +49,8 @@
 #include "vk/GpuTimestampQueries.h"
 #endif
 #include <core/types/InxApplication.h>
-#include <function/scene/LightingData.h>
 #include <function/renderer/lighting/CanonicalLightGpuBuffer.h>
+#include <function/scene/LightingData.h>
 
 #include <functional>
 #include <memory>
@@ -819,6 +819,12 @@ class InxVkCoreModular
     /// @brief Clear a per-view descriptor set (bind default white texture).
     void ClearPerViewShadowMap(VkDescriptorSet perViewDescSet);
 
+    /// Bind the frame-local canonical lights and tiled Forward+ outputs.
+    void UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDescSet, rhi::BufferHandle canonicalLights,
+                                         uint64_t canonicalBytes, rhi::BufferHandle tileHeaders,
+                                         uint64_t tileHeaderBytes, rhi::BufferHandle tileIndices,
+                                         uint64_t tileIndexBytes);
+
     /// @brief Set the active per-view descriptor set for subsequent draw calls.
     void SetActiveShadowDescriptorSet(VkDescriptorSet descSet)
     {
@@ -866,6 +872,13 @@ class InxVkCoreModular
         if (m_canonicalLightGpuBuffer.FrameCount() == 0)
             return nullptr;
         return &m_canonicalLightGpuBuffer.Frame(m_currentFrame % m_maxFramesInFlight);
+    }
+
+    [[nodiscard]] const lighting::CanonicalLightGpuFrame *GetCanonicalLightGpuFrame(uint32_t frameIndex) const noexcept
+    {
+        if (frameIndex >= m_canonicalLightGpuBuffer.FrameCount())
+            return nullptr;
+        return &m_canonicalLightGpuBuffer.Frame(frameIndex);
     }
 
     // ========================================================================

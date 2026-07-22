@@ -23,8 +23,7 @@ struct MaterialPassPipelineDescriptor
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        if (target < ShaderCompileTarget::Forward || target >= ShaderCompileTarget::Count ||
-            colorFormats.size() > 8)
+        if (target < ShaderCompileTarget::Forward || target >= ShaderCompileTarget::Count || colorFormats.size() > 8)
             return false;
 
         for (const rhi::PixelFormat format : colorFormats) {
@@ -42,6 +41,7 @@ struct MaterialPassPipelineDescriptor
             return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RG32UInt &&
                    depthFormat != rhi::PixelFormat::Undefined;
         case ShaderCompileTarget::Forward:
+        case ShaderCompileTarget::ForwardPlus:
         case ShaderCompileTarget::GBuffer:
         case ShaderCompileTarget::Motion:
             return !colorFormats.empty();
@@ -54,8 +54,8 @@ struct MaterialPassPipelineDescriptor
     friend bool operator==(const MaterialPassPipelineDescriptor &lhs,
                            const MaterialPassPipelineDescriptor &rhs) noexcept
     {
-        return lhs.target == rhs.target && lhs.colorFormats == rhs.colorFormats &&
-               lhs.depthFormat == rhs.depthFormat && lhs.samples == rhs.samples;
+        return lhs.target == rhs.target && lhs.colorFormats == rhs.colorFormats && lhs.depthFormat == rhs.depthFormat &&
+               lhs.samples == rhs.samples;
     }
 
     friend bool operator!=(const MaterialPassPipelineDescriptor &lhs,

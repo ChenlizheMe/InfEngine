@@ -36,6 +36,13 @@ bool CanonicalLightGpuBuffer::Initialize(rhi::Device &device, uint32_t framesInF
         return false;
     m_device = &device;
     m_frames.resize(framesInFlight);
+    CanonicalLightSnapshot empty;
+    for (uint32_t frameIndex = 0; frameIndex < framesInFlight; ++frameIndex) {
+        if (!Update(frameIndex, empty)) {
+            Shutdown();
+            return false;
+        }
+    }
     return true;
 }
 

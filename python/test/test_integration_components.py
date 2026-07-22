@@ -938,6 +938,50 @@ class TestComponentLifecycle:
         pipeline = RenderStackPipeline()
         assert pipeline._find_render_stack(ctx) is None
 
+    def test_renderstack_pipeline_restores_singleton_from_scene_cache(self, scene):
+        owner = scene.create_game_object("CachedRenderStackGO")
+        stack = owner.add_component(RenderStack)
+
+        class _Context:
+            pass
+
+        ctx = _Context()
+        ctx.scene = scene
+        pipeline = RenderStackPipeline()
+
+        RenderStack._active_instance = None
+        assert pipeline._find_render_stack(ctx) is stack
+        assert RenderStack.instance() is stack
+
+        RenderStack._active_instance = None
+        assert pipeline._find_render_stack(ctx) is stack
+        assert RenderStack.instance() is stack
+
+    def test_renderstack_active_instance_survives_play_mode_document_rebuild(self, scene):
+        from Infernux.engine.play_mode import PlayModeManager
+
+        owner = scene.create_game_object("PlayModeRenderStack")
+        original = owner.add_component(RenderStack)
+        snapshot = scene.serialize_document()
+
+        previous_manager = PlayModeManager.instance()
+        manager = PlayModeManager()
+        manager.set_asset_database(AssetRegistry.instance().get_asset_database())
+        try:
+            assert RenderStack.instance() is original
+            assert manager._rebuild_active_scene(snapshot, for_play=True)
+
+            rebuilt_owner = SceneManager.instance().get_active_scene().find("PlayModeRenderStack")
+            rebuilt = next(
+                component
+                for component in rebuilt_owner.get_py_components()
+                if isinstance(component, RenderStack)
+            )
+            assert rebuilt is not original
+            assert RenderStack.instance() is rebuilt
+        finally:
+            PlayModeManager._instance = previous_manager
+
     def test_renderstack_effect_slots_survive_component_serialization_hooks(self, scene):
         stack = scene.create_game_object("EffectBindingRenderStack").add_component(RenderStack)
         slots = (

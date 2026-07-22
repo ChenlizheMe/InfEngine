@@ -132,12 +132,6 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
 
     if not isinstance(definition, PipelineDefinition):
         raise TypeError("pipeline compiler requires a PipelineDefinition")
-    if definition.lighting is not None and definition.lighting.clustered:
-        raise NotImplementedError(
-            "clustered lighting is not available until the true Forward+ "
-            "lighting backend is implemented"
-        )
-
     graph.set_msaa_samples(definition.frame.msaa)
     color_format = Format.RGBA16_SFLOAT if definition.frame.hdr else Format.RGBA8_UNORM
     camera_color = graph.create_texture("color", format=color_format, camera_target=True)
@@ -387,7 +381,7 @@ def _compile_route(
     inline_target,
     msaa_samples: int,
 ):
-    if route.path is not Path.FORWARD:
+    if route.path not in {Path.FORWARD, Path.FORWARD_PLUS}:
         raise NotImplementedError(
             f"{route.path.value} route {route.route_id!r} is not available until its "
             "true lighting backend is implemented; ordinary Forward is not used as a silent fallback"
@@ -497,7 +491,7 @@ def _draw_route(
                 render_pass.draw_renderers(
                     queue_range=selector.as_tuple(),
                     sort_mode=sort_mode,
-                    material_pass="forward",
+                    material_pass=route.path.value,
                 )
 
 

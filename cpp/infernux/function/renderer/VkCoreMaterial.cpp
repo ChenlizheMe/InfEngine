@@ -666,8 +666,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         if (forwardOk && artifact) {
             // Optional programs are materialized by their first real pass.
             for (const auto target :
-                 {ShaderCompileTarget::GBuffer, ShaderCompileTarget::Shadow, ShaderCompileTarget::Depth,
-                  ShaderCompileTarget::Picking, ShaderCompileTarget::Motion})
+                 {ShaderCompileTarget::ForwardPlus, ShaderCompileTarget::GBuffer, ShaderCompileTarget::Shadow,
+                  ShaderCompileTarget::Depth, ShaderCompileTarget::Picking, ShaderCompileTarget::Motion})
                 material->SetPassShaderProgram(target, nullptr);
         }
 

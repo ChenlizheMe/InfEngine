@@ -1034,8 +1034,7 @@ static void ApplyNormalMapPreviewInPlace(std::vector<unsigned char> &pixels, int
             ny *= inverseLength;
             nz *= inverseLength;
 
-            const size_t index =
-                (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4u;
+            const size_t index = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 4u;
             pixels[index] = static_cast<unsigned char>((nx * 0.5f + 0.5f) * 255.0f);
             pixels[index + 1] = static_cast<unsigned char>((ny * 0.5f + 0.5f) * 255.0f);
             pixels[index + 2] = static_cast<unsigned char>((nz * 0.5f + 0.5f) * 255.0f);
@@ -1870,13 +1869,9 @@ void Infernux::ReleasePreviewAuthoring(const std::string &resourceKey)
     }
 }
 
-std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey,
-                                                                       const std::string &textureFilePath,
-                                                                       uint64_t contentStampHint, bool nearest,
-                                                                       bool srgb, int maxSize,
-                                                                       const std::string &textureFormat,
-                                                                       const std::string &textureType, bool authoring,
-                                                                       bool pump)
+std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
+    const std::string &resourceKey, const std::string &textureFilePath, uint64_t contentStampHint, bool nearest,
+    bool srgb, int maxSize, const std::string &textureFormat, const std::string &textureType, bool authoring, bool pump)
 {
     if (resourceKey.empty() || textureFilePath.empty())
         return {0, 0, 0};
@@ -1935,8 +1930,8 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(const std
         // Schedule render if not already in flight.
         if (!state.inFlight && state.readyGeneration < state.generation) {
             state.inFlight = true;
-            req = TexturePreviewRequest{key, textureFilePath, state.generation, nearest,
-                                        srgb, sanitizedMaxSize, textureFormat, textureType};
+            req = TexturePreviewRequest{key,  textureFilePath,  state.generation, nearest,
+                                        srgb, sanitizedMaxSize, textureFormat,    textureType};
             shouldEnqueue = true;
         }
     }
@@ -2844,6 +2839,8 @@ void Infernux::RegisterShaderToRenderer(const ShaderAsset &asset)
             return asset.shaderId + "/picking";
         case ShaderCompileTarget::Motion:
             return asset.shaderId + "/motion";
+        case ShaderCompileTarget::ForwardPlus:
+            return asset.shaderId + "/forward_plus";
         case ShaderCompileTarget::Count:
             break;
         }

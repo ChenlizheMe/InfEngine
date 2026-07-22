@@ -93,6 +93,8 @@ class RenderStackPipeline(RenderPipeline):
             if cached is not None and not RenderStack._is_effectively_active(cached):
                 self._cached_stack = None
                 return None
+            if cached is not None:
+                RenderStack._active_instance = cached
             return cached
 
         # Slow path: scan scene (only when structure changes)
@@ -110,6 +112,8 @@ class RenderStackPipeline(RenderPipeline):
         self._cached_stack = found
         self._cached_stack_version = ver
         self._cached_stack_scene_key = scene_key
+        if found is not None:
+            RenderStack._active_instance = found
         return found
 
     def _render_fallback(self, context, camera) -> None:

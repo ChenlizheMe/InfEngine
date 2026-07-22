@@ -76,6 +76,37 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         return inst
 
     @classmethod
+    def refresh_active_instance(
+        cls,
+        scene=None,
+        *,
+        exclude: Optional["RenderStack"] = None,
+    ) -> Optional["RenderStack"]:
+        """Resolve ownership once after a scene graph has been published."""
+        cls._active_instance = None
+        if scene is None:
+            try:
+                from Infernux.lib import SceneManager as _NativeSceneManager
+                scene = _NativeSceneManager.instance().get_active_scene()
+            except Exception:
+                return None
+        if scene is None or not hasattr(scene, "get_all_objects"):
+            return None
+        for obj in scene.get_all_objects() or ():
+            if not obj.is_active_in_hierarchy():
+                continue
+            for component in obj.get_py_components() or ():
+                if (
+                    isinstance(component, cls)
+                    and component is not exclude
+                    and cls._is_effectively_active(component)
+                ):
+                    cls._active_instance = component
+                    component.invalidate_graph()
+                    return component
+        return None
+
+    @classmethod
     def _is_effectively_active(cls, stack: Optional["RenderStack"]) -> bool:
         if stack is None or not stack.is_valid or not stack.enabled:
             return False
@@ -185,18 +216,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         except Exception as _exc:
             Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
             return
-        if scene is None:
-            return
-        for obj in scene.get_all_objects():
-            if not obj.is_active_in_hierarchy():
-                continue
-            for comp in obj.get_py_components():
-                if (isinstance(comp, RenderStack)
-                        and comp is not self
-                        and RenderStack._is_effectively_active(comp)):
-                    RenderStack._active_instance = comp
-                    comp.invalidate_graph()
-                    return
+        RenderStack.refresh_active_instance(scene, exclude=self)
 
     # ------------------------------------------------------------------
     # Serialization hooks

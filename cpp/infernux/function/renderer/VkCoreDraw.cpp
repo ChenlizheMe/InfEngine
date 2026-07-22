@@ -2024,40 +2024,50 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     if (device == VK_NULL_HANDLE)
         return false;
 
-    // Layout: set 1, binding 0 = combined image sampler (shadow map), fragment stage
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    binding.pImmutableSamplers = nullptr;
+    // Canonical per-view ABI. Forward shaders only consume binding 0; tiled
+    // Forward+ variants additionally consume the three storage buffers.
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    for (uint32_t binding = 1; binding < bindings.size(); ++binding) {
+        bindings[binding].binding = binding;
+        bindings[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[binding].descriptorCount = 1;
+        bindings[binding].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
 
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_perViewDescSetLayout) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to create per-view descriptor set layout");
         return false;
     }
+    ShaderProgram::SetPerViewDescSetLayout(m_perViewDescSetLayout);
 
     // Pool: enough for multiple render graphs (scene + game + future cameras)
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 16; // Up to 16 render graphs
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[0].descriptorCount = 16;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[1].descriptorCount = 48;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     poolInfo.maxSets = 16;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
 
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_perViewDescPool) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to create per-view descriptor pool");
         vkDestroyDescriptorSetLayout(device, m_perViewDescSetLayout, nullptr);
         m_perViewDescSetLayout = VK_NULL_HANDLE;
+        ShaderProgram::SetPerViewDescSetLayout(VK_NULL_HANDLE);
         return false;
     }
 
@@ -2078,6 +2088,7 @@ void InxVkCoreModular::DestroyPerViewDescriptorResources()
         m_perViewDescPool = VK_NULL_HANDLE;
     }
     if (m_perViewDescSetLayout != VK_NULL_HANDLE) {
+        ShaderProgram::SetPerViewDescSetLayout(VK_NULL_HANDLE);
         vkDestroyDescriptorSetLayout(device, m_perViewDescSetLayout, nullptr);
         m_perViewDescSetLayout = VK_NULL_HANDLE;
     }
@@ -2147,6 +2158,35 @@ void InxVkCoreModular::ClearPerViewShadowMap(VkDescriptorSet perViewDescSet)
     }
 
     UpdatePerViewShadowMap(perViewDescSet, defaultView, defaultSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+void InxVkCoreModular::UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDescSet,
+                                                       rhi::BufferHandle canonicalLights, uint64_t canonicalBytes,
+                                                       rhi::BufferHandle tileHeaders, uint64_t tileHeaderBytes,
+                                                       rhi::BufferHandle tileIndices, uint64_t tileIndexBytes)
+{
+    if (perViewDescSet == VK_NULL_HANDLE || canonicalBytes == 0 || tileHeaderBytes == 0 || tileIndexBytes == 0)
+        return;
+
+    auto &rhiDevice = m_deviceContext.GetRhiDevice();
+    const std::array<VkDescriptorBufferInfo, 3> infos = {{
+        {rhiDevice.Resolve(canonicalLights), 0, canonicalBytes},
+        {rhiDevice.Resolve(tileHeaders), 0, tileHeaderBytes},
+        {rhiDevice.Resolve(tileIndices), 0, tileIndexBytes},
+    }};
+    if (std::any_of(infos.begin(), infos.end(), [](const auto &info) { return info.buffer == VK_NULL_HANDLE; }))
+        return;
+
+    std::array<VkWriteDescriptorSet, 3> writes{};
+    for (uint32_t index = 0; index < writes.size(); ++index) {
+        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[index].dstSet = perViewDescSet;
+        writes[index].dstBinding = index + 1u;
+        writes[index].descriptorCount = 1;
+        writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[index].pBufferInfo = &infos[index];
+    }
+    vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 } // namespace infernux

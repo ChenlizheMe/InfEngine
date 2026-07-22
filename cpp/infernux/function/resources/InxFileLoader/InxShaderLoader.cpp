@@ -92,9 +92,10 @@ bool LinkedShaderProgramArtifactCompilation::IsValid() const noexcept
         if (!requirement.enabled)
             continue;
         const bool supported =
-            requirement.target == ShaderCompileTarget::Forward || requirement.target == ShaderCompileTarget::GBuffer ||
-            requirement.target == ShaderCompileTarget::Shadow || requirement.target == ShaderCompileTarget::Depth ||
-            requirement.target == ShaderCompileTarget::Picking;
+            requirement.target == ShaderCompileTarget::Forward ||
+            requirement.target == ShaderCompileTarget::ForwardPlus ||
+            requirement.target == ShaderCompileTarget::GBuffer || requirement.target == ShaderCompileTarget::Shadow ||
+            requirement.target == ShaderCompileTarget::Depth || requirement.target == ShaderCompileTarget::Picking;
         const uint64_t targetBit = 1ull << static_cast<uint32_t>(requirement.target);
         if (supported && (compiledTargets & targetBit) == 0)
             return false;
@@ -970,6 +971,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     if (target == ShaderCompileTarget::Forward)
         result << "#define INX_FORWARD_PASS 1\n";
+    else if (target == ShaderCompileTarget::ForwardPlus)
+        result << "#define INX_FORWARD_PLUS_PASS 1\n";
     else if (target == ShaderCompileTarget::GBuffer)
         result << "#define INX_GBUFFER_PASS 1\n";
     else if (target == ShaderCompileTarget::Shadow)
@@ -1035,6 +1038,10 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 if (needsLightingUBO) {
                     result << "\n// Auto-generated LightingUBO (required by shading model)\n";
                     result << LoadTemplate("lighting_ubo.glsl") << "\n";
+                    if (target == ShaderCompileTarget::ForwardPlus) {
+                        result << "\n// Canonical tiled Forward+ light resources\n";
+                        result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
+                    }
                 }
 
                 // Unified fragment varying inputs
@@ -1521,9 +1528,9 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
 {
     LinkedShaderProgramCompilation compilation;
     compilation.target = target;
-    if (target != ShaderCompileTarget::Forward && target != ShaderCompileTarget::GBuffer &&
-        target != ShaderCompileTarget::Shadow && target != ShaderCompileTarget::Depth &&
-        target != ShaderCompileTarget::Picking) {
+    if (target != ShaderCompileTarget::Forward && target != ShaderCompileTarget::ForwardPlus &&
+        target != ShaderCompileTarget::GBuffer && target != ShaderCompileTarget::Shadow &&
+        target != ShaderCompileTarget::Depth && target != ShaderCompileTarget::Picking) {
         compilation.errors.push_back(std::string(ShaderCompileTargetName(target)) +
                                      " linked shader variant generation is not implemented");
         return compilation;
@@ -1572,9 +1579,10 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
             continue;
 
         const bool supported =
-            requirement.target == ShaderCompileTarget::Forward || requirement.target == ShaderCompileTarget::GBuffer ||
-            requirement.target == ShaderCompileTarget::Shadow || requirement.target == ShaderCompileTarget::Depth ||
-            requirement.target == ShaderCompileTarget::Picking;
+            requirement.target == ShaderCompileTarget::Forward ||
+            requirement.target == ShaderCompileTarget::ForwardPlus ||
+            requirement.target == ShaderCompileTarget::GBuffer || requirement.target == ShaderCompileTarget::Shadow ||
+            requirement.target == ShaderCompileTarget::Depth || requirement.target == ShaderCompileTarget::Picking;
         if (!supported) {
             result.pendingTargets.push_back(requirement.target);
             continue;

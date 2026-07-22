@@ -21,12 +21,13 @@ enum class ShaderProgramDomain : unsigned char
 
 enum class ShaderCompileTarget : int
 {
-    Forward = 0, // Standard forward rendering (default)
-    GBuffer = 1, // Deferred GBuffer output
-    Shadow = 2,  // Depth-only shadow caster
-    Depth = 3,   // Camera depth/depth-prepass output
-    Picking = 4, // Stable object identity output
-    Motion = 5,  // Motion-vector output
+    Forward = 0,     // Standard forward rendering (default)
+    GBuffer = 1,     // Deferred GBuffer output
+    Shadow = 2,      // Depth-only shadow caster
+    Depth = 3,       // Camera depth/depth-prepass output
+    Picking = 4,     // Stable object identity output
+    Motion = 5,      // Motion-vector output
+    ForwardPlus = 6, // Tiled/clustered forward lighting
 
     Count // Sentinel — number of targets; must be last
 };
@@ -46,6 +47,8 @@ enum class ShaderCompileTarget : int
         return "Picking";
     case ShaderCompileTarget::Motion:
         return "Motion";
+    case ShaderCompileTarget::ForwardPlus:
+        return "ForwardPlus";
     case ShaderCompileTarget::Count:
         return "Count";
     }

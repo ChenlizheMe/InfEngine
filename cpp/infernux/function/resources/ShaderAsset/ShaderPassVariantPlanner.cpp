@@ -60,6 +60,8 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
 
     if (interfaceArtifact.domain == ShaderProgramDomain::ParticleSprite) {
         Add(plan, ShaderCompileTarget::Forward, true, "particle sprite materials require a Forward variant");
+        Add(plan, ShaderCompileTarget::ForwardPlus, false,
+            "particle Forward+ variants require the shared particle lighting contract");
         Add(plan, ShaderCompileTarget::GBuffer, false, "particle sprites use the Forward fallback",
             ShaderCompileTarget::Forward);
         Add(plan, ShaderCompileTarget::Shadow, false,
@@ -70,7 +72,8 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
         return plan;
     }
 
-    Add(plan, ShaderCompileTarget::Forward, true, "all linked material programs require a Forward/Forward+ variant");
+    Add(plan, ShaderCompileTarget::Forward, true, "all linked material programs require a Forward variant");
+    Add(plan, ShaderCompileTarget::ForwardPlus, true, "mesh material programs require a tiled Forward+ variant");
     Add(plan, ShaderCompileTarget::GBuffer, !transparent && !forceForward,
         transparent ? "transparent surfaces use the Forward fallback"
                     : (forceForward ? "the fragment shader explicitly requires Forward"

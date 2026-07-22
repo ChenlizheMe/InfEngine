@@ -651,6 +651,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
         from Infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
 
+        from Infernux.renderstack.render_stack import RenderStack
+        RenderStack.refresh_active_instance(scene)
+
         # Force-init SpriteRenderer wrappers so their materials (texture,
         # color, uvRect) are created before the first render frame.
         try:

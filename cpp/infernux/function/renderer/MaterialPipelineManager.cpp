@@ -361,6 +361,7 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptor(ShaderCompileTarget ta
         pipeline.samples = rhi::SampleCount::One;
         break;
     case ShaderCompileTarget::Forward:
+    case ShaderCompileTarget::ForwardPlus:
     case ShaderCompileTarget::GBuffer:
         pipeline.colorFormats = {rhi::FromVkFormat(m_colorFormat)};
         break;
@@ -609,7 +610,8 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
     }
 
     RenderState effectiveState = renderState;
-    if (pipelineDesc.target != ShaderCompileTarget::Forward) {
+    if (pipelineDesc.target != ShaderCompileTarget::Forward &&
+        pipelineDesc.target != ShaderCompileTarget::ForwardPlus) {
         effectiveState.blendEnable = false;
         effectiveState.depthTestEnable = pipelineDesc.depthFormat != rhi::PixelFormat::Undefined;
         effectiveState.depthWriteEnable = pipelineDesc.depthFormat != rhi::PixelFormat::Undefined;

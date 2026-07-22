@@ -158,9 +158,10 @@ void surface(out SurfaceData s)
     const auto passPlan = infernux::ShaderPassVariantPlanner::Plan(vertex, fragment, artifact);
     assert(passPlan.IsValid());
     assert(passPlan.requirements.size() == static_cast<size_t>(infernux::ShaderCompileTarget::Count));
-    for (const auto target : {infernux::ShaderCompileTarget::Forward, infernux::ShaderCompileTarget::GBuffer,
-                              infernux::ShaderCompileTarget::Shadow, infernux::ShaderCompileTarget::Depth,
-                              infernux::ShaderCompileTarget::Picking, infernux::ShaderCompileTarget::Motion}) {
+    for (const auto target : {infernux::ShaderCompileTarget::Forward, infernux::ShaderCompileTarget::ForwardPlus,
+                              infernux::ShaderCompileTarget::GBuffer, infernux::ShaderCompileTarget::Shadow,
+                              infernux::ShaderCompileTarget::Depth, infernux::ShaderCompileTarget::Picking,
+                              infernux::ShaderCompileTarget::Motion}) {
         const auto *requirement = passPlan.Find(target);
         assert(requirement != nullptr);
         assert(requirement->enabled);
@@ -248,13 +249,14 @@ void surface(out SurfaceData s)
             std::cerr << error << '\n';
     }
     assert(completeCompilation.IsValid());
-    assert(completeCompilation.compiledVariants.size() == 5);
+    assert(completeCompilation.compiledVariants.size() == 6);
     assert(completeCompilation.pendingTargets.size() == 1);
     assert(completeCompilation.pendingTargets[0] == infernux::ShaderCompileTarget::Motion);
     const auto completeArtifact = completeCompilation.CreateRuntimeArtifact();
     assert(completeArtifact.IsValid());
-    assert(completeArtifact.variants.size() == 5);
+    assert(completeArtifact.variants.size() == 6);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Depth) != nullptr);
@@ -367,6 +369,7 @@ void surface(out SurfaceData surface)
         infernux::ShaderPassVariantPlanner::Plan(vertex, transparentDescriptor, transparentInterface);
     assert(transparentPlan.IsValid());
     assert(transparentPlan.Find(infernux::ShaderCompileTarget::Forward)->enabled);
+    assert(transparentPlan.Find(infernux::ShaderCompileTarget::ForwardPlus)->enabled);
     assert(!transparentPlan.Find(infernux::ShaderCompileTarget::GBuffer)->enabled);
     assert(transparentPlan.Find(infernux::ShaderCompileTarget::GBuffer)->fallback ==
            infernux::ShaderCompileTarget::Forward);
@@ -378,12 +381,13 @@ void surface(out SurfaceData surface)
     const auto transparentCompilation = compiler.CompileLinkedProgramArtifact(
         waveVertex, "WaveDeform.vert", transparentFragment, "TransparentForwardOnly.frag");
     assert(transparentCompilation.IsValid());
-    assert(transparentCompilation.compiledVariants.size() == 1);
+    assert(transparentCompilation.compiledVariants.size() == 2);
     assert(transparentCompilation.pendingTargets.empty());
     const auto transparentArtifact = transparentCompilation.CreateRuntimeArtifact();
     assert(transparentArtifact.IsValid());
-    assert(transparentArtifact.variants.size() == 1);
+    assert(transparentArtifact.variants.size() == 2);
     assert(transparentArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(transparentArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
 
     const std::string particleVertex = R"(
 ShaderInfo
@@ -422,9 +426,9 @@ void surface(out SurfaceData surface)
                                                                        particleFragmentDescriptor, particleInterface);
     assert(particlePlan.IsValid());
     assert(particlePlan.Find(infernux::ShaderCompileTarget::Forward)->enabled);
-    for (const auto target : {infernux::ShaderCompileTarget::GBuffer, infernux::ShaderCompileTarget::Shadow,
-                              infernux::ShaderCompileTarget::Depth, infernux::ShaderCompileTarget::Picking,
-                              infernux::ShaderCompileTarget::Motion}) {
+    for (const auto target : {infernux::ShaderCompileTarget::ForwardPlus, infernux::ShaderCompileTarget::GBuffer,
+                              infernux::ShaderCompileTarget::Shadow, infernux::ShaderCompileTarget::Depth,
+                              infernux::ShaderCompileTarget::Picking, infernux::ShaderCompileTarget::Motion}) {
         assert(!particlePlan.Find(target)->enabled);
     }
     const auto particleCompilation = compiler.CompileLinkedProgramArtifact(particleVertex, "ParticleSprite.vert",
@@ -503,7 +507,34 @@ void surface(out SurfaceData surface)
     assert(builtinLitArtifact.key.stages.vertexShaderId == "standard");
     assert(builtinLitArtifact.key.stages.fragmentShaderId == "lit");
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
+    const auto builtinForward =
+        std::find_if(builtinLitCompilation.compiledVariants.begin(), builtinLitCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Forward; });
+    const auto builtinForwardPlus =
+        std::find_if(builtinLitCompilation.compiledVariants.begin(), builtinLitCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::ForwardPlus; });
+    assert(builtinForward != builtinLitCompilation.compiledVariants.end());
+    assert(builtinForwardPlus != builtinLitCompilation.compiledVariants.end());
+    assert(builtinForward->generatedFragmentSource.find("CanonicalLightBuffer") == std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("#define INX_FORWARD_PLUS_PASS 1") != std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("set = 1, binding = 1") != std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("set = 1, binding = 2") != std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("set = 1, binding = 3") != std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("inxForwardPlusTileHeader()") != std::string::npos);
+
+    const auto errorCompilation =
+        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/error.vert"), shaderRoot + "/error.vert",
+                                              ReadText(shaderRoot + "/error.frag"), shaderRoot + "/error.frag");
+    if (!errorCompilation.IsValid()) {
+        for (const auto &error : errorCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(errorCompilation.IsValid());
+    const auto errorArtifact = errorCompilation.CreateRuntimeArtifact();
+    assert(errorArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
+    assert(errorArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
 
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo

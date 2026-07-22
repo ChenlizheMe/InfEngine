@@ -233,26 +233,45 @@ def test_msaa_inline_background_is_not_deferred_over_effect_overflow():
     assert otherwise_composite < sky_under < overflow_composite
 
 
-@pytest.mark.parametrize("path", [Path.FORWARD_PLUS, Path.DEFERRED])
-def test_compiler_never_silently_substitutes_forward_for_unfinished_paths(path):
+def test_compiler_lowers_forward_plus_without_silently_substituting_forward():
     pipeline = PipelineBuilder()
     opaque = pipeline.opaque()
-    if path is Path.FORWARD_PLUS:
-        opaque.forward_plus()
-    else:
-        opaque.deferred(fallback=Path.FORWARD_PLUS)
+    opaque.forward_plus()
+
+    graph = RenderGraph("ForwardPlus")
+    compile_pipeline_definition(pipeline.build(), graph)
+
+    draw_passes = [
+        render_pass
+        for render_pass in graph._passes
+        if render_pass._action == "draw_renderers"
+    ]
+    assert draw_passes
+    assert all(render_pass._material_pass == "forward_plus" for render_pass in draw_passes)
+
+
+def test_compiler_never_silently_substitutes_forward_for_deferred():
+    pipeline = PipelineBuilder()
+    opaque = pipeline.opaque()
+    opaque.deferred(fallback=Path.FORWARD_PLUS)
 
     with pytest.raises(NotImplementedError, match="not available"):
         compile_pipeline_definition(pipeline.build(), RenderGraph("Unsupported"))
 
 
-def test_compiler_never_silently_ignores_clustered_lighting_request():
+def test_compiler_accepts_clustered_lighting_with_forward_plus_routes():
     pipeline = PipelineBuilder()
     pipeline.lighting(clustered=True)
-    pipeline.opaque().forward()
+    pipeline.opaque().forward_plus()
 
-    with pytest.raises(NotImplementedError, match="clustered lighting"):
-        compile_pipeline_definition(pipeline.build(), RenderGraph("Clustered"))
+    graph = RenderGraph("Clustered")
+    compile_pipeline_definition(pipeline.build(), graph)
+
+    assert any(
+        render_pass._material_pass == "forward_plus"
+        for render_pass in graph._passes
+        if render_pass._action == "draw_renderers"
+    )
 
 
 def test_screen_ui_must_be_the_final_author_operation():

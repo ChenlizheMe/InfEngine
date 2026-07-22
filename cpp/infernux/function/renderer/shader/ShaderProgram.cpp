@@ -147,7 +147,7 @@ void ShaderProgram::Destroy()
     for (auto &[set, layout] : m_descriptorSetLayouts) {
         // Skip the shared globals layout — it is owned by VkCore and
         // destroyed in DestroyGlobalsDescriptorResources().
-        if (layout != VK_NULL_HANDLE && layout != s_globalsDescSetLayout) {
+        if (layout != VK_NULL_HANDLE && layout != s_globalsDescSetLayout && layout != s_perViewDescSetLayout) {
             vkDestroyDescriptorSetLayout(m_device, layout, nullptr);
         }
     }
@@ -449,6 +449,13 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 
 bool ShaderProgram::CreatePipelineLayout()
 {
+    if (m_variantKey.target != ShaderCompileTarget::Shadow && s_perViewDescSetLayout != VK_NULL_HANDLE) {
+        auto it = m_descriptorSetLayouts.find(1);
+        if (it != m_descriptorSetLayouts.end() && it->second != s_perViewDescSetLayout)
+            vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
+        m_descriptorSetLayouts[1] = s_perViewDescSetLayout;
+    }
+
     // If a globals descriptor set layout was registered, ensure set 2 exists
     // in the layout map. Replace any reflection-created set 2 with the
     // canonical engine layout so descriptor set compatibility is guaranteed.

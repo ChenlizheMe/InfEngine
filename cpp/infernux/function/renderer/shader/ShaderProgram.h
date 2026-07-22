@@ -192,6 +192,15 @@ class ShaderProgram
         return s_globalsDescSetLayout;
     }
 
+    static void SetPerViewDescSetLayout(VkDescriptorSetLayout layout)
+    {
+        s_perViewDescSetLayout = layout;
+    }
+    static VkDescriptorSetLayout GetPerViewDescSetLayout()
+    {
+        return s_perViewDescSetLayout;
+    }
+
     /**
      * @brief Globally enable VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND on
      * material-set sampler bindings. Set once at startup based on the
@@ -215,6 +224,7 @@ class ShaderProgram
     ShaderProgramVariantKey m_variantKey;
 
     static inline VkDescriptorSetLayout s_globalsDescSetLayout = VK_NULL_HANDLE;
+    static inline VkDescriptorSetLayout s_perViewDescSetLayout = VK_NULL_HANDLE;
     static inline bool s_updateAfterBindEnabled = false;
 
     // Shader modules

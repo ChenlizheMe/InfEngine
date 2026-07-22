@@ -571,6 +571,30 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
                     "disabled on this adapter");
     }
 
+    {
+        InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+        const auto bytes = compiler.CompileComputeGlsl(std::string(lighting::ForwardPlusLightGrid::ShaderSource()),
+                                                       "Infernux/ForwardPlusLightGrid.comp");
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0) {
+            INXLOG_ERROR("SceneRenderGraph: failed to compile the Forward+ tiled-light shader");
+        } else {
+            std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
+            std::memcpy(spirv.data(), bytes.data(), bytes.size());
+            if (!m_forwardPlusGeometryGrid.Initialize(vkCore->GetDeviceContext().GetRhiDevice(), kMaxFramesInFlight,
+                                                      {spirv.data(), spirv.size()})) {
+                INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
+            } else {
+                for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+                    const auto *lights = vkCore->GetCanonicalLightGpuFrame(frameIndex);
+                    if (lights && lights->buffer.IsValid()) {
+                        (void)m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
+                                                                     CanonicalLightAffectsGeometry, lights->buffer);
+                    }
+                }
+            }
+        }
+    }
+
     return true;
 }
 
@@ -598,6 +622,7 @@ void SceneRenderGraph::Destroy()
     m_particleSorters.clear();
     m_fullscreenRenderer.Destroy();
     m_sceneDepthResolver.Destroy();
+    m_forwardPlusGeometryGrid.Shutdown();
     m_transientResources.clear();
     m_parameterBlocks.clear();
 
@@ -976,6 +1001,12 @@ void SceneRenderGraph::EnsureGraphBuilt()
         m_needsRebuild = true;
     }
 
+    if (UsesForwardPlus() && !PrepareForwardPlusFrame()) {
+        INXLOG_ERROR("SceneRenderGraph: Forward+ resources are unavailable for the current view");
+        m_graphBuilt = false;
+        return;
+    }
+
     if (m_needsRebuild) {
         BuildRenderGraph();
         m_needsRebuild = false;
@@ -994,6 +1025,63 @@ void SceneRenderGraph::EnsureGraphBuilt()
     if (m_graphBuilt) {
         RefreshPerViewShadowDescriptor();
     }
+}
+
+bool SceneRenderGraph::UsesForwardPlus() const
+{
+    if (!m_hasPythonGraph)
+        return false;
+    for (const auto &pass : m_pythonGraphDesc.passes) {
+        for (const auto &command : pass.commands) {
+            if (command.type == GraphCommandType::DrawRenderers &&
+                command.shaderTarget == ShaderCompileTarget::ForwardPlus) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool SceneRenderGraph::PrepareForwardPlusFrame()
+{
+    if (!m_vkCore || !m_forwardPlusGeometryGrid.IsValid())
+        return false;
+    const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+    const auto *lights = m_vkCore->GetCanonicalLightGpuFrame(frameIndex);
+    if (!lights || !lights->buffer.IsValid())
+        return false;
+
+    const auto previousHeaders = m_forwardPlusGeometryGrid.Frame(frameIndex).headers;
+    const auto previousIndices = m_forwardPlusGeometryGrid.Frame(frameIndex).indices;
+    const auto previousLights = m_forwardPlusGeometryGrid.Frame(frameIndex).canonicalLights;
+    if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
+                                                CanonicalLightAffectsGeometry, lights->buffer)) {
+        return false;
+    }
+    const auto &frame = m_forwardPlusGeometryGrid.Frame(frameIndex);
+    if (frame.headers != previousHeaders || frame.indices != previousIndices || frame.canonicalLights != previousLights)
+        m_needsRebuild = true;
+
+    RetireForwardPlusResources();
+    const VkDescriptorSet descriptorSet = m_perViewDescSets[frameIndex];
+    m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights->buffer, lights->dataBytes, frame.headers,
+                                              frame.config.headerBytes, frame.indices, frame.config.indexBytes);
+    return true;
+}
+
+void SceneRenderGraph::RetireForwardPlusResources()
+{
+    auto retired = m_forwardPlusGeometryGrid.TakeRetiredResources();
+    if (retired.empty() || !m_vkCore)
+        return;
+    rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
+    m_vkCore->GetDeletionQueue().Push([device, retired = std::move(retired)]() mutable {
+        for (const auto &resource : retired) {
+            device->Release(resource.bindGroup);
+            device->Release(resource.indices);
+            device->Release(resource.headers);
+        }
+    });
 }
 
 void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
@@ -1764,6 +1852,52 @@ void SceneRenderGraph::BuildRenderGraph()
         vk::ResourceHandle resolvedParticleSceneDepth;
         vk::ResourceHandle resolvedParticleDepthSource;
 
+        struct ForwardPlusGraphResources
+        {
+            vk::ResourceHandle canonicalLights;
+            vk::ResourceHandle headers;
+            vk::ResourceHandle indices;
+        };
+        std::array<ForwardPlusGraphResources, kMaxFramesInFlight> forwardPlusResources{};
+        if (UsesForwardPlus()) {
+            for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+                const auto *lights = m_vkCore->GetCanonicalLightGpuFrame(frameIndex);
+                const auto &gridFrame = m_forwardPlusGeometryGrid.Frame(frameIndex);
+                if (!lights || !lights->buffer.IsValid() || !gridFrame.config.IsValid())
+                    continue;
+                const std::string prefix = "ForwardPlus/Geometry/Frame" + std::to_string(frameIndex);
+                m_renderGraph->AddComputePass(prefix + "/Build", [&, frameIndex, prefix](vk::PassBuilder &builder) {
+                    auto &resources = forwardPlusResources[frameIndex];
+                    resources.canonicalLights =
+                        builder.ImportBuffer(prefix + "/CanonicalLights", lights->buffer, lights->capacityBytes);
+                    resources.headers =
+                        builder.ImportBuffer(prefix + "/TileHeaders", gridFrame.headers, gridFrame.headerCapacityBytes);
+                    resources.indices =
+                        builder.ImportBuffer(prefix + "/TileIndices", gridFrame.indices, gridFrame.indexCapacityBytes);
+                    m_renderGraph->SetResourceInitialState(resources.canonicalLights, rhi::TextureLayout::Undefined,
+                                                           rhi::Access::HostWrite, rhi::PipelineStage::Host);
+                    m_renderGraph->SetResourceInitialState(resources.headers, rhi::TextureLayout::Undefined,
+                                                           rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
+                    m_renderGraph->SetResourceInitialState(resources.indices, rhi::TextureLayout::Undefined,
+                                                           rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
+                    builder.ReadStorageBuffer(resources.canonicalLights);
+                    resources.headers = builder.WriteStorageBuffer(resources.headers);
+                    resources.indices = builder.WriteStorageBuffer(resources.indices);
+                    return [this, frameIndex](vk::RenderContext &ctx) {
+                        const uint32_t activeFrame = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+                        if (activeFrame != frameIndex)
+                            return;
+                        lighting::ForwardPlusGridConstants constants{};
+                        const glm::mat4 viewProjection = m_cachedProj * m_cachedView;
+                        std::memcpy(constants.viewProjection, &viewProjection[0][0], sizeof(viewProjection));
+                        constants.viewportAndProjectionScale[2] = std::abs(m_cachedProj[0][0]);
+                        constants.viewportAndProjectionScale[3] = std::abs(m_cachedProj[1][1]);
+                        m_forwardPlusGeometryGrid.Record(frameIndex, ctx.GetComputeCommandEncoder(), constants);
+                    };
+                });
+            }
+        }
+
         for (const auto &passDesc : sortedPasses) {
             const GraphCommandDesc *command = PrimaryCommand(passDesc);
             static const std::vector<std::pair<std::string, std::string>> kNoInputBindings;
@@ -2412,6 +2546,19 @@ void SceneRenderGraph::BuildRenderGraph()
                 };
                 std::vector<ParticlePacket> particlePackets;
                 particlePackets.reserve(particleEntries.size());
+
+                if (command && command->type == GraphCommandType::DrawRenderers &&
+                    command->shaderTarget == ShaderCompileTarget::ForwardPlus) {
+                    for (const auto &resources : forwardPlusResources) {
+                        if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
+                            !resources.indices.IsValid()) {
+                            continue;
+                        }
+                        builder.ReadStorageBuffer(resources.canonicalLights, rhi::PipelineStage::FragmentShader);
+                        builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
+                        builder.ReadStorageBuffer(resources.indices, rhi::PipelineStage::FragmentShader);
+                    }
+                }
                 for (const auto &entry : particleEntries) {
                     vk::ResourceHandle instances;
                     vk::ResourceHandle renderIndices;
@@ -2449,8 +2596,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     for (const auto &staticBuffer : entry.renderer->StaticVertexStorageBuffers()) {
                         const std::string name = "GpuParticle/" + std::to_string(entry.id) + "/StaticVertex" +
                                                  std::to_string(staticBufferIndex++);
-                        const auto handle =
-                            builder.ImportBuffer(name, staticBuffer.buffer, staticBuffer.byteSize);
+                        const auto handle = builder.ImportBuffer(name, staticBuffer.buffer, staticBuffer.byteSize);
                         if (!handle.IsValid())
                             continue;
                         m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined,

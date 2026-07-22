@@ -527,7 +527,8 @@ void InxRenderer::PreparePipeline()
             // unset for a frame; skipping Execute() in that window leaves the old
             // scene's image stuck in the game render target until some other view
             // rebuilds the cache. Fall back to live camera matrices instead.
-            if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
+            const bool gameViewActive = m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game);
+            if (gameViewActive && m_gameRenderGraph && m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
                 Camera *gameCam = FindGameCameraCached();
                 if (gameCam) {
                     if (m_gameRenderGraph->HasCachedDrawCalls()) {
@@ -869,6 +870,7 @@ void InxRenderer::DrawFrame()
                                    (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
                                   m_sceneRenderTarget && m_sceneRenderTarget->IsReady() &&
                                   m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1);
+    const bool gameViewActive = m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game);
 
     // Prepare scene rendering data (collect + cull + sort) AFTER GUI processing
     // so we always operate on the current scene state.
@@ -939,7 +941,7 @@ void InxRenderer::DrawFrame()
         }
 
         // ---- Game View: use scene main camera (if enabled) ----
-        if (m_gameCameraEnabled && m_gameRenderTarget && m_gameRenderTarget->IsReady() && m_gameRenderGraph) {
+        if (gameViewActive && m_gameRenderTarget && m_gameRenderTarget->IsReady() && m_gameRenderGraph) {
             Camera *gameCam = FindGameCameraCached();
             if (gameCam) {
                 // Set aspect ratio BEFORE SetupCameraProperties() so the
@@ -1009,7 +1011,7 @@ void InxRenderer::DrawFrame()
     if (sceneViewActive && m_sceneRenderGraph) {
         m_sceneRenderGraph->EnsureGraphBuilt();
     }
-    if (m_gameCameraEnabled && m_gameRenderGraph) {
+    if (gameViewActive && m_gameRenderGraph) {
         m_gameRenderGraph->EnsureGraphBuilt();
     }
 
@@ -1027,9 +1029,9 @@ void InxRenderer::DrawFrame()
             totalDrawCalls += m_sceneRenderGraph->GetCachedDrawCalls().size();
         if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls())
             totalDrawCalls += m_sceneRenderGraph->GetCachedShadowDrawCalls().size();
-        if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
+        if (gameViewActive && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
             totalDrawCalls += m_gameRenderGraph->GetCachedDrawCalls().size();
-        if (m_gameCameraEnabled && m_gameRenderGraph && m_gameRenderGraph->HasCachedShadowDrawCalls())
+        if (gameViewActive && m_gameRenderGraph && m_gameRenderGraph->HasCachedShadowDrawCalls())
             totalDrawCalls += m_gameRenderGraph->GetCachedShadowDrawCalls().size();
         m_vkCore->PreallocateInstances(totalDrawCalls);
     }
@@ -1430,8 +1432,9 @@ void InxRenderer::DrawFrame()
 bool InxRenderer::CheckAndApplyMsaaRequest()
 {
     m_sceneRequestedMsaaSamples = m_sceneRenderGraph ? m_sceneRenderGraph->GetRequestedMsaaSamples() : 0;
-    m_gameRequestedMsaaSamples =
-        (m_gameCameraEnabled && m_gameRenderGraph) ? m_gameRenderGraph->GetRequestedMsaaSamples() : 0;
+    m_gameRequestedMsaaSamples = ((m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game)) && m_gameRenderGraph)
+                                     ? m_gameRenderGraph->GetRequestedMsaaSamples()
+                                     : 0;
 
     const MsaaRequestResolution resolution =
         ResolveMsaaRequests(m_sceneRequestedMsaaSamples, m_gameRequestedMsaaSamples);
@@ -2336,7 +2339,7 @@ void InxRenderer::UpdateSceneLighting()
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lightingShadowGameMs = 0.0;
 #endif
-    if (m_gameCameraEnabled) {
+    if (m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game)) {
         Camera *gameCam = FindGameCameraCached();
         if (gameCam) {
             SceneLightCollector gameCollector;
@@ -2564,6 +2567,13 @@ uint64_t InxRenderer::RequestCapture(CaptureSource source, const std::string &ou
     if (!m_captureService)
         throw std::logic_error("Capture service is not initialized");
     const bool gameView = source == CaptureSource::Game;
+    if (gameView && (!m_gameRenderTarget || !m_gameRenderTarget->IsReady())) {
+        if (!FindGameCameraCached())
+            throw std::logic_error("Game camera is not available");
+        constexpr uint32_t kBackgroundCaptureWidth = 1280;
+        constexpr uint32_t kBackgroundCaptureHeight = 720;
+        ResizeGameRenderTarget(kBackgroundCaptureWidth, kBackgroundCaptureHeight);
+    }
     const uint64_t generation = gameView ? m_gameRenderTargetGeneration : m_sceneRenderTargetGeneration;
     SceneRenderTarget *target = gameView ? m_gameRenderTarget.get() : m_sceneRenderTarget.get();
     if (!target || !target->IsReady())

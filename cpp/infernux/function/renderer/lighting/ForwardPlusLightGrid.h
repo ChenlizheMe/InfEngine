@@ -59,6 +59,13 @@ struct ForwardPlusGridFrame
     uint64_t indexCapacityBytes = 0;
 };
 
+struct ForwardPlusRetiredResources
+{
+    rhi::BindGroupHandle bindGroup;
+    rhi::BufferHandle headers;
+    rhi::BufferHandle indices;
+};
+
 /// Per-view, frame-isolated tiled light-list builder. It owns no scene state;
 /// callers provide the current canonical LightData buffer and camera matrices.
 class ForwardPlusLightGrid
@@ -84,6 +91,7 @@ class ForwardPlusLightGrid
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] uint32_t FrameCount() const noexcept;
     [[nodiscard]] const ForwardPlusGridFrame &Frame(uint32_t frameIndex) const;
+    [[nodiscard]] std::vector<ForwardPlusRetiredResources> TakeRetiredResources();
 
     [[nodiscard]] static std::string_view ShaderSource() noexcept;
 
@@ -94,6 +102,7 @@ class ForwardPlusLightGrid
     rhi::BindingLayoutHandle m_layout;
     rhi::ComputePipelineHandle m_pipeline;
     std::vector<ForwardPlusGridFrame> m_frames;
+    std::vector<ForwardPlusRetiredResources> m_retired;
 };
 
 } // namespace infernux::lighting

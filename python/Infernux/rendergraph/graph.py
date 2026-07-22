@@ -346,11 +346,18 @@ class RenderPassBuilder:
             override_material: Force all objects to use this material name
                                (empty = per-object material).
             material_pass: Linked material program used by this pass. Supported
-                           values are ``forward``, ``gbuffer``, ``depth``,
+            values are ``forward``, ``forward_plus``, ``gbuffer``, ``depth``,
                            ``picking``, and ``motion``.
         """
         normalized_pass = str(material_pass).strip().lower()
-        if normalized_pass not in {"forward", "gbuffer", "depth", "picking", "motion"}:
+        if normalized_pass not in {
+            "forward",
+            "forward_plus",
+            "gbuffer",
+            "depth",
+            "picking",
+            "motion",
+        }:
             raise ValueError(f"Unknown material pass '{material_pass}'")
         self._action = "draw_renderers"
         self._material_pass = normalized_pass
@@ -1457,6 +1464,7 @@ class RenderGraph:
         }
         _material_pass_map = {
             "forward": MaterialPassType.FORWARD,
+            "forward_plus": MaterialPassType.FORWARD_PLUS,
             "gbuffer": MaterialPassType.GBUFFER,
             "depth": MaterialPassType.DEPTH,
             "picking": MaterialPassType.PICKING,
