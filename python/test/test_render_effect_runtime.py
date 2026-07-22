@@ -87,6 +87,7 @@ def test_render_effect_inspector_edit_updates_shared_instance_and_queues_snapsho
 
 def test_render_effect_inspector_skips_edit_path_for_unchanged_fields(monkeypatch):
     from Infernux.engine.ui import render_effect_inspector as inspector
+    from Infernux.renderstack import render_effect_compiler
 
     effect = RenderEffect(
         RenderEffectAsset(
@@ -95,6 +96,24 @@ def test_render_effect_inspector_skips_edit_path_for_unchanged_fields(monkeypatc
         )
     )
     edit_calls = []
+    instantiate_calls = []
+    feature = render_effect_compiler.get_render_effect_feature(effect.feature_type)
+    original_instantiate = feature.instantiate
+
+    class CountingFeature:
+        type_id = feature.type_id
+        effect_class = feature.effect_class
+
+        @staticmethod
+        def instantiate(source):
+            instantiate_calls.append(source.revision)
+            return original_instantiate(source)
+
+    monkeypatch.setattr(
+        render_effect_compiler,
+        "get_render_effect_feature",
+        lambda _type_id: CountingFeature,
+    )
     monkeypatch.setattr(inspector, "max_label_w", lambda *_args: 80.0)
     monkeypatch.setattr(
         inspector,
@@ -113,7 +132,13 @@ def test_render_effect_inspector_skips_edit_path_for_unchanged_fields(monkeypatc
     )()
 
     assert inspector.render_render_effect_parameters(ctx, effect) is False
+    assert inspector.render_render_effect_parameters(ctx, effect) is False
+    assert instantiate_calls == [0]
     assert edit_calls == []
+
+    effect.set_float("intensity", 0.75)
+    assert inspector.render_render_effect_parameters(ctx, effect) is False
+    assert instantiate_calls == [0, 1]
 
 
 def test_render_effect_debounced_save_uses_document_store_worker(tmp_path):
@@ -644,6 +669,65 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path):
         "infernux.post.tonemapping",
     ]
     assert effects[0].get_float("intensity") == pytest.approx(0.9)
+
+
+def test_effect_group_expansion_is_published_in_memory_until_asset_reimport(
+    tmp_path,
+    monkeypatch,
+):
+    RenderEffectArtifactRegistry.clear()
+    bloom_path = tmp_path / "Bloom.effect"
+    bloom_path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.bloom",
+                parameters={"intensity": 0.5, "max_iterations": 2},
+            )
+        ),
+        encoding="utf-8",
+    )
+    group_path = tmp_path / "Post.effectgroup"
+
+    def write_group(intensity):
+        group_path.write_text(
+            dump_render_effect_document(
+                RenderEffectGroupAsset(
+                    entries=(
+                        RenderEffectGroupEntry(
+                            "bloom",
+                            EffectAssetReference(path_hint=bloom_path.name),
+                            overrides={"intensity": intensity},
+                        ),
+                    )
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    write_group(0.75)
+    original_read_text = Path.read_text
+    group_reads = []
+
+    def count_group_reads(path, *args, **kwargs):
+        if path.resolve() == group_path.resolve():
+            group_reads.append(str(path))
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", count_group_reads)
+
+    first = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
+    second = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
+
+    assert first[0] is second[0]
+    assert first[0].get_float("intensity") == pytest.approx(0.75)
+    assert len(group_reads) == 1
+
+    write_group(1.25)
+    RenderEffectArtifactRegistry.compile_and_publish(str(group_path))
+    refreshed = expand_render_effect_reference(RenderEffectRef(path_hint=str(group_path)))
+
+    assert refreshed[0].get_float("intensity") == pytest.approx(1.25)
+    assert len(group_reads) == 2
 
 
 def test_effect_group_compiles_without_reentering_its_own_asset_load(tmp_path, monkeypatch):

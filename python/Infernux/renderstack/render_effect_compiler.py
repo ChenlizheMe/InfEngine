@@ -25,6 +25,14 @@ class RenderEffectCompileError(ValueError):
 
 
 _ARTIFACT_SCHEMA = "infernux.render_effect_artifact"
+_EFFECT_GROUP_EXPANSIONS: dict[str, tuple[RenderEffect, ...]] = {}
+_EFFECT_GROUP_EXPANSION_GENERATION = 0
+
+
+def _clear_effect_group_expansions() -> None:
+    global _EFFECT_GROUP_EXPANSION_GENERATION
+    _EFFECT_GROUP_EXPANSIONS.clear()
+    _EFFECT_GROUP_EXPANSION_GENERATION += 1
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,7 @@ class RenderEffectArtifactRegistry:
         cls._compiling.clear()
         cls._revision = 0
         cls._topology_generation = 0
+        _clear_effect_group_expansions()
 
     @classmethod
     def compile_and_publish(cls, path: str, *, guid: str = ""):
@@ -73,8 +82,13 @@ class RenderEffectArtifactRegistry:
                 f"render effect compile cycle detected at {source_path!r}"
             )
         cls._compiling.add(key)
+        expansion_snapshot = dict(_EFFECT_GROUP_EXPANSIONS)
         try:
             return cls._compile_and_publish_unchecked(source_path, guid=guid)
+        except Exception:
+            _EFFECT_GROUP_EXPANSIONS.clear()
+            _EFFECT_GROUP_EXPANSIONS.update(expansion_snapshot)
+            raise
         finally:
             cls._compiling.discard(key)
 
@@ -92,6 +106,18 @@ class RenderEffectArtifactRegistry:
         if existing is not None and existing.source_hash == source_hash:
             return existing, document
 
+        group_sources = None
+        if isinstance(document, RenderEffectGroupAsset):
+            # Group membership is an asset-time concern. Publish a fresh,
+            # flattened memory view when the source changes so RenderStack and
+            # its Inspector never need to poll or parse source files per frame.
+            _clear_effect_group_expansions()
+            group_sources = _expand_render_effect_group_document(
+                document,
+                source_path,
+                _trail=(path_key(source_path),),
+            )
+
         artifact_path = cls._artifact_path(source_path, guid)
         if existing is None and artifact_path:
             persisted = cls._load_persisted(
@@ -103,9 +129,16 @@ class RenderEffectArtifactRegistry:
                 cls._artifacts[key] = persisted
                 cls._revision = max(cls._revision, persisted.revision)
                 cls._topology_generation += 1
+                if group_sources is not None:
+                    _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
                 return persisted, document
 
-        features = cls._compile_document(document, source_path, guid)
+        if group_sources is None:
+            features = cls._compile_document(document, source_path, guid)
+        else:
+            features = tuple(
+                cls._compile_feature_record(source) for source in group_sources
+            )
         structural_hash = cls._structural_hash(document, features)
         next_revision = cls._revision + 1
         payload = {
@@ -140,6 +173,8 @@ class RenderEffectArtifactRegistry:
         cls._artifacts[key] = artifact
         if existing is None or existing.structural_hash != structural_hash:
             cls._topology_generation += 1
+        if group_sources is not None:
+            _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
         return artifact, document
 
     @staticmethod
@@ -188,8 +223,10 @@ class RenderEffectArtifactRegistry:
         if isinstance(document, RenderEffectAsset):
             sources = [RenderEffect(document, file_path=source_path, guid=guid)]
         else:
-            sources = expand_render_effect_reference(
-                RenderEffectRef(guid=guid, path_hint=source_path)
+            sources = _expand_render_effect_group_document(
+                document,
+                source_path,
+                _trail=(path_key(source_path),),
             )
         return tuple(cls._compile_feature_record(source) for source in sources)
 
@@ -357,10 +394,8 @@ def _register_builtin_features() -> None:
     from Infernux.renderstack.bloom_effect import BloomEffect
     from Infernux.renderstack.chromatic_aberration_effect import ChromaticAberrationEffect
     from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
-    from Infernux.renderstack.digital_glitch_effect import DigitalGlitchEffect
     from Infernux.renderstack.film_grain_effect import FilmGrainEffect
-    from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect
-    from Infernux.renderstack.grayscale_effect import GrayscaleEffect
+    from Infernux.renderstack.pixelation_effect import PixelationEffect
     from Infernux.renderstack.sharpen_effect import SharpenEffect
     from Infernux.renderstack.tonemapping_effect import ToneMappingEffect
     from Infernux.renderstack.vignette_effect import VignetteEffect
@@ -408,18 +443,8 @@ def _register_builtin_features() -> None:
         route_policy=RoutePolicy.MASK_AND_MODIFY,
     )
     register_render_effect_feature(
-        "infernux.route.grayscale",
-        GrayscaleEffect,
-        route_policy=RoutePolicy.MASK_AND_MODIFY,
-    )
-    register_render_effect_feature(
-        "infernux.route.gaussian_blur",
-        GaussianBlurEffect,
-        route_policy=RoutePolicy.ISOLATE_AND_COMPOSITE,
-    )
-    register_render_effect_feature(
-        "infernux.route.digital_glitch",
-        DigitalGlitchEffect,
+        "infernux.route.pixelation",
+        PixelationEffect,
         route_policy=RoutePolicy.ISOLATE_AND_COMPOSITE,
     )
     _BUILTINS_REGISTERED = True
@@ -586,14 +611,38 @@ def expand_render_effect_reference(
     if isinstance(cached, RenderEffect):
         return [cached]
 
+    local_group = getattr(reference, "_group_expansion_cache", None)
+    local_identity = (reference.guid, reference.path_hint)
+    if (
+        isinstance(local_group, tuple)
+        and len(local_group) == 3
+        and local_group[0] == _EFFECT_GROUP_EXPANSION_GENERATION
+        and local_group[1] == local_identity
+    ):
+        return list(local_group[2])
+
     path = _resolve_reference_path(reference, _parent)
     if not path:
         raise RenderEffectCompileError(
             f"effect reference cannot be resolved: {reference.path_hint or reference.guid!r}"
         )
-    cycle_key = reference.guid or path_key(path)
+    cycle_key = path_key(path)
     if cycle_key in _trail:
         raise RenderEffectCompileError(f"render effect group cycle detected at {path!r}")
+    group_sources = _EFFECT_GROUP_EXPANSIONS.get(cycle_key)
+    if group_sources is not None:
+        reference._group_expansion_cache = (
+            _EFFECT_GROUP_EXPANSION_GENERATION,
+            local_identity,
+            group_sources,
+        )
+        return list(group_sources)
+
+    if path.lower().endswith(".effect"):
+        cached = reference.resolve()
+        if isinstance(cached, RenderEffect):
+            return [cached]
+
     document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
     if isinstance(document, RenderEffectAsset):
         cached = reference.resolve()
@@ -603,6 +652,27 @@ def expand_render_effect_reference(
     if not isinstance(document, RenderEffectGroupAsset):
         raise RenderEffectCompileError(f"unsupported effect document: {path!r}")
 
+    flattened = _expand_render_effect_group_document(
+        document,
+        path,
+        _trail=(*_trail, cycle_key),
+    )
+    _EFFECT_GROUP_EXPANSIONS[cycle_key] = tuple(flattened)
+    reference._group_expansion_cache = (
+        _EFFECT_GROUP_EXPANSION_GENERATION,
+        local_identity,
+        _EFFECT_GROUP_EXPANSIONS[cycle_key],
+    )
+    return list(flattened)
+
+
+def _expand_render_effect_group_document(
+    document: RenderEffectGroupAsset,
+    path: str,
+    *,
+    _trail: tuple[str, ...] = (),
+) -> list[RenderEffect]:
+    """Flatten a parsed group into live effect objects for memory publication."""
     flattened: list[RenderEffect] = []
     for entry in document.entries:
         if not entry.enabled:
@@ -614,7 +684,7 @@ def expand_render_effect_reference(
         children = expand_render_effect_reference(
             child,
             _parent=os.path.dirname(path),
-            _trail=(*_trail, cycle_key),
+            _trail=_trail,
         )
         if entry.overrides:
             children = _apply_group_overrides(children, entry.overrides, entry.entry_id)

@@ -178,6 +178,61 @@ def test_opaque_route_effect_overflow_is_composited_after_ordinary_background():
     assert sky_under < overflow_composite
 
 
+def test_msaa_inline_background_is_not_deferred_over_effect_overflow():
+    class MsaaOverflowPipeline(RenderPipeline):
+        name = "MSAA Overflow Ordering"
+
+        def define(self, pipeline):
+            pipeline.frame(hdr=True, msaa=4)
+            with pipeline.opaque() as opaque:
+                with opaque.layer("Effects") as layer:
+                    layer.forward(Queue(1, 100)).effects("blurred")
+                opaque.otherwise().forward()
+            pipeline.sky()
+
+    stack = RenderStack()
+    stack._pipeline = MsaaOverflowPipeline()
+    stack._pipeline._render_stack = stack
+    stack.add_effect_slot(
+        "blurred",
+        RenderEffectRef(
+            effect=_effect("infernux.route.pixelation", pixel_size=18)
+        ),
+    )
+
+    description = stack.build_graph()
+    passes = list(description.passes)
+    otherwise_composite = next(
+        index
+        for index, render_pass in enumerate(passes)
+        if any(
+            command.shader_name == "route_alpha_composite"
+            and dict(command.input_bindings).get("_LayerTex", "").endswith(
+                "route/opaque.route_2/color"
+            )
+            for command in render_pass.commands
+        )
+    )
+    overflow_composite = next(
+        index
+        for index, render_pass in enumerate(passes)
+        if any(
+            command.shader_name == "route_alpha_composite"
+            and dict(command.input_bindings).get("_LayerTex", "").endswith(
+                "route/opaque.route_1/color"
+            )
+            for command in render_pass.commands
+        )
+    )
+    sky_under = next(
+        index
+        for index, render_pass in enumerate(passes)
+        if render_pass.name.startswith("under/scene/")
+    )
+
+    assert otherwise_composite < sky_under < overflow_composite
+
+
 @pytest.mark.parametrize("path", [Path.FORWARD_PLUS, Path.DEFERRED])
 def test_compiler_never_silently_substitutes_forward_for_unfinished_paths(path):
     pipeline = PipelineBuilder()
@@ -287,9 +342,7 @@ def _effect(feature_type: str, **parameters) -> RenderEffect:
 
 def test_builtin_route_effects_declare_their_image_ownership_policy():
     assert get_render_effect_feature("infernux.post.bloom").route_policy is RoutePolicy.ADDITIVE_EXTRACT
-    assert get_render_effect_feature("infernux.route.grayscale").route_policy is RoutePolicy.MASK_AND_MODIFY
-    assert get_render_effect_feature("infernux.route.gaussian_blur").route_policy is RoutePolicy.ISOLATE_AND_COMPOSITE
-    assert get_render_effect_feature("infernux.route.digital_glitch").route_policy is RoutePolicy.ISOLATE_AND_COMPOSITE
+    assert get_render_effect_feature("infernux.route.pixelation").route_policy is RoutePolicy.ISOLATE_AND_COMPOSITE
 
 
 def test_route_policy_merge_rejects_additive_and_replacement_effects():
@@ -329,75 +382,65 @@ def test_empty_route_effect_stage_draws_inline_without_an_isolation_target():
     )
 
 
-def test_grayscale_route_is_committed_without_leaking_into_the_scene_output():
+def test_pixelation_route_uses_isolation_and_alpha_composite():
     description = _route_effect_stack(
-        _effect("infernux.route.grayscale", intensity=0.75)
+        _effect(
+            "infernux.route.pixelation",
+            pixel_size=24,
+            pixel_aspect=1.5,
+            sampling=2,
+            preserve_alpha_coverage=True,
+        )
     ).build_graph()
-    grayscale = next(
+    pixelation = next(
         render_pass
         for render_pass in description.passes
-        if render_pass.name.endswith("Grayscale_Apply")
+        if render_pass.name.endswith("Pixelation_Apply")
     )
-    bindings = dict(grayscale.commands[0].input_bindings)
+    command = pixelation.commands[0]
+    bindings = dict(command.input_bindings)
+    constants = dict(command.push_constants)
 
     assert bindings["_SourceTex"].startswith("route/opaque.route_1/")
-    assert not any(
-        render_pass.name == "_FinalCompositeBlit"
+    assert command.shader_name == "pixelation"
+    assert constants["pixelSize"] == 24.0
+    assert constants["pixelAspect"] == 1.5
+    assert constants["samplingMode"] == 2.0
+    assert constants["preserveAlphaCoverage"] == 1.0
+    assert any(
+        command.shader_name == "route_alpha_composite"
         for render_pass in description.passes
+        for command in render_pass.commands
     )
     assert description.output_texture == "color"
 
 
-def test_gaussian_route_uses_two_pass_isolation_and_alpha_composite():
-    description = _route_effect_stack(
-        _effect("infernux.route.gaussian_blur", radius=5, sigma=2.0)
-    ).build_graph()
-    names = [render_pass.name for render_pass in description.passes]
-    shaders = [
-        command.shader_name
-        for render_pass in description.passes
-        for command in render_pass.commands
-    ]
-
-    assert any(name.endswith("GaussianBlur_Horizontal") for name in names)
-    assert any(name.endswith("GaussianBlur_Vertical") for name in names)
-    assert "route_alpha_composite" in shaders
-
-
-def test_gaussian_blur_keeps_a_fixed_tap_budget_for_wide_spread():
-    from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect
-
-    effect = GaussianBlurEffect()
-    effect.radius = 128
-    effect.sigma = 48.0
+def test_pixelation_clamps_runtime_parameters_to_production_limits():
     stack = _route_effect_stack(
-        _effect("infernux.route.gaussian_blur", radius=effect.radius, sigma=effect.sigma)
+        _effect(
+            "infernux.route.pixelation",
+            pixel_size=999,
+            pixel_aspect=0.01,
+            grid_offset_x=4.0,
+            grid_offset_y=-4.0,
+            intensity=2.0,
+            sampling=2,
+        )
     )
     description = stack.build_graph()
-    blur_passes = [
+    pixelation = next(
         render_pass
         for render_pass in description.passes
-        if "GaussianBlur_" in render_pass.name
-    ]
+        if render_pass.name.endswith("Pixelation_Apply")
+    )
+    constants = dict(pixelation.commands[0].push_constants)
 
-    assert len(blur_passes) == 2
-    assert all(dict(render_pass.commands[0].push_constants)["radius"] == 128.0 for render_pass in blur_passes)
-
-
-def test_digital_glitch_route_uses_isolation_and_alpha_composite():
-    description = _route_effect_stack(
-        _effect("infernux.route.digital_glitch", intensity=0.8, block_size=14.0)
-    ).build_graph()
-    names = [render_pass.name for render_pass in description.passes]
-    shaders = [
-        command.shader_name
-        for render_pass in description.passes
-        for command in render_pass.commands
-    ]
-
-    assert any(name.endswith("DigitalGlitch_Apply") for name in names)
-    assert "digital_glitch" in shaders
-    assert "route_alpha_composite" in shaders
+    assert constants["pixelSize"] == 256.0
+    assert constants["pixelAspect"] == 0.25
+    assert constants["gridOffsetX"] == 1.0
+    assert constants["gridOffsetY"] == -1.0
+    assert constants["intensity"] == 1.0
+    assert constants["samplingMode"] == 2.0
 
 
 def test_bloom_route_extracts_only_additive_energy_and_handles_one_mip():
@@ -425,7 +468,7 @@ def test_bloom_route_extracts_only_additive_energy_and_handles_one_mip():
 def test_mixed_additive_and_replacement_route_effects_fail_actionably():
     stack = _route_effect_stack(
         _effect("infernux.post.bloom", max_iterations=2),
-        _effect("infernux.route.grayscale", intensity=1.0),
+        _effect("infernux.route.pixelation", pixel_size=16),
     )
 
     with pytest.raises(RenderEffectCompileError, match="incompatible route effect policies"):

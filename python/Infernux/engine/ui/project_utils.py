@@ -839,7 +839,9 @@ def open_file_with_system(file_path: str, project_root: str = ""):
     # VS Code -> PyCharm.
     if ext in CODE_EXTENSIONS and project_root:
         preferred_ide = get_ide()
-        available_ides = detect_available_ides()
+        # Refresh here instead of trusting the startup cache. IDEs can be
+        # installed, updated, or selected while the editor is already running.
+        available_ides = detect_available_ides(force_refresh=True)
 
         ide_order = ["vscode", "pycharm"]
         if preferred_ide in available_ides:

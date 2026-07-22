@@ -45,7 +45,7 @@ class UIButton(UISelectable):
         group="Content",
     )
     font_size: float = serialized_field(
-        default=16.0, tooltip="Label font size",
+        default=18.0, tooltip="Label font size",
         group="Content", range=(4.0, 256.0), drag_speed=0.5,
     )
     font_path: str = serialized_field(

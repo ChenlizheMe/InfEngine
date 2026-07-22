@@ -121,7 +121,7 @@ def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Pat
         json.dumps(
             {
                 "$schema": "infernux.render_effect",
-                "feature_type": "infernux.post.grayscale",
+                "feature_type": "infernux.route.pixelation",
                 "parameters": {},
                 "dependencies": [],
                 "scope": "final",

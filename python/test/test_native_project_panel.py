@@ -79,14 +79,14 @@ class TestProjectPanelCreation:
         )
 
         ok, error = create_render_effect(
-            str(tmp_path), "Blur", "infernux.route.gaussian_blur"
+            str(tmp_path), "Pixels", "infernux.route.pixelation"
         )
         assert ok is True, error
         effect = parse_render_effect_document(
-            (tmp_path / "Blur.effect").read_text(encoding="utf-8")
+            (tmp_path / "Pixels.effect").read_text(encoding="utf-8")
         )
         assert isinstance(effect, RenderEffectAsset)
-        assert effect.feature_type == "infernux.route.gaussian_blur"
+        assert effect.feature_type == "infernux.route.pixelation"
         assert effect.parameters == {}
 
         ok, error = create_render_effect_group(str(tmp_path), "Post")
@@ -102,9 +102,9 @@ class TestProjectPanelCreation:
         pp.create_render_effect = lambda cur, name, feature: (True, feature)
         pp.create_render_effect_group = lambda cur, name: (True, name)
 
-        assert pp.create_render_effect("/path", "Blur", "infernux.route.gaussian_blur") == (
+        assert pp.create_render_effect("/path", "Pixels", "infernux.route.pixelation") == (
             True,
-            "infernux.route.gaussian_blur",
+            "infernux.route.pixelation",
         )
         assert pp.create_render_effect_group("/path", "Post") == (True, "Post")
 

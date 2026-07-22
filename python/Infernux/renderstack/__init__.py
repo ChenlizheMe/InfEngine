@@ -66,9 +66,7 @@ from Infernux.renderstack.route_policy import RoutePolicy, merge_route_policies
 from Infernux.renderstack.geometry_pass import GeometryPass
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
 from Infernux.renderstack.bloom_effect import BloomEffect
-from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect
-from Infernux.renderstack.grayscale_effect import GrayscaleEffect
-from Infernux.renderstack.digital_glitch_effect import DigitalGlitchEffect
+from Infernux.renderstack.pixelation_effect import PixelationEffect, PixelationSampling
 from Infernux.renderstack.tonemapping_effect import ToneMappingEffect
 from Infernux.renderstack.vignette_effect import VignetteEffect
 from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
@@ -126,9 +124,8 @@ __all__ = [
     "FullScreenEffect",
     # Built-in effects
     "BloomEffect",
-    "GaussianBlurEffect",
-    "GrayscaleEffect",
-    "DigitalGlitchEffect",
+    "PixelationEffect",
+    "PixelationSampling",
     "ToneMappingEffect",
     "VignetteEffect",
     "ColorAdjustmentsEffect",

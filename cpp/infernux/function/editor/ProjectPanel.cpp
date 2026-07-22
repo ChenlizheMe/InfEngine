@@ -2881,9 +2881,7 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
             effectItem("project.effect_vignette", "NewVignette", "infernux.post.vignette");
             effectItem("project.effect_white_balance", "NewWhiteBalance", "infernux.post.white_balance");
             ctx->Separator();
-            effectItem("project.effect_grayscale", "NewGrayscale", "infernux.route.grayscale");
-            effectItem("project.effect_gaussian_blur", "NewGaussianBlur", "infernux.route.gaussian_blur");
-            effectItem("project.effect_digital_glitch", "NewDigitalGlitch", "infernux.route.digital_glitch");
+            effectItem("project.effect_pixelation", "NewPixelation", "infernux.route.pixelation");
             ctx->EndMenu();
         }
         if (ctx->Selectable(Tr("project.create_render_effect_group"), false)) {
@@ -3113,8 +3111,19 @@ void ProjectPanel::RenderItemLabel(InxGUIContext *ctx, const FileItem &item, flo
             CommitRename();
     } else {
         auto &entry = GetCachedItemLabel(ctx, item, iconSize);
-        ctx->SetCursorPosX(cellStartX + entry.offsetX);
-        ctx->Label(entry.displayText);
+        const float labelHeight = GetGridTextLineHeight(ctx);
+        ctx->SetCursorPosX(cellStartX);
+        const ImVec2 labelMin = ImGui::GetCursorScreenPos();
+        ctx->InvisibleButton("##label_click", iconSize, labelHeight);
+
+        const float textY = labelMin.y + std::max((labelHeight - ImGui::GetTextLineHeight()) * 0.5f, 0.0f);
+        ImGui::GetWindowDrawList()->AddText(ImVec2(labelMin.x + entry.offsetX, textY),
+                                            ImGui::GetColorU32(ImGuiCol_Text), entry.displayText.c_str());
+
+        // The icon and its filename are one file item. Previously only the icon
+        // received clicks, so a normal double-click on the filename did nothing.
+        if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+            HandleItemClick(item, ctx);
     }
 }
 

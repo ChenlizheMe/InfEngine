@@ -80,6 +80,7 @@ class _ImageAccumulator:
 class _RouteContribution:
     color: object | None = None
     additive: object | None = None
+    deferred_overlay: bool = True
 
 
 @dataclass(frozen=True)
@@ -274,7 +275,14 @@ def _compile_domain(
                 msaa_samples=msaa_samples,
             )
             if contribution is not None:
-                pending_overlays.append((stable_id, contribution))
+                if contribution.deferred_overlay:
+                    pending_overlays.append((stable_id, contribution))
+                else:
+                    _consume_route_contribution(
+                        accumulator,
+                        contribution,
+                        label=stable_id,
+                    )
             continue
         if operation == "layer":
             image = _compile_layer(
@@ -345,7 +353,14 @@ def _compile_layer(
                 msaa_samples=msaa_samples,
             )
             if contribution is not None:
-                pending_overlays.append((stable_id, contribution))
+                if contribution.deferred_overlay:
+                    pending_overlays.append((stable_id, contribution))
+                else:
+                    _consume_route_contribution(
+                        accumulator,
+                        contribution,
+                        label=stable_id,
+                    )
             continue
         if operation == "effect":
             stage = stages[stable_id]
@@ -438,7 +453,14 @@ def _compile_route(
         _declare_effect(graph, stage, resources, policy=policy)
 
     if policy is not RoutePolicy.ADDITIVE_EXTRACT:
-        return _RouteContribution(color=route_color)
+        # MSAA forces even an ordinary inline route through an isolated resolve
+        # target. That is only a storage detail: it must join the scope's base
+        # image immediately, otherwise it is deferred alongside real effect
+        # overflow and can cover blur/glitch pixels composited later.
+        return _RouteContribution(
+            color=route_color,
+            deferred_overlay=policy is not RoutePolicy.INLINE,
+        )
 
     with graph.name_scope(f"route/{route.route_id}"):
         additive = graph.create_texture("additive_delta", format=color_format)

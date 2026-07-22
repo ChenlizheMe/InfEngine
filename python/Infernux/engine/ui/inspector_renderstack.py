@@ -53,9 +53,12 @@ def _effect_stage_adapter(stack: "RenderStack", stage_id: str) -> _EffectStageSl
 def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     """Build or reuse the data-only model consumed by the common Inspector."""
     topology = stack._build_full_topology_probe()
-    pipelines = stack.discover_pipelines()
+    catalog_signature = tuple(getattr(stack, "_pipeline_catalog_signature", ()))
+    if not catalog_signature:
+        catalog_signature = tuple(sorted(stack.discover_pipelines()))
+        stack._pipeline_catalog_signature = catalog_signature
     pipeline_names = ("Default Forward",) + tuple(
-        sorted(name for name in pipelines if name != "Default Forward")
+        name for name in catalog_signature if name != "Default Forward"
     )
     cache_key = (id(topology), pipeline_names)
     cached = getattr(stack, "_inspector_declarative_model", None)

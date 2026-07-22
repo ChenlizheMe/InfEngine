@@ -607,7 +607,7 @@ class Theme:
 
     UI_DEFAULT_BUTTON_BG      : RGBA = (0.22, 0.56, 0.92, 1.0)  # Default button bg
     UI_DEFAULT_LABEL_COLOR    : RGBA = (1.0, 1.0, 1.0, 1.0)  # Default label color
-    UI_DEFAULT_FONT_SIZE      : float = 16.0  # Default font size
+    UI_DEFAULT_FONT_SIZE      : float = 18.0  # Default font size
     UI_DEFAULT_LINE_HEIGHT    : float = 1.2  # Default line height
     UI_DEFAULT_LETTER_SPACING : float = 0.0  # Default letter spacing
 

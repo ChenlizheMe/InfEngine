@@ -14,6 +14,17 @@ from Infernux.engine.ui.inspector_utils import (
 from Infernux.engine.ui.theme import Theme
 
 
+def _inspector_parameter_instance(effect, feature):
+    """Return a typed parameter view rebuilt only after live asset changes."""
+    cache_key = (feature.type_id, id(feature.effect_class), effect.revision)
+    cached = getattr(effect, "_inspector_parameter_cache", None)
+    if isinstance(cached, tuple) and cached[0] == cache_key:
+        return cached[1]
+    instance = feature.instantiate(effect)
+    effect._inspector_parameter_cache = (cache_key, instance)
+    return instance
+
+
 def apply_render_effect_parameter_edit(effect, field_name: str, value) -> bool:
     """Apply one typed parameter edit to the shared asset with Undo support."""
     from Infernux.renderstack.render_effect_compiler import get_render_effect_feature
@@ -24,7 +35,7 @@ def apply_render_effect_parameter_edit(effect, field_name: str, value) -> bool:
     if metadata is None or metadata.readonly:
         return False
 
-    instance = feature.instantiate(effect)
+    instance = _inspector_parameter_instance(effect, feature)
     current_value = getattr(instance, field_name, metadata.default)
     if not has_field_changed(metadata.field_type, current_value, value):
         return False
@@ -60,7 +71,7 @@ def render_render_effect_parameters(ctx, effect, *, widget_prefix: str = "effect
     fields = get_serialized_fields(feature.effect_class)
     if not fields:
         return False
-    instance = feature.instantiate(effect)
+    instance = _inspector_parameter_instance(effect, feature)
     labels = [pretty_field_name(name) for name in fields]
     label_width = max(Theme.INSPECTOR_MIN_LABEL_WIDTH, max_label_w(ctx, labels))
     changed = False
