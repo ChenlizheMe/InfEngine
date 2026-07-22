@@ -69,9 +69,21 @@ class DirtyPanelConfirmationCoordinator:
         self._begin("panel", identifier, on_complete, on_cancel)
         return True
 
-    def render(self, ctx) -> None:
-        """Poll asynchronous saves and render the current Editor modal."""
+    def render(self, ctx, *, panel_host_id: Optional[str] = None) -> None:
+        """Poll saves and render from the window that owns the transaction.
+
+        A panel-close popup must be submitted while its source panel is the
+        current ImGui window. Otherwise an undocked dock host can remain above
+        the modal even when the modal is registered as a late global overlay.
+        Exit confirmations have no single panel host and stay on the global
+        overlay path.
+        """
         if not self.is_active:
+            return
+        if self._scope == "panel":
+            if str(panel_host_id or "") != self._panel_id:
+                return
+        elif panel_host_id is not None:
             return
         if self._waiting_for_save:
             self._poll_save()

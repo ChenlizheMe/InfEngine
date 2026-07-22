@@ -234,6 +234,49 @@ def test_direct_panel_close_routes_through_shared_confirmation():
         clear_panel_tracking(panel_id)
 
 
+def test_panel_confirmation_renders_only_from_its_source_panel():
+    panel_id = "dirty_test_hosted_modal"
+    set_panel_dirty(panel_id, True, title="Hosted Modal")
+    coordinator = DirtyPanelConfirmationCoordinator()
+    try:
+        assert coordinator.request_panel_close(panel_id, lambda: None)
+
+        global_ctx = _SemanticContext()
+        coordinator.render(global_ctx)
+        assert global_ctx.opened == []
+
+        other_ctx = _SemanticContext()
+        coordinator.render(other_ctx, panel_host_id="another_panel")
+        assert other_ctx.opened == []
+
+        source_ctx = _SemanticContext()
+        coordinator.render(source_ctx, panel_host_id=panel_id)
+        assert source_ctx.opened == ["Unsaved Changes###editor_dirty_panel_confirm"]
+        assert "editor.dirty_panel.dialog" in source_ctx.semantics
+    finally:
+        coordinator.choose_cancel()
+        clear_panel_tracking(panel_id)
+
+
+def test_exit_confirmation_renders_only_from_global_overlay():
+    panel_id = "dirty_test_global_modal"
+    set_panel_dirty(panel_id, True, title="Global Modal")
+    coordinator = DirtyPanelConfirmationCoordinator()
+    try:
+        assert coordinator.request_exit(lambda: None, lambda: None)
+
+        panel_ctx = _SemanticContext()
+        coordinator.render(panel_ctx, panel_host_id=panel_id)
+        assert panel_ctx.opened == []
+
+        global_ctx = _SemanticContext()
+        coordinator.render(global_ctx)
+        assert global_ctx.opened == ["Unsaved Changes###editor_dirty_panel_confirm"]
+    finally:
+        coordinator.choose_cancel()
+        clear_panel_tracking(panel_id)
+
+
 def test_titlebar_close_keeps_panel_open_without_stealing_modal_focus():
     panel_id = "dirty_test_titlebar_close"
     panel = ClosablePanel("Titlebar Close", panel_id)

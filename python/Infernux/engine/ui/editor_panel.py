@@ -476,7 +476,20 @@ class EditorPanel(ClosablePanel):
                         self._on_not_visible(ctx)
                     self._content_was_visible = False
             finally:
-                ctx.end_window()
+                try:
+                    # Panel-close confirmations belong to this window's popup
+                    # hierarchy. Rendering them here keeps an undocked panel
+                    # from covering its own modal; engine-exit confirmations
+                    # continue to use the global overlay renderer.
+                    from .dirty_panel_confirmation import (
+                        DirtyPanelConfirmationCoordinator,
+                    )
+
+                    DirtyPanelConfirmationCoordinator.instance().render(
+                        ctx, panel_host_id=self._window_id
+                    )
+                finally:
+                    ctx.end_window()
         finally:
             # Keep the ImGui style stack balanced even when panel code fails.
             self._pop_window_style(ctx)
