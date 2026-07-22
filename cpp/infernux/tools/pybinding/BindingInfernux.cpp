@@ -961,6 +961,20 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["game_shadow_draw_call_count"] = snapshot.gameShadowDrawCallCount;
                                    result["light_count"] = snapshot.lightCount;
                                    result["particle_count"] = snapshot.particleCount;
+                                   result["cpu_particle_count"] = snapshot.particleCount;
+                                   result["gpu_particle_system_count"] = snapshot.gpuParticleSystemCount;
+                                   result["gpu_particle_output_count"] = snapshot.gpuParticleOutputCount;
+                                   result["gpu_particle_capacity"] = snapshot.gpuParticleCapacity;
+                                   result["gpu_particle_last_scheduled_frame"] =
+                                       snapshot.gpuParticleLastScheduledFrame;
+                                   result["gpu_particle_scheduled_system_count"] =
+                                       snapshot.gpuParticleScheduledSystemCount;
+                                   result["gpu_particle_simulating_system_count"] =
+                                       snapshot.gpuParticleSimulatingSystemCount;
+                                   result["gpu_particle_rendering_system_count"] =
+                                       snapshot.gpuParticleRenderingSystemCount;
+                                   result["gpu_particle_requested_spawn_count"] =
+                                       snapshot.gpuParticleRequestedSpawnCount;
                                    result["scene_render_graph_name"] = snapshot.sceneRenderGraphName;
                                    result["game_render_graph_name"] = snapshot.gameRenderGraphName;
                                    result["scene_render_graph_execution_count"] =

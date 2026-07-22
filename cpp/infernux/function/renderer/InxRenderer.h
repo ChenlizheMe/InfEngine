@@ -74,6 +74,14 @@ struct RendererFrameTelemetrySnapshot
     size_t gameShadowDrawCallCount = 0;
     size_t lightCount = 0;
     size_t particleCount = 0;
+    size_t gpuParticleSystemCount = 0;
+    size_t gpuParticleOutputCount = 0;
+    uint64_t gpuParticleCapacity = 0;
+    uint64_t gpuParticleLastScheduledFrame = 0;
+    size_t gpuParticleScheduledSystemCount = 0;
+    size_t gpuParticleSimulatingSystemCount = 0;
+    size_t gpuParticleRenderingSystemCount = 0;
+    uint64_t gpuParticleRequestedSpawnCount = 0;
     std::string sceneRenderGraphName;
     std::string gameRenderGraphName;
     uint64_t sceneRenderGraphExecutionCount = 0;

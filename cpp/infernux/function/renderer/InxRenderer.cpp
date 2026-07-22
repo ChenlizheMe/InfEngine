@@ -2442,6 +2442,17 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.lightCount = m_vkCore->GetLightCollector().GetTotalLightCount();
     if (m_particleDrawCalls)
         snapshot.particleCount = m_particleDrawCalls->GetParticleCount();
+    if (m_particleGpuSystemManager) {
+        const auto gpuParticles = m_particleGpuSystemManager->TelemetrySnapshot();
+        snapshot.gpuParticleSystemCount = gpuParticles.systemCount;
+        snapshot.gpuParticleOutputCount = gpuParticles.outputCount;
+        snapshot.gpuParticleCapacity = gpuParticles.totalCapacity;
+        snapshot.gpuParticleLastScheduledFrame = gpuParticles.lastScheduledFrame;
+        snapshot.gpuParticleScheduledSystemCount = gpuParticles.scheduledSystemCount;
+        snapshot.gpuParticleSimulatingSystemCount = gpuParticles.simulatingSystemCount;
+        snapshot.gpuParticleRenderingSystemCount = gpuParticles.renderingSystemCount;
+        snapshot.gpuParticleRequestedSpawnCount = gpuParticles.requestedSpawnCount;
+    }
     snapshot.gameRenderMs = m_lastGameRenderMs;
     snapshot.gameOnlyFrameMs = m_gameOnlyFrameMs;
     snapshot.sceneUpdateMs = m_sceneUpdateMs;

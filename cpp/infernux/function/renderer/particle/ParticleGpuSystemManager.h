@@ -118,6 +118,20 @@ struct GpuParticleEmitterProgram
     std::vector<GpuParticleOutputProgram> outputs;
 };
 
+/// CPU-side scheduling telemetry for the resident GPU particle world.
+/// This deliberately avoids reading particle counters back from the GPU.
+struct GpuParticleTelemetrySnapshot
+{
+    size_t systemCount = 0;
+    size_t outputCount = 0;
+    uint64_t totalCapacity = 0;
+    uint64_t lastScheduledFrame = 0;
+    size_t scheduledSystemCount = 0;
+    size_t simulatingSystemCount = 0;
+    size_t renderingSystemCount = 0;
+    uint64_t requestedSpawnCount = 0;
+};
+
 /// Owns all GPU particle emitters and their once-per-engine-frame simulation
 /// graph. Camera graphs consume only the exported instance/indirect buffers.
 class ParticleGpuSystemManager
@@ -169,6 +183,7 @@ class ParticleGpuSystemManager
 
     [[nodiscard]] bool Contains(uint64_t id) const;
     [[nodiscard]] size_t Size() const;
+    [[nodiscard]] GpuParticleTelemetrySnapshot TelemetrySnapshot() const;
     [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
     [[nodiscard]] bool ActiveStateWasPreserved(uint64_t id) const;
     [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;

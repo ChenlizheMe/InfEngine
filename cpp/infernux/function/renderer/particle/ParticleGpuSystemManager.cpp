@@ -86,6 +86,11 @@ struct ParticleGpuSystemManager::Impl
         std::vector<uint32_t> billboardFragmentShader;
         std::vector<uint32_t> billboardPickingFragmentShader;
         std::vector<Output> outputs;
+        bool hasFrameRequest = false;
+        uint64_t lastFrameIndex = 0;
+        uint32_t lastSpawnCount = 0;
+        bool lastSimulate = false;
+        bool lastRender = false;
     };
 
     struct GraphState
@@ -896,7 +901,14 @@ bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameReq
     (void)m_impl->RefreshDataInterfaces(*emitter->second);
     if (!emitter->second->runtime->UpdateTransforms(transforms))
         return false;
-    return scheduler->second->BeginFrame(request);
+    if (!scheduler->second->BeginFrame(request))
+        return false;
+    emitter->second->hasFrameRequest = true;
+    emitter->second->lastFrameIndex = request.frameIndex;
+    emitter->second->lastSpawnCount = request.spawnCount;
+    emitter->second->lastSimulate = request.simulate;
+    emitter->second->lastRender = request.render;
+    return true;
 }
 
 bool ParticleGpuSystemManager::Reset(uint64_t id)
@@ -930,6 +942,32 @@ bool ParticleGpuSystemManager::Contains(uint64_t id) const
 size_t ParticleGpuSystemManager::Size() const
 {
     return m_impl ? m_impl->emitters.size() : 0;
+}
+
+GpuParticleTelemetrySnapshot ParticleGpuSystemManager::TelemetrySnapshot() const
+{
+    GpuParticleTelemetrySnapshot snapshot;
+    if (!m_impl)
+        return snapshot;
+
+    snapshot.systemCount = m_impl->emitters.size();
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)id;
+        snapshot.outputCount += emitter->outputs.size();
+        snapshot.totalCapacity += emitter->sourceProgram.capacity;
+        if (emitter->hasFrameRequest)
+            snapshot.lastScheduledFrame = std::max(snapshot.lastScheduledFrame, emitter->lastFrameIndex);
+    }
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)id;
+        if (!emitter->hasFrameRequest || emitter->lastFrameIndex != snapshot.lastScheduledFrame)
+            continue;
+        ++snapshot.scheduledSystemCount;
+        snapshot.simulatingSystemCount += emitter->lastSimulate ? 1u : 0u;
+        snapshot.renderingSystemCount += emitter->lastRender ? 1u : 0u;
+        snapshot.requestedSpawnCount += emitter->lastSpawnCount;
+    }
+    return snapshot;
 }
 
 uint64_t ParticleGpuSystemManager::ActiveArtifactRevision(uint64_t id) const

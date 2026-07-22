@@ -889,6 +889,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      resources.resources.GetBufferUploadSubmissionCount() == pointCacheUploadsBeforeCreate + 2,
                  "GPU particle system was not published atomically"))
         return false;
+    const auto residentParticleTelemetry = particleSystems.TelemetrySnapshot();
+    if (!Require(residentParticleTelemetry.systemCount == 1 && residentParticleTelemetry.outputCount == 1 &&
+                     residentParticleTelemetry.totalCapacity == 32 &&
+                     residentParticleTelemetry.scheduledSystemCount == 0,
+                 "GPU particle resident telemetry is incorrect before scheduling"))
+        return false;
     const auto initialManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
     if (!Require(initialManagedEntries.size() == 1 && !particleSystems.ActiveStateWasPreserved(managedProgram.id),
                  "Initial GPU particle publication reported a preserved state"))
@@ -1069,6 +1075,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!Require(particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
                  "GPU particle manager rejected a valid frame request"))
+        return false;
+    const auto scheduledParticleTelemetry = particleSystems.TelemetrySnapshot();
+    if (!Require(scheduledParticleTelemetry.systemCount == 1 && scheduledParticleTelemetry.outputCount == 2 &&
+                     scheduledParticleTelemetry.totalCapacity == 32 &&
+                     scheduledParticleTelemetry.lastScheduledFrame == managedFrame.frameIndex &&
+                     scheduledParticleTelemetry.scheduledSystemCount == 1 &&
+                     scheduledParticleTelemetry.simulatingSystemCount == 1 &&
+                     scheduledParticleTelemetry.renderingSystemCount == 1 &&
+                     scheduledParticleTelemetry.requestedSpawnCount == managedFrame.spawnCount,
+                 "GPU particle scheduling telemetry is incorrect"))
         return false;
     if (!Require(particleSystems.Reset(managedProgram.id) &&
                      particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
