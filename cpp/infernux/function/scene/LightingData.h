@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <vector>
@@ -184,6 +185,72 @@ static_assert(sizeof(PointLightData) == 48, "PointLightData must be 48 bytes");
 static_assert(sizeof(SpotLightData) == 80, "SpotLightData must be 80 bytes");
 
 // ============================================================================
+// Canonical light snapshot (std430-compatible, uncapped)
+// ============================================================================
+
+enum class CanonicalLightType : uint32_t
+{
+    Directional = 0,
+    Point = 1,
+    Spot = 2,
+};
+
+enum CanonicalLightFlags : uint32_t
+{
+    CanonicalLightAffectsScene = 1u << 0u,
+    CanonicalLightAffectsParticles = 1u << 1u,
+};
+
+/**
+ * Shared GPU light record for Forward+, Deferred, and lit particles.
+ *
+ * The old fixed arrays remain only as the
+ * legacy Forward compatibility ABI.
+ * This record is deliberately a dense std430-compatible structure so all new
+ *
+ * lighting paths consume the same immutable per-frame snapshot.
+ */
+struct alignas(16) CanonicalLightData
+{
+    glm::vec4 positionRange;     ///< xyz = world position, w = range (0 for directional)
+    glm::vec4 directionOuterCos; ///< xyz = ray direction, w = cos(outer spot half-angle)
+    glm::vec4 colorIntensity;    ///< xyz = linear color, w = intensity
+    glm::vec4 shadowAndInnerCos; ///< x = strength, y = bias, z = normal bias, w = cos(inner half-angle)
+    glm::uvec4 metadata;         ///< x = type, y = culling mask, z = shadow mode, w = flags
+};
+
+static_assert(alignof(CanonicalLightData) == 16, "CanonicalLightData alignment must match std430");
+static_assert(sizeof(CanonicalLightData) == 80, "CanonicalLightData must be 80 bytes");
+static_assert(offsetof(CanonicalLightData, metadata) == 64, "CanonicalLightData metadata offset must match GLSL");
+
+struct CanonicalLightSnapshot
+{
+    uint64_t generation = 0;
+    std::vector<CanonicalLightData> directionalLights;
+    std::vector<CanonicalLightData> localLights;
+
+    void Clear(uint64_t nextGeneration)
+    {
+        generation = nextGeneration;
+        directionalLights.clear();
+        localLights.clear();
+    }
+
+    void Add(const CanonicalLightData &light)
+    {
+        if (light.metadata.x == static_cast<uint32_t>(CanonicalLightType::Directional))
+            directionalLights.push_back(light);
+        else
+            localLights.push_back(light);
+    }
+
+    [[nodiscard]] size_t Size() const
+    {
+        return directionalLights.size() + localLights.size();
+    }
+};
+
+// ============================================================================
 // Scene Light Collector
 // ============================================================================
 
@@ -262,6 +329,11 @@ class SceneLightCollector
     [[nodiscard]] const ShaderLightingUBO &GetShaderLightingUBO() const
     {
         return m_shaderLightingUBO;
+    }
+
+    [[nodiscard]] const CanonicalLightSnapshot &GetCanonicalLightSnapshot() const
+    {
+        return m_canonicalLightSnapshot;
     }
 
     /**
@@ -407,6 +479,8 @@ class SceneLightCollector
      */
     void AddSpotLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
 
+    void AddCanonicalLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
+
     /**
      * @brief Sort point lights by importance (distance to camera, intensity).
      */
@@ -426,6 +500,7 @@ class SceneLightCollector
     LightingUBO m_lightingUBO{};
     SimpleLightingUBO m_simpleLightingUBO{};
     ShaderLightingUBO m_shaderLightingUBO{}; ///< Shader-compatible UBO for GPU upload
+    CanonicalLightSnapshot m_canonicalLightSnapshot{};
 
     // Light counts
     uint32_t m_directionalLightCount = 0;

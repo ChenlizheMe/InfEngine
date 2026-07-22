@@ -45,6 +45,9 @@ void SceneLightCollector::CollectLights(Scene *scene, const glm::vec3 &cameraPos
         glm::vec3 worldPosition = transform->GetWorldPosition();
         glm::vec3 worldForward = transform->GetWorldForward();
 
+        if (light->GetLightType() != LightType::Area)
+            AddCanonicalLight(light, worldPosition, worldForward);
+
         switch (light->GetLightType()) {
         case LightType::Directional:
             AddDirectionalLight(light);
@@ -74,6 +77,7 @@ void SceneLightCollector::CollectLights(Scene *scene, const glm::vec3 &cameraPos
 
 void SceneLightCollector::Clear()
 {
+    m_canonicalLightSnapshot.Clear(m_canonicalLightSnapshot.generation + 1u);
     m_lightingUBO = LightingUBO{};
     m_simpleLightingUBO = SimpleLightingUBO{};
     m_directionalLightCount = 0;
@@ -90,6 +94,32 @@ void SceneLightCollector::Clear()
     m_lightingUBO.ambientSkyColor = glm::vec4(0.2f, 0.2f, 0.3f, 0.5f);
     m_lightingUBO.ambientGroundColor = glm::vec4(0.1f, 0.1f, 0.1f, 0.3f);
     m_lightingUBO.ambientEquatorColor = glm::vec4(0.15f, 0.15f, 0.2f, 0.0f); // mode = 0 (flat)
+}
+
+void SceneLightCollector::AddCanonicalLight(const Light *light, const glm::vec3 &worldPosition,
+                                            const glm::vec3 &worldDirection)
+{
+    if (!light)
+        return;
+
+    CanonicalLightData data{};
+    const LightType lightType = light->GetLightType();
+    const bool directional = lightType == LightType::Directional;
+    const bool spot = lightType == LightType::Spot;
+    const glm::vec3 fallbackDirection(0.0f, -1.0f, 0.0f);
+    const glm::vec3 direction =
+        glm::dot(worldDirection, worldDirection) > 0.0f ? glm::normalize(worldDirection) : fallbackDirection;
+
+    data.positionRange = glm::vec4(worldPosition, directional ? 0.0f : std::max(light->GetRange(), 0.0f));
+    data.directionOuterCos =
+        glm::vec4(direction, spot ? std::cos(glm::radians(light->GetOuterSpotAngle() * 0.5f)) : -1.0f);
+    data.colorIntensity = glm::vec4(light->GetColor(), std::max(light->GetIntensity(), 0.0f));
+    data.shadowAndInnerCos = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
+                                       spot ? std::cos(glm::radians(light->GetSpotAngle() * 0.5f)) : -1.0f);
+    data.metadata = glm::uvec4(static_cast<uint32_t>(lightType), light->GetCullingMask(),
+                               static_cast<uint32_t>(light->GetShadows()),
+                               CanonicalLightAffectsScene | CanonicalLightAffectsParticles);
+    m_canonicalLightSnapshot.Add(data);
 }
 
 void SceneLightCollector::AddDirectionalLight(const Light *light)

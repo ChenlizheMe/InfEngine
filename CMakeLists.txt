@@ -411,6 +411,19 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.render_identity COMMAND infernux_render_identity_tests)
 
+    add_executable(infernux_canonical_light_snapshot_tests
+        cpp/tests/CanonicalLightSnapshotTests.cpp
+    )
+    target_include_directories(infernux_canonical_light_snapshot_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_canonical_light_snapshot_tests PRIVATE glm::glm)
+    if(MSVC)
+        target_compile_options(infernux_canonical_light_snapshot_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.canonical_light_snapshot COMMAND infernux_canonical_light_snapshot_tests)
+
     add_executable(infernux_render_instance_history_tests
         cpp/tests/RenderInstanceHistoryTests.cpp
     )
