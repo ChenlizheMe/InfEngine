@@ -561,7 +561,7 @@
   "material.no_properties": "(No properties)",
   "material.properties_section": "Properties",
   "renderstack.pipeline": "Pipeline",
-  "renderstack.default_forward": "Default Forward",
+  "renderstack.default_forward": "Default Forward+",
   "renderstack.pipeline_settings": "Pipeline Settings",
   "renderstack.topology": "Render Pipeline",
   "renderstack.effect_stages": "Effect Mount Points",

@@ -52,13 +52,16 @@ def _effect_stage_adapter(stack: "RenderStack", stage_id: str) -> _EffectStageSl
 
 def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     """Build or reuse the data-only model consumed by the common Inspector."""
+    from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+
+    default_pipeline_name = DefaultForwardPipeline.name
     topology = stack._build_full_topology_probe()
     catalog_signature = tuple(getattr(stack, "_pipeline_catalog_signature", ()))
     if not catalog_signature:
         catalog_signature = tuple(sorted(stack.discover_pipelines()))
         stack._pipeline_catalog_signature = catalog_signature
-    pipeline_names = ("Default Forward",) + tuple(
-        name for name in catalog_signature if name != "Default Forward"
+    pipeline_names = (default_pipeline_name,) + tuple(
+        name for name in catalog_signature if name != default_pipeline_name
     )
     cache_key = (id(topology), pipeline_names)
     cached = getattr(stack, "_inspector_declarative_model", None)
@@ -72,12 +75,12 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     effect_metadata = get_serialized_fields(EffectSlot)["effect"]
 
     def current_pipeline_index() -> int:
-        current = stack.pipeline_class_name or "Default Forward"
+        current = stack.pipeline_class_name or default_pipeline_name
         return pipeline_names.index(current) if current in pipeline_names else 0
 
     def set_pipeline_index(index: int) -> None:
         selected = pipeline_names[int(index)]
-        new_pipeline = "" if selected == "Default Forward" else selected
+        new_pipeline = "" if selected == default_pipeline_name else selected
         old_pipeline = stack.pipeline_class_name or ""
         if new_pipeline == old_pipeline:
             return

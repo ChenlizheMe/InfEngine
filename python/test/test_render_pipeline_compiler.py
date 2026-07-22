@@ -250,6 +250,23 @@ def test_compiler_lowers_forward_plus_without_silently_substituting_forward():
     assert all(render_pass._material_pass == "forward_plus" for render_pass in draw_passes)
 
 
+def test_compiler_preserves_transparent_forward_plus_sorting():
+    pipeline = PipelineBuilder()
+    pipeline.transparent().forward_plus()
+
+    graph = RenderGraph("TransparentForwardPlus")
+    compile_pipeline_definition(pipeline.build(), graph)
+
+    draw_passes = [
+        render_pass
+        for render_pass in graph._passes
+        if render_pass._action == "draw_renderers"
+    ]
+    assert draw_passes
+    assert all(render_pass._material_pass == "forward_plus" for render_pass in draw_passes)
+    assert all(render_pass._sort_mode == "back_to_front" for render_pass in draw_passes)
+
+
 def test_compiler_never_silently_substitutes_forward_for_deferred():
     pipeline = PipelineBuilder()
     opaque = pipeline.opaque()

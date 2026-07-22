@@ -10,6 +10,7 @@ from Infernux.engine.ui.inspector_declarative import (
 from Infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
 from Infernux.components.serialized_field import get_serialized_fields
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 from Infernux.renderstack.render_stack import RenderStack
 
 
@@ -33,6 +34,38 @@ def test_forward_pipeline_labels_single_sample_msaa_explicitly():
     metadata = get_serialized_fields(DefaultForwardPipeline)["msaa_samples"]
 
     assert metadata.enum_labels == ["X1 (Off)", "X2", "X4", "X8"]
+
+
+def test_default_forward_pipeline_uses_forward_plus_for_opaque_and_transparent():
+    from Infernux.rendergraph.graph import RenderGraph
+
+    graph = RenderGraph("Default Forward+")
+    DefaultForwardPipeline().define_topology(graph)
+    draws = {
+        render_pass.name: render_pass
+        for render_pass in graph._passes
+        if render_pass._action == "draw_renderers"
+    }
+
+    assert draws["OpaquePass"]._material_pass == "forward_plus"
+    assert draws["OpaquePass"]._sort_mode == "front_to_back"
+    assert draws["TransparentPass"]._material_pass == "forward_plus"
+    assert draws["TransparentPass"]._sort_mode == "back_to_front"
+
+
+def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
+    from Infernux.rendergraph.graph import RenderGraph
+
+    graph = RenderGraph("Default Deferred")
+    DefaultDeferredPipeline().define_topology(graph)
+    transparent = next(
+        render_pass
+        for render_pass in graph._passes
+        if render_pass.name == "TransparentPass"
+    )
+
+    assert transparent._material_pass == "forward_plus"
+    assert transparent._sort_mode == "back_to_front"
 
 
 def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
@@ -85,7 +118,7 @@ def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access():
     assert "stage_after_gbuffer" in deferred_stages
 
     deferred_choice = build_renderstack_inspector_model(stack).sections[0].controls[0]
-    deferred_choice.on_change(tuple(deferred_choice.options()).index("Default Forward"))
+    deferred_choice.on_change(tuple(deferred_choice.options()).index("Default Forward+"))
     forward_controls = _topology_controls(build_renderstack_inspector_model(stack))
     assert "stage_after_gbuffer" not in {
         control.key for control in forward_controls if isinstance(control, InspectorList)

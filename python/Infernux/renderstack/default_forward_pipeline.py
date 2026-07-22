@@ -1,8 +1,8 @@
 """
-DefaultForwardPipeline — Standard 3-pass forward rendering pipeline.
+DefaultForwardPipeline — Standard 3-pass Forward+ rendering pipeline.
 
 This is the default pipeline used when no custom pipeline is selected.
-It defines a standard forward rendering topology:
+It defines a standard Forward+ rendering topology:
 
     OpaquePass → after_opaque → SkyboxPass → after_sky
     → TransparentPass → after_transparent
@@ -19,7 +19,7 @@ Usage::
     # stack.pipeline is DefaultForwardPipeline by default
 
     # Manual — can also be selected explicitly
-    stack.set_pipeline("Default Forward")
+    stack.set_pipeline("Default Forward+")
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class MSAASamples(IntEnum):
 
 
 class DefaultForwardPipeline(RenderPipeline):
-    """Standard forward rendering pipeline.
+    """Standard Forward+ rendering pipeline.
 
     Defines 3 injection points:
 
@@ -70,7 +70,7 @@ class DefaultForwardPipeline(RenderPipeline):
     ``graph.screen_ui_section()``.
     """
 
-    name: str = "Default Forward"
+    name: str = "Default Forward+"
 
     # ------------------------------------------------------------------
     # Exposed parameters (shown in RenderStack inspector)
@@ -121,7 +121,7 @@ class DefaultForwardPipeline(RenderPipeline):
         add_shadow_caster_pass(graph)
 
         # Pass 1: Opaque objects (front-to-back for early-z)
-        add_forward_opaque_pass(graph)
+        add_forward_opaque_pass(graph, material_pass="forward_plus")
         graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
         graph.effects(
             "after_opaque",
@@ -145,7 +145,7 @@ class DefaultForwardPipeline(RenderPipeline):
         )
 
         # Pass 3: Transparent objects (back-to-front for blending)
-        add_transparent_pass(graph)
+        add_transparent_pass(graph, material_pass="forward_plus")
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
         graph.effects(
             "after_transparent",

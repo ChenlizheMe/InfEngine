@@ -205,8 +205,8 @@ class DefaultDeferredPipeline(RenderPipeline):
             capabilities={"fullscreen"},
         )
 
-        # ---- Pass 4: Transparent objects (forward rendering) ----
-        add_transparent_pass(graph)
+        # ---- Pass 4: Transparent objects (Forward+ rendering) ----
+        add_transparent_pass(graph, material_pass="forward_plus")
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
         graph.effects(
             "after_transparent",

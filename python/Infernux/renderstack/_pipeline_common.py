@@ -105,6 +105,7 @@ def add_forward_opaque_pass(
     name: str = "OpaquePass",
     clear_color: tuple[float, float, float, float] = FORWARD_CLEAR_COLOR,
     queue_range: tuple[int, int] | None = None,
+    material_pass: str = "forward",
 ) -> None:
     with graph.add_pass(name) as p:
         p.write_color(COLOR_TEXTURE)
@@ -114,6 +115,7 @@ def add_forward_opaque_pass(
         p.draw_renderers(
             queue_range=queue_range or opaque_queue_range(),
             sort_mode="front_to_back",
+            material_pass=material_pass,
         )
 
 
@@ -133,6 +135,7 @@ def add_transparent_pass(
     *,
     name: str = "TransparentPass",
     queue_range: tuple[int, int] | None = None,
+    material_pass: str = "forward",
 ) -> None:
     with graph.add_pass(name) as p:
         p.read(DEPTH_TEXTURE)
@@ -141,6 +144,7 @@ def add_transparent_pass(
         p.draw_renderers(
             queue_range=queue_range or transparent_queue_range(),
             sort_mode="back_to_front",
+            material_pass=material_pass,
         )
 
 

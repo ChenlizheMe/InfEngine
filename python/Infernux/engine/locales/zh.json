@@ -561,7 +561,7 @@
   "material.no_properties": "(无属性)",
   "material.properties_section": "属性",
   "renderstack.pipeline": "管线",
-  "renderstack.default_forward": "默认前向",
+  "renderstack.default_forward": "默认 Forward+",
   "renderstack.pipeline_settings": "管线设置",
   "renderstack.topology": "渲染管线",
   "renderstack.effect_stages": "效果挂载点",

@@ -21,7 +21,7 @@ Usage::
 
     # In a scene setup script
     stack = game_object.add_component(RenderStack)
-    stack.set_pipeline("Default Forward")
+    stack.set_pipeline("Default Forward+")
     stack.add_effect_slot("final", bloom_effect_ref)
 """
 
