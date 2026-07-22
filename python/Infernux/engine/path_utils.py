@@ -7,6 +7,7 @@ instead of assembling identity checks from ``abspath``/``normcase``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from typing import TypeAlias
@@ -59,6 +60,14 @@ def resolved_path(path: PathLike) -> str:
 def path_key(path: PathLike) -> str:
     """Return the cross-platform identity key for a filesystem path."""
     return os.path.normcase(resolved_path(path))
+
+
+def path_fingerprint(path: PathLike) -> str:
+    """Return a stable, non-reversible identity for a filesystem path."""
+    identity = path_key(path)
+    if not identity:
+        return ""
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def lexical_path_key(path: PathLike) -> str:

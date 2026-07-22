@@ -894,6 +894,7 @@ class TestGameBuilderOutputSafety:
         assert payload["tool"] == "Infernux"
         assert payload["kind"] == "build-output"
         assert payload["project_name"] == "TestGame"
+        assert len(payload["project_identity"]) == 64
         assert "project_path" not in payload
 
 

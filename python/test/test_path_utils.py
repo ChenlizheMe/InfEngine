@@ -9,6 +9,7 @@ from Infernux.engine.path_utils import (
     is_path_within,
     lexical_path,
     lexical_path_key,
+    path_fingerprint,
     path_key,
     portable_path,
     relative_path,
@@ -26,6 +27,9 @@ def test_path_helpers_separate_storage_paths_from_identity_keys(tmp_path: Path):
     assert os.path.isabs(resolved)
     assert safe_path(str(source)) == resolved
     assert path_key(str(source)) == os.path.normcase(resolved)
+    assert path_fingerprint(str(source)) == path_fingerprint(resolved)
+    assert len(path_fingerprint(str(source))) == 64
+    assert str(source) not in path_fingerprint(str(source))
     assert lexical_path_key(str(source)) == os.path.normcase(os.path.abspath(str(source)))
     assert same_path(str(source), resolved)
     assert not same_path("", "")

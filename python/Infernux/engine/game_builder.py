@@ -42,7 +42,13 @@ from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
 from Infernux.engine.nuitka_builder import NuitkaBuilder
-from Infernux.engine.path_utils import portable_path, relative_path, resolved_path, same_path
+from Infernux.engine.path_utils import (
+    path_fingerprint,
+    portable_path,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 
 
 def _ensure_video_splash_packages() -> None:
@@ -415,6 +421,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "tool": "Infernux",
             "kind": "build-output",
             "project_name": self.project_name,
+            "project_identity": path_fingerprint(self.project_path),
             "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         with open(marker_path, "w", encoding="utf-8") as f:

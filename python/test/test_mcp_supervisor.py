@@ -465,14 +465,24 @@ def test_supervisor_public_status_excludes_private_lease_but_persists_recovery_s
 
 def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scenes=None):
     output = tmp_path / "PlayerBuild"
-    data = output / "Data"
-    data.mkdir(parents=True)
+    data = output / "Pilot_Data"
+    runtime = data / "Runtime"
+    runtime.mkdir(parents=True)
     executable = output / "Pilot.exe"
-    executable.write_bytes(b"placeholder")
-    (output / ".infernux-build-output").write_text(json.dumps({
+    executable.write_bytes(b"launcher")
+    (runtime / "InfernuxPlayer.exe").write_bytes(b"runtime")
+    (data / "PlayerLayout.json").write_text(json.dumps({
+        "layout": "infernux-windows-player",
+        "launcher": "Pilot.exe",
+        "data_directory": "Pilot_Data",
+        "runtime_directory": "Runtime",
+        "runtime_modules_directory": "RuntimeModules",
+    }), encoding="utf-8")
+    (data / ".infernux-build-output").write_text(json.dumps({
         "tool": "Infernux",
         "kind": "build-output",
-        "project_path": str(project_root),
+        "project_name": "Pilot",
+        "project_identity": supervisor_module.path_fingerprint(str(project_root)),
     }), encoding="utf-8")
     (data / "BuildManifest.json").write_text(json.dumps({
         "game_name": "Pilot",
@@ -510,7 +520,8 @@ def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeyp
     assert status["player_running"] is True
     assert status["player_ready"] is True
     assert status["player_pid"] == 8448
-    assert captured["argv"] == [str(executable)]
+    expected_runtime = executable.parent / "Pilot_Data" / "Runtime" / "InfernuxPlayer.exe"
+    assert captured["argv"] == [str(expected_runtime)]
     assert captured["env"]["_INFERNUX_PLAYER_CONTROL_TOKEN"] == supervisor._player_control_token
     assert "_INFERNUX_PLAYER_DEBUG_BUILD" not in captured["env"]
     supervisor._close_player_log()

@@ -21,7 +21,13 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from Infernux.engine.path_utils import is_path_within, relative_path, resolved_path, same_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    path_fingerprint,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 from Infernux.mcp import capabilities
 from Infernux.mcp import checkpoints as checkpoint_store
 
@@ -1415,23 +1421,40 @@ class SupervisorSession:
 
 
 def _validate_player_executable(executable_path: str, project_root: str) -> tuple[str, dict[str, Any]]:
-    executable = resolved_path(str(executable_path or ""))
-    if not os.path.isfile(executable):
-        raise FileNotFoundError(f"Player executable was not found: {executable}")
-    output_root = os.path.dirname(executable)
-    marker = _read_json_object(os.path.join(output_root, ".infernux-build-output"))
+    launcher = resolved_path(str(executable_path or ""))
+    if not os.path.isfile(launcher):
+        raise FileNotFoundError(f"Player executable was not found: {launcher}")
+
+    output_root = os.path.dirname(launcher)
+    game_name = os.path.splitext(os.path.basename(launcher))[0]
+    data_root = resolved_path(os.path.join(output_root, f"{game_name}_Data"))
+    layout_path = os.path.join(data_root, "PlayerLayout.json")
+    layout = _read_json_object(layout_path)
+    if layout.get("layout") != "infernux-windows-player":
+        raise ValueError("Player executable is not the launcher of a current Infernux Player layout.")
+    if str(layout.get("launcher", "") or "") != os.path.basename(launcher):
+        raise ValueError("Player layout launcher does not match the selected executable.")
+    if str(layout.get("data_directory", "") or "") != os.path.basename(data_root):
+        raise ValueError("Player layout data directory does not match the selected executable.")
+    if str(layout.get("runtime_directory", "") or "") != "Runtime":
+        raise ValueError("Player layout runtime directory is invalid.")
+
+    runtime_executable = resolved_path(os.path.join(data_root, "Runtime", "InfernuxPlayer.exe"))
+    if not is_path_within(runtime_executable, data_root, allow_root=False) or not os.path.isfile(runtime_executable):
+        raise FileNotFoundError(f"Player runtime executable was not found: {runtime_executable}")
+
+    marker = _read_json_object(os.path.join(data_root, ".infernux-build-output"))
     if marker.get("tool") != "Infernux" or marker.get("kind") != "build-output":
         raise ValueError("Player executable is not inside a verified Infernux build output directory.")
-    marker_project = resolved_path(str(marker.get("project_path", "") or ""))
-    if not same_path(marker_project, project_root):
+    if str(marker.get("project_identity", "") or "") != path_fingerprint(project_root):
         raise ValueError("Player build output belongs to a different project.")
-    manifest_path = os.path.join(output_root, "Data", "BuildManifest.json")
+    manifest_path = os.path.join(data_root, "BuildManifest.json")
     manifest = _read_json_object(manifest_path)
     if not manifest:
         raise FileNotFoundError(f"Player BuildManifest was not found: {manifest_path}")
     if not bool(manifest.get("debug_build", False)):
         raise RuntimeError("Supervisor validation control is available only in a Debug Player build.")
-    return executable, manifest
+    return runtime_executable, manifest
 
 
 def _resolve_player_start_scene(start_scene: str, project_root: str, manifest: dict[str, Any]) -> str:
