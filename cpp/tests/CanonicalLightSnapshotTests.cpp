@@ -195,9 +195,10 @@ int main()
     const infernux::rhi::BufferHandle canonicalBuffer{900, 1};
     assert(grid.PrepareFrame(0, 1920, 1080, 1000, CanonicalLightAffectsGeometry, canonicalBuffer));
     assert(grid.PrepareFrame(1, 1280, 720, 4, CanonicalLightAffectsParticles, canonicalBuffer));
-    assert(device.layouts.size() == 1 && device.layouts[0].entryCount == 3);
+    assert(device.layouts.size() == 2 && device.layouts[0].entryCount == 3 && device.layouts[1].entryCount == 3);
+    assert(grid.ConsumerLayout().IsValid());
     assert(device.pipelines.size() == 1 && device.pipelines[0].pushConstantBytes == 112);
-    assert(device.groups.size() == 2 && device.groups[0].bufferCount == 3);
+    assert(device.groups.size() == 4 && device.groups[0].bufferCount == 3 && device.groups[1].bufferCount == 3);
     assert(grid.Frame(0).headers != grid.Frame(1).headers && grid.Frame(0).indices != grid.Frame(1).indices);
 
     DispatchTrace trace;
@@ -219,6 +220,6 @@ int main()
     assert(source.find("metadata.w & pc.domain_stride.x") != std::string_view::npos);
     assert(source.find("MAX_LIGHTS") == std::string_view::npos);
     grid.Shutdown();
-    assert(device.releasedBuffers == 4 && device.releasedGroups == 2);
+    assert(device.releasedBuffers == 4 && device.releasedGroups == 4);
     return 0;
 }

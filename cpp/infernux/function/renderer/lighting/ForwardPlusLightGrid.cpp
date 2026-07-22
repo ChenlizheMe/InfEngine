@@ -94,9 +94,15 @@ bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlig
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     layoutDesc.entryCount = 3;
     m_layout = device.CreateBindingLayout(layoutDesc);
+    rhi::BindingLayoutDesc consumerLayoutDesc;
+    for (uint32_t binding = 0; binding < 3; ++binding) {
+        consumerLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Fragment, 1};
+    }
+    consumerLayoutDesc.entryCount = 3;
+    m_consumerLayout = device.CreateBindingLayout(consumerLayoutDesc);
 
     const auto shader = device.CreateShaderModule({program.words, program.wordCount});
-    if (m_layout.IsValid() && shader.IsValid()) {
+    if (m_layout.IsValid() && m_consumerLayout.IsValid() && shader.IsValid()) {
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
         pipelineDesc.bindingLayouts[0] = m_layout;
@@ -119,21 +125,25 @@ void ForwardPlusLightGrid::Shutdown() noexcept
     if (m_device) {
         for (const auto &retired : m_retired) {
             m_device->Release(retired.bindGroup);
+            m_device->Release(retired.consumerBindGroup);
             m_device->Release(retired.indices);
             m_device->Release(retired.headers);
         }
         for (auto &frame : m_frames) {
             m_device->Release(frame.bindGroup);
+            m_device->Release(frame.consumerBindGroup);
             m_device->Release(frame.indices);
             m_device->Release(frame.headers);
         }
         m_device->Release(m_pipeline);
         m_device->Release(m_layout);
+        m_device->Release(m_consumerLayout);
     }
     m_frames.clear();
     m_retired.clear();
     m_pipeline = {};
     m_layout = {};
+    m_consumerLayout = {};
     m_device = nullptr;
 }
 
@@ -154,8 +164,9 @@ bool ForwardPlusLightGrid::PrepareFrame(uint32_t frameIndex, uint32_t width, uin
         const auto replacement = m_device->CreateBuffer({capacity, rhi::BufferUsageFlags::Storage});
         if (!replacement.IsValid())
             return false;
-        m_retired.push_back({frame.bindGroup, frame.headers, {}});
+        m_retired.push_back({frame.bindGroup, frame.consumerBindGroup, frame.headers, {}});
         frame.bindGroup = {};
+        frame.consumerBindGroup = {};
         frame.headers = replacement;
         frame.headerCapacityBytes = capacity;
         resourcesChanged = true;
@@ -166,17 +177,19 @@ bool ForwardPlusLightGrid::PrepareFrame(uint32_t frameIndex, uint32_t width, uin
         if (!replacement.IsValid())
             return false;
         if (frame.bindGroup.IsValid())
-            m_retired.push_back({frame.bindGroup, {}, {}});
+            m_retired.push_back({frame.bindGroup, frame.consumerBindGroup, {}, {}});
         frame.bindGroup = {};
+        frame.consumerBindGroup = {};
         if (frame.indices.IsValid())
-            m_retired.push_back({{}, {}, frame.indices});
+            m_retired.push_back({{}, {}, {}, frame.indices});
         frame.indices = replacement;
         frame.indexCapacityBytes = capacity;
         resourcesChanged = true;
     }
 
     frame.config = config;
-    if (resourcesChanged || frame.canonicalLights != canonicalLights || !frame.bindGroup.IsValid())
+    if (resourcesChanged || frame.canonicalLights != canonicalLights || !frame.bindGroup.IsValid() ||
+        !frame.consumerBindGroup.IsValid())
         return RebuildBindGroup(frame, canonicalLights);
     return true;
 }
@@ -208,7 +221,7 @@ void ForwardPlusLightGrid::Record(uint32_t frameIndex, const rhi::ComputeCommand
 
 bool ForwardPlusLightGrid::IsValid() const noexcept
 {
-    return m_device && m_layout.IsValid() && m_pipeline.IsValid() && !m_frames.empty();
+    return m_device && m_layout.IsValid() && m_consumerLayout.IsValid() && m_pipeline.IsValid() && !m_frames.empty();
 }
 
 uint32_t ForwardPlusLightGrid::FrameCount() const noexcept
@@ -233,8 +246,9 @@ std::vector<ForwardPlusRetiredResources> ForwardPlusLightGrid::TakeRetiredResour
 bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::BufferHandle canonicalLights)
 {
     if (frame.bindGroup.IsValid())
-        m_retired.push_back({frame.bindGroup, {}, {}});
+        m_retired.push_back({frame.bindGroup, frame.consumerBindGroup, {}, {}});
     frame.bindGroup = {};
+    frame.consumerBindGroup = {};
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
     const rhi::BufferHandle buffers[] = {canonicalLights, frame.headers, frame.indices};
@@ -244,6 +258,14 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
     frame.bindGroup = m_device->CreateBindGroup(groupDesc);
     if (!frame.bindGroup.IsValid())
         return false;
+
+    groupDesc.layout = m_consumerLayout;
+    frame.consumerBindGroup = m_device->CreateBindGroup(groupDesc);
+    if (!frame.consumerBindGroup.IsValid()) {
+        m_device->Release(frame.bindGroup);
+        frame.bindGroup = {};
+        return false;
+    }
     frame.canonicalLights = canonicalLights;
     return true;
 }

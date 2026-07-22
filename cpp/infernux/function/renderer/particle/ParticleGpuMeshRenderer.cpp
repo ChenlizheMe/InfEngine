@@ -28,6 +28,8 @@ bool ParticleGpuMeshRenderer::Create(rhi::Device &device, const GpuMeshRendererD
     Destroy();
     if (!desc.instances.IsValid() || !desc.renderIndices.IsValid() || !desc.mesh || !desc.vertexShader.words ||
         desc.vertexShader.wordCount == 0 || !desc.fragmentShader.words || desc.fragmentShader.wordCount == 0 ||
+        (desc.semantics.receiveSceneLighting &&
+         (!desc.forwardPlusFragmentShader.words || desc.forwardPlusFragmentShader.wordCount == 0)) ||
         !desc.pickingFragmentShader.words || desc.pickingFragmentShader.wordCount == 0 ||
         !desc.meshVertices.IsValid() || !desc.meshIndices.IsValid() || desc.indexCount == 0 ||
         !desc.meshBufferKeepAlive) {
@@ -46,6 +48,11 @@ bool ParticleGpuMeshRenderer::Create(rhi::Device &device, const GpuMeshRendererD
     m_meshBufferKeepAlive = desc.meshBufferKeepAlive;
     m_material = desc.material;
     m_fallbackMaterial = desc.fallbackMaterial;
+    m_semantics = desc.semantics;
+    if (!m_semantics.IsValid()) {
+        Destroy();
+        return false;
+    }
     m_indexCount = desc.indexCount;
     m_instances = desc.instances;
     m_renderIndices = desc.renderIndices;
@@ -58,10 +65,15 @@ bool ParticleGpuMeshRenderer::Create(rhi::Device &device, const GpuMeshRendererD
 
     m_vertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
     m_fragmentShader = device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
+    if (m_semantics.receiveSceneLighting) {
+        m_forwardPlusFragmentShader =
+            device.CreateShaderModule({desc.forwardPlusFragmentShader.words, desc.forwardPlusFragmentShader.wordCount});
+    }
     m_pickingFragmentShader =
         device.CreateShaderModule({desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
     if (!m_meshVertices.IsValid() || !m_meshIndices.IsValid() || !m_vertexShader.IsValid() ||
-        !m_fragmentShader.IsValid() || !m_pickingFragmentShader.IsValid()) {
+        !m_fragmentShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
+        (m_semantics.receiveSceneLighting && !m_forwardPlusFragmentShader.IsValid())) {
         Destroy();
         return false;
     }
@@ -88,6 +100,7 @@ void ParticleGpuMeshRenderer::Destroy() noexcept
         m_device->Release(m_group);
         m_device->Release(m_layout);
         m_device->Release(m_pickingFragmentShader);
+        m_device->Release(m_forwardPlusFragmentShader);
         m_device->Release(m_fragmentShader);
         m_device->Release(m_vertexShader);
     }
@@ -96,6 +109,7 @@ void ParticleGpuMeshRenderer::Destroy() noexcept
     m_meshBufferKeepAlive.reset();
     m_material.reset();
     m_fallbackMaterial = {};
+    m_semantics = {};
     m_indexCount = 0;
     m_instances = {};
     m_renderIndices = {};
@@ -104,6 +118,7 @@ void ParticleGpuMeshRenderer::Destroy() noexcept
     m_staticVertexStorageBuffers.clear();
     m_vertexShader = {};
     m_fragmentShader = {};
+    m_forwardPlusFragmentShader = {};
     m_pickingFragmentShader = {};
     m_layout = {};
     m_group = {};
@@ -174,20 +189,28 @@ bool ParticleGpuMeshRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &enco
                                          const MaterialPassPipelineDescriptor &pass,
                                          rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                          rhi::BufferHandle renderIndices, rhi::TextureViewHandle sceneDepth,
-                                         bool sceneDepthIsDepth)
+                                         bool sceneDepthIsDepth, const GpuParticleForwardPlusBindings &forwardPlus)
 {
     (void)sceneDepth;
     (void)sceneDepthIsDepth;
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid())
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
+    const bool usesForwardPlusLighting =
+        pass.target == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting;
+    if (usesForwardPlusLighting && !forwardPlus.IsValid())
+        return false;
+    const auto pipeline = GetOrCreatePipeline(
+        renderTargetLayout, pass, usesForwardPlusLighting ? forwardPlus.layout : rhi::BindingLayoutHandle{});
     const auto group = ResolveBindGroup(renderIndices);
     if (!pipeline.IsValid() || !group.IsValid())
         return false;
     auto constants = view;
     constants.materialTint = ResolveMaterialTint();
+    constants.lightingControl[0] = usesForwardPlusLighting ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
+    if (usesForwardPlusLighting)
+        encoder.BindGroup(pipeline, 1, forwardPlus.group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
                           &constants);
     encoder.DrawIndirect(indirectArguments);
@@ -221,25 +244,32 @@ bool ParticleGpuMeshRenderer::RecordPickingDraw(const rhi::GraphicsCommandEncode
 
 rhi::GraphicsPipelineHandle
 ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                             const MaterialPassPipelineDescriptor &pass)
+                                             const MaterialPassPipelineDescriptor &pass,
+                                             rhi::BindingLayoutHandle forwardPlusLayout)
 {
     if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
-        (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::Picking)) {
+        (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
+         pass.target != ShaderCompileTarget::Picking)) {
         return {};
     }
     const bool picking = pass.target == ShaderCompileTarget::Picking;
+    const bool usesForwardPlusLighting =
+        pass.target == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting;
+    if (usesForwardPlusLighting && !forwardPlusLayout.IsValid())
+        return {};
     const auto state = picking ? GpuBillboardMaterialState{3000, false, true, true} : ResolveMaterialState();
     const uint8_t signature = PipelineStateSignature(state);
     const auto found = std::find_if(m_pipelines.begin(), m_pipelines.end(), [&](const auto &entry) {
         return entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
-               entry.materialStateSignature == signature;
+               entry.forwardPlusLayout == forwardPlusLayout && entry.materialStateSignature == signature;
     });
     if (found != m_pipelines.end())
         return found->pipeline;
 
     rhi::GraphicsPipelineDesc desc;
     desc.vertexShader = m_vertexShader;
-    desc.fragmentShader = picking ? m_pickingFragmentShader : m_fragmentShader;
+    desc.fragmentShader =
+        picking ? m_pickingFragmentShader : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
     desc.renderTargetLayout = renderTargetLayout;
     desc.raster.cullMode = rhi::CullMode::Back;
     desc.raster.frontFace = rhi::FrontFace::Clockwise;
@@ -253,11 +283,15 @@ ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle rende
     desc.colorTargetCount = static_cast<uint32_t>(pass.colorFormats.size());
     desc.bindingLayouts[0] = m_layout;
     desc.bindingLayoutCount = 1;
+    if (usesForwardPlusLighting) {
+        desc.bindingLayouts[1] = forwardPlusLayout;
+        desc.bindingLayoutCount = 2;
+    }
     desc.pushConstantStages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(GpuParticleViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
-        m_pipelines.push_back({renderTargetLayout, pass, signature, pipeline});
+        m_pipelines.push_back({renderTargetLayout, pass, forwardPlusLayout, signature, pipeline});
     return pipeline;
 }
 

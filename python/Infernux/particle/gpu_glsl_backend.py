@@ -41,6 +41,9 @@ struct ParticleInstance {
 layout(set = 0, binding = 0, std430) readonly buffer Instances {
     ParticleInstance instances[];
 };
+layout(set = 0, binding = 1, std430) readonly buffer RenderIndices {
+    uint render_indices[];
+};
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
@@ -48,10 +51,13 @@ layout(push_constant) uniform ViewConstants {
     vec4 camera_up;
     vec4 material_tint;
     vec4 depth_reconstruct;
+    vec4 lighting_control;
 } view;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec2 out_uv;
+layout(location = 2) out vec3 out_world_position;
+layout(location = 3) out vec3 out_world_normal;
 
 const vec2 corners[6] = vec2[](
     vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0),
@@ -64,7 +70,10 @@ const vec2 uvs[6] = vec2[](
 );
 
 void main() {
-    ParticleInstance instance = instances[gl_InstanceIndex];
+    uint particle_index = view.lighting_control.y > 0.5
+        ? render_indices[gl_InstanceIndex]
+        : gl_InstanceIndex;
+    ParticleInstance instance = instances[particle_index];
     vec2 corner = corners[gl_VertexIndex % 6];
     float cosine = cos(instance.rotation_custom.x);
     float sine = sin(instance.rotation_custom.x);
@@ -74,6 +83,8 @@ void main() {
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     out_color = instance.color;
     out_uv = uvs[gl_VertexIndex % 6];
+    out_world_position = world_position;
+    out_world_normal = normalize(cross(view.camera_right.xyz, view.camera_up.xyz));
 }
 """
 
@@ -83,7 +94,7 @@ layout(location = 0) in vec4 in_color;
 layout(location = 1) in vec2 in_uv;
 layout(location = 0) out vec4 out_color;
 
-layout(set = 0, binding = 1) uniform sampler2D texSampler;
+layout(set = 0, binding = 2) uniform sampler2D texSampler;
 layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
 
 layout(push_constant) uniform ViewConstants {
@@ -92,6 +103,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 camera_up;
     vec4 material_tint;
     vec4 depth_reconstruct;
+    vec4 lighting_control;
 } view;
 
 float particle_eye_depth(float device_depth) {
@@ -109,6 +121,113 @@ void main() {
         float particle_depth = particle_eye_depth(gl_FragCoord.z);
         out_color.a *= clamp((scene_depth - particle_depth) / max(view.camera_right.w, 1e-4), 0.0, 1.0);
     }
+}
+"""
+
+_PARTICLE_FORWARD_PLUS_LIGHTING_GLSL = """
+struct CanonicalLightData {
+    vec4 position_range;
+    vec4 direction_spot;
+    vec4 color_intensity;
+    vec4 attenuation;
+    uvec4 metadata;
+};
+
+layout(set = 1, binding = 0, std430) readonly buffer CanonicalLights {
+    uvec4 counts_generation;
+    CanonicalLightData lights[];
+};
+layout(set = 1, binding = 1, std430) readonly buffer ParticleTileHeaders {
+    uvec4 tile_headers[];
+};
+layout(set = 1, binding = 2, std430) readonly buffer ParticleTileIndices {
+    uint tile_indices[];
+};
+
+vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, vec3 albedo, bool two_sided) {
+    vec3 result = albedo * 0.08;
+    uint directional_count = counts_generation.x;
+    for (uint index = 0u; index < directional_count; ++index) {
+        CanonicalLightData light = lights[index];
+        if ((light.metadata.w & 2u) == 0u) continue;
+        vec3 direction = normalize(-light.direction_spot.xyz);
+        float ndotl = dot(normal, direction);
+        ndotl = two_sided ? abs(ndotl) : max(ndotl, 0.0);
+        result += albedo * light.color_intensity.rgb * light.color_intensity.w * ndotl;
+    }
+
+    uvec4 grid = tile_headers[0];
+    uvec2 tile_count = max(grid.xy, uvec2(1u));
+    uint tile_size = max(grid.z, 1u);
+    uvec2 tile = min(uvec2(gl_FragCoord.xy) / tile_size, tile_count - uvec2(1u));
+    uvec4 header = tile_headers[1u + tile.y * tile_count.x + tile.x];
+    for (uint entry = 0u; entry < header.y; ++entry) {
+        uint local_index = tile_indices[header.x + entry];
+        CanonicalLightData light = lights[directional_count + local_index];
+        vec3 light_vector = light.position_range.xyz - world_position;
+        float distance_to_light = length(light_vector);
+        float range = max(light.position_range.w, 0.0001);
+        if (distance_to_light <= 0.00001 || distance_to_light >= range) continue;
+        vec3 direction = light_vector / distance_to_light;
+        float normalized_distance = distance_to_light / range;
+        float range_window = max(1.0 - pow(normalized_distance, 4.0), 0.0);
+        float falloff = (range_window * range_window) / max(distance_to_light * distance_to_light, 0.01);
+        if (light.metadata.x == 2u) {
+            float cone = dot(direction, -normalize(light.direction_spot.xyz));
+            falloff *= smoothstep(light.direction_spot.w, light.attenuation.w, cone);
+        }
+        float ndotl = dot(normal, direction);
+        ndotl = two_sided ? abs(ndotl) : max(ndotl, 0.0);
+        result += albedo * light.color_intensity.rgb * light.color_intensity.w * falloff * ndotl;
+    }
+    return result;
+}
+"""
+
+_BILLBOARD_FORWARD_PLUS_FRAGMENT_GLSL = """#version 450
+
+layout(location = 0) in vec4 in_color;
+layout(location = 1) in vec2 in_uv;
+layout(location = 2) in vec3 in_world_position;
+layout(location = 3) in vec3 in_world_normal;
+layout(location = 0) out vec4 out_color;
+
+layout(set = 0, binding = 2) uniform sampler2D texSampler;
+layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
+
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    vec4 material_tint;
+    vec4 depth_reconstruct;
+    vec4 lighting_control;
+} view;
+""" + _PARTICLE_FORWARD_PLUS_LIGHTING_GLSL + """
+float particle_eye_depth(float device_depth) {
+    float numerator = view.depth_reconstruct.y - device_depth * view.depth_reconstruct.w;
+    float denominator = device_depth * view.depth_reconstruct.z - view.depth_reconstruct.x;
+    return max(0.0, -numerator / (abs(denominator) > 1e-7 ? denominator : 1e-7));
+}
+
+void main() {
+    vec4 base = texture(texSampler, in_uv) * in_color * view.material_tint;
+    vec2 centered_uv = in_uv * 2.0 - 1.0;
+    float edge_width = max(view.lighting_control.z, 0.0001);
+    base.a *= 1.0 - smoothstep(1.0 - edge_width, 1.0, length(centered_uv));
+    if (view.lighting_control.x > 0.5) {
+        base.rgb = inx_particle_forward_plus(
+            in_world_position, normalize(in_world_normal), base.rgb, true
+        );
+    }
+    if (view.camera_up.w > 0.5) {
+        ivec2 depth_size = textureSize(_InxParticleSceneDepth, 0);
+        ivec2 depth_coord = clamp(ivec2(gl_FragCoord.xy), ivec2(0), depth_size - ivec2(1));
+        float scene_depth = particle_eye_depth(texelFetch(_InxParticleSceneDepth, depth_coord, 0).r);
+        float particle_depth = particle_eye_depth(gl_FragCoord.z);
+        base.a *= clamp((scene_depth - particle_depth) / max(view.camera_right.w, 1e-4), 0.0, 1.0);
+    }
+    out_color = base;
 }
 """
 
@@ -163,11 +282,13 @@ layout(push_constant) uniform ViewConstants {
     vec4 camera_up;
     vec4 material_tint;
     vec4 depth_reconstruct;
+    vec4 lighting_control;
 } view;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec3 out_normal;
 layout(location = 2) out vec2 out_uv;
+layout(location = 3) out vec3 out_world_position;
 
 void main() {
     uint particle_index = render_indices[gl_InstanceIndex];
@@ -198,6 +319,7 @@ void main() {
     out_color = instance.color * vertex.color;
     out_normal = normalize(rotation * vertex.normal.xyz);
     out_uv = vertex.uv.xy;
+    out_world_position = world_position;
 }
 """
 
@@ -214,10 +336,39 @@ layout(push_constant) uniform ViewConstants {
     vec4 camera_up;
     vec4 material_tint;
     vec4 depth_reconstruct;
+    vec4 lighting_control;
 } view;
 
 void main() {
     out_color = in_color * view.material_tint;
+}
+"""
+
+_MESH_FORWARD_PLUS_FRAGMENT_GLSL = """#version 450
+
+layout(location = 0) in vec4 in_color;
+layout(location = 1) in vec3 in_normal;
+layout(location = 2) in vec2 in_uv;
+layout(location = 3) in vec3 in_world_position;
+layout(location = 0) out vec4 out_color;
+
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    vec4 material_tint;
+    vec4 depth_reconstruct;
+    vec4 lighting_control;
+} view;
+""" + _PARTICLE_FORWARD_PLUS_LIGHTING_GLSL + """
+void main() {
+    vec4 base = in_color * view.material_tint;
+    if (view.lighting_control.x > 0.5) {
+        base.rgb = inx_particle_forward_plus(
+            in_world_position, normalize(in_normal), base.rgb, false
+        );
+    }
+    out_color = base;
 }
 """
 
@@ -441,6 +592,33 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         _SPIRV_DESCRIPTOR_CACHE[picking_key] = picking_descriptor
     billboard["picking_fragment"] = dict(picking_descriptor)
 
+    billboard_forward_plus_key = hashlib.sha256(
+        (
+            "vulkan1.2-spirv1.5\0fragment\0"
+            + _BILLBOARD_FORWARD_PLUS_FRAGMENT_GLSL
+        ).encode("utf-8")
+    ).hexdigest()
+    billboard_forward_plus = _SPIRV_DESCRIPTOR_CACHE.get(
+        billboard_forward_plus_key
+    )
+    if billboard_forward_plus is None:
+        compiled = native._compile_graphics_glsl_batch(
+            {"fragment": _BILLBOARD_FORWARD_PLUS_FRAGMENT_GLSL},
+            "particle:builtin-billboard-forward-plus",
+        )
+        binary = bytes(compiled.get("fragment", b""))
+        if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
+            raise GpuParticleCompileError(
+                "engine graphics compiler returned invalid particle Forward+ billboard SPIR-V"
+            )
+        billboard_forward_plus = {
+            "byte_size": len(binary),
+            "sha256": hashlib.sha256(binary).hexdigest(),
+            "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
+        }
+        _SPIRV_DESCRIPTOR_CACHE[billboard_forward_plus_key] = billboard_forward_plus
+    billboard["forward_plus_fragment"] = dict(billboard_forward_plus)
+
     mesh_sources = {
         "vertex": _MESH_VERTEX_GLSL,
         "fragment": _MESH_FRAGMENT_GLSL,
@@ -483,6 +661,30 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         mesh[stage] = dict(descriptor)
     mesh["picking_fragment"] = dict(picking_descriptor)
 
+    mesh_forward_plus_key = hashlib.sha256(
+        ("vulkan1.2-spirv1.5\0fragment\0" + _MESH_FORWARD_PLUS_FRAGMENT_GLSL).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    mesh_forward_plus = _SPIRV_DESCRIPTOR_CACHE.get(mesh_forward_plus_key)
+    if mesh_forward_plus is None:
+        compiled = native._compile_graphics_glsl_batch(
+            {"fragment": _MESH_FORWARD_PLUS_FRAGMENT_GLSL},
+            "particle:builtin-mesh-forward-plus",
+        )
+        binary = bytes(compiled.get("fragment", b""))
+        if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
+            raise GpuParticleCompileError(
+                "engine graphics compiler returned invalid particle Forward+ mesh SPIR-V"
+            )
+        mesh_forward_plus = {
+            "byte_size": len(binary),
+            "sha256": hashlib.sha256(binary).hexdigest(),
+            "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
+        }
+        _SPIRV_DESCRIPTOR_CACHE[mesh_forward_plus_key] = mesh_forward_plus
+    mesh["forward_plus_fragment"] = dict(mesh_forward_plus)
+
     return {
         "$schema": "infernux.particle_gpu_spirv",
         "target": "vulkan1.2-spirv1.5",
@@ -517,12 +719,12 @@ def validate_gpu_particle_spirv(
         raise GpuParticleCompileError("particle GPU SPIR-V header is incompatible")
     billboard = value["billboard"]
     if type(billboard) is not dict or set(billboard) != {
-        "vertex", "fragment", "picking_fragment"
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
     }:
         raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
     mesh = value["mesh"]
     if type(mesh) is not dict or set(mesh) != {
-        "vertex", "fragment", "picking_fragment"
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
     }:
         raise GpuParticleCompileError("particle GPU mesh binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):

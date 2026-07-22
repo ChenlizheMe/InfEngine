@@ -127,9 +127,11 @@ struct ParticleGpuSystemManager::Impl
         std::vector<uint64_t> observedVectorFieldGenerations;
         std::vector<uint32_t> billboardVertexShader;
         std::vector<uint32_t> billboardFragmentShader;
+        std::vector<uint32_t> billboardForwardPlusFragmentShader;
         std::vector<uint32_t> billboardPickingFragmentShader;
         std::vector<uint32_t> meshVertexShader;
         std::vector<uint32_t> meshFragmentShader;
+        std::vector<uint32_t> meshForwardPlusFragmentShader;
         std::vector<uint32_t> meshPickingFragmentShader;
         std::vector<Output> outputs;
         bool hasFrameRequest = false;
@@ -417,6 +419,8 @@ struct ParticleGpuSystemManager::Impl
             GpuMeshRendererDesc desc;
             desc.vertexShader = {emitter.meshVertexShader.data(), emitter.meshVertexShader.size()};
             desc.fragmentShader = {emitter.meshFragmentShader.data(), emitter.meshFragmentShader.size()};
+            desc.forwardPlusFragmentShader = {emitter.meshForwardPlusFragmentShader.data(),
+                                              emitter.meshForwardPlusFragmentShader.size()};
             desc.pickingFragmentShader = {emitter.meshPickingFragmentShader.data(),
                                           emitter.meshPickingFragmentShader.size()};
             desc.instances = emitter.runtime->InstanceBuffer();
@@ -428,15 +432,21 @@ struct ParticleGpuSystemManager::Impl
             desc.meshBufferKeepAlive = meshResources;
             desc.material = output.material;
             desc.fallbackMaterial = output.fallbackMaterial;
+            desc.semantics = output.semantics;
             return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
         }
         auto renderer = std::make_shared<ParticleGpuBillboardRenderer>();
         GpuBillboardRendererDesc rendererDesc;
         rendererDesc.vertexShader = {emitter.billboardVertexShader.data(), emitter.billboardVertexShader.size()};
         rendererDesc.fragmentShader = {emitter.billboardFragmentShader.data(), emitter.billboardFragmentShader.size()};
+        rendererDesc.forwardPlusFragmentShader = {emitter.billboardForwardPlusFragmentShader.data(),
+                                                  emitter.billboardForwardPlusFragmentShader.size()};
         rendererDesc.pickingFragmentShader = {emitter.billboardPickingFragmentShader.data(),
                                               emitter.billboardPickingFragmentShader.size()};
-        rendererDesc.shaderProgram = output.shaderProgram;
+        // The shared lit particle ABI owns lighting, depth fading, and sorted
+        // instance addressing. ParticleSprite linked programs remain the
+        // unlit customization path until they publish a Forward+ contract.
+        rendererDesc.shaderProgram = output.semantics.receiveSceneLighting ? nullptr : output.shaderProgram;
         rendererDesc.instances = emitter.runtime->InstanceBuffer();
         rendererDesc.renderIndices = emitter.runtime->RenderIndexBuffer();
         rendererDesc.material = output.material;
@@ -465,17 +475,28 @@ struct ParticleGpuSystemManager::Impl
         }
         const bool needsLegacyBillboard =
             std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
-                return output.type == GpuParticleOutputType::Sprite && !output.shaderProgram;
+                return output.type == GpuParticleOutputType::Sprite &&
+                       (!output.shaderProgram || output.semantics.receiveSceneLighting);
+            });
+        const bool needsLitLegacyBillboard =
+            std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
+                return output.type == GpuParticleOutputType::Sprite && output.semantics.receiveSceneLighting;
             });
         if (needsLegacyBillboard &&
-            (!IsSpirv(program.billboardVertexShader) || !IsSpirv(program.billboardFragmentShader))) {
+            (!IsSpirv(program.billboardVertexShader) || !IsSpirv(program.billboardFragmentShader) ||
+             (needsLitLegacyBillboard && !IsSpirv(program.billboardForwardPlusFragmentShader)))) {
             SetError(error, "GPU particle program contains invalid billboard SPIR-V");
             return {};
         }
         const bool needsMesh = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
             return output.type == GpuParticleOutputType::Mesh;
         });
+        const bool needsLitMesh =
+            std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
+                return output.type == GpuParticleOutputType::Mesh && output.semantics.receiveSceneLighting;
+            });
         if (needsMesh && (!IsSpirv(program.meshVertexShader) || !IsSpirv(program.meshFragmentShader) ||
+                          (needsLitMesh && !IsSpirv(program.meshForwardPlusFragmentShader)) ||
                           !IsSpirv(program.meshPickingFragmentShader))) {
             SetError(error, "GPU particle program contains invalid mesh output SPIR-V");
             return {};
@@ -492,9 +513,11 @@ struct ParticleGpuSystemManager::Impl
         emitter->statePreservedOnPublish = program.preserveState;
         emitter->billboardVertexShader = program.billboardVertexShader;
         emitter->billboardFragmentShader = program.billboardFragmentShader;
+        emitter->billboardForwardPlusFragmentShader = program.billboardForwardPlusFragmentShader;
         emitter->billboardPickingFragmentShader = program.billboardPickingFragmentShader;
         emitter->meshVertexShader = program.meshVertexShader;
         emitter->meshFragmentShader = program.meshFragmentShader;
+        emitter->meshForwardPlusFragmentShader = program.meshForwardPlusFragmentShader;
         emitter->meshPickingFragmentShader = program.meshPickingFragmentShader;
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
@@ -581,15 +604,9 @@ struct ParticleGpuSystemManager::Impl
                 return {};
             }
             if (output.type == GpuParticleOutputType::Mesh &&
-                (!output.mesh || output.semantics.receiveSceneLighting || output.semantics.receiveShadows ||
-                 output.semantics.softParticles)) {
+                (!output.mesh || output.semantics.receiveShadows || output.semantics.softParticles)) {
                 SetError(error, "GPU particle mesh output '" + output.stableId +
-                                    "' requires a loaded mesh and currently supports unlit, non-soft rendering only");
-                return {};
-            }
-            if (output.semantics.sortMode != ParticleSortMode::None && !output.shaderProgram) {
-                SetError(error, "GPU particle output '" + output.stableId +
-                                    "' sorting requires a linked ParticleSprite material");
+                                    "' requires a loaded mesh and currently does not support shadows or soft fading");
                 return {};
             }
             if (output.semantics.sortMode != ParticleSortMode::None && (!sortProgram || !sortProgram->IsValid())) {
@@ -719,8 +736,10 @@ struct ParticleGpuSystemManager::Impl
                 entry.indirectArguments = emitter->runtime->IndirectBuffer();
                 entry.bounds = emitter->bounds->BoundsBuffer();
                 entry.renderer = output.renderer;
-                entry.cullProgram =
-                    (output.shaderProgram || output.type == GpuParticleOutputType::Mesh) ? cullProgram : nullptr;
+                entry.cullProgram = (output.shaderProgram || output.type == GpuParticleOutputType::Mesh ||
+                                     output.semantics.sortMode != ParticleSortMode::None)
+                                        ? cullProgram
+                                        : nullptr;
                 entry.sortProgram = output.semantics.sortMode == ParticleSortMode::None ? nullptr : sortProgram;
                 entry.semantics = output.semantics;
                 entries.push_back(std::move(entry));

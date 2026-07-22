@@ -15,6 +15,7 @@ struct GpuMeshRendererDesc
 {
     ShaderBytecode vertexShader;
     ShaderBytecode fragmentShader;
+    ShaderBytecode forwardPlusFragmentShader;
     ShaderBytecode pickingFragmentShader;
     rhi::BufferHandle instances;
     rhi::BufferHandle renderIndices;
@@ -25,6 +26,7 @@ struct GpuMeshRendererDesc
     std::shared_ptr<void> meshBufferKeepAlive;
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
+    ParticleOutputSemantics semantics;
 };
 
 class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
@@ -66,7 +68,8 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
                                   rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuParticleViewConstants &view, rhi::BufferHandle renderIndices = {},
-                                  rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true) override;
+                                  rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true,
+                                  const GpuParticleForwardPlusBindings &forwardPlus = {}) override;
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                          rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
@@ -78,6 +81,7 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     {
         rhi::RenderTargetLayoutHandle renderTargetLayout;
         MaterialPassPipelineDescriptor pass;
+        rhi::BindingLayoutHandle forwardPlusLayout;
         uint8_t materialStateSignature = 0;
         rhi::GraphicsPipelineHandle pipeline;
     };
@@ -92,13 +96,15 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(rhi::BufferHandle renderIndices) const;
     [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices);
     [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                                                  const MaterialPassPipelineDescriptor &pass);
+                                                                  const MaterialPassPipelineDescriptor &pass,
+                                                                  rhi::BindingLayoutHandle forwardPlusLayout = {});
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<InxMesh> m_mesh;
     std::shared_ptr<void> m_meshBufferKeepAlive;
     std::shared_ptr<InxMaterial> m_material;
     GpuBillboardMaterialState m_fallbackMaterial{};
+    ParticleOutputSemantics m_semantics{};
     uint32_t m_indexCount = 0;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_renderIndices;
@@ -107,6 +113,7 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     std::vector<GpuParticleStaticBuffer> m_staticVertexStorageBuffers;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
+    rhi::ShaderModuleHandle m_forwardPlusFragmentShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;

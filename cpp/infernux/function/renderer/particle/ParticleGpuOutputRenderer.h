@@ -17,6 +17,18 @@ struct alignas(16) GpuParticleViewConstants
     std::array<float, 4> cameraUp{};
     std::array<float, 4> materialTint{1.0f, 1.0f, 1.0f, 1.0f};
     std::array<float, 4> depthReconstruct{};
+    std::array<float, 4> lightingControl{};
+};
+
+struct GpuParticleForwardPlusBindings
+{
+    rhi::BindingLayoutHandle layout;
+    rhi::BindGroupHandle group;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return layout.IsValid() && group.IsValid();
+    }
 };
 
 struct GpuParticleStaticBuffer
@@ -47,7 +59,8 @@ class ParticleGpuOutputRenderer
                                           const MaterialPassPipelineDescriptor &pass,
                                           rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                           rhi::BufferHandle renderIndices = {}, rhi::TextureViewHandle sceneDepth = {},
-                                          bool sceneDepthIsDepth = true) = 0;
+                                          bool sceneDepthIsDepth = true,
+                                          const GpuParticleForwardPlusBindings &forwardPlus = {}) = 0;
     [[nodiscard]] virtual bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
                                                  rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                  const MaterialPassPipelineDescriptor &pass,
@@ -56,6 +69,6 @@ class ParticleGpuOutputRenderer
                                                  rhi::BufferHandle renderIndices = {}) = 0;
 };
 
-static_assert(sizeof(GpuParticleViewConstants) == 128);
+static_assert(sizeof(GpuParticleViewConstants) == 144);
 
 } // namespace infernux::particle

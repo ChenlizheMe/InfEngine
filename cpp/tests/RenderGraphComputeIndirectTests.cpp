@@ -1745,6 +1745,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     billboardDesc.vertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
     billboardDesc.fragmentShader = {particleTexturedFragmentCode.data(), particleTexturedFragmentCode.size()};
     billboardDesc.instances = particleRuntime.InstanceBuffer();
+    billboardDesc.renderIndices = particleRuntime.RenderIndexBuffer();
     billboardDesc.fallbackMaterial.blendEnabled = false;
     billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName) {
         if (bindingName != "texSampler")

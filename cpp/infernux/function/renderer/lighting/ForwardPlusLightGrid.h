@@ -53,6 +53,7 @@ struct ForwardPlusGridFrame
     rhi::BufferHandle headers;
     rhi::BufferHandle indices;
     rhi::BindGroupHandle bindGroup;
+    rhi::BindGroupHandle consumerBindGroup;
     rhi::BufferHandle canonicalLights;
     ForwardPlusGridConfig config{};
     uint64_t headerCapacityBytes = 0;
@@ -62,6 +63,7 @@ struct ForwardPlusGridFrame
 struct ForwardPlusRetiredResources
 {
     rhi::BindGroupHandle bindGroup;
+    rhi::BindGroupHandle consumerBindGroup;
     rhi::BufferHandle headers;
     rhi::BufferHandle indices;
 };
@@ -91,6 +93,10 @@ class ForwardPlusLightGrid
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] uint32_t FrameCount() const noexcept;
     [[nodiscard]] const ForwardPlusGridFrame &Frame(uint32_t frameIndex) const;
+    [[nodiscard]] rhi::BindingLayoutHandle ConsumerLayout() const noexcept
+    {
+        return m_consumerLayout;
+    }
     [[nodiscard]] std::vector<ForwardPlusRetiredResources> TakeRetiredResources();
 
     [[nodiscard]] static std::string_view ShaderSource() noexcept;
@@ -100,6 +106,7 @@ class ForwardPlusLightGrid
 
     rhi::Device *m_device = nullptr;
     rhi::BindingLayoutHandle m_layout;
+    rhi::BindingLayoutHandle m_consumerLayout;
     rhi::ComputePipelineHandle m_pipeline;
     std::vector<ForwardPlusGridFrame> m_frames;
     std::vector<ForwardPlusRetiredResources> m_retired;

@@ -258,20 +258,25 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     }
 
     const py::dict billboard = py::cast<py::dict>(value["billboard"]);
-    if (!billboard.contains("vertex") || !billboard.contains("fragment"))
+    if (!billboard.contains("vertex") || !billboard.contains("fragment") ||
+        !billboard.contains("forward_plus_fragment"))
         throw std::invalid_argument("GPU particle billboard shaders are incomplete");
     program.billboardVertexShader = DecodeParticleSpirv(billboard["vertex"], "particle billboard vertex shader");
     program.billboardFragmentShader = DecodeParticleSpirv(billboard["fragment"], "particle billboard fragment shader");
+    program.billboardForwardPlusFragmentShader =
+        DecodeParticleSpirv(billboard["forward_plus_fragment"], "particle billboard Forward+ fragment shader");
     program.billboardPickingFragmentShader =
         DecodeParticleSpirv(billboard["picking_fragment"], "particle billboard picking fragment shader");
 
     const py::dict meshShaders = py::cast<py::dict>(value["mesh_shaders"]);
-    for (const char *field : {"vertex", "fragment", "picking_fragment"}) {
+    for (const char *field : {"vertex", "fragment", "forward_plus_fragment", "picking_fragment"}) {
         if (!meshShaders.contains(field))
             throw std::invalid_argument(std::string("GPU particle mesh shaders are missing ") + field);
     }
     program.meshVertexShader = DecodeParticleSpirv(meshShaders["vertex"], "particle mesh vertex shader");
     program.meshFragmentShader = DecodeParticleSpirv(meshShaders["fragment"], "particle mesh fragment shader");
+    program.meshForwardPlusFragmentShader =
+        DecodeParticleSpirv(meshShaders["forward_plus_fragment"], "particle mesh Forward+ fragment shader");
     program.meshPickingFragmentShader =
         DecodeParticleSpirv(meshShaders["picking_fragment"], "particle mesh picking fragment shader");
 

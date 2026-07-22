@@ -123,7 +123,7 @@ ParticleGpuBillboardRenderer::~ParticleGpuBillboardRenderer()
 bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboardRendererDesc &desc)
 {
     Destroy();
-    if (!desc.instances.IsValid())
+    if (!desc.instances.IsValid() || !desc.renderIndices.IsValid())
         return false;
 
     const ShaderProgramArtifact::PassVariant *linkedVariant = nullptr;
@@ -131,7 +131,7 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     std::vector<uint32_t> linkedFragmentWords;
     if (desc.shaderProgram) {
         if (!desc.renderIndices.IsValid() || !desc.shaderProgram->IsValid() ||
-            desc.shaderProgram->domain != ShaderProgramDomain::ParticleSprite)
+            desc.shaderProgram->domain != ShaderProgramDomain::ParticleSprite || desc.semantics.receiveSceneLighting)
             return false;
         linkedVariant = desc.shaderProgram->FindVariant(ShaderCompileTarget::Forward);
         if (!linkedVariant)
@@ -141,7 +141,9 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
         if (linkedVertexWords.empty() || linkedFragmentWords.empty())
             return false;
     } else if (!desc.vertexShader.words || desc.vertexShader.wordCount == 0 || !desc.fragmentShader.words ||
-               desc.fragmentShader.wordCount == 0) {
+               desc.fragmentShader.wordCount == 0 ||
+               (desc.semantics.receiveSceneLighting &&
+                (!desc.forwardPlusFragmentShader.words || desc.forwardPlusFragmentShader.wordCount == 0))) {
         return false;
     }
 
@@ -165,13 +167,18 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_fragmentShader = linkedVariant
                            ? device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()})
                            : device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
+    if (m_semantics.receiveSceneLighting) {
+        m_forwardPlusFragmentShader =
+            device.CreateShaderModule({desc.forwardPlusFragmentShader.words, desc.forwardPlusFragmentShader.wordCount});
+    }
     if (desc.vertexShader.words && desc.vertexShader.wordCount && desc.pickingFragmentShader.words &&
         desc.pickingFragmentShader.wordCount) {
         m_pickingVertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
         m_pickingFragmentShader =
             device.CreateShaderModule({desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
     }
-    if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid()) {
+    if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() ||
+        (m_semantics.receiveSceneLighting && !m_forwardPlusFragmentShader.IsValid())) {
         Destroy();
         return false;
     }
@@ -211,10 +218,13 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
                 return false;
             }
         }
-    } else if (m_textureResolver) {
-        layoutDesc.entries[layoutDesc.entryCount++] = {1, rhi::BindingType::CombinedTextureSampler,
-                                                       rhi::ShaderStage::Fragment, 1};
-        m_textures.push_back({1, rhi::ShaderStage::Fragment, "texSampler"});
+    } else {
+        layoutDesc.entries[layoutDesc.entryCount++] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
+        if (m_textureResolver) {
+            layoutDesc.entries[layoutDesc.entryCount++] = {2, rhi::BindingType::CombinedTextureSampler,
+                                                           rhi::ShaderStage::Fragment, 1};
+            m_textures.push_back({2, rhi::ShaderStage::Fragment, "texSampler"});
+        }
     }
     if (m_supportsSceneDepth && layoutDesc.entryCount >= rhi::BindingLayoutDesc::MaxEntries) {
         Destroy();
@@ -272,6 +282,7 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
         }
         m_device->Release(m_materialBuffer);
         m_device->Release(m_layout);
+        m_device->Release(m_forwardPlusFragmentShader);
         m_device->Release(m_fragmentShader);
         m_device->Release(m_vertexShader);
         m_device->Release(m_pickingFragmentShader);
@@ -289,6 +300,7 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_renderIndices = {};
     m_vertexShader = {};
     m_fragmentShader = {};
+    m_forwardPlusFragmentShader = {};
     m_pickingVertexShader = {};
     m_pickingFragmentShader = {};
     m_layout = {};
@@ -339,6 +351,17 @@ std::array<float, 4> ParticleGpuBillboardRenderer::ResolveMaterialTint() const n
     const auto *value = std::get_if<glm::vec4>(&property->value);
     return value ? std::array<float, 4>{value->x, value->y, value->z, value->w}
                  : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f};
+}
+
+float ParticleGpuBillboardRenderer::ResolveMaterialFloat(const char *name, float fallback) const noexcept
+{
+    if (!name || !m_material || m_material->IsDeleted())
+        return fallback;
+    const auto *property = m_material->GetProperty(name);
+    if (!property || property->type != MaterialPropertyType::Float)
+        return fallback;
+    const auto *value = std::get_if<float>(&property->value);
+    return value ? *value : fallback;
 }
 
 std::string ParticleGpuBillboardRenderer::ResolveMaterialTextureGuid(const TextureBindingState &binding) const
@@ -423,11 +446,9 @@ rhi::BindGroupHandle ParticleGpuBillboardRenderer::CreateBindGroup(const std::ve
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
     groupDesc.buffers[groupDesc.bufferCount++] = {0, rhi::BindingType::StorageBuffer, m_instances, 0, 0};
-    if (UsesLinkedProgram()) {
-        if (!renderIndices.IsValid())
-            return {};
-        groupDesc.buffers[groupDesc.bufferCount++] = {1, rhi::BindingType::StorageBuffer, renderIndices, 0, 0};
-    }
+    if (!renderIndices.IsValid())
+        return {};
+    groupDesc.buffers[groupDesc.bufferCount++] = {1, rhi::BindingType::StorageBuffer, renderIndices, 0, 0};
     if (m_materialBuffer.IsValid()) {
         groupDesc.buffers[groupDesc.bufferCount++] = {14, rhi::BindingType::UniformBuffer, m_materialBuffer, 0,
                                                       m_shaderProgram ? m_shaderProgram->materialBufferSize : 0};
@@ -479,7 +500,7 @@ rhi::BindGroupHandle ParticleGpuBillboardRenderer::ResolveBindGroup(rhi::BufferH
                                                                     rhi::TextureViewHandle sceneDepth,
                                                                     bool sceneDepthIsDepth)
 {
-    if ((!UsesLinkedProgram() || !renderIndices.IsValid() || renderIndices == m_renderIndices) && !sceneDepth.IsValid())
+    if ((!renderIndices.IsValid() || renderIndices == m_renderIndices) && !sceneDepth.IsValid())
         return m_group;
     const auto existing = std::find_if(m_viewGroups.begin(), m_viewGroups.end(), [&](const auto &entry) {
         return entry.renderIndices == renderIndices && entry.sceneDepth == sceneDepth &&
@@ -487,7 +508,7 @@ rhi::BindGroupHandle ParticleGpuBillboardRenderer::ResolveBindGroup(rhi::BufferH
     });
     if (existing != m_viewGroups.end())
         return existing->group;
-    const auto resolvedIndices = UsesLinkedProgram() && renderIndices.IsValid() ? renderIndices : m_renderIndices;
+    const auto resolvedIndices = renderIndices.IsValid() ? renderIndices : m_renderIndices;
     const auto group = CreateBindGroup(m_textures, resolvedIndices, sceneDepth, sceneDepthIsDepth);
     if (group.IsValid())
         m_viewGroups.push_back({renderIndices, sceneDepth, sceneDepthIsDepth, group});
@@ -588,14 +609,20 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
                                               const MaterialPassPipelineDescriptor &pass,
                                               rhi::BufferHandle indirectArguments,
                                               const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices,
-                                              rhi::TextureViewHandle sceneDepth, bool sceneDepthIsDepth)
+                                              rhi::TextureViewHandle sceneDepth, bool sceneDepthIsDepth,
+                                              const GpuParticleForwardPlusBindings &forwardPlus)
 {
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || !RefreshMaterialBuffer(false) ||
         !RefreshTextureBindings(false))
         return false;
     if (m_semantics.softParticles && !sceneDepth.IsValid())
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
+    const bool usesForwardPlusLighting =
+        pass.target == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting;
+    if (usesForwardPlusLighting && !forwardPlus.IsValid())
+        return false;
+    const auto pipeline = GetOrCreatePipeline(
+        renderTargetLayout, pass, usesForwardPlusLighting ? forwardPlus.layout : rhi::BindingLayoutHandle{});
     if (!pipeline.IsValid())
         return false;
     const auto group = ResolveBindGroup(renderIndices, sceneDepth, sceneDepthIsDepth);
@@ -605,8 +632,13 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     constants.materialTint = UsesLinkedProgram() ? std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f} : ResolveMaterialTint();
     constants.cameraRight[3] = m_semantics.softDistance;
     constants.cameraUp[3] = m_semantics.softParticles ? 1.0f : 0.0f;
+    constants.lightingControl[0] = usesForwardPlusLighting ? 1.0f : 0.0f;
+    constants.lightingControl[1] = m_semantics.sortMode != ParticleSortMode::None ? 1.0f : 0.0f;
+    constants.lightingControl[2] = ResolveMaterialFloat("softness", 0.18f);
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
+    if (usesForwardPlusLighting)
+        encoder.BindGroup(pipeline, 1, forwardPlus.group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
                           &constants);
     encoder.DrawIndirect(indirectArguments);
@@ -635,6 +667,7 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandE
         0u,
     };
     std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
+    constants.lightingControl[1] = m_semantics.sortMode != ParticleSortMode::None ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
@@ -645,23 +678,30 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandE
 
 rhi::GraphicsPipelineHandle
 ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                                  const MaterialPassPipelineDescriptor &pass)
+                                                  const MaterialPassPipelineDescriptor &pass,
+                                                  rhi::BindingLayoutHandle forwardPlusLayout)
 {
     if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
-        (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::Picking))
+        (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
+         pass.target != ShaderCompileTarget::Picking))
         return {};
     const bool picking = pass.target == ShaderCompileTarget::Picking;
+    const bool usesForwardPlusLighting =
+        pass.target == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting;
+    if (usesForwardPlusLighting && !forwardPlusLayout.IsValid())
+        return {};
     const auto materialState = picking ? GpuBillboardMaterialState{3000, false, true, true} : ResolveMaterialState();
     const uint8_t pipelineStateSignature = PipelineStateSignature(materialState);
     for (const auto &entry : m_pipelines) {
         if (entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
-            entry.materialStateSignature == pipelineStateSignature)
+            entry.forwardPlusLayout == forwardPlusLayout && entry.materialStateSignature == pipelineStateSignature)
             return entry.pipeline;
     }
 
     rhi::GraphicsPipelineDesc desc;
     desc.vertexShader = picking ? m_pickingVertexShader : m_vertexShader;
-    desc.fragmentShader = picking ? m_pickingFragmentShader : m_fragmentShader;
+    desc.fragmentShader =
+        picking ? m_pickingFragmentShader : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
     desc.renderTargetLayout = renderTargetLayout;
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = materialState.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
@@ -674,11 +714,15 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     desc.colorTargetCount = static_cast<uint32_t>(pass.colorFormats.size());
     desc.bindingLayouts[0] = m_layout;
     desc.bindingLayoutCount = 1;
+    if (usesForwardPlusLighting) {
+        desc.bindingLayouts[1] = forwardPlusLayout;
+        desc.bindingLayoutCount = 2;
+    }
     desc.pushConstantStages = rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(GpuBillboardViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
-        m_pipelines.push_back({renderTargetLayout, pass, pipelineStateSignature, pipeline});
+        m_pipelines.push_back({renderTargetLayout, pass, forwardPlusLayout, pipelineStateSignature, pipeline});
     return pipeline;
 }
 

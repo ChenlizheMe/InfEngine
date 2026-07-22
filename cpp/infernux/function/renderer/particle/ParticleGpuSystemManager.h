@@ -123,9 +123,11 @@ struct GpuParticleEmitterProgram
     GpuParticleVectorFieldLayoutProgram vectorFields;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
+    std::vector<uint32_t> billboardForwardPlusFragmentShader;
     std::vector<uint32_t> billboardPickingFragmentShader;
     std::vector<uint32_t> meshVertexShader;
     std::vector<uint32_t> meshFragmentShader;
+    std::vector<uint32_t> meshForwardPlusFragmentShader;
     std::vector<uint32_t> meshPickingFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;
 };

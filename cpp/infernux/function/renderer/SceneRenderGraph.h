@@ -526,6 +526,7 @@ class SceneRenderGraph
     /// @brief Update this frame's per-view shadow descriptor before recording.
     void RefreshPerViewShadowDescriptor();
     [[nodiscard]] bool UsesForwardPlus() const;
+    void RefreshForwardPlusParticleRequirement();
     [[nodiscard]] bool PrepareForwardPlusFrame();
     void RetireForwardPlusResources();
 
@@ -637,6 +638,8 @@ class SceneRenderGraph
     FullscreenRenderer m_fullscreenRenderer;
     SceneDepthResolver m_sceneDepthResolver;
     lighting::ForwardPlusLightGrid m_forwardPlusGeometryGrid;
+    lighting::ForwardPlusLightGrid m_forwardPlusParticleGrid;
+    bool m_forwardPlusParticlesRequired = false;
 };
 
 } // namespace infernux

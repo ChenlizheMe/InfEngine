@@ -926,18 +926,22 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
         graph_artifact.gpu_glsl["emitters"][0]["stages"]
     )
     assert set(graph_artifact.gpu_spirv["billboard"]) == {
-        "vertex", "fragment", "picking_fragment"
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
     }
     assert set(graph_artifact.gpu_spirv["mesh"]) == {
-        "vertex", "fragment", "picking_fragment"
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
     }
     from Infernux.particle import decode_gpu_particle_spirv
 
     decoded = decode_gpu_particle_spirv(graph_artifact.gpu_spirv, 0)
     assert decoded["stable_id"] == "smoke"
     assert set(decoded["stages"]) == set(graph_artifact.gpu_glsl["emitters"][0]["stages"])
-    assert set(decoded["billboard"]) == {"vertex", "fragment", "picking_fragment"}
-    assert set(decoded["mesh"]) == {"vertex", "fragment", "picking_fragment"}
+    assert set(decoded["billboard"]) == {
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+    }
+    assert set(decoded["mesh"]) == {
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+    }
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["stages"].values())
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["billboard"].values())
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["mesh"].values())

@@ -241,6 +241,7 @@ struct GraphicsTrace
 {
     std::vector<rhi::GraphicsPipelineHandle> pipelines;
     std::vector<rhi::BindGroupHandle> groups;
+    std::vector<uint32_t> groupSets;
     std::vector<particle::GpuBillboardViewConstants> constants;
     std::vector<rhi::BufferHandle> indirectBuffers;
 
@@ -250,8 +251,10 @@ struct GraphicsTrace
     }
     static void BindGroup(void *context, rhi::GraphicsPipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
     {
-        assert(setIndex == 0);
-        static_cast<GraphicsTrace *>(context)->groups.push_back(group);
+        assert(setIndex <= 1);
+        auto &trace = *static_cast<GraphicsTrace *>(context);
+        trace.groups.push_back(group);
+        trace.groupSets.push_back(setIndex);
     }
     static void PushConstants(void *context, rhi::GraphicsPipelineHandle, rhi::ShaderStage stages, uint32_t byteSize,
                               const void *data)
@@ -887,6 +890,7 @@ int main()
     billboardDesc.vertexShader = {billboardVertex.data(), billboardVertex.size()};
     billboardDesc.fragmentShader = {billboardFragment.data(), billboardFragment.size()};
     billboardDesc.instances = instanceBuffer;
+    billboardDesc.renderIndices = renderIndexBuffer;
     billboardDesc.fallbackMaterial.renderQueue = 3100;
     billboardDesc.material = std::make_shared<InxMaterial>("live-particle-material");
     auto liveMaterialState = billboardDesc.material->GetRenderState();
@@ -918,10 +922,11 @@ int main()
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({7, 3}));
-    assert(device.groupBufferCounts == std::vector<uint32_t>({7, 1}));
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({7, 4}));
+    assert(device.groupBufferCounts == std::vector<uint32_t>({7, 2}));
     assert(device.groupTextureCounts == std::vector<uint32_t>({0, 2}));
-    assert(device.bindGroups.back().textures[1].binding == 15 && !device.bindGroups.back().textures[1].depthRead);
+    assert(device.bindGroups.back().textures[0].binding == 2 && device.bindGroups.back().textures[1].binding == 15 &&
+           !device.bindGroups.back().textures[1].depthRead);
     assert(textureResolveCount == 1);
 
     MaterialPassPipelineDescriptor forwardPass;
@@ -990,6 +995,40 @@ int main()
     assert(!billboard.RecordDraw(graphicsEncoder, firstTarget, unsupportedPass, indirectBuffer, view));
     billboard.Destroy();
     assert(!billboard.IsValid() && device.graphicsPipelineReleases == 2);
+
+    {
+        FakeDevice litDevice;
+        std::array<uint32_t, 4> forwardPlusFragment = {0x07230203};
+        auto litDesc = billboardDesc;
+        litDesc.forwardPlusFragmentShader = {forwardPlusFragment.data(), forwardPlusFragment.size()};
+        litDesc.semantics.receiveSceneLighting = true;
+        litDesc.semantics.softParticles = true;
+        litDesc.semantics.softDistance = 0.25f;
+        litDesc.semantics.sortMode = particle::ParticleSortMode::BackToFront;
+        litDesc.material->SetFloat("softness", 0.3f);
+        litDesc.deletionQueue = nullptr;
+        particle::ParticleGpuBillboardRenderer litBillboard;
+        assert(litBillboard.Create(litDevice, litDesc));
+
+        auto forwardPlusPass = forwardPass;
+        forwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
+        GraphicsTrace litTrace;
+        const rhi::GraphicsCommandEncoder litEncoder(&litTrace, &graphicsDispatch);
+        const rhi::TextureViewHandle litSceneDepth{902, 1};
+        assert(!litBillboard.RecordDraw(litEncoder, firstTarget, forwardPlusPass, indirectBuffer, view, {},
+                                        litSceneDepth));
+        const particle::GpuParticleForwardPlusBindings lighting{{900, 1}, {901, 1}};
+        assert(litBillboard.RecordDraw(litEncoder, firstTarget, forwardPlusPass, indirectBuffer, view, {},
+                                       litSceneDepth, true, lighting));
+        assert(litDevice.graphicsPipelineDescs.size() == 1);
+        const auto &litPipeline = litDevice.graphicsPipelineDescs.front();
+        assert(litPipeline.bindingLayoutCount == 2 && litPipeline.bindingLayouts[1] == lighting.layout);
+        assert(litTrace.groupSets == std::vector<uint32_t>({0, 1}) && litTrace.groups.back() == lighting.group);
+        assert(litTrace.constants.size() == 1 && litTrace.constants[0].lightingControl[0] == 1.0f &&
+               litTrace.constants[0].lightingControl[1] == 1.0f && litTrace.constants[0].lightingControl[2] == 0.3f &&
+               litTrace.constants[0].cameraUp[3] == 1.0f && litTrace.constants[0].cameraRight[3] == 0.25f);
+        litBillboard.Destroy();
+    }
 
     FakeDevice softDevice;
     auto softDesc = billboardDesc;
@@ -1213,6 +1252,32 @@ int main()
         assert(!meshRenderer.IsValid() && meshDevice.bufferReleases == 0 && meshDevice.shaderReleases == 3 &&
                meshDevice.layoutReleases == 1 && meshDevice.groupReleases == 1 &&
                meshDevice.graphicsPipelineReleases == 2);
+
+        {
+            FakeDevice litMeshDevice;
+            std::array<uint32_t, 4> meshForwardPlusFragment = {0x07230203};
+            auto litMeshDesc = meshDesc;
+            litMeshDesc.forwardPlusFragmentShader = {meshForwardPlusFragment.data(), meshForwardPlusFragment.size()};
+            litMeshDesc.semantics.receiveSceneLighting = true;
+            particle::ParticleGpuMeshRenderer litMeshRenderer;
+            assert(litMeshRenderer.Create(litMeshDevice, litMeshDesc));
+
+            auto forwardPlusPass = forwardPass;
+            forwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
+            GraphicsTrace litMeshTrace;
+            const rhi::GraphicsCommandEncoder litMeshEncoder(&litMeshTrace, &meshGraphicsDispatch);
+            assert(!litMeshRenderer.RecordDraw(litMeshEncoder, firstTarget, forwardPlusPass, indirectBuffer, view));
+            const particle::GpuParticleForwardPlusBindings lighting{{910, 1}, {911, 1}};
+            assert(litMeshRenderer.RecordDraw(litMeshEncoder, firstTarget, forwardPlusPass, indirectBuffer, view, {},
+                                              {}, true, lighting));
+            assert(litMeshDevice.graphicsPipelineDescs.size() == 1);
+            const auto &litMeshPipeline = litMeshDevice.graphicsPipelineDescs.front();
+            assert(litMeshPipeline.bindingLayoutCount == 2 && litMeshPipeline.bindingLayouts[1] == lighting.layout);
+            assert(litMeshTrace.groupSets == std::vector<uint32_t>({0, 1}) &&
+                   litMeshTrace.groups.back() == lighting.group);
+            assert(litMeshTrace.constants.size() == 1 && litMeshTrace.constants[0].lightingControl[0] == 1.0f);
+            litMeshRenderer.Destroy();
+        }
 
         auto invalidMesh = std::make_shared<InxMesh>("invalid-particle-mesh");
         invalidMesh->SetData(std::vector<Vertex>(1), {1}, {});
