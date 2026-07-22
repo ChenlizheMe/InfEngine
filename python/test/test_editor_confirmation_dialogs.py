@@ -297,6 +297,9 @@ def test_native_modals_use_a_dedicated_main_window_child_viewport():
     assert "modalClass.ParentViewportId = ImGui::GetMainViewport()->ID" in implementation
     assert "ImGuiViewportFlags_NoAutoMerge" in implementation
     assert "ImGuiViewportFlags_NoTaskBarIcon" in implementation
+    assert "ImGuiViewportFlags_TopMost" in implementation
+    assert "viewport->PlatformWindowCreated" in implementation
+    assert "window->StateStorage.SetBool(nativeRaiseState, false)" in implementation
 
 
 def test_native_modal_is_promoted_after_late_dock_focus_processing():
@@ -317,8 +320,9 @@ def test_native_modal_is_promoted_after_late_dock_focus_processing():
 
     promote_end = source.index("void InxGUI::RecordCommand", promote_begin)
     promote_implementation = source[promote_begin:promote_end]
+    assert "ImGui::FocusWindow(modal)" in promote_implementation
     assert "ImGui::BringWindowToFocusFront(modal->RootWindow)" in promote_implementation
-    assert "ImGui::BringWindowToDisplayFront(modal->RootWindowDockTree)" in promote_implementation
+    assert "ImGui::BringWindowToDisplayFront(modal)" in promote_implementation
 
 
 import Infernux.lib as native

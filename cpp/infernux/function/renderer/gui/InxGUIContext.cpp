@@ -842,7 +842,8 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
     modalClass.ClassId = ImHashStr("Infernux.GlobalModal");
     modalClass.ParentViewportId = ImGui::GetMainViewport()->ID;
     modalClass.ViewportFlagsOverrideSet =
-        ImGuiViewportFlags_NoAutoMerge | ImGuiViewportFlags_NoTaskBarIcon | ImGuiViewportFlags_NoDecoration;
+        ImGuiViewportFlags_NoAutoMerge | ImGuiViewportFlags_NoTaskBarIcon | ImGuiViewportFlags_NoDecoration |
+        ImGuiViewportFlags_TopMost;
     ImGui::SetNextWindowClass(&modalClass);
 
     const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr, static_cast<ImGuiWindowFlags>(flags));
@@ -854,16 +855,24 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
         ImGui::BringWindowToDisplayFront(window);
         ImGui::BringWindowToFocusFront(window->RootWindow);
 
-        // Multi-viewport windows are separate native SDL windows, so ImGui's
-        // display order alone cannot raise a modal above an undocked editor.
-        // Give the modal focus when it appears and ask the platform backend to
-        // raise the native window that owns it.
-        if (window->Appearing) {
-            ImGui::FocusWindow(window);
+        // Keep the modal as the sole ImGui focus owner for its whole lifetime.
+        // A detached panel may otherwise regain focus from the title-bar close
+        // interaction on the following frame and cover the confirmation.
+        ImGui::FocusWindow(window);
+
+        // A new platform viewport is created after the first ImGui frame. The
+        // old Appearing-only check therefore ran too early and never raised the
+        // native modal. Remember the request until the viewport actually exists.
+        static const ImGuiID nativeRaiseState = ImHashStr("Infernux.GlobalModal.NativeRaiseComplete");
+        if (window->Appearing)
+            window->StateStorage.SetBool(nativeRaiseState, false);
+        ImGuiViewport *viewport = window->Viewport;
+        if (viewport != nullptr && viewport->PlatformWindowCreated &&
+            !window->StateStorage.GetBool(nativeRaiseState, false)) {
             ImGuiPlatformIO &platformIO = ImGui::GetPlatformIO();
-            ImGuiViewport *viewport = window->Viewport;
-            if (viewport != nullptr && viewport->PlatformWindowCreated && platformIO.Platform_SetWindowFocus != nullptr)
+            if (platformIO.Platform_SetWindowFocus != nullptr)
                 platformIO.Platform_SetWindowFocus(viewport);
+            window->StateStorage.SetBool(nativeRaiseState, true);
         }
         RecordSemanticWindow("modal", title, title);
     }

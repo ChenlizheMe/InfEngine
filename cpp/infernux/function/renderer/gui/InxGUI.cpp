@@ -662,8 +662,9 @@ void InxGUI::PromoteActiveModal()
     // This is deliberately the final window-order operation before
     // ImGui::Render(). It makes modal ordering independent of renderable
     // registration order and of floating/docked panel focus transitions.
+    ImGui::FocusWindow(modal);
     ImGui::BringWindowToFocusFront(modal->RootWindow);
-    ImGui::BringWindowToDisplayFront(modal->RootWindowDockTree);
+    ImGui::BringWindowToDisplayFront(modal);
 }
 
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
