@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 
 from Infernux.graph.registry import COMMON_NODE_REGISTRY, PortDirection, PortKind
@@ -52,6 +53,8 @@ class ParticleOutputDescriptor:
     material: AssetReference
     receive_scene_lighting: bool
     receive_shadows: bool
+    soft_particles: bool
+    soft_distance: float
     sort_mode: str
 
 
@@ -164,6 +167,8 @@ class ParticleGraphCompiler:
                             "material": output.material.to_dict(),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
+                            "soft_particles": output.soft_particles,
+                            "soft_distance": output.soft_distance,
                             "sort": output.sort_mode,
                         }
                         for output in emitter.render_plan.outputs
@@ -188,6 +193,8 @@ class ParticleGraphCompiler:
                 AssetReference.from_dict(operation.parameter_dict()["material"]),
                 bool(operation.parameter_dict()["receive_scene_lighting"]),
                 bool(operation.parameter_dict()["receive_shadows"]),
+                bool(operation.parameter_dict()["soft_particles"]),
+                float(operation.parameter_dict()["soft_distance"]),
                 str(operation.parameter_dict()["sort"]),
             )
             for operation in rendering.operations
@@ -222,6 +229,18 @@ class ParticleGraphCompiler:
             raise ParticleCompileError(
                 f"particle output {invalid_shadows.output_id!r} cannot receive shadows "
                 "while scene lighting is disabled"
+            )
+        invalid_soft_distance = next(
+            (
+                output
+                for output in outputs
+                if not math.isfinite(output.soft_distance) or output.soft_distance <= 0.0
+            ),
+            None,
+        )
+        if invalid_soft_distance is not None:
+            raise ParticleCompileError(
+                f"particle output {invalid_soft_distance.output_id!r} soft distance must be finite and positive"
             )
         return ParticleEmitterHIR(
             emitter.stable_id,

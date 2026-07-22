@@ -17,6 +17,7 @@ layout(push_constant) uniform ParticleViewConstants {
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
+    vec4 depth_reconstruct;
 } particleView;
 
 layout(location = 0) out vec3 v_WorldPos;

@@ -13,6 +13,7 @@ from Infernux.engine.path_utils import path_key, resolved_path
 from .asset import ParticleGraphAsset
 from .hir import ParticleGraphCompiler, ParticleProgramHIR
 from .kernel_ir import ParticleKernelLowerer, ParticleKernelProgram
+from .runtime_metadata import decode_particle_runtime_metadata
 from .gpu_glsl_backend import (
     GpuParticleGlslLowerer,
     compile_gpu_particle_spirv,
@@ -267,6 +268,9 @@ class ParticleArtifactRegistry:
             revision = payload.get("revision")
             if type(revision) is not int or revision <= 0:
                 return None
+            runtime_metadata = decode_particle_runtime_metadata(payload["hir"])
+            if runtime_metadata.behavior_hash != payload["behavior_hash"]:
+                return None
             kernel_program = ParticleKernelProgram.from_dict(payload["kernel_ir"])
             if kernel_program.source_behavior_hash != payload["behavior_hash"]:
                 return None
@@ -352,6 +356,8 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "material": output.material.to_dict(),
                         "receive_scene_lighting": output.receive_scene_lighting,
                         "receive_shadows": output.receive_shadows,
+                        "soft_particles": output.soft_particles,
+                        "soft_distance": output.soft_distance,
                         "sort_mode": output.sort_mode,
                     }
                     for output in emitter.render_plan.outputs

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -144,6 +146,8 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
                         "material": AssetReference(guid="six-way-smoke-guid").to_dict(),
                         "receive_scene_lighting": True,
                         "receive_shadows": True,
+                        "soft_particles": True,
+                        "soft_distance": 0.35,
                         "sort": "back_to_front",
                     },
                 ),
@@ -164,6 +168,8 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
     assert smoke.render_plan.outputs[0].material == AssetReference(guid="six-way-smoke-guid")
     assert smoke.render_plan.outputs[0].receive_scene_lighting is True
     assert smoke.render_plan.outputs[0].receive_shadows is True
+    assert smoke.render_plan.outputs[0].soft_particles is True
+    assert smoke.render_plan.outputs[0].soft_distance == pytest.approx(0.35)
 
 
 def test_particle_graph_compiler_rejects_rendering_without_output():
@@ -655,3 +661,43 @@ def test_particle_aot_failure_preserves_last_known_good_and_cache_hit(tmp_path, 
 
     assert restored.source_hash == current.source_hash
     assert restored.behavior_hash == current.behavior_hash
+
+
+def test_particle_aot_rebuilds_persisted_artifact_with_stale_hir_contract(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "Smoke.particlegraph"
+    source.parent.mkdir(parents=True)
+    graph = ParticleGraphAsset(stable_id="stale-hir-smoke")
+    source.write_text(
+        json.dumps(graph.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "Infernux.engine.project_context.get_project_root", lambda: str(project)
+    )
+
+    ParticleArtifactRegistry.clear()
+    current = ParticleArtifactRegistry.compile_path(str(source))
+    artifact_path = Path(current.artifact_path)
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    output = payload["hir"]["emitters"][0]["render_plan"][0]
+    output.pop("soft_particles")
+    output.pop("soft_distance")
+    artifact_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    ParticleArtifactRegistry.clear()
+    rebuilt = ParticleArtifactRegistry.compile_path(str(source))
+
+    rebuilt_output = rebuilt.hir["emitters"][0]["render_plan"][0]
+    assert rebuilt_output["soft_particles"] is False
+    assert rebuilt_output["soft_distance"] == 1.0
+    persisted_output = json.loads(artifact_path.read_text(encoding="utf-8"))["hir"][
+        "emitters"
+    ][0]["render_plan"][0]
+    assert persisted_output["soft_particles"] is False
+    assert persisted_output["soft_distance"] == 1.0

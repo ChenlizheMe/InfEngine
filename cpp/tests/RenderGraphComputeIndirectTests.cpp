@@ -2111,6 +2111,34 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Present pass did not report its typed side-effect root"))
         return false;
 
+    RenderGraph sampledDepthGraph;
+    sampledDepthGraph.Initialize(&resources.context, &resources.pipelines);
+    ResourceHandle sceneDepth;
+    ResourceHandle softParticleColor;
+    sampledDepthGraph.AddPass("WriteSceneDepth", [&](PassBuilder &builder) {
+        sceneDepth = builder.CreateDepthStencil("SoftParticleDepth", 8, 8, VK_FORMAT_D32_SFLOAT);
+        sceneDepth = builder.WriteDepth(sceneDepth);
+        builder.SetRenderArea(8, 8);
+        builder.SetClearDepth(1.0f, 0);
+        return [](RenderContext &) {};
+    });
+    sampledDepthGraph.AddPass("ReadDepthAndSampleForParticles", [&](PassBuilder &builder) {
+        builder.ReadDepth(sceneDepth);
+        builder.ReadSampledDepth(sceneDepth, infernux::rhi::PipelineStage::FragmentShader);
+        softParticleColor = builder.CreateTexture("SoftParticleColor", 8, 8, VK_FORMAT_R8G8B8A8_UNORM);
+        softParticleColor = builder.WriteColor(softParticleColor);
+        builder.SetRenderArea(8, 8);
+        return [](RenderContext &) {};
+    });
+    sampledDepthGraph.SetOutput(softParticleColor);
+    if (!Require(sampledDepthGraph.Compile(),
+                 "Read-only depth attachment could not also be sampled by a soft-particle pass"))
+        return false;
+    if (!Require(sampledDepthGraph.GetExecutionPassNames() ==
+                     std::vector<std::string>{"WriteSceneDepth", "ReadDepthAndSampleForParticles"},
+                 "Soft-particle scene-depth dependency did not retain its producer"))
+        return false;
+
     // Two logical versions share one physical image. A final pass cannot read
     // both sides of an overwrite without a copy, because it would need to run
     // both before and after that overwrite. Reject the cycle instead of

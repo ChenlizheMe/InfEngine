@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Mapping
 
 from Infernux.graph.types import AssetReference
@@ -128,6 +129,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         "material",
         "receive_scene_lighting",
         "receive_shadows",
+        "soft_particles",
+        "soft_distance",
         "sort_mode",
     }:
         raise ParticleRuntimeMetadataError(f"{location} is invalid")
@@ -138,6 +141,10 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         or not value["output_type"]
         or type(value["receive_scene_lighting"]) is not bool
         or type(value["receive_shadows"]) is not bool
+        or type(value["soft_particles"]) is not bool
+        or type(value["soft_distance"]) not in {int, float}
+        or not math.isfinite(float(value["soft_distance"]))
+        or float(value["soft_distance"]) <= 0.0
         or type(value["sort_mode"]) is not str
     ):
         raise ParticleRuntimeMetadataError(f"{location} fields are invalid")
@@ -147,6 +154,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         AssetReference.from_dict(value["material"]),
         value["receive_scene_lighting"],
         value["receive_shadows"],
+        value["soft_particles"],
+        float(value["soft_distance"]),
         value["sort_mode"],
     )
 

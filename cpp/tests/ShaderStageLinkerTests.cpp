@@ -446,12 +446,16 @@ void surface(out SurfaceData surface)
     assert(particleForward.generatedFragmentSource.find("s.alpha *= v_ParticleAlpha;") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 2") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 14") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("set = 0, binding = 15") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("_inxParticleEyeDepth") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("sceneDepth - particleDepth") != std::string::npos);
     assert(particleForward.generatedVertexSource.find("set = 0, binding = 1") != std::string::npos);
     assert(particleForward.generatedVertexSource.find("draw_indices[gl_InstanceIndex]") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("_Globals") == std::string::npos);
     const auto particleArtifact = particleCompilation.CreateRuntimeArtifact();
     assert(particleArtifact.IsValid());
     assert(particleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
+    assert(particleArtifact.usesParticleSceneDepthBinding);
     assert(particleArtifact.variants.size() == 1);
 
     const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;

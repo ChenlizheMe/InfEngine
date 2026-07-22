@@ -161,6 +161,8 @@ PARTICLE_NODE_DEFINITIONS = (
             PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
+            PropertyDef("soft_particles", TypeRef(ValueType.BOOL), False),
+            PropertyDef("soft_distance", TypeRef(ValueType.F32), 1.0),
             PropertyDef("sort", TypeRef(ValueType.STRING), "back_to_front"),
         ),
         {"particle_hir": "render.sprite"},

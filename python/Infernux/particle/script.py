@@ -59,6 +59,8 @@ class ParticleStream:
         material: AssetReference = AssetReference(),
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,
+        soft_particles: bool = False,
+        soft_distance: float = 1.0,
         sort: str = "back_to_front",
     ) -> None: ...
 

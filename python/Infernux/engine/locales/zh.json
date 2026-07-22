@@ -102,6 +102,8 @@
   "particle_graph_editor.property_material": "材质",
   "particle_graph_editor.property_receive_scene_lighting": "接受场景光照",
   "particle_graph_editor.property_receive_shadows": "接受阴影",
+  "particle_graph_editor.property_soft_particles": "软粒子",
+  "particle_graph_editor.property_soft_distance": "交界淡出距离",
   "particle_graph_editor.property_sort": "排序方式",
   "particle_graph_editor.property_interface": "数据接口",
   "particle_graph_editor.property_channel": "通道",

@@ -473,6 +473,8 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     assert engine._gpu_particle_output_semantics(emitter_id, secondary_output_id) == {
         "receive_scene_lighting": False,
         "receive_shadows": False,
+        "soft_particles": False,
+        "soft_distance": 1.0,
         "sort_mode": "back_to_front",
     }
     assert (

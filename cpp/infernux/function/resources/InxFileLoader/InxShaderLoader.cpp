@@ -32,6 +32,7 @@ ShaderProgramStageMask ToRuntimeStageMask(ShaderStageVisibility visibility) noex
 void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderProgramArtifact &target)
 {
     target.domain = source.domain;
+    target.usesParticleSceneDepthBinding = source.domain == ShaderProgramDomain::ParticleSprite;
     target.shadingModel = source.shadingModel;
     target.materialBufferSize = source.materialBufferSize;
     target.alphaClipThresholdOffset = source.alphaClipThresholdOffset;

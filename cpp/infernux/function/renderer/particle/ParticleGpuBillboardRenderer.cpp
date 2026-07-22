@@ -149,6 +149,12 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_material = desc.material;
     m_shaderProgram = desc.shaderProgram;
     m_fallbackMaterial = desc.fallbackMaterial;
+    m_semantics = desc.semantics;
+    m_supportsSceneDepth = !desc.shaderProgram || desc.shaderProgram->usesParticleSceneDepthBinding;
+    if (!m_semantics.IsValid() || (m_semantics.softParticles && !m_supportsSceneDepth)) {
+        Destroy();
+        return false;
+    }
     m_textureResolver = desc.textureResolver;
     m_textureVersionResolver = desc.textureVersionResolver;
     m_deletionQueue = desc.deletionQueue;
@@ -159,12 +165,11 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_fragmentShader = linkedVariant
                            ? device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()})
                            : device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
-    if (desc.vertexShader.words && desc.vertexShader.wordCount &&
-        desc.pickingFragmentShader.words && desc.pickingFragmentShader.wordCount) {
-        m_pickingVertexShader =
-            device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
-        m_pickingFragmentShader = device.CreateShaderModule(
-            {desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
+    if (desc.vertexShader.words && desc.vertexShader.wordCount && desc.pickingFragmentShader.words &&
+        desc.pickingFragmentShader.wordCount) {
+        m_pickingVertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
+        m_pickingFragmentShader =
+            device.CreateShaderModule({desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
     }
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid()) {
         Destroy();
@@ -211,6 +216,26 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
                                                        rhi::ShaderStage::Fragment, 1};
         m_textures.push_back({1, rhi::ShaderStage::Fragment, "texSampler"});
     }
+    if (m_supportsSceneDepth && layoutDesc.entryCount >= rhi::BindingLayoutDesc::MaxEntries) {
+        Destroy();
+        return false;
+    }
+    if (m_supportsSceneDepth)
+        layoutDesc.entries[layoutDesc.entryCount++] = {15, rhi::BindingType::CombinedTextureSampler,
+                                                       rhi::ShaderStage::Fragment, 1};
+    if (m_supportsSceneDepth && m_textures.empty()) {
+        if (!m_textureResolver) {
+            Destroy();
+            return false;
+        }
+        m_sceneDepthFallback = m_textureResolver("white", "_InxParticleSceneDepth");
+        if (m_sceneDepthFallback.status != GpuBillboardTextureStatus::Ready ||
+            !m_sceneDepthFallback.texture.IsValid() || !m_sceneDepthFallback.sampler.IsValid() ||
+            !m_sceneDepthFallback.keepAlive) {
+            Destroy();
+            return false;
+        }
+    }
     m_usesTexture = !m_textures.empty();
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
@@ -241,6 +266,10 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
                 m_device->Release(binding.sampler);
             }
         }
+        if (m_sceneDepthFallback.releaseHandles) {
+            m_device->Release(m_sceneDepthFallback.texture);
+            m_device->Release(m_sceneDepthFallback.sampler);
+        }
         m_device->Release(m_materialBuffer);
         m_device->Release(m_layout);
         m_device->Release(m_fragmentShader);
@@ -252,6 +281,7 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_material.reset();
     m_shaderProgram.reset();
     m_fallbackMaterial = {};
+    m_semantics = {};
     m_textureResolver = {};
     m_textureVersionResolver = {};
     m_deletionQueue = nullptr;
@@ -266,9 +296,11 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_viewGroups.clear();
     m_materialBuffer = {};
     m_textures.clear();
+    m_sceneDepthFallback = {};
     m_materialVersion = 0;
     m_materialVersionInitialized = false;
     m_usesTexture = false;
+    m_supportsSceneDepth = false;
     m_pipelines.clear();
 }
 
@@ -382,7 +414,8 @@ bool ParticleGpuBillboardRenderer::RefreshMaterialBuffer(bool force)
 }
 
 rhi::BindGroupHandle ParticleGpuBillboardRenderer::CreateBindGroup(const std::vector<TextureBindingState> &textures,
-                                                                   rhi::BufferHandle renderIndices) const
+                                                                   rhi::BufferHandle renderIndices,
+                                                                   rhi::TextureViewHandle sceneDepth) const
 {
     if (!m_device || !m_layout.IsValid())
         return {};
@@ -406,6 +439,20 @@ rhi::BindGroupHandle ParticleGpuBillboardRenderer::CreateBindGroup(const std::ve
         groupDesc.textures[groupDesc.textureCount++] = {binding.binding, rhi::BindingType::CombinedTextureSampler,
                                                         binding.texture, binding.sampler, false};
     }
+    if (!m_supportsSceneDepth)
+        return m_device->CreateBindGroup(groupDesc);
+    const rhi::TextureViewHandle fallbackTexture =
+        !textures.empty() ? textures.front().texture : m_sceneDepthFallback.texture;
+    const rhi::SamplerHandle fallbackSampler =
+        !textures.empty() ? textures.front().sampler : m_sceneDepthFallback.sampler;
+    const bool readsSceneDepth = sceneDepth.IsValid();
+    const rhi::TextureViewHandle depthTexture = readsSceneDepth ? sceneDepth : fallbackTexture;
+    if (!depthTexture.IsValid() || !fallbackSampler.IsValid() ||
+        groupDesc.textureCount >= rhi::BindGroupDesc::MaxTextureBindings) {
+        return {};
+    }
+    groupDesc.textures[groupDesc.textureCount++] = {15, rhi::BindingType::CombinedTextureSampler, depthTexture,
+                                                    fallbackSampler, readsSceneDepth};
     return m_device->CreateBindGroup(groupDesc);
 }
 
@@ -427,17 +474,20 @@ void ParticleGpuBillboardRenderer::RetireViewBindGroups()
     m_viewGroups.clear();
 }
 
-rhi::BindGroupHandle ParticleGpuBillboardRenderer::ResolveBindGroup(rhi::BufferHandle renderIndices)
+rhi::BindGroupHandle ParticleGpuBillboardRenderer::ResolveBindGroup(rhi::BufferHandle renderIndices,
+                                                                    rhi::TextureViewHandle sceneDepth)
 {
-    if (!UsesLinkedProgram() || !renderIndices.IsValid() || renderIndices == m_renderIndices)
+    if ((!UsesLinkedProgram() || !renderIndices.IsValid() || renderIndices == m_renderIndices) && !sceneDepth.IsValid())
         return m_group;
-    const auto existing = std::find_if(m_viewGroups.begin(), m_viewGroups.end(),
-                                       [&](const auto &entry) { return entry.renderIndices == renderIndices; });
+    const auto existing = std::find_if(m_viewGroups.begin(), m_viewGroups.end(), [&](const auto &entry) {
+        return entry.renderIndices == renderIndices && entry.sceneDepth == sceneDepth;
+    });
     if (existing != m_viewGroups.end())
         return existing->group;
-    const auto group = CreateBindGroup(m_textures, renderIndices);
+    const auto resolvedIndices = UsesLinkedProgram() && renderIndices.IsValid() ? renderIndices : m_renderIndices;
+    const auto group = CreateBindGroup(m_textures, resolvedIndices, sceneDepth);
     if (group.IsValid())
-        m_viewGroups.push_back({renderIndices, group});
+        m_viewGroups.push_back({renderIndices, sceneDepth, group});
     return group;
 }
 
@@ -534,19 +584,24 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
                                               rhi::RenderTargetLayoutHandle renderTargetLayout,
                                               const MaterialPassPipelineDescriptor &pass,
                                               rhi::BufferHandle indirectArguments,
-                                              const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices)
+                                              const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices,
+                                              rhi::TextureViewHandle sceneDepth)
 {
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || !RefreshMaterialBuffer(false) ||
         !RefreshTextureBindings(false))
         return false;
+    if (m_semantics.softParticles && (!sceneDepth.IsValid() || pass.samples != rhi::SampleCount::One))
+        return false;
     const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
     if (!pipeline.IsValid())
         return false;
-    const auto group = ResolveBindGroup(renderIndices);
+    const auto group = ResolveBindGroup(renderIndices, sceneDepth);
     if (!group.IsValid())
         return false;
     auto constants = view;
     constants.materialTint = UsesLinkedProgram() ? std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f} : ResolveMaterialTint();
+    constants.cameraRight[3] = m_semantics.softDistance;
+    constants.cameraUp[3] = m_semantics.softParticles ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
@@ -555,17 +610,15 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     return true;
 }
 
-bool ParticleGpuBillboardRenderer::RecordPickingDraw(
-    const rhi::GraphicsCommandEncoder &encoder,
-    rhi::RenderTargetLayoutHandle renderTargetLayout,
-    const MaterialPassPipelineDescriptor &pass,
-    rhi::BufferHandle indirectArguments,
-    const GpuBillboardViewConstants &view,
-    uint64_t ownerObjectId,
-    rhi::BufferHandle renderIndices)
+bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
+                                                     rhi::RenderTargetLayoutHandle renderTargetLayout,
+                                                     const MaterialPassPipelineDescriptor &pass,
+                                                     rhi::BufferHandle indirectArguments,
+                                                     const GpuBillboardViewConstants &view, uint64_t ownerObjectId,
+                                                     rhi::BufferHandle renderIndices)
 {
-    if (!IsValid() || !m_pickingVertexShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
-        ownerObjectId == 0 || !encoder.IsValid() || !indirectArguments.IsValid())
+    if (!IsValid() || !m_pickingVertexShader.IsValid() || !m_pickingFragmentShader.IsValid() || ownerObjectId == 0 ||
+        !encoder.IsValid() || !indirectArguments.IsValid())
         return false;
     const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
     const auto group = ResolveBindGroup(renderIndices);
@@ -581,8 +634,8 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(
     std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
-    encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment,
-                          sizeof(constants), &constants);
+    encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
+                          &constants);
     encoder.DrawIndirect(indirectArguments);
     return true;
 }
@@ -595,9 +648,7 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::Picking))
         return {};
     const bool picking = pass.target == ShaderCompileTarget::Picking;
-    const auto materialState = picking
-                                   ? GpuBillboardMaterialState{3000, false, true, true}
-                                   : ResolveMaterialState();
+    const auto materialState = picking ? GpuBillboardMaterialState{3000, false, true, true} : ResolveMaterialState();
     const uint8_t pipelineStateSignature = PipelineStateSignature(materialState);
     for (const auto &entry : m_pipelines) {
         if (entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&

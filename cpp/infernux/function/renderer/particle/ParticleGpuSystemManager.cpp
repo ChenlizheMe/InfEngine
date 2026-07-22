@@ -270,7 +270,8 @@ struct ParticleGpuSystemManager::Impl
     [[nodiscard]] std::shared_ptr<ParticleGpuBillboardRenderer>
     CreateOutputRenderer(const Emitter &emitter, const std::shared_ptr<InxMaterial> &material,
                          const GpuBillboardMaterialState &fallbackMaterial,
-                         const std::shared_ptr<const ShaderProgramArtifact> &shaderProgram) const
+                         const std::shared_ptr<const ShaderProgramArtifact> &shaderProgram,
+                         const ParticleOutputSemantics &semantics) const
     {
         auto renderer = std::make_shared<ParticleGpuBillboardRenderer>();
         GpuBillboardRendererDesc rendererDesc;
@@ -283,6 +284,7 @@ struct ParticleGpuSystemManager::Impl
         rendererDesc.renderIndices = emitter.runtime->RenderIndexBuffer();
         rendererDesc.material = material;
         rendererDesc.fallbackMaterial = fallbackMaterial;
+        rendererDesc.semantics = semantics;
         rendererDesc.textureResolver = textureResolver;
         rendererDesc.textureVersionResolver = textureVersionResolver;
         rendererDesc.deletionQueue = deletionQueue;
@@ -406,8 +408,7 @@ struct ParticleGpuSystemManager::Impl
                 return {};
             }
             if (!output.semantics.IsValid()) {
-                SetError(error, "GPU particle output '" + output.stableId +
-                                    "' cannot receive shadows while scene lighting is disabled");
+                SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
                 return {};
             }
             if (output.semantics.sortMode != ParticleSortMode::None && !output.shaderProgram) {
@@ -423,8 +424,8 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle view-culling kernels are unavailable");
                 return {};
             }
-            auto renderer =
-                CreateOutputRenderer(*emitter, output.material, output.fallbackMaterial, output.shaderProgram);
+            auto renderer = CreateOutputRenderer(*emitter, output.material, output.fallbackMaterial,
+                                                 output.shaderProgram, output.semantics);
             if (!renderer) {
                 SetError(error,
                          "failed to create GPU particle billboard renderer for output '" + output.stableId + "'");
@@ -812,7 +813,8 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
                          "GPU particle sorted output '" + output.stableId + "' cannot use a legacy billboard material");
                 return false;
             }
-            auto renderer = m_impl->CreateOutputRenderer(*emitter, material, output.fallbackMaterial, shaderProgram);
+            auto renderer = m_impl->CreateOutputRenderer(*emitter, material, output.fallbackMaterial, shaderProgram,
+                                                         output.semantics);
             if (!renderer) {
                 SetError(error, "failed to refresh GPU particle material for output '" + output.stableId + "'");
                 return false;

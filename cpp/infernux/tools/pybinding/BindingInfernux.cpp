@@ -271,8 +271,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         if (!py::isinstance<py::dict>(item))
             throw std::invalid_argument("GPU particle outputs must contain dictionaries");
         const py::dict output = py::reinterpret_borrow<py::dict>(item);
-        for (const char *field :
-             {"id", "stable_id", "material", "receive_scene_lighting", "receive_shadows", "sort_mode"}) {
+        for (const char *field : {"id", "stable_id", "material", "receive_scene_lighting", "receive_shadows",
+                                  "soft_particles", "soft_distance", "sort_mode"}) {
             if (!output.contains(field))
                 throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
         }
@@ -281,6 +281,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         decoded.stableId = py::cast<std::string>(output["stable_id"]);
         decoded.semantics.receiveSceneLighting = py::cast<bool>(output["receive_scene_lighting"]);
         decoded.semantics.receiveShadows = py::cast<bool>(output["receive_shadows"]);
+        decoded.semantics.softParticles = py::cast<bool>(output["soft_particles"]);
+        decoded.semantics.softDistance = py::cast<float>(output["soft_distance"]);
         decoded.semantics.sortMode = DecodeParticleSortMode(py::cast<std::string>(output["sort_mode"]));
         const py::dict material = py::cast<py::dict>(output["material"]);
         for (const char *field : {"render_queue", "blend_enabled", "depth_test_enabled", "depth_write_enabled"}) {
@@ -2141,6 +2143,8 @@ PYBIND11_MODULE(_Infernux, m)
                 py::dict result;
                 result["receive_scene_lighting"] = semantics->receiveSceneLighting;
                 result["receive_shadows"] = semantics->receiveShadows;
+                result["soft_particles"] = semantics->softParticles;
+                result["soft_distance"] = semantics->softDistance;
                 result["sort_mode"] = ParticleSortModeName(semantics->sortMode);
                 return result;
             },

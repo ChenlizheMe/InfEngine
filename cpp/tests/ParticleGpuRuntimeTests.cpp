@@ -855,9 +855,10 @@ int main()
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({7, 2}));
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({7, 3}));
     assert(device.groupBufferCounts == std::vector<uint32_t>({7, 1}));
-    assert(device.groupTextureCounts == std::vector<uint32_t>({0, 1}));
+    assert(device.groupTextureCounts == std::vector<uint32_t>({0, 2}));
+    assert(device.bindGroups.back().textures[1].binding == 15 && !device.bindGroups.back().textures[1].depthRead);
     assert(textureResolveCount == 1);
 
     MaterialPassPipelineDescriptor forwardPass;
@@ -927,9 +928,35 @@ int main()
     billboard.Destroy();
     assert(!billboard.IsValid() && device.graphicsPipelineReleases == 2);
 
+    FakeDevice softDevice;
+    auto softDesc = billboardDesc;
+    softDesc.semantics.softParticles = true;
+    softDesc.semantics.softDistance = 0.5f;
+    softDesc.deletionQueue = nullptr;
+    particle::ParticleGpuBillboardRenderer softBillboard;
+    assert(softBillboard.Create(softDevice, softDesc) && softBillboard.RequiresSceneDepth());
+    const rhi::TextureViewHandle sceneDepthView{990, 1};
+    assert(
+        !softBillboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, sceneDepthView));
+    auto singleSamplePass = forwardPass;
+    singleSamplePass.samples = rhi::SampleCount::One;
+    assert(!softBillboard.RecordDraw(graphicsEncoder, firstTarget, singleSamplePass, indirectBuffer, view));
+    GraphicsTrace softTrace;
+    const rhi::GraphicsCommandEncoder softEncoder(&softTrace, &graphicsDispatch);
+    assert(
+        softBillboard.RecordDraw(softEncoder, firstTarget, singleSamplePass, indirectBuffer, view, {}, sceneDepthView));
+    assert(softDevice.bindGroups.size() == 2 && softDevice.bindGroups.back().textureCount == 2);
+    assert(softDevice.bindGroups.back().textures[1].binding == 15 &&
+           softDevice.bindGroups.back().textures[1].texture == sceneDepthView &&
+           softDevice.bindGroups.back().textures[1].depthRead);
+    assert(softTrace.constants.size() == 1 && softTrace.constants[0].cameraRight[3] == 0.5f &&
+           softTrace.constants[0].cameraUp[3] == 1.0f);
+    softBillboard.Destroy();
+
     auto linkedArtifact = std::make_shared<ShaderProgramArtifact>();
     linkedArtifact->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 7};
     linkedArtifact->domain = ShaderProgramDomain::ParticleSprite;
+    linkedArtifact->usesParticleSceneDepthBinding = true;
     linkedArtifact->materialBufferSize = 32;
     linkedArtifact->compatibilitySignature = 99;
     linkedArtifact->properties = {
@@ -985,16 +1012,17 @@ int main()
     assert(linkedDevice.shaderCreates == 2 && linkedDevice.buffers.size() == 1);
     assert(linkedDevice.buffers[0].byteSize == 32 && linkedDevice.buffers[0].usage == rhi::BufferUsageFlags::Uniform &&
            linkedDevice.buffers[0].memory == rhi::BufferMemory::Upload);
-    assert(linkedDevice.layouts.size() == 1 && linkedDevice.layouts[0].entryCount == 5);
+    assert(linkedDevice.layouts.size() == 1 && linkedDevice.layouts[0].entryCount == 6);
     assert(linkedDevice.layouts[0].entries[0].binding == 0 && linkedDevice.layouts[0].entries[1].binding == 1 &&
            linkedDevice.layouts[0].entries[2].binding == 2 && linkedDevice.layouts[0].entries[3].binding == 3 &&
-           linkedDevice.layouts[0].entries[4].binding == 14);
+           linkedDevice.layouts[0].entries[4].binding == 14 && linkedDevice.layouts[0].entries[5].binding == 15);
     assert(linkedDevice.bindGroups.size() == 1 && linkedDevice.bindGroups[0].bufferCount == 3 &&
-           linkedDevice.bindGroups[0].textureCount == 2);
+           linkedDevice.bindGroups[0].textureCount == 3);
     assert(linkedDevice.bindGroups[0].buffers[0].binding == 0 && linkedDevice.bindGroups[0].buffers[1].binding == 1 &&
            linkedDevice.bindGroups[0].buffers[1].buffer == renderIndexBuffer &&
            linkedDevice.bindGroups[0].buffers[2].binding == 14);
-    assert(linkedDevice.bindGroups[0].textures[0].binding == 2 && linkedDevice.bindGroups[0].textures[1].binding == 3);
+    assert(linkedDevice.bindGroups[0].textures[0].binding == 2 && linkedDevice.bindGroups[0].textures[1].binding == 3 &&
+           linkedDevice.bindGroups[0].textures[2].binding == 15 && !linkedDevice.bindGroups[0].textures[2].depthRead);
     assert(linkedTextureResolves == 2 && linkedDevice.writes == 1 && linkedDevice.writtenBytes[0].size() == 32);
     glm::vec4 packedColor{};
     float packedIntensity = 0.0f;

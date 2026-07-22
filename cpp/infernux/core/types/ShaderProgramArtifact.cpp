@@ -178,6 +178,7 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
     hash = AppendBytes(hash, &artifact.varyingInterfaceSignature, sizeof(artifact.varyingInterfaceSignature));
     hash = AppendBytes(hash, &artifact.materialLayoutSignature, sizeof(artifact.materialLayoutSignature));
     hash = AppendBytes(hash, &artifact.compatibilitySignature, sizeof(artifact.compatibilitySignature));
+    hash = AppendBytes(hash, &artifact.usesParticleSceneDepthBinding, sizeof(artifact.usesParticleSceneDepthBinding));
     std::array<const ShaderProgramArtifact::PassVariant *, static_cast<size_t>(ShaderCompileTarget::Count)> ordered{};
     if (artifact.variants.size() > ordered.size())
         return 1;

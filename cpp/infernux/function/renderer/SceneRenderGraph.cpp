@@ -2022,6 +2022,25 @@ void SceneRenderGraph::BuildRenderGraph()
             vk::ResourceHandle depthForThisPass = sharedDepth;
             bool needsCreateDepth = writesDepth && !sharedDepth.IsValid();
             bool passReadsDepth = readsDepth && !writesDepth;
+            vk::ResourceHandle particleSceneDepth;
+            const bool hasSoftParticleOutputs =
+                std::any_of(particleEntries.begin(), particleEntries.end(),
+                            [](const auto &entry) { return entry.semantics.softParticles; });
+            if (hasSoftParticleOutputs) {
+                const bool validDepthContract = passReadsDepth && depthForThisPass.IsValid() &&
+                                                particlePass.depthFormat != rhi::PixelFormat::Undefined &&
+                                                particlePass.samples == rhi::SampleCount::One;
+                if (validDepthContract) {
+                    particleSceneDepth = depthForThisPass;
+                } else {
+                    INXLOG_ERROR("SceneRenderGraph: soft particle outputs in pass '", passDesc.name,
+                                 "' require a single-sample read-only scene depth attachment");
+                    particleEntries.erase(
+                        std::remove_if(particleEntries.begin(), particleEntries.end(),
+                                       [](const auto &entry) { return entry.semantics.softParticles; }),
+                        particleEntries.end());
+                }
+            }
 
             vk::ResourceHandle resolveTarget;
             if (!passDesc.resolveColor.empty()) {
@@ -2437,6 +2456,8 @@ void SceneRenderGraph::BuildRenderGraph()
                     // Pass reads depth (e.g., skybox, transparent) — attach as read-only
                     builder.ReadDepth(depthForThisPass);
                 }
+                if (particleSceneDepth.IsValid())
+                    builder.ReadSampledDepth(particleSceneDepth, rhi::PipelineStage::FragmentShader);
 
                 // Scene-sized depth textures are pre-registered in customRTHandles,
                 // so later writers commonly take the first branch above. Keep the
@@ -2501,7 +2522,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 }
 
                 return [this, callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
-                        usesShadowRendererList, localVkCore, particlePackets, particlePass,
+                        usesShadowRendererList, localVkCore, particlePackets, particlePass, particleSceneDepth,
                         passName = passDesc.name](vk::RenderContext &ctx) {
                     if (rendererListHandle.IsValid()) {
                         const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
@@ -2522,12 +2543,17 @@ void SceneRenderGraph::BuildRenderGraph()
                         std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
                         std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
                         std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
+                        view.depthReconstruct = {m_cachedProj[2][2], m_cachedProj[3][2], m_cachedProj[2][3],
+                                                 m_cachedProj[3][3]};
                         const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
+                        const auto sceneDepth = particleSceneDepth.IsValid() ? ctx.GetTextureView(particleSceneDepth)
+                                                                             : rhi::TextureViewHandle{};
                         for (const auto &packet : particlePackets) {
                             [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
                                 encoder, renderTargetLayout, particlePass,
-                                ctx.GetBufferHandle(packet.indirectArguments), view, packet.drawRenderIndices);
+                                ctx.GetBufferHandle(packet.indirectArguments), view, packet.drawRenderIndices,
+                                packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{});
                         }
                     }
                 };

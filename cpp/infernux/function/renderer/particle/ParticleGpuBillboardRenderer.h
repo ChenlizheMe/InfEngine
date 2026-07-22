@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuRuntime.h"
+#include "ParticleOutputSemantics.h"
 
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/renderer/MaterialPassPipeline.h>
@@ -59,6 +60,7 @@ struct GpuBillboardRendererDesc
     rhi::BufferHandle renderIndices;
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
+    ParticleOutputSemantics semantics;
     GpuBillboardTextureResolver textureResolver;
     GpuBillboardTextureVersionResolver textureVersionResolver;
     FrameDeletionQueue *deletionQueue = nullptr;
@@ -70,6 +72,9 @@ struct alignas(16) GpuBillboardViewConstants
     std::array<float, 4> cameraRight{};
     std::array<float, 4> cameraUp{};
     std::array<float, 4> materialTint{1.0f, 1.0f, 1.0f, 1.0f};
+    // Projection coefficients (m22, m32, m23, m33) reconstruct linear eye depth
+    // for both perspective and orthographic cameras without a second matrix.
+    std::array<float, 4> depthReconstruct{};
 };
 
 class ParticleGpuBillboardRenderer
@@ -88,6 +93,10 @@ class ParticleGpuBillboardRenderer
 
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] int32_t RenderQueue() const noexcept;
+    [[nodiscard]] bool RequiresSceneDepth() const noexcept
+    {
+        return m_semantics.softParticles;
+    }
     [[nodiscard]] rhi::BufferHandle InstanceBuffer() const noexcept
     {
         return m_instances;
@@ -100,15 +109,13 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                   rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
-                                  const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {});
-    [[nodiscard]] bool RecordPickingDraw(
-        const rhi::GraphicsCommandEncoder &encoder,
-        rhi::RenderTargetLayoutHandle renderTargetLayout,
-        const MaterialPassPipelineDescriptor &pass,
-        rhi::BufferHandle indirectArguments,
-        const GpuBillboardViewConstants &view,
-        uint64_t ownerObjectId,
-        rhi::BufferHandle renderIndices = {});
+                                  const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {},
+                                  rhi::TextureViewHandle sceneDepth = {});
+    [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
+                                         rhi::RenderTargetLayoutHandle renderTargetLayout,
+                                         const MaterialPassPipelineDescriptor &pass,
+                                         rhi::BufferHandle indirectArguments, const GpuBillboardViewConstants &view,
+                                         uint64_t ownerObjectId, rhi::BufferHandle renderIndices = {});
 
   private:
     struct PipelineEntry
@@ -144,8 +151,10 @@ class ParticleGpuBillboardRenderer
     [[nodiscard]] bool RefreshMaterialBuffer(bool force);
     [[nodiscard]] bool RefreshTextureBindings(bool force);
     [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures,
-                                                       rhi::BufferHandle renderIndices) const;
-    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices);
+                                                       rhi::BufferHandle renderIndices,
+                                                       rhi::TextureViewHandle sceneDepth = {}) const;
+    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::BufferHandle renderIndices,
+                                                        rhi::TextureViewHandle sceneDepth = {});
     [[nodiscard]] bool RebuildBindGroup();
     void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
@@ -156,6 +165,7 @@ class ParticleGpuBillboardRenderer
     std::shared_ptr<InxMaterial> m_material;
     std::shared_ptr<const ShaderProgramArtifact> m_shaderProgram;
     GpuBillboardMaterialState m_fallbackMaterial{};
+    ParticleOutputSemantics m_semantics{};
     GpuBillboardTextureResolver m_textureResolver;
     GpuBillboardTextureVersionResolver m_textureVersionResolver;
     FrameDeletionQueue *m_deletionQueue = nullptr;
@@ -170,17 +180,20 @@ class ParticleGpuBillboardRenderer
     struct ViewBindGroup
     {
         rhi::BufferHandle renderIndices;
+        rhi::TextureViewHandle sceneDepth;
         rhi::BindGroupHandle group;
     };
     std::vector<ViewBindGroup> m_viewGroups;
     rhi::BufferHandle m_materialBuffer;
     std::vector<TextureBindingState> m_textures;
+    GpuBillboardTextureLease m_sceneDepthFallback;
     uint64_t m_materialVersion = 0;
     bool m_materialVersionInitialized = false;
     bool m_usesTexture = false;
+    bool m_supportsSceneDepth = false;
     std::vector<PipelineEntry> m_pipelines;
 };
 
-static_assert(sizeof(GpuBillboardViewConstants) == 112);
+static_assert(sizeof(GpuBillboardViewConstants) == 128);
 
 } // namespace infernux::particle

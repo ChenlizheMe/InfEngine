@@ -154,6 +154,9 @@ struct ShaderProgramArtifact
     uint64_t varyingInterfaceSignature = 0;
     uint64_t materialLayoutSignature = 0;
     uint64_t compatibilitySignature = 0;
+    // True when ParticleSprite shaders include the engine-owned set 0,
+    // binding 15 scene-depth contract.
+    bool usesParticleSceneDepthBinding = false;
     struct PassVariant
     {
         ShaderCompileTarget target = ShaderCompileTarget::Forward;

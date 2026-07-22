@@ -46,6 +46,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
+    vec4 depth_reconstruct;
 } view;
 
 layout(location = 0) out vec4 out_color;
@@ -82,16 +83,31 @@ layout(location = 1) in vec2 in_uv;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 1) uniform sampler2D texSampler;
+layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
+    vec4 depth_reconstruct;
 } view;
+
+float particle_eye_depth(float device_depth) {
+    float numerator = view.depth_reconstruct.y - device_depth * view.depth_reconstruct.w;
+    float denominator = device_depth * view.depth_reconstruct.z - view.depth_reconstruct.x;
+    return max(0.0, -numerator / (abs(denominator) > 1e-7 ? denominator : 1e-7));
+}
 
 void main() {
     out_color = texture(texSampler, in_uv) * in_color * view.material_tint;
+    if (view.camera_up.w > 0.5) {
+        ivec2 depth_size = textureSize(_InxParticleSceneDepth, 0);
+        ivec2 depth_coord = clamp(ivec2(gl_FragCoord.xy), ivec2(0), depth_size - ivec2(1));
+        float scene_depth = particle_eye_depth(texelFetch(_InxParticleSceneDepth, depth_coord, 0).r);
+        float particle_depth = particle_eye_depth(gl_FragCoord.z);
+        out_color.a *= clamp((scene_depth - particle_depth) / max(view.camera_right.w, 1e-4), 0.0, 1.0);
+    }
 }
 """
 

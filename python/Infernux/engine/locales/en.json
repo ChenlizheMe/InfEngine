@@ -102,6 +102,8 @@
   "particle_graph_editor.property_material": "Material",
   "particle_graph_editor.property_receive_scene_lighting": "Receive Scene Lighting",
   "particle_graph_editor.property_receive_shadows": "Receive Shadows",
+  "particle_graph_editor.property_soft_particles": "Soft Particles",
+  "particle_graph_editor.property_soft_distance": "Fade Distance",
   "particle_graph_editor.property_sort": "Sorting",
   "particle_graph_editor.property_interface": "Data Interface",
   "particle_graph_editor.property_channel": "Channel",
