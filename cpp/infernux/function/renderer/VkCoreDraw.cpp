@@ -512,8 +512,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
     const size_t totalEligible = m_eligibleScratch.size();
     const uint32_t writeBase = m_instanceWriteOffset;
-    const bool needsInstanceAuxiliary =
-        activePass.target == ShaderCompileTarget::Picking || activePass.target == ShaderCompileTarget::Motion;
+    const bool needsInstanceAuxiliary = activePass.target == ShaderCompileTarget::Picking ||
+                                        activePass.target == ShaderCompileTarget::Motion ||
+                                        activePass.target == ShaderCompileTarget::ForwardPlus;
     if (needsInstanceAuxiliary)
         PrepareInstanceAuxiliary(m_ensureFrameCounter, writeBase + totalEligible);
 
@@ -571,7 +572,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 const DrawCall &draw = *m_eligibleScratch[i].dc;
                 const uint64_t pickingId = draw.pickingObjectId != 0 ? draw.pickingObjectId : draw.objectId;
                 (void)WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
-                                             draw.worldMatrix, pickingId);
+                                             draw.worldMatrix, pickingId, draw.layerMask);
             }
         }
 

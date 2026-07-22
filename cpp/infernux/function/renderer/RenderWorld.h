@@ -21,6 +21,7 @@ class SceneRenderer;
 struct RenderProxyStructuralData
 {
     uint64_t objectId = 0;
+    uint32_t layerMask = 1u;
     RenderProxyHandle identity;
     MeshRef mesh;
     std::shared_ptr<InxMaterial> renderMaterial;

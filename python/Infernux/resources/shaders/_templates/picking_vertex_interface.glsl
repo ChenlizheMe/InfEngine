@@ -2,7 +2,7 @@ struct InstanceAuxData {
     mat4 previousModel;
     uvec2 objectId;
     uint flags;
-    uint _pad;
+    uint layerMask;
 };
 
 layout(std430, set = 2, binding = 4) readonly buffer InstanceAuxBuffer {

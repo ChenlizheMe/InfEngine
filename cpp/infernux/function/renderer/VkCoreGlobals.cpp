@@ -620,7 +620,7 @@ void InxVkCoreModular::PrepareInstanceAuxiliary(uint64_t frameSerial, size_t tot
 
 bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t instanceIndex,
                                               const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
-                                              uint64_t objectId)
+                                              uint64_t objectId, uint32_t layerMask)
 {
     if (frameIndex >= m_instanceAuxBuffers.size())
         return false;
@@ -634,7 +634,7 @@ bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t inst
         return false;
 
     static_cast<GPUInstanceAuxData *>(frame.mapped)[instanceIndex] =
-        m_instanceHistory.Resolve(identity, currentModel, objectId);
+        m_instanceHistory.Resolve(identity, currentModel, objectId, layerMask);
     return true;
 }
 

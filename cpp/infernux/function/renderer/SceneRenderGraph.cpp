@@ -2637,6 +2637,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle renderIndices;
                     vk::ResourceHandle indirectArguments;
                     rhi::BufferHandle drawRenderIndices;
+                    uint32_t ownerLayerMask = 1u;
                 };
                 std::vector<ParticlePacket> particlePackets;
                 particlePackets.reserve(particleEntries.size());
@@ -2713,8 +2714,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         builder.ReadStorageBuffer(handle, rhi::PipelineStage::VertexShader);
                     }
                     builder.ReadIndirectBuffer(indirectArguments);
-                    particlePackets.push_back(
-                        {entry.renderer, instances, renderIndices, indirectArguments, drawRenderIndices});
+                    particlePackets.push_back({entry.renderer, instances, renderIndices, indirectArguments,
+                                               drawRenderIndices, entry.ownerLayerMask});
                 }
 
                 if (rendererListHandle.IsValid()) {
@@ -2898,9 +2899,12 @@ void SceneRenderGraph::BuildRenderGraph()
                             particleLighting.group = lightingFrame.consumerBindGroup;
                         }
                         for (const auto &packet : particlePackets) {
+                            auto packetView = view;
+                            std::memcpy(&packetView.lightingControl[3], &packet.ownerLayerMask,
+                                        sizeof(packet.ownerLayerMask));
                             [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
                                 encoder, renderTargetLayout, particlePass,
-                                ctx.GetBufferHandle(packet.indirectArguments), view, packet.drawRenderIndices,
+                                ctx.GetBufferHandle(packet.indirectArguments), packetView, packet.drawRenderIndices,
                                 packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
                                 particleSceneDepthIsDepth, particleLighting);
                         }

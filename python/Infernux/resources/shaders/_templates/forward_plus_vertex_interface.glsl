@@ -10,4 +10,4 @@ layout(std430, set = 2, binding = 4) readonly buffer InstanceAuxBuffer {
 };
 
 // Location 15 is reserved for engine-owned pass data.
-layout(location = 15) out vec2 _inx_MotionVector;
+layout(location = 15) flat out uint _inx_ObjectLayerMask;

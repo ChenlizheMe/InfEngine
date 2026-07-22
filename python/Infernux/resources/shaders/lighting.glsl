@@ -268,6 +268,7 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
     for (uint i = 0u; i < directionalCount; ++i) {
         CanonicalLightData light = canonicalLights[i];
         if ((light.metadata.w & 1u) == 0u) continue;
+        if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
         vec3 L = normalize(-light.directionOuterCos.xyz);
         vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w;
         float lightShadow = (i == 0u) ? shadow : 1.0;
@@ -280,6 +281,7 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
     for (uint entry = 0u; entry < tileHeader.y; ++entry) {
         uint localIndex = forwardPlusTileIndices[tileHeader.x + entry];
         CanonicalLightData light = canonicalLights[directionalCount + localIndex];
+        if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
         vec3 lightVec = light.positionRange.xyz - worldPos;
         float distanceToLight = length(lightVec);
         float range = max(light.positionRange.w, 0.0001);

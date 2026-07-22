@@ -828,6 +828,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     infernux::particle::GpuParticleEmitterProgram managedProgram;
     managedProgram.id = 91;
+    managedProgram.ownerLayerMask = 1u << 4u;
     managedProgram.artifactRevision = 1;
     managedProgram.stableId = "managed-emitter";
     managedProgram.capacity = 32;
@@ -896,7 +897,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle resident telemetry is incorrect before scheduling"))
         return false;
     const auto initialManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(initialManagedEntries.size() == 1 && !particleSystems.ActiveStateWasPreserved(managedProgram.id),
+    if (!Require(initialManagedEntries.size() == 1 && initialManagedEntries[0].ownerLayerMask == 1u << 4u &&
+                     !particleSystems.ActiveStateWasPreserved(managedProgram.id),
                  "Initial GPU particle publication reported a preserved state"))
         return false;
     const auto initialManagedInstances = initialManagedEntries[0].instances;

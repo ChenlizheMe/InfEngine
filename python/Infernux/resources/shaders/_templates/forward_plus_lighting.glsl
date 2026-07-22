@@ -20,6 +20,8 @@ layout(std430, set = 1, binding = 3) readonly buffer ForwardPlusTileIndexBuffer 
     uint forwardPlusTileIndices[];
 };
 
+layout(location = 15) flat in uint _inx_ObjectLayerMask;
+
 uvec4 inxForwardPlusTileHeader() {
     uvec4 grid = forwardPlusTileHeaders[0];
     uvec2 tileCount = max(grid.xy, uvec2(1u));

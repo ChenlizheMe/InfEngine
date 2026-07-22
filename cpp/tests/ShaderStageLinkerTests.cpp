@@ -523,6 +523,10 @@ void surface(out SurfaceData surface)
     assert(builtinForwardPlus->generatedFragmentSource.find("set = 1, binding = 2") != std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("set = 1, binding = 3") != std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("inxForwardPlusTileHeader()") != std::string::npos);
+    assert(builtinForwardPlus->generatedVertexSource.find("set = 2, binding = 4") != std::string::npos);
+    assert(builtinForwardPlus->generatedVertexSource.find("_inx_ObjectLayerMask =") != std::string::npos);
+    assert(builtinForwardPlus->generatedFragmentSource.find("light.metadata.y & _inx_ObjectLayerMask") !=
+           std::string::npos);
 
     const auto errorCompilation =
         compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/error.vert"), shaderRoot + "/error.vert",

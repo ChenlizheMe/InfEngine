@@ -20,7 +20,7 @@ struct alignas(16) GPUInstanceAuxData
     glm::mat4 previousModel{1.0f};
     glm::uvec2 objectId{0u};
     uint32_t flags = 0;
-    uint32_t _pad = 0;
+    uint32_t layerMask = 1u;
 };
 
 static_assert(alignof(GPUInstanceAuxData) == 16, "GPU instance auxiliary data must remain std430-compatible");
@@ -59,11 +59,12 @@ class RenderInstanceHistory
     }
 
     [[nodiscard]] GPUInstanceAuxData Resolve(const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
-                                             uint64_t objectId)
+                                             uint64_t objectId, uint32_t layerMask)
     {
         GPUInstanceAuxData result;
         result.previousModel = currentModel;
         result.objectId = PackGPUObjectId(objectId);
+        result.layerMask = layerMask;
 
         if (m_frameSerial == 0 || !identity.IsValid())
             return result;

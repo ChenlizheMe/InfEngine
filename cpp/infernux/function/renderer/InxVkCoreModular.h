@@ -1538,7 +1538,7 @@ class InxVkCoreModular
     void PrepareInstanceAuxiliary(uint64_t frameSerial, size_t totalInstances);
     [[nodiscard]] bool WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t instanceIndex,
                                               const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
-                                              uint64_t objectId);
+                                              uint64_t objectId, uint32_t layerMask);
 };
 
 } // namespace infernux

@@ -146,10 +146,12 @@ layout(set = 1, binding = 2, std430) readonly buffer ParticleTileIndices {
 
 vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, vec3 albedo, bool two_sided) {
     vec3 result = albedo * 0.08;
+    uint object_layer_mask = floatBitsToUint(view.lighting_control.w);
     uint directional_count = counts_generation.x;
     for (uint index = 0u; index < directional_count; ++index) {
         CanonicalLightData light = lights[index];
         if ((light.metadata.w & 2u) == 0u) continue;
+        if ((light.metadata.y & object_layer_mask) == 0u) continue;
         vec3 direction = normalize(-light.direction_spot.xyz);
         float ndotl = dot(normal, direction);
         ndotl = two_sided ? abs(ndotl) : max(ndotl, 0.0);
@@ -164,6 +166,7 @@ vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, vec3 albedo, bo
     for (uint entry = 0u; entry < header.y; ++entry) {
         uint local_index = tile_indices[header.x + entry];
         CanonicalLightData light = lights[directional_count + local_index];
+        if ((light.metadata.y & object_layer_mask) == 0u) continue;
         vec3 light_vector = light.position_range.xyz - world_position;
         float distance_to_light = length(light_vector);
         float range = max(light.position_range.w, 0.0001);

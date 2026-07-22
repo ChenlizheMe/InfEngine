@@ -1297,6 +1297,7 @@ int main()
         const uint64_t initialRevision = registry.Revision();
         particle::GpuParticleDrawEntry registryEntry;
         registryEntry.id = 77;
+        registryEntry.ownerLayerMask = 1u << 6u;
         registryEntry.capacity = runtime.Capacity();
         registryEntry.instances = instanceBuffer;
         registryEntry.renderIndices = renderIndexBuffer;
@@ -1306,7 +1307,8 @@ int main()
         assert(registry.Set(std::move(registryEntry)));
         assert(registry.Revision() == initialRevision + 1 && registry.Size() == 1);
         const auto visibleEntries = registry.Snapshot(3000, 3200);
-        assert(visibleEntries.size() == 1 && visibleEntries[0].id == 77);
+        assert(visibleEntries.size() == 1 && visibleEntries[0].id == 77 &&
+               visibleEntries[0].ownerLayerMask == 1u << 6u);
         assert(registry.Snapshot(0, 2999).empty());
         assert(registry.Remove(77) && !registry.Remove(77) && registry.Size() == 0);
     }

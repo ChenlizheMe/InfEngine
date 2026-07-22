@@ -610,6 +610,7 @@ class ParticleSystem(InxComponent):
                 {
                     "id": emitter_id,
                     "owner_object_id": int(self.game_object.id),
+                    "owner_layer_mask": 1 << int(self.game_object.layer),
                     "artifact_revision": artifact.revision,
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,

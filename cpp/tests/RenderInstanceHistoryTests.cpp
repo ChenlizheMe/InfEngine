@@ -37,38 +37,40 @@ int main()
 
     RenderInstanceHistory history;
     history.BeginFrame(1);
-    const auto firstAppearance = history.Resolve(first, modelA, objectId);
+    const auto firstAppearance = history.Resolve(first, modelA, objectId, 1u << 3u);
     assert(MatrixEquals(firstAppearance.previousModel, modelA));
     assert(firstAppearance.flags == 0);
+    assert(firstAppearance.layerMask == 1u << 3u);
 
     history.BeginFrame(2);
-    const auto continuous = history.Resolve(first, modelB, objectId);
+    const auto continuous = history.Resolve(first, modelB, objectId, 1u << 3u);
     assert(MatrixEquals(continuous.previousModel, modelA));
     assert(continuous.flags == kGPUInstanceAuxFlagValidHistory);
 
     // A second camera/pass in the same logical frame sees the same history.
-    const auto repeated = history.Resolve(first, modelC, objectId);
+    const auto repeated = history.Resolve(first, modelC, objectId, 1u << 3u);
     assert(MatrixEquals(repeated.previousModel, modelA));
     assert(repeated.flags == kGPUInstanceAuxFlagValidHistory);
 
     // Independent identities never share transform history.
-    const auto independent = history.Resolve(second, modelC, 7);
+    const auto independent = history.Resolve(second, modelC, 7, 1u << 5u);
     assert(MatrixEquals(independent.previousModel, modelC));
     assert(independent.flags == 0);
+    assert(independent.layerMask == 1u << 5u);
     assert(history.Size() == 2);
 
     // Missing a frame suppresses stale motion when the primitive reappears.
     history.BeginFrame(3);
-    const auto secondFrame = history.Resolve(second, modelC, 7);
+    const auto secondFrame = history.Resolve(second, modelC, 7, 1u << 5u);
     assert(secondFrame.flags == kGPUInstanceAuxFlagValidHistory);
     history.BeginFrame(4);
-    const auto reappeared = history.Resolve(first, modelC, objectId);
+    const auto reappeared = history.Resolve(first, modelC, objectId, 1u << 3u);
     assert(MatrixEquals(reappeared.previousModel, modelC));
     assert(reappeared.flags == 0);
 
     // Invalid identities remain usable for picking but are never retained.
     const size_t retained = history.Size();
-    const auto invalid = history.Resolve({}, modelB, objectId);
+    const auto invalid = history.Resolve({}, modelB, objectId, 1u << 3u);
     assert(MatrixEquals(invalid.previousModel, modelB));
     assert(UnpackGPUObjectId(invalid.objectId) == objectId);
     assert(history.Size() == retained);

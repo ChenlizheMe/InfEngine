@@ -1135,6 +1135,8 @@ void RegisterSceneBindings(py::module_ &m)
                       "Whether this light affects geometry renderers")
         .def_property("affect_particles", &Light::GetAffectParticles, &Light::SetAffectParticles,
                       "Whether this light affects particle renderers")
+        .def_property("culling_mask", &Light::GetCullingMask, &Light::SetCullingMask,
+                      "Layer bitmask selecting which GameObjects this light affects")
 
         // Shadow mapping matrices
         .def("get_light_view_matrix", &Light::GetLightViewMatrix, "Get the light's view matrix for shadow mapping")

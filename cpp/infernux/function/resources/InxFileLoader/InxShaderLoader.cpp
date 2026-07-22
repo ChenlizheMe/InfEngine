@@ -1032,6 +1032,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << "\n" << LoadTemplate("picking_vertex_interface.glsl") << "\n";
                 else if (target == ShaderCompileTarget::Motion)
                     result << "\n" << LoadTemplate("motion_vertex_interface.glsl") << "\n";
+                else if (target == ShaderCompileTarget::ForwardPlus)
+                    result << "\n" << LoadTemplate("forward_plus_vertex_interface.glsl") << "\n";
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
                 // LightingUBO — only when the shading model requires it
@@ -1363,6 +1365,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     } else {
         _inx_MotionVector = vec2(0.0);
     })";
+        } else if (target == ShaderCompileTarget::ForwardPlus) {
+            passVertexOutput = "    _inx_ObjectLayerMask = instanceAuxData[gl_InstanceIndex].layerMask;";
         }
         ReplacePlaceholder(mainTpl, "${PASS_VERTEX_OUTPUT}", passVertexOutput);
         result << "\n" << mainTpl << "\n";

@@ -89,8 +89,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
-    for (const char *field : {"id", "owner_object_id", "artifact_revision", "stable_id", "capacity", "state_stride",
-                              "stages", "billboard", "mesh_shaders", "outputs"}) {
+    for (const char *field : {"id", "owner_object_id", "owner_layer_mask", "artifact_revision", "stable_id", "capacity",
+                              "state_stride", "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -98,6 +98,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     particle::GpuParticleEmitterProgram program;
     program.id = py::cast<uint64_t>(value["id"]);
     program.ownerObjectId = py::cast<uint64_t>(value["owner_object_id"]);
+    program.ownerLayerMask = py::cast<uint32_t>(value["owner_layer_mask"]);
     program.artifactRevision = py::cast<uint64_t>(value["artifact_revision"]);
     program.stableId = py::cast<std::string>(value["stable_id"]);
     program.capacity = py::cast<uint32_t>(value["capacity"]);

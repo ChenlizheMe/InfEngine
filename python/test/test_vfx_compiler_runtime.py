@@ -200,6 +200,7 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     component = ParticleSystem()
     component.graph = ParticleGraphRef(path_hint=str(source))
     game_object = scene.create_game_object("MixedParticleGraphProbe")
+    game_object.layer = 3
     game_object.add_py_component(component)
 
     component.awake()
@@ -217,6 +218,7 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert component._gpu_controllers[0].simulation_step == 1
     assert len(native.program_batches[-1][0]) == 1
     assert native.program_batches[-1][0][0]["owner_object_id"] == int(game_object.id)
+    assert native.program_batches[-1][0][0]["owner_layer_mask"] == 1 << 3
 
     cpu_step = component._runtimes[0].simulation_step
     gpu_step = component._gpu_controllers[0].simulation_step

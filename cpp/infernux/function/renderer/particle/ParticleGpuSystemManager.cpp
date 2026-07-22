@@ -730,6 +730,7 @@ struct ParticleGpuSystemManager::Impl
                 GpuParticleDrawEntry entry;
                 entry.id = output.id;
                 entry.ownerObjectId = emitter->sourceProgram.ownerObjectId;
+                entry.ownerLayerMask = emitter->sourceProgram.ownerLayerMask;
                 entry.capacity = emitter->runtime->Capacity();
                 entry.instances = emitter->runtime->InstanceBuffer();
                 entry.renderIndices = output.renderer->RenderIndexBuffer();

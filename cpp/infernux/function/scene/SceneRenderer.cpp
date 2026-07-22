@@ -238,6 +238,7 @@ void SceneRenderer::CollectRenderables(uint32_t cullingMask)
 
         RenderProxy renderable;
         renderable.structural.objectId = obj->GetID();
+        renderable.structural.layerMask = objectLayerBit;
         renderable.structural.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
         renderable.frame.worldMatrix = obj->GetTransform()->GetWorldMatrix();
         renderable.structural.mesh = renderer->GetMesh();
@@ -478,6 +479,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldMatrix = worldMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
             dc.objectId = structural.objectId;
+            dc.layerMask = structural.layerMask;
             dc.identity = structural.identity.MakeDrawIdentity();
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
@@ -504,6 +506,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
             dc.worldMatrix = effectiveMatrix;
             dc.material = renderer->GetEffectiveMaterial(0);
             dc.objectId = structural.objectId;
+            dc.layerMask = structural.layerMask;
             dc.identity = structural.identity.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
@@ -546,6 +549,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
                     matSlot = slotRemap[matSlot];
                 dc.material = renderer->GetEffectiveMaterial(matSlot);
                 dc.objectId = structural.objectId;
+                dc.layerMask = structural.layerMask;
                 dc.identity = structural.identity.MakeDrawIdentity(si);
                 dc.frustumVisible = visible;
                 dc.castsShadows = renderer->CastsShadows();
@@ -574,6 +578,7 @@ void SceneRenderer::EmitDrawCallsForRenderable(DrawCallResult &result, const Ren
         dc.worldMatrix = worldMatrix;
         dc.material = renderer->GetEffectiveMaterial(0);
         dc.objectId = structural.objectId;
+        dc.layerMask = structural.layerMask;
         dc.identity = structural.identity.MakeDrawIdentity();
         dc.frustumVisible = visible;
         dc.castsShadows = renderer->CastsShadows();

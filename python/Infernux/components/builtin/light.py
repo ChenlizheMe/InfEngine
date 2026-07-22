@@ -217,6 +217,18 @@ class Light(BuiltinComponent):
         tooltip="Allow this light to illuminate particle renderers",
     )
 
+    @property
+    def culling_mask(self) -> int:
+        """Layer bitmask selecting which GameObjects this light affects."""
+        return int(self._require_cpp_component().culling_mask)
+
+    @culling_mask.setter
+    def culling_mask(self, value: int) -> None:
+        mask = int(value)
+        if not 0 <= mask <= 0xFFFFFFFF:
+            raise ValueError("Light.culling_mask must be an unsigned 32-bit integer")
+        self._require_cpp_component().culling_mask = mask
+
     # ------------------------------------------------------------------
     # Methods (delegate to C++ Light)
     # ------------------------------------------------------------------

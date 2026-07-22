@@ -105,6 +105,7 @@ struct GpuParticleEmitterProgram
 {
     uint64_t id = 0;
     uint64_t ownerObjectId = 0;
+    uint32_t ownerLayerMask = 1u;
     uint64_t artifactRevision = 0;
     std::string stableId;
     uint32_t capacity = 0;

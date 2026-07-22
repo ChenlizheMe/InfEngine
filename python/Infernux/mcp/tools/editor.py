@@ -249,7 +249,10 @@ def register_editor_tools(mcp) -> None:
         """Set the current editor selection."""
 
         def _select():
+            from Infernux.engine.ui.event_bus import EditorEvent, EditorEventBus
             from Infernux.engine.ui.selection_manager import SelectionManager
+            from Infernux.lib import SceneManager
+
             sel = SelectionManager.instance()
             ids = [int(i) for i in (object_ids or []) if int(i) > 0]
             if primary_id:
@@ -258,6 +261,11 @@ def register_editor_tools(mcp) -> None:
                 sel.box_select(ids)
             else:
                 sel.clear()
-            return {"selected_ids": sel.get_ids()}
+            selected_ids = sel.get_ids()
+            primary = int(sel.get_primary() or 0)
+            scene = SceneManager.instance().get_active_scene()
+            selected = scene.find_by_id(primary) if scene is not None and primary else None
+            EditorEventBus.instance().emit(EditorEvent.SELECTION_CHANGED, selected)
+            return {"selected_ids": selected_ids}
 
         return main_thread("editor_select", _select, arguments={"object_ids": object_ids or [], "primary_id": primary_id})

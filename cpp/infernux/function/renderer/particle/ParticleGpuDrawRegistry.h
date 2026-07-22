@@ -18,6 +18,7 @@ struct GpuParticleDrawEntry
 {
     uint64_t id = 0;
     uint64_t ownerObjectId = 0;
+    uint32_t ownerLayerMask = 1u;
     uint32_t capacity = 0;
     rhi::BufferHandle instances;
     rhi::BufferHandle renderIndices;
