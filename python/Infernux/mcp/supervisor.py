@@ -347,6 +347,7 @@ class SupervisorSession:
         env["_INFERNUX_PLAYER_CONTROL_FILE"] = self.player_control_path
         env["_INFERNUX_PLAYER_RESPONSE_FILE"] = self.player_response_path
         env["_INFERNUX_PLAYER_CONTROL_TOKEN"] = self._player_control_token
+        env["_INFERNUX_PLAYER_ARTIFACT_ROOT"] = self.artifact_root
         data_root = _player_data_root(self._player_executable)
         env["_INFERNUX_PLAYER_RUNTIME_ROOT"] = os.path.dirname(self._player_executable)
         env["_INFERNUX_PLAYER_DATA_ROOT"] = data_root
@@ -416,6 +417,29 @@ class SupervisorSession:
                 timeout_seconds=timeout_seconds,
             )
 
+    def player_send_mouse_button(
+        self,
+        button: int,
+        pressed: bool,
+        x: float,
+        y: float,
+        *,
+        timeout_seconds: float = 3.0,
+    ) -> dict[str, Any]:
+        """Send one human-equivalent pointer transition to the managed Player."""
+        mouse_buttons = _normalize_player_hold_mouse_buttons([button])
+        with self._operation_lock():
+            return self._call_player_control(
+                "mouse_button",
+                {
+                    "button": mouse_buttons[0],
+                    "pressed": bool(pressed),
+                    "x": _bounded_finite_float(x, "x", minimum=0.0, maximum=100_000.0),
+                    "y": _bounded_finite_float(y, "y", minimum=0.0, maximum=100_000.0),
+                },
+                timeout_seconds=timeout_seconds,
+            )
+
     def player_press_key(
         self,
         key: str | int,
@@ -448,6 +472,26 @@ class SupervisorSession:
                     "component_probes": probes,
                 },
                 timeout_seconds=max(float(timeout_seconds), duration + 2.0),
+            )
+
+    def player_capture_game(
+        self,
+        file_name: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        """Capture the managed Player's engine-owned Game render target."""
+        requested = os.path.basename(str(file_name or "").strip())
+        if not requested or os.path.splitext(requested)[1].lower() != ".png":
+            raise ValueError("file_name must be a plain .png basename.")
+        with self._operation_lock():
+            return self._call_player_control(
+                "capture",
+                {
+                    "file_name": requested,
+                    "timeout_seconds": min(max(float(timeout_seconds) - 0.25, 0.5), 60.0),
+                },
+                timeout_seconds=timeout_seconds,
             )
 
     def player_motion_capture_arm(

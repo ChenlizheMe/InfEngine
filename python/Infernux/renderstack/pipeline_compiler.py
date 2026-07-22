@@ -19,7 +19,8 @@ from Infernux.renderstack.route_policy import RoutePolicy
 
 
 _CLEAR_TRANSPARENT = (0.0, 0.0, 0.0, 0.0)
-_CLEAR_SCENE = (0.1, 0.1, 0.1, 1.0)
+_CLEAR_SCENE = (0.0, 0.0, 0.0, 0.0)
+_CLEAR_SKY_FALLBACK = (0.1, 0.1, 0.1, 1.0)
 
 
 @dataclass
@@ -53,6 +54,18 @@ class _ImageAccumulator:
                 render_pass.set_texture("_AdditiveTex", image)
                 render_pass.write_color(target)
                 render_pass.fullscreen_quad("route_additive_composite")
+        self.current, self.alternate = target, self.current
+        self.composite_index += 1
+
+    def under(self, image, *, label: str) -> None:
+        """Place an image behind the accumulated premultiplied foreground."""
+        target = self.alternate
+        with self.graph.name_scope(f"under/{self.stable_id}"):
+            with self.graph.add_pass(f"{self.composite_index:02d}_{label}") as render_pass:
+                render_pass.set_texture("_BaseTex", image)
+                render_pass.set_texture("_LayerTex", self.current)
+                render_pass.write_color(target)
+                render_pass.fullscreen_quad("route_alpha_composite")
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
@@ -419,37 +432,25 @@ def _compile_sky(
     color_format,
     msaa_samples: int,
 ) -> None:
-    if msaa_samples == 1:
-        with graph.add_pass("SkyboxPass") as render_pass:
-            render_pass.read(scene.depth)
-            render_pass.write_color(scene.current)
-            render_pass.draw_skybox()
-        return
-
-    previous_current = scene.current
     with graph.name_scope("sky"):
-        sky_msaa = graph.create_texture(
-            "color_msaa",
-            format=color_format,
-            samples=msaa_samples,
-        )
-        sky_resolved = graph.create_texture(
-            "color",
-            format=color_format,
-            samples=1,
-        )
-        with graph.add_pass("PrimeSceneColor") as render_pass:
-            render_pass.set_texture("_SourceTex", previous_current)
-            render_pass.write_color(sky_msaa)
-            render_pass.fullscreen_quad("fullscreen_blit")
+        sky_resolved = graph.create_texture("color", format=color_format, samples=1)
+        sky_target = sky_resolved
+        if msaa_samples > 1:
+            sky_target = graph.create_texture(
+                "color_msaa",
+                format=color_format,
+                samples=msaa_samples,
+            )
         with graph.add_pass("SkyboxPass") as render_pass:
             render_pass.read(scene.depth)
-            render_pass.write_color(sky_msaa)
-            render_pass.write_resolve(sky_resolved)
+            render_pass.write_color(sky_target)
+            if sky_target is not sky_resolved:
+                render_pass.write_resolve(sky_resolved)
+            render_pass.set_clear(color=_CLEAR_SKY_FALLBACK)
             render_pass.draw_skybox()
-
-    scene.current = sky_resolved
-    scene.alternate = previous_current
+    # Sky is a background. Compositing it underneath preserves route effects
+    # whose alpha coverage expands beyond geometry depth, such as blur/bloom.
+    scene.under(sky_resolved, label="sky")
 
 
 def _effect_resources(color, depth, shadow_map) -> dict:

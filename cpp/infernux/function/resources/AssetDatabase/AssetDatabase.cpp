@@ -1964,7 +1964,28 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
     request.guid = guid;
     request.resourceType = GetResourceTypeForPath(path);
     request.metadata = *metaIt->second;
-    request.resolveAssetGuid = [this](const std::string &dependencyPath) { return GetGuidFromPath(dependencyPath); };
+    request.resolveAssetGuid = [this, sourcePath = path](const std::string &dependencyPath) {
+        if (dependencyPath.empty())
+            return std::string{};
+
+        const auto lookup = [this](const std::filesystem::path &candidate) {
+            return GetGuidFromPath(FromFsPath(candidate.lexically_normal()));
+        };
+        const std::filesystem::path dependency = ToFsPath(dependencyPath);
+        if (dependency.is_absolute())
+            return lookup(dependency);
+
+        // Asset documents store portable project-relative references such as
+        // Assets/Rendering/Bloom.effect. They may also use a sibling filename
+        // for a reference local to the source document.
+        std::string guid = lookup(ToFsPath(m_projectRoot) / dependency);
+        if (!guid.empty())
+            return guid;
+        guid = lookup(ToFsPath(sourcePath).parent_path() / dependency);
+        if (!guid.empty())
+            return guid;
+        return GetGuidFromPath(dependencyPath);
+    };
     request.isReimport = isReimport;
 
     std::string error;

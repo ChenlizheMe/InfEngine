@@ -200,7 +200,19 @@ class PlayerBootstrap:
             )
 
     def _enter_play_mode(self):
-        """Enter play mode immediately (no deferred task, no save guard)."""
+        """Activate the initial scene on the first safe main-loop frame."""
+        from Infernux.engine.deferred_task import DeferredTaskRunner
+
+        runner = DeferredTaskRunner.instance()
+        queued = runner.submit(
+            "Player Startup",
+            [("Starting game...", 1.0, self._activate_initial_scene_for_play)],
+        )
+        if not queued:
+            raise RuntimeError("Cannot start Player while another deferred task is active")
+
+    def _activate_initial_scene_for_play(self):
+        """Start the freshly loaded scene without rebuilding it a second time."""
         from Infernux.lib import SceneManager as _NativeSM
         from Infernux.renderstack.render_stack import RenderStack
         from Infernux.timing import Time
@@ -220,50 +232,28 @@ class PlayerBootstrap:
         # Capture a typed document (player never restores it, but PM needs it).
         snapshot = scene.serialize_document()
         if not snapshot:
-            Debug.log_error("Scene serialization failed — play mode skipped")
-            return
+            Debug.log_error("Scene serialization failed - play mode skipped")
+            return False
         pm._scene_backup = snapshot
 
-        # Reset timing
         Time._reset()
+        old_state = pm._state
+        pm._state = PlayModeState.PLAYING
+        pm._last_frame_time = __import__("time").time()
+        pm._notify_state_change(old_state, PlayModeState.PLAYING)
 
-        def after_publish():
-            RenderStack._active_instance = None
-            scene.set_playing(True)
-            try:
-                from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-                SpriteRenderer.init_all_in_scene(scene)
-            except Exception as exc:
-                Debug.log_internal(f"Player SpriteRenderer init before py restore: {exc}")
-            pm._state = PlayModeState.PLAYING
-            pm._last_frame_time = __import__("time").time()
-
-        from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
-        transaction = SceneDocumentTransaction(
-            scene,
-            document=snapshot,
-            asset_database=pm._asset_database,
-            clear_registries=True,
-            after_publish=after_publish,
-        )
-        if not transaction.run_to_completion(raise_on_failure=False):
-            Debug.log_error(f"Scene document transaction failed - play mode skipped: {transaction.error}")
-            return
-
-        # Run once more after Python restore so any lazily-created or
-        # animator-driven SpriteRenderers also have bound materials before
-        # the first rendered frame.
+        RenderStack._active_instance = None
+        scene.set_playing(True)
         try:
             from Infernux.components.builtin.sprite_renderer import SpriteRenderer
 
             SpriteRenderer.init_all_in_scene(scene)
         except Exception as exc:
-            Debug.log_internal(f"Player SpriteRenderer init after py restore: {exc}")
+            Debug.log_internal(f"Player SpriteRenderer init: {exc}")
 
-        # Tell C++ SceneManager to enter play mode (drives lifecycle updates)
+        # This is the same lifecycle boundary used after a runtime scene load.
+        # The initial load already published fresh Python components, so a
+        # second Scene transaction here only creates competing object graphs.
         sm.play()
-
-        # Transition state
-        pm._notify_state_change(PlayModeState.EDIT, PlayModeState.PLAYING)
-
         Debug.log_internal("Player: Play mode activated")
+        return True

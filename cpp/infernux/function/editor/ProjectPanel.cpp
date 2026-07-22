@@ -2883,6 +2883,7 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
             ctx->Separator();
             effectItem("project.effect_grayscale", "NewGrayscale", "infernux.route.grayscale");
             effectItem("project.effect_gaussian_blur", "NewGaussianBlur", "infernux.route.gaussian_blur");
+            effectItem("project.effect_digital_glitch", "NewDigitalGlitch", "infernux.route.digital_glitch");
             ctx->EndMenu();
         }
         if (ctx->Selectable(Tr("project.create_render_effect_group"), false)) {

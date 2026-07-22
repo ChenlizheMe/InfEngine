@@ -8,11 +8,9 @@ from Infernux.engine.i18n import t
 
 from .inspector_declarative import (
     InspectorChoice,
-    InspectorInlineAssets,
     InspectorList,
     InspectorMessages,
     InspectorModel,
-    InspectorReadOnlyRow,
     InspectorSection,
     InspectorSerializedTarget,
     register_inline_asset_renderer,
@@ -111,21 +109,10 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
 
     topology_controls = []
     stage_by_id = {stage.stable_id: stage for stage in topology.effect_stages}
-    uid = 0
     for kind, label in topology.topology_sequence:
-        if kind == "ip":
-            # Injection points are pipeline implementation details. Effects are
-            # mounted only through explicit EffectStages.
-            continue
-        uid += 1
         if kind != "effect_stage":
-            topology_controls.append(
-                InspectorReadOnlyRow(
-                    key=f"pass_{uid}",
-                    label=format_display_name(label),
-                    level="tertiary",
-                )
-            )
+            # Passes, layers, composites and injection points are compiler
+            # topology. RenderStack authors operate only on named mount points.
             continue
 
         stage = stage_by_id.get(label)
@@ -140,6 +127,23 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
             reference = _create_asset_ref_from_payload(effect_metadata, str(payload))
             return EffectSlot(stage_id=_stage_id, effect=reference)
 
+        def make_item_label(slot, index):
+            hint = slot.effect_ref.path_hint if slot and slot.effect_ref else ""
+            if hint:
+                import os
+
+                return f"{index + 1}. {os.path.splitext(os.path.basename(hint))[0]}"
+            return f"{t('renderstack.effect_slot')} {index + 1}"
+
+        def render_item(ctx, slot, index, widget_prefix, *, _stage_id=stage.stable_id):
+            if slot is None or not slot.enabled or not slot.effect_ref:
+                return
+            _render_effect_slot_parameters(
+                ctx,
+                slot.effect_ref,
+                widget_prefix=f"{_stage_id}_{widget_prefix}_{index}",
+            )
+
         topology_controls.append(
             InspectorList(
                 key=f"stage_{stage.stable_id}",
@@ -150,15 +154,8 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
                 value=lambda _adapter=adapter: _adapter.slots,
                 accept_drop="RENDER_EFFECT_FILE",
                 drop_factory=make_drop,
-            )
-        )
-        topology_controls.append(
-            InspectorInlineAssets(
-                key=f"stage_assets_{stage.stable_id}",
-                asset_type="RenderEffect",
-                references=lambda _adapter=adapter: (
-                    slot.effect_ref for slot in _adapter.slots if slot.enabled
-                ),
+                item_label=make_item_label,
+                item_renderer=render_item,
             )
         )
 
@@ -207,7 +204,7 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
             ),
             InspectorSection(
                 key="topology",
-                title=t("renderstack.topology"),
+                title=t("renderstack.effect_stages"),
                 level="secondary",
                 separator_before=True,
                 controls=tuple(topology_controls),
@@ -250,6 +247,29 @@ def _render_effect_assets(ctx, references, widget_prefix: str) -> None:
                 effect,
                 widget_prefix=f"{widget_prefix}_{reference_index}_{effect_index}",
             )
+
+
+def _render_effect_slot_parameters(ctx, reference, widget_prefix: str) -> None:
+    """Render one slot's shared asset parameters directly below that slot."""
+    from Infernux.renderstack.render_effect_compiler import expand_render_effect_reference
+    from .render_effect_inspector import render_render_effect_parameters
+
+    try:
+        effects = tuple(expand_render_effect_reference(reference))
+    except (OSError, TypeError, ValueError):
+        return
+    for effect_index, effect in enumerate(effects):
+        if len(effects) > 1 and not render_compact_section_header(
+            ctx,
+            f"{effect.name}##{widget_prefix}_{effect_index}",
+            level="tertiary",
+        ):
+            continue
+        render_render_effect_parameters(
+            ctx,
+            effect,
+            widget_prefix=f"{widget_prefix}_{effect_index}",
+        )
 
 
 register_inline_asset_renderer("RenderEffect", _render_effect_assets)

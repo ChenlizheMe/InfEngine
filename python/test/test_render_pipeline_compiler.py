@@ -119,6 +119,19 @@ def test_msaa_pipeline_resolves_isolated_routes_and_sky_before_effects():
     assert sky.resolve_color == "sky/color"
     assert textures[sky.write_colors[0][1]].samples == 4
 
+    frame_clear = next(
+        render_pass for render_pass in description.passes
+        if render_pass.name == "FrameClear"
+    )
+    sky_under = next(
+        render_pass for render_pass in description.passes
+        if render_pass.name.startswith("under/scene/")
+    )
+    assert frame_clear.clear_color_a == 0.0
+    assert sky.clear_color_a == 1.0
+    assert sky_under.commands[0].shader_name == "route_alpha_composite"
+    assert sky_under.commands[0].input_bindings[0] == ("_BaseTex", "sky/color")
+
 
 @pytest.mark.parametrize("path", [Path.FORWARD_PLUS, Path.DEFERRED])
 def test_compiler_never_silently_substitutes_forward_for_unfinished_paths(path):
@@ -231,6 +244,7 @@ def test_builtin_route_effects_declare_their_image_ownership_policy():
     assert get_render_effect_feature("infernux.post.bloom").route_policy is RoutePolicy.ADDITIVE_EXTRACT
     assert get_render_effect_feature("infernux.route.grayscale").route_policy is RoutePolicy.MASK_AND_MODIFY
     assert get_render_effect_feature("infernux.route.gaussian_blur").route_policy is RoutePolicy.ISOLATE_AND_COMPOSITE
+    assert get_render_effect_feature("infernux.route.digital_glitch").route_policy is RoutePolicy.ISOLATE_AND_COMPOSITE
 
 
 def test_route_policy_merge_rejects_additive_and_replacement_effects():
@@ -291,6 +305,42 @@ def test_gaussian_route_uses_two_pass_isolation_and_alpha_composite():
 
     assert any(name.endswith("GaussianBlur_Horizontal") for name in names)
     assert any(name.endswith("GaussianBlur_Vertical") for name in names)
+    assert "route_alpha_composite" in shaders
+
+
+def test_gaussian_blur_keeps_a_fixed_tap_budget_for_wide_spread():
+    from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect
+
+    effect = GaussianBlurEffect()
+    effect.radius = 128
+    effect.sigma = 48.0
+    stack = _route_effect_stack(
+        _effect("infernux.route.gaussian_blur", radius=effect.radius, sigma=effect.sigma)
+    )
+    description = stack.build_graph()
+    blur_passes = [
+        render_pass
+        for render_pass in description.passes
+        if "GaussianBlur_" in render_pass.name
+    ]
+
+    assert len(blur_passes) == 2
+    assert all(dict(render_pass.commands[0].push_constants)["radius"] == 128.0 for render_pass in blur_passes)
+
+
+def test_digital_glitch_route_uses_isolation_and_alpha_composite():
+    description = _route_effect_stack(
+        _effect("infernux.route.digital_glitch", intensity=0.8, block_size=14.0)
+    ).build_graph()
+    names = [render_pass.name for render_pass in description.passes]
+    shaders = [
+        command.shader_name
+        for render_pass in description.passes
+        for command in render_pass.commands
+    ]
+
+    assert any(name.endswith("DigitalGlitch_Apply") for name in names)
+    assert "digital_glitch" in shaders
     assert "route_alpha_composite" in shaders
 
 

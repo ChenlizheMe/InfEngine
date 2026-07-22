@@ -13,14 +13,14 @@ class GaussianBlurEffect(FullScreenEffect):
     menu_path = "Blur/Gaussian Blur"
 
     radius: int = serialized_field(
-        default=6,
-        range=(1, 16),
+        default=12,
+        range=(1, 128),
         slider=False,
-        tooltip="Kernel radius in pixels",
+        tooltip="Visible blur spread in full-resolution pixels",
     )
     sigma: float = serialized_field(
         default=3.0,
-        range=(0.25, 16.0),
+        range=(0.25, 64.0),
         slider=False,
         tooltip="Gaussian standard deviation",
     )
@@ -45,7 +45,7 @@ class GaussianBlurEffect(FullScreenEffect):
             format=Format.RGBA16_SFLOAT,
         )
         parameters = {
-            "radius": float(max(1, min(int(self.radius), 16))),
+            "radius": float(max(1, min(int(self.radius), 128))),
             "sigma": max(float(self.sigma), 0.25),
         }
         with graph.add_pass("GaussianBlur_Horizontal") as render_pass:

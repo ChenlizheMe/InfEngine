@@ -44,6 +44,14 @@ class _Supervisor:
         self.calls.append(("press", key, duration_seconds, kwargs))
         return {"delivered": True, "sequence": 10, "actual_duration_seconds": duration_seconds}
 
+    def player_send_mouse_button(self, button, pressed, x, y, **kwargs):
+        self.calls.append(("mouse_button", button, pressed, x, y, kwargs))
+        return {"delivered": True, "sequence": 11, "button": button}
+
+    def player_capture_game(self, file_name, **kwargs):
+        self.calls.append(("capture", file_name, kwargs))
+        return {"status": "completed", "output_path": file_name, "pixel_origin": "engine_render_target"}
+
     def player_motion_capture_arm(self, names, **kwargs):
         self.calls.append(("motion_capture_arm", names, kwargs))
         return {"capture_id": "player-motion-test", "status": "armed"}
@@ -97,6 +105,8 @@ def test_player_validation_tools_proxy_only_constrained_operations(tmp_path, mon
     )
     keyed = mcp.tools["player_validation_key"]("W", True)
     pressed = mcp.tools["player_validation_press"]("W", 0.5)
+    clicked = mcp.tools["player_validation_mouse_button"](0, True, 640.0, 360.0)
+    screenshot = mcp.tools["player_validation_capture"]("standalone.png")
     armed = mcp.tools["player_validation_motion_capture_arm"](
         ["PlayerCar"],
         seconds=1.5,
@@ -137,20 +147,24 @@ def test_player_validation_tools_proxy_only_constrained_operations(tmp_path, mon
     assert supervisor.calls[1][2]["max_discovered_objects"] == 12
     assert keyed["data"]["delivered"] is True
     assert pressed["data"]["actual_duration_seconds"] == 0.5
+    assert clicked["data"]["button"] == 0
+    assert supervisor.calls[4][0:5] == ("mouse_button", 0, True, 640.0, 360.0)
+    assert screenshot["data"]["pixel_origin"] == "engine_render_target"
+    assert supervisor.calls[5][0:2] == ("capture", "standalone.png")
     assert armed["data"] == {"capture_id": "player-motion-test", "status": "armed"}
-    assert supervisor.calls[4][0:2] == ("motion_capture_arm", ["PlayerCar"])
-    assert supervisor.calls[4][2]["trigger_scene_name"] == "racetrack"
-    assert supervisor.calls[4][2]["component_probes"][0]["fields"] == ["current_speed_kph"]
-    assert supervisor.calls[4][2]["hold_keys"] == ["W", "A"]
-    assert supervisor.calls[4][2]["hold_mouse_buttons"] == [1]
-    assert supervisor.calls[4][2]["mouse_x"] == 640.0
-    assert supervisor.calls[4][2]["mouse_y"] == 360.0
-    assert supervisor.calls[4][2]["hold_frame_count"] == 90
-    assert supervisor.calls[4][2]["wait_frame_count"] == 30
-    assert supervisor.calls[4][2]["pause_on_complete"] is True
-    assert supervisor.calls[4][2]["stop_assertions"][0]["field"] == "current_speed_kph"
-    assert supervisor.calls[4][2]["stop_mode"] == "any"
-    assert supervisor.calls[4][2]["pause_on_condition"] is True
+    assert supervisor.calls[6][0:2] == ("motion_capture_arm", ["PlayerCar"])
+    assert supervisor.calls[6][2]["trigger_scene_name"] == "racetrack"
+    assert supervisor.calls[6][2]["component_probes"][0]["fields"] == ["current_speed_kph"]
+    assert supervisor.calls[6][2]["hold_keys"] == ["W", "A"]
+    assert supervisor.calls[6][2]["hold_mouse_buttons"] == [1]
+    assert supervisor.calls[6][2]["mouse_x"] == 640.0
+    assert supervisor.calls[6][2]["mouse_y"] == 360.0
+    assert supervisor.calls[6][2]["hold_frame_count"] == 90
+    assert supervisor.calls[6][2]["wait_frame_count"] == 30
+    assert supervisor.calls[6][2]["pause_on_complete"] is True
+    assert supervisor.calls[6][2]["stop_assertions"][0]["field"] == "current_speed_kph"
+    assert supervisor.calls[6][2]["stop_mode"] == "any"
+    assert supervisor.calls[6][2]["pause_on_condition"] is True
     assert captured["data"]["terminal"] is True
     assert cancelled["data"]["cancelled"] is True
     assert stopped["data"]["stopped"] is True

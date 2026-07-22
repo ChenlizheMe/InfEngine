@@ -53,6 +53,8 @@ class InspectorList:
     value: Callable[[], list]
     accept_drop: str | None = None
     drop_factory: Callable[[Any], Any] | None = None
+    item_label: Callable[[Any, int], str] | None = None
+    item_renderer: Callable[[InxGUIContext, Any, int, str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,8 @@ def render_inspector_model(ctx: InxGUIContext, component, model: InspectorModel)
                             display_name=control.label,
                             header_drop_type=control.accept_drop,
                             header_drop_factory=control.drop_factory,
+                            item_label=control.item_label,
+                            item_renderer=control.item_renderer,
                         )
                     finally:
                         ctx.pop_id()

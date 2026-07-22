@@ -357,6 +357,7 @@ def _register_builtin_features() -> None:
     from Infernux.renderstack.bloom_effect import BloomEffect
     from Infernux.renderstack.chromatic_aberration_effect import ChromaticAberrationEffect
     from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
+    from Infernux.renderstack.digital_glitch_effect import DigitalGlitchEffect
     from Infernux.renderstack.film_grain_effect import FilmGrainEffect
     from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect
     from Infernux.renderstack.grayscale_effect import GrayscaleEffect
@@ -414,6 +415,11 @@ def _register_builtin_features() -> None:
     register_render_effect_feature(
         "infernux.route.gaussian_blur",
         GaussianBlurEffect,
+        route_policy=RoutePolicy.ISOLATE_AND_COMPOSITE,
+    )
+    register_render_effect_feature(
+        "infernux.route.digital_glitch",
+        DigitalGlitchEffect,
         route_policy=RoutePolicy.ISOLATE_AND_COMPOSITE,
     )
     _BUILTINS_REGISTERED = True

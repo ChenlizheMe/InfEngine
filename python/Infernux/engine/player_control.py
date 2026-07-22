@@ -11,7 +11,7 @@ import time
 import uuid
 from typing import Any
 
-from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.path_utils import is_path_within, resolved_path
 
 
 _MAX_COMMAND_BYTES = 64 * 1024
@@ -45,12 +45,20 @@ _COMPARISON_ALIASES = {
 class PlayerControlChannel:
     """Poll a token-authenticated file channel from the Player main thread."""
 
-    def __init__(self, request_path: str = "", response_path: str = "", token: str = "") -> None:
+    def __init__(
+        self,
+        request_path: str = "",
+        response_path: str = "",
+        token: str = "",
+        artifact_root: str = "",
+    ) -> None:
         self.request_path = resolved_path(request_path) if request_path else ""
         self.response_path = resolved_path(response_path) if response_path else ""
+        self.artifact_root = resolved_path(artifact_root) if artifact_root else ""
         self._token = str(token or "")
         self._last_command_id = ""
         self._pending_input: dict[str, Any] | None = None
+        self._pending_render_capture: dict[str, Any] | None = None
         self._motion_capture: dict[str, Any] | None = None
 
     @classmethod
@@ -60,9 +68,10 @@ class PlayerControlChannel:
         request_path = os.environ.get("_INFERNUX_PLAYER_CONTROL_FILE", "").strip()
         response_path = os.environ.get("_INFERNUX_PLAYER_RESPONSE_FILE", "").strip()
         token = os.environ.get("_INFERNUX_PLAYER_CONTROL_TOKEN", "").strip()
+        artifact_root = os.environ.get("_INFERNUX_PLAYER_ARTIFACT_ROOT", "").strip()
         if not request_path or not response_path or len(token) < 16:
             return cls()
-        return cls(request_path, response_path, token)
+        return cls(request_path, response_path, token, artifact_root)
 
     @property
     def enabled(self) -> bool:
@@ -77,6 +86,29 @@ class PlayerControlChannel:
             return None
 
         self._poll_motion_capture(engine)
+
+        if self._pending_render_capture is not None:
+            pending = self._pending_render_capture
+            snapshot = dict(native.query_capture(int(pending["capture_id"])))
+            status = str(snapshot.get("status", "") or "")
+            if status not in {"completed", "failed", "cancelled", "source_expired"} and time.monotonic() >= float(
+                pending["deadline"]
+            ):
+                native.cancel_capture(int(pending["capture_id"]))
+                status = "cancelled"
+                snapshot.update({"status": status, "error": "Player render-target capture timed out"})
+            if status in {"completed", "failed", "cancelled", "source_expired"}:
+                snapshot["terminal"] = True
+                snapshot["pixel_origin"] = "engine_render_target"
+                snapshot["os_capture_fallback"] = False
+                self._write_response(
+                    str(pending["command_id"]),
+                    status == "completed",
+                    snapshot,
+                    error=str(snapshot.get("error", "") or "capture failed"),
+                )
+                self._pending_render_capture = None
+            return None
 
         if self._pending_input is not None:
             pending = self._pending_input
@@ -105,21 +137,37 @@ class PlayerControlChannel:
                     return None
             if int(native.last_processed_synthetic_input_sequence) >= sequence:
                 command_id = str(pending["command_id"])
-                scancode = int(pending["scancode"])
                 from Infernux.input import Input
                 from Infernux.lib import InputManager
 
                 input_manager = InputManager.instance()
-                response = {
-                    "sequence": sequence,
-                    "delivered": True,
-                    "scancode": scancode,
-                    "game_focused": bool(Input.is_game_focused()),
-                    "held": bool(input_manager.get_key(scancode)),
-                    "down": bool(input_manager.get_key_down(scancode)),
-                    "up": bool(input_manager.get_key_up(scancode)),
-                    "pending_input_count": int(native.pending_synthetic_input_count),
-                }
+                if pending.get("kind") == "mouse_button":
+                    button = int(pending["button"])
+                    response = {
+                        "sequence": sequence,
+                        "delivered": True,
+                        "button": button,
+                        "pressed": bool(pending["pressed"]),
+                        "x": float(input_manager.mouse_position_x),
+                        "y": float(input_manager.mouse_position_y),
+                        "game_focused": bool(Input.is_game_focused()),
+                        "held": bool(input_manager.get_mouse_button(button)),
+                        "down": bool(input_manager.get_mouse_button_down(button)),
+                        "up": bool(input_manager.get_mouse_button_up(button)),
+                        "pending_input_count": int(native.pending_synthetic_input_count),
+                    }
+                else:
+                    scancode = int(pending["scancode"])
+                    response = {
+                        "sequence": sequence,
+                        "delivered": True,
+                        "scancode": scancode,
+                        "game_focused": bool(Input.is_game_focused()),
+                        "held": bool(input_manager.get_key(scancode)),
+                        "down": bool(input_manager.get_key_down(scancode)),
+                        "up": bool(input_manager.get_key_up(scancode)),
+                        "pending_input_count": int(native.pending_synthetic_input_count),
+                    }
                 if pending.get("kind") == "press":
                     response.update({
                         "down_sequence": int(pending["down_sequence"]),
@@ -173,6 +221,45 @@ class PlayerControlChannel:
                     "command_id": command_id,
                     "sequence": sequence,
                     "scancode": scancode,
+                }
+                return None
+            if action == "mouse_button":
+                button = int(command.get("button", -1))
+                if button < 0 or button > 4:
+                    raise ValueError("button must use a Unity mouse button index from 0 through 4")
+                x = _bounded_finite_float(command.get("x", 0.0), "x", minimum=0.0, maximum=100_000.0)
+                y = _bounded_finite_float(command.get("y", 0.0), "y", minimum=0.0, maximum=100_000.0)
+                pressed = bool(command.get("pressed", False))
+                sequence = int(native.queue_synthetic_mouse_button_input(button, pressed, x, y))
+                self._pending_input = {
+                    "kind": "mouse_button",
+                    "command_id": command_id,
+                    "sequence": sequence,
+                    "button": button,
+                    "pressed": pressed,
+                }
+                return None
+            if action == "capture":
+                if not self.artifact_root:
+                    raise RuntimeError("Player capture artifact root is unavailable")
+                file_name = os.path.basename(str(command.get("file_name", "") or "").strip())
+                if not file_name or os.path.splitext(file_name)[1].lower() != ".png":
+                    raise ValueError("file_name must be a plain .png basename")
+                output_path = resolved_path(os.path.join(self.artifact_root, "review", file_name))
+                if not is_path_within(output_path, self.artifact_root, allow_root=False):
+                    raise ValueError("capture output must stay inside the session artifact root")
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                capture_id = int(native.request_capture("game", output_path))
+                timeout_seconds = _bounded_finite_float(
+                    command.get("timeout_seconds", 30.0),
+                    "timeout_seconds",
+                    minimum=0.5,
+                    maximum=60.0,
+                )
+                self._pending_render_capture = {
+                    "command_id": command_id,
+                    "capture_id": capture_id,
+                    "deadline": time.monotonic() + timeout_seconds,
                 }
                 return None
             if action == "press":

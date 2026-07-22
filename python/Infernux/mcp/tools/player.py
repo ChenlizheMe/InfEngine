@@ -124,6 +124,40 @@ def register_player_tools(mcp, project_path: str) -> None:
         except Exception as exc:
             return _player_failure(exc)
 
+    @mcp.tool(name="player_validation_mouse_button")
+    def player_validation_mouse_button(
+        button: int,
+        pressed: bool,
+        x: float,
+        y: float,
+        timeout_seconds: float = 3.0,
+    ) -> dict:
+        """Send one mouse transition to Player through its SDL synthetic input queue."""
+        try:
+            return ok(_supervisor().player_send_mouse_button(
+                int(button),
+                bool(pressed),
+                float(x),
+                float(y),
+                timeout_seconds=timeout_seconds,
+            ))
+        except Exception as exc:
+            return _player_failure(exc)
+
+    @mcp.tool(name="player_validation_capture")
+    def player_validation_capture(
+        file_name: str = "player-game.png",
+        timeout_seconds: float = 30.0,
+    ) -> dict:
+        """Capture the standalone Player Game render target for human review."""
+        try:
+            return ok(_supervisor().player_capture_game(
+                file_name,
+                timeout_seconds=timeout_seconds,
+            ))
+        except Exception as exc:
+            return _player_failure(exc)
+
     @mcp.tool(name="player_validation_motion_capture_arm")
     def player_validation_motion_capture_arm(
         object_names: list[str],
@@ -279,6 +313,16 @@ def _register_metadata() -> None:
             [],
         ),
         ("player_validation_key", "Send a human-equivalent SDL key transition to Player.", ["Queues Player input"]),
+        (
+            "player_validation_mouse_button",
+            "Send a human-equivalent SDL mouse transition to Player.",
+            ["Queues Player input"],
+        ),
+        (
+            "player_validation_capture",
+            "Capture the standalone Player Game render target through engine GPU readback.",
+            ["Queues GPU readback", "Writes one PNG under the session review directory"],
+        ),
         (
             "player_validation_press",
             "Press and release a Player key with engine-controlled timing and optional public component probes.",

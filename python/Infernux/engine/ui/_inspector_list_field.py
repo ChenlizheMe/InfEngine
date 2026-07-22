@@ -239,14 +239,28 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
     return changed
 
 
-def _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
+def _render_serializable_list_item(
+    ctx,
+    field_name,
+    index,
+    item,
+    items,
+    metadata,
+    *,
+    item_label=None,
+    item_renderer=None,
+):
     """Render a single SERIALIZABLE_OBJECT list element with nested fields.
 
     Mutates *items[index]* in-place on change. Returns True if changed.
     """
     import copy as _copy
     so_class = type(item) if item is not None else metadata.element_class
-    so_label = f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
+    so_label = (
+        str(item_label(item, index))
+        if item_label is not None
+        else f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
+    )
     if not render_compact_section_header(ctx, so_label, level="tertiary"):
         return False
     from Infernux.components.serialized_field import get_serialized_fields as _gsf
@@ -283,13 +297,16 @@ def _render_serializable_list_item(ctx, field_name, index, item, items, metadata
             )
         if has_field_changed(so_meta.field_type, so_val, new_val):
             elem_changes[so_fn] = new_val
-    if not elem_changes:
-        return False
-    edited = _copy.deepcopy(item)
-    for fn, fv in elem_changes.items():
-        setattr(edited, fn, fv)
-    items[index] = edited
-    return True
+    changed = bool(elem_changes)
+    if changed:
+        edited = _copy.deepcopy(item)
+        for fn, fv in elem_changes.items():
+            setattr(edited, fn, fv)
+        items[index] = edited
+        item = edited
+    if item_renderer is not None:
+        item_renderer(ctx, item, index, f"{field_name}_{index}")
+    return changed
 
 
 def _render_serializable_asset_reference(
@@ -359,8 +376,20 @@ def _render_serializable_asset_reference(
     return selected
 
 
-def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,
-                            reference_types, button_spacing, current_value):
+def _render_list_items_body(
+    ctx,
+    comp,
+    field_name,
+    metadata,
+    items,
+    element_type,
+    reference_types,
+    button_spacing,
+    current_value,
+    *,
+    item_label=None,
+    item_renderer=None,
+):
     """Render list item rows, reorder separators, and bottom drop zone. Returns True if changed."""
     from .igui import IGUI
     from .inspector_utils import render_serialized_field, has_field_changed
@@ -403,7 +432,16 @@ def _render_list_items_body(ctx, comp, field_name, metadata, items, element_type
             if _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
                 changed = True
         elif element_type == FieldType.SERIALIZABLE_OBJECT:
-            if _render_serializable_list_item(ctx, field_name, index, item, items, metadata):
+            if _render_serializable_list_item(
+                ctx,
+                field_name,
+                index,
+                item,
+                items,
+                metadata,
+                item_label=item_label,
+                item_renderer=item_renderer,
+            ):
                 changed = True
         else:
             new_item = render_serialized_field(
@@ -444,6 +482,8 @@ def _render_list_field(
     display_name: str | None = None,
     header_drop_type: str | None = None,
     header_drop_factory=None,
+    item_label=None,
+    item_renderer=None,
 ):
     from Infernux.components.serialized_field import FieldType
     from .igui import IGUI
@@ -519,8 +559,19 @@ def _render_list_field(
         return
 
     # ── Render items, reorder separators, bottom drop zone ──
-    if _render_list_items_body(ctx, comp, field_name, metadata, items, element_type,
-                               reference_types, button_spacing, current_value):
+    if _render_list_items_body(
+        ctx,
+        comp,
+        field_name,
+        metadata,
+        items,
+        element_type,
+        reference_types,
+        button_spacing,
+        current_value,
+        item_label=item_label,
+        item_renderer=item_renderer,
+    ):
         changed = True
 
     if changed and not metadata.readonly:

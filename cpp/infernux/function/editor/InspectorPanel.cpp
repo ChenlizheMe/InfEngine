@@ -212,7 +212,8 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
     if (undoBeginFrame)
         undoBeginFrame();
 
-    bool childVisible = ImGui::BeginChild("PropertiesModule", ImVec2(0, height), ImGuiChildFlags_Borders);
+    bool childVisible = ImGui::BeginChild("PropertiesModule", ImVec2(0, height), ImGuiChildFlags_Borders,
+                                          ImGuiWindowFlags_AlwaysVerticalScrollbar);
     if (childVisible) {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_FRAME_PAD);
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_ITEM_SPC);
@@ -261,7 +262,8 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
 
 void InspectorPanel::RenderRawDataModule(InxGUIContext *ctx, float height)
 {
-    bool childVisible = ImGui::BeginChild("RawDataModule", ImVec2(0, height), ImGuiChildFlags_Borders);
+    bool childVisible = ImGui::BeginChild("RawDataModule", ImVec2(0, height), ImGuiChildFlags_Borders,
+                                          ImGuiWindowFlags_AlwaysVerticalScrollbar);
     if (childVisible) {
         if (!m_selectedFile.empty() && m_mode == InspectorMode::Asset) {
             if (renderAssetInspector)

@@ -1131,6 +1131,18 @@ std::string SceneRenderGraph::GetDebugString() const
         for (const auto &pass : m_pythonGraphDesc.passes) {
             result += "  " + pass.name + "\n";
         }
+        if (!m_parameterBlocks.empty()) {
+            result += "Parameter blocks (" + std::to_string(m_parameterBlocks.size()) + "):\n";
+            for (const auto &[id, block] : m_parameterBlocks) {
+                result += "  " + id + " [";
+                for (size_t index = 0; index < block.names.size(); ++index) {
+                    if (index != 0)
+                        result += ", ";
+                    result += block.names[index] + "=" + std::to_string(block.values.values[index]);
+                }
+                result += "]\n";
+            }
+        }
     }
 
     // Add underlying RenderGraph debug info

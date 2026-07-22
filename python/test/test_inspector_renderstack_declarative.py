@@ -1,9 +1,8 @@
 from Infernux.engine.ui.inspector_declarative import (
     InspectorChoice,
-    InspectorInlineAssets,
     InspectorList,
+    InspectorMessages,
     InspectorModel,
-    InspectorReadOnlyRow,
     InspectorSection,
     InspectorSerializedTarget,
     render_inspector_model,
@@ -55,10 +54,10 @@ def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
     assert '"msaa_samples": {"__enum_name__": "X2"}' in stack.pipeline_params_json
 
 
-def test_renderstack_topology_exposes_only_pass_rows_and_effect_stage_lists():
+def test_renderstack_inspector_exposes_only_effect_mount_points_with_inline_slots():
     controls = _topology_controls(build_renderstack_inspector_model(RenderStack()))
 
-    assert any(isinstance(control, InspectorReadOnlyRow) for control in controls)
+    assert all(isinstance(control, (InspectorList, InspectorMessages)) for control in controls)
     lists = [control for control in controls if isinstance(control, InspectorList)]
     assert [control.key for control in lists] == [
         "stage_after_opaque",
@@ -68,7 +67,8 @@ def test_renderstack_topology_exposes_only_pass_rows_and_effect_stage_lists():
         "stage_after_screen_ui",
     ]
     assert all(control.accept_drop == "RENDER_EFFECT_FILE" for control in lists)
-    assert len([control for control in controls if isinstance(control, InspectorInlineAssets)]) == 5
+    assert all(control.item_label is not None for control in lists)
+    assert all(control.item_renderer is not None for control in lists)
 
 
 def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access():

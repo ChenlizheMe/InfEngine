@@ -68,6 +68,7 @@ from Infernux.renderstack.fullscreen_effect import FullScreenEffect
 from Infernux.renderstack.bloom_effect import BloomEffect
 from Infernux.renderstack.gaussian_blur_effect import GaussianBlurEffect
 from Infernux.renderstack.grayscale_effect import GrayscaleEffect
+from Infernux.renderstack.digital_glitch_effect import DigitalGlitchEffect
 from Infernux.renderstack.tonemapping_effect import ToneMappingEffect
 from Infernux.renderstack.vignette_effect import VignetteEffect
 from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
@@ -127,6 +128,7 @@ __all__ = [
     "BloomEffect",
     "GaussianBlurEffect",
     "GrayscaleEffect",
+    "DigitalGlitchEffect",
     "ToneMappingEffect",
     "VignetteEffect",
     "ColorAdjustmentsEffect",
