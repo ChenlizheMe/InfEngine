@@ -1130,6 +1130,12 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("shadow_normal_bias", &Light::GetShadowNormalBias, &Light::SetShadowNormalBias,
                       "Shadow normal-offset bias (world units along the surface normal)")
 
+        // Influence domains are orthogonal to the GameObject layer mask.
+        .def_property("affect_geometry", &Light::GetAffectGeometry, &Light::SetAffectGeometry,
+                      "Whether this light affects geometry renderers")
+        .def_property("affect_particles", &Light::GetAffectParticles, &Light::SetAffectParticles,
+                      "Whether this light affects particle renderers")
+
         // Shadow mapping matrices
         .def("get_light_view_matrix", &Light::GetLightViewMatrix, "Get the light's view matrix for shadow mapping")
         .def("get_light_projection_matrix", &Light::GetLightProjectionMatrix, py::arg("shadow_extent") = 20.0f,

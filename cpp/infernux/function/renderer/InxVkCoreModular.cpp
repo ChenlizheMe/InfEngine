@@ -147,6 +147,7 @@ InxVkCoreModular::~InxVkCoreModular()
 
     m_lightingUbo.reset();
     m_lightingUboMapped = nullptr;
+    m_canonicalLightGpuBuffer.Shutdown();
     m_materialUbo.reset();
     m_materialUboMapped = nullptr;
     m_sceneUbo.reset();
@@ -666,6 +667,9 @@ void InxVkCoreModular::CreateUniformBuffers()
         }
     }
     INXLOG_INFO("Created lighting UBO: ", lightingUboSize, " bytes (single buffer)");
+
+    if (!m_canonicalLightGpuBuffer.Initialize(m_deviceContext.GetRhiDevice(), m_maxFramesInFlight))
+        throw std::runtime_error("Failed to initialize canonical light GPU buffers");
 
     // Default material UBO (binding 2) — single buffer, persistently mapped.
     // 256 bytes is a safe default for the fallback material UBO; per-material

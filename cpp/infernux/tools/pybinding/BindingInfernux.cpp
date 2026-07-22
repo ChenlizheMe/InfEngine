@@ -981,6 +981,13 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["game_draw_call_count"] = snapshot.gameDrawCallCount;
                                    result["game_shadow_draw_call_count"] = snapshot.gameShadowDrawCallCount;
                                    result["light_count"] = snapshot.lightCount;
+                                   result["canonical_light_gpu_buffer_ready"] =
+                                       snapshot.canonicalLightGpuBufferReady;
+                                   result["canonical_light_gpu_bytes"] = snapshot.canonicalLightGpuBytes;
+                                   result["canonical_light_generation"] = snapshot.canonicalLightGeneration;
+                                   result["canonical_directional_light_count"] =
+                                       snapshot.canonicalDirectionalLightCount;
+                                   result["canonical_local_light_count"] = snapshot.canonicalLocalLightCount;
                                    result["particle_count"] = snapshot.particleCount;
                                    result["cpu_particle_count"] = snapshot.particleCount;
                                    result["gpu_particle_system_count"] = snapshot.gpuParticleSystemCount;

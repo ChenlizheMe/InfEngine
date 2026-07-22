@@ -2438,8 +2438,16 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         if (m_gameRenderGraph->HasCachedShadowDrawCalls())
             snapshot.gameShadowDrawCallCount = countShadowCasters(m_gameRenderGraph->GetCachedShadowDrawCalls());
     }
-    if (m_vkCore)
+    if (m_vkCore) {
         snapshot.lightCount = m_vkCore->GetLightCollector().GetTotalLightCount();
+        if (const auto *lights = m_vkCore->GetCanonicalLightGpuFrame()) {
+            snapshot.canonicalLightGpuBufferReady = lights->buffer.IsValid();
+            snapshot.canonicalLightGpuBytes = lights->dataBytes;
+            snapshot.canonicalLightGeneration = lights->generation;
+            snapshot.canonicalDirectionalLightCount = lights->directionalCount;
+            snapshot.canonicalLocalLightCount = lights->localCount;
+        }
+    }
     if (m_particleDrawCalls)
         snapshot.particleCount = m_particleDrawCalls->GetParticleCount();
     if (m_particleGpuSystemManager) {

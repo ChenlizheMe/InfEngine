@@ -117,8 +117,7 @@ void SceneLightCollector::AddCanonicalLight(const Light *light, const glm::vec3 
     data.shadowAndInnerCos = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
                                        spot ? std::cos(glm::radians(light->GetSpotAngle() * 0.5f)) : -1.0f);
     data.metadata = glm::uvec4(static_cast<uint32_t>(lightType), light->GetCullingMask(),
-                               static_cast<uint32_t>(light->GetShadows()),
-                               CanonicalLightAffectsScene | CanonicalLightAffectsParticles);
+                               static_cast<uint32_t>(light->GetShadows()), light->GetInfluenceDomains());
     m_canonicalLightSnapshot.Add(data);
 }
 

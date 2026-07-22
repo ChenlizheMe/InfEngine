@@ -720,6 +720,9 @@ void InxVkCoreModular::UpdateLightingUBO(const glm::vec3 &cameraPosition)
     // Delegate to StageLightingUBO — the actual GPU write now happens
     // inline in the command buffer via CmdUpdateLightingUBO().
     StageLightingUBO(cameraPosition);
+    const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
+    if (!m_canonicalLightGpuBuffer.Update(frameIndex, m_lightCollector.GetCanonicalLightSnapshot()))
+        INXLOG_ERROR("Failed to upload canonical light snapshot for frame slot ", frameIndex);
 }
 
 void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)

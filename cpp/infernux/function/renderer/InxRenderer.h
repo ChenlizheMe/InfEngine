@@ -73,6 +73,11 @@ struct RendererFrameTelemetrySnapshot
     size_t gameDrawCallCount = 0;
     size_t gameShadowDrawCallCount = 0;
     size_t lightCount = 0;
+    bool canonicalLightGpuBufferReady = false;
+    uint64_t canonicalLightGpuBytes = 0;
+    uint64_t canonicalLightGeneration = 0;
+    uint32_t canonicalDirectionalLightCount = 0;
+    uint32_t canonicalLocalLightCount = 0;
     size_t particleCount = 0;
     size_t gpuParticleSystemCount = 0;
     size_t gpuParticleOutputCount = 0;

@@ -1228,6 +1228,8 @@ class TestLight:
         assert light.light_type == LightType.Directional
         assert light.intensity == pytest.approx(1.0)
         assert light.shadow_bias == pytest.approx(0.0)
+        assert light.affect_geometry is True
+        assert light.affect_particles is True
 
     def test_light_type_point(self, scene):
         go = scene.create_game_object("PL")
@@ -1256,6 +1258,17 @@ class TestLight:
         light = go.add_component("Light")
         light.shadows = LightShadows.Hard
         assert light.shadows == LightShadows.Hard
+
+    def test_light_influence_domains_round_trip(self, scene):
+        go = scene.create_game_object("DomainLight")
+        light = go.add_component("Light")
+        light.affect_geometry = False
+        light.affect_particles = True
+
+        assert light.affect_geometry is False
+        assert light.affect_particles is True
+        data = json.loads(light.serialize())
+        assert data["influenceDomains"] == 2
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MeshRenderer

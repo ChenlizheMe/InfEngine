@@ -197,7 +197,7 @@ enum class CanonicalLightType : uint32_t
 
 enum CanonicalLightFlags : uint32_t
 {
-    CanonicalLightAffectsScene = 1u << 0u,
+    CanonicalLightAffectsGeometry = 1u << 0u,
     CanonicalLightAffectsParticles = 1u << 1u,
 };
 

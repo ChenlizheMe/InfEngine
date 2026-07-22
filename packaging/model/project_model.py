@@ -59,6 +59,7 @@ def _default_scene_document() -> dict:
                             "backgroundColor": [0.1, 0.1, 0.1, 1.0],
                             "clearFlags": 0,
                             "cullingMask": 4294967295,
+                            "influenceDomains": 3,
                             "depth": 0.0,
                             "farClip": 5000.0,
                             "fov": 60.0,

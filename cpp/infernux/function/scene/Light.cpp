@@ -63,6 +63,7 @@ nlohmann::json Light::SerializeDocument() const
     // Rendering
     j["renderMode"] = static_cast<int>(m_renderMode);
     j["cullingMask"] = m_cullingMask;
+    j["influenceDomains"] = m_influenceDomains;
 
     // Baking
     j["baked"] = m_baked;
@@ -76,7 +77,7 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
     ValidateComponentDocument(j, "Light",
                               {"lightType", "color", "intensity", "range", "spotAngle", "outerSpotAngle", "shadows",
                                "shadowStrength", "shadowBias", "shadowNormalBias", "renderMode", "cullingMask",
-                               "baked"});
+                               "influenceDomains", "baked"});
     const int lightType = RequireInteger(j, "lightType", "Light");
     RequireFiniteVector(j, "color", 3, "Light");
     const float intensity = RequireFiniteFloat(j, "intensity", "Light");
@@ -89,6 +90,7 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
     const float shadowNormalBias = RequireFiniteFloat(j, "shadowNormalBias", "Light");
     const int renderMode = RequireInteger(j, "renderMode", "Light");
     const uint64_t cullingMask = RequireUnsignedInteger(j, "cullingMask", "Light");
+    const uint64_t influenceDomains = RequireUnsignedInteger(j, "influenceDomains", "Light");
     RequireBoolean(j, "baked", "Light");
 
     if (lightType < static_cast<int>(LightType::Directional) || lightType > static_cast<int>(LightType::Area))
@@ -106,6 +108,8 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
         throw std::invalid_argument("Light.renderMode is unsupported");
     if (cullingMask > std::numeric_limits<uint32_t>::max())
         throw std::invalid_argument("Light.cullingMask exceeds 32 bits");
+    if ((influenceDomains & ~static_cast<uint64_t>(AllLightInfluenceDomains)) != 0u)
+        throw std::invalid_argument("Light.influenceDomains contains unsupported flags");
 }
 
 bool Light::DeserializeDocument(const nlohmann::json &j)
@@ -127,6 +131,7 @@ bool Light::DeserializeDocument(const nlohmann::json &j)
         m_shadowNormalBias = j["shadowNormalBias"].get<float>();
         m_renderMode = static_cast<LightRenderMode>(j["renderMode"].get<int>());
         m_cullingMask = j["cullingMask"].get<uint32_t>();
+        m_influenceDomains = j["influenceDomains"].get<uint32_t>();
         m_baked = j["baked"].get<bool>();
 
         return true;
@@ -211,6 +216,7 @@ std::unique_ptr<Component> Light::Clone() const
     clone->m_shadowNormalBias = m_shadowNormalBias;
     clone->m_renderMode = m_renderMode;
     clone->m_cullingMask = m_cullingMask;
+    clone->m_influenceDomains = m_influenceDomains;
     clone->m_baked = m_baked;
     return clone;
 }

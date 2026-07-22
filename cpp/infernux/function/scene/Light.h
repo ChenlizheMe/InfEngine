@@ -43,6 +43,15 @@ enum class LightRenderMode
     ForceVertex = 2 ///< Always per-vertex lighting
 };
 
+enum class LightInfluenceDomain : uint32_t
+{
+    Geometry = 1u << 0u,
+    Particles = 1u << 1u,
+};
+
+constexpr uint32_t AllLightInfluenceDomains = static_cast<uint32_t>(LightInfluenceDomain::Geometry) |
+                                              static_cast<uint32_t>(LightInfluenceDomain::Particles);
+
 /**
  * @brief Light component - Base class for all light sources.
  *
@@ -218,6 +227,27 @@ class Light : public Component
         m_cullingMask = mask;
     }
 
+    [[nodiscard]] uint32_t GetInfluenceDomains() const
+    {
+        return m_influenceDomains;
+    }
+    [[nodiscard]] bool GetAffectGeometry() const
+    {
+        return (m_influenceDomains & static_cast<uint32_t>(LightInfluenceDomain::Geometry)) != 0u;
+    }
+    void SetAffectGeometry(bool enabled)
+    {
+        SetInfluenceDomain(LightInfluenceDomain::Geometry, enabled);
+    }
+    [[nodiscard]] bool GetAffectParticles() const
+    {
+        return (m_influenceDomains & static_cast<uint32_t>(LightInfluenceDomain::Particles)) != 0u;
+    }
+    void SetAffectParticles(bool enabled)
+    {
+        SetInfluenceDomain(LightInfluenceDomain::Particles, enabled);
+    }
+
     // ========================================================================
     // Baking
     // ========================================================================
@@ -281,9 +311,17 @@ class Light : public Component
     // Rendering
     LightRenderMode m_renderMode = LightRenderMode::Auto;
     uint32_t m_cullingMask = 0xFFFFFFFF; // All layers by default
+    uint32_t m_influenceDomains = AllLightInfluenceDomains;
 
     // Baking
     bool m_baked = false;
+
+  private:
+    void SetInfluenceDomain(LightInfluenceDomain domain, bool enabled)
+    {
+        const uint32_t bit = static_cast<uint32_t>(domain);
+        m_influenceDomains = enabled ? (m_influenceDomains | bit) : (m_influenceDomains & ~bit);
+    }
 };
 
 } // namespace infernux

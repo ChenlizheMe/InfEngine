@@ -50,6 +50,7 @@
 #endif
 #include <core/types/InxApplication.h>
 #include <function/scene/LightingData.h>
+#include <function/renderer/lighting/CanonicalLightGpuBuffer.h>
 
 #include <functional>
 #include <memory>
@@ -860,6 +861,13 @@ class InxVkCoreModular
     /// @brief Update lighting UBO for current frame
     void UpdateLightingUBO(const glm::vec3 &cameraPosition);
 
+    [[nodiscard]] const lighting::CanonicalLightGpuFrame *GetCanonicalLightGpuFrame() const noexcept
+    {
+        if (m_canonicalLightGpuBuffer.FrameCount() == 0)
+            return nullptr;
+        return &m_canonicalLightGpuBuffer.Frame(m_currentFrame % m_maxFramesInFlight);
+    }
+
     // ========================================================================
     // Frame Synchronization & Deferred Deletion
     // ========================================================================
@@ -1119,6 +1127,7 @@ class InxVkCoreModular
 
     // Scene light collector
     SceneLightCollector m_lightCollector;
+    lighting::CanonicalLightGpuBuffer m_canonicalLightGpuBuffer;
 
     // Shader cache (modules, SPIR-V code, render-state annotations, program cache)
     VkShaderCache m_shaderCache;

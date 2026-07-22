@@ -203,6 +203,20 @@ class Light(BuiltinComponent):
                 "position along the surface normal to fight shadow acne)",
     )
 
+    affect_geometry = CppProperty(
+        "affect_geometry",
+        FieldType.BOOL,
+        default=True,
+        header="Influence",
+        tooltip="Allow this light to illuminate geometry renderers",
+    )
+    affect_particles = CppProperty(
+        "affect_particles",
+        FieldType.BOOL,
+        default=True,
+        tooltip="Allow this light to illuminate particle renderers",
+    )
+
     # ------------------------------------------------------------------
     # Methods (delegate to C++ Light)
     # ------------------------------------------------------------------
