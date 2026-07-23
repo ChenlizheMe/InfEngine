@@ -85,6 +85,15 @@ class ParticleStream:
         restitution: float = 0.5,
         friction: float = 0.1,
     ) -> None: ...
+    def collide_sphere(
+        self,
+        *,
+        center=(0.0, 0.0, 0.0),
+        sphere_radius: float = 1.0,
+        particle_radius: float = 0.0,
+        restitution: float = 0.5,
+        friction: float = 0.1,
+    ) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
     def rotate_orientation(self, degrees_per_second) -> None: ...
     def kill_if(self, condition: bool) -> None: ...
@@ -146,6 +155,7 @@ class ParticleScriptCompiler:
         "update": {
             "acceleration": ("particle.update.acceleration", "value"),
             "collide_plane": ("particle.update.collide_plane", ""),
+            "collide_sphere": ("particle.update.collide_sphere", ""),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
             "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),

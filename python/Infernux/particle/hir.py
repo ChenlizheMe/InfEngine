@@ -302,39 +302,43 @@ class ParticleGraphCompiler:
                 f"particle ribbon output {invalid_ribbon_uv.output_id!r} requires uv_mode "
                 "'stretch' or 'repeat' and a finite positive uv_scale"
             )
+        collision_opcodes = {"collision.plane", "collision.sphere"}
         collision_indices = [
             index
             for index, operation in enumerate(update.operations)
-            if operation.opcode == "collision.plane"
+            if operation.opcode in collision_opcodes
         ]
         if collision_indices and any(
-            operation.opcode != "collision.plane"
+            operation.opcode not in collision_opcodes
             for operation in update.operations[collision_indices[0] :]
         ):
             raise ParticleCompileError(
-                "Plane Collision must be the final operation group in the Update stream"
+                "Collision nodes must form the final operation group in the Update stream"
             )
-        for operation in (
-            update.operations[index] for index in collision_indices
-        ):
+        for operation in (update.operations[index] for index in collision_indices):
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
-            normal = parameters["normal"]
-            if "normal" not in bindings and (
-                not isinstance(normal, (list, tuple))
-                or len(normal) != 3
-                or sum(float(value) * float(value) for value in normal) <= 1.0e-12
-            ):
-                raise ParticleCompileError("Plane Collision normal must be non-zero")
-            for name in ("radius", "restitution", "friction"):
+            label = "Plane Collision" if operation.opcode == "collision.plane" else "Sphere Collision"
+            if operation.opcode == "collision.plane":
+                normal = parameters["normal"]
+                if "normal" not in bindings and (
+                    not isinstance(normal, (list, tuple))
+                    or len(normal) != 3
+                    or sum(float(value) * float(value) for value in normal) <= 1.0e-12
+                ):
+                    raise ParticleCompileError("Plane Collision normal must be non-zero")
+                radius_names = ("radius",)
+            else:
+                radius_names = ("sphere_radius", "particle_radius")
+            for name in (*radius_names, "restitution", "friction"):
                 if name in bindings:
                     continue
                 value = float(parameters[name])
-                if name == "radius" and value < 0.0:
-                    raise ParticleCompileError("Plane Collision radius must be non-negative")
-                if name != "radius" and not 0.0 <= value <= 1.0:
+                if name in radius_names and value < 0.0:
+                    raise ParticleCompileError(f"{label} {name} must be non-negative")
+                if name not in radius_names and not 0.0 <= value <= 1.0:
                     raise ParticleCompileError(
-                        f"Plane Collision {name} must be between 0 and 1"
+                        f"{label} {name} must be between 0 and 1"
                     )
         orientation_opcodes = {
             "attribute.set_orientation",

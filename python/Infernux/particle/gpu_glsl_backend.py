@@ -1309,6 +1309,10 @@ class _StageCompiler:
             expression = f"inx_collide_plane_position({', '.join(operands)})"
         elif opcode == "collide_plane_velocity":
             expression = f"inx_collide_plane_velocity({', '.join(operands)})"
+        elif opcode == "collide_sphere_position":
+            expression = f"inx_collide_sphere_position({', '.join(operands)})"
+        elif opcode == "collide_sphere_velocity":
+            expression = f"inx_collide_sphere_velocity({', '.join(operands)})"
         elif opcode == "export_attribute":
             self._exports[immediate["attribute"]] = operands[0]
             return
@@ -2065,6 +2069,36 @@ vec3 inx_collide_plane_velocity(vec3 position, vec3 velocity, vec3 point, vec3 n
     vec3 n = inx_safe_normalize(normal);
     float normal_speed = dot(velocity, n);
     bool collision = dot(position - point, n) < max(radius, 0.0) && normal_speed < 0.0;
+    if (!collision) return velocity;
+    vec3 tangent_velocity = velocity - n * normal_speed;
+    return tangent_velocity * (1.0 - clamp(friction, 0.0, 1.0))
+         - n * normal_speed * clamp(restitution, 0.0, 1.0);
+}}
+
+vec3 inx_sphere_collision_normal(vec3 position, vec3 velocity, vec3 center) {{
+    vec3 delta = position - center;
+    float distance_value = length(delta);
+    if (distance_value > 1.0e-6) return delta / distance_value;
+    float speed = length(velocity);
+    return speed > 1.0e-6 ? -velocity / speed : vec3(0.0, 1.0, 0.0);
+}}
+
+vec3 inx_collide_sphere_position(vec3 position, vec3 velocity, vec3 center,
+                                 float sphere_radius, float particle_radius,
+                                 float restitution, float friction) {{
+    vec3 n = inx_sphere_collision_normal(position, velocity, center);
+    float combined_radius = max(sphere_radius, 0.0) + max(particle_radius, 0.0);
+    float penetration = combined_radius - length(position - center);
+    return penetration > 0.0 ? position + n * penetration : position;
+}}
+
+vec3 inx_collide_sphere_velocity(vec3 position, vec3 velocity, vec3 center,
+                                 float sphere_radius, float particle_radius,
+                                 float restitution, float friction) {{
+    vec3 n = inx_sphere_collision_normal(position, velocity, center);
+    float normal_speed = dot(velocity, n);
+    float combined_radius = max(sphere_radius, 0.0) + max(particle_radius, 0.0);
+    bool collision = length(position - center) < combined_radius && normal_speed < 0.0;
     if (!collision) return velocity;
     vec3 tangent_velocity = velocity - n * normal_speed;
     return tangent_velocity * (1.0 - clamp(friction, 0.0, 1.0))

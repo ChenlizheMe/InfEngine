@@ -228,6 +228,22 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
     ),
     _operation(
+        "particle.update.collide_sphere",
+        "Sphere Collision",
+        "collision.sphere",
+        (
+            PropertyDef(
+                "center",
+                TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                [0.0, 0.0, 0.0],
+            ),
+            PropertyDef("sphere_radius", TypeRef(ValueType.F32), 1.0),
+            PropertyDef("particle_radius", TypeRef(ValueType.F32), 0.0),
+            PropertyDef("restitution", TypeRef(ValueType.F32), 0.5),
+            PropertyDef("friction", TypeRef(ValueType.F32), 0.1),
+        ),
+    ),
+    _operation(
         "particle.update.kill_if",
         "Kill If",
         "lifecycle.kill_if",

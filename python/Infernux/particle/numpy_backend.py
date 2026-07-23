@@ -1020,14 +1020,15 @@ def _compile_stage(
                 f"    np.logical_and(state.alive[particle_slice], np.logical_not({source}), "
                 f"out=state.alive[particle_slice])"
             )
-        elif opcode in {"collide_plane_position", "collide_plane_velocity"}:
+        elif opcode in {
+            "collide_plane_position",
+            "collide_plane_velocity",
+            "collide_sphere_position",
+            "collide_sphere_velocity",
+        }:
             operands = operand_names(instruction)
             output = result_buffer(instruction)
-            helper = (
-                "_collide_plane_position"
-                if opcode == "collide_plane_position"
-                else "_collide_plane_velocity"
-            )
+            helper = f"_{opcode}"
             lines.append(
                 f"    {helper}({output}, {', '.join(operands)}, workspace, count)"
             )
@@ -1060,6 +1061,8 @@ def _compile_stage(
         "_normalize": _normalize,
         "_collide_plane_position": _collide_plane_position,
         "_collide_plane_velocity": _collide_plane_velocity,
+        "_collide_sphere_position": _collide_sphere_position,
+        "_collide_sphere_velocity": _collide_sphere_velocity,
         "_random_range": _random_range,
         "_sample_shape": _sample_shape,
         "_sample_point_cache": _sample_point_cache,
@@ -1509,6 +1512,103 @@ def _collide_plane_velocity(
     np.add(temporary, normal_component, out=temporary)
     np.copyto(output, velocity, casting="unsafe")
     np.copyto(output, temporary, where=penetrating[:, None])
+
+
+def _sphere_collision_normal(position, velocity, center, workspace, count):
+    normal = workspace.sample_vector[:count]
+    delta = workspace.field_fraction[:count]
+    np.subtract(position, center, out=delta)
+    distance = workspace.random_float[0][:count]
+    _normalize(normal, delta, distance)
+
+    degenerate = workspace.sample_valid[:count]
+    np.less_equal(distance, np.float32(1.0e-6), out=degenerate)
+    fallback = workspace.field_coordinates[:count]
+    fallback_length = workspace.random_float[1][:count]
+    _normalize(fallback, velocity, fallback_length)
+    np.negative(fallback, out=fallback)
+    stationary = workspace.field_valid[:count]
+    np.less_equal(fallback_length, np.float32(1.0e-6), out=stationary)
+    np.copyto(fallback, (0.0, 1.0, 0.0), where=stationary[:, None])
+    np.copyto(normal, fallback, where=degenerate[:, None])
+    return normal, distance
+
+
+def _collide_sphere_position(
+    output,
+    position,
+    velocity,
+    center,
+    sphere_radius,
+    particle_radius,
+    restitution,
+    friction,
+    workspace,
+    count,
+) -> None:
+    del restitution, friction
+    normal, distance = _sphere_collision_normal(
+        position, velocity, center, workspace, count
+    )
+    combined_radius = workspace.random_float[2][:count]
+    np.maximum(sphere_radius, 0.0, out=combined_radius)
+    np.maximum(particle_radius, 0.0, out=workspace.random_float[3][:count])
+    np.add(combined_radius, workspace.random_float[3][:count], out=combined_radius)
+    penetrating = workspace.sample_valid[:count]
+    np.less(distance, combined_radius, out=penetrating)
+    correction = workspace.field_fraction[:count]
+    np.subtract(combined_radius, distance, out=distance)
+    np.multiply(normal, distance[:, None], out=correction)
+    np.copyto(output, position, casting="unsafe")
+    np.add(output, correction, out=output, where=penetrating[:, None])
+
+
+def _collide_sphere_velocity(
+    output,
+    position,
+    velocity,
+    center,
+    sphere_radius,
+    particle_radius,
+    restitution,
+    friction,
+    workspace,
+    count,
+) -> None:
+    normal, distance = _sphere_collision_normal(
+        position, velocity, center, workspace, count
+    )
+    combined_radius = workspace.random_float[2][:count]
+    np.maximum(sphere_radius, 0.0, out=combined_radius)
+    np.maximum(particle_radius, 0.0, out=workspace.random_float[3][:count])
+    np.add(combined_radius, workspace.random_float[3][:count], out=combined_radius)
+    collision = workspace.sample_valid[:count]
+    np.less(distance, combined_radius, out=collision)
+
+    normal_component = workspace.field_fraction[:count]
+    np.multiply(velocity, normal, out=normal_component)
+    normal_speed = workspace.random_float[3][:count]
+    np.sum(normal_component, axis=1, out=normal_speed)
+    moving_inward = workspace.field_valid[:count]
+    np.less(normal_speed, 0.0, out=moving_inward)
+    np.logical_and(collision, moving_inward, out=collision)
+
+    tangent = workspace.field_coordinates[:count]
+    np.multiply(normal, normal_speed[:, None], out=tangent)
+    np.subtract(velocity, tangent, out=tangent)
+    clamped_friction = workspace.random_float[4][:count]
+    np.clip(friction, 0.0, 1.0, out=clamped_friction)
+    np.subtract(1.0, clamped_friction, out=clamped_friction)
+    np.multiply(tangent, clamped_friction[:, None], out=tangent)
+
+    clamped_restitution = workspace.random_float[5][:count]
+    np.clip(restitution, 0.0, 1.0, out=clamped_restitution)
+    np.negative(normal_speed, out=normal_speed)
+    np.multiply(clamped_restitution, normal_speed, out=clamped_restitution)
+    np.multiply(normal, clamped_restitution[:, None], out=normal_component)
+    np.add(tangent, normal_component, out=tangent)
+    np.copyto(output, velocity, casting="unsafe")
+    np.copyto(output, tangent, where=collision[:, None])
 
 
 def _sample_point_cache(output, index_or_id, sample, context, workspace) -> None:

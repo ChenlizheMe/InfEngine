@@ -822,8 +822,8 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.emit_void("kill_if", (condition,), {}, source)
-            elif operation.opcode == "collision.plane":
-                # Plane collision is lowered after the implicit position integration below.
+            elif operation.opcode in {"collision.plane", "collision.sphere"}:
+                # Collisions are lowered after the implicit position integration below.
                 continue
             else:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
@@ -846,40 +846,56 @@ class ParticleKernelLowerer:
         )
         builder.store("builtin.position", position, KernelSourceRef(operation="update.integrate_position"))
         for operation in emitter.update.operations:
-            if operation.opcode != "collision.plane":
+            if operation.opcode not in {"collision.plane", "collision.sphere"}:
                 continue
             source = KernelSourceRef(
                 operation.source_node_uid,
-                operation="update.collision.plane",
+                operation=f"update.{operation.opcode}",
             )
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             position = builder.load("builtin.position", source)
             velocity = builder.load("builtin.velocity", source)
-            point = builder.operation_value(
-                "point",
-                bindings,
-                expression_values,
-                parameters,
-                attribute_types["builtin.position"],
-                source,
-            )
-            normal = builder.operation_value(
-                "normal",
-                bindings,
-                expression_values,
-                parameters,
-                attribute_types["builtin.position"],
-                source,
-            )
-            radius = builder.operation_value(
-                "radius",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.F32),
-                source,
-            )
+            if operation.opcode == "collision.plane":
+                point = builder.operation_value(
+                    "point", bindings, expression_values, parameters,
+                    attribute_types["builtin.position"], source,
+                )
+                normal = builder.operation_value(
+                    "normal", bindings, expression_values, parameters,
+                    attribute_types["builtin.position"], source,
+                )
+                radius = builder.operation_value(
+                    "radius", bindings, expression_values, parameters,
+                    TypeRef(ValueType.F32), source,
+                )
+                collision_operands = (
+                    position,
+                    velocity,
+                    point,
+                    normal,
+                    radius,
+                )
+            else:
+                center = builder.operation_value(
+                    "center", bindings, expression_values, parameters,
+                    attribute_types["builtin.position"], source,
+                )
+                sphere_radius = builder.operation_value(
+                    "sphere_radius", bindings, expression_values, parameters,
+                    TypeRef(ValueType.F32), source,
+                )
+                particle_radius = builder.operation_value(
+                    "particle_radius", bindings, expression_values, parameters,
+                    TypeRef(ValueType.F32), source,
+                )
+                collision_operands = (
+                    position,
+                    velocity,
+                    center,
+                    sphere_radius,
+                    particle_radius,
+                )
             restitution = builder.operation_value(
                 "restitution",
                 bindings,
@@ -896,24 +912,17 @@ class ParticleKernelLowerer:
                 TypeRef(ValueType.F32),
                 source,
             )
-            collision_operands = (
-                position,
-                velocity,
-                point,
-                normal,
-                radius,
-                restitution,
-                friction,
-            )
+            collision_operands += (restitution, friction)
+            opcode_prefix = operation.opcode.replace("collision.", "collide_")
             resolved_position = builder.emit(
-                "collide_plane_position",
+                f"{opcode_prefix}_position",
                 attribute_types["builtin.position"],
                 collision_operands,
                 {},
                 source,
             )
             resolved_velocity = builder.emit(
-                "collide_plane_velocity",
+                f"{opcode_prefix}_velocity",
                 attribute_types["builtin.velocity"],
                 collision_operands,
                 {},

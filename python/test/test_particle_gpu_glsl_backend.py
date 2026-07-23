@@ -234,6 +234,41 @@ def test_gpu_plane_collision_uses_portable_post_integration_helpers_and_compiles
     assert validate_gpu_particle_spirv(payload, source) is payload
 
 
+def test_gpu_sphere_collision_uses_portable_post_integration_helpers_and_compiles():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_sphere",
+                properties={"sphere_radius": 1.5, "particle_radius": 0.1},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    asset = ParticleGraphAsset(
+        stable_id="gpu-sphere-collision",
+        emitters=(ParticleEmitterAsset(stable_id="sparks", update=update),),
+    )
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    )
+    update_source = source.emitters[0].update
+
+    assert "inx_collide_sphere_position" in update_source
+    assert "inx_collide_sphere_velocity" in update_source
+    assert update_source.index("update.integrate_position") < update_source.index(
+        "// collision"
+    )
+    payload = compile_gpu_particle_spirv(source)
+    assert validate_gpu_particle_spirv(payload, source) is payload
+
+
 def _point_cache_gpu_source():
     init = GraphDocument(
         "particle.init",

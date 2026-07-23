@@ -231,6 +231,53 @@ def test_plane_collision_lowers_after_position_integration_with_portable_state_w
     }.issuperset({"builtin.position", "builtin.velocity"})
 
 
+def test_sphere_collision_lowers_after_position_integration_with_typed_operands():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_sphere",
+                properties={
+                    "center": [0.0, 1.0, 0.0],
+                    "sphere_radius": 2.0,
+                    "particle_radius": 0.25,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    emitter = _lower(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    ).emitters[0]
+    instructions = emitter.update.instructions
+    opcodes = [instruction.opcode for instruction in instructions]
+    position_collision = opcodes.index("collide_sphere_position")
+    velocity_collision = opcodes.index("collide_sphere_velocity")
+
+    assert position_collision < velocity_collision
+    assert len(instructions[position_collision].operands) == 7
+    assert [operand.value_type.value_type for operand in instructions[position_collision].operands] == [
+        ValueType.VEC3,
+        ValueType.VEC3,
+        ValueType.VEC3,
+        ValueType.F32,
+        ValueType.F32,
+        ValueType.F32,
+        ValueType.F32,
+    ]
+    assert any(
+        instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.position"
+        for instruction in instructions[:position_collision]
+    )
+
+
 def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
     first_emitter = ParticleEmitterAsset(
         stable_id="data-emitter",
