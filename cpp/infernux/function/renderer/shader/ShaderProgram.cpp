@@ -7,6 +7,40 @@
 namespace infernux
 {
 
+VkDescriptorSetLayout ShaderProgram::s_globalsDescSetLayout = VK_NULL_HANDLE;
+VkDescriptorSetLayout ShaderProgram::s_perViewDescSetLayout = VK_NULL_HANDLE;
+bool ShaderProgram::s_updateAfterBindEnabled = false;
+
+void ShaderProgram::SetGlobalsDescSetLayout(VkDescriptorSetLayout layout)
+{
+    s_globalsDescSetLayout = layout;
+}
+
+VkDescriptorSetLayout ShaderProgram::GetGlobalsDescSetLayout()
+{
+    return s_globalsDescSetLayout;
+}
+
+void ShaderProgram::SetPerViewDescSetLayout(VkDescriptorSetLayout layout)
+{
+    s_perViewDescSetLayout = layout;
+}
+
+VkDescriptorSetLayout ShaderProgram::GetPerViewDescSetLayout()
+{
+    return s_perViewDescSetLayout;
+}
+
+void ShaderProgram::SetUpdateAfterBindEnabled(bool enabled)
+{
+    s_updateAfterBindEnabled = enabled;
+}
+
+bool ShaderProgram::IsUpdateAfterBindEnabled()
+{
+    return s_updateAfterBindEnabled;
+}
+
 // ============================================================================
 // ShaderProgram Implementation
 // ============================================================================

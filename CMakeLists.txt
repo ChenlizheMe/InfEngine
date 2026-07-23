@@ -37,8 +37,8 @@ file(GLOB_RECURSE BINDING_SOURCES CONFIGURE_DEPENDS cpp/infernux/tools/pybinding
 file(GLOB_RECURSE INFERNUX_FOUNDATION_SOURCES CONFIGURE_DEPENDS
     cpp/infernux/core/*.cpp
     cpp/infernux/core/*.h
-    cpp/infernux/platform/*.cpp
-    cpp/infernux/platform/*.h
+    cpp/infernux/platform/filesystem/*.cpp
+    cpp/infernux/platform/filesystem/*.h
 )
 list(APPEND INFERNUX_FOUNDATION_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxTexture/StbImage.cpp"
@@ -335,9 +335,7 @@ target_link_libraries(InfernuxRuntime PUBLIC
 add_subdirectory(external)
 
 target_link_libraries(InfernuxFoundation PUBLIC
-    SDL3::SDL3
     glm::glm
-    imgui
     stb
     Vulkan::Vulkan
 )

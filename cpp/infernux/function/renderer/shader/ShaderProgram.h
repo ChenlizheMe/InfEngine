@@ -183,23 +183,11 @@ class ShaderProgram
      * Called once at startup; all ShaderProgram instances will include this
      * layout in their pipeline layouts so that the globals UBO can be bound.
      */
-    static void SetGlobalsDescSetLayout(VkDescriptorSetLayout layout)
-    {
-        s_globalsDescSetLayout = layout;
-    }
-    static VkDescriptorSetLayout GetGlobalsDescSetLayout()
-    {
-        return s_globalsDescSetLayout;
-    }
+    static void SetGlobalsDescSetLayout(VkDescriptorSetLayout layout);
+    [[nodiscard]] static VkDescriptorSetLayout GetGlobalsDescSetLayout();
 
-    static void SetPerViewDescSetLayout(VkDescriptorSetLayout layout)
-    {
-        s_perViewDescSetLayout = layout;
-    }
-    static VkDescriptorSetLayout GetPerViewDescSetLayout()
-    {
-        return s_perViewDescSetLayout;
-    }
+    static void SetPerViewDescSetLayout(VkDescriptorSetLayout layout);
+    [[nodiscard]] static VkDescriptorSetLayout GetPerViewDescSetLayout();
 
     /**
      * @brief Globally enable VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND on
@@ -209,23 +197,17 @@ class ShaderProgram
      * UPDATE_AFTER_BIND_POOL bit so MaterialDescriptorManager can rewrite
      * bindings without a full GPU drain.
      */
-    static void SetUpdateAfterBindEnabled(bool enabled)
-    {
-        s_updateAfterBindEnabled = enabled;
-    }
-    static bool IsUpdateAfterBindEnabled()
-    {
-        return s_updateAfterBindEnabled;
-    }
+    static void SetUpdateAfterBindEnabled(bool enabled);
+    [[nodiscard]] static bool IsUpdateAfterBindEnabled();
 
   private:
     VkDevice m_device = VK_NULL_HANDLE;
     std::string m_shaderId;
     ShaderProgramVariantKey m_variantKey;
 
-    static inline VkDescriptorSetLayout s_globalsDescSetLayout = VK_NULL_HANDLE;
-    static inline VkDescriptorSetLayout s_perViewDescSetLayout = VK_NULL_HANDLE;
-    static inline bool s_updateAfterBindEnabled = false;
+    static VkDescriptorSetLayout s_globalsDescSetLayout;
+    static VkDescriptorSetLayout s_perViewDescSetLayout;
+    static bool s_updateAfterBindEnabled;
 
     // Shader modules
     VkShaderModule m_vertModule = VK_NULL_HANDLE;

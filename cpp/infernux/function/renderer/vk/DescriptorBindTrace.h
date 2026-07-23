@@ -1,16 +1,16 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
-#include <atomic>
 #include <cstdint>
-#include <mutex>
 
-#include <core/error/InxError.h>
 #include <vulkan/vulkan.h>
 
 namespace infernux::vkdebug
 {
+
+#ifndef INFERNUX_VULKAN_VALIDATION_LAYERS
+#define INFERNUX_VULKAN_VALIDATION_LAYERS 0
+#endif
 
 struct DescriptorBindTraceSnapshot
 {
@@ -33,128 +33,48 @@ inline bool IsSuspiciousDescriptorRaw(uint64_t raw)
     return hi == lo && lo <= 0x000fffffu;
 }
 
-inline std::mutex &DescriptorBindTraceMutex()
+#if INFERNUX_VULKAN_VALIDATION_LAYERS
+
+void RecordDescriptorBind(const char *site, VkCommandBuffer cmdBuf, VkPipelineLayout layout, uint32_t firstSet,
+                          uint32_t descriptorSetCount, const VkDescriptorSet *descriptorSets);
+
+[[nodiscard]] DescriptorBindTraceSnapshot GetLastDescriptorBindSnapshot();
+
+[[nodiscard]] bool FindRecentDescriptorBindByRaw(uint64_t descriptorRaw, DescriptorBindTraceSnapshot &outMatch,
+                                                 uint32_t &outLocalIndex);
+
+void CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf, VkPipelineBindPoint pipelineBindPoint,
+                                  VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
+                                  const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
+                                  const uint32_t *dynamicOffsets);
+
+#else
+
+inline void RecordDescriptorBind(const char *, VkCommandBuffer, VkPipelineLayout, uint32_t, uint32_t,
+                                 const VkDescriptorSet *)
 {
-    static std::mutex m;
-    return m;
 }
 
-inline constexpr size_t kDescriptorBindTraceHistorySize = 256;
-
-inline std::array<DescriptorBindTraceSnapshot, kDescriptorBindTraceHistorySize> &DescriptorBindTraceHistory()
+[[nodiscard]] inline DescriptorBindTraceSnapshot GetLastDescriptorBindSnapshot()
 {
-    static std::array<DescriptorBindTraceSnapshot, kDescriptorBindTraceHistorySize> history{};
-    return history;
+    return {};
 }
 
-inline size_t &DescriptorBindTraceHistoryWriteIndex()
+[[nodiscard]] inline bool FindRecentDescriptorBindByRaw(uint64_t, DescriptorBindTraceSnapshot &, uint32_t &)
 {
-    static size_t idx = 0;
-    return idx;
-}
-
-inline DescriptorBindTraceSnapshot &LastDescriptorBindSnapshotStorage()
-{
-    static DescriptorBindTraceSnapshot s;
-    return s;
-}
-
-inline std::atomic<uint64_t> &DescriptorBindTraceSequence()
-{
-    static std::atomic<uint64_t> seq{0};
-    return seq;
-}
-
-inline std::atomic<int> &DescriptorBindSuspiciousWarnCount()
-{
-    static std::atomic<int> count{0};
-    return count;
-}
-
-inline void RecordDescriptorBind(const char *site, VkCommandBuffer cmdBuf, VkPipelineLayout layout, uint32_t firstSet,
-                                 uint32_t descriptorSetCount, const VkDescriptorSet *descriptorSets)
-{
-    DescriptorBindTraceSnapshot snapshot;
-    snapshot.sequence = DescriptorBindTraceSequence().fetch_add(1, std::memory_order_relaxed) + 1;
-    snapshot.site = site;
-    snapshot.commandBufferRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(cmdBuf));
-    snapshot.pipelineLayoutRaw = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(layout));
-    snapshot.firstSet = firstSet;
-    snapshot.descriptorSetCount = descriptorSetCount;
-
-    const uint32_t copyCount =
-        std::min<uint32_t>(descriptorSetCount, static_cast<uint32_t>(snapshot.descriptorSetRaws.size()));
-    for (uint32_t i = 0; i < copyCount; ++i) {
-        snapshot.descriptorSetRaws[i] = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptorSets[i]));
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(DescriptorBindTraceMutex());
-        LastDescriptorBindSnapshotStorage() = snapshot;
-        auto &history = DescriptorBindTraceHistory();
-        size_t &writeIdx = DescriptorBindTraceHistoryWriteIndex();
-        history[writeIdx] = snapshot;
-        writeIdx = (writeIdx + 1) % kDescriptorBindTraceHistorySize;
-    }
-
-    for (uint32_t i = 0; i < copyCount; ++i) {
-        const uint64_t raw = snapshot.descriptorSetRaws[i];
-        if (!IsSuspiciousDescriptorRaw(raw))
-            continue;
-
-        const int warnIndex = DescriptorBindSuspiciousWarnCount().fetch_add(1, std::memory_order_relaxed);
-        if (warnIndex < 48) {
-            INXLOG_WARN("[VkBindTrace] suspicious descriptor raw=0x", raw, " site=", (site ? site : "<null>"),
-                        " firstSet=", firstSet, " localIndex=", i, " count=", descriptorSetCount, " cmd=0x",
-                        snapshot.commandBufferRaw, " layout=0x", snapshot.pipelineLayoutRaw);
-        }
-    }
-}
-
-inline DescriptorBindTraceSnapshot GetLastDescriptorBindSnapshot()
-{
-    std::lock_guard<std::mutex> lock(DescriptorBindTraceMutex());
-    return LastDescriptorBindSnapshotStorage();
-}
-
-inline bool FindRecentDescriptorBindByRaw(uint64_t descriptorRaw, DescriptorBindTraceSnapshot &outMatch,
-                                          uint32_t &outLocalIndex)
-{
-    if (descriptorRaw == 0ull)
-        return false;
-
-    std::lock_guard<std::mutex> lock(DescriptorBindTraceMutex());
-    const auto &history = DescriptorBindTraceHistory();
-    const size_t writeIdx = DescriptorBindTraceHistoryWriteIndex();
-
-    for (size_t i = 0; i < kDescriptorBindTraceHistorySize; ++i) {
-        const size_t idx = (writeIdx + kDescriptorBindTraceHistorySize - 1 - i) % kDescriptorBindTraceHistorySize;
-        const auto &snap = history[idx];
-        if (snap.sequence == 0)
-            continue;
-
-        const uint32_t count =
-            std::min<uint32_t>(snap.descriptorSetCount, static_cast<uint32_t>(snap.descriptorSetRaws.size()));
-        for (uint32_t local = 0; local < count; ++local) {
-            if (snap.descriptorSetRaws[local] == descriptorRaw) {
-                outMatch = snap;
-                outLocalIndex = local;
-                return true;
-            }
-        }
-    }
     return false;
 }
 
-inline void CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf,
+inline void CmdBindDescriptorSetsTracked(const char *, VkCommandBuffer cmdBuf,
                                          VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
                                          uint32_t firstSet, uint32_t descriptorSetCount,
                                          const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
                                          const uint32_t *dynamicOffsets)
 {
-    RecordDescriptorBind(site, cmdBuf, layout, firstSet, descriptorSetCount, descriptorSets);
     vkCmdBindDescriptorSets(cmdBuf, pipelineBindPoint, layout, firstSet, descriptorSetCount, descriptorSets,
                             dynamicOffsetCount, dynamicOffsets);
 }
+
+#endif
 
 } // namespace infernux::vkdebug
