@@ -89,10 +89,18 @@ class UITextureCache:
             self._pending_keys.discard(key)
             return 0
 
-        if cached is not None and cached != 0 and self._stamp.get(key) == stamp:
-            return cached
-
         resource_key = f"ui_img|{key}"
+        if cached is not None and cached != 0 and self._stamp.get(key) == stamp:
+            live = int(native.get_texture_preview_texture_id(resource_key))
+            if live == cached:
+                return cached
+            if live != 0:
+                self._generation += 1
+                self._cache[key] = live
+                return live
+            self._cache.pop(key, None)
+            self._stamp.pop(key, None)
+
         tid, _, _ = query_or_schedule_texture(
             native,
             resource_key,

@@ -3061,6 +3061,8 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
                                            m_gameRenderTarget->GetColorFormat(),
                                            m_gameRenderTarget->GetMsaaSampleCount());
             m_screenUIRenderer->SetDeletionQueue(&m_vkCore->GetDeletionQueue());
+            m_screenUIRenderer->SetTextureUsageValidator(
+                [this](uint64_t textureId) { return m_gui && m_gui->TouchImGuiTextureId(textureId); });
         }
         m_gameRenderGraph->SetScreenUIRenderer(m_screenUIRenderer.get());
 
@@ -3208,6 +3210,8 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
             return false;
         }
         replacementScreenUI->SetDeletionQueue(&m_vkCore->GetDeletionQueue());
+        replacementScreenUI->SetTextureUsageValidator(
+            [this](uint64_t textureId) { return m_gui && m_gui->TouchImGuiTextureId(textureId); });
     }
 
     if (m_outlineRenderer) {

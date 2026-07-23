@@ -18,6 +18,34 @@ from Infernux.components.serialized_field import (
 )
 
 
+def test_project_relative_asset_path_is_resolved_before_guid_lookup(monkeypatch, tmp_path):
+    import importlib
+
+    from Infernux.engine import project_context
+
+    serialized_field_module = importlib.import_module("Infernux.components.serialized_field")
+
+    project = tmp_path / "Project"
+    asset = project / "Assets" / "VFX" / "Ribbon.particlegraph"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("{}", encoding="ascii")
+
+    class AbsoluteOnlyDatabase:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "ribbon-guid" if str(path) == str(asset) else ""
+
+    monkeypatch.setattr(serialized_field_module, "_get_asset_db", lambda: AbsoluteOnlyDatabase())
+    monkeypatch.setattr(project_context, "_project_root", str(project))
+
+    guid, path_hint = serialized_field_module._extract_guid_and_path(
+        "Assets/VFX/Ribbon.particlegraph", ()
+    )
+
+    assert guid == "ribbon-guid"
+    assert path_hint == "Assets/VFX/Ribbon.particlegraph"
+
+
 # ══════════════════════════════════════════════════════════════════════
 # FieldType enum completeness
 # ══════════════════════════════════════════════════════════════════════

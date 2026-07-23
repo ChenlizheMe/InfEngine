@@ -113,6 +113,28 @@ class ShadowAtlasAllocator
         return allocations;
     }
 
+    template <size_t Count>
+    [[nodiscard]] std::optional<std::array<ShadowAtlasRect, Count>>
+    AllocateBatchWithFallback(const std::array<uint32_t, Count> &preferredSizes, uint32_t minimumSize,
+                              uint32_t guard = 2)
+    {
+        auto candidateSizes = preferredSizes;
+        for (;;) {
+            if (const auto allocation = AllocateBatch(candidateSizes, guard))
+                return allocation;
+
+            bool reduced = false;
+            for (uint32_t &size : candidateSizes) {
+                if (size <= minimumSize)
+                    continue;
+                size = std::max(size / 2u, minimumSize);
+                reduced = true;
+            }
+            if (!reduced)
+                return std::nullopt;
+        }
+    }
+
     [[nodiscard]] uint32_t AtlasSize() const noexcept
     {
         return m_atlasSize;

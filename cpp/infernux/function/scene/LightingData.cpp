@@ -385,14 +385,17 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             if (firstView + lighting::DirectionalCascadeCount > lighting::MaxShadowViews)
                 continue;
             const uint32_t atlasSize = m_shadowFrame.atlasSize;
+            // Keep the two camera-near cascades at half-atlas resolution. The
+            // former 2:1:1:0.5 distribution made a 4096 atlas behave like a
+            // 1024 map immediately after the first split.
             const std::array<uint32_t, lighting::DirectionalCascadeCount> mainSizes{
-                atlasSize / 2u, atlasSize / 4u, atlasSize / 4u, atlasSize / 8u};
+                atlasSize / 2u, atlasSize / 2u, atlasSize / 4u, atlasSize / 4u};
             const std::array<uint32_t, lighting::DirectionalCascadeCount> secondarySizes{
-                atlasSize / 8u, atlasSize / 8u, atlasSize / 16u, atlasSize / 16u};
+                atlasSize / 4u, atlasSize / 4u, atlasSize / 8u, atlasSize / 8u};
             const auto &sizes = mainDirectional ? mainSizes : secondarySizes;
             const float shadowDistance = std::min(shadowCamera.farClip, 160.0f);
             const auto splits = lighting::PracticalCascadeSplits(shadowCamera.nearClip, shadowDistance, 0.72f);
-            const auto tiles = atlas.AllocateBatch(sizes, 4);
+            const auto tiles = atlas.AllocateBatchWithFallback(sizes, std::max(atlasSize / 16u, 16u), 4);
             if (!tiles)
                 continue;
             for (uint32_t cascade = 0; cascade < lighting::DirectionalCascadeCount; ++cascade) {
@@ -404,19 +407,22 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
         } else if (light->GetLightType() == LightType::Spot) {
             if (firstView + 1u > lighting::MaxShadowViews)
                 continue;
-            const auto tile = atlas.Allocate(m_shadowFrame.atlasSize / 8u, 4);
-            if (!tile)
+            const std::array<uint32_t, 1> preferredSize{m_shadowFrame.atlasSize / 4u};
+            const auto tiles = atlas.AllocateBatchWithFallback(
+                preferredSize, std::max(m_shadowFrame.atlasSize / 32u, 16u), 4);
+            if (!tiles)
                 continue;
             m_shadowFrame.views.push_back(lighting::BuildSpotShadowView(
-                lightId, position, direction, light->GetOuterSpotAngle(), light->GetRange(), *tile));
+                lightId, position, direction, light->GetOuterSpotAngle(), light->GetRange(), (*tiles)[0]));
         } else {
             constexpr uint32_t faceCount = 6u;
             if (firstView + faceCount > lighting::MaxShadowViews)
                 continue;
-            const uint32_t faceSize = m_shadowFrame.atlasSize / 16u;
+            const uint32_t faceSize = m_shadowFrame.atlasSize / 8u;
             const std::array<uint32_t, faceCount> faceSizes{
                 faceSize, faceSize, faceSize, faceSize, faceSize, faceSize};
-            const auto tiles = atlas.AllocateBatch(faceSizes, 4);
+            const auto tiles = atlas.AllocateBatchWithFallback(
+                faceSizes, std::max(m_shadowFrame.atlasSize / 32u, 16u), 4);
             if (!tiles)
                 continue;
             const auto type = light->GetLightType() == LightType::Area ? lighting::ShadowViewType::AreaFace

@@ -1320,20 +1320,20 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
 
     vkrender::DynamicViewportScissorState dynVpScissor;
 
-    // Rasterization: use material cull mode + depth bias
+    // Rasterization: the receiver shader owns all user-visible bias. A fixed
+    // raster bias here made Light.shadowBias=0 lie and caused detached contact
+    // shadows. Respecting the material cull mode also keeps the shadow
+    // silhouette consistent with the visible surface.
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    // Respect the material's cull mode so double-sided surfaces (cull=None)
-    // cast shadows from both faces.  Default front-face culling reduces
-    // shadow acne for single-sided geometry.
-    rasterizer.cullMode = (matCullMode == VK_CULL_MODE_NONE) ? VK_CULL_MODE_NONE : VK_CULL_MODE_FRONT_BIT;
+    rasterizer.cullMode = static_cast<VkCullModeFlags>(matCullMode);
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_TRUE;
-    rasterizer.depthBiasConstantFactor = 1.5f;
-    rasterizer.depthBiasSlopeFactor = 1.0f;
-    rasterizer.depthBiasClamp = 0.01f;
+    rasterizer.depthBiasEnable = VK_FALSE;
+    rasterizer.depthBiasConstantFactor = 0.0f;
+    rasterizer.depthBiasSlopeFactor = 0.0f;
+    rasterizer.depthBiasClamp = 0.0f;
 
     auto multisampling = vkrender::MakeMultisampleState();
 

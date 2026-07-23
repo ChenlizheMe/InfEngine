@@ -361,6 +361,7 @@ void InxGUI::PumpTextureUploads()
 
         auto existing = m_textures_umap.find(pending.name);
         if (existing != m_textures_umap.end()) {
+            m_textureNamesByDescriptor.erase(existing->second.descriptorSet);
             DeferTextureRelease(std::move(existing->second));
             m_textures_umap.erase(existing);
         }
@@ -374,6 +375,7 @@ void InxGUI::PumpTextureUploads()
         m_textures_umap.emplace(pending.name,
                                 ImGuiTextureResource{std::move(texture), descriptor, residentBytes, m_guiFrameCounter,
                                                      pending.generation, pending.pinned});
+        m_textureNamesByDescriptor[descriptor] = pending.name;
     }
     m_pendingTextureUploads.resize(writeIndex);
 }
@@ -414,6 +416,7 @@ void InxGUI::BuildFrameInternal()
             if (it == m_textures_umap.end())
                 continue;
 
+            m_textureNamesByDescriptor.erase(it->second.descriptorSet);
             DeferTextureRelease(std::move(it->second));
             m_textures_umap.erase(it);
         }
@@ -706,6 +709,7 @@ void InxGUI::Shutdown()
         ReleaseTextureResource(tex);
     }
     m_textures_umap.clear();
+    m_textureNamesByDescriptor.clear();
 
     // Shut down ImGui backends BEFORE destroying the descriptor pool —
     // ImGui_ImplVulkan_Shutdown() internally frees descriptor sets and
@@ -849,6 +853,26 @@ uint64_t InxGUI::GetImGuiTextureId(const std::string &name)
     return 0;
 }
 
+bool InxGUI::TouchImGuiTextureId(uint64_t textureId)
+{
+    const auto descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
+    if (descriptor == VK_NULL_HANDLE)
+        return false;
+
+    const auto owner = m_textureNamesByDescriptor.find(descriptor);
+    if (owner == m_textureNamesByDescriptor.end())
+        return false;
+    const auto resource = m_textures_umap.find(owner->second);
+    if (resource == m_textures_umap.end() || resource->second.descriptorSet != descriptor)
+        return false;
+    if (std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), owner->second) !=
+        m_pendingTextureRemovals.end())
+        return false;
+
+    resource->second.lastUsedFrame = m_guiFrameCounter;
+    return true;
+}
+
 uint64_t InxGUI::GetImGuiTextureVersion(const std::string &name) const
 {
     if (std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name) !=
@@ -887,6 +911,7 @@ size_t InxGUI::TrimImGuiTextureBudget()
         }
         if (candidate == m_textures_umap.end())
             break;
+        m_textureNamesByDescriptor.erase(candidate->second.descriptorSet);
         DeferTextureRelease(std::move(candidate->second));
         m_textures_umap.erase(candidate);
         ++evicted;
@@ -929,6 +954,7 @@ uint64_t InxGUI::EvictOldestImGuiTexture()
     if (candidate == m_textures_umap.end())
         return 0;
     const uint64_t bytes = candidate->second.residentBytes;
+    m_textureNamesByDescriptor.erase(candidate->second.descriptorSet);
     DeferTextureRelease(std::move(candidate->second));
     m_textures_umap.erase(candidate);
     ++m_textureEvictionCount;

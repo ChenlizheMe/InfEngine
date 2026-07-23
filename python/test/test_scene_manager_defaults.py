@@ -26,6 +26,7 @@ class _FakeLight:
         self.intensity = None
         self.shadows = None
         self.shadow_bias = 0.0
+        self.shadow_normal_bias = 0.0
 
 
 class _FakeGameObject:
@@ -134,4 +135,5 @@ def test_populate_default_objects_sets_light_shadow_bias(monkeypatch):
     light = scene.created[1].components["Light"]
     assert light.light_type == _LightType.Directional
     assert light.shadows == _LightShadows.Soft
-    assert light.shadow_bias == pytest.approx(0.0)
+    assert light.shadow_bias == pytest.approx(0.5)
+    assert light.shadow_normal_bias == pytest.approx(0.5)

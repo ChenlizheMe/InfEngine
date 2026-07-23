@@ -176,10 +176,36 @@ int main()
         assert(local->size == 512 && local->InnerSize() == 504);
         assert(!atlas.Allocate(4096, 4));
 
+        infernux::lighting::ShadowAtlasAllocator productionAtlas(4096);
+        const std::array<uint32_t, 4> primaryCascadeSizes{2048, 2048, 1024, 1024};
+        const auto primaryCascades = productionAtlas.AllocateBatch(primaryCascadeSizes, 4);
+        assert(primaryCascades);
+        assert((*primaryCascades)[0].InnerSize() == 2040);
+        assert((*primaryCascades)[1].InnerSize() == 2040);
+        const auto spotTile = productionAtlas.Allocate(1024, 4);
+        assert(spotTile && spotTile->InnerSize() == 1016);
+        const std::array<uint32_t, 6> pointFaceSizes{512, 512, 512, 512, 512, 512};
+        const auto pointFaceTiles = productionAtlas.AllocateBatch(pointFaceSizes, 4);
+        assert(pointFaceTiles);
+
         infernux::lighting::ShadowAtlasAllocator transactionalAtlas(1024);
         const std::array<uint32_t, 2> impossibleBatch{512, 1024};
         assert(!transactionalAtlas.AllocateBatch(impossibleBatch, 4));
         assert(transactionalAtlas.Allocate(1024, 4));
+
+        infernux::lighting::ShadowAtlasAllocator fallbackAtlas(1024);
+        assert(fallbackAtlas.Allocate(768, 4));
+        const std::array<uint32_t, 1> preferredFallbackSize{512};
+        const auto fallbackTile = fallbackAtlas.AllocateBatchWithFallback(preferredFallbackSize, 128, 4);
+        assert(fallbackTile && (*fallbackTile)[0].size == 256);
+
+        infernux::lighting::ShadowAtlasAllocator fallbackBatchAtlas(1024);
+        assert(fallbackBatchAtlas.Allocate(768, 4));
+        const std::array<uint32_t, 2> preferredFallbackBatch{512, 256};
+        const auto fallbackBatch =
+            fallbackBatchAtlas.AllocateBatchWithFallback(preferredFallbackBatch, 128, 4);
+        assert(fallbackBatch);
+        assert((*fallbackBatch)[0].size == 256 && (*fallbackBatch)[1].size == 128);
 
         const auto splits = infernux::lighting::PracticalCascadeSplits(0.1f, 160.0f, 0.72f);
         assert(splits.front() == 0.1f && splits.back() == 160.0f);

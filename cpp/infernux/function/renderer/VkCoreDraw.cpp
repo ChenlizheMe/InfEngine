@@ -883,8 +883,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 #endif
 
     // NOTE: hard/soft shadow selection is NOT a property of this pass.
-    // The shadow map only stores depth; filtering (16-tap Vogel-disk PCF for
-    // LightShadows::Soft) happens in the lit pass via shadowParams.w, driven
+    // The shadow map only stores depth; stable PCF filtering happens in the
+    // lit pass via shadowParams.w, driven
     // by the Light component. A former "shadowType" string parameter here was
     // a dead end and has been removed.
 
@@ -1660,8 +1660,9 @@ bool InxVkCoreModular::CreateShadowDepthSampler()
 {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    // Depth is compared manually in GLSL. Linear-filtering raw depth before
-    // comparison creates false penumbras and makes hard shadows unstable.
+    // Shaders gather four raw depth texels and compare before interpolation.
+    // Keeping this a regular depth sampler also permits the engine's fully-lit
+    // fallback descriptor when a graph has no shadow pass.
     samplerInfo.magFilter = VK_FILTER_NEAREST;
     samplerInfo.minFilter = VK_FILTER_NEAREST;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;

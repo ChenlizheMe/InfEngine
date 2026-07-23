@@ -316,8 +316,11 @@ class Light : public Component
     // Shadows
     LightShadows m_shadows = LightShadows::Hard;
     float m_shadowStrength = 1.0f;
-    float m_shadowBias = 0.0f;
-    float m_shadowNormalBias = 0.01f;
+    // Bias values are expressed in shadow-map texels. Keeping both values in
+    // the same resolution-independent unit makes a light behave consistently
+    // when the pipeline changes its shadow atlas size.
+    float m_shadowBias = 0.5f;
+    float m_shadowNormalBias = 0.5f;
     float m_shadowSoftness = 1.5f;
 
     // Rendering

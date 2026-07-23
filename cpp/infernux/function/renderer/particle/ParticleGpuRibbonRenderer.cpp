@@ -330,8 +330,12 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
     if (!pipeline.IsValid() || !group.IsValid())
         return false;
     auto constants = view;
-    const std::array<uint32_t, 4> objectId = {static_cast<uint32_t>(ownerObjectId),
-                                              static_cast<uint32_t>(ownerObjectId >> 32u), 0u, 0u};
+    const std::array<uint32_t, 4> objectId = {
+        static_cast<uint32_t>(ownerObjectId),
+        static_cast<uint32_t>(ownerObjectId >> 32u),
+        0u,
+        0x3f800000u,
+    };
     std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
     constants.renderingControl[1] = m_uvScale;
     constants.renderingControl[2] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;

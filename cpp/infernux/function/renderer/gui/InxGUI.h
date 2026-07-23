@@ -92,6 +92,9 @@ class InxGUI
     /// @param name Texture identifier
     /// @return Texture ID or 0 if not found
     uint64_t GetImGuiTextureId(const std::string &name);
+    /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
+    /// @return false when the descriptor is no longer owned by the live texture registry.
+    bool TouchImGuiTextureId(uint64_t textureId);
     [[nodiscard]] uint64_t GetImGuiTextureVersion(const std::string &name) const;
     [[nodiscard]] uint64_t GetFailedImGuiTextureVersion(const std::string &name) const;
 
@@ -182,6 +185,7 @@ class InxGUI
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> m_lastPanelSubTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
+    std::unordered_map<VkDescriptorSet, std::string> m_textureNamesByDescriptor;
     std::unordered_map<std::string, uint64_t> m_textureUploadGenerations;
     std::unordered_map<std::string, uint64_t> m_failedTextureUploadVersions;
     std::vector<PendingTextureUpload> m_pendingTextureUploads;

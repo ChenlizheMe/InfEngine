@@ -1023,6 +1023,15 @@ int main()
     ribbonPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     assert(ribbonRenderer.RecordPickingDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
                                             ribbonTopology->DrawIndirectBuffer(), ribbonView, 0x123456789abcdef0ull));
+    const auto floatBits = [](float value) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        return bits;
+    };
+    assert(ribbonGraphicsTrace.constants.size() == 2 &&
+           floatBits(ribbonGraphicsTrace.constants[1].materialTint[0]) == 0x9abcdef0u &&
+           floatBits(ribbonGraphicsTrace.constants[1].materialTint[1]) == 0x12345678u &&
+           ribbonGraphicsTrace.constants[1].materialTint[3] == 1.0f);
     ribbonRenderer.Destroy();
     ribbonTopology->Destroy();
     assert(!ribbonRenderer.IsValid() && !ribbonTopology->IsValid());

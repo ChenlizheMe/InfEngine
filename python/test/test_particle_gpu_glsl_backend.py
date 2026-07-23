@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 import shutil
 import struct
 import subprocess
@@ -101,6 +102,27 @@ def test_gpu_vector_noise_uses_the_portable_hash_and_compiles_to_spirv():
     assert "inx_vector_noise_3d" in update
     payload = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(payload, source) is payload
+
+
+def test_geometry_and_particle_shadow_filters_share_stable_zero_bias_contract():
+    python_root = Path(__file__).resolve().parents[1]
+    shader_path = python_root / "Infernux" / "resources" / "shaders" / "lighting.glsl"
+    geometry_source = shader_path.read_text(encoding="utf-8")
+    particle_source = (python_root / "Infernux" / "particle" / "gpu_glsl_backend.py").read_text(encoding="utf-8")
+    lighting_ubo = (
+        python_root / "Infernux" / "resources" / "shaders" / "_templates" / "lighting_ubo.glsl"
+    ).read_text(encoding="utf-8")
+
+    for source in (geometry_source, particle_source):
+        assert "interleavedGradientNoise" not in source
+        assert "vogelDiskSample" not in source
+        assert "slope * worldTexel" not in source
+        assert "slope * world_texel" not in source
+        assert "textureGather" in source
+        assert "perspectiveScale" in source or "perspective_scale" in source
+        assert "shadowParams.z * worldTexel" in source or "shadow_params.z * world_texel" in source
+    assert "sampler2D shadowMap" in lighting_ubo
+    assert "sampler2D particle_shadow_map" in particle_source
 
 
 def test_gpu_ribbon_render_instance_exports_full_width_topology_key():

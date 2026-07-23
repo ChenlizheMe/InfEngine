@@ -270,7 +270,8 @@ class InxVkCoreModular
      * @brief Draw shadow casters into a depth-only shadow map.
      *
      * Uses per-material shadow pipelines (auto-generated shadow variants) with
-     * front-face culling and depth bias. The light VP is obtained from
+     * the material's culling mode. Receiver bias is applied by the lighting
+     * shader in resolution-independent shadow texels. The light VP is obtained from
      * SceneLightCollector. Shadow infrastructure is created lazily on first use.
      *
      * @param cmdBuf Vulkan command buffer (inside a render pass)

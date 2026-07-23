@@ -15,6 +15,7 @@ from enum import Enum, auto
 from typing import Any, Tuple, Optional, Type, Dict, Callable, TYPE_CHECKING, List, Union
 from dataclasses import dataclass
 import copy
+import os
 import weakref
 import threading
 from Infernux.debug import Debug
@@ -556,8 +557,19 @@ def _guid_from_path(path: str) -> str:
     if not db:
         return ""
     try:
-        guid = db.get_guid_from_path(path)
-        return guid or ""
+        candidates = [path]
+        if not os.path.isabs(path):
+            from Infernux.engine.project_context import get_project_root
+            from Infernux.engine.path_utils import resolved_path
+
+            project_root = get_project_root()
+            if project_root:
+                candidates.append(resolved_path(os.path.join(project_root, path)))
+        for candidate in candidates:
+            guid = db.get_guid_from_path(candidate)
+            if guid:
+                return guid
+        return ""
     except Exception as exc:
         Debug.log_suppressed("serialized_field._guid_for_path", exc)
         return ""

@@ -20,6 +20,7 @@
 
 #include "../FrameDeletionQueue.h"
 
+#include <functional>
 #include <imgui.h>
 #include <string>
 #include <vector>
@@ -67,6 +68,11 @@ class InxScreenUIRenderer
     void SetDeletionQueue(FrameDeletionQueue *queue)
     {
         m_deletionQueue = queue;
+    }
+
+    void SetTextureUsageValidator(std::function<bool(uint64_t)> validator)
+    {
+        m_textureUsageValidator = std::move(validator);
     }
 
     /**
@@ -256,6 +262,7 @@ class InxScreenUIRenderer
     uint64_t m_cachedContentRevision = 0;
     ImTextureID m_cachedFontTextureId = 0;
     FrameDeletionQueue *m_deletionQueue = nullptr;
+    std::function<bool(uint64_t)> m_textureUsageValidator;
 };
 
 } // namespace infernux

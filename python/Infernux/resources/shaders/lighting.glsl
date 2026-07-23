@@ -72,30 +72,51 @@ vec3 getSpecularAmbientDirection(vec3 N, vec3 V, float perceptualRoughness) {
 }
 
 // ============================================================================
-// Shadow Mapping — Cascaded Shadow Maps with Vogel Disk Soft Shadows
+// Shadow Mapping — stable cascades and deterministic percentage-closer filtering
 // ============================================================================
 
-// Interleaved gradient noise — per-pixel pseudo-random rotation
-float interleavedGradientNoise(vec2 screenPos) {
-    vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
-    return fract(magic.z * fract(dot(screenPos, magic.xy)));
+float shadowBilinearPcf(vec2 atlasUv, float receiverDepth, vec2 tileMin, vec2 tileMax,
+                        float atlasSize) {
+    vec2 inverseAtlas = vec2(1.0 / atlasSize);
+    vec2 pixel = atlasUv * atlasSize - vec2(0.5);
+    vec2 base = floor(pixel);
+    vec2 fraction = fract(pixel);
+    vec2 gatherUv = (base + vec2(1.0)) * inverseAtlas;
+    gatherUv = clamp(gatherUv, tileMin + inverseAtlas * 0.5, tileMax - inverseAtlas * 0.5);
+    vec4 depths = textureGather(shadowMap, gatherUv, 0);
+    vec4 comparison = step(vec4(receiverDepth), depths);
+    float lower = mix(comparison.w, comparison.z, fraction.x);
+    float upper = mix(comparison.x, comparison.y, fraction.x);
+    return mix(lower, upper, fraction.y);
 }
 
-// Vogel disk sample point on a unit disk
-vec2 vogelDiskSample(int sampleIdx, int totalSamples, float phi) {
-    float GoldenAngle = 2.399963;
-    float r = sqrt((float(sampleIdx) + 0.5) / float(totalSamples));
-    float theta = float(sampleIdx) * GoldenAngle + phi;
-    return vec2(cos(theta), sin(theta)) * r;
+float shadowTentWeight(int index) {
+    return (index == 0 || index == 3) ? 1.0 : 3.0;
 }
 
-float sampleShadowView(uint viewIndex, vec3 worldPos, vec3 normal, vec3 toLight, vec4 shadowParams) {
-    if (viewIndex >= lighting.shadowViewHeader.x || shadowParams.w < 0.5 || shadowParams.x <= 0.0) return 1.0;
+float sampleShadowViewVisibility(uint viewIndex, vec3 worldPos, vec3 normal, vec3 toLight,
+                                 vec4 shadowParams, bool softFilter) {
+    if (viewIndex >= lighting.shadowViewHeader.x) return 1.0;
     ShadowViewData shadowView = lighting.shadowViews[viewIndex];
-    float worldTexel = max(shadowView.depthTexel.z, 0.000001);
-    float slope = 1.0 - max(dot(normalize(normal), normalize(toLight)), 0.0);
-    vec3 biasedPosition = worldPos + normalize(normal) * shadowParams.z;
-    biasedPosition += normalize(toLight) * (shadowParams.y + slope * worldTexel);
+    vec3 N = normalize(normal);
+    vec3 L = normalize(toLight);
+    float nDotL = clamp(dot(N, L), 0.0, 1.0);
+    float slope = clamp(sqrt(max(1.0 - nDotL * nDotL, 0.0)) / max(nDotL, 0.2), 0.0, 4.0);
+
+    // Perspective shadow texels grow with distance from the light. Store the
+    // far-plane footprint once, then scale it back to the receiver depth so a
+    // nearby object is not biased as if it lived at the end of the light range.
+    vec4 unbiassedClip = shadowView.viewProjection * vec4(worldPos, 1.0);
+    float perspectiveScale = shadowView.metadata.x == 0u
+        ? 1.0
+        : clamp(abs(unbiassedClip.w) / max(shadowView.depthTexel.y, 0.000001), 0.001, 1.0);
+    float worldTexel = max(shadowView.depthTexel.z * perspectiveScale, 0.000001);
+
+    // Bias is measured in shadow texels. There is deliberately no implicit
+    // slope or raster bias: setting both controls to zero means exactly zero.
+    vec3 biasedPosition = worldPos;
+    biasedPosition += N * (shadowParams.z * worldTexel * (1.0 + slope));
+    biasedPosition += L * (shadowParams.y * worldTexel);
 
     vec4 clip = shadowView.viewProjection * vec4(biasedPosition, 1.0);
     if (abs(clip.w) < 0.000001) return 1.0;
@@ -112,18 +133,32 @@ float sampleShadowView(uint viewIndex, vec3 worldPos, vec3 normal, vec3 toLight,
     vec2 tileMin = atlasOffset + texel * 0.5;
     vec2 tileMax = atlasOffset + atlasScale - texel * 0.5;
 
-    int sampleCount = shadowParams.w > 1.5 ? 16 : 1;
+    if (!softFilter)
+        return shadowBilinearPcf(atlasUv, ndc.z, tileMin, tileMax, atlasSize);
+
+    // Each tap is itself a hardware-filtered 2x2 depth comparison. A fixed 4x4
+    // tent is temporally stable without TAA; the previous random per-pixel
+    // rotation traded staircase edges for visible noise and crawl.
+    float radius = clamp(shadowView.depthTexel.w, 0.5, 3.5);
+    float stepSize = radius / 1.5;
     float visibility = 0.0;
-    float rotation = interleavedGradientNoise(gl_FragCoord.xy) * 6.283185;
-    float radius = max(shadowView.depthTexel.w, 0.0);
-    for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
-        if (sampleIndex >= sampleCount) break;
-        vec2 offset = sampleCount == 1 ? vec2(0.0)
-                                       : vogelDiskSample(sampleIndex, sampleCount, rotation) * radius * texel;
-        float storedDepth = texture(shadowMap, clamp(atlasUv + offset, tileMin, tileMax)).r;
-        visibility += ndc.z <= storedDepth ? 1.0 : 0.0;
+    float totalWeight = 0.0;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            float weight = shadowTentWeight(x) * shadowTentWeight(y);
+            vec2 offset = (vec2(float(x), float(y)) - vec2(1.5)) * stepSize * texel;
+            visibility += shadowBilinearPcf(atlasUv + offset, ndc.z, tileMin, tileMax, atlasSize) * weight;
+            totalWeight += weight;
+        }
     }
-    return mix(1.0, visibility / float(sampleCount), shadowParams.x);
+    return visibility / max(totalWeight, 1.0);
+}
+
+float sampleShadowView(uint viewIndex, vec3 worldPos, vec3 normal, vec3 toLight, vec4 shadowParams) {
+    if (viewIndex >= lighting.shadowViewHeader.x || shadowParams.w < 0.5 || shadowParams.x <= 0.0) return 1.0;
+    float visibility = sampleShadowViewVisibility(
+        viewIndex, worldPos, normal, toLight, shadowParams, shadowParams.w > 1.5);
+    return mix(1.0, visibility, shadowParams.x);
 }
 
 float sampleDirectionalViews(uint firstView, uint viewCount, vec4 shadowParams,
@@ -161,8 +196,40 @@ float sampleLocalShadow(uint firstView, uint viewCount, uint lightType, vec4 sha
     uint availableViews = lighting.shadowViewHeader.x;
     if (viewCount == 0u || firstView >= availableViews) return 1.0;
     viewCount = min(viewCount, availableViews - firstView);
-    uint offset = lightType == 2u ? 0u : min(pointShadowFace(worldPos - lightPosition), viewCount - 1u);
-    return sampleShadowView(firstView + offset, worldPos, normal, toLight, shadowParams);
+    if (lightType == 2u || shadowParams.w < 1.5) {
+        uint offset = lightType == 2u ? 0u : min(pointShadowFace(worldPos - lightPosition), viewCount - 1u);
+        return sampleShadowView(firstView + offset, worldPos, normal, toLight, shadowParams);
+    }
+
+    // Point and area soft shadows must be filtered in world space. Offsetting
+    // atlas UVs keeps every tap on one cube face and exposes a hard seam. Each
+    // tap below selects its own face after the offset, so the kernel crosses
+    // cube boundaries continuously.
+    vec3 radial = worldPos - lightPosition;
+    float radialLength = max(length(radial), 0.0001);
+    vec3 radialDirection = radial / radialLength;
+    vec3 helper = abs(radialDirection.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(helper, radialDirection));
+    vec3 bitangent = cross(radialDirection, tangent);
+    uint centerFace = min(pointShadowFace(radial), viewCount - 1u);
+    ShadowViewData centerView = lighting.shadowViews[firstView + centerFace];
+    float innerResolution = max(centerView.atlasScaleOffset.x * float(lighting.shadowViewHeader.y), 1.0);
+    float radiusWorld = shadowParams.w > 1.5
+        ? centerView.depthTexel.w * (2.0 * radialLength / innerResolution)
+        : 0.0;
+    const vec2 disk[8] = vec2[](
+        vec2(0.0, 0.0), vec2(0.7071, 0.0), vec2(-0.7071, 0.0),
+        vec2(0.0, 0.7071), vec2(0.0, -0.7071), vec2(0.5, 0.5),
+        vec2(-0.5, 0.5), vec2(0.5, -0.5));
+    float visibility = 0.0;
+    for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
+        vec3 samplePosition = worldPos +
+            (tangent * disk[sampleIndex].x + bitangent * disk[sampleIndex].y) * radiusWorld;
+        uint face = min(pointShadowFace(samplePosition - lightPosition), viewCount - 1u);
+        visibility += sampleShadowViewVisibility(firstView + face, samplePosition, normal, toLight,
+                                                  shadowParams, false);
+    }
+    return mix(1.0, visibility * 0.125, shadowParams.x);
 }
 
 /**

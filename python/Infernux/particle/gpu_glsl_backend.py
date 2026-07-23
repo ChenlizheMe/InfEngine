@@ -220,15 +220,42 @@ uint inx_particle_point_shadow_face(vec3 direction_from_light) {
     return direction_from_light.z >= 0.0 ? 4u : 5u;
 }
 
-float inx_particle_sample_shadow_view(uint view_index, vec3 world_position, vec3 normal,
-                                      vec3 to_light, vec4 shadow_params) {
-    if (view.rendering_control.x < 0.5 || view_index >= particle_lighting.shadow_view_header.x ||
-        shadow_params.w < 0.5 || shadow_params.x <= 0.0) return 1.0;
+float inx_particle_shadow_bilinear_pcf(vec2 atlas_uv, float receiver_depth,
+                                       vec2 tile_min, vec2 tile_max, float atlas_size) {
+    vec2 inverse_atlas = vec2(1.0 / atlas_size);
+    vec2 pixel = atlas_uv * atlas_size - vec2(0.5);
+    vec2 base = floor(pixel);
+    vec2 fraction = fract(pixel);
+    vec2 gather_uv = (base + vec2(1.0)) * inverse_atlas;
+    gather_uv = clamp(gather_uv, tile_min + inverse_atlas * 0.5, tile_max - inverse_atlas * 0.5);
+    vec4 depths = textureGather(particle_shadow_map, gather_uv, 0);
+    vec4 comparison = step(vec4(receiver_depth), depths);
+    float lower = mix(comparison.w, comparison.z, fraction.x);
+    float upper = mix(comparison.x, comparison.y, fraction.x);
+    return mix(lower, upper, fraction.y);
+}
+
+float inx_particle_shadow_tent_weight(int index) {
+    return (index == 0 || index == 3) ? 1.0 : 3.0;
+}
+
+float inx_particle_sample_shadow_view_visibility(uint view_index, vec3 world_position, vec3 normal,
+                                                  vec3 to_light, vec4 shadow_params,
+                                                  bool soft_filter) {
+    if (view.rendering_control.x < 0.5 || view_index >= particle_lighting.shadow_view_header.x) return 1.0;
     ParticleShadowViewData shadow_view = particle_lighting.shadow_views[view_index];
-    float world_texel = max(shadow_view.depth_texel.z, 0.000001);
-    float slope = 1.0 - max(dot(normalize(normal), normalize(to_light)), 0.0);
-    vec3 biased_position = world_position + normalize(normal) * shadow_params.z;
-    biased_position += normalize(to_light) * (shadow_params.y + slope * world_texel);
+    vec3 N = normalize(normal);
+    vec3 L = normalize(to_light);
+    float n_dot_l = clamp(dot(N, L), 0.0, 1.0);
+    float slope = clamp(sqrt(max(1.0 - n_dot_l * n_dot_l, 0.0)) / max(n_dot_l, 0.2), 0.0, 4.0);
+    vec4 unbiassed_clip = shadow_view.view_projection * vec4(world_position, 1.0);
+    float perspective_scale = shadow_view.metadata.x == 0u
+        ? 1.0
+        : clamp(abs(unbiassed_clip.w) / max(shadow_view.depth_texel.y, 0.000001), 0.001, 1.0);
+    float world_texel = max(shadow_view.depth_texel.z * perspective_scale, 0.000001);
+    vec3 biased_position = world_position;
+    biased_position += N * (shadow_params.z * world_texel * (1.0 + slope));
+    biased_position += L * (shadow_params.y * world_texel);
     vec4 clip = shadow_view.view_projection * vec4(biased_position, 1.0);
     if (abs(clip.w) < 0.000001) return 1.0;
     vec3 ndc = clip.xyz / clip.w;
@@ -238,22 +265,36 @@ float inx_particle_sample_shadow_view(uint view_index, vec3 world_position, vec3
     vec2 atlas_offset = shadow_view.atlas_scale_offset.zw;
     vec2 atlas_scale = shadow_view.atlas_scale_offset.xy;
     vec2 atlas_uv = atlas_offset + local_uv * atlas_scale;
-    vec2 texel = vec2(1.0 / max(float(particle_lighting.shadow_view_header.y), 1.0));
+    float atlas_size = max(float(particle_lighting.shadow_view_header.y), 1.0);
+    vec2 texel = vec2(1.0 / atlas_size);
     vec2 tile_min = atlas_offset + texel * 0.5;
     vec2 tile_max = atlas_offset + atlas_scale - texel * 0.5;
-    int radius = shadow_params.w > 1.5 ? 2 : 0;
+    if (!soft_filter)
+        return inx_particle_shadow_bilinear_pcf(atlas_uv, ndc.z, tile_min, tile_max, atlas_size);
+
+    float radius = clamp(shadow_view.depth_texel.w, 0.5, 3.5);
+    float step_size = radius / 1.5;
     float visibility = 0.0;
-    float samples = 0.0;
-    for (int y = -2; y <= 2; ++y) {
-        for (int x = -2; x <= 2; ++x) {
-            if (abs(x) > radius || abs(y) > radius) continue;
-            float stored_depth = texture(particle_shadow_map,
-                clamp(atlas_uv + vec2(x, y) * texel, tile_min, tile_max)).r;
-            visibility += ndc.z <= stored_depth ? 1.0 : 0.0;
-            samples += 1.0;
+    float total_weight = 0.0;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            float weight = inx_particle_shadow_tent_weight(x) * inx_particle_shadow_tent_weight(y);
+            vec2 offset = (vec2(float(x), float(y)) - vec2(1.5)) * step_size * texel;
+            visibility += inx_particle_shadow_bilinear_pcf(
+                atlas_uv + offset, ndc.z, tile_min, tile_max, atlas_size) * weight;
+            total_weight += weight;
         }
     }
-    return mix(1.0, visibility / max(samples, 1.0), shadow_params.x);
+    return visibility / max(total_weight, 1.0);
+}
+
+float inx_particle_sample_shadow_view(uint view_index, vec3 world_position, vec3 normal,
+                                      vec3 to_light, vec4 shadow_params) {
+    if (view.rendering_control.x < 0.5 || view_index >= particle_lighting.shadow_view_header.x ||
+        shadow_params.w < 0.5 || shadow_params.x <= 0.0) return 1.0;
+    float visibility = inx_particle_sample_shadow_view_visibility(
+        view_index, world_position, normal, to_light, shadow_params, shadow_params.w > 1.5);
+    return mix(1.0, visibility, shadow_params.x);
 }
 
 float inx_particle_directional_shadow(CanonicalLightData light, vec3 world_position,
@@ -270,8 +311,18 @@ float inx_particle_directional_shadow(CanonicalLightData light, vec3 world_posit
             break;
         }
     }
-    return inx_particle_sample_shadow_view(first_view + selected, world_position, normal, to_light,
-        vec4(light.attenuation.xyz, float(light.metadata.z)));
+    vec4 shadow_params = vec4(light.attenuation.xyz, float(light.metadata.z));
+    float shadow = inx_particle_sample_shadow_view(
+        first_view + selected, world_position, normal, to_light, shadow_params);
+    if (selected + 1u < view_count) {
+        ParticleShadowViewData current = particle_lighting.shadow_views[first_view + selected];
+        float overlap = max((current.split_data.y - current.split_data.x) * 0.1, 0.0001);
+        float blend = smoothstep(0.0, overlap, current.split_data.y - view_depth);
+        float next_shadow = inx_particle_sample_shadow_view(
+            first_view + selected + 1u, world_position, normal, to_light, shadow_params);
+        shadow = mix(next_shadow, shadow, blend);
+    }
+    return shadow;
 }
 
 float inx_particle_local_shadow(CanonicalLightData light, vec3 world_position,
@@ -281,10 +332,39 @@ float inx_particle_local_shadow(CanonicalLightData light, vec3 world_position,
     uint available_views = particle_lighting.shadow_view_header.x;
     if (view_count == 0u || first_view >= available_views) return 1.0;
     view_count = min(view_count, available_views - first_view);
-    uint offset = light.metadata.x == 2u ? 0u :
-        min(inx_particle_point_shadow_face(world_position - light.position_range.xyz), view_count - 1u);
-    return inx_particle_sample_shadow_view(first_view + offset, world_position, normal, to_light,
-        vec4(light.attenuation.xyz, float(light.metadata.z)));
+    vec4 shadow_params = vec4(light.attenuation.xyz, float(light.metadata.z));
+    if (light.metadata.x == 2u || shadow_params.w < 1.5) {
+        uint offset = light.metadata.x == 2u ? 0u :
+            min(inx_particle_point_shadow_face(world_position - light.position_range.xyz), view_count - 1u);
+        return inx_particle_sample_shadow_view(first_view + offset, world_position, normal, to_light,
+                                               shadow_params);
+    }
+
+    vec3 radial = world_position - light.position_range.xyz;
+    float radial_length = max(length(radial), 0.0001);
+    vec3 radial_direction = radial / radial_length;
+    vec3 helper = abs(radial_direction.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(helper, radial_direction));
+    vec3 bitangent = cross(radial_direction, tangent);
+    uint center_face = min(inx_particle_point_shadow_face(radial), view_count - 1u);
+    ParticleShadowViewData center_view = particle_lighting.shadow_views[first_view + center_face];
+    float inner_resolution = max(center_view.atlas_scale_offset.x *
+        float(particle_lighting.shadow_view_header.y), 1.0);
+    float radius_world = center_view.depth_texel.w * (2.0 * radial_length / inner_resolution);
+    const vec2 disk[8] = vec2[](
+        vec2(0.0, 0.0), vec2(0.7071, 0.0), vec2(-0.7071, 0.0),
+        vec2(0.0, 0.7071), vec2(0.0, -0.7071), vec2(0.5, 0.5),
+        vec2(-0.5, 0.5), vec2(0.5, -0.5));
+    float visibility = 0.0;
+    for (int sample_index = 0; sample_index < 8; ++sample_index) {
+        vec3 sample_position = world_position +
+            (tangent * disk[sample_index].x + bitangent * disk[sample_index].y) * radius_world;
+        uint face = min(inx_particle_point_shadow_face(sample_position - light.position_range.xyz),
+                        view_count - 1u);
+        visibility += inx_particle_sample_shadow_view_visibility(
+            first_view + face, sample_position, normal, to_light, shadow_params, false);
+    }
+    return mix(1.0, visibility * 0.125, shadow_params.x);
 }
 
 float inx_particle_distance_attenuation(float range, float distance_to_light) {
