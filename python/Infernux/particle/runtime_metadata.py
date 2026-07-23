@@ -134,6 +134,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         "soft_particles",
         "soft_distance",
         "sort_mode",
+        "ribbon_uv_mode",
+        "ribbon_uv_scale",
     }:
         raise ParticleRuntimeMetadataError(f"{location} is invalid")
     if (
@@ -149,6 +151,10 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         or not math.isfinite(float(value["soft_distance"]))
         or float(value["soft_distance"]) <= 0.0
         or type(value["sort_mode"]) is not str
+        or type(value["ribbon_uv_mode"]) is not str
+        or type(value["ribbon_uv_scale"]) not in {int, float}
+        or not math.isfinite(float(value["ribbon_uv_scale"]))
+        or float(value["ribbon_uv_scale"]) <= 0.0
     ):
         raise ParticleRuntimeMetadataError(f"{location} fields are invalid")
     return ParticleOutputDescriptor(
@@ -162,6 +168,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         value["soft_particles"],
         float(value["soft_distance"]),
         value["sort_mode"],
+        value["ribbon_uv_mode"],
+        float(value["ribbon_uv_scale"]),
     )
 
 

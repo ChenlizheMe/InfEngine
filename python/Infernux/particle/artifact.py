@@ -374,6 +374,8 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "soft_particles": output.soft_particles,
                         "soft_distance": output.soft_distance,
                         "sort_mode": output.sort_mode,
+                        "ribbon_uv_mode": output.ribbon_uv_mode,
+                        "ribbon_uv_scale": output.ribbon_uv_scale,
                     }
                     for output in emitter.render_plan.outputs
                 ],

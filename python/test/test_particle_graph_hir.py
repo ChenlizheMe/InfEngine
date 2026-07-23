@@ -789,6 +789,82 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
     }
 
 
+def test_ribbon_output_has_stable_topology_attributes_and_script_parity():
+    source = '''
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings
+
+class TrailGraph(ParticleScript):
+    class Trail(ParticleEmitter):
+        stable_id = "trail"
+        settings = EmitterSettings(capacity=4096)
+
+        def init(self, ctx, particles):
+            particles.set_strip_id(7)
+            particles.set_ribbon_order(11)
+            particles.break_ribbon(False)
+
+        def update(self, ctx, particles):
+            particles.set_ribbon_order(12)
+
+        def rendering(self, ctx, particles):
+            particles.ribbon(
+                material=AssetReference(path_hint="Assets/Materials/Trail.mat"),
+                uv_mode="repeat",
+                uv_scale=2.5,
+            )
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="Trail.particle.py")
+    program = compiler.compile(source, source_name="Trail.particle.py")
+    graph_program = ParticleGraphCompiler().compile(asset)
+    emitter = program.emitters[0]
+    output = emitter.render_plan.outputs[0]
+
+    assert program.behavior_hash == graph_program.behavior_hash
+    assert output.output_type == "ribbon"
+    assert output.ribbon_uv_mode == "repeat"
+    assert output.ribbon_uv_scale == pytest.approx(2.5)
+    assert output.sort_mode == "none"
+    assert [operation.opcode for operation in emitter.init.operations[-3:]] == [
+        "attribute.set_strip_id",
+        "attribute.set_ribbon_order",
+        "attribute.set_ribbon_break",
+    ]
+    assert {
+        "builtin.ribbon_strip_id",
+        "builtin.ribbon_order",
+        "builtin.ribbon_break",
+    }.issubset({attribute.stable_id for attribute in emitter.attributes})
+
+
+@pytest.mark.parametrize(
+    "properties, message",
+    [
+        ({"sort": "back_to_front"}, "requires sort='none'"),
+        ({"uv_mode": "projected"}, "requires uv_mode"),
+        ({"uv_scale": 0.0}, "finite positive uv_scale"),
+    ],
+)
+def test_ribbon_output_rejects_ambiguous_topology_and_uv_settings(properties, message):
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord("ribbon", "particle.output.ribbon", properties=properties),
+        ),
+        links=(
+            GraphLinkRecord(
+                "render-stream", "root.rendering", "out", "ribbon", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(rendering=rendering),)
+    )
+    with pytest.raises(ParticleCompileError, match=message):
+        ParticleGraphCompiler().compile(asset)
+
+
 def test_particle_script_vector_field_expression_matches_graph_kernel_contract():
     source = PARTICLE_SCRIPT_SOURCE.replace(
         "particles.acceleration((0.0, -0.2, 0.0))",

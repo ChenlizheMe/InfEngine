@@ -58,6 +58,8 @@ class ParticleOutputDescriptor:
     soft_particles: bool
     soft_distance: float
     sort_mode: str
+    ribbon_uv_mode: str = "stretch"
+    ribbon_uv_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,8 @@ class ParticleGraphCompiler:
                             "soft_particles": output.soft_particles,
                             "soft_distance": output.soft_distance,
                             "sort": output.sort_mode,
+                            "ribbon_uv_mode": output.ribbon_uv_mode,
+                            "ribbon_uv_scale": output.ribbon_uv_scale,
                         }
                         for output in emitter.render_plan.outputs
                     ],
@@ -193,7 +197,7 @@ class ParticleGraphCompiler:
         outputs = tuple(
             self._compile_output(operation)
             for operation in rendering.operations
-            if operation.opcode in {"render.sprite", "render.mesh"}
+            if operation.opcode in {"render.sprite", "render.mesh", "render.ribbon"}
         )
         if not outputs:
             raise ParticleCompileError(
@@ -267,6 +271,37 @@ class ParticleGraphCompiler:
                 f"particle mesh output {unsupported_mesh_semantics.output_id!r} currently "
                 "supports unsorted, non-soft rendering only"
             )
+        unsupported_ribbon_semantics = next(
+            (
+                output
+                for output in outputs
+                if output.output_type == "ribbon" and output.sort_mode != "none"
+            ),
+            None,
+        )
+        if unsupported_ribbon_semantics is not None:
+            raise ParticleCompileError(
+                f"particle ribbon output {unsupported_ribbon_semantics.output_id!r} uses stable "
+                "strip topology ordering and therefore requires sort='none'"
+            )
+        invalid_ribbon_uv = next(
+            (
+                output
+                for output in outputs
+                if output.output_type == "ribbon"
+                and (
+                    output.ribbon_uv_mode not in {"stretch", "repeat"}
+                    or not math.isfinite(output.ribbon_uv_scale)
+                    or output.ribbon_uv_scale <= 0.0
+                )
+            ),
+            None,
+        )
+        if invalid_ribbon_uv is not None:
+            raise ParticleCompileError(
+                f"particle ribbon output {invalid_ribbon_uv.output_id!r} requires uv_mode "
+                "'stretch' or 'repeat' and a finite positive uv_scale"
+            )
         orientation_opcodes = {
             "attribute.set_orientation",
             "integrate.angular_velocity_3d",
@@ -303,6 +338,28 @@ class ParticleGraphCompiler:
                     [1.0, 1.0, 1.0],
                 ),
             )
+        if any(output.output_type == "ribbon" for output in outputs):
+            attributes = (
+                *attributes,
+                ParticleAttribute(
+                    "builtin.ribbon_strip_id",
+                    "ribbon_strip_id",
+                    TypeRef(ValueType.U32),
+                    0,
+                ),
+                ParticleAttribute(
+                    "builtin.ribbon_order",
+                    "ribbon_order",
+                    TypeRef(ValueType.U32),
+                    0,
+                ),
+                ParticleAttribute(
+                    "builtin.ribbon_break",
+                    "ribbon_break",
+                    TypeRef(ValueType.BOOL),
+                    False,
+                ),
+            )
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,
@@ -318,7 +375,11 @@ class ParticleGraphCompiler:
     @staticmethod
     def _compile_output(operation: ParticleOperation) -> ParticleOutputDescriptor:
         parameters = operation.parameter_dict()
-        output_type = "sprite" if operation.opcode == "render.sprite" else "mesh"
+        output_type = {
+            "render.sprite": "sprite",
+            "render.mesh": "mesh",
+            "render.ribbon": "ribbon",
+        }[operation.opcode]
         return ParticleOutputDescriptor(
             operation.source_node_uid,
             output_type,
@@ -332,6 +393,8 @@ class ParticleGraphCompiler:
             bool(parameters.get("soft_particles", False)),
             float(parameters.get("soft_distance", 1.0)),
             str(parameters["sort"]),
+            str(parameters.get("uv_mode", "stretch")),
+            float(parameters.get("uv_scale", 1.0)),
         )
 
     def _compile_stage(

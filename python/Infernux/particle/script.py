@@ -61,6 +61,9 @@ class ParticleStream:
     rotation: float
     orientation: tuple[float, float, float]
     color: tuple[float, float, float, float]
+    ribbon_strip_id: int
+    ribbon_order: int
+    ribbon_break: bool
 
     def set_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
@@ -69,6 +72,9 @@ class ParticleStream:
     def set_color(self, value) -> None: ...
     def set_size(self, value) -> None: ...
     def set_scale(self, value) -> None: ...
+    def set_strip_id(self, value: int) -> None: ...
+    def set_ribbon_order(self, value: int) -> None: ...
+    def break_ribbon(self, value: bool) -> None: ...
     def acceleration(self, value) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
     def rotate_orientation(self, degrees_per_second) -> None: ...
@@ -93,6 +99,18 @@ class ParticleStream:
         cast_shadows: bool = False,
         sort: str = "none",
     ) -> None: ...
+    def ribbon(
+        self,
+        *,
+        material: AssetReference = AssetReference(),
+        receive_scene_lighting: bool = False,
+        receive_shadows: bool = False,
+        soft_particles: bool = False,
+        soft_distance: float = 1.0,
+        sort: str = "none",
+        uv_mode: str = "stretch",
+        uv_scale: float = 1.0,
+    ) -> None: ...
 
 
 class ParticleScriptError(ValueError):
@@ -112,6 +130,9 @@ class ParticleScriptCompiler:
             "set_color": ("particle.attribute.set_color", "value"),
             "set_size": ("particle.attribute.set_size", "value"),
             "set_scale": ("particle.attribute.set_scale", "value"),
+            "set_strip_id": ("particle.attribute.set_strip_id", "value"),
+            "set_ribbon_order": ("particle.attribute.set_ribbon_order", "value"),
+            "break_ribbon": ("particle.attribute.set_ribbon_break", "value"),
         },
         "update": {
             "acceleration": ("particle.update.acceleration", "value"),
@@ -120,6 +141,9 @@ class ParticleScriptCompiler:
             "set_color": ("particle.attribute.set_color", "value"),
             "set_size": ("particle.attribute.set_size", "value"),
             "set_scale": ("particle.attribute.set_scale", "value"),
+            "set_strip_id": ("particle.attribute.set_strip_id", "value"),
+            "set_ribbon_order": ("particle.attribute.set_ribbon_order", "value"),
+            "break_ribbon": ("particle.attribute.set_ribbon_break", "value"),
             "rotate": ("particle.update.rotate", "degrees_per_second"),
             "rotate_orientation": (
                 "particle.update.rotate_orientation",
@@ -130,6 +154,7 @@ class ParticleScriptCompiler:
         "rendering": {
             "sprite": ("particle.output.sprite", ""),
             "mesh": ("particle.output.mesh", ""),
+            "ribbon": ("particle.output.ribbon", ""),
         },
     }
 
@@ -444,6 +469,9 @@ class ParticleScriptCompiler:
                 "lifetime": ("particle.attribute.read_f32", "builtin.lifetime"),
                 "size": ("particle.attribute.read_f32", "builtin.size"),
                 "scale": ("particle.attribute.read_vec3", "builtin.scale"),
+                "ribbon_strip_id": ("particle.attribute.read_u32", "builtin.ribbon_strip_id"),
+                "ribbon_order": ("particle.attribute.read_u32", "builtin.ribbon_order"),
+                "ribbon_break": ("particle.attribute.read_bool", "builtin.ribbon_break"),
                 "rotation": ("particle.attribute.read_f32", "builtin.rotation"),
                 "color": ("particle.attribute.read_color", "builtin.color"),
             }

@@ -617,6 +617,9 @@ class ParticleKernelLowerer:
                 "attribute.set_scale",
                 "attribute.set_rotation",
                 "attribute.set_orientation",
+                "attribute.set_strip_id",
+                "attribute.set_ribbon_order",
+                "attribute.set_ribbon_break",
             }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
@@ -624,6 +627,9 @@ class ParticleKernelLowerer:
                     "attribute.set_scale": "builtin.scale",
                     "attribute.set_rotation": "builtin.rotation",
                     "attribute.set_orientation": "builtin.orientation",
+                    "attribute.set_strip_id": "builtin.ribbon_strip_id",
+                    "attribute.set_ribbon_order": "builtin.ribbon_order",
+                    "attribute.set_ribbon_break": "builtin.ribbon_break",
                 }[operation.opcode]
                 property_name = "degrees" if operation.opcode == "attribute.set_orientation" else "value"
                 value = builder.operation_value(
@@ -695,6 +701,9 @@ class ParticleKernelLowerer:
                 "attribute.set_scale",
                 "attribute.set_rotation",
                 "attribute.set_orientation",
+                "attribute.set_strip_id",
+                "attribute.set_ribbon_order",
+                "attribute.set_ribbon_break",
             }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
@@ -702,6 +711,9 @@ class ParticleKernelLowerer:
                     "attribute.set_scale": "builtin.scale",
                     "attribute.set_rotation": "builtin.rotation",
                     "attribute.set_orientation": "builtin.orientation",
+                    "attribute.set_strip_id": "builtin.ribbon_strip_id",
+                    "attribute.set_ribbon_order": "builtin.ribbon_order",
+                    "attribute.set_ribbon_break": "builtin.ribbon_break",
                 }[operation.opcode]
                 property_name = "degrees" if operation.opcode == "attribute.set_orientation" else "value"
                 value = builder.operation_value(
@@ -866,6 +878,9 @@ class ParticleKernelLowerer:
             "builtin.age",
             "builtin.lifetime",
             "builtin.id",
+            "builtin.ribbon_strip_id",
+            "builtin.ribbon_order",
+            "builtin.ribbon_break",
         ):
             if stable_id not in attribute_types:
                 continue

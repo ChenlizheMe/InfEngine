@@ -154,6 +154,24 @@ PARTICLE_NODE_DEFINITIONS = (
         (PropertyDef("value", TypeRef(ValueType.VEC3), [1.0, 1.0, 1.0]),),
     ),
     _operation(
+        "particle.attribute.set_strip_id",
+        "Set Strip ID",
+        "attribute.set_strip_id",
+        (PropertyDef("value", TypeRef(ValueType.U32), 0),),
+    ),
+    _operation(
+        "particle.attribute.set_ribbon_order",
+        "Set Ribbon Order",
+        "attribute.set_ribbon_order",
+        (PropertyDef("value", TypeRef(ValueType.U32), 0),),
+    ),
+    _operation(
+        "particle.attribute.set_ribbon_break",
+        "Break Ribbon",
+        "attribute.set_ribbon_break",
+        (PropertyDef("value", TypeRef(ValueType.BOOL), True),),
+    ),
+    _operation(
         "particle.attribute.set_rotation",
         "Set Rotation",
         "attribute.set_rotation",
@@ -222,6 +240,22 @@ PARTICLE_NODE_DEFINITIONS = (
             PropertyDef("sort", TypeRef(ValueType.STRING), "none"),
         ),
         {"particle_hir": "render.mesh"},
+    ),
+    NodeDef(
+        "particle.output.ribbon",
+        "Ribbon Output",
+        (_stream("in", PortDirection.INPUT),),
+        (
+            PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
+            PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
+            PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
+            PropertyDef("soft_particles", TypeRef(ValueType.BOOL), False),
+            PropertyDef("soft_distance", TypeRef(ValueType.F32), 1.0),
+            PropertyDef("sort", TypeRef(ValueType.STRING), "none"),
+            PropertyDef("uv_mode", TypeRef(ValueType.STRING), "stretch"),
+            PropertyDef("uv_scale", TypeRef(ValueType.F32), 1.0),
+        ),
+        {"particle_hir": "render.ribbon"},
     ),
     _point_cache_sample(
         "particle.point_cache.sample_f32",
@@ -299,6 +333,12 @@ PARTICLE_NODE_DEFINITIONS = (
         "Read UInt Attribute",
         TypeRef(ValueType.U32),
         "builtin.id",
+    ),
+    _attribute_read(
+        "particle.attribute.read_bool",
+        "Read Bool Attribute",
+        TypeRef(ValueType.BOOL),
+        "builtin.ribbon_break",
     ),
     _attribute_read(
         "particle.attribute.read_vec3",

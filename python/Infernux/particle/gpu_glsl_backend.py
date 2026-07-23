@@ -37,6 +37,7 @@ struct ParticleInstance {
     vec4 color;
     vec4 rotation_custom;
     vec4 scale_custom;
+    uvec4 ribbon_data;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer Instances {
@@ -443,6 +444,7 @@ struct ParticleInstance {
     vec4 color;
     vec4 rotation_custom;
     vec4 scale_custom;
+    uvec4 ribbon_data;
 };
 
 struct ParticleMeshVertex {
@@ -1793,6 +1795,7 @@ struct ParticleRenderInstance {{
     vec4 color;
     vec4 rotation_custom;
     vec4 scale_custom;
+    uvec4 ribbon_data;
 }};
 
 layout(std430, set = 0, binding = 0) buffer ParticleStates {{ ParticleState states[]; }};
@@ -2042,6 +2045,10 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     rotation = exports["builtin.rotation"]
     orientation = exports.get("builtin.orientation", "vec3(0.0)")
     scale = exports.get("builtin.scale", "vec3(1.0)")
+    particle_id = exports["builtin.id"]
+    ribbon_strip_id = exports.get("builtin.ribbon_strip_id", "0u")
+    ribbon_order = exports.get("builtin.ribbon_order", particle_id)
+    ribbon_break = exports.get("builtin.ribbon_break", "false")
     world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
     world_scale = (
         "vec3(length(transforms.simulation_to_world[0].xyz), "
@@ -2075,6 +2082,8 @@ void main() {{
     instances[output_index].color = {color};
     instances[output_index].rotation_custom = vec4({rotation}, {orientation});
     instances[output_index].scale_custom = vec4(({scale}) * {world_scale}, 0.0);
+    instances[output_index].ribbon_data = uvec4(
+        {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
     render_indices[output_index] = output_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}

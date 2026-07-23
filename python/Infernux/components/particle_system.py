@@ -570,7 +570,7 @@ class ParticleSystem(InxComponent):
         ):
             if targets[index] is not ExecutionTarget.GPU:
                 continue
-            if any(output.output_type not in {"sprite", "mesh"} for output in emitter.outputs):
+            if any(output.output_type not in {"sprite", "mesh", "ribbon"} for output in emitter.outputs):
                 raise RuntimeError("the GPU particle renderer received an unsupported output type")
             if (
                 type(glsl_emitter) is not dict
@@ -636,6 +636,8 @@ class ParticleSystem(InxComponent):
                             "soft_particles": output.soft_particles,
                             "soft_distance": output.soft_distance,
                             "sort_mode": output.sort_mode,
+                            "ribbon_uv_mode": output.ribbon_uv_mode,
+                            "ribbon_uv_scale": output.ribbon_uv_scale,
                         }
                         for output in emitter.outputs
                     ],

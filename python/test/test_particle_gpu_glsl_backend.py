@@ -103,6 +103,35 @@ def test_gpu_vector_noise_uses_the_portable_hash_and_compiles_to_spirv():
     assert validate_gpu_particle_spirv(payload, source) is payload
 
 
+def test_gpu_ribbon_render_instance_exports_full_width_topology_key():
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord("ribbon", "particle.output.ribbon"),
+        ),
+        links=(
+            GraphLinkRecord("render", "root.rendering", "out", "ribbon", "in", PortKind.STREAM),
+        ),
+    )
+    asset = ParticleGraphAsset(
+        stable_id="gpu-ribbon",
+        emitters=(ParticleEmitterAsset(stable_id="trail", rendering=rendering),),
+    )
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    )
+    emitter = source.emitters[0]
+
+    assert "uvec4 ribbon_data" in emitter.rendering
+    assert "instances[output_index].ribbon_data = uvec4(" in emitter.rendering
+    assert "state.a_builtin_ribbon_strip_id" in emitter.rendering
+    assert "state.a_builtin_ribbon_order" in emitter.rendering
+    assert "state.a_builtin_ribbon_break" in emitter.rendering
+    payload = compile_gpu_particle_spirv(source)
+    assert validate_gpu_particle_spirv(payload, source) is payload
+
+
 def _point_cache_gpu_source():
     init = GraphDocument(
         "particle.init",

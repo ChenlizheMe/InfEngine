@@ -143,6 +143,55 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
     assert sum(instruction.opcode == "multiply" for instruction in emitter.update.instructions) >= 4
 
 
+def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contract():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord("strip", "particle.attribute.set_strip_id", properties={"value": 3}),
+            GraphNodeRecord("order", "particle.attribute.set_ribbon_order", properties={"value": 9}),
+            GraphNodeRecord("break", "particle.attribute.set_ribbon_break", properties={"value": True}),
+        ),
+        links=(
+            GraphLinkRecord("a", "root.init", "out", "strip", "in", PortKind.STREAM),
+            GraphLinkRecord("b", "strip", "out", "order", "in", PortKind.STREAM),
+            GraphLinkRecord("c", "order", "out", "break", "in", PortKind.STREAM),
+        ),
+    )
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord("ribbon", "particle.output.ribbon"),
+        ),
+        links=(
+            GraphLinkRecord("render", "root.rendering", "out", "ribbon", "in", PortKind.STREAM),
+        ),
+    )
+    emitter = _lower(
+        ParticleGraphAsset(
+            emitters=(ParticleEmitterAsset(init=init, rendering=rendering),)
+        )
+    ).emitters[0]
+
+    topology = {
+        "builtin.ribbon_strip_id": TypeRef(ValueType.U32),
+        "builtin.ribbon_order": TypeRef(ValueType.U32),
+        "builtin.ribbon_break": TypeRef(ValueType.BOOL),
+    }
+    attribute_types = {
+        stable_id: value_type for stable_id, value_type, _ in emitter.attributes
+    }
+    assert {stable_id: attribute_types[stable_id] for stable_id in topology} == topology
+    assert set(topology).issubset(emitter.init.written_attributes)
+    exports = {
+        instruction.immediate_dict()["attribute"]
+        for instruction in emitter.rendering.instructions
+        if instruction.opcode == "export_attribute"
+    }
+    assert set(topology).issubset(exports)
+
+
 def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
     first_emitter = ParticleEmitterAsset(
         stable_id="data-emitter",
