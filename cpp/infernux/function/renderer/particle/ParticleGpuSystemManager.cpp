@@ -1131,6 +1131,24 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
         candidates[emitterProgram.id] = std::move(emitter);
     }
 
+    if (program.eventDomain) {
+        const size_t graphEmitterCount =
+            static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [&](const auto &entry) {
+                return entry.second && entry.second->graphInstanceId == program.graphInstanceId;
+            }));
+        if (graphEmitterCount != program.emitters.size()) {
+            SetError(error, "GPU particle event publication requires the complete graph emitter set");
+            return false;
+        }
+        for (const auto &channel : program.eventDomain->channels) {
+            if (channel.sourceEmitterIndex >= program.emitters.size() ||
+                channel.targetEmitterIndex >= program.emitters.size()) {
+                SetError(error, "GPU particle event channel references an emitter outside the published graph");
+                return false;
+            }
+        }
+    }
+
     std::shared_ptr<ParticleGpuEventDomain> candidateEventDomain;
     const auto currentEventDomain = m_impl->eventDomains.find(program.graphInstanceId);
     if (program.eventDomain) {

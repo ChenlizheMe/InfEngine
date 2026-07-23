@@ -688,7 +688,48 @@ class ParticleSystem(InxComponent):
             emitter_indices.append(index)
 
         removed = sorted(set(getattr(self, "_gpu_emitter_ids", ())) - set(emitter_ids))
-        error = native._replace_gpu_particle_graph(self._batch_id, programs, removed)
+        event_domain = None
+        event_metadata = artifact.hir.get("events")
+        if type(event_metadata) is not dict:
+            raise RuntimeError("ParticleGraph event ABI metadata is missing")
+        event_routes = event_metadata.get("routes")
+        event_types = event_metadata.get("event_types")
+        event_abi_hash = event_metadata.get("event_abi_hash")
+        if (
+            type(event_routes) is not list
+            or type(event_types) is not list
+            or type(event_abi_hash) is not str
+        ):
+            raise RuntimeError("ParticleGraph event ABI metadata is invalid")
+        if event_routes:
+            if any(target is not ExecutionTarget.GPU for target in targets):
+                raise RuntimeError(
+                    "graph-local particle events currently require every emitter in the graph to run on the GPU"
+                )
+            abi_u64 = int(event_abi_hash[:16], 16) or 1
+            event_domain = {
+                "event_abi_hash": abi_u64,
+                "channels": [
+                    {
+                        "stable_event_type_hash": event_types[
+                            route["event_type_index"]
+                        ]["stable_type_hash"],
+                        "source_emitter_index": route["source_emitter_index"],
+                        "target_emitter_index": route["target_emitter_index"],
+                        "event_type_index": route["event_type_index"],
+                        "payload_stride_words": route["payload_stride_words"],
+                        "capacity": route["capacity"],
+                        "spawn_count": route["spawn_count"],
+                    }
+                    for route in event_routes
+                ],
+            }
+        error = native._replace_gpu_particle_graph(
+            self._batch_id,
+            programs,
+            removed,
+            event_domain,
+        )
         if error:
             raise RuntimeError(error)
         self._gpu_controllers = controllers
@@ -1206,7 +1247,7 @@ class ParticleSystem(InxComponent):
             and native is not None
             and hasattr(native, "_replace_gpu_particle_graph")
         ):
-            native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids)
+            native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids, None)
         self._gpu_emitter_ids = []
         self._gpu_emitter_indices = []
         self._gpu_controllers = []

@@ -328,14 +328,17 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         }
     };
 
-    requireExactKeys(root, {"$schema", "stable_id", "name", "emitters", "parameters"}, "particle graph");
+    requireExactKeys(root,
+                     {"$schema", "stable_id", "name", "emitters", "parameters", "event_types", "event_routes"},
+                     "particle graph");
     if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.particle_graph")
         throw std::runtime_error("particle graph has an unsupported $schema");
     if (!root["stable_id"].is_string() || root["stable_id"].get_ref<const std::string &>().empty() ||
         !root["name"].is_string() || root["name"].get_ref<const std::string &>().empty())
         throw std::runtime_error("particle graph stable_id and name must be non-empty strings");
-    if (!root["emitters"].is_array() || root["emitters"].empty() || !root["parameters"].is_array())
-        throw std::runtime_error("particle graph requires emitters and parameters arrays");
+    if (!root["emitters"].is_array() || root["emitters"].empty() || !root["parameters"].is_array() ||
+        !root["event_types"].is_array() || !root["event_routes"].is_array())
+        throw std::runtime_error("particle graph requires emitters, parameters, event_types, and event_routes arrays");
 
     std::unordered_set<std::string> dependencies;
     const auto readReference = [&](const nlohmann::json &reference, const std::string &location) {

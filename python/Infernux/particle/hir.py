@@ -86,6 +86,54 @@ class ParticleSystemSchedule:
 
 
 @dataclass(frozen=True)
+class ParticleEventFieldHIR:
+    stable_id: str
+    name: str
+    value_type: TypeRef
+    word_offset: int
+    word_count: int
+    default: Any
+
+
+@dataclass(frozen=True)
+class ParticleEventTypeHIR:
+    stable_id: str
+    name: str
+    type_index: int
+    stable_type_hash: int
+    capacity_per_step: int
+    payload_stride_words: int
+    fields: tuple[ParticleEventFieldHIR, ...]
+
+
+@dataclass(frozen=True)
+class ParticleEventRouteHIR:
+    stable_id: str
+    event_type_id: str
+    event_type_index: int
+    source_emitter_id: str
+    source_emitter_index: int
+    source_stage: ParticleStage
+    target_emitter_id: str
+    target_emitter_index: int
+    spawn_count: int
+    capacity: int
+    payload_stride_words: int
+
+
+@dataclass(frozen=True)
+class ParticleEventSchedule:
+    event_abi_hash: str
+    event_types: tuple[ParticleEventTypeHIR, ...]
+    routes: tuple[ParticleEventRouteHIR, ...]
+
+    @property
+    def event_abi_u64(self) -> int:
+        value = int(self.event_abi_hash[:16], 16)
+        return value or 1
+
+
+@dataclass(frozen=True)
 class ParticleProgramHIR:
     stable_id: str
     name: str
@@ -93,6 +141,7 @@ class ParticleProgramHIR:
     behavior_hash: str
     emitters: tuple[ParticleEmitterHIR, ...]
     schedule: ParticleSystemSchedule
+    events: ParticleEventSchedule
 
 
 class ParticleGraphCompiler:
@@ -100,17 +149,19 @@ class ParticleGraphCompiler:
 
     def compile(self, asset: ParticleGraphAsset) -> ParticleProgramHIR:
         emitters = tuple(self._compile_emitter(emitter) for emitter in asset.emitters)
+        events = self._compile_events(asset)
         return ParticleProgramHIR(
             asset.stable_id,
             asset.name,
             asset.semantic_hash(),
-            self._behavior_hash(emitters),
+            self._behavior_hash(emitters, events),
             emitters,
             ParticleSystemSchedule(tuple(emitter.stable_id for emitter in emitters)),
+            events,
         )
 
     @staticmethod
-    def _behavior_hash(emitters) -> str:
+    def _behavior_hash(emitters, events: ParticleEventSchedule) -> str:
         def stage_payload(stage_hir):
             canonical_ids = {
                 instruction.result_id: f"%{index}"
@@ -183,8 +234,136 @@ class ParticleGraphCompiler:
                     ],
                 }
             )
+        payload.append(
+            {
+                "event_abi_hash": events.event_abi_hash,
+                "event_types": [
+                    {
+                        "stable_id": value.stable_id,
+                        "capacity": value.capacity_per_step,
+                        "payload_stride_words": value.payload_stride_words,
+                        "fields": [
+                            {
+                                "stable_id": field.stable_id,
+                                "type": field.value_type.to_dict(),
+                                "word_offset": field.word_offset,
+                                "word_count": field.word_count,
+                                "default": field.default,
+                            }
+                            for field in value.fields
+                        ],
+                    }
+                    for value in events.event_types
+                ],
+                "event_routes": [
+                    {
+                        "stable_id": route.stable_id,
+                        "event_type": route.event_type_id,
+                        "source_emitter": route.source_emitter_id,
+                        "source_stage": route.source_stage.value,
+                        "target_emitter": route.target_emitter_id,
+                        "spawn_count": route.spawn_count,
+                    }
+                    for route in events.routes
+                ],
+            }
+        )
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _compile_events(asset: ParticleGraphAsset) -> ParticleEventSchedule:
+        emitter_indices = {
+            emitter.stable_id: index for index, emitter in enumerate(asset.emitters)
+        }
+        event_types = []
+        event_type_by_id = {}
+        for type_index, event_type in enumerate(asset.event_types):
+            fields = []
+            word_offset = 0
+            for field in event_type.fields:
+                word_count = _event_word_count(field.value_type)
+                fields.append(
+                    ParticleEventFieldHIR(
+                        field.stable_id,
+                        field.name,
+                        field.value_type,
+                        word_offset,
+                        word_count,
+                        field.default,
+                    )
+                )
+                word_offset += word_count
+            stable_type_hash = _stable_u64(event_type.stable_id)
+            lowered = ParticleEventTypeHIR(
+                event_type.stable_id,
+                event_type.name,
+                type_index,
+                stable_type_hash,
+                event_type.capacity_per_step,
+                word_offset,
+                tuple(fields),
+            )
+            event_types.append(lowered)
+            event_type_by_id[event_type.stable_id] = lowered
+
+        routes = []
+        for route in asset.event_routes:
+            event_type = event_type_by_id[route.event_type_id]
+            routes.append(
+                ParticleEventRouteHIR(
+                    route.stable_id,
+                    event_type.stable_id,
+                    event_type.type_index,
+                    route.source_emitter_id,
+                    emitter_indices[route.source_emitter_id],
+                    ParticleStage(route.source_stage),
+                    route.target_emitter_id,
+                    emitter_indices[route.target_emitter_id],
+                    route.spawn_count,
+                    event_type.capacity_per_step,
+                    event_type.payload_stride_words,
+                )
+            )
+
+        abi_payload = {
+            "emitters": [emitter.stable_id for emitter in asset.emitters],
+            "event_types": [
+                {
+                    "stable_id": value.stable_id,
+                    "stable_type_hash": value.stable_type_hash,
+                    "capacity": value.capacity_per_step,
+                    "payload_stride_words": value.payload_stride_words,
+                    "fields": [
+                        {
+                            "stable_id": field.stable_id,
+                            "type": field.value_type.to_dict(),
+                            "word_offset": field.word_offset,
+                            "word_count": field.word_count,
+                        }
+                        for field in value.fields
+                    ],
+                }
+                for value in event_types
+            ],
+            "routes": [
+                {
+                    "stable_id": route.stable_id,
+                    "event_type_index": route.event_type_index,
+                    "source_emitter_index": route.source_emitter_index,
+                    "source_stage": route.source_stage.value,
+                    "target_emitter_index": route.target_emitter_index,
+                    "spawn_count": route.spawn_count,
+                }
+                for route in routes
+            ],
+        }
+        encoded = json.dumps(abi_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return ParticleEventSchedule(
+            hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+            tuple(event_types),
+            tuple(routes),
+        )
 
     def _compile_emitter(self, emitter) -> ParticleEmitterHIR:
         init = self._compile_stage(ParticleStage.INIT, emitter.init, emitter.settings)
@@ -606,9 +785,41 @@ class ParticleGraphCompiler:
         return ()
 
 
+def _stable_u64(value: str) -> int:
+    result = int.from_bytes(hashlib.sha256(value.encode("utf-8")).digest()[:8], "big")
+    return result or 1
+
+
+def _event_word_count(value_type: TypeRef) -> int:
+    widths = {
+        ValueType.BOOL: 1,
+        ValueType.I32: 1,
+        ValueType.U32: 1,
+        ValueType.F32: 1,
+        ValueType.VEC2: 2,
+        ValueType.VEC3: 3,
+        ValueType.VEC4: 4,
+        ValueType.COLOR: 4,
+        # Mat3 columns retain their std430 padding so a payload can be copied
+        # directly into generated GPU code without backend-specific repacking.
+        ValueType.MAT3: 12,
+        ValueType.MAT4: 16,
+    }
+    try:
+        return widths[value_type.value_type]
+    except KeyError as exc:
+        raise ParticleCompileError(
+            f"particle event field type {value_type.value_type.value!r} is not GPU portable"
+        ) from exc
+
+
 __all__ = [
     "ParticleCompileError",
     "ParticleEmitterHIR",
+    "ParticleEventFieldHIR",
+    "ParticleEventRouteHIR",
+    "ParticleEventSchedule",
+    "ParticleEventTypeHIR",
     "ParticleGraphCompiler",
     "ParticleOperation",
     "ParticleOutputDescriptor",

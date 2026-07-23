@@ -3250,6 +3250,7 @@ class Infernux:
         graph_instance_id: int,
         programs: Sequence[Dict[str, Any]],
         remove_ids: Sequence[int] = ...,
+        event_domain: Optional[Dict[str, Any]] = ...,
     ) -> str: ...
     def _begin_gpu_particle_batch(
         self, graph_instance_id: int, items: Sequence[Dict[str, Any]]

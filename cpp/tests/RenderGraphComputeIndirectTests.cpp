@@ -1995,6 +1995,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     infernux::particle::GpuParticleGraphProgram managedGraphProgram;
     managedGraphProgram.graphInstanceId = managedProgram.graphInstanceId;
+    managedGraphProgram.emitters = {managedProgram};
     infernux::particle::GpuParticleEventDomainDesc managedEvents;
     managedEvents.graphInstanceId = managedProgram.graphInstanceId;
     managedEvents.eventAbiHash = 0xfeed1234u;

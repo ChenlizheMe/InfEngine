@@ -2081,7 +2081,7 @@ PYBIND11_MODULE(_Infernux, m)
         .def(
             "_replace_gpu_particle_graph",
             [](Infernux &self, uint64_t graphInstanceId, const py::sequence &encodedPrograms,
-               const std::vector<uint64_t> &removeIds) {
+               const std::vector<uint64_t> &removeIds, const py::object &encodedEventDomain) {
                 auto *renderer = self.GetRenderer();
                 auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
                 if (!manager)
@@ -2111,12 +2111,57 @@ PYBIND11_MODULE(_Infernux, m)
                 graphProgram.graphInstanceId = graphInstanceId;
                 graphProgram.emitters = std::move(programs);
                 graphProgram.removeEmitterIds = removeIds;
+                if (!encodedEventDomain.is_none()) {
+                    if (!py::isinstance<py::dict>(encodedEventDomain))
+                        throw std::invalid_argument("GPU particle event domain must be a dictionary or None");
+                    const py::dict value = py::reinterpret_borrow<py::dict>(encodedEventDomain);
+                    for (const char *field : {"event_abi_hash", "channels"}) {
+                        if (!value.contains(field))
+                            throw std::invalid_argument(std::string("GPU particle event domain is missing ") + field);
+                    }
+                    if (py::len(value) != 2)
+                        throw std::invalid_argument("GPU particle event domain contains unknown fields");
+                    const py::handle encodedChannels = value["channels"];
+                    if (!py::isinstance<py::sequence>(encodedChannels) || py::isinstance<py::str>(encodedChannels))
+                        throw std::invalid_argument("GPU particle event channels must be a sequence");
+
+                    particle::GpuParticleEventDomainDesc eventDomain;
+                    eventDomain.graphInstanceId = graphInstanceId;
+                    eventDomain.eventAbiHash = py::cast<uint64_t>(value["event_abi_hash"]);
+                    eventDomain.framesInFlight = renderer->GetMaxFramesInFlight();
+                    const py::sequence channels = py::reinterpret_borrow<py::sequence>(encodedChannels);
+                    eventDomain.channels.reserve(channels.size());
+                    for (const py::handle item : channels) {
+                        if (!py::isinstance<py::dict>(item))
+                            throw std::invalid_argument("GPU particle event channel must be a dictionary");
+                        const py::dict channel = py::reinterpret_borrow<py::dict>(item);
+                        for (const char *field : {"stable_event_type_hash", "source_emitter_index",
+                                                  "target_emitter_index", "event_type_index",
+                                                  "payload_stride_words", "capacity", "spawn_count"}) {
+                            if (!channel.contains(field))
+                                throw std::invalid_argument(std::string("GPU particle event channel is missing ") +
+                                                            field);
+                        }
+                        if (py::len(channel) != 7)
+                            throw std::invalid_argument("GPU particle event channel contains unknown fields");
+                        eventDomain.channels.push_back({
+                            py::cast<uint64_t>(channel["stable_event_type_hash"]),
+                            py::cast<uint32_t>(channel["source_emitter_index"]),
+                            py::cast<uint32_t>(channel["target_emitter_index"]),
+                            py::cast<uint32_t>(channel["event_type_index"]),
+                            py::cast<uint32_t>(channel["payload_stride_words"]),
+                            py::cast<uint32_t>(channel["capacity"]),
+                            py::cast<uint32_t>(channel["spawn_count"]),
+                        });
+                    }
+                    graphProgram.eventDomain = std::move(eventDomain);
+                }
                 if (!manager->ApplyGraph(graphProgram, &error))
                     return error.empty() ? std::string("failed to publish GPU particle program batch") : error;
                 return std::string{};
             },
             py::arg("graph_instance_id"), py::arg("programs"),
-            py::arg("remove_ids") = std::vector<uint64_t>{},
+            py::arg("remove_ids") = std::vector<uint64_t>{}, py::arg("event_domain") = py::none(),
             "Internal control-plane publication for one saved ParticleGraph revision")
         .def(
             "_begin_gpu_particle_batch",

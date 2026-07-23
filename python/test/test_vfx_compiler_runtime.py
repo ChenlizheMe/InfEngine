@@ -24,6 +24,8 @@ from Infernux.particle import (
     ExecutionTarget,
     ParticleBurst,
     ParticleEmitterAsset,
+    ParticleEventRoute,
+    ParticleEventType,
     ParticleGraphAsset,
     ParticleRuntimeCompatibility,
     PointCache,
@@ -223,9 +225,13 @@ class _MixedParticleNative:
         self.frames = []
         self.removed_batches = []
         self.reset_emitters = []
+        self.event_domains = []
 
-    def _replace_gpu_particle_graph(self, graph_instance_id, programs, removed):
+    def _replace_gpu_particle_graph(
+        self, graph_instance_id, programs, removed, event_domain=None
+    ):
         self.program_batches.append((programs, removed, graph_instance_id))
+        self.event_domains.append(event_domain)
         return ""
 
     def _begin_gpu_particle_batch(self, graph_instance_id, items):
@@ -319,6 +325,65 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     published_gpu_ids = list(component._gpu_emitter_ids)
     component._remove_native_batch()
     assert native.program_batches[-1] == ([], published_gpu_ids, component._batch_id)
+
+
+def test_particle_system_publishes_saved_event_domain_with_complete_gpu_graph(
+    scene, monkeypatch, tmp_path
+):
+    source = tmp_path / "GpuEvents.particlegraph"
+    graph = ParticleGraphAsset(
+        stable_id="gpu-event-component",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="source",
+                settings=EmitterSettings(target=ExecutionTarget.GPU, capacity=32),
+            ),
+            ParticleEmitterAsset(
+                stable_id="target",
+                settings=EmitterSettings(target=ExecutionTarget.GPU, capacity=64),
+            ),
+        ),
+        event_types=(ParticleEventType("impact", "Impact", 128),),
+        event_routes=(
+            ParticleEventRoute(
+                "source-impact-target",
+                "impact",
+                "source",
+                "update",
+                "target",
+                2,
+            ),
+        ),
+    )
+    graph.save(str(source))
+    native = _MixedParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("GpuEventGraphProbe")
+    game_object.add_py_component(component)
+
+    component.awake()
+    component.start()
+
+    assert len(native.program_batches[-1][0]) == 2
+    event_domain = native.event_domains[-1]
+    assert event_domain["event_abi_hash"] != 0
+    assert event_domain["channels"][0]["stable_event_type_hash"] != 0
+    assert {
+        key: value
+        for key, value in event_domain["channels"][0].items()
+        if key != "stable_event_type_hash"
+    } == {
+        "source_emitter_index": 0,
+        "target_emitter_index": 1,
+        "event_type_index": 0,
+        "payload_stride_words": 0,
+        "capacity": 128,
+        "spawn_count": 2,
+    }
+    component._remove_native_batch()
+    assert native.event_domains[-1] is None
 
 
 def test_local_particle_instances_follow_emitter_transform_and_scale():

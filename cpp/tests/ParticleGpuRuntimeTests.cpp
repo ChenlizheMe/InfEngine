@@ -495,8 +495,8 @@ int main()
         eventDesc.eventAbiHash = 0x12345678u;
         eventDesc.framesInFlight = 3;
         eventDesc.channels = {
-            {0x1001u, 0, 1, 0, 3, 128},
-            {0x1002u, 1, 2, 1, 1, 64},
+            {0x1001u, 0, 1, 0, 3, 128, 3},
+            {0x1002u, 1, 2, 1, 1, 64, 2},
         };
 
         particle::ParticleGpuEventDomain events;
@@ -507,6 +507,9 @@ int main()
                events.PageCount() == 3 && events.ChannelCount() == 2);
         assert(events.RecordBufferBytes() == (128u * 7u + 64u * 5u) * sizeof(uint32_t));
         assert(eventDevice.buffers.size() == 10 && eventDevice.initialBufferBytes[0].size() == 64);
+        std::array<particle::GpuParticleEventChannelRecord, 2> eventRecords{};
+        std::memcpy(eventRecords.data(), eventDevice.initialBufferBytes[0].data(), sizeof(eventRecords));
+        assert(eventRecords[0].spawnCount == 3 && eventRecords[1].spawnCount == 2);
         assert(eventDevice.buffers[0].memory == rhi::BufferMemory::Upload &&
                eventDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage);
         for (size_t page = 0; page < 3; ++page) {

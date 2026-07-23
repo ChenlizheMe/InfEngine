@@ -44,6 +44,7 @@ struct GpuParticleEventChannelDesc
     uint32_t eventTypeIndex = 0;
     uint32_t payloadStrideWords = 0;
     uint32_t capacity = 0;
+    uint32_t spawnCount = 1;
 };
 
 struct GpuParticleEventDomainDesc
@@ -66,7 +67,7 @@ struct alignas(16) GpuParticleEventChannelRecord
     uint32_t targetEmitterIndex = 0;
     uint32_t eventTypeIndex = 0;
     uint32_t payloadStrideWords = 0;
-    uint32_t reserved = 0;
+    uint32_t spawnCount = 1;
 };
 
 struct alignas(16) GpuParticleEventCounter

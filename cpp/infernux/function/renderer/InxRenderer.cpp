@@ -2786,6 +2786,11 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
     return m_particleGpuSystemManager.get();
 }
 
+uint32_t InxRenderer::GetMaxFramesInFlight() const noexcept
+{
+    return m_vkCore ? m_vkCore->GetMaxFramesInFlight() : 0;
+}
+
 bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
 {
     INXLOG_DEBUG("RefreshMaterialPipeline called");

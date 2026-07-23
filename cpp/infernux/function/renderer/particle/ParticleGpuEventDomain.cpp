@@ -63,7 +63,7 @@ struct EventChannel {
     uint target_emitter_index;
     uint event_type_index;
     uint payload_stride_words;
-    uint reserved;
+    uint spawn_count;
 };
 layout(std430, set = 0, binding = 0) readonly buffer ChannelTable { EventChannel channels[]; };
 layout(std430, set = 0, binding = 1) buffer InputCounters { uvec4 input_counters[]; };
@@ -114,7 +114,7 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
     records.reserve(desc.channels.size());
     uint64_t recordWords = 0;
     for (const auto &channel : desc.channels) {
-        if (channel.stableEventTypeHash == 0 || channel.capacity == 0 ||
+        if (channel.stableEventTypeHash == 0 || channel.capacity == 0 || channel.spawnCount == 0 ||
             channel.payloadStrideWords > std::numeric_limits<uint32_t>::max() - EventHeaderWords) {
             return false;
         }
@@ -133,7 +133,7 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
             return false;
         records.push_back({static_cast<uint32_t>(recordWords), strideWords, channel.capacity,
                            channel.sourceEmitterIndex, channel.targetEmitterIndex, channel.eventTypeIndex,
-                           channel.payloadStrideWords, 0});
+                           channel.payloadStrideWords, channel.spawnCount});
         recordWords = nextRecordWords;
     }
     if (recordWords == 0 || recordWords > std::numeric_limits<uint64_t>::max() / sizeof(uint32_t) ||

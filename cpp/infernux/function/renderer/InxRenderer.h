@@ -317,6 +317,7 @@ class InxRenderer
 
     particle::ParticleGpuDrawRegistry *GetParticleGpuDrawRegistry();
     particle::ParticleGpuSystemManager *GetParticleGpuSystemManager();
+    [[nodiscard]] uint32_t GetMaxFramesInFlight() const noexcept;
     [[nodiscard]] uint64_t GetNextFrameIndex() const noexcept
     {
         return m_frameCount + 1;

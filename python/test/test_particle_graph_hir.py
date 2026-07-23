@@ -15,6 +15,9 @@ from Infernux.particle import (
     ParticleCompileError,
     ParticleEmitterAsset,
     ParticleAttribute,
+    ParticleEventField,
+    ParticleEventRoute,
+    ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleGraphSchemaError,
@@ -31,7 +34,7 @@ from Infernux.particle import (
     VectorField,
     decode_particle_runtime_metadata,
 )
-from Infernux.graph import AssetReference, TypeRef, ValueType
+from Infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 
 def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
@@ -50,6 +53,89 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     assert "builtin.orientation" not in {
         attribute.stable_id for attribute in hir.emitters[0].attributes
     }
+
+
+def test_particle_event_routes_compile_to_stable_typed_dense_abi():
+    source = ParticleEmitterAsset(stable_id="source", name="Source")
+    target = ParticleEmitterAsset(stable_id="target", name="Target")
+    impact = ParticleEventType(
+        "impact",
+        "Impact",
+        4096,
+        (
+            ParticleEventField(
+                "position",
+                "Position",
+                TypeRef(ValueType.VEC3, CoordinateSpace.WORLD),
+                [0.0, 0.0, 0.0],
+            ),
+            ParticleEventField(
+                "color",
+                "Color",
+                TypeRef(ValueType.COLOR),
+                [1.0, 1.0, 1.0, 1.0],
+            ),
+        ),
+    )
+    route = ParticleEventRoute(
+        "source-impact-target",
+        "impact",
+        "source",
+        "update",
+        "target",
+        3,
+    )
+    asset = ParticleGraphAsset(
+        stable_id="event-graph",
+        emitters=(source, target),
+        event_types=(impact,),
+        event_routes=(route,),
+    )
+
+    restored = ParticleGraphAsset.from_json(asset.canonical_json())
+    assert restored == asset
+    program = ParticleGraphCompiler().compile(asset)
+    assert len(program.events.event_types) == 1
+    assert len(program.events.routes) == 1
+    event_type = program.events.event_types[0]
+    lowered_route = program.events.routes[0]
+    assert event_type.payload_stride_words == 7
+    assert [(field.word_offset, field.word_count) for field in event_type.fields] == [
+        (0, 3),
+        (3, 4),
+    ]
+    assert event_type.stable_type_hash != 0
+    assert program.events.event_abi_u64 != 0
+    assert lowered_route.source_emitter_index == 0
+    assert lowered_route.target_emitter_index == 1
+    assert lowered_route.event_type_index == 0
+    assert lowered_route.source_stage is ParticleStage.UPDATE
+    assert lowered_route.spawn_count == 3
+
+    changed = replace(
+        asset,
+        event_types=(replace(impact, capacity_per_step=8192),),
+    )
+    assert (
+        ParticleGraphCompiler().compile(changed).events.event_abi_hash
+        != program.events.event_abi_hash
+    )
+
+
+def test_particle_event_routes_reject_implicit_feedback_cycles():
+    first = ParticleEmitterAsset(stable_id="first", name="First")
+    second = ParticleEmitterAsset(stable_id="second", name="Second")
+    event_type = ParticleEventType("event", "Event", 16)
+
+    with pytest.raises(ParticleGraphSchemaError, match="explicit delay"):
+        ParticleGraphAsset(
+            emitters=(first, second),
+            event_types=(event_type,),
+            event_routes=(
+                ParticleEventRoute("first-second", "event", "first", "update", "second"),
+                ParticleEventRoute("second-first", "event", "second", "update", "first"),
+            ),
+        )
 
 
 def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attributes():

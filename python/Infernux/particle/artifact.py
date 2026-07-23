@@ -350,6 +350,47 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
         "semantic_hash": program.semantic_hash,
         "behavior_hash": program.behavior_hash,
         "schedule": list(program.schedule.emitter_ids),
+        "events": {
+            "event_abi_hash": program.events.event_abi_hash,
+            "event_types": [
+                {
+                    "stable_id": event_type.stable_id,
+                    "name": event_type.name,
+                    "type_index": event_type.type_index,
+                    "stable_type_hash": event_type.stable_type_hash,
+                    "capacity_per_step": event_type.capacity_per_step,
+                    "payload_stride_words": event_type.payload_stride_words,
+                    "fields": [
+                        {
+                            "stable_id": field.stable_id,
+                            "name": field.name,
+                            "type": field.value_type.to_dict(),
+                            "word_offset": field.word_offset,
+                            "word_count": field.word_count,
+                            "default": field.default,
+                        }
+                        for field in event_type.fields
+                    ],
+                }
+                for event_type in program.events.event_types
+            ],
+            "routes": [
+                {
+                    "stable_id": route.stable_id,
+                    "event_type_id": route.event_type_id,
+                    "event_type_index": route.event_type_index,
+                    "source_emitter_id": route.source_emitter_id,
+                    "source_emitter_index": route.source_emitter_index,
+                    "source_stage": route.source_stage.value,
+                    "target_emitter_id": route.target_emitter_id,
+                    "target_emitter_index": route.target_emitter_index,
+                    "spawn_count": route.spawn_count,
+                    "capacity": route.capacity,
+                    "payload_stride_words": route.payload_stride_words,
+                }
+                for route in program.events.routes
+            ],
+        },
         "emitters": [
             {
                 "stable_id": emitter.stable_id,
