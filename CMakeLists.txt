@@ -30,6 +30,49 @@ list(FILTER INFERNUX_RUNTIME_SOURCES EXCLUDE REGEX "tools/pybinding/")
 list(FILTER INFERNUX_RUNTIME_SOURCES EXCLUDE REGEX "cpp/tests/")
 file(GLOB_RECURSE BINDING_SOURCES CONFIGURE_DEPENDS cpp/infernux/tools/pybinding/*.cpp)
 
+# Native DLL boundaries are source-owned rather than inferred from folders at
+# link time. Foundation is dependency-free engine infrastructure. Particle
+# Runtime is the camera-independent/RHI particle kernel and topology layer;
+# Vulkan graph integration and material-facing renderers remain in Runtime.
+file(GLOB_RECURSE INFERNUX_FOUNDATION_SOURCES CONFIGURE_DEPENDS
+    cpp/infernux/core/*.cpp
+    cpp/infernux/core/*.h
+    cpp/infernux/platform/*.cpp
+    cpp/infernux/platform/*.h
+)
+list(APPEND INFERNUX_FOUNDATION_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxTexture/StbImage.cpp"
+)
+set(INFERNUX_PARTICLE_RUNTIME_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxPointCache/PointCacheArtifact.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuCuller.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuRibbonTopology.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuSorter.cpp"
+)
+set(INFERNUX_SHADER_COMPILER_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderCache.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderProgram.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderReflection.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/GlslStageInterfaceEmitter.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderInfoSchema.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderPassVariantPlanner.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderStageLinker.cpp"
+)
+file(GLOB_RECURSE INFERNUX_VULKAN_BACKEND_SOURCES CONFIGURE_DEPENDS
+    cpp/infernux/function/renderer/vk/*.cpp
+    cpp/infernux/function/renderer/vk/*.h
+)
+list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES
+    ${INFERNUX_FOUNDATION_SOURCES}
+    ${INFERNUX_PARTICLE_RUNTIME_SOURCES}
+    ${INFERNUX_SHADER_COMPILER_SOURCES}
+    ${INFERNUX_VULKAN_BACKEND_SOURCES}
+)
+
 # ------------------------------------------------------------------------------
 # Header Include Directories
 # ------------------------------------------------------------------------------
@@ -68,6 +111,10 @@ endif()
 # NO_EXTRAS keeps pybind11 from choosing its own LTO flags. Release IPO/LTO is
 # enabled explicitly below where the target's export strategy supports it, so
 # compile and link settings always agree.
+add_library(InfernuxFoundation SHARED ${INFERNUX_FOUNDATION_SOURCES})
+add_library(InfernuxParticleRuntime SHARED ${INFERNUX_PARTICLE_RUNTIME_SOURCES})
+add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
+add_library(InfernuxVulkanBackend SHARED ${INFERNUX_VULKAN_BACKEND_SOURCES})
 add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
 pybind11_add_module(_Infernux MODULE NO_EXTRAS ${BINDING_SOURCES})
 
@@ -100,13 +147,30 @@ endif()
 # CMake generates the Windows export table while Linux/macOS use their default
 # symbol visibility. A later ABI-hardening pass can replace this with a narrow
 # INFERNUX_API surface without collapsing the binary boundary again.
-set_target_properties(InfernuxRuntime PROPERTIES
-    WINDOWS_EXPORT_ALL_SYMBOLS ON
-    CXX_VISIBILITY_PRESET default
-    VISIBILITY_INLINES_HIDDEN OFF
+set(INFERNUX_RUNTIME_DLL_TARGETS
+    InfernuxFoundation
+    InfernuxParticleRuntime
+    InfernuxShaderCompiler
+    InfernuxVulkanBackend
+    InfernuxRuntime
 )
+foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+    set_target_properties(${_infernux_dll} PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+        CXX_VISIBILITY_PRESET default
+        VISIBILITY_INLINES_HIDDEN OFF
+    )
+endforeach()
 
-foreach(_infernux_target InfernuxRuntime _Infernux)
+set(INFERNUX_NATIVE_TARGETS
+    InfernuxFoundation
+    InfernuxParticleRuntime
+    InfernuxShaderCompiler
+    InfernuxVulkanBackend
+    InfernuxRuntime
+    _Infernux
+)
+foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
     target_include_directories(${_infernux_target} PRIVATE
         ${INFERNUX_INCLUDE_DIRS}
         ${CMAKE_SOURCE_DIR}/external
@@ -114,12 +178,21 @@ foreach(_infernux_target InfernuxRuntime _Infernux)
     )
 endforeach()
 
+target_link_libraries(InfernuxParticleRuntime PUBLIC InfernuxFoundation)
+target_link_libraries(InfernuxShaderCompiler PUBLIC InfernuxFoundation)
+target_link_libraries(InfernuxVulkanBackend PUBLIC InfernuxFoundation)
+target_link_libraries(InfernuxRuntime PUBLIC
+    InfernuxFoundation
+    InfernuxParticleRuntime
+    InfernuxShaderCompiler
+    InfernuxVulkanBackend
+)
 target_link_libraries(InfernuxRuntime PRIVATE pybind11::embed)
 target_link_libraries(_Infernux PRIVATE InfernuxRuntime)
 
 # Set UTF-8 encoding for MSVC to avoid C4819 warnings
 if(MSVC)
-    foreach(_infernux_target InfernuxRuntime _Infernux)
+    foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
         target_compile_options(${_infernux_target} PRIVATE
             /utf-8
             /MP       # Compile independent translation units concurrently.
@@ -154,9 +227,13 @@ if(INFERNUX_RELEASE_LTO)
             # WINDOWS_EXPORT_ALL_SYMBOLS cannot inspect MSVC /GL objects, so
             # enabling IPO here removes the DLL export table. Keep the runtime
             # stable until its public ABI has explicit export annotations.
-            set_property(TARGET InfernuxRuntime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+            foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+                set_property(TARGET ${_infernux_dll} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE FALSE)
+            endforeach()
         else()
-            set_property(TARGET InfernuxRuntime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+            foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+                set_property(TARGET ${_infernux_dll} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+            endforeach()
         endif()
     else()
         message(FATAL_ERROR "Release IPO/LTO is required but unsupported: ${_infernux_ipo_error}")
@@ -173,7 +250,7 @@ if(DEFINED ENV{VULKAN_SDK})
     
     # Link SPIRV-Cross libraries for shader reflection
     if(WIN32)
-        target_link_libraries(InfernuxRuntime PRIVATE
+        target_link_libraries(InfernuxShaderCompiler PRIVATE
             ${VULKAN_SDK_PATH}/Lib/spirv-cross-core.lib
             ${VULKAN_SDK_PATH}/Lib/spirv-cross-glsl.lib
             ${VULKAN_SDK_PATH}/Lib/spirv-cross-cpp.lib
@@ -185,7 +262,7 @@ if(DEFINED ENV{VULKAN_SDK})
         foreach(_sc_lib spirv-cross-core spirv-cross-glsl spirv-cross-cpp spirv-cross-reflect)
             find_library(_found_${_sc_lib} NAMES ${_sc_lib} PATHS ${_spirv_cross_lib_dir} NO_DEFAULT_PATH)
             if(_found_${_sc_lib})
-                target_link_libraries(InfernuxRuntime PRIVATE ${_found_${_sc_lib}})
+                target_link_libraries(InfernuxShaderCompiler PRIVATE ${_found_${_sc_lib}})
             else()
                 message(WARNING "SPIRV-Cross library ${_sc_lib} not found in ${_spirv_cross_lib_dir}")
             endif()
@@ -197,7 +274,7 @@ else()
     foreach(_sc_lib spirv-cross-core spirv-cross-glsl spirv-cross-cpp spirv-cross-reflect)
         find_library(_sys_${_sc_lib} NAMES ${_sc_lib})
         if(_sys_${_sc_lib})
-            target_link_libraries(InfernuxRuntime PRIVATE ${_sys_${_sc_lib}})
+            target_link_libraries(InfernuxShaderCompiler PRIVATE ${_sys_${_sc_lib}})
         else()
             set(_spirv_cross_found FALSE)
         endif()
@@ -209,7 +286,7 @@ endif()
 
 # GLM: Use Vulkan-compatible [0,1] depth range instead of OpenGL [-1,1]
 # GLM: Use left-handed coordinate system (Unity convention: X+=right, Y+=up, Z+=forward)
-foreach(_infernux_target InfernuxRuntime _Infernux)
+foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
     target_compile_definitions(${_infernux_target} PRIVATE GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_LEFT_HANDED)
 endforeach()
 
@@ -222,7 +299,7 @@ endforeach()
 # - Release / MinSizeRel: keep only the last 100 log lines in memory and write them on exit.
 option(INFERNUX_FRAME_PROFILE_TERMINAL "Emit bounded frame-profile reports to stderr" OFF)
 
-foreach(_infernux_target InfernuxRuntime _Infernux)
+foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
     target_compile_definitions(${_infernux_target} PRIVATE
         $<$<CONFIG:RelWithDebInfo>:INFERNUX_FRAME_PROFILE=1>
         $<$<CONFIG:Debug>:INFERNUX_FILE_LOGGING=1>
@@ -257,6 +334,22 @@ target_link_libraries(InfernuxRuntime PUBLIC
 # ------------------------------------------------------------------------------
 add_subdirectory(external)
 
+target_link_libraries(InfernuxFoundation PUBLIC
+    SDL3::SDL3
+    glm::glm
+    imgui
+    stb
+    Vulkan::Vulkan
+)
+target_link_libraries(InfernuxParticleRuntime PUBLIC glm::glm)
+target_link_libraries(InfernuxShaderCompiler PUBLIC Vulkan::Vulkan)
+target_link_libraries(InfernuxVulkanBackend PUBLIC
+    SDL3::SDL3
+    glm::glm
+    Vulkan::Vulkan
+    GPUOpen::VulkanMemoryAllocator
+)
+
 if(TARGET zlibstatic)
     set(INFERNUX_ZLIB_TARGET zlibstatic)
     set(INFERNUX_ZLIB_INCLUDE_DIRS
@@ -270,9 +363,9 @@ elseif(TARGET ZLIB::ZLIB)
 else()
     message(FATAL_ERROR "Infernux requires a zlib target for document transaction journals")
 endif()
-target_link_libraries(InfernuxRuntime PRIVATE ${INFERNUX_ZLIB_TARGET})
+target_link_libraries(InfernuxFoundation PRIVATE ${INFERNUX_ZLIB_TARGET})
 if(INFERNUX_ZLIB_INCLUDE_DIRS)
-    target_include_directories(InfernuxRuntime PRIVATE ${INFERNUX_ZLIB_INCLUDE_DIRS})
+    target_include_directories(InfernuxFoundation PRIVATE ${INFERNUX_ZLIB_INCLUDE_DIRS})
 endif()
 
 # ------------------------------------------------------------------------------
@@ -926,12 +1019,14 @@ configure_file(
     @ONLY
 )
 
-add_custom_command(TARGET InfernuxRuntime POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:InfernuxRuntime>"
-        "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:InfernuxRuntime>"
-    COMMENT "Copy InfernuxRuntime shared library to python/Infernux/lib"
-)
+foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+    add_custom_command(TARGET ${_infernux_dll} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:${_infernux_dll}>"
+            "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:${_infernux_dll}>"
+        COMMENT "Copy ${_infernux_dll} shared library to python/Infernux/lib"
+    )
+endforeach()
 
 add_custom_command(TARGET _Infernux POST_BUILD
     # Remove native modules from other Python ABIs/builds first so wheels can
@@ -974,10 +1069,12 @@ elseif(APPLE)
         BUILD_RPATH "@loader_path"
         INSTALL_RPATH "@loader_path"
     )
-    set_target_properties(InfernuxRuntime PROPERTIES
-        BUILD_RPATH "@loader_path"
-        INSTALL_RPATH "@loader_path"
-    )
+    foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+        set_target_properties(${_infernux_dll} PROPERTIES
+            BUILD_RPATH "@loader_path"
+            INSTALL_RPATH "@loader_path"
+        )
+    endforeach()
 else()
     # Linux: copy shared libraries (.so) and set RPATH
     add_custom_command(TARGET _Infernux POST_BUILD
@@ -990,10 +1087,12 @@ else()
         BUILD_RPATH "$ORIGIN"
         INSTALL_RPATH "$ORIGIN"
     )
-    set_target_properties(InfernuxRuntime PROPERTIES
-        BUILD_RPATH "$ORIGIN"
-        INSTALL_RPATH "$ORIGIN"
-    )
+    foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+        set_target_properties(${_infernux_dll} PROPERTIES
+            BUILD_RPATH "$ORIGIN"
+            INSTALL_RPATH "$ORIGIN"
+        )
+    endforeach()
 endif()
 
 # ------------------------------------------------------------------------------
