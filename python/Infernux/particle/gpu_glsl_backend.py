@@ -36,6 +36,7 @@ struct ParticleInstance {
     vec4 position_size;
     vec4 color;
     vec4 rotation_custom;
+    vec4 scale_custom;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer Instances {
@@ -81,7 +82,8 @@ void main() {
     float sine = sin(instance.rotation_custom.x);
     corner = mat2(cosine, -sine, sine, cosine) * corner;
     vec3 world_position = instance.position_size.xyz +
-        (view.camera_right.xyz * corner.x + view.camera_up.xyz * corner.y) * instance.position_size.w;
+        (view.camera_right.xyz * corner.x * instance.scale_custom.x +
+         view.camera_up.xyz * corner.y * instance.scale_custom.y) * instance.position_size.w;
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     out_color = instance.color;
     out_uv = uvs[gl_VertexIndex % 6];
@@ -440,6 +442,7 @@ struct ParticleInstance {
     vec4 position_size;
     vec4 color;
     vec4 rotation_custom;
+    vec4 scale_custom;
 };
 
 struct ParticleMeshVertex {
@@ -502,11 +505,17 @@ void main() {
         0.0, 0.0, 1.0
     );
     mat3 rotation = rotation_z * rotation_y * rotation_x;
+    vec3 particle_scale = instance.scale_custom.xyz * instance.position_size.w;
     vec3 world_position = instance.position_size.xyz +
-        rotation * vertex.position.xyz * instance.position_size.w;
+        rotation * (vertex.position.xyz * particle_scale);
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     out_color = instance.color * vertex.color;
-    out_normal = normalize(rotation * vertex.normal.xyz);
+    vec3 inverse_scale = sign(particle_scale) / max(abs(particle_scale), vec3(1e-6));
+    vec3 transformed_normal = rotation * (vertex.normal.xyz * inverse_scale);
+    float normal_length_squared = dot(transformed_normal, transformed_normal);
+    out_normal = normal_length_squared > 1e-12
+        ? transformed_normal * inversesqrt(normal_length_squared)
+        : vec3(0.0, 1.0, 0.0);
     out_uv = vertex.uv.xy;
     out_world_position = world_position;
     out_view_depth = gl_Position.w;
@@ -1783,6 +1792,7 @@ struct ParticleRenderInstance {{
     vec4 position_size;
     vec4 color;
     vec4 rotation_custom;
+    vec4 scale_custom;
 }};
 
 layout(std430, set = 0, binding = 0) buffer ParticleStates {{ ParticleState states[]; }};
@@ -2031,18 +2041,20 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     color = exports["builtin.color"]
     rotation = exports["builtin.rotation"]
     orientation = exports.get("builtin.orientation", "vec3(0.0)")
+    scale = exports.get("builtin.scale", "vec3(1.0)")
     world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
     world_scale = (
-        "max(length(transforms.simulation_to_world[0].xyz), "
-        "max(length(transforms.simulation_to_world[1].xyz), "
-        "length(transforms.simulation_to_world[2].xyz)))"
+        "vec3(length(transforms.simulation_to_world[0].xyz), "
+        "length(transforms.simulation_to_world[1].xyz), "
+        "length(transforms.simulation_to_world[2].xyz))"
     )
     finite = " && ".join(
         (_finite_expression(position, TypeRef(ValueType.VEC3)),
          _finite_expression(size, TypeRef(ValueType.F32)),
          _finite_expression(color, TypeRef(ValueType.COLOR)),
          _finite_expression(rotation, TypeRef(ValueType.F32)),
-         _finite_expression(orientation, TypeRef(ValueType.VEC3)))
+         _finite_expression(orientation, TypeRef(ValueType.VEC3)),
+         _finite_expression(scale, TypeRef(ValueType.VEC3)))
     )
     return f"""
 void main() {{
@@ -2059,9 +2071,10 @@ void main() {{
     }}
     uint output_index = atomicAdd(counters.visible_count, 1u);
     if (output_index >= pc.capacity) return;
-    instances[output_index].position_size = vec4({world_position}, ({size}) * {world_scale});
+    instances[output_index].position_size = vec4({world_position}, {size});
     instances[output_index].color = {color};
     instances[output_index].rotation_custom = vec4({rotation}, {orientation});
+    instances[output_index].scale_custom = vec4(({scale}) * {world_scale}, 0.0);
     render_indices[output_index] = output_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}

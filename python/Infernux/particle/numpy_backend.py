@@ -36,7 +36,7 @@ from .runtime_compatibility import (
 )
 
 
-PARTICLE_INSTANCE_FLOATS = 9
+PARTICLE_INSTANCE_FLOATS = 12
 
 
 class NumpyParticleBackendError(RuntimeError):
@@ -653,6 +653,7 @@ class NumpyParticleEmitterRuntime:
         exports = workspace.exports
         position_id = self._render_aliases.get("builtin.position")
         size_id = self._render_aliases.get("builtin.size")
+        scale_id = self._render_aliases.get("builtin.scale")
         color_id = self._render_aliases.get("builtin.color")
         rotation_id = self._render_aliases.get("builtin.rotation")
         position = (
@@ -664,6 +665,11 @@ class NumpyParticleEmitterRuntime:
             self.attributes[size_id]
             if size_id is not None
             else exports.get("builtin.size", self.attributes["builtin.size"])
+        )
+        scale = (
+            self.attributes[scale_id]
+            if scale_id is not None
+            else exports.get("builtin.scale")
         )
         color = (
             self.attributes[color_id]
@@ -680,6 +686,10 @@ class NumpyParticleEmitterRuntime:
         np.copyto(output[:, 3], size[:count], casting="unsafe")
         np.copyto(output[:, 4:8], color[:count], casting="unsafe")
         np.copyto(output[:, 8], rotation[:count], casting="unsafe")
+        if scale is None:
+            output[:, 9:12] = 1.0
+        else:
+            np.copyto(output[:, 9:12], scale[:count], casting="unsafe")
         return output
 
     def _refresh_data_interfaces(self) -> None:

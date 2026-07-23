@@ -2036,12 +2036,12 @@ PYBIND11_MODULE(_Infernux, m)
                 if (!renderer || !renderer->GetParticleDrawCallBuffer())
                     throw std::logic_error("particle submission requires graphical renderer initialization");
                 py::buffer_info info = instanceBuffer.request();
-                if (info.ndim != 2 || info.shape[1] != 9 || info.itemsize != sizeof(float) ||
+                if (info.ndim != 2 || info.shape[1] != 12 || info.itemsize != sizeof(float) ||
                     info.format != py::format_descriptor<float>::format()) {
-                    throw std::invalid_argument("particle instances must be a contiguous float32 array shaped (N, 9)");
+                    throw std::invalid_argument("particle instances must be a contiguous float32 array shaped (N, 12)");
                 }
                 if (info.strides[1] != static_cast<py::ssize_t>(sizeof(float)) ||
-                    info.strides[0] != static_cast<py::ssize_t>(9 * sizeof(float))) {
+                    info.strides[0] != static_cast<py::ssize_t>(12 * sizeof(float))) {
                     throw std::invalid_argument("particle instances must be C-contiguous");
                 }
 
@@ -2052,7 +2052,7 @@ PYBIND11_MODULE(_Infernux, m)
             py::arg("batch_id"), py::arg("instances"), py::arg("material_guid") = "", py::arg("origin_x") = 0.0f,
              py::arg("origin_y") = 0.0f, py::arg("origin_z") = 0.0f, py::arg("validate") = true,
              py::arg("owner_object_id") = 0,
-            "Submit one contiguous particle instance batch (position3, size, color4, rotation)")
+            "Submit one contiguous particle instance batch (position3, size, color4, rotation, scale3)")
         .def(
             "remove_particle_batch",
             [](Infernux &self, uint64_t batchId) {

@@ -753,7 +753,7 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
     )
     source = source.replace(
         "particles.set_rotation(0.25)",
-        "particles.set_orientation((10.0, 20.0, 30.0))",
+        "particles.set_orientation((10.0, 20.0, 30.0))\n            particles.set_scale((2.0, 0.5, 1.5))",
     ).replace(
         "particles.rotate(180.0)",
         "particles.rotate_orientation((90.0, 180.0, 270.0))",
@@ -778,9 +778,13 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
     assert graph_program.emitters[0].render_plan.outputs[0] == output
     assert output.material.guid == "debris-material-guid"
     assert output.sort_mode == "none"
-    assert emitter.init.operations[-1].opcode == "attribute.set_orientation"
+    assert emitter.init.operations[-2].opcode == "attribute.set_orientation"
+    assert emitter.init.operations[-1].opcode == "attribute.set_scale"
     assert emitter.update.operations[-1].opcode == "integrate.angular_velocity_3d"
     assert "builtin.orientation" in {
+        attribute.stable_id for attribute in emitter.attributes
+    }
+    assert "builtin.scale" in {
         attribute.stable_id for attribute in emitter.attributes
     }
 

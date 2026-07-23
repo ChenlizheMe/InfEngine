@@ -614,12 +614,14 @@ class ParticleKernelLowerer:
             elif operation.opcode in {
                 "attribute.set_color",
                 "attribute.set_size",
+                "attribute.set_scale",
                 "attribute.set_rotation",
                 "attribute.set_orientation",
             }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
                     "attribute.set_size": "builtin.size",
+                    "attribute.set_scale": "builtin.scale",
                     "attribute.set_rotation": "builtin.rotation",
                     "attribute.set_orientation": "builtin.orientation",
                 }[operation.opcode]
@@ -690,12 +692,14 @@ class ParticleKernelLowerer:
             elif operation.opcode in {
                 "attribute.set_color",
                 "attribute.set_size",
+                "attribute.set_scale",
                 "attribute.set_rotation",
                 "attribute.set_orientation",
             }:
                 stable_id = {
                     "attribute.set_color": "builtin.color",
                     "attribute.set_size": "builtin.size",
+                    "attribute.set_scale": "builtin.scale",
                     "attribute.set_rotation": "builtin.rotation",
                     "attribute.set_orientation": "builtin.orientation",
                 }[operation.opcode]
@@ -855,6 +859,7 @@ class ParticleKernelLowerer:
         for stable_id in (
             "builtin.position",
             "builtin.size",
+            "builtin.scale",
             "builtin.color",
             "builtin.rotation",
             "builtin.orientation",

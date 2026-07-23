@@ -5,6 +5,7 @@ struct ParticleInstance
     vec4 positionSize;
     vec4 color;
     vec4 rotationCustom;
+    vec4 scaleCustom;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer Instances { ParticleInstance instances[]; };
@@ -34,7 +35,8 @@ void main()
     ParticleInstance instance = instances[gl_InstanceIndex];
     vec2 corner = corners[gl_VertexIndex % 6];
     vec3 worldPosition = instance.positionSize.xyz +
-        (view.cameraRight.xyz * corner.x + view.cameraUp.xyz * corner.y) * instance.positionSize.w;
+        (view.cameraRight.xyz * corner.x * instance.scaleCustom.x +
+         view.cameraUp.xyz * corner.y * instance.scaleCustom.y) * instance.positionSize.w;
     gl_Position = view.viewProjection * vec4(worldPosition, 1.0);
     outColor = instance.color;
     outUv = uvs[gl_VertexIndex % 6];

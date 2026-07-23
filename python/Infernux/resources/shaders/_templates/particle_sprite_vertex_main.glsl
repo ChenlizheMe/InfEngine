@@ -17,7 +17,8 @@ void main() {
 
     VertexInput v;
     v.position = instance.position_size.xyz +
-        (particleView.camera_right.xyz * corner.x + particleView.camera_up.xyz * corner.y) * instance.position_size.w;
+        (particleView.camera_right.xyz * corner.x * instance.scale_custom.x +
+         particleView.camera_up.xyz * corner.y * instance.scale_custom.y) * instance.position_size.w;
     v.normal = normalize(cross(particleView.camera_right.xyz, particleView.camera_up.xyz));
     v.tangent = vec4(normalize(particleView.camera_right.xyz), 1.0);
     v.color = instance.color.rgb * particleView.material_tint.rgb;

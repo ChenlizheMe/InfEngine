@@ -16,6 +16,7 @@ struct ParticleInstance {
     vec4 position_size;
     vec4 color;
     vec4 rotation_custom;
+    vec4 scale_custom;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer IndirectArguments {

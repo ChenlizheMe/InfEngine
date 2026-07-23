@@ -15,6 +15,7 @@ struct ParticleInstance {
     vec4 position_size;
     vec4 color;
     vec4 rotation_custom;
+    vec4 scale_custom;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndirectArguments {
@@ -97,7 +98,9 @@ void main() {
     uint source_count = min(source_instance_count, pc.capacity);
     if (index >= source_count) return;
     ParticleInstance instance = instances[index];
-    float radius = abs(instance.position_size.w) * 1.41421356237;
+    float radius = abs(instance.position_size.w) *
+        max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)), abs(instance.scale_custom.z)) *
+        1.41421356237;
     vec3 lower = instance.position_size.xyz - vec3(radius);
     vec3 upper = instance.position_size.xyz + vec3(radius);
     atomicMin(min_x, inx_ordered_float(lower.x));

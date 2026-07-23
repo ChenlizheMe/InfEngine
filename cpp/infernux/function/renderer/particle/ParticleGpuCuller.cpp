@@ -14,6 +14,7 @@ struct ParticleInstance {
     vec4 position_size;
     vec4 color;
     vec4 rotation_custom;
+    vec4 scale_custom;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndirectArguments {
@@ -128,7 +129,9 @@ void main() {
     uint source_count = min(source_instance_count, pc.capacity);
     if (source_index >= source_count) return;
     ParticleInstance instance = instances[source_index];
-    float radius = abs(instance.position_size.w) * 1.41421356237;
+    float radius = abs(instance.position_size.w) *
+        max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)), abs(instance.scale_custom.z)) *
+        1.41421356237;
     if (!inx_visible_sphere(instance.position_size.xyz, radius)) return;
     uint output_index = atomicAdd(draw_instance_count, 1u);
     if (output_index < pc.capacity) visible_indices[output_index] = source_index;

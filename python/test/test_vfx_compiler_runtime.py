@@ -279,7 +279,7 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
 
 def test_local_particle_instances_follow_emitter_transform_and_scale():
     instances = np.array(
-        [[1.0, 2.0, 3.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.0]],
+        [[1.0, 2.0, 3.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]],
         dtype=np.float32,
     )
     emitter_to_world = np.array(
@@ -295,7 +295,8 @@ def test_local_particle_instances_follow_emitter_transform_and_scale():
     transformed = ParticleSystem._local_instances_to_world(instances, emitter_to_world)
 
     assert transformed[0, :3].tolist() == pytest.approx([12.0, 26.0, 42.0])
-    assert transformed[0, 3] == pytest.approx(2.0)
+    assert transformed[0, 3] == pytest.approx(0.5)
+    assert transformed[0, 9:12].tolist() == pytest.approx([2.0, 3.0, 4.0])
     assert instances[0, :4].tolist() == pytest.approx([1.0, 2.0, 3.0, 0.5])
 
 

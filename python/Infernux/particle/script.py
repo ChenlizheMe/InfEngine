@@ -57,6 +57,7 @@ class ParticleStream:
     age: float
     lifetime: float
     size: float
+    scale: tuple[float, float, float]
     rotation: float
     orientation: tuple[float, float, float]
     color: tuple[float, float, float, float]
@@ -67,6 +68,7 @@ class ParticleStream:
     def set_orientation(self, degrees) -> None: ...
     def set_color(self, value) -> None: ...
     def set_size(self, value) -> None: ...
+    def set_scale(self, value) -> None: ...
     def acceleration(self, value) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
     def rotate_orientation(self, degrees_per_second) -> None: ...
@@ -109,6 +111,7 @@ class ParticleScriptCompiler:
             "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),
             "set_size": ("particle.attribute.set_size", "value"),
+            "set_scale": ("particle.attribute.set_scale", "value"),
         },
         "update": {
             "acceleration": ("particle.update.acceleration", "value"),
@@ -116,6 +119,7 @@ class ParticleScriptCompiler:
             "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),
             "set_size": ("particle.attribute.set_size", "value"),
+            "set_scale": ("particle.attribute.set_scale", "value"),
             "rotate": ("particle.update.rotate", "degrees_per_second"),
             "rotate_orientation": (
                 "particle.update.rotate_orientation",
@@ -439,6 +443,7 @@ class ParticleScriptCompiler:
                 "age": ("particle.attribute.read_f32", "builtin.age"),
                 "lifetime": ("particle.attribute.read_f32", "builtin.lifetime"),
                 "size": ("particle.attribute.read_f32", "builtin.size"),
+                "scale": ("particle.attribute.read_vec3", "builtin.scale"),
                 "rotation": ("particle.attribute.read_f32", "builtin.rotation"),
                 "color": ("particle.attribute.read_color", "builtin.color"),
             }

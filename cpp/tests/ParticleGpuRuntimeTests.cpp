@@ -675,7 +675,8 @@ int main()
     assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64);
     assert(device.buffers.size() == 7);
     assert(device.buffers[0].byteSize == 64000);
-    assert(device.buffers[3].byteSize == 48000);
+    assert(device.buffers[3].byteSize ==
+           static_cast<uint64_t>(desc.capacity) * particle::ParticleGpuRuntime::RenderInstanceStride);
     assert(rhi::HasBufferUsage(device.buffers[4].usage, rhi::BufferUsageFlags::Indirect));
     assert(device.buffers[5].byteSize == 4000 && device.buffers[5].usage == rhi::BufferUsageFlags::Storage);
     assert(device.buffers[6].byteSize == sizeof(particle::GpuParticleTransforms) &&

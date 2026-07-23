@@ -22,6 +22,7 @@ struct ParticleInstance
     float size = 1.0f;
     glm::vec4 color{1.0f};
     float rotation = 0.0f;
+    glm::vec3 scale{1.0f};
 };
 
 class ParticleDrawCallBuffer

@@ -271,8 +271,14 @@ class ParticleGraphCompiler:
             "attribute.set_orientation",
             "integrate.angular_velocity_3d",
         }
+        scale_opcodes = {"attribute.set_scale"}
         needs_orientation = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in orientation_opcodes
+            for stage in (init, update)
+            for operation in stage.operations
+        )
+        needs_scale = any(output.output_type == "mesh" for output in outputs) or any(
+            operation.opcode in scale_opcodes
             for stage in (init, update)
             for operation in stage.operations
         )
@@ -285,6 +291,16 @@ class ParticleGraphCompiler:
                     "orientation",
                     TypeRef(ValueType.VEC3),
                     [0.0, 0.0, 0.0],
+                ),
+            )
+        if needs_scale:
+            attributes = (
+                *attributes,
+                ParticleAttribute(
+                    "builtin.scale",
+                    "scale",
+                    TypeRef(ValueType.VEC3),
+                    [1.0, 1.0, 1.0],
                 ),
             )
         return ParticleEmitterHIR(

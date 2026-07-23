@@ -460,8 +460,16 @@ def test_numpy_mesh_orientation_matches_gpu_degree_semantics():
                 "particle.attribute.set_orientation",
                 properties={"degrees": [10.0, 20.0, 30.0]},
             ),
+            GraphNodeRecord(
+                "scale",
+                "particle.attribute.set_scale",
+                properties={"value": [2.0, 0.5, 1.5]},
+            ),
         ),
-        links=(GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM),),
+        links=(
+            GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM),
+            GraphLinkRecord("scale-stream", "orientation", "out", "scale", "in", PortKind.STREAM),
+        ),
     )
     update = GraphDocument(
         "particle.update",
@@ -499,6 +507,8 @@ def test_numpy_mesh_orientation_matches_gpu_degree_semantics():
         rtol=1e-6,
         atol=1e-6,
     )
+    np.testing.assert_allclose(runtime.attributes["builtin.scale"][0], [2.0, 0.5, 1.5])
+    np.testing.assert_allclose(runtime.instance_buffer()[0, 9:12], [2.0, 0.5, 1.5])
 
 
 def test_numpy_aot_samples_curve_and_gradient_without_runtime_graph_dispatch():
@@ -942,7 +952,7 @@ def test_numpy_runtime_honors_pause_capacity_and_non_finite_policy():
     paused_step = runtime.simulation_step
     paused = runtime.tick(1.0)
     assert runtime.simulation_step == paused_step
-    assert paused.shape == (3, 9)
+    assert paused.shape == (3, 12)
 
     runtime.play()
     runtime.attributes["builtin.position"][1, 0] = np.inf
@@ -1124,7 +1134,8 @@ def test_numpy_compiler_loads_save_time_particle_artifact_without_source_graph_c
 
     instances = runtime.tick(0.0)
 
-    assert instances.shape == (3, 9)
+    assert instances.shape == (3, 12)
+    np.testing.assert_array_equal(instances[:, 9:12], np.ones((3, 3), dtype=np.float32))
     assert program.emitters[0].settings.capacity == 12
     assert len(program.emitters[0].outputs) == 1
     assert program.emitters[0].outputs[0].output_type == "sprite"

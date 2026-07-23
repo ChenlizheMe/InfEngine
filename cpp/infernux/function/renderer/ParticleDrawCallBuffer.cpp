@@ -14,11 +14,12 @@ namespace infernux
 {
 
 static_assert(std::is_standard_layout_v<ParticleInstance>);
-static_assert(sizeof(ParticleInstance) == 9 * sizeof(float));
+static_assert(sizeof(ParticleInstance) == 12 * sizeof(float));
 static_assert(offsetof(ParticleInstance, position) == 0);
 static_assert(offsetof(ParticleInstance, size) == 3 * sizeof(float));
 static_assert(offsetof(ParticleInstance, color) == 4 * sizeof(float));
 static_assert(offsetof(ParticleInstance, rotation) == 8 * sizeof(float));
+static_assert(offsetof(ParticleInstance, scale) == 9 * sizeof(float));
 
 void ParticleDrawCallBuffer::SetBatch(uint64_t batchId, std::vector<ParticleInstance> instances,
                                       const std::string &materialGuid, uint64_t ownerObjectId)
@@ -60,7 +61,7 @@ void ParticleDrawCallBuffer::SetBatchInterleaved(uint64_t batchId, const float *
     if (instanceCount > 0 && instances == nullptr)
         throw std::invalid_argument("particle instance data cannot be null");
 
-    constexpr size_t kStride = 9;
+    constexpr size_t kStride = 12;
     if (validate) {
         for (size_t index = 0; index < instanceCount; ++index) {
             const float *row = instances + index * kStride;
@@ -112,6 +113,7 @@ void ParticleDrawCallBuffer::SetBatchInterleaved(uint64_t batchId, const float *
         instance.size = row[3];
         instance.color = glm::vec4(row[4], row[5], row[6], row[7]);
         instance.rotation = row[8];
+        instance.scale = glm::vec3(row[9], row[10], row[11]);
     }
 }
 
@@ -146,8 +148,8 @@ DrawCallResult ParticleDrawCallBuffer::GetDrawCalls(const glm::vec3 &cameraRight
         for (const ParticleInstance &instance : batch.instances) {
             const float cosine = std::cos(instance.rotation);
             const float sine = std::sin(instance.rotation);
-            const glm::vec3 rotatedRight = (right * cosine + up * sine) * instance.size;
-            const glm::vec3 rotatedUp = (-right * sine + up * cosine) * instance.size;
+            const glm::vec3 rotatedRight = (right * cosine + up * sine) * (instance.size * instance.scale.x);
+            const glm::vec3 rotatedUp = (-right * sine + up * cosine) * (instance.size * instance.scale.y);
 
             glm::mat4 packed(1.0f);
             packed[0] = glm::vec4(rotatedRight, instance.color.r);

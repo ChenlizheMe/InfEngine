@@ -292,7 +292,7 @@ def test_gpu_lowerer_emits_lifecycle_divide_lerp_rotation_and_attribute_stores()
     assert ".a_builtin_rotation" in rendering
 
 
-def test_gpu_mesh_orientation_uses_spare_instance_words_without_sprite_abi_growth():
+def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
     init = GraphDocument(
         "particle.init",
         nodes=(
@@ -302,8 +302,16 @@ def test_gpu_mesh_orientation_uses_spare_instance_words_without_sprite_abi_growt
                 "particle.attribute.set_orientation",
                 properties={"degrees": [10.0, 20.0, 30.0]},
             ),
+            GraphNodeRecord(
+                "scale",
+                "particle.attribute.set_scale",
+                properties={"value": [2.0, 0.5, 1.5]},
+            ),
         ),
-        links=(GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM),),
+        links=(
+            GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM),
+            GraphLinkRecord("scale-stream", "orientation", "out", "scale", "in", PortKind.STREAM),
+        ),
     )
     update = GraphDocument(
         "particle.update",
@@ -338,12 +346,15 @@ def test_gpu_mesh_orientation_uses_spare_instance_words_without_sprite_abi_growt
     emitter = program.emitters[0]
 
     assert _gpu_source().emitters[0].state_stride == 80
-    assert emitter.state_stride == 96
+    assert emitter.state_stride == 112
     assert ".a_builtin_orientation" in emitter.init
     assert ".a_builtin_orientation" in emitter.update
     assert "rotation_custom = vec4(" in emitter.rendering
     assert ".a_builtin_orientation" in emitter.rendering
+    assert ".a_builtin_scale" in emitter.rendering
+    assert "scale_custom = vec4(" in emitter.rendering
     assert "instance.rotation_custom.yzw" in gpu_backend._MESH_VERTEX_GLSL
+    assert "instance.scale_custom.xyz" in gpu_backend._MESH_VERTEX_GLSL
     assert "rotation_z * rotation_y * rotation_x" in gpu_backend._MESH_VERTEX_GLSL
     assert "ParticleTileLightMasks" in gpu_backend._PARTICLE_FORWARD_PLUS_LIGHTING_GLSL
     assert "findLSB(light_mask)" in gpu_backend._PARTICLE_FORWARD_PLUS_LIGHTING_GLSL

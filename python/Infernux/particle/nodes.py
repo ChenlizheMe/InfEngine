@@ -148,6 +148,12 @@ PARTICLE_NODE_DEFINITIONS = (
         (PropertyDef("value", TypeRef(ValueType.F32), 1.0),),
     ),
     _operation(
+        "particle.attribute.set_scale",
+        "Set Scale 3D",
+        "attribute.set_scale",
+        (PropertyDef("value", TypeRef(ValueType.VEC3), [1.0, 1.0, 1.0]),),
+    ),
+    _operation(
         "particle.attribute.set_rotation",
         "Set Rotation",
         "attribute.set_rotation",

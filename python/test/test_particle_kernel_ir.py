@@ -122,10 +122,15 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
         )
     ).emitters[0]
 
-    assert emitter.attributes[-1] == (
+    assert emitter.attributes[-2] == (
         "builtin.orientation",
         TypeRef(ValueType.VEC3),
         [0.0, 0.0, 0.0],
+    )
+    assert emitter.attributes[-1] == (
+        "builtin.scale",
+        TypeRef(ValueType.VEC3),
+        [1.0, 1.0, 1.0],
     )
     assert "builtin.orientation" in emitter.init.written_attributes
     assert "builtin.orientation" in emitter.update.written_attributes

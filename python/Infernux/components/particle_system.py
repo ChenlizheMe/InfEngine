@@ -782,7 +782,8 @@ class ParticleSystem(InxComponent):
         translation = emitter_to_world[0:3, 3]
         result[:, 0:3] = positions @ linear.T + translation
         axis_scales = np.linalg.norm(linear, axis=0)
-        result[:, 3] *= float(np.max(axis_scales)) if axis_scales.size else 1.0
+        if axis_scales.size:
+            result[:, 9:12] *= axis_scales
         return result
 
     def _gpu_transform_buffer(self, local_simulation: bool) -> np.ndarray:
