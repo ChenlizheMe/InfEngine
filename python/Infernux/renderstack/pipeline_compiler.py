@@ -483,7 +483,14 @@ def _draw_route(
                 f"Draw_{index:02d}_{selector.minimum}_{selector.maximum}"
             ) as render_pass:
                 render_pass.write_color(color)
-                render_pass.write_depth(depth)
+                if route.domain == "transparent":
+                    # Transparent geometry depth-tests against the opaque scene
+                    # without mutating it.  Keeping the attachment read-only also
+                    # makes the same depth image available to soft-particle
+                    # shaders through the RenderGraph sampled-depth contract.
+                    render_pass.read(depth)
+                else:
+                    render_pass.write_depth(depth)
                 if resolve is not None:
                     render_pass.write_resolve(resolve)
                 if shadow_map is not None:

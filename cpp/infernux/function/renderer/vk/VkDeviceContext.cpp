@@ -122,8 +122,14 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityF
     if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         INXLOG_ERROR("Vulkan Validation Error: ", pCallbackData->pMessage);
 
-        if (pCallbackData && pCallbackData->pMessage &&
-            std::strstr(pCallbackData->pMessage, "vkCmdBindDescriptorSets()") != nullptr) {
+        const bool descriptorBindFailure = pCallbackData && pCallbackData->pMessage &&
+                                           std::strstr(pCallbackData->pMessage, "vkCmdBindDescriptorSets()") != nullptr;
+        const bool descriptorDrawFailure =
+            pCallbackData && pCallbackData->pMessage &&
+            (std::strstr(pCallbackData->pMessage, "uses set ") != nullptr ||
+             std::strstr(pCallbackData->pMessage, "descriptor set must have been bound") != nullptr ||
+             std::strstr(pCallbackData->pMessage, "has never been updated") != nullptr);
+        if (descriptorBindFailure || descriptorDrawFailure) {
             const auto lastBind = infernux::vkdebug::GetLastDescriptorBindSnapshot();
             if (lastBind.sequence > 0) {
                 INXLOG_ERROR("[VkBindTrace] lastTrackedBind seq=", lastBind.sequence,

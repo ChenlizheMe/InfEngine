@@ -240,10 +240,10 @@ class OutlineRenderer
     // Per-material outline mask pipeline resources
     // ========================================================================
 
-    // Pipeline layout: set 0 (scene UBO + vert mat UBO), set 1 (empty), set 2 (globals + instance SSBO)
+    // Pipeline layout: set 0 (scene UBO + vert mat UBO), set 1 (active camera view),
+    // set 2 (globals + instance SSBO)
     VkPipelineLayout m_outlineMtlPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_outlineMtlSet0Layout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_emptyDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_outlineMtlDescPool = VK_NULL_HANDLE;
 
     // Per-frame single-instance buffer (1 mat4, for outline object transform)
@@ -264,9 +264,11 @@ class OutlineRenderer
     };
     std::vector<OutlineSkinBuf> m_outlineSkinInstanceBufs;
     std::vector<OutlineSkinBuf> m_outlineSkinPaletteBufs;
+    std::vector<OutlineSkinBuf> m_outlineInstanceAuxBufs;
 
     // Per-frame outline globals descriptor sets (binding 0 = globals UBO, binding 1 = instance buf,
-    // binding 2 = one selected skin instance, binding 3 = selected skin palette)
+    // binding 2 = one selected skin instance, binding 3 = selected skin palette,
+    // binding 4 = selected instance identity/layer data)
     std::vector<VkDescriptorSet> m_outlineGlobalsDescSets;
 
     // Cached per-material outline mask pipelines (key = material name)

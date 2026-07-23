@@ -453,6 +453,7 @@ void surface(out SurfaceData surface)
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 14") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 15") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("_inxParticleEyeDepth") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("return abs(numerator / ") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("sceneDepth - particleDepth") != std::string::npos);
     assert(particleForward.generatedVertexSource.find("set = 0, binding = 1") != std::string::npos);
     assert(particleForward.generatedVertexSource.find("draw_indices[gl_InstanceIndex]") != std::string::npos);

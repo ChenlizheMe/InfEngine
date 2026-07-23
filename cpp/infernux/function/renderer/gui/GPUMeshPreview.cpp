@@ -300,12 +300,16 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     const VkBuffer globalsUBOBuf = m_previewGlobalsUbo->GetBuffer();
     const VkBuffer instanceSSBOBuf = m_previewInstanceBuffer->GetBuffer();
 
-    // Resolve optional descriptor sets from the first binding's shader
-    ShaderProgram *primaryProgram = bindings.front().program;
     VkDescriptorSet shadowDesc = VK_NULL_HANDLE;
     VkDescriptorSet globalsDesc = VK_NULL_HANDLE;
+    const bool requiresPerViewSet = std::any_of(bindings.begin(), bindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(1);
+    });
+    const bool requiresGlobalsSet = std::any_of(bindings.begin(), bindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(2);
+    });
 
-    if (primaryProgram->HasDeclaredDescriptorSet(1)) {
+    if (requiresPerViewSet) {
         if (m_fallbackShadowDescSet == VK_NULL_HANDLE) {
             m_fallbackShadowDescSet = m_vkCore->AllocatePerViewDescriptorSet();
             if (m_fallbackShadowDescSet != VK_NULL_HANDLE)
@@ -317,7 +321,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
             return nullptr;
     }
 
-    if (primaryProgram->HasDeclaredDescriptorSet(2)) {
+    if (requiresGlobalsSet) {
         globalsDesc = m_previewGlobalsSet;
     }
 
@@ -954,10 +958,15 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     const VkBuffer globalsUBOBuf = m_previewGlobalsUbo->GetBuffer();
     const VkBuffer instanceSSBOBuf = m_previewInstanceBuffer->GetBuffer();
 
-    ShaderProgram *primaryProgram = bindings.front().program;
     VkDescriptorSet shadowDesc = VK_NULL_HANDLE;
     VkDescriptorSet globalsDesc = VK_NULL_HANDLE;
-    if (primaryProgram->HasDeclaredDescriptorSet(1)) {
+    const bool requiresPerViewSet = std::any_of(bindings.begin(), bindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(1);
+    });
+    const bool requiresGlobalsSet = std::any_of(bindings.begin(), bindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(2);
+    });
+    if (requiresPerViewSet) {
         if (m_fallbackShadowDescSet == VK_NULL_HANDLE) {
             m_fallbackShadowDescSet = m_vkCore->AllocatePerViewDescriptorSet();
             if (m_fallbackShadowDescSet != VK_NULL_HANDLE)
@@ -968,7 +977,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         if (shadowDesc == VK_NULL_HANDLE)
             return 0;
     }
-    if (primaryProgram->HasDeclaredDescriptorSet(2)) {
+    if (requiresGlobalsSet) {
         globalsDesc = m_previewGlobalsSet;
     }
 

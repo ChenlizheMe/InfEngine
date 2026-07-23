@@ -212,11 +212,15 @@ void OutlineRenderer::Cleanup()
             vmaDestroyBuffer(allocator, skinBuf.buffer, skinBuf.allocation);
     }
     m_outlineSkinPaletteBufs.clear();
+    for (auto &auxBuf : m_outlineInstanceAuxBufs) {
+        if (auxBuf.buffer != VK_NULL_HANDLE)
+            vmaDestroyBuffer(allocator, auxBuf.buffer, auxBuf.allocation);
+    }
+    m_outlineInstanceAuxBufs.clear();
 
     vkrender::SafeDestroy(device, m_outlineMtlDescPool);
     vkrender::SafeDestroy(device, m_outlineMtlPipelineLayout);
     vkrender::SafeDestroy(device, m_outlineMtlSet0Layout);
-    vkrender::SafeDestroy(device, m_emptyDescSetLayout);
     vkrender::SafeDestroy(device, m_outlineMaskFramebuffer);
     vkrender::SafeDestroy(device, m_outlineCompositeFramebuffer);
     vkrender::SafeDestroy(device, m_outlineMaskRenderPass);
@@ -608,19 +612,14 @@ void OutlineRenderer::CreateOutlineMaterialResources()
                                             m_outlineMtlSet0Layout);
     }
 
-    // --- Empty set 1 layout placeholder ---
-    {
-        vkrender::CreateDescriptorSetLayout(device, nullptr, 0, m_emptyDescSetLayout);
-    }
-
-    // --- Pipeline layout: [set0, emptySet1, globalsSet2] + push constants ---
+    // --- Pipeline layout: [set0, active camera view, globalsSet2] + push constants ---
     {
         VkPushConstantRange pushRange{};
         pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         pushRange.offset = 0;
         pushRange.size = 128; // 2 x mat4
 
-        VkDescriptorSetLayout setLayouts[3] = {m_outlineMtlSet0Layout, m_emptyDescSetLayout,
+        VkDescriptorSetLayout setLayouts[3] = {m_outlineMtlSet0Layout, m_core->GetPerViewDescSetLayout(),
                                                m_core->GetGlobalsDescSetLayout()};
 
         VkPipelineLayoutCreateInfo layoutInfo{};
@@ -656,6 +655,7 @@ void OutlineRenderer::CreateOutlineMaterialResources()
     m_outlineInstanceBufs.resize(framesInFlight);
     m_outlineSkinInstanceBufs.resize(framesInFlight);
     m_outlineSkinPaletteBufs.resize(framesInFlight);
+    m_outlineInstanceAuxBufs.resize(framesInFlight);
     for (uint32_t i = 0; i < framesInFlight; ++i) {
         VkBufferCreateInfo bufInfo{};
         bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -676,6 +676,18 @@ void OutlineRenderer::CreateOutlineMaterialResources()
         // Write identity as initial value
         glm::mat4 identity(1.0f);
         std::memcpy(m_outlineInstanceBufs[i].mapped, &identity, sizeof(glm::mat4));
+
+        bufInfo.size = sizeof(GPUInstanceAuxData);
+        VmaAllocationInfo auxAllocationInfo{};
+        vmaCreateBuffer(allocator, &bufInfo, &allocCreateInfo, &m_outlineInstanceAuxBufs[i].buffer,
+                        &m_outlineInstanceAuxBufs[i].allocation, &auxAllocationInfo);
+        m_outlineInstanceAuxBufs[i].mapped = auxAllocationInfo.pMappedData;
+        if (m_outlineInstanceAuxBufs[i].mapped) {
+            GPUInstanceAuxData aux{};
+            aux.previousModel = identity;
+            aux.layerMask = ~0u;
+            std::memcpy(m_outlineInstanceAuxBufs[i].mapped, &aux, sizeof(aux));
+        }
 
         EnsureOutlineSkinBufferCapacity(i, 1);
     }
@@ -729,6 +741,15 @@ void OutlineRenderer::CreateOutlineMaterialResources()
                     vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[i], 3,
                                                             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, skinPaletteInfo);
                 }
+            }
+
+            if (i < m_outlineInstanceAuxBufs.size() && m_outlineInstanceAuxBufs[i].buffer != VK_NULL_HANDLE) {
+                VkDescriptorBufferInfo instanceAuxInfo{};
+                instanceAuxInfo.buffer = m_outlineInstanceAuxBufs[i].buffer;
+                instanceAuxInfo.offset = 0;
+                instanceAuxInfo.range = sizeof(GPUInstanceAuxData);
+                vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[i], 4,
+                                                        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, instanceAuxInfo);
             }
         }
     }
@@ -1030,6 +1051,13 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
                     } else {
                         // Write the selected object's transform and skin palette as instance 0 for this isolated pass.
                         std::memcpy(m_outlineInstanceBufs[frameIdx].mapped, &dc.worldMatrix, sizeof(glm::mat4));
+                        if (frameIdx < m_outlineInstanceAuxBufs.size() && m_outlineInstanceAuxBufs[frameIdx].mapped) {
+                            GPUInstanceAuxData aux{};
+                            aux.previousModel = dc.worldMatrix;
+                            aux.objectId = PackGPUObjectId(dc.pickingObjectId != 0 ? dc.pickingObjectId : dc.objectId);
+                            aux.layerMask = dc.layerMask;
+                            std::memcpy(m_outlineInstanceAuxBufs[frameIdx].mapped, &aux, sizeof(aux));
+                        }
                         GPUSkinInstanceData skinData{};
                         if (dc.skinBoneMatrices && !dc.skinBoneMatrices->empty() &&
                             frameIdx < m_outlineSkinInstanceBufs.size() && frameIdx < m_outlineSkinPaletteBufs.size()) {
@@ -1055,6 +1083,13 @@ void OutlineRenderer::RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vecto
                         vkdebug::CmdBindDescriptorSetsTracked(
                             "OutlineRenderer.RenderOutlineMask.Set0", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             m_outlineMtlPipelineLayout, 0, 1, &mtlDescSet, 0, nullptr);
+
+                        VkDescriptorSet perViewDescSet = m_core->GetActiveShadowDescriptorSet();
+                        if (perViewDescSet == VK_NULL_HANDLE)
+                            continue;
+                        vkdebug::CmdBindDescriptorSetsTracked(
+                            "OutlineRenderer.RenderOutlineMask.Set1", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            m_outlineMtlPipelineLayout, 1, 1, &perViewDescSet, 0, nullptr);
 
                         // Set 2: outline globals (globals UBO + outline instance buffer)
                         VkDescriptorSet globalsDescSet = m_outlineGlobalsDescSets[frameIdx];

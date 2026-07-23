@@ -13,7 +13,9 @@ layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
 float _inxParticleEyeDepth(float deviceDepth) {
     float numerator = particleView.depth_reconstruct.y - deviceDepth * particleView.depth_reconstruct.w;
     float denominator = deviceDepth * particleView.depth_reconstruct.z - particleView.depth_reconstruct.x;
-    return max(0.0, -numerator / (abs(denominator) > 1e-7 ? denominator : 1e-7));
+    // GLM can generate either LH (+Z forward) or RH (-Z forward) projections.
+    // Soft-particle fading needs a positive eye-space distance in both cases.
+    return abs(numerator / (abs(denominator) > 1e-7 ? denominator : 1e-7));
 }
 
 bool inxParticleReceivesShadows() {

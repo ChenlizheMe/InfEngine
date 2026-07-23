@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -27,6 +28,44 @@ from Infernux.particle import (
     VectorField,
 )
 from Infernux.lib import AssetRegistry
+
+
+def test_gpu_particle_default_material_state_matches_output_geometry(monkeypatch):
+    fallback_sprite = SimpleNamespace(
+        render_queue=3000,
+        blend_enable=True,
+        depth_test_enable=True,
+        depth_write_enable=False,
+        native=object(),
+    )
+    requested_builtins: list[str] = []
+
+    def get_builtin(name: str):
+        requested_builtins.append(name)
+        return fallback_sprite
+
+    monkeypatch.setattr(Material, "get", staticmethod(get_builtin))
+    sprite = SimpleNamespace(output_type="sprite", material=AssetReference())
+    mesh = SimpleNamespace(output_type="mesh", material=AssetReference())
+
+    sprite_state = ParticleSystem._gpu_material_binding(sprite)
+    mesh_state = ParticleSystem._gpu_material_binding(mesh)
+
+    assert requested_builtins == ["ParticleSpriteMaterial"]
+    assert sprite_state == {
+        "render_queue": 3000,
+        "blend_enabled": True,
+        "depth_test_enabled": True,
+        "depth_write_enabled": False,
+        "native": fallback_sprite.native,
+    }
+    assert mesh_state == {
+        "render_queue": 2000,
+        "blend_enabled": False,
+        "depth_test_enabled": True,
+        "depth_write_enabled": True,
+        "native": None,
+    }
 
 
 def _two_output_rendering_graph(
@@ -475,6 +514,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     assert engine._gpu_particle_output_semantics(emitter_id, secondary_output_id) == {
         "receive_scene_lighting": False,
         "receive_shadows": False,
+        "cast_shadows": False,
         "soft_particles": False,
         "soft_distance": 1.0,
         "sort_mode": "back_to_front",

@@ -265,6 +265,8 @@ def test_compiler_preserves_transparent_forward_plus_sorting():
     assert draw_passes
     assert all(render_pass._material_pass == "forward_plus" for render_pass in draw_passes)
     assert all(render_pass._sort_mode == "back_to_front" for render_pass in draw_passes)
+    assert all("depth" in render_pass._reads for render_pass in draw_passes)
+    assert all(render_pass._write_depth is None for render_pass in draw_passes)
 
 
 def test_compiler_never_silently_substitutes_forward_for_deferred():

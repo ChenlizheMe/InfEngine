@@ -352,9 +352,14 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     VkDescriptorSet shadowDesc = VK_NULL_HANDLE;
     VkDescriptorSet globalsDesc = VK_NULL_HANDLE;
 
-    ShaderProgram *primaryProgram = passBindings.front().program;
+    const bool requiresPerViewSet = std::any_of(passBindings.begin(), passBindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(1);
+    });
+    const bool requiresGlobalsSet = std::any_of(passBindings.begin(), passBindings.end(), [](const auto &binding) {
+        return binding.program && binding.program->HasDeclaredDescriptorSet(2);
+    });
 
-    if (primaryProgram->HasDeclaredDescriptorSet(1)) {
+    if (requiresPerViewSet) {
         if (m_fallbackShadowDescSet == VK_NULL_HANDLE) {
             m_fallbackShadowDescSet = m_vkCore->AllocatePerViewDescriptorSet();
             if (m_fallbackShadowDescSet != VK_NULL_HANDLE)
@@ -368,7 +373,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         }
     }
 
-    if (primaryProgram->HasDeclaredDescriptorSet(2))
+    if (requiresGlobalsSet)
         globalsDesc = m_previewGlobalsSet;
 
     auto &resourceManager = m_vkCore->GetResourceManager();

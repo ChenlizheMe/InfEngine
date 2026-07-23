@@ -851,11 +851,12 @@ class ParticleSystem(InxComponent):
 
     @staticmethod
     def _gpu_material_binding(output) -> dict[str, object]:
+        is_mesh = output.output_type == "mesh"
         state: dict[str, object] = {
-            "render_queue": 3000,
-            "blend_enabled": True,
+            "render_queue": 2000 if is_mesh else 3000,
+            "blend_enabled": not is_mesh,
             "depth_test_enabled": True,
-            "depth_write_enabled": False,
+            "depth_write_enabled": is_mesh,
             "native": None,
         }
         material_ref = output.material
@@ -870,7 +871,7 @@ class ParticleSystem(InxComponent):
             except (AttributeError, RuntimeError):
                 pass
         material = None
-        if not path:
+        if not path and not is_mesh:
             try:
                 from Infernux.core.material import Material
 

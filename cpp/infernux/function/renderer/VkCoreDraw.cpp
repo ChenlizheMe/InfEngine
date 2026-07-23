@@ -918,8 +918,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         const uint32_t bufferIndex = frameIndex * lighting::MaxShadowViews + viewIndex;
         if (bufferIndex >= cameraResources.mappedPointers.size() || !cameraResources.mappedPointers[bufferIndex])
             return;
-        const ShadowUBO shadowUbo{glm::mat4(1.0f), glm::mat4(1.0f),
-                                  shadowFrame.views[viewIndex].viewProjection};
+        const ShadowUBO shadowUbo{glm::mat4(1.0f), glm::mat4(1.0f), shadowFrame.views[viewIndex].viewProjection};
         std::memcpy(cameraResources.mappedPointers[bufferIndex], &shadowUbo, sizeof(shadowUbo));
     }
 
@@ -1032,15 +1031,10 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     if (skinBufferChanged)
         UpdateSkinBufferDescriptors(frameIndex);
 
-    // Bind globals descriptor set (set 1) with instance SSBO — once for all cascades
-    if (frameIndex < m_globalsDescSets.size()) {
-        VkDescriptorSet globalsDescSet = m_globalsDescSets[frameIndex];
-        if (globalsDescSet != VK_NULL_HANDLE) {
-            vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set1", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 1, 1,
-                                                  &globalsDescSet, 0, nullptr);
-        }
-    }
+    const VkDescriptorSet globalsDescSet =
+        frameIndex < m_globalsDescSets.size() ? m_globalsDescSets[frameIndex] : VK_NULL_HANDLE;
+    if (globalsDescSet == VK_NULL_HANDLE)
+        return;
 
     for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex) {
         const uint32_t descIdx = frameIndex * lighting::MaxShadowViews + viewIndex;
@@ -1071,16 +1065,14 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         scissor.extent = {tileW, tileH};
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
-        // Bind per-cascade descriptor set (set 0)
+        // The complete shadow descriptor state is bound per batch below. Set 0
+        // belongs to this camera and this shadow view.
         VkDescriptorSet cascadeDescSet = cameraResources.descriptorSets[descIdx];
-        vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set0", cmdBuf,
-                                              VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1,
-                                              &cascadeDescSet, 0, nullptr);
+        if (cascadeDescSet == VK_NULL_HANDLE)
+            continue;
 
         const Frustum &shadowFrustum = shadowFrustums[viewIndex];
         VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
-        VkDescriptorSet lastBoundShadowMaterialDescSet = VK_NULL_HANDLE;
-
         // Per-cascade frustum cull into a compact index list, then upload
         // model matrices for visible objects and batch by (pipeline, VB, submesh).
         m_shadowViewVisible.clear();
@@ -1186,6 +1178,17 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         auto emitShadowBatch = [&]() {
             if (batchCount == 0)
                 return;
+            const VkDescriptorSet materialDescSet = batchShadowMaterialDescSet != VK_NULL_HANDLE
+                                                        ? batchShadowMaterialDescSet
+                                                        : m_shadowMaterialDummyDescSet;
+            if (materialDescSet == VK_NULL_HANDLE) {
+                batchCount = 0;
+                return;
+            }
+            const std::array<VkDescriptorSet, 3> descriptorSets = {cascadeDescSet, globalsDescSet, materialDescSet};
+            vkdebug::CmdBindDescriptorSetsTracked(
+                "VkCoreDraw.DrawShadowCasters.AllSets", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
+                0, static_cast<uint32_t>(descriptorSets.size()), descriptorSets.data(), 0, nullptr);
             struct PushData
             {
                 glm::mat4 model;
@@ -1225,16 +1228,6 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             if (sd.shadowPipeline != lastBoundPipeline) {
                 vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, sd.shadowPipeline);
                 lastBoundPipeline = sd.shadowPipeline;
-            }
-
-            VkDescriptorSet matDesc = sd.shadowMaterialDescSet;
-            if (matDesc == VK_NULL_HANDLE)
-                matDesc = m_shadowMaterialDummyDescSet;
-            if (matDesc != lastBoundShadowMaterialDescSet && matDesc != VK_NULL_HANDLE) {
-                vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set2", cmdBuf,
-                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 2, 1,
-                                                      &matDesc, 0, nullptr);
-                lastBoundShadowMaterialDescSet = matDesc;
             }
 
             if (vb != currentVertexBuffer) {
