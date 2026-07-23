@@ -415,6 +415,7 @@ class InxMaterial
     /// Empty input explicitly clears the property; paths and missing assets fail.
     static std::string RequireTextureGuid(const std::string &textureGuid);
     void ClearTexture(const std::string &name);
+    bool RemoveProperty(const std::string &name);
 
     [[nodiscard]] bool HasProperty(const std::string &name) const;
     [[nodiscard]] const MaterialProperty *GetProperty(const std::string &name) const;

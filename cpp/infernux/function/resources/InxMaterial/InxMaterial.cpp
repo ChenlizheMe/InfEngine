@@ -535,6 +535,24 @@ void InxMaterial::ClearTexture(const std::string &name)
     }
 }
 
+bool InxMaterial::RemoveProperty(const std::string &name)
+{
+    auto it = m_properties.find(name);
+    if (it == m_properties.end())
+        return false;
+
+    if (it->second.type == MaterialPropertyType::Texture2D) {
+        const auto *oldGuid = std::get_if<std::string>(&it->second.value);
+        if (!m_guid.empty() && oldGuid && !oldGuid->empty() && !IsBuiltinTextureToken(*oldGuid))
+            AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, *oldGuid);
+    }
+
+    m_properties.erase(it);
+    m_propertiesDirty = true;
+    ++m_version;
+    return true;
+}
+
 bool InxMaterial::HasProperty(const std::string &name) const
 {
     return m_properties.find(name) != m_properties.end();

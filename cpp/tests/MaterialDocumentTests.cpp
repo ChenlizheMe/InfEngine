@@ -104,6 +104,20 @@ void VerifyShaderReferenceVersioning()
     assert((material.GetFragShaderReference() == ShaderAssetReference{"", "unlit", ""}));
 }
 
+void VerifyPropertyRemoval()
+{
+    InxMaterial material("PropertyRemoval", "unlit");
+    material.SetFloat("blend_enable", 1.0f);
+    const uint64_t populatedVersion = material.GetVersion();
+    assert(material.HasProperty("blend_enable"));
+
+    assert(material.RemoveProperty("blend_enable"));
+    assert(!material.HasProperty("blend_enable"));
+    assert(material.GetVersion() == populatedVersion + 1);
+    assert(!material.RemoveProperty("blend_enable"));
+    assert(material.GetVersion() == populatedVersion + 1);
+}
+
 } // namespace
 
 int main()
@@ -113,6 +127,7 @@ int main()
     VerifyTransactionalFailure();
     VerifyRenderStateVersioning();
     VerifyShaderReferenceVersioning();
+    VerifyPropertyRemoval();
     std::cout << "Material document tests passed\n";
     return 0;
 }

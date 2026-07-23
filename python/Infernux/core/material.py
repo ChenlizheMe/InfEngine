@@ -393,6 +393,10 @@ class Material:
         self._native.mark_override(RenderStateOverride.BLEND_ENABLE)
         self._native.mark_override(RenderStateOverride.DEPTH_WRITE)
         self._native.mark_override(RenderStateOverride.RENDER_QUEUE)
+        # Older tooling could accidentally create shader properties with the
+        # same names as render-state fields. Keep a single source of truth.
+        self._native.remove_property("blend_enable")
+        self._native.remove_property("depth_write_enable")
 
     @property
     def alpha_clip_enabled(self) -> bool:
@@ -567,6 +571,13 @@ class Material:
         """Clear a texture shader property (remove texture reference)."""
         self._native.clear_texture(name)
         self._auto_save()
+
+    def remove_property(self, name: str) -> bool:
+        """Remove a shader property and any asset dependency it owns."""
+        removed = bool(self._native.remove_property(name))
+        if removed:
+            self._auto_save()
+        return removed
 
     # ==========================================================================
     # Shader Property Getters

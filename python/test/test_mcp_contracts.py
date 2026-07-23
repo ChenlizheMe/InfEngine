@@ -11,7 +11,7 @@ from Infernux.mcp import client as client_module
 from Infernux.mcp.client import create_loopback_client
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools import register_all_tools
-from Infernux.mcp.tools import api, project, runtime
+from Infernux.mcp.tools import api, material, project, runtime
 
 
 class _FakeMcp:
@@ -46,6 +46,24 @@ class _AssetDatabase:
 
     def contains_guid(self, guid: str) -> bool:
         return guid == self.guid
+
+
+class _MaterialPropertyRecorder:
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+
+    def set_float(self, name: str, value: float) -> None:
+        self.values[name] = value
+
+
+def test_material_property_writer_rejects_render_state_names():
+    recorder = _MaterialPropertyRecorder()
+
+    with pytest.raises(ValueError, match="render state"):
+        material._set_one(recorder, "blend_enable", 1.0, "float")
+
+    material._set_one(recorder, "emission_strength", 2.0, "float")
+    assert recorder.values == {"emission_strength": 2.0}
 
 
 def _registered_mcp(tmp_path, profile: str) -> _FakeMcp:

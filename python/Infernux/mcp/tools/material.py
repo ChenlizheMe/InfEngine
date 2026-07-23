@@ -16,6 +16,27 @@ from Infernux.mcp.tools.common import (
 )
 
 
+_RESERVED_RENDER_STATE_PROPERTIES = frozenset(
+    {
+        "alpha_clip_enabled",
+        "alpha_clip_threshold",
+        "blend_enable",
+        "color_blend_op",
+        "cull_mode",
+        "depth_compare_op",
+        "depth_test_enable",
+        "depth_write_enable",
+        "dst_alpha_blend_factor",
+        "dst_color_blend_factor",
+        "render_queue",
+        "src_alpha_blend_factor",
+        "src_color_blend_factor",
+        "stencil_enable",
+        "surface_type",
+    }
+)
+
+
 def register_material_tools(mcp, project_path: str) -> None:
     _register_metadata()
 
@@ -189,6 +210,11 @@ def _set_properties(mat, properties: dict[str, Any]) -> None:
 
 
 def _set_one(mat, name: str, value: Any, value_type: str) -> None:
+    normalized_name = str(name or "").strip().lower()
+    if normalized_name in _RESERVED_RENDER_STATE_PROPERTIES:
+        raise ValueError(
+            f"'{name}' is render state, not a shader property; use the dedicated material tool."
+        )
     kind = str(value_type or "auto").lower()
     if kind == "float" or (kind == "auto" and isinstance(value, float)):
         mat.set_float(name, float(value))

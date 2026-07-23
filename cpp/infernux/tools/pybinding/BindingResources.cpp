@@ -411,6 +411,8 @@ void RegisterResourceBindings(py::module_ &m)
             py::arg("name"), py::arg("value"), "Set a non-texture material property using value-shape/type dispatch")
         .def("clear_texture", &InxMaterial::ClearTexture, py::arg("name"),
              "Clear a texture property (remove texture reference)")
+        .def("remove_property", &InxMaterial::RemoveProperty, py::arg("name"),
+             "Remove a material property and its asset dependency")
         .def(
             "set_texture",
             [](InxMaterial &mat, const std::string &name, py::object value) {
