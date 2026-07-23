@@ -270,6 +270,11 @@ void surface(out SurfaceData s)
            std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find(
                "layout(set = 2, binding = 0) uniform sampler2D displacement;") != std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 1") != std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 2") != std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 3") != std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("InstanceAuxBuffer") == std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 4") == std::string::npos);
     assert(shadowCompilation->generatedFragmentSource.find("layout(location = 6) smooth in vec2 _inx_v_waveUV;") !=
            std::string::npos);
 

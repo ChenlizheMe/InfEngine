@@ -998,42 +998,28 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex)
         shadowFrustums[viewIndex].ExtractFromMatrix(shadowFrame.views[viewIndex].viewProjection);
 
-    size_t maxShadowBoneMatrices = m_skinPaletteWriteOffset;
+    if (frameIndex >= cameraResources.streamFrames.size())
+        return;
+    auto &shadowStream = cameraResources.streamFrames[frameIndex];
+    if (shadowStream.frameSerial != m_ensureFrameCounter) {
+        shadowStream.frameSerial = m_ensureFrameCounter;
+        shadowStream.instanceWriteOffset = 0;
+        shadowStream.skinPaletteWriteOffset = 0;
+        shadowStream.skinPaletteCache.clear();
+    }
+
+    size_t maxShadowBoneMatrices = shadowStream.skinPaletteWriteOffset;
     for (const auto &sd : m_shadowDrawScratch) {
         if (sd.dc->skinBoneMatrices)
             maxShadowBoneMatrices += sd.dc->skinBoneMatrices->size() * viewCount;
     }
-    const VkBuffer previousInstanceBuffer =
-        m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
-    const VkBuffer previousSkinInstanceBuffer =
-        frameIndex < m_skinInstanceBuffers.size() && m_skinInstanceBuffers[frameIndex].buffer
-            ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
-            : VK_NULL_HANDLE;
-    const VkBuffer previousSkinPaletteBuffer =
-        frameIndex < m_skinPaletteBuffers.size() && m_skinPaletteBuffers[frameIndex].buffer
-            ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()
-            : VK_NULL_HANDLE;
+    const size_t maxShadowInstances =
+        static_cast<size_t>(shadowStream.instanceWriteOffset) + m_shadowDrawScratch.size() * viewCount;
+    if (!EnsureShadowCameraStreamCapacity(cameraResources, frameIndex, maxShadowInstances, maxShadowBoneMatrices))
+        return;
 
-    EnsureInstanceBufferCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * viewCount);
-    EnsureSkinBuffersCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * viewCount,
-                              maxShadowBoneMatrices);
-
-    const bool instanceBufferChanged = m_instanceBuffers[frameIndex].buffer &&
-                                       previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer();
-    const bool skinBufferChanged =
-        frameIndex < m_skinInstanceBuffers.size() && frameIndex < m_skinPaletteBuffers.size() &&
-        ((m_skinInstanceBuffers[frameIndex].buffer &&
-          previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
-         (m_skinPaletteBuffers[frameIndex].buffer &&
-          previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()));
-    if (instanceBufferChanged)
-        UpdateInstanceBufferDescriptor(frameIndex);
-    if (skinBufferChanged)
-        UpdateSkinBufferDescriptors(frameIndex);
-
-    const VkDescriptorSet globalsDescSet =
-        frameIndex < m_globalsDescSets.size() ? m_globalsDescSets[frameIndex] : VK_NULL_HANDLE;
-    if (globalsDescSet == VK_NULL_HANDLE)
+    const VkDescriptorSet shadowStreamDescSet = shadowStream.descriptorSet;
+    if (shadowStreamDescSet == VK_NULL_HANDLE)
         return;
 
     for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex) {
@@ -1101,63 +1087,41 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
         }
 
-        // Upload model matrices for this cascade's visible objects into the shared SSBO
-        const uint32_t writeBase = m_instanceWriteOffset;
-        EnsureInstanceBufferCapacity(frameIndex, writeBase + visibleCount);
-
-        auto &instFrame = m_instanceBuffers[frameIndex];
-        void *mapped = instFrame.mapped;
-        if (!mapped) {
-            mapped = instFrame.buffer->Map();
-            instFrame.mapped = mapped;
-        }
-        if (!mapped)
+        // Each camera appends into its own frame-local shadow instance stream.
+        const uint32_t writeBase = shadowStream.instanceWriteOffset;
+        if (!shadowStream.instanceMapped || !shadowStream.skinInstanceMapped || !shadowStream.skinPaletteMapped)
             continue;
-        glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
+        auto *matrices = static_cast<glm::mat4 *>(shadowStream.instanceMapped);
         for (uint32_t vi = 0; vi < visibleCount; ++vi) {
             matrices[writeBase + vi] = m_shadowDrawScratch[m_shadowViewVisible[vi]].dc->worldMatrix;
         }
 
-        if (frameIndex < m_skinInstanceBuffers.size() && frameIndex < m_skinPaletteBuffers.size()) {
-            auto &skinInstFrame = m_skinInstanceBuffers[frameIndex];
-            auto &skinPaletteFrame = m_skinPaletteBuffers[frameIndex];
-            auto *skinInstances = static_cast<GPUSkinInstanceData *>(skinInstFrame.mapped);
-            if (!skinInstances && skinInstFrame.buffer) {
-                skinInstances = static_cast<GPUSkinInstanceData *>(skinInstFrame.buffer->Map());
-                skinInstFrame.mapped = skinInstances;
-            }
-            auto *skinBones = static_cast<glm::mat4 *>(skinPaletteFrame.mapped);
-            if (!skinBones && skinPaletteFrame.buffer) {
-                skinBones = static_cast<glm::mat4 *>(skinPaletteFrame.buffer->Map());
-                skinPaletteFrame.mapped = skinBones;
-            }
-            if (skinInstances && skinBones) {
-                auto resolveSkinData = [&](const std::vector<glm::mat4> *palette) {
-                    GPUSkinInstanceData skinData{};
-                    if (!palette || palette->empty())
-                        return skinData;
-                    const void *key = static_cast<const void *>(palette);
-                    auto cached = m_skinPaletteFrameCache.find(key);
-                    if (cached != m_skinPaletteFrameCache.end())
-                        return cached->second;
+        auto *skinInstances = static_cast<GPUSkinInstanceData *>(shadowStream.skinInstanceMapped);
+        auto *skinBones = static_cast<glm::mat4 *>(shadowStream.skinPaletteMapped);
+        auto resolveSkinData = [&](const std::vector<glm::mat4> *palette) {
+            GPUSkinInstanceData skinData{};
+            if (!palette || palette->empty())
+                return skinData;
+            const void *key = static_cast<const void *>(palette);
+            auto cached = shadowStream.skinPaletteCache.find(key);
+            if (cached != shadowStream.skinPaletteCache.end())
+                return cached->second;
 
-                    skinData.boneOffset = m_skinPaletteWriteOffset;
-                    skinData.boneCount = static_cast<uint32_t>(palette->size());
-                    skinData.flags = kGPUSkinFlagEnabled;
-                    std::memcpy(&skinBones[m_skinPaletteWriteOffset], palette->data(),
-                                palette->size() * sizeof(glm::mat4));
-                    m_skinPaletteWriteOffset += static_cast<uint32_t>(palette->size());
-                    m_skinPaletteFrameCache[key] = skinData;
-                    return skinData;
-                };
+            skinData.boneOffset = shadowStream.skinPaletteWriteOffset;
+            skinData.boneCount = static_cast<uint32_t>(palette->size());
+            skinData.flags = kGPUSkinFlagEnabled;
+            std::memcpy(&skinBones[shadowStream.skinPaletteWriteOffset], palette->data(),
+                        palette->size() * sizeof(glm::mat4));
+            shadowStream.skinPaletteWriteOffset += static_cast<uint32_t>(palette->size());
+            shadowStream.skinPaletteCache[key] = skinData;
+            return skinData;
+        };
 
-                for (uint32_t vi = 0; vi < visibleCount; ++vi) {
-                    const DrawCall *dc = m_shadowDrawScratch[m_shadowViewVisible[vi]].dc;
-                    skinInstances[writeBase + vi] = resolveSkinData(dc ? dc->skinBoneMatrices : nullptr);
-                }
-            }
+        for (uint32_t vi = 0; vi < visibleCount; ++vi) {
+            const DrawCall *dc = m_shadowDrawScratch[m_shadowViewVisible[vi]].dc;
+            skinInstances[writeBase + vi] = resolveSkinData(dc ? dc->skinBoneMatrices : nullptr);
         }
-        m_instanceWriteOffset += visibleCount;
+        shadowStream.instanceWriteOffset += visibleCount;
 
 #if INFERNUX_FRAME_PROFILE
         stageNow = Clock::now();
@@ -1185,7 +1149,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 batchCount = 0;
                 return;
             }
-            const std::array<VkDescriptorSet, 3> descriptorSets = {cascadeDescSet, globalsDescSet, materialDescSet};
+            const std::array<VkDescriptorSet, 3> descriptorSets = {cascadeDescSet, shadowStreamDescSet,
+                                                                   materialDescSet};
             vkdebug::CmdBindDescriptorSetsTracked(
                 "VkCoreDraw.DrawShadowCasters.AllSets", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
                 0, static_cast<uint32_t>(descriptorSets.size()), descriptorSets.data(), 0, nullptr);
@@ -1295,9 +1260,13 @@ void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResources &resou
     resources.allocations.clear();
     resources.mappedPointers.clear();
     resources.descriptorSets.clear();
+    resources.streamFrames.clear();
     if (device != VK_NULL_HANDLE && resources.descriptorPool != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(device, resources.descriptorPool, nullptr);
+    if (device != VK_NULL_HANDLE && resources.streamDescriptorPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device, resources.streamDescriptorPool, nullptr);
     resources.descriptorPool = VK_NULL_HANDLE;
+    resources.streamDescriptorPool = VK_NULL_HANDLE;
 }
 
 void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResourceId resourceId) noexcept
@@ -1311,13 +1280,13 @@ void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResourceId resou
 
 bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resourceId)
 {
-    if (resourceId == 0 || m_shadowDescSetLayout == VK_NULL_HANDLE)
+    if (resourceId == 0 || m_shadowDescSetLayout == VK_NULL_HANDLE || m_shadowGlobalsDescSetLayout == VK_NULL_HANDLE)
         return false;
     auto found = m_shadowCameraResources.find(resourceId);
     if (found == m_shadowCameraResources.end())
         return false;
     ShadowCameraResources &resources = found->second;
-    if (!resources.descriptorSets.empty())
+    if (!resources.descriptorSets.empty() && resources.streamFrames.size() == m_maxFramesInFlight)
         return true;
 
     const uint32_t totalSets = m_maxFramesInFlight * lighting::MaxShadowViews;
@@ -1380,6 +1349,130 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
         write.pBufferInfo = &descriptorInfo;
         vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
     }
+
+    VkDescriptorPoolSize streamPoolSizes[2]{};
+    streamPoolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    streamPoolSizes[0].descriptorCount = m_maxFramesInFlight;
+    streamPoolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    streamPoolSizes[1].descriptorCount = m_maxFramesInFlight * 3;
+    VkDescriptorPoolCreateInfo streamPoolInfo{};
+    streamPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    streamPoolInfo.maxSets = m_maxFramesInFlight;
+    streamPoolInfo.poolSizeCount = 2;
+    streamPoolInfo.pPoolSizes = streamPoolSizes;
+    if (vkCreateDescriptorPool(GetDevice(), &streamPoolInfo, nullptr, &resources.streamDescriptorPool) != VK_SUCCESS) {
+        INXLOG_ERROR("Failed to create camera-local shadow stream descriptor pool");
+        DestroyShadowCameraResources(resources);
+        return false;
+    }
+
+    std::vector<VkDescriptorSetLayout> streamLayouts(m_maxFramesInFlight, m_shadowGlobalsDescSetLayout);
+    std::vector<VkDescriptorSet> streamDescriptorSets(m_maxFramesInFlight, VK_NULL_HANDLE);
+    VkDescriptorSetAllocateInfo streamAllocationInfo{};
+    streamAllocationInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    streamAllocationInfo.descriptorPool = resources.streamDescriptorPool;
+    streamAllocationInfo.descriptorSetCount = m_maxFramesInFlight;
+    streamAllocationInfo.pSetLayouts = streamLayouts.data();
+    if (vkAllocateDescriptorSets(GetDevice(), &streamAllocationInfo, streamDescriptorSets.data()) != VK_SUCCESS) {
+        INXLOG_ERROR("Failed to allocate camera-local shadow stream descriptor sets");
+        DestroyShadowCameraResources(resources);
+        return false;
+    }
+
+    resources.streamFrames.resize(m_maxFramesInFlight);
+    for (uint32_t frameIndex = 0; frameIndex < m_maxFramesInFlight; ++frameIndex) {
+        resources.streamFrames[frameIndex].descriptorSet = streamDescriptorSets[frameIndex];
+        if (!EnsureShadowCameraStreamCapacity(resources, frameIndex, INSTANCE_BUFFER_INITIAL_CAPACITY,
+                                              SKIN_PALETTE_BUFFER_INITIAL_CAPACITY)) {
+            INXLOG_ERROR("Failed to create camera-local shadow instance streams for frame ", frameIndex);
+            DestroyShadowCameraResources(resources);
+            return false;
+        }
+    }
+    return true;
+}
+
+void InxVkCoreModular::UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame,
+                                                          uint32_t frameIndex)
+{
+    if (frame.descriptorSet == VK_NULL_HANDLE || frameIndex >= m_globalsBuffers.size() ||
+        !m_globalsBuffers[frameIndex] || !frame.instanceBuffer || !frame.skinInstanceBuffer || !frame.skinPaletteBuffer)
+        return;
+
+    std::array<VkDescriptorBufferInfo, 4> infos{};
+    infos[0] = {m_globalsBuffers[frameIndex]->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
+    infos[1] = {frame.instanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    infos[2] = {frame.skinInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    infos[3] = {frame.skinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+
+    std::array<VkWriteDescriptorSet, 4> writes{};
+    for (uint32_t binding = 0; binding < writes.size(); ++binding) {
+        writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[binding].dstSet = frame.descriptorSet;
+        writes[binding].dstBinding = binding;
+        writes[binding].descriptorType =
+            binding == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[binding].descriptorCount = 1;
+        writes[binding].pBufferInfo = &infos[binding];
+    }
+    vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
+bool InxVkCoreModular::EnsureShadowCameraStreamCapacity(ShadowCameraResources &resources, uint32_t frameIndex,
+                                                        size_t instanceCount, size_t skinPaletteCount)
+{
+    if (frameIndex >= resources.streamFrames.size())
+        return false;
+    auto &frame = resources.streamFrames[frameIndex];
+    const bool growInstances = !frame.instanceBuffer || !frame.skinInstanceBuffer ||
+                               frame.instanceCapacity < std::max<size_t>(instanceCount, 1);
+    const bool growPalette =
+        !frame.skinPaletteBuffer || frame.skinPaletteCapacity < std::max<size_t>(skinPaletteCount, 1);
+    if (!growInstances && !growPalette)
+        return true;
+
+    size_t newInstanceCapacity = std::max<size_t>(frame.instanceCapacity, INSTANCE_BUFFER_INITIAL_CAPACITY);
+    while (newInstanceCapacity < std::max<size_t>(instanceCount, 1))
+        newInstanceCapacity *= 2;
+    size_t newPaletteCapacity = std::max<size_t>(frame.skinPaletteCapacity, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY);
+    while (newPaletteCapacity < std::max<size_t>(skinPaletteCount, 1))
+        newPaletteCapacity *= 2;
+
+    auto newInstances = m_resourceManager.CreateStorageBuffer(newInstanceCapacity * sizeof(glm::mat4), false);
+    auto newSkinInstances =
+        m_resourceManager.CreateStorageBuffer(newInstanceCapacity * sizeof(GPUSkinInstanceData), false);
+    auto newSkinPalette = m_resourceManager.CreateStorageBuffer(newPaletteCapacity * sizeof(glm::mat4), false);
+    if (!newInstances || !newSkinInstances || !newSkinPalette)
+        return false;
+
+    void *newInstanceMapped = newInstances->Map();
+    void *newSkinInstanceMapped = newSkinInstances->Map();
+    void *newSkinPaletteMapped = newSkinPalette->Map();
+    if (!newInstanceMapped || !newSkinInstanceMapped || !newSkinPaletteMapped)
+        return false;
+
+    if (frame.instanceBuffer && frame.instanceMapped && frame.instanceWriteOffset > 0) {
+        std::memcpy(newInstanceMapped, frame.instanceMapped,
+                    static_cast<size_t>(frame.instanceWriteOffset) * sizeof(glm::mat4));
+    }
+    if (frame.skinInstanceBuffer && frame.skinInstanceMapped && frame.instanceWriteOffset > 0) {
+        std::memcpy(newSkinInstanceMapped, frame.skinInstanceMapped,
+                    static_cast<size_t>(frame.instanceWriteOffset) * sizeof(GPUSkinInstanceData));
+    }
+    if (frame.skinPaletteBuffer && frame.skinPaletteMapped && frame.skinPaletteWriteOffset > 0) {
+        std::memcpy(newSkinPaletteMapped, frame.skinPaletteMapped,
+                    static_cast<size_t>(frame.skinPaletteWriteOffset) * sizeof(glm::mat4));
+    }
+
+    frame.instanceBuffer = std::move(newInstances);
+    frame.skinInstanceBuffer = std::move(newSkinInstances);
+    frame.skinPaletteBuffer = std::move(newSkinPalette);
+    frame.instanceMapped = newInstanceMapped;
+    frame.skinInstanceMapped = newSkinInstanceMapped;
+    frame.skinPaletteMapped = newSkinPaletteMapped;
+    frame.instanceCapacity = newInstanceCapacity;
+    frame.skinPaletteCapacity = newPaletteCapacity;
+    UpdateShadowCameraStreamDescriptor(frame, frameIndex);
     return true;
 }
 
@@ -1447,6 +1540,27 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
         }
     }
 
+    // Camera-local shadow stream layout. Shadow draws deliberately do not use
+    // the ordinary set-2 instance descriptor: each camera owns the matrices
+    // and skinning data recorded for its shadow views.
+    if (m_shadowGlobalsDescSetLayout == VK_NULL_HANDLE) {
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+        bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_shadowGlobalsDescSetLayout) != VK_SUCCESS) {
+            INXLOG_ERROR("Failed to create camera-local shadow stream descriptor layout");
+            return false;
+        }
+    }
+
     // --- Create shadow material descriptor set layout (set 2) ---
     //
     // This set serves two purposes:
@@ -1509,10 +1623,10 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
     }
 
     // --- Create shadow pipeline layout (shared by all per-material shadow pipelines) ---
-    // Set 0 = shadow UBO (per-cascade), set 1 = globals (UBO + instance SSBO),
+    // Set 0 = shadow UBO (per-cascade), set 1 = camera-local globals and shadow streams,
     // set 2 = vertex material UBO (binding 14, when needed).
-    if (m_globalsDescSetLayout == VK_NULL_HANDLE) {
-        INXLOG_ERROR("EnsureShadowPipeline: m_globalsDescSetLayout is null — globals not yet initialized");
+    if (m_shadowGlobalsDescSetLayout == VK_NULL_HANDLE) {
+        INXLOG_ERROR("EnsureShadowPipeline: camera-local shadow stream layout is null");
         return false;
     }
     if (m_shadowPipelineLayout == VK_NULL_HANDLE) {
@@ -1521,7 +1635,7 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
         pushRange.offset = 0;
         pushRange.size = sizeof(glm::mat4) * 2; // model + normalMat
 
-        VkDescriptorSetLayout setLayouts[3] = {m_shadowDescSetLayout, m_globalsDescSetLayout,
+        VkDescriptorSetLayout setLayouts[3] = {m_shadowDescSetLayout, m_shadowGlobalsDescSetLayout,
                                                m_shadowMaterialDescSetLayout};
 
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -1588,6 +1702,10 @@ void InxVkCoreModular::CleanupShadowPipeline()
     if (m_shadowDescSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, m_shadowDescSetLayout, nullptr);
         m_shadowDescSetLayout = VK_NULL_HANDLE;
+    }
+    if (m_shadowGlobalsDescSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(device, m_shadowGlobalsDescSetLayout, nullptr);
+        m_shadowGlobalsDescSetLayout = VK_NULL_HANDLE;
     }
     for (VkDescriptorPool pool : m_shadowMaterialDescPools) {
         if (pool != VK_NULL_HANDLE)

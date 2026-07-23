@@ -1352,14 +1352,34 @@ class InxVkCoreModular
     // ========================================================================
     VkPipelineLayout m_shadowPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowDescSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_shadowGlobalsDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;
     struct ShadowCameraResources
     {
+        struct StreamFrame
+        {
+            VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+            std::unique_ptr<vk::VkBufferHandle> instanceBuffer;
+            std::unique_ptr<vk::VkBufferHandle> skinInstanceBuffer;
+            std::unique_ptr<vk::VkBufferHandle> skinPaletteBuffer;
+            void *instanceMapped = nullptr;
+            void *skinInstanceMapped = nullptr;
+            void *skinPaletteMapped = nullptr;
+            size_t instanceCapacity = 0;
+            size_t skinPaletteCapacity = 0;
+            uint32_t instanceWriteOffset = 0;
+            uint32_t skinPaletteWriteOffset = 0;
+            uint64_t frameSerial = 0;
+            std::unordered_map<const void *, GPUSkinInstanceData> skinPaletteCache;
+        };
+
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<VkBuffer> uniformBuffers;
         std::vector<VmaAllocation> allocations;
         std::vector<void *> mappedPointers;
+        VkDescriptorPool streamDescriptorPool = VK_NULL_HANDLE;
+        std::vector<StreamFrame> streamFrames;
     };
     std::unordered_map<ShadowCameraResourceId, ShadowCameraResources> m_shadowCameraResources;
     ShadowCameraResourceId m_nextShadowCameraResourceId = 1;
@@ -1402,6 +1422,9 @@ class InxVkCoreModular
     /// @brief Lazily create/recreate shadow pipeline resources.
     bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass);
     bool EnsureShadowCameraResources(ShadowCameraResourceId resourceId);
+    bool EnsureShadowCameraStreamCapacity(ShadowCameraResources &resources, uint32_t frameIndex, size_t instanceCount,
+                                          size_t skinPaletteCount);
+    void UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame, uint32_t frameIndex);
     void DestroyShadowCameraResources(ShadowCameraResources &resources) noexcept;
     [[nodiscard]] VkDescriptorPool CreateShadowMaterialDescriptorPoolPage(uint32_t maxSets);
     [[nodiscard]] ShadowDescriptorAllocation AllocateShadowMaterialDescriptorSet();
