@@ -828,6 +828,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     infernux::particle::GpuParticleEmitterProgram managedProgram;
     managedProgram.id = 91;
+    managedProgram.graphInstanceId = 7001;
     managedProgram.ownerLayerMask = 1u << 4u;
     managedProgram.artifactRevision = 1;
     managedProgram.stableId = "managed-emitter";
@@ -1085,8 +1086,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(particleSystems.Reset(managedProgram.id) && !particleSystems.Reset(999999),
                  "GPU particle manager reset lookup is incorrect"))
         return false;
-    if (!Require(particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
-                 "GPU particle manager rejected a valid frame request"))
+    const infernux::particle::GpuParticleBatchFrameItem managedBatchItem{managedProgram.id, managedFrame,
+                                                                         managedTransforms};
+    if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {managedBatchItem}),
+                 "GPU particle manager rejected a valid graph-instance frame batch"))
         return false;
     const auto scheduledParticleTelemetry = particleSystems.TelemetrySnapshot();
     if (!Require(scheduledParticleTelemetry.systemCount == 1 && scheduledParticleTelemetry.outputCount == 2 &&
@@ -1098,8 +1101,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      scheduledParticleTelemetry.requestedSpawnCount == managedFrame.spawnCount,
                  "GPU particle scheduling telemetry is incorrect"))
         return false;
-    if (!Require(particleSystems.Reset(managedProgram.id) &&
-                     particleSystems.BeginFrame(managedProgram.id, managedFrame, managedTransforms),
+    if (!Require(!particleSystems.BeginFrameBatch(managedProgram.graphInstanceId + 1, {managedBatchItem}) &&
+                     !particleSystems.BeginFrameBatch(managedProgram.graphInstanceId,
+                                                      {managedBatchItem, managedBatchItem}) &&
+                     particleSystems.Reset(managedProgram.id) &&
+                     particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {managedBatchItem}),
                  "GPU particle reset did not cancel and replace a pending frame request"))
         return false;
     const auto managedEntries = particleDrawRegistry.Snapshot(3000, 3100);

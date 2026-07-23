@@ -3248,18 +3248,8 @@ class Infernux:
     def _replace_gpu_particle_emitters(
         self, programs: Sequence[Dict[str, Any]], remove_ids: Sequence[int] = ...
     ) -> str: ...
-    def _begin_gpu_particle_frame(
-        self,
-        emitter_id: int,
-        spawn_count: int,
-        spawn_base_id: int,
-        spawn_generation: int,
-        system_seed: int,
-        simulation_step: int,
-        delta_time: float,
-        transforms: Any,
-        simulate: bool = ...,
-        render: bool = ...,
+    def _begin_gpu_particle_batch(
+        self, graph_instance_id: int, items: Sequence[Dict[str, Any]]
     ) -> bool: ...
     def _remove_gpu_particle_emitter(self, emitter_id: int) -> bool: ...
     def _reset_gpu_particle_emitter(self, emitter_id: int) -> bool: ...

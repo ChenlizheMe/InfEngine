@@ -109,6 +109,7 @@ using GpuParticleVectorFieldTextureResolver =
 struct GpuParticleEmitterProgram
 {
     uint64_t id = 0;
+    uint64_t graphInstanceId = 0;
     uint64_t ownerObjectId = 0;
     uint32_t ownerLayerMask = 1u;
     uint64_t artifactRevision = 0;
@@ -136,6 +137,13 @@ struct GpuParticleEmitterProgram
     std::vector<uint32_t> meshForwardPlusFragmentShader;
     std::vector<uint32_t> meshPickingFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;
+};
+
+struct GpuParticleBatchFrameItem
+{
+    uint64_t emitterId = 0;
+    GpuParticleFrameRequest request;
+    GpuParticleTransforms transforms;
 };
 
 /// CPU-side scheduling telemetry for the resident GPU particle world.
@@ -200,6 +208,10 @@ class ParticleGpuSystemManager
 
     [[nodiscard]] bool BeginFrame(uint64_t id, const GpuParticleFrameRequest &request,
                                   const GpuParticleTransforms &transforms);
+    /// Atomically arms all GPU emitters belonging to one ParticleGraph
+    /// instance. No scheduler is armed until the complete batch validates and
+    /// all transform uploads succeed.
+    [[nodiscard]] bool BeginFrameBatch(uint64_t graphInstanceId, const std::vector<GpuParticleBatchFrameItem> &items);
     [[nodiscard]] bool Reset(uint64_t id);
     void Execute(VkCommandBuffer commandBuffer);
 

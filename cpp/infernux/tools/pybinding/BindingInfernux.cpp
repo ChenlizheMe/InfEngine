@@ -89,14 +89,16 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
-    for (const char *field : {"id", "owner_object_id", "owner_layer_mask", "artifact_revision", "stable_id", "capacity",
-                              "state_stride", "stages", "billboard", "mesh_shaders", "outputs"}) {
+    for (const char *field :
+         {"id", "graph_instance_id", "owner_object_id", "owner_layer_mask", "artifact_revision", "stable_id",
+          "capacity", "state_stride", "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
 
     particle::GpuParticleEmitterProgram program;
     program.id = py::cast<uint64_t>(value["id"]);
+    program.graphInstanceId = py::cast<uint64_t>(value["graph_instance_id"]);
     program.ownerObjectId = py::cast<uint64_t>(value["owner_object_id"]);
     program.ownerLayerMask = py::cast<uint32_t>(value["owner_layer_mask"]);
     program.artifactRevision = py::cast<uint64_t>(value["artifact_revision"]);
@@ -2111,30 +2113,44 @@ PYBIND11_MODULE(_Infernux, m)
             py::arg("programs"), py::arg("remove_ids") = std::vector<uint64_t>{},
             "Internal control-plane publication for one saved ParticleGraph revision")
         .def(
-            "_begin_gpu_particle_frame",
-            [](Infernux &self, uint64_t emitterId, uint32_t spawnCount, uint32_t spawnBaseId,
-               uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime,
-               const py::buffer &transforms, bool simulate, bool render) {
+            "_begin_gpu_particle_batch",
+            [](Infernux &self, uint64_t graphInstanceId, const py::sequence &encodedItems) {
                 auto *renderer = self.GetRenderer();
                 auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
                 if (!manager)
                     return false;
-                particle::GpuParticleFrameRequest request;
-                request.frameIndex = renderer->GetNextFrameIndex();
-                request.spawnCount = spawnCount;
-                request.spawnBaseId = spawnBaseId;
-                request.spawnGeneration = spawnGeneration;
-                request.systemSeed = systemSeed;
-                request.simulationStep = simulationStep;
-                request.deltaTime = deltaTime;
-                request.simulate = simulate;
-                request.render = render;
-                return manager->BeginFrame(emitterId, request, DecodeGpuParticleTransforms(transforms));
+                const uint64_t frameIndex = renderer->GetNextFrameIndex();
+                std::vector<particle::GpuParticleBatchFrameItem> items;
+                items.reserve(encodedItems.size());
+                for (const py::handle value : encodedItems) {
+                    if (!py::isinstance<py::dict>(value))
+                        throw std::invalid_argument("GPU particle frame batch must contain dictionaries");
+                    const py::dict item = py::reinterpret_borrow<py::dict>(value);
+                    for (const char *field : {"emitter_id", "spawn_count", "spawn_base_id", "spawn_generation",
+                                              "system_seed", "simulation_step", "delta_time", "transforms",
+                                              "simulate", "render"}) {
+                        if (!item.contains(field))
+                            throw std::invalid_argument(std::string("GPU particle frame item is missing ") + field);
+                    }
+                    particle::GpuParticleBatchFrameItem decoded;
+                    decoded.emitterId = py::cast<uint64_t>(item["emitter_id"]);
+                    decoded.request.frameIndex = frameIndex;
+                    decoded.request.spawnCount = py::cast<uint32_t>(item["spawn_count"]);
+                    decoded.request.spawnBaseId = py::cast<uint32_t>(item["spawn_base_id"]);
+                    decoded.request.spawnGeneration = py::cast<uint32_t>(item["spawn_generation"]);
+                    decoded.request.systemSeed = py::cast<uint32_t>(item["system_seed"]);
+                    decoded.request.simulationStep = py::cast<uint32_t>(item["simulation_step"]);
+                    decoded.request.deltaTime = py::cast<float>(item["delta_time"]);
+                    decoded.request.simulate = py::cast<bool>(item["simulate"]);
+                    decoded.request.render = py::cast<bool>(item["render"]);
+                    decoded.transforms =
+                        DecodeGpuParticleTransforms(py::cast<py::buffer>(item["transforms"]));
+                    items.push_back(std::move(decoded));
+                }
+                return manager->BeginFrameBatch(graphInstanceId, items);
             },
-            py::arg("emitter_id"), py::arg("spawn_count"), py::arg("spawn_base_id"),
-            py::arg("spawn_generation"), py::arg("system_seed"), py::arg("simulation_step"),
-            py::arg("delta_time"), py::arg("transforms"), py::arg("simulate") = true, py::arg("render") = true,
-            "Internal once-per-engine-frame GPU particle scheduling hook")
+            py::arg("graph_instance_id"), py::arg("items"),
+            "Internal graph-instance GPU particle batch scheduling hook")
         .def(
             "_remove_gpu_particle_emitter",
             [](Infernux &self, uint64_t emitterId) {

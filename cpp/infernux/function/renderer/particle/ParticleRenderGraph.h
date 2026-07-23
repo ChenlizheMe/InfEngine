@@ -58,6 +58,7 @@ class ParticleRenderGraph
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
                               const std::string &namePrefix, ParticleGpuMigrator *migration = nullptr,
                               ParticleGpuRibbonTopology *ribbonTopology = nullptr);
+    [[nodiscard]] bool CanBeginFrame(const GpuParticleFrameRequest &request) const noexcept;
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
     void Reset() noexcept;
     [[nodiscard]] bool HasCompletedMigration() const noexcept

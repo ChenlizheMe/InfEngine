@@ -228,8 +228,8 @@ class _MixedParticleNative:
         self.program_batches.append((programs, removed))
         return ""
 
-    def _begin_gpu_particle_frame(self, emitter_id, *request):
-        self.frames.append((emitter_id, request))
+    def _begin_gpu_particle_batch(self, graph_instance_id, items):
+        self.frames.append((graph_instance_id, items))
         return True
 
     def _reset_gpu_particle_emitter(self, emitter_id):
@@ -298,6 +298,10 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert len(native.program_batches[-1][0]) == 1
     assert native.program_batches[-1][0][0]["owner_object_id"] == int(game_object.id)
     assert native.program_batches[-1][0][0]["owner_layer_mask"] == 1 << 3
+    assert native.program_batches[-1][0][0]["graph_instance_id"] == component._batch_id
+    assert len(native.frames) == 1
+    assert native.frames[0][0] == component._batch_id
+    assert [item["emitter_id"] for item in native.frames[0][1]] == component._gpu_emitter_ids
 
     cpu_step = component._runtimes[0].simulation_step
     gpu_step = component._gpu_controllers[0].simulation_step

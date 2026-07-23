@@ -38,6 +38,15 @@ bool IsSpirv(const std::vector<uint32_t> &words)
     return words.size() >= 5 && words.front() == 0x07230203u;
 }
 
+bool IsFinite(const GpuParticleTransforms &transforms) noexcept
+{
+    const auto finite = [](const auto &matrix) {
+        return std::all_of(matrix.begin(), matrix.end(), [](float value) { return std::isfinite(value); });
+    };
+    return finite(transforms.emitterToWorld) && finite(transforms.worldToEmitter) &&
+           finite(transforms.simulationToWorld) && finite(transforms.worldToSimulation);
+}
+
 struct alignas(16) PackedParticleMeshVertex
 {
     std::array<float, 4> position{};
@@ -114,6 +123,7 @@ struct ParticleGpuSystemManager::Impl
         };
 
         uint64_t id = 0;
+        uint64_t graphInstanceId = 0;
         uint64_t artifactRevision = 0;
         std::string stableId;
         bool statePreservedOnPublish = false;
@@ -481,9 +491,11 @@ struct ParticleGpuSystemManager::Impl
                                                          const std::shared_ptr<Emitter> &previous,
                                                          std::string *error) const
     {
-        if (program.id == 0 || program.stableId.empty() || program.artifactRevision == 0 || program.capacity == 0 ||
-            program.stateStride == 0) {
-            SetError(error, "GPU particle program identity, revision, capacity, and state stride must be valid");
+        if (program.id == 0 || program.graphInstanceId == 0 || program.stableId.empty() ||
+            program.artifactRevision == 0 || program.capacity == 0 || program.stateStride == 0) {
+            SetError(error,
+                     "GPU particle program graph identity, emitter identity, revision, capacity, and state stride "
+                     "must be valid");
             return {};
         }
         for (const auto &kernel : program.kernels) {
@@ -535,6 +547,7 @@ struct ParticleGpuSystemManager::Impl
 
         auto emitter = std::make_shared<Emitter>();
         emitter->id = program.id;
+        emitter->graphInstanceId = program.graphInstanceId;
         emitter->artifactRevision = program.artifactRevision;
         emitter->stableId = program.stableId;
         emitter->statePreservedOnPublish = program.preserveState;
@@ -1199,22 +1212,64 @@ void ParticleGpuSystemManager::Clear()
 bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameRequest &request,
                                           const GpuParticleTransforms &transforms)
 {
-    if (!m_impl || !m_impl->graphState)
+    if (!m_impl)
         return false;
     const auto emitter = m_impl->emitters.find(id);
-    const auto scheduler = m_impl->graphState->schedulerById.find(id);
-    if (emitter == m_impl->emitters.end() || scheduler == m_impl->graphState->schedulerById.end())
+    if (emitter == m_impl->emitters.end())
         return false;
-    (void)m_impl->RefreshDataInterfaces(*emitter->second);
-    if (!emitter->second->runtime->UpdateTransforms(transforms))
+    return BeginFrameBatch(emitter->second->graphInstanceId, {{id, request, transforms}});
+}
+
+bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
+                                               const std::vector<GpuParticleBatchFrameItem> &items)
+{
+    if (!m_impl || !m_impl->graphState || graphInstanceId == 0 || items.empty())
         return false;
-    if (!scheduler->second->BeginFrame(request))
-        return false;
-    emitter->second->hasFrameRequest = true;
-    emitter->second->lastFrameIndex = request.frameIndex;
-    emitter->second->lastSpawnCount = request.spawnCount;
-    emitter->second->lastSimulate = request.simulate;
-    emitter->second->lastRender = request.render;
+
+    struct PreparedItem
+    {
+        const GpuParticleBatchFrameItem *item = nullptr;
+        std::shared_ptr<Impl::Emitter> emitter;
+        ParticleRenderGraph *scheduler = nullptr;
+    };
+    std::vector<PreparedItem> prepared;
+    prepared.reserve(items.size());
+    std::unordered_set<uint64_t> emitterIds;
+    emitterIds.reserve(items.size());
+    const uint64_t frameIndex = items.front().request.frameIndex;
+
+    for (const auto &item : items) {
+        const auto emitter = m_impl->emitters.find(item.emitterId);
+        const auto scheduler = m_impl->graphState->schedulerById.find(item.emitterId);
+        if (item.emitterId == 0 || !emitterIds.insert(item.emitterId).second || item.request.frameIndex != frameIndex ||
+            !IsFinite(item.transforms) || emitter == m_impl->emitters.end() ||
+            scheduler == m_impl->graphState->schedulerById.end() || emitter->second->graphInstanceId != graphInstanceId)
+            return false;
+        prepared.push_back({&item, emitter->second, scheduler->second});
+    }
+
+    for (const auto &entry : prepared)
+        (void)m_impl->RefreshDataInterfaces(*entry.emitter);
+
+    for (const auto &entry : prepared) {
+        if (!entry.scheduler->CanBeginFrame(entry.item->request))
+            return false;
+    }
+    for (const auto &entry : prepared) {
+        if (!entry.emitter->runtime->UpdateTransforms(entry.item->transforms))
+            return false;
+    }
+    for (const auto &entry : prepared) {
+        if (!entry.scheduler->BeginFrame(entry.item->request))
+            return false;
+    }
+    for (const auto &entry : prepared) {
+        entry.emitter->hasFrameRequest = true;
+        entry.emitter->lastFrameIndex = entry.item->request.frameIndex;
+        entry.emitter->lastSpawnCount = entry.item->request.spawnCount;
+        entry.emitter->lastSimulate = entry.item->request.simulate;
+        entry.emitter->lastRender = entry.item->request.render;
+    }
     return true;
 }
 

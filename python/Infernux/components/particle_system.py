@@ -541,7 +541,7 @@ class ParticleSystem(InxComponent):
             artifact is not None
             and native is not None
             and hasattr(native, "_replace_gpu_particle_emitters")
-            and hasattr(native, "_begin_gpu_particle_frame")
+            and hasattr(native, "_begin_gpu_particle_batch")
         )
         targets = []
         for index, emitter in enumerate(metadata.emitters):
@@ -637,6 +637,7 @@ class ParticleSystem(InxComponent):
             programs.append(
                 {
                     "id": emitter_id,
+                    "graph_instance_id": self._batch_id,
                     "owner_object_id": int(self.game_object.id),
                     "owner_layer_mask": 1 << int(self.game_object.layer),
                     "artifact_revision": artifact.revision,
@@ -706,6 +707,7 @@ class ParticleSystem(InxComponent):
             self._emitter_to_world_cache = emitter_to_world
             self._gpu_transform_buffers = {}
 
+        frame_items = []
         for emitter_id, emitter_index, controller in zip(
             self._gpu_emitter_ids,
             self._gpu_emitter_indices,
@@ -716,18 +718,22 @@ class ParticleSystem(InxComponent):
             transforms = self._gpu_transform_buffer(
                 emitter.settings.simulation_space.value == "local"
             )
-            native._begin_gpu_particle_frame(
-                emitter_id,
-                schedule.spawn_count,
-                schedule.spawn_base_id,
-                schedule.spawn_generation,
-                schedule.system_seed,
-                schedule.simulation_step,
-                schedule.delta_time,
-                transforms,
-                schedule.simulate,
-                schedule.render,
+            frame_items.append(
+                {
+                    "emitter_id": emitter_id,
+                    "spawn_count": schedule.spawn_count,
+                    "spawn_base_id": schedule.spawn_base_id,
+                    "spawn_generation": schedule.spawn_generation,
+                    "system_seed": schedule.system_seed,
+                    "simulation_step": schedule.simulation_step,
+                    "delta_time": schedule.delta_time,
+                    "transforms": transforms,
+                    "simulate": schedule.simulate,
+                    "render": schedule.render,
+                }
             )
+        if frame_items:
+            native._begin_gpu_particle_batch(self._batch_id, frame_items)
 
     def _update_particle_graph(self, delta_time: float) -> None:
         native = self._native_engine()

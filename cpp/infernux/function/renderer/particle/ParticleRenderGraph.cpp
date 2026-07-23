@@ -335,11 +335,18 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     return m_outputs.IsValid();
 }
 
-bool ParticleRenderGraph::BeginFrame(const GpuParticleFrameRequest &request) noexcept
+bool ParticleRenderGraph::CanBeginFrame(const GpuParticleFrameRequest &request) const noexcept
 {
     if (!IsAttached() || !m_runtime->IsValid() || !std::isfinite(request.deltaTime) || request.deltaTime < 0.0f ||
         (m_framePending && request.frameIndex == m_request.frameIndex) ||
         (m_hasConsumedFrame && request.frameIndex == m_lastConsumedFrame))
+        return false;
+    return true;
+}
+
+bool ParticleRenderGraph::BeginFrame(const GpuParticleFrameRequest &request) noexcept
+{
+    if (!CanBeginFrame(request))
         return false;
     m_request = request;
     m_framePending = true;
