@@ -90,6 +90,7 @@ struct ParticleGpuRuntime::ResidentState
         if (!device)
             return;
         device->Release(transforms);
+        device->Release(eventInputLayout);
         device->Release(renderIndices);
         device->Release(indirect);
         device->Release(instances);
@@ -106,6 +107,7 @@ struct ParticleGpuRuntime::ResidentState
     rhi::BufferHandle indirect;
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle transforms;
+    rhi::BindingLayoutHandle eventInputLayout;
     bool bootstrapRecorded = false;
 };
 
@@ -183,6 +185,8 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_vectorFields, replacement.m_vectorFields);
     std::swap(m_emptyDataInterfaceLayout, replacement.m_emptyDataInterfaceLayout);
     std::swap(m_emptyDataInterfaceGroup, replacement.m_emptyDataInterfaceGroup);
+    std::swap(m_eventInputLayout, replacement.m_eventInputLayout);
+    std::swap(m_eventInitPipeline, replacement.m_eventInitPipeline);
     std::swap(m_pipelines, replacement.m_pipelines);
     return true;
 }
@@ -200,6 +204,8 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         if (!kernel.words || kernel.wordCount == 0)
             return false;
     }
+    if (!desc.eventInitKernel.words || desc.eventInitKernel.wordCount == 0)
+        return false;
 
     m_device = &device;
     m_capacity = desc.capacity;
@@ -227,9 +233,15 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         transformDesc.usage = rhi::BufferUsageFlags::Uniform;
         transformDesc.memory = rhi::BufferMemory::Upload;
         m_residentState->transforms = device.CreateBuffer(transformDesc);
+        rhi::BindingLayoutDesc eventLayoutDesc;
+        for (uint32_t binding = 0; binding < 4; ++binding) {
+            eventLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+        }
+        eventLayoutDesc.entryCount = 4;
+        m_residentState->eventInputLayout = device.CreateBindingLayout(eventLayoutDesc);
         if (!StateBuffer().IsValid() || !FreeListBuffer().IsValid() || !CounterBuffer().IsValid() ||
             !InstanceBuffer().IsValid() || !IndirectBuffer().IsValid() || !RenderIndexBuffer().IsValid() ||
-            !TransformBuffer().IsValid()) {
+            !TransformBuffer().IsValid() || !m_residentState->eventInputLayout.IsValid()) {
             Destroy();
             return false;
         }
@@ -265,6 +277,17 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         Destroy();
         return false;
     }
+
+    m_emptyDataInterfaceLayout = device.CreateBindingLayout({});
+    rhi::BindGroupDesc emptyGroupDesc;
+    emptyGroupDesc.layout = m_emptyDataInterfaceLayout;
+    m_emptyDataInterfaceGroup = device.CreateBindGroup(emptyGroupDesc);
+    if (!m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid()) {
+        Destroy();
+        return false;
+    }
+
+    m_eventInputLayout = m_residentState->eventInputLayout;
 
     const auto &pointCacheLayout = desc.pointCaches;
     if (!pointCacheLayout.pointCaches.empty()) {
@@ -491,17 +514,6 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             return false;
         }
         m_vectorFields = std::move(vectorFields);
-
-        if (!m_dataInterfaces) {
-            m_emptyDataInterfaceLayout = device.CreateBindingLayout({});
-            rhi::BindGroupDesc emptyGroupDesc;
-            emptyGroupDesc.layout = m_emptyDataInterfaceLayout;
-            m_emptyDataInterfaceGroup = device.CreateBindGroup(emptyGroupDesc);
-            if (!m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid()) {
-                Destroy();
-                return false;
-            }
-        }
     }
 
     for (size_t index = 0; index < desc.kernels.size(); ++index) {
@@ -531,12 +543,34 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             return false;
         }
     }
+
+    const auto eventInitShader =
+        device.CreateShaderModule({desc.eventInitKernel.words, desc.eventInitKernel.wordCount});
+    if (!eventInitShader.IsValid()) {
+        Destroy();
+        return false;
+    }
+    rhi::ComputePipelineDesc eventPipelineDesc;
+    eventPipelineDesc.computeShader = eventInitShader;
+    eventPipelineDesc.bindingLayouts[0] = m_layout;
+    eventPipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
+    eventPipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
+    eventPipelineDesc.bindingLayouts[3] = m_eventInputLayout;
+    eventPipelineDesc.bindingLayoutCount = 4;
+    eventPipelineDesc.pushConstantBytes = sizeof(GpuParticlePushConstants);
+    m_eventInitPipeline = device.CreateComputePipeline(eventPipelineDesc);
+    device.Release(eventInitShader);
+    if (!m_eventInitPipeline.IsValid()) {
+        Destroy();
+        return false;
+    }
     return true;
 }
 
 void ParticleGpuRuntime::Destroy() noexcept
 {
     if (m_device) {
+        m_device->Release(m_eventInitPipeline);
         for (auto pipeline : m_pipelines)
             m_device->Release(pipeline);
         m_device->Release(m_group);
@@ -554,12 +588,15 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_group = {};
     m_emptyDataInterfaceLayout = {};
     m_emptyDataInterfaceGroup = {};
+    m_eventInputLayout = {};
+    m_eventInitPipeline = {};
     m_pipelines.fill({});
 }
 
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
-    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid())
+    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid() || !m_eventInputLayout.IsValid() ||
+        !m_eventInitPipeline.IsValid() || !m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid())
         return false;
     if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
                              !m_dataInterfaces->metadataBuffer.IsValid()))
@@ -726,6 +763,28 @@ void ParticleGpuRuntime::RecordInit(const rhi::ComputeCommandEncoder &encoder, u
     constants.simulationStep = simulationStep;
     constants.deltaTime = deltaTime;
     Record(encoder, GpuKernelStage::Init, constants, spawnCount);
+}
+
+void ParticleGpuRuntime::RecordEventInit(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle eventInput,
+                                         rhi::BufferHandle indirectArguments, uint64_t indirectOffset,
+                                         uint32_t channelIndex, uint32_t systemSeed, uint32_t simulationStep,
+                                         float deltaTime) const
+{
+    if (!IsValid() || !encoder.IsValid() || !eventInput.IsValid() || !indirectArguments.IsValid())
+        return;
+    GpuParticlePushConstants constants;
+    constants.capacity = m_capacity;
+    constants.spawnBaseId = channelIndex;
+    constants.systemSeed = systemSeed;
+    constants.simulationStep = simulationStep;
+    constants.deltaTime = deltaTime;
+    encoder.BindPipeline(m_eventInitPipeline);
+    encoder.BindGroup(m_eventInitPipeline, 0, m_group);
+    encoder.BindGroup(m_eventInitPipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
+    encoder.BindGroup(m_eventInitPipeline, 2, m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup);
+    encoder.BindGroup(m_eventInitPipeline, 3, eventInput);
+    encoder.PushConstants(m_eventInitPipeline, sizeof(constants), &constants);
+    encoder.DispatchIndirect(indirectArguments, indirectOffset);
 }
 
 void ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,

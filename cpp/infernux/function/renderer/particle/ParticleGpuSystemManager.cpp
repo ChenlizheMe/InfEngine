@@ -159,6 +159,9 @@ struct ParticleGpuSystemManager::Impl
     {
         std::shared_ptr<ParticleGpuEventDomain> domain;
         bool pending = false;
+        bool active = false;
+        bool simulate = false;
+        std::vector<GpuParticleFrameRequest> emitterRequests;
     };
 
     struct GraphState
@@ -361,6 +364,7 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.stateStride = program.stateStride;
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
+        runtimeDesc.eventInitKernel = {program.eventInitKernel.data(), program.eventInitKernel.size()};
         runtimeDesc.pointCaches.metadataBinding = program.pointCaches.metadataBinding;
         runtimeDesc.pointCaches.interfaceStrideWords = program.pointCaches.interfaceStrideWords;
         runtimeDesc.pointCaches.sampleStrideWords = program.pointCaches.sampleStrideWords;
@@ -793,6 +797,7 @@ struct ParticleGpuSystemManager::Impl
         auto state = std::make_shared<GraphState>();
         state->graph = std::make_unique<vk::RenderGraph>();
         state->graph->Initialize(context, pipelines, deletionQueue);
+        auto *graph = state->graph.get();
         state->eventFrames.reserve(candidateEventDomains.size());
         for (const auto &[graphInstanceId, domain] : candidateEventDomains) {
             if (!domain || !domain->IsValid()) {
@@ -803,13 +808,13 @@ struct ParticleGpuSystemManager::Impl
             frame->domain = domain;
             state->eventFrames.emplace(graphInstanceId, frame);
             const std::string prefix = "GpuParticleEvent/" + std::to_string(graphInstanceId);
-            state->graph->AddComputePass(prefix + "/Prepare", [domain, frame, prefix](vk::PassBuilder &builder) {
+            state->graph->AddComputePass(prefix + "/Prepare", [domain, frame, prefix, graph](vk::PassBuilder &builder) {
                 auto channelTable =
                     builder.ImportBuffer(prefix + "/Channels", domain->ChannelTable(),
                                          uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventChannelRecord));
                 builder.ReadStorageBuffer(channelTable);
                 for (uint32_t pageIndex = 0; pageIndex < domain->PageCount(); ++pageIndex) {
-                    const auto *page = domain->WritePage(pageIndex);
+                    const auto *page = domain->Page(pageIndex);
                     if (!page)
                         continue;
                     auto counters =
@@ -820,15 +825,166 @@ struct ParticleGpuSystemManager::Impl
                         uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventDispatchArguments));
                     builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
                     builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
+                    graph->SetResourceInitialState(counters, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                                                   rhi::PipelineStage::ComputeShader);
+                    graph->SetResourceInitialState(indirect, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                                                   rhi::PipelineStage::ComputeShader);
                 }
                 builder.SetSideEffect();
                 return [domain, frame](vk::RenderContext &context) {
                     if (!frame->pending)
                         return;
-                    domain->RecordPrepare(context.GetComputeCommandEncoder());
                     frame->pending = false;
+                    if (!frame->simulate) {
+                        frame->active = false;
+                        return;
+                    }
+                    domain->RecordPrepare(context.GetComputeCommandEncoder());
+                    frame->active = true;
                 };
             });
+
+            std::unordered_map<uint32_t, std::shared_ptr<Emitter>> emittersByDenseIndex;
+            for (const auto &[emitterId, emitter] : candidateEmitters) {
+                (void)emitterId;
+                if (emitter && emitter->graphInstanceId == graphInstanceId)
+                    emittersByDenseIndex.emplace(emitter->sourceProgram.graphEmitterIndex, emitter);
+            }
+            frame->emitterRequests.resize(emittersByDenseIndex.size());
+            for (uint32_t channelIndex = 0; channelIndex < domain->ChannelCount(); ++channelIndex) {
+                const uint32_t targetIndex = domain->ChannelTargetEmitterIndex(channelIndex);
+                const auto target = emittersByDenseIndex.find(targetIndex);
+                if (target == emittersByDenseIndex.end() || !target->second || !target->second->runtime) {
+                    SetError(error, "GPU particle event channel has no target emitter runtime");
+                    return {};
+                }
+                const auto targetEmitter = target->second;
+                const std::string routePrefix = prefix + "/Route" + std::to_string(channelIndex);
+                state->graph->AddComputePass(routePrefix + "/Allocate", [domain, frame, targetEmitter, channelIndex,
+                                                                         targetIndex, routePrefix,
+                                                                         graph](vk::PassBuilder &builder) {
+                    auto channelTable =
+                        builder.ImportBuffer(routePrefix + "/Channels", domain->ChannelTable(),
+                                             uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventChannelRecord));
+                    builder.ReadStorageBuffer(channelTable);
+                    for (uint32_t pageIndex = 0; pageIndex < domain->PageCount(); ++pageIndex) {
+                        const auto *page = domain->Page(pageIndex);
+                        if (!page)
+                            continue;
+                        auto counters =
+                            builder.ImportBuffer(routePrefix + "/Counters" + std::to_string(pageIndex), page->counters,
+                                                 uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventCounter));
+                        auto indirect = builder.ImportBuffer(
+                            routePrefix + "/Indirect" + std::to_string(pageIndex), page->indirectArguments,
+                            uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventDispatchArguments));
+                        auto spawnIndices =
+                            builder.ImportBuffer(routePrefix + "/SpawnIndices" + std::to_string(pageIndex),
+                                                 page->spawnIndices, domain->SpawnIndexBufferBytes());
+                        builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+                        builder.ReadIndirectBuffer(indirect);
+                        builder.WriteStorageBuffer(spawnIndices);
+                        graph->SetResourceInitialState(counters, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                        graph->SetResourceInitialState(indirect, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                        graph->SetResourceInitialState(spawnIndices, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                    }
+                    auto freeList =
+                        builder.ImportBuffer(routePrefix + "/TargetFreeList", targetEmitter->runtime->FreeListBuffer(),
+                                             uint64_t(targetEmitter->runtime->Capacity()) * sizeof(uint32_t));
+                    auto targetCounters = builder.ImportBuffer(routePrefix + "/TargetCounters",
+                                                               targetEmitter->runtime->CounterBuffer(), 16);
+                    builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
+                    builder.ReadWrite(targetCounters, rhi::PipelineStage::ComputeShader);
+                    graph->SetResourceInitialState(freeList, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                                                   rhi::PipelineStage::ComputeShader);
+                    graph->SetResourceInitialState(targetCounters, rhi::TextureLayout::Undefined,
+                                                   rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                    builder.SetSideEffect();
+                    return [domain, frame, channelIndex, targetIndex](vk::RenderContext &context) {
+                        if (frame->active && targetIndex < frame->emitterRequests.size() &&
+                            frame->emitterRequests[targetIndex].simulate)
+                            domain->RecordAllocate(context.GetComputeCommandEncoder(), channelIndex);
+                    };
+                });
+
+                const bool isLastChannel = channelIndex + 1u == domain->ChannelCount();
+                state->graph->AddComputePass(routePrefix + "/Init", [domain, frame, targetEmitter, channelIndex,
+                                                                     targetIndex, routePrefix, isLastChannel,
+                                                                     graph](vk::PassBuilder &builder) {
+                    auto channelTable =
+                        builder.ImportBuffer(routePrefix + "/InitChannels", domain->ChannelTable(),
+                                             uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventChannelRecord));
+                    builder.ReadStorageBuffer(channelTable);
+                    for (uint32_t pageIndex = 0; pageIndex < domain->PageCount(); ++pageIndex) {
+                        const auto *page = domain->Page(pageIndex);
+                        if (!page)
+                            continue;
+                        auto records = builder.ImportBuffer(routePrefix + "/Records" + std::to_string(pageIndex),
+                                                            page->records, domain->RecordBufferBytes());
+                        auto counters = builder.ImportBuffer(
+                            routePrefix + "/InitCounters" + std::to_string(pageIndex), page->counters,
+                            uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventCounter));
+                        auto indirect = builder.ImportBuffer(
+                            routePrefix + "/InitIndirect" + std::to_string(pageIndex), page->indirectArguments,
+                            uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventDispatchArguments));
+                        auto spawnIndices =
+                            builder.ImportBuffer(routePrefix + "/InitSpawnIndices" + std::to_string(pageIndex),
+                                                 page->spawnIndices, domain->SpawnIndexBufferBytes());
+                        builder.ReadStorageBuffer(records);
+                        builder.ReadStorageBuffer(counters);
+                        builder.ReadStorageBuffer(spawnIndices);
+                        builder.ReadIndirectBuffer(indirect);
+                        graph->SetResourceInitialState(records, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                                                       rhi::PipelineStage::ComputeShader);
+                        graph->SetResourceInitialState(counters, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                        graph->SetResourceInitialState(indirect, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                        graph->SetResourceInitialState(spawnIndices, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                    }
+                    auto states = builder.ImportBuffer(
+                        routePrefix + "/TargetStates", targetEmitter->runtime->StateBuffer(),
+                        uint64_t(targetEmitter->runtime->Capacity()) * targetEmitter->runtime->StateStride());
+                    auto freeList = builder.ImportBuffer(
+                        routePrefix + "/InitTargetFreeList", targetEmitter->runtime->FreeListBuffer(),
+                        uint64_t(targetEmitter->runtime->Capacity()) * sizeof(uint32_t));
+                    auto targetCounters = builder.ImportBuffer(routePrefix + "/InitTargetCounters",
+                                                               targetEmitter->runtime->CounterBuffer(), 16);
+                    auto transforms =
+                        builder.ImportBuffer(routePrefix + "/TargetTransforms",
+                                             targetEmitter->runtime->TransformBuffer(), sizeof(GpuParticleTransforms));
+                    builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
+                    builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
+                    builder.ReadWrite(targetCounters, rhi::PipelineStage::ComputeShader);
+                    builder.ReadUniformBuffer(transforms);
+                    graph->SetResourceInitialState(states, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                                                   rhi::PipelineStage::ComputeShader);
+                    graph->SetResourceInitialState(freeList, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                                                   rhi::PipelineStage::ComputeShader);
+                    graph->SetResourceInitialState(targetCounters, rhi::TextureLayout::Undefined,
+                                                   rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                    builder.SetSideEffect();
+                    return [domain, frame, targetEmitter, channelIndex, targetIndex,
+                            isLastChannel](vk::RenderContext &context) {
+                        if (!frame->active)
+                            return;
+                        if (domain->HasPreparedInput() && targetIndex < frame->emitterRequests.size() &&
+                            frame->emitterRequests[targetIndex].simulate) {
+                            const auto &request = frame->emitterRequests[targetIndex];
+                            targetEmitter->runtime->RecordEventInit(
+                                context.GetComputeCommandEncoder(), domain->CurrentEventInputGroup(channelIndex),
+                                domain->CurrentIndirectArguments(),
+                                static_cast<uint64_t>(channelIndex) * sizeof(GpuParticleEventDispatchArguments),
+                                channelIndex, request.systemSeed, request.simulationStep, request.deltaTime);
+                        }
+                        if (isLastChannel)
+                            frame->active = false;
+                    };
+                });
+            }
         }
         state->schedulers.reserve(candidateEmitters.size());
         state->schedulerById.reserve(candidateEmitters.size());
@@ -1140,6 +1296,15 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
             SetError(error, "GPU particle event publication requires the complete graph emitter set");
             return false;
         }
+        std::vector<bool> denseEmitterIndices(program.emitters.size(), false);
+        for (const auto &emitter : program.emitters) {
+            if (emitter.graphEmitterIndex >= denseEmitterIndices.size() ||
+                denseEmitterIndices[emitter.graphEmitterIndex]) {
+                SetError(error, "GPU particle event publication requires unique dense emitter indices");
+                return false;
+            }
+            denseEmitterIndices[emitter.graphEmitterIndex] = true;
+        }
         for (const auto &channel : program.eventDomain->channels) {
             if (channel.sourceEmitterIndex >= program.emitters.size() ||
                 channel.targetEmitterIndex >= program.emitters.size()) {
@@ -1152,16 +1317,30 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
     std::shared_ptr<ParticleGpuEventDomain> candidateEventDomain;
     const auto currentEventDomain = m_impl->eventDomains.find(program.graphInstanceId);
     if (program.eventDomain) {
+        std::vector<GpuParticleEventTargetDesc> eventTargets;
+        eventTargets.reserve(program.emitters.size());
+        for (const auto &emitterProgram : program.emitters) {
+            const auto candidate = candidates.find(emitterProgram.id);
+            if (candidate == candidates.end() || !candidate->second || !candidate->second->runtime) {
+                SetError(error, "GPU particle event target runtime is missing");
+                return false;
+            }
+            eventTargets.push_back({emitterProgram.graphEmitterIndex, candidate->second->runtime->Capacity(),
+                                    candidate->second->runtime->FreeListBuffer(),
+                                    candidate->second->runtime->CounterBuffer(),
+                                    candidate->second->runtime->EventInputLayout()});
+        }
         const uint32_t expectedPages =
             std::max(program.eventDomain->framesInFlight, ParticleGpuEventDomain::MinimumPageCount);
         if (currentEventDomain != m_impl->eventDomains.end() &&
             currentEventDomain->second->EventAbiHash() == program.eventDomain->eventAbiHash &&
-            currentEventDomain->second->PageCount() == expectedPages) {
+            currentEventDomain->second->PageCount() == expectedPages &&
+            currentEventDomain->second->MatchesTargets(eventTargets)) {
             candidateEventDomain = currentEventDomain->second;
         } else {
             candidateEventDomain = std::make_shared<ParticleGpuEventDomain>();
             if (!candidateEventDomain->Create(m_impl->context->GetRhiDevice(), *program.eventDomain,
-                                              m_impl->eventProgram->View())) {
+                                              m_impl->eventProgram->View(), eventTargets)) {
                 SetError(error, "failed to create GPU particle event domain");
                 return false;
             }
@@ -1346,7 +1525,7 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     const uint64_t frameIndex = items.front().request.frameIndex;
     const auto eventFrame = m_impl->graphState->eventFrames.find(graphInstanceId);
     if (eventFrame != m_impl->graphState->eventFrames.end()) {
-        if (!eventFrame->second || eventFrame->second->pending)
+        if (!eventFrame->second || eventFrame->second->pending || eventFrame->second->active)
             return false;
         const size_t graphEmitterCount = static_cast<size_t>(
             std::count_if(m_impl->emitters.begin(), m_impl->emitters.end(), [graphInstanceId](const auto &entry) {
@@ -1364,6 +1543,21 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
             scheduler == m_impl->graphState->schedulerById.end() || emitter->second->graphInstanceId != graphInstanceId)
             return false;
         prepared.push_back({&item, emitter->second, scheduler->second});
+    }
+
+    std::vector<GpuParticleFrameRequest> eventEmitterRequests;
+    if (eventFrame != m_impl->graphState->eventFrames.end()) {
+        if (eventFrame->second->emitterRequests.size() != prepared.size())
+            return false;
+        eventEmitterRequests.resize(prepared.size());
+        std::vector<bool> assigned(prepared.size(), false);
+        for (const auto &entry : prepared) {
+            const uint32_t denseIndex = entry.emitter->sourceProgram.graphEmitterIndex;
+            if (denseIndex >= eventEmitterRequests.size() || assigned[denseIndex])
+                return false;
+            assigned[denseIndex] = true;
+            eventEmitterRequests[denseIndex] = entry.item->request;
+        }
     }
 
     for (const auto &entry : prepared)
@@ -1389,6 +1583,9 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         entry.emitter->lastRender = entry.item->request.render;
     }
     if (eventFrame != m_impl->graphState->eventFrames.end()) {
+        eventFrame->second->emitterRequests = std::move(eventEmitterRequests);
+        eventFrame->second->simulate = std::any_of(
+            prepared.begin(), prepared.end(), [](const PreparedItem &entry) { return entry.item->request.simulate; });
         eventFrame->second->pending = true;
     }
     return true;

@@ -121,11 +121,11 @@ struct CompiledParticleMigrationProgram
 
 struct CompiledParticleEventProgram
 {
-    std::vector<uint32_t> shader;
+    std::array<std::vector<uint32_t>, 2> shaders;
 
     [[nodiscard]] particle::GpuParticleEventProgram View() const noexcept
     {
-        return {shader.data(), shader.size()};
+        return {shaders[0].data(), shaders[0].size(), shaders[1].data(), shaders[1].size()};
     }
 };
 
@@ -236,12 +236,17 @@ CompiledParticleEventProgram CompileParticleEventProgram()
 {
     InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
     CompiledParticleEventProgram result;
-    const auto bytes = compiler.CompileComputeGlsl(std::string(particle::GpuParticleEventShaderSource::Prepare()),
-                                                   "Infernux/ParticleEventPrepare.comp");
-    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-        return {};
-    result.shader.resize(bytes.size() / sizeof(uint32_t));
-    std::memcpy(result.shader.data(), bytes.data(), bytes.size());
+    const std::array<std::pair<std::string_view, const char *>, 2> sources = {{
+        {particle::GpuParticleEventShaderSource::Prepare(), "Infernux/ParticleEventPrepare.comp"},
+        {particle::GpuParticleEventShaderSource::Allocate(), "Infernux/ParticleEventAllocate.comp"},
+    }};
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
     return result;
 }
 
@@ -548,7 +553,7 @@ void InxRenderer::PreparePipeline()
             INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
         const auto particleEventProgram = CompileParticleEventProgram();
         if (!particleEventProgram.View().IsValid())
-            INXLOG_ERROR("Failed to compile the GPU particle event preparation kernel");
+            INXLOG_ERROR("Failed to compile the GPU particle event kernels");
         const auto particleRibbonTopologyProgram = CompileParticleRibbonTopologyProgram();
         if (!particleRibbonTopologyProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle Ribbon topology kernels");

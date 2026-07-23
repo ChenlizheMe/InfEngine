@@ -1300,6 +1300,7 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert set(graph_artifact.gpu_glsl["emitters"][0]["stages"]) == {
         "bootstrap",
         "init",
+        "event_init",
         "update",
         "render_reset",
         "rendering",

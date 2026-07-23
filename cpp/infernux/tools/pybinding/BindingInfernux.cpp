@@ -90,8 +90,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
     for (const char *field :
-         {"id", "graph_instance_id", "owner_object_id", "owner_layer_mask", "artifact_revision", "stable_id",
-          "capacity", "state_stride", "stages", "billboard", "mesh_shaders", "outputs"}) {
+         {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask", "artifact_revision",
+          "stable_id", "capacity", "state_stride", "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -99,6 +99,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     particle::GpuParticleEmitterProgram program;
     program.id = py::cast<uint64_t>(value["id"]);
     program.graphInstanceId = py::cast<uint64_t>(value["graph_instance_id"]);
+    program.graphEmitterIndex = py::cast<uint32_t>(value["graph_emitter_index"]);
     program.ownerObjectId = py::cast<uint64_t>(value["owner_object_id"]);
     program.ownerLayerMask = py::cast<uint32_t>(value["owner_layer_mask"]);
     program.artifactRevision = py::cast<uint64_t>(value["artifact_revision"]);
@@ -259,6 +260,9 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             throw std::invalid_argument(std::string("GPU particle program is missing stage ") + stage);
         program.kernels[index] = DecodeParticleSpirv(stages[stage], std::string("particle stage ") + stage);
     }
+    if (!stages.contains("event_init"))
+        throw std::invalid_argument("GPU particle program is missing stage event_init");
+    program.eventInitKernel = DecodeParticleSpirv(stages["event_init"], "particle stage event_init");
 
     const py::dict billboard = py::cast<py::dict>(value["billboard"]);
     if (!billboard.contains("vertex") || !billboard.contains("fragment") ||

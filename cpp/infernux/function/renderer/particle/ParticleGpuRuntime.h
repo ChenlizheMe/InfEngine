@@ -89,6 +89,7 @@ struct GpuEmitterDesc
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
+    ShaderBytecode eventInitKernel;
     GpuPointCacheLayoutDesc pointCaches;
     GpuVectorFieldLayoutDesc vectorFields;
 };
@@ -149,6 +150,9 @@ class ParticleGpuRuntime
     void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed);
     void RecordInit(const rhi::ComputeCommandEncoder &encoder, uint32_t spawnCount, uint32_t spawnBaseId,
                     uint32_t spawnGeneration, uint32_t systemSeed, uint32_t simulationStep, float deltaTime) const;
+    void RecordEventInit(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle eventInput,
+                         rhi::BufferHandle indirectArguments, uint64_t indirectOffset, uint32_t channelIndex,
+                         uint32_t systemSeed, uint32_t simulationStep, float deltaTime) const;
     void RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
                       float deltaTime) const;
     void RecordRenderReset(const rhi::ComputeCommandEncoder &encoder) const;
@@ -169,6 +173,10 @@ class ParticleGpuRuntime
     [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept;
+    [[nodiscard]] rhi::BindingLayoutHandle EventInputLayout() const noexcept
+    {
+        return m_eventInputLayout;
+    }
 
   private:
     struct ResidentState;
@@ -191,9 +199,11 @@ class ParticleGpuRuntime
     std::unique_ptr<VectorFieldState> m_vectorFields;
     rhi::BindingLayoutHandle m_emptyDataInterfaceLayout;
     rhi::BindGroupHandle m_emptyDataInterfaceGroup;
+    rhi::BindingLayoutHandle m_eventInputLayout;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
+    rhi::ComputePipelineHandle m_eventInitPipeline;
 };
 
 static_assert(sizeof(GpuParticleTransforms) == 256);

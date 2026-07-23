@@ -360,12 +360,19 @@ def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
     assert set(emitter.stages()) == {
         "bootstrap",
         "init",
+        "event_init",
         "update",
         "render_reset",
         "rendering",
     }
     assert "buffer ParticleStates" in emitter.update
     assert "inx_pop_free" in emitter.init
+    assert "layout(std430, set = 3, binding = 3)" in emitter.event_init
+    assert "event_spawn_indices[channel.spawn_base_indices + invocation]" in emitter.event_init
+    assert "uint source_particle_id = event_record_words[record_base + 2u];" in emitter.event_init
+    assert "uint route_seed = inx_random_u32(channel_index" in emitter.event_init
+    assert "state.spawn_generation = inx_random_u32(" in emitter.event_init
+    assert "states[index].spawn_generation = 0u;" in emitter.bootstrap
     assert "atomicAdd(indirect_args.instance_count, 1u)" in emitter.rendering
     assert "layout(push_constant)" in emitter.rendering
     assert "Vk" not in "\n".join(emitter.stages().values())

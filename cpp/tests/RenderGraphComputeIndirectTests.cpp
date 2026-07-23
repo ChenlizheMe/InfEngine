@@ -803,11 +803,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     };
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
         return false;
-    const auto eventCode = SpirvWords(sortCompiler.CompileComputeGlsl(
+    const auto eventPrepareCode = SpirvWords(sortCompiler.CompileComputeGlsl(
         std::string(infernux::particle::GpuParticleEventShaderSource::Prepare()), "Tests/ParticleEventPrepare.comp"));
-    if (!Require(!eventCode.empty(), "Failed to compile GPU particle event fixture"))
+    const auto eventAllocateCode = SpirvWords(sortCompiler.CompileComputeGlsl(
+        std::string(infernux::particle::GpuParticleEventShaderSource::Allocate()), "Tests/ParticleEventAllocate.comp"));
+    if (!Require(!eventPrepareCode.empty() && !eventAllocateCode.empty(),
+                 "Failed to compile GPU particle event fixture"))
         return false;
-    const infernux::particle::GpuParticleEventProgram eventProgram = {eventCode.data(), eventCode.size()};
+    const infernux::particle::GpuParticleEventProgram eventProgram = {
+        eventPrepareCode.data(), eventPrepareCode.size(), eventAllocateCode.data(), eventAllocateCode.size()};
 
     auto initialLinkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
     initialLinkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 10};
@@ -841,6 +845,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedProgram.stateStride = 16;
     for (auto &kernel : managedProgram.kernels)
         kernel = particleComputeCode;
+    managedProgram.eventInitKernel = particleComputeCode;
     managedProgram.billboardVertexShader = particleVertexCode;
     managedProgram.billboardFragmentShader = particleFragmentCode;
     auto pointCacheData = std::make_shared<infernux::PointCacheCpuData>();
@@ -1214,6 +1219,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     particleDesc.stateStride = 16;
     for (auto &kernel : particleDesc.kernels)
         kernel = {particleComputeCode.data(), particleComputeCode.size()};
+    particleDesc.eventInitKernel = {particleComputeCode.data(), particleComputeCode.size()};
     infernux::particle::ParticleGpuRuntime particleRuntime;
     if (!Require(particleRuntime.Create(rhi, particleDesc), "Particle GPU runtime creation failed"))
         return false;
@@ -1995,12 +2001,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     infernux::particle::GpuParticleGraphProgram managedGraphProgram;
     managedGraphProgram.graphInstanceId = managedProgram.graphInstanceId;
-    managedGraphProgram.emitters = {managedProgram};
+    auto eventCompanionProgram = companionProgram;
+    eventCompanionProgram.graphEmitterIndex = 1;
+    managedGraphProgram.emitters = {managedProgram, eventCompanionProgram};
     infernux::particle::GpuParticleEventDomainDesc managedEvents;
     managedEvents.graphInstanceId = managedProgram.graphInstanceId;
     managedEvents.eventAbiHash = 0xfeed1234u;
     managedEvents.framesInFlight = 2;
-    managedEvents.channels.push_back({0x44u, 0, 0, 0, 3, 64});
+    managedEvents.channels.push_back({0x44u, 0, 1, 0, 3, 64});
     managedGraphProgram.eventDomain = managedEvents;
     if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
                      particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash &&
@@ -2009,15 +2017,31 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     auto eventFrame = postMigrationFrame;
     eventFrame.frameIndex = 46;
-    if (!Require(particleSystems.BeginFrame(managedProgram.id, eventFrame, managedTransforms),
-                 "GPU particle manager rejected an event-domain frame") ||
+    auto pausedCompanionFrame = eventFrame;
+    pausedCompanionFrame.simulationStep = 7;
+    pausedCompanionFrame.simulate = false;
+    pausedCompanionFrame.render = false;
+    if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId,
+                                                 {{managedProgram.id, eventFrame, managedTransforms},
+                                                  {eventCompanionProgram.id, pausedCompanionFrame, managedTransforms}}),
+                 "GPU particle manager rejected an event-domain batch with a paused target") ||
         !executeManagedFrame("GPU particle event preparation frame failed"))
+        return false;
+    ++eventFrame.frameIndex;
+    ++eventFrame.simulationStep;
+    ++pausedCompanionFrame.frameIndex;
+    pausedCompanionFrame.simulate = true;
+    if (!Require(particleSystems.BeginFrameBatch(managedProgram.graphInstanceId,
+                                                 {{managedProgram.id, eventFrame, managedTransforms},
+                                                  {eventCompanionProgram.id, pausedCompanionFrame, managedTransforms}}),
+                 "GPU particle manager rejected divergent per-emitter simulation steps") ||
+        !executeManagedFrame("GPU particle event allocate/init frame failed"))
         return false;
 
     auto foreignGraphProgram = managedGraphProgram;
     foreignGraphProgram.graphInstanceId += 1;
     foreignGraphProgram.eventDomain.reset();
-    foreignGraphProgram.removeEmitterIds = {managedProgram.id};
+    foreignGraphProgram.removeEmitterIds = {managedProgram.id, eventCompanionProgram.id};
     if (!Require(!particleSystems.ApplyGraph(foreignGraphProgram, &managedError) &&
                      particleSystems.Contains(managedProgram.id) &&
                      particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash,
@@ -2031,8 +2055,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "GPU particle event ABI replacement did not publish the new domain"))
         return false;
     particleDeletionQueue.FlushAll();
-    if (!Require(publishManagedGraph({}, {managedProgram.id}) && particleSystems.Size() == 0 &&
-                     particleDrawRegistry.Size() == 0 && particleDeletionQueue.PendingCount() == 1,
+    if (!Require(publishManagedGraph({}, {managedProgram.id, eventCompanionProgram.id}) &&
+                     particleSystems.Size() == 0 && particleDrawRegistry.Size() == 0 &&
+                     particleDeletionQueue.PendingCount() == 1,
                  "GPU particle manager removal did not retire graph resources"))
         return false;
     particleSystems.Shutdown();
@@ -2113,6 +2138,35 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(registeredBuffer.IsValid() && writtenBuffer.version == 1 && typedResourceGraph.Compile(),
                  "Pre-registered transient buffer did not participate in graph compilation"))
         return false;
+
+    infernux::rhi::BufferDesc externalAliasDesc;
+    externalAliasDesc.byteSize = 128;
+    externalAliasDesc.usage = infernux::rhi::BufferUsageFlags::Storage;
+    const auto externalAliasBuffer = rhi.CreateBuffer(externalAliasDesc);
+    RenderGraph externalAliasGraph;
+    externalAliasGraph.Initialize(&resources.context, &resources.pipelines);
+    ResourceHandle externalAliasWrite;
+    ResourceHandle externalAliasRead;
+    externalAliasGraph.AddComputePass("WriteExternalAlias", [&](PassBuilder &builder) {
+        externalAliasWrite =
+            builder.WriteStorageBuffer(builder.ImportBuffer("ExternalAliasWriter", externalAliasBuffer, 64));
+        return [](RenderContext &) {};
+    });
+    externalAliasGraph.AddComputePass("ReadExternalAlias", [&](PassBuilder &builder) {
+        externalAliasRead =
+            builder.ImportBuffer("ExternalAliasReader", externalAliasBuffer, externalAliasDesc.byteSize);
+        builder.ReadStorageBuffer(externalAliasRead);
+        builder.SetSideEffect();
+        return [](RenderContext &) {};
+    });
+    if (!Require(externalAliasWrite.IsValid() && externalAliasRead == externalAliasWrite &&
+                     externalAliasGraph.GetResourceCount() == 1 && externalAliasGraph.Compile() &&
+                     externalAliasGraph.GetExecutionPassNames() ==
+                         std::vector<std::string>{"WriteExternalAlias", "ReadExternalAlias"},
+                 "Repeated external buffer imports did not preserve one latest-version dependency chain"))
+        return false;
+    externalAliasGraph.Destroy();
+    rhi.Release(externalAliasBuffer);
 
     RenderGraph bufferAliasGraph;
     bufferAliasGraph.Initialize(&resources.context, &resources.pipelines);

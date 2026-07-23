@@ -718,6 +718,7 @@ class GpuParticleEmitterSource:
     state_stride: int
     bootstrap: str
     init: str
+    event_init: str
     update: str
     render_reset: str
     rendering: str
@@ -728,6 +729,7 @@ class GpuParticleEmitterSource:
         return {
             "bootstrap": self.bootstrap,
             "init": self.init,
+            "event_init": self.event_init,
             "update": self.update,
             "render_reset": self.render_reset,
             "rendering": self.rendering,
@@ -807,6 +809,7 @@ class GpuParticleGlslLowerer:
             state_stride,
             bootstrap,
             prelude + _init_main(init_body, emitter, fields),
+            prelude + _event_init_bindings() + _event_init_main(init_body, emitter, fields),
             prelude + _update_main(update_body, emitter, fields),
             prelude + _render_reset_main(),
             prelude + _rendering_main(rendering_body, exports),
@@ -2150,6 +2153,7 @@ void main() {
     uint index = gl_GlobalInvocationID.x;
     if (index >= pc.capacity) return;
     states[index].alive = 0u;
+    states[index].spawn_generation = 0u;
     free_slots[index] = index;
     if (index == 0u) {
         counters.free_count = pc.capacity;
@@ -2183,6 +2187,76 @@ void main() {{
     uint particle_id = pc.spawn_base_id + invocation;
     state.{id_field} = particle_id;
     state.spawn_generation = pc.spawn_generation + uint(particle_id < pc.spawn_base_id);
+    bool particle_alive = true;
+{body}
+    particle_alive = particle_alive && ({finite});
+    state.alive = particle_alive ? 1u : 0u;
+    states[particle_index] = state;
+    if (!particle_alive) inx_push_free(particle_index);
+}}
+"""
+
+
+def _event_init_bindings() -> str:
+    return """
+struct ParticleEventChannel {
+    uint record_base_words;
+    uint record_stride_words;
+    uint capacity;
+    uint source_emitter_index;
+    uint target_emitter_index;
+    uint event_type_index;
+    uint payload_stride_words;
+    uint spawn_count;
+    uint spawn_base_indices;
+    uint target_capacity;
+    uint reserved0;
+    uint reserved1;
+};
+layout(std430, set = 3, binding = 0) readonly buffer ParticleEventChannels {
+    ParticleEventChannel event_channels[];
+};
+layout(std430, set = 3, binding = 1) readonly buffer ParticleEventRecords {
+    uint event_record_words[];
+};
+layout(std430, set = 3, binding = 2) readonly buffer ParticleEventCounters {
+    uvec4 event_counters[];
+};
+layout(std430, set = 3, binding = 3) readonly buffer ParticleEventSpawnIndices {
+    uint event_spawn_indices[];
+};
+"""
+
+
+def _event_init_main(
+    body: str,
+    emitter: ParticleEmitterKernelIR,
+    fields: tuple[tuple[str, TypeRef, str], ...],
+) -> str:
+    id_field = next(field for stable, _type, field in fields if stable == "builtin.id")
+    finite = _finite_state_check(emitter.init, fields)
+    return f"""
+void main() {{
+    uint invocation = gl_GlobalInvocationID.x;
+    uint channel_index = pc.spawn_base_id;
+    ParticleEventChannel channel = event_channels[channel_index];
+    uint accepted_count = event_counters[channel_index].z;
+    uint total_spawn_count = accepted_count * channel.spawn_count;
+    if (invocation >= total_spawn_count) return;
+    uint particle_index = event_spawn_indices[channel.spawn_base_indices + invocation];
+    if (particle_index == INX_INVALID_INDEX || particle_index >= pc.capacity) return;
+    uint event_index = invocation / channel.spawn_count;
+    uint record_base = channel.record_base_words + event_index * channel.record_stride_words;
+    uint source_particle_id = event_record_words[record_base + 2u];
+    uint source_generation = event_record_words[record_base + 3u];
+    uint route_seed = inx_random_u32(channel_index, channel.source_emitter_index,
+                                     channel.target_emitter_index, channel.event_type_index);
+    uint particle_id = inx_random_u32(route_seed, source_particle_id, source_generation, invocation);
+    ParticleState state = states[particle_index];
+    state.alive = 1u;
+    state.{id_field} = particle_id;
+    state.spawn_generation = inx_random_u32(route_seed ^ 0x9e3779b9u, source_generation,
+                                            source_particle_id, invocation);
     bool particle_alive = true;
 {body}
     particle_alive = particle_alive && ({finite});

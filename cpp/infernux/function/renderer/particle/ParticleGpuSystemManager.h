@@ -111,6 +111,7 @@ struct GpuParticleEmitterProgram
 {
     uint64_t id = 0;
     uint64_t graphInstanceId = 0;
+    uint32_t graphEmitterIndex = 0;
     uint64_t ownerObjectId = 0;
     uint32_t ownerLayerMask = 1u;
     uint64_t artifactRevision = 0;
@@ -127,6 +128,7 @@ struct GpuParticleEmitterProgram
     };
     std::optional<StateMigration> migration;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
+    std::vector<uint32_t> eventInitKernel;
     GpuParticlePointCacheLayoutProgram pointCaches;
     GpuParticleVectorFieldLayoutProgram vectorFields;
     std::vector<uint32_t> billboardVertexShader;

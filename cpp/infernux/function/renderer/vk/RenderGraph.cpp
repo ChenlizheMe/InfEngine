@@ -220,6 +220,24 @@ ResourceHandle PassBuilder::ImportTexture(const std::string &name, VkImage image
 
 ResourceHandle PassBuilder::ImportBuffer(const std::string &name, VkBuffer buffer, VkDeviceSize size)
 {
+    if (buffer != VK_NULL_HANDLE) {
+        for (uint32_t resourceId = 0; resourceId < m_graph->m_resources.size(); ++resourceId) {
+            auto &resource = m_graph->m_resources[resourceId];
+            if (!resource.isExternal || resource.type != ResourceType::Buffer || resource.externalBuffer != buffer)
+                continue;
+            if (size > resource.bufferDesc.size) {
+                resource.bufferDesc.size = size;
+                if (m_graph->m_rhiDevice) {
+                    m_graph->m_rhiDevice->Release(resource.rhiBuffer);
+                    resource.rhiBuffer = m_graph->m_rhiDevice->RegisterBuffer(buffer, size);
+                    if (!resource.rhiBuffer.IsValid())
+                        return {};
+                }
+            }
+            return {m_graph->m_identity.Current(), resourceId, m_graph->m_resourceVersions[resourceId]};
+        }
+    }
+
     ResourceHandle handle = m_graph->CreateResource(name, ResourceType::Buffer);
     if (!m_graph->Owns(handle)) {
         return handle;
