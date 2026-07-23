@@ -10,7 +10,16 @@ from Infernux.engine.ui.graph_document_authoring import (
     ParticleEmitterGraphAuthoringModel,
     particle_stage_definition_filter,
 )
-from Infernux.particle.asset import ParticleGraphAsset
+from Infernux.particle.asset import (
+    ParticleEmitterAsset,
+    ParticleEventRoute,
+    ParticleEventType,
+    ParticleGraphAsset,
+)
+from Infernux.particle.nodes import (
+    particle_event_output_type_id,
+    particle_graph_node_definitions,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -81,13 +90,39 @@ def test_particle_data_expression_nodes_are_creatable_in_simulation_stages():
 
 
 def test_particle_event_output_is_available_in_every_emitter_stage():
-    emitter = ParticleGraphAsset().emitters[0]
+    source = ParticleEmitterAsset(stable_id="source", name="Source")
+    target = ParticleEmitterAsset(stable_id="target", name="Target")
+    routes = tuple(
+        ParticleEventRoute(
+            f"route-{stage}", "event", "source", stage, "target"
+        )
+        for stage in ("init", "update", "rendering")
+    )
+    asset = ParticleGraphAsset(
+        emitters=(source, target),
+        event_types=(ParticleEventType("event", "Event", 32),),
+        event_routes=routes,
+    )
+    model = ParticleEmitterGraphAuthoringModel(
+        source, definition_set=particle_graph_node_definitions(asset)
+    )
+    registered = {definition.type_id for definition in model.registered_types()}
 
-    for document in (emitter.init, emitter.update, emitter.rendering):
-        registered = {
-            definition.type_id for definition in _stage_model(document).registered_types()
-        }
-        assert "particle.event.output" in registered
+    for route in routes:
+        type_id = particle_event_output_type_id(route.stable_id, route.source_stage)
+        assert type_id in registered
+        model.prepare_node_creation(route.source_stage)
+        node = model.add_node(type_id, 200.0, 230.0)
+        assert model.stage_for_uid(node.uid) == route.source_stage
+
+    target_model = ParticleEmitterGraphAuthoringModel(
+        target, definition_set=particle_graph_node_definitions(asset)
+    )
+    target_types = {definition.type_id for definition in target_model.registered_types()}
+    assert not target_types.intersection(
+        particle_event_output_type_id(route.stable_id, route.source_stage)
+        for route in routes
+    )
 
 
 def test_default_rendering_stage_opens_without_overlapping_output():

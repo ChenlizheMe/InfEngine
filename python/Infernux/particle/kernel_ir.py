@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
-import struct
 from typing import Any, Mapping
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
@@ -26,6 +25,7 @@ from .data_interface import (
     VectorField,
     particle_data_interface_from_dict,
 )
+from .nodes import particle_event_payload_port_id
 from .kernel_semantics import (
     KernelCapability,
     KernelRuntimeContract,
@@ -418,10 +418,233 @@ class ParticleEmitterKernelIR:
 
 
 @dataclass(frozen=True)
+class KernelEventField:
+    stable_id: str
+    value_type: TypeRef
+    word_offset: int
+    word_count: int
+    default: Any
+
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise KernelCompileError("kernel event field stable_id cannot be empty")
+        if not isinstance(self.value_type, TypeRef):
+            raise KernelCompileError("kernel event field type is invalid")
+        if type(self.word_offset) is not int or self.word_offset < 0:
+            raise KernelCompileError("kernel event field word_offset is invalid")
+        if type(self.word_count) is not int or self.word_count <= 0:
+            raise KernelCompileError("kernel event field word_count is invalid")
+        _finite_json(self.default)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stable_id": self.stable_id,
+            "type": self.value_type.to_dict(),
+            "word_offset": self.word_offset,
+            "word_count": self.word_count,
+            "default": self.default,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelEventField":
+        _exact_dict(
+            value,
+            {"stable_id", "type", "word_offset", "word_count", "default"},
+            "kernel event field",
+        )
+        try:
+            value_type = TypeRef.from_dict(value["type"])
+        except (TypeError, ValueError) as exc:
+            raise KernelCompileError("kernel event field type is invalid") from exc
+        return cls(
+            value["stable_id"],
+            value_type,
+            value["word_offset"],
+            value["word_count"],
+            value["default"],
+        )
+
+
+@dataclass(frozen=True)
+class KernelEventType:
+    stable_id: str
+    type_index: int
+    stable_type_hash: int
+    capacity_per_step: int
+    payload_stride_words: int
+    fields: tuple[KernelEventField, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise KernelCompileError("kernel event type stable_id cannot be empty")
+        if type(self.type_index) is not int or self.type_index < 0:
+            raise KernelCompileError("kernel event type index is invalid")
+        if (
+            type(self.stable_type_hash) is not int
+            or not 0 <= self.stable_type_hash <= 0xFFFFFFFFFFFFFFFF
+        ):
+            raise KernelCompileError("kernel event stable type hash is invalid")
+        if type(self.capacity_per_step) is not int or self.capacity_per_step <= 0:
+            raise KernelCompileError("kernel event capacity is invalid")
+        if type(self.payload_stride_words) is not int or self.payload_stride_words < 0:
+            raise KernelCompileError("kernel event payload stride is invalid")
+        if not all(isinstance(field, KernelEventField) for field in self.fields):
+            raise KernelCompileError("kernel event fields are invalid")
+        if len({field.stable_id for field in self.fields}) != len(self.fields):
+            raise KernelCompileError("kernel event field stable ids must be unique")
+        cursor = 0
+        for field in self.fields:
+            if field.word_offset != cursor:
+                raise KernelCompileError("kernel event fields must use a contiguous payload layout")
+            cursor += field.word_count
+        if cursor != self.payload_stride_words:
+            raise KernelCompileError("kernel event payload stride does not match its fields")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stable_id": self.stable_id,
+            "type_index": self.type_index,
+            "stable_type_hash": self.stable_type_hash,
+            "capacity_per_step": self.capacity_per_step,
+            "payload_stride_words": self.payload_stride_words,
+            "fields": [field.to_dict() for field in self.fields],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelEventType":
+        _exact_dict(
+            value,
+            {
+                "stable_id",
+                "type_index",
+                "stable_type_hash",
+                "capacity_per_step",
+                "payload_stride_words",
+                "fields",
+            },
+            "kernel event type",
+        )
+        if type(value["fields"]) is not list:
+            raise KernelCompileError("kernel event fields must be an array")
+        return cls(
+            value["stable_id"],
+            value["type_index"],
+            value["stable_type_hash"],
+            value["capacity_per_step"],
+            value["payload_stride_words"],
+            tuple(KernelEventField.from_dict(field) for field in value["fields"]),
+        )
+
+
+@dataclass(frozen=True)
+class KernelEventRoute:
+    stable_id: str
+    event_type_index: int
+    source_emitter_index: int
+    source_stage: KernelStage
+    target_emitter_index: int
+    spawn_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise KernelCompileError("kernel event route stable_id cannot be empty")
+        for label, value in (
+            ("event type", self.event_type_index),
+            ("source emitter", self.source_emitter_index),
+            ("target emitter", self.target_emitter_index),
+        ):
+            if type(value) is not int or value < 0:
+                raise KernelCompileError(f"kernel event route {label} index is invalid")
+        object.__setattr__(self, "source_stage", KernelStage(self.source_stage))
+        if type(self.spawn_count) is not int or self.spawn_count <= 0:
+            raise KernelCompileError("kernel event route spawn_count is invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stable_id": self.stable_id,
+            "event_type_index": self.event_type_index,
+            "source_emitter_index": self.source_emitter_index,
+            "source_stage": self.source_stage.value,
+            "target_emitter_index": self.target_emitter_index,
+            "spawn_count": self.spawn_count,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelEventRoute":
+        _exact_dict(
+            value,
+            {
+                "stable_id",
+                "event_type_index",
+                "source_emitter_index",
+                "source_stage",
+                "target_emitter_index",
+                "spawn_count",
+            },
+            "kernel event route",
+        )
+        return cls(
+            value["stable_id"],
+            value["event_type_index"],
+            value["source_emitter_index"],
+            value["source_stage"],
+            value["target_emitter_index"],
+            value["spawn_count"],
+        )
+
+
+@dataclass(frozen=True)
+class KernelEventABI:
+    abi_hash: str
+    event_types: tuple[KernelEventType, ...]
+    routes: tuple[KernelEventRoute, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.abi_hash) is not str or len(self.abi_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in self.abi_hash
+        ):
+            raise KernelCompileError("kernel event ABI hash must be a lowercase SHA-256")
+        if not all(isinstance(value, KernelEventType) for value in self.event_types):
+            raise KernelCompileError("kernel event types are invalid")
+        if not all(isinstance(value, KernelEventRoute) for value in self.routes):
+            raise KernelCompileError("kernel event routes are invalid")
+        if tuple(value.type_index for value in self.event_types) != tuple(
+            range(len(self.event_types))
+        ):
+            raise KernelCompileError("kernel event type indices must be dense and ordered")
+        if len({value.stable_id for value in self.event_types}) != len(self.event_types):
+            raise KernelCompileError("kernel event type stable ids must be unique")
+        if len({value.stable_id for value in self.routes}) != len(self.routes):
+            raise KernelCompileError("kernel event route stable ids must be unique")
+        for route in self.routes:
+            if route.event_type_index >= len(self.event_types):
+                raise KernelCompileError("kernel event route references an unknown event type")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "abi_hash": self.abi_hash,
+            "event_types": [value.to_dict() for value in self.event_types],
+            "routes": [value.to_dict() for value in self.routes],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelEventABI":
+        _exact_dict(value, {"abi_hash", "event_types", "routes"}, "kernel event ABI")
+        if type(value["event_types"]) is not list or type(value["routes"]) is not list:
+            raise KernelCompileError("kernel event ABI types and routes must be arrays")
+        return cls(
+            value["abi_hash"],
+            tuple(KernelEventType.from_dict(item) for item in value["event_types"]),
+            tuple(KernelEventRoute.from_dict(item) for item in value["routes"]),
+        )
+
+
+@dataclass(frozen=True)
 class ParticleKernelProgram:
     source_behavior_hash: str
     kernel_hash: str
     emitters: tuple[ParticleEmitterKernelIR, ...]
+    events: KernelEventABI
     contract: KernelRuntimeContract = KernelRuntimeContract()
 
     def __post_init__(self) -> None:
@@ -437,10 +660,43 @@ class ParticleKernelProgram:
             raise KernelCompileError("particle kernel emitters are invalid")
         if len({emitter.stable_id for emitter in self.emitters}) != len(self.emitters):
             raise KernelCompileError("particle kernel emitter stable ids must be unique")
+        if not isinstance(self.events, KernelEventABI):
+            raise KernelCompileError("particle kernel event ABI is invalid")
         if not isinstance(self.contract, KernelRuntimeContract):
             raise KernelCompileError("particle kernel runtime contract is invalid")
-        if self.kernel_hash != _kernel_semantic_hash(self.emitters, self.contract):
+        self._validate_event_access()
+        if self.kernel_hash != _kernel_semantic_hash(self.emitters, self.events, self.contract):
             raise KernelCompileError("particle kernel hash does not match its semantic payload")
+
+    def _validate_event_access(self) -> None:
+        for route in self.events.routes:
+            if (
+                route.source_emitter_index >= len(self.emitters)
+                or route.target_emitter_index >= len(self.emitters)
+            ):
+                raise KernelCompileError("kernel event route references an unknown emitter")
+        for emitter_index, emitter in enumerate(self.emitters):
+            for function in (emitter.init, emitter.update, emitter.rendering):
+                for instruction in function.instructions:
+                    if instruction.opcode != "event_append":
+                        continue
+                    channel_index = instruction.immediate_dict()["channel_index"]
+                    if type(channel_index) is not int or not 0 <= channel_index < len(
+                        self.events.routes
+                    ):
+                        raise KernelCompileError("kernel event_append references an unknown channel")
+                    route = self.events.routes[channel_index]
+                    if (
+                        route.source_emitter_index != emitter_index
+                        or route.source_stage is not function.stage
+                    ):
+                        raise KernelCompileError("kernel event_append does not match its source route")
+                    event_type = self.events.event_types[route.event_type_index]
+                    payload_types = tuple(
+                        operand.value_type for operand in instruction.operands[1:]
+                    )
+                    if payload_types != tuple(field.value_type for field in event_type.fields):
+                        raise KernelCompileError("kernel event_append payload does not match its event type")
 
     def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
         return {
@@ -448,6 +704,7 @@ class ParticleKernelProgram:
             "source_behavior_hash": self.source_behavior_hash,
             "kernel_hash": self.kernel_hash,
             "contract": self.contract.to_dict(),
+            "events": self.events.to_dict(),
             "emitters": [
                 emitter.to_dict(include_source=include_source)
                 for emitter in self.emitters
@@ -463,6 +720,7 @@ class ParticleKernelProgram:
                 "source_behavior_hash",
                 "kernel_hash",
                 "contract",
+                "events",
                 "emitters",
             },
             "particle kernel program",
@@ -479,6 +737,7 @@ class ParticleKernelProgram:
             value["source_behavior_hash"],
             value["kernel_hash"],
             tuple(ParticleEmitterKernelIR.from_dict(item) for item in value["emitters"]),
+            KernelEventABI.from_dict(value["events"]),
             contract,
         )
 
@@ -499,11 +758,13 @@ class ParticleKernelLowerer:
             self._lower_emitter(emitter, routes, event_types)
             for emitter in program.emitters
         )
+        events = _lower_event_abi(program.events)
         contract = KernelRuntimeContract()
         return ParticleKernelProgram(
             program.behavior_hash,
-            _kernel_semantic_hash(emitters, contract),
+            _kernel_semantic_hash(emitters, events, contract),
             emitters,
+            events,
             contract,
         )
 
@@ -1084,12 +1345,34 @@ class ParticleKernelLowerer:
             TypeRef(ValueType.BOOL),
             source,
         )
+        payload_values = []
+        payload_layout = []
+        for field in event_type.fields:
+            port_id = particle_event_payload_port_id(field.stable_id)
+            payload_values.append(
+                builder.operation_value(
+                    port_id,
+                    bindings,
+                    expression_values,
+                    parameters,
+                    field.value_type,
+                    source,
+                )
+            )
+            payload_layout.append(
+                {
+                    "stable_id": field.stable_id,
+                    "type": field.value_type.to_dict(),
+                    "word_offset": field.word_offset,
+                    "word_count": field.word_count,
+                }
+            )
         builder.emit_void(
             "event_append",
-            (condition,),
+            (condition, *payload_values),
             {
                 "channel_index": channel_index,
-                "payload_words": _event_default_words(event_type),
+                "payload_layout": payload_layout,
             },
             source,
         )
@@ -1291,71 +1574,56 @@ def _exact_dict(value: Any, expected: set[str], label: str) -> None:
         raise KernelCompileError(f"{label} keys do not match the schema")
 
 
+def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
+    return KernelEventABI(
+        events.event_abi_hash,
+        tuple(
+            KernelEventType(
+                event_type.stable_id,
+                event_type.type_index,
+                event_type.stable_type_hash,
+                event_type.capacity_per_step,
+                event_type.payload_stride_words,
+                tuple(
+                    KernelEventField(
+                        field.stable_id,
+                        field.value_type,
+                        field.word_offset,
+                        field.word_count,
+                        field.default,
+                    )
+                    for field in event_type.fields
+                ),
+            )
+            for event_type in events.event_types
+        ),
+        tuple(
+            KernelEventRoute(
+                route.stable_id,
+                route.event_type_index,
+                route.source_emitter_index,
+                route.source_stage.value,
+                route.target_emitter_index,
+                route.spawn_count,
+            )
+            for route in events.routes
+        ),
+    )
+
+
 def _kernel_semantic_hash(
     emitters: tuple[ParticleEmitterKernelIR, ...],
+    events: KernelEventABI,
     contract: KernelRuntimeContract,
 ) -> str:
     semantic = {
         "$schema": KERNEL_IR_SCHEMA,
         "contract": contract.to_dict(),
+        "events": events.to_dict(),
         "emitters": [emitter.to_dict(include_source=False) for emitter in emitters],
     }
     encoded = json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _event_default_words(event_type: ParticleEventTypeHIR) -> list[int]:
-    words: list[int] = []
-
-    def flatten(value):
-        if isinstance(value, (list, tuple)):
-            result = []
-            for item in value:
-                result.extend(flatten(item))
-            return result
-        return [value]
-
-    def float_word(value) -> int:
-        return struct.unpack("<I", struct.pack("<f", float(value)))[0]
-
-    for field in event_type.fields:
-        kind = field.value_type.value_type
-        values = flatten(field.default)
-        if kind is ValueType.BOOL:
-            encoded = [1 if bool(values[0]) else 0]
-        elif kind is ValueType.I32:
-            encoded = [int(values[0]) & 0xFFFFFFFF]
-        elif kind is ValueType.U32:
-            encoded = [int(values[0])]
-        elif kind is ValueType.F32:
-            encoded = [float_word(values[0])]
-        elif kind in {
-            ValueType.VEC2,
-            ValueType.VEC3,
-            ValueType.VEC4,
-            ValueType.COLOR,
-            ValueType.MAT4,
-        }:
-            encoded = [float_word(value) for value in values]
-        elif kind is ValueType.MAT3:
-            if len(values) != 9:
-                raise KernelCompileError("mat3 event defaults require nine scalar values")
-            encoded = []
-            for column in range(3):
-                encoded.extend(float_word(value) for value in values[column * 3 : column * 3 + 3])
-                encoded.append(0)
-        else:
-            raise KernelCompileError(
-                f"event payload type {kind.value!r} is not portable"
-            )
-        if len(encoded) != field.word_count:
-            raise KernelCompileError(
-                f"event field {field.stable_id!r} default does not match its word layout"
-            )
-        words.extend(encoded)
-    if len(words) != event_type.payload_stride_words:
-        raise KernelCompileError("event payload defaults do not match the event ABI")
-    return words
 
 
 __all__ = [
@@ -1363,6 +1631,10 @@ __all__ = [
     "KernelCapability",
     "KernelCompileError",
     "KernelInstruction",
+    "KernelEventABI",
+    "KernelEventField",
+    "KernelEventRoute",
+    "KernelEventType",
     "KernelOperand",
     "KernelSourceRef",
     "KernelStage",

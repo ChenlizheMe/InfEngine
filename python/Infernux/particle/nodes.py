@@ -2,15 +2,110 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
+import json
+from types import MappingProxyType
+from typing import Mapping
+
 from Infernux.graph.registry import (
     COMMON_NODE_REGISTRY,
     NodeDef,
+    NodeDefinitionRegistry,
     PortDef,
     PortDirection,
     PortKind,
     PropertyDef,
 )
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+
+
+_EVENT_OUTPUT_PREFIX = "particle.event.output"
+
+
+def particle_event_payload_port_id(field_stable_id: str) -> str:
+    digest = hashlib.sha256(str(field_stable_id).encode("utf-8")).hexdigest()
+    return f"payload.{digest}"
+
+
+def particle_event_output_type_id(route_stable_id: str, source_stage: str) -> str:
+    digest = hashlib.sha256(str(route_stable_id).encode("utf-8")).hexdigest()
+    return f"{_EVENT_OUTPUT_PREFIX}.{source_stage}.{digest}"
+
+
+@dataclass(frozen=True)
+class ParticleGraphNodeDefinitionSet:
+    registry: NodeDefinitionRegistry
+    event_route_by_type_id: Mapping[str, str]
+    event_source_by_type_id: Mapping[str, tuple[str, str]]
+    abi_fingerprint: str
+
+
+def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
+    """Build immutable asset-local metadata for event-schema-derived nodes."""
+
+    registry = NodeDefinitionRegistry()
+    for definition in COMMON_NODE_REGISTRY.definitions():
+        registry.register(definition)
+
+    event_types = {event_type.stable_id: event_type for event_type in asset.event_types}
+    emitter_names = {emitter.stable_id: emitter.name for emitter in asset.emitters}
+    route_by_type_id = {}
+    source_by_type_id = {}
+    for route in asset.event_routes:
+        event_type = event_types[route.event_type_id]
+        type_id = particle_event_output_type_id(route.stable_id, route.source_stage)
+        if type_id in route_by_type_id:
+            raise ValueError("particle event output node identity collision")
+        route_by_type_id[type_id] = route.stable_id
+        source_by_type_id[type_id] = (
+            route.source_emitter_id,
+            route.source_stage,
+        )
+        registry.register(
+            NodeDef(
+                type_id,
+                f"Event Output: {event_type.name} -> "
+                f"{emitter_names.get(route.target_emitter_id, route.target_emitter_id)}",
+                (
+                    _stream("in", PortDirection.INPUT),
+                    _stream("out", PortDirection.OUTPUT),
+                    PortDef(
+                        "condition",
+                        PortDirection.INPUT,
+                        value_type=TypeRef(ValueType.BOOL),
+                        required=False,
+                        default=True,
+                    ),
+                    *(
+                        PortDef(
+                            particle_event_payload_port_id(field.stable_id),
+                            PortDirection.INPUT,
+                            value_type=field.value_type,
+                            required=False,
+                            default=field.default,
+                            display_name=field.name,
+                        )
+                        for field in event_type.fields
+                    ),
+                ),
+                (),
+                {"particle_hir": "event.emit"},
+            )
+        )
+    abi_payload = {
+        "event_types": [event_type.to_dict() for event_type in asset.event_types],
+        "event_routes": [route.to_dict() for route in asset.event_routes],
+    }
+    encoded = json.dumps(
+        abi_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return ParticleGraphNodeDefinitionSet(
+        registry,
+        MappingProxyType(route_by_type_id),
+        MappingProxyType(source_by_type_id),
+        hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+    )
 
 
 def _stream(port_id: str, direction: PortDirection) -> PortDef:
@@ -249,15 +344,6 @@ PARTICLE_NODE_DEFINITIONS = (
         "lifecycle.kill_if",
         (PropertyDef("condition", TypeRef(ValueType.BOOL), False),),
     ),
-    _operation(
-        "particle.event.output",
-        "Event Output",
-        "event.emit",
-        (
-            PropertyDef("route", TypeRef(ValueType.STRING), ""),
-            PropertyDef("condition", TypeRef(ValueType.BOOL), True),
-        ),
-    ),
     NodeDef(
         "particle.output.sprite",
         "Sprite Output",
@@ -403,4 +489,10 @@ for _definition in PARTICLE_NODE_DEFINITIONS:
     COMMON_NODE_REGISTRY.register(_definition)
 
 
-__all__ = ["PARTICLE_NODE_DEFINITIONS"]
+__all__ = [
+    "PARTICLE_NODE_DEFINITIONS",
+    "ParticleGraphNodeDefinitionSet",
+    "particle_event_output_type_id",
+    "particle_event_payload_port_id",
+    "particle_graph_node_definitions",
+]

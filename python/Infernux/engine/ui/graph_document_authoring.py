@@ -66,7 +66,7 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
         pins.append(
             CanvasPinDef(
                 id=port.id,
-                label=port.id.replace("_", " ").title(),
+                label=port.display_name or port.id.replace("_", " ").title(),
                 kind=(
                     CanvasPinKind.INPUT
                     if port.direction is PortDirection.INPUT
@@ -106,7 +106,7 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
             inline_fields.append(
                 NodeInlineFieldDef(
                     port.id,
-                    port.id.replace("_", " ").title(),
+                    port.display_name or port.id.replace("_", " ").title(),
                     port.value_type.value_type.value if port.value_type is not None else "f32",
                     copy.deepcopy(port.default),
                 )
@@ -221,6 +221,9 @@ class GraphDocumentAuthoringModel(NodeGraph):
             if (definition := self.get_type(type_id)) is not None
         ]
 
+    def definition_for_type(self, type_id: str) -> NodeDef | None:
+        return self._definitions.get(type_id)
+
     def add_node(self, type_id: str, x=0.0, y=0.0, uid=None, **data):
         if type_id not in self._creatable_type_ids:
             raise ValueError(f"node type {type_id!r} cannot be created in {self._domain!r}")
@@ -323,9 +326,13 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         emitter,
         *,
         registry: NodeDefinitionRegistry = COMMON_NODE_REGISTRY,
+        definition_set=None,
     ) -> None:
         super().__init__(graph_kind="particle.emitter")
+        if definition_set is not None:
+            registry = definition_set.registry
         self._definitions = registry
+        self._definition_set = definition_set
         self._documents = {stage: getattr(emitter, stage) for stage in self.STAGES}
         self._creatable_type_ids: list[str] = []
         self._allowed_stages: dict[str, set[str]] = {}
@@ -338,6 +345,18 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 for stage in self.STAGES
                 if particle_stage_definition_filter(f"particle.{stage}")(definition)
             }
+            if (
+                definition_set is not None
+                and definition.type_id in definition_set.event_source_by_type_id
+            ):
+                source_emitter_id, source_stage = (
+                    definition_set.event_source_by_type_id[definition.type_id]
+                )
+                stages = (
+                    {source_stage}
+                    if source_emitter_id == emitter.stable_id and source_stage in stages
+                    else set()
+                )
             if not stages:
                 continue
             self.register_type(_canvas_definition(definition))
@@ -410,6 +429,9 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             for type_id in self._creatable_type_ids
             if (definition := self.get_type(type_id)) is not None
         ]
+
+    def definition_for_type(self, type_id: str) -> NodeDef | None:
+        return self._definitions.get(type_id)
 
     def _stage_for_new_node(self, type_id: str, y: float) -> str:
         allowed = self._allowed_stages.get(type_id, set())
@@ -547,8 +569,8 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
         type_id = definition.type_id
         if type_id.startswith("common."):
             return True
-        if type_id == "particle.event.output":
-            return stage in {"init", "update", "rendering"}
+        if type_id.startswith("particle.event.output."):
+            return type_id.startswith(f"particle.event.output.{stage}.")
         if stage in {"init", "update"} and type_id.startswith(
             ("particle.attribute.", "particle.point_cache.", "particle.vector_field.")
         ):

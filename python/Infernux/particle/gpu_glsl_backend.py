@@ -1335,11 +1335,10 @@ class _StageCompiler:
             return
         elif opcode == "event_append":
             channel_index = int(immediate["channel_index"])
-            payload_words = immediate["payload_words"]
-            if channel_index < 0 or not isinstance(payload_words, list) or any(
-                type(word) is not int or not 0 <= word <= 0xFFFFFFFF
-                for word in payload_words
-            ):
+            payload_layout = immediate["payload_layout"]
+            if channel_index < 0 or type(payload_layout) is not list or len(
+                payload_layout
+            ) != len(operands) - 1:
                 raise GpuParticleCompileError("GPU event append metadata is invalid")
             suffix = len(self._event_lines)
             id_field = self._field("builtin.id")[1]
@@ -1362,10 +1361,25 @@ class _StageCompiler:
                     f"        event_output_record_words[inx_event_base_{suffix} + 3u] = state.spawn_generation;",
                 )
             )
-            self._event_lines.extend(
-                f"        event_output_record_words[inx_event_base_{suffix} + {4 + index}u] = {word}u;"
-                for index, word in enumerate(payload_words)
-            )
+            for field, operand, kernel_operand in zip(
+                payload_layout, operands[1:], instruction.operands[1:]
+            ):
+                field_type = TypeRef.from_dict(field["type"])
+                if field_type != kernel_operand.value_type:
+                    raise GpuParticleCompileError(
+                        "GPU event append payload type does not match its operand"
+                    )
+                words = _event_payload_word_expressions(operand, field_type)
+                if len(words) != int(field["word_count"]):
+                    raise GpuParticleCompileError(
+                        "GPU event append payload word layout is invalid"
+                    )
+                word_offset = int(field["word_offset"])
+                self._event_lines.extend(
+                    f"        event_output_record_words[inx_event_base_{suffix} + "
+                    f"{4 + word_offset + index}u] = {word};"
+                    for index, word in enumerate(words)
+                )
             self._event_lines.extend(
                 (
                     "    } else {",
@@ -2558,6 +2572,48 @@ def _glsl_literal(value: Any, value_type: TypeRef | None) -> str:
     if component_count is None:
         raise GpuParticleCompileError(f"GPU literal does not support {kind.value}")
     return f"{_glsl_type(value_type)}(" + ", ".join(_float_literal(item) for item in value) + ")"
+
+
+def _event_payload_word_expressions(expression: str, value_type: TypeRef) -> list[str]:
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        return [f"(({expression}) ? 1u : 0u)"]
+    if kind is ValueType.I32:
+        return [f"uint({expression})"]
+    if kind is ValueType.U32:
+        return [expression]
+    if kind is ValueType.F32:
+        return [f"floatBitsToUint({expression})"]
+    component_count = {
+        ValueType.VEC2: 2,
+        ValueType.VEC3: 3,
+        ValueType.VEC4: 4,
+        ValueType.COLOR: 4,
+    }.get(kind)
+    if component_count is not None:
+        components = "xyzw"
+        return [
+            f"floatBitsToUint(({expression}).{components[index]})"
+            for index in range(component_count)
+        ]
+    if kind is ValueType.MAT3:
+        words = []
+        for column in range(3):
+            words.extend(
+                f"floatBitsToUint(({expression})[{column}][{row}])"
+                for row in range(3)
+            )
+            words.append("0u")
+        return words
+    if kind is ValueType.MAT4:
+        return [
+            f"floatBitsToUint(({expression})[{column}][{row}])"
+            for column in range(4)
+            for row in range(4)
+        ]
+    raise GpuParticleCompileError(
+        f"GPU event payload does not support {kind.value}"
+    )
 
 
 def _float_literal(value: Any) -> str:

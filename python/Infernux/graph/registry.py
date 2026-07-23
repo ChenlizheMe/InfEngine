@@ -29,12 +29,15 @@ class PortDef:
     type_variable: str = ""
     required: bool = True
     default: Any = None
+    display_name: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "direction", PortDirection(self.direction))
         object.__setattr__(self, "kind", PortKind(self.kind))
         if not self.id:
             raise ValueError("graph port id cannot be empty")
+        if type(self.display_name) is not str:
+            raise ValueError("graph port display_name must be a string")
         if self.kind is PortKind.VALUE and self.value_type is None and not self.type_variable:
             raise ValueError("value ports require a concrete type or type variable")
         if self.kind is not PortKind.VALUE and (self.value_type is not None or self.type_variable):

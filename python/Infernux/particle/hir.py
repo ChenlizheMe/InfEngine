@@ -9,12 +9,13 @@ import json
 import math
 from typing import Any, Mapping
 
-from Infernux.graph.registry import COMMON_NODE_REGISTRY, PortDirection, PortKind
+from Infernux.graph.registry import PortDirection, PortKind
 from Infernux.graph.expression_ir import ExpressionCompileError, ExpressionCompiler, ExpressionProgram
 from Infernux.graph.types import AssetReference, TypeRef, ValueType
 
 from .asset import EmitterSettings, ParticleAttribute, ParticleGraphAsset
 from .data_interface import ParticleDataInterface
+from .nodes import particle_event_output_type_id, particle_graph_node_definitions
 
 
 class ParticleStage(str, Enum):
@@ -149,7 +150,11 @@ class ParticleGraphCompiler:
 
     def compile(self, asset: ParticleGraphAsset) -> ParticleProgramHIR:
         events = self._compile_events(asset)
-        emitters = tuple(self._compile_emitter(emitter, events) for emitter in asset.emitters)
+        definitions = particle_graph_node_definitions(asset)
+        emitters = tuple(
+            self._compile_emitter(emitter, events, definitions)
+            for emitter in asset.emitters
+        )
         return ParticleProgramHIR(
             asset.stable_id,
             asset.name,
@@ -369,15 +374,26 @@ class ParticleGraphCompiler:
         self,
         emitter,
         events: ParticleEventSchedule,
+        definitions,
     ) -> ParticleEmitterHIR:
-        init = self._compile_stage(ParticleStage.INIT, emitter.init, emitter.settings)
-        update = self._compile_stage(ParticleStage.UPDATE, emitter.update, emitter.settings)
+        init = self._compile_stage(
+            ParticleStage.INIT, emitter.init, emitter.settings, definitions
+        )
+        update = self._compile_stage(
+            ParticleStage.UPDATE, emitter.update, emitter.settings, definitions
+        )
         rendering = self._compile_stage(
             ParticleStage.RENDERING,
             emitter.rendering,
             emitter.settings,
+            definitions,
         )
         routes_by_id = {route.stable_id: route for route in events.routes}
+        stage_documents = {
+            ParticleStage.INIT: emitter.init,
+            ParticleStage.UPDATE: emitter.update,
+            ParticleStage.RENDERING: emitter.rendering,
+        }
         for stage in (init, update, rendering):
             for operation in stage.operations:
                 if operation.opcode != "event.emit":
@@ -397,6 +413,22 @@ class ParticleGraphCompiler:
                     raise ParticleCompileError(
                         f"Event Output route {route_id!r} belongs to the "
                         f"{route.source_stage.value} stage, not {stage.stage.value}"
+                    )
+                expected_type_id = particle_event_output_type_id(
+                    route.stable_id, route.source_stage.value
+                )
+                source_node = next(
+                    (
+                        node
+                        for node in stage_documents[stage.stage].nodes
+                        if node.uid == operation.source_node_uid
+                    ),
+                    None,
+                )
+                if source_node is None or source_node.type_id != expected_type_id:
+                    actual = source_node.type_id if source_node is not None else ""
+                    raise ParticleCompileError(
+                        f"Event Output route {route_id!r} does not match node type {actual!r}"
                     )
         outputs = tuple(
             self._compile_output(operation)
@@ -644,7 +676,9 @@ class ParticleGraphCompiler:
         stage: ParticleStage,
         document,
         settings: EmitterSettings,
+        definitions,
     ) -> ParticleStageHIR:
+        registry = definitions.registry
         root_type = f"particle.root.{stage.value}"
         root = next(node for node in document.nodes if node.type_id == root_type)
         value_links = sorted(
@@ -661,7 +695,12 @@ class ParticleGraphCompiler:
             for link in value_links
         )
         try:
-            expressions = ExpressionCompiler().compile(document, expression_outputs)
+            expressions = ExpressionCompiler(
+                registry,
+                definition_fingerprint=definitions.abi_fingerprint,
+            ).compile(
+                document, expression_outputs
+            )
         except ExpressionCompileError as exc:
             raise ParticleCompileError(str(exc)) from exc
         value_bindings = {
@@ -669,10 +708,13 @@ class ParticleGraphCompiler:
             for link, (result_id, _value_type) in zip(value_links, expressions.outputs)
         }
         operations = list(self._settings_operations(stage, settings))
-        operations.extend(self._graph_operations(document, root.uid, value_bindings))
+        operations.extend(
+            self._graph_operations(document, root.uid, value_bindings, definitions)
+        )
         return ParticleStageHIR(stage, root.uid, expressions, tuple(operations))
 
-    def _graph_operations(self, document, root_uid: str, value_bindings):
+    def _graph_operations(self, document, root_uid: str, value_bindings, definitions):
+        registry = definitions.registry
         by_uid = {node.uid: node for node in document.nodes}
         outgoing: dict[str, list[tuple[str, str]]] = {}
         for link in document.links:
@@ -680,8 +722,8 @@ class ParticleGraphCompiler:
                 continue
             source = by_uid.get(link.source_node)
             target = by_uid.get(link.target_node)
-            source_def = COMMON_NODE_REGISTRY.get(source.type_id) if source else None
-            target_def = COMMON_NODE_REGISTRY.get(target.type_id) if target else None
+            source_def = registry.get(source.type_id) if source else None
+            target_def = registry.get(target.type_id) if target else None
             source_port = source_def.port(link.source_port) if source_def else None
             target_port = target_def.port(link.target_port) if target_def else None
             if (
@@ -727,7 +769,7 @@ class ParticleGraphCompiler:
             if uid == root_uid:
                 continue
             node = by_uid[uid]
-            definition = COMMON_NODE_REGISTRY.get(node.type_id)
+            definition = registry.get(node.type_id)
             if definition is None:
                 raise ParticleCompileError(f"unknown particle node type {node.type_id!r}")
             opcode = definition.target_opcodes.get("particle_hir", "")
@@ -741,12 +783,21 @@ class ParticleGraphCompiler:
                 and port.kind is PortKind.VALUE
                 and not port.required
             }
+            properties.update(
+                {
+                    port.id: port.default
+                    for port in definition.ports
+                    if port.id in editable_inputs
+                }
+            )
             unknown = set(node.properties) - (set(properties) | editable_inputs)
             if unknown:
                 raise ParticleCompileError(
                     f"node {node.type_id!r} has unknown properties: {sorted(unknown)}"
                 )
             properties.update(node.properties)
+            if node.type_id in definitions.event_route_by_type_id:
+                properties["route"] = definitions.event_route_by_type_id[node.type_id]
             from Infernux.graph.expression_ir import ExpressionCompiler
 
             for property_def in definition.properties:

@@ -14,6 +14,7 @@ from Infernux.lib import _Infernux as native
 from Infernux.particle import (
     GpuParticleGlslLowerer,
     GpuParticleCompileError,
+    KernelCompileError,
     ParticleAttribute,
     ParticleEmitterAsset,
     ParticleEventField,
@@ -31,6 +32,10 @@ from Infernux.particle import (
 )
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from Infernux.particle.nodes import (
+    particle_event_output_type_id,
+    particle_event_payload_port_id,
+)
 
 
 def _gpu_source():
@@ -69,9 +74,14 @@ def _event_output_program():
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
+                "impact.position",
+                "common.constant.vec3",
+                properties={"value": [4.0, 5.0, 6.0]},
+            ),
+            GraphNodeRecord(
                 "impact.output",
-                "particle.event.output",
-                properties={"route": "impact-route", "condition": True},
+                particle_event_output_type_id("impact-route", "update"),
+                properties={"condition": True},
             ),
         ),
         links=(
@@ -82,6 +92,14 @@ def _event_output_program():
                 "impact.output",
                 "in",
                 PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "event.position",
+                "impact.position",
+                "value",
+                "impact.output",
+                particle_event_payload_port_id("position"),
+                PortKind.VALUE,
             ),
         ),
     )
@@ -95,7 +113,7 @@ def _event_output_program():
             ParticleEventField(
                 "position",
                 "Position",
-                TypeRef(ValueType.VEC3, CoordinateSpace.WORLD),
+                TypeRef(ValueType.VEC3),
                 [1.0, 2.0, 3.0],
             ),
             ParticleEventField(
@@ -136,10 +154,19 @@ def test_event_output_lowers_to_stage_end_gpu_append_with_typed_defaults():
     )
     immediate = instruction.immediate_dict()
     assert immediate["channel_index"] == 0
-    assert immediate["payload_words"] == [
-        struct.unpack("<I", struct.pack("<f", value))[0]
-        for value in (1.0, 2.0, 3.0)
-    ] + [7]
+    assert [operand.value_type for operand in instruction.operands] == [
+        TypeRef(ValueType.BOOL),
+        TypeRef(ValueType.VEC3),
+        TypeRef(ValueType.U32),
+    ]
+    assert [field["stable_id"] for field in immediate["payload_layout"]] == [
+        "position",
+        "kind",
+    ]
+    assert [field["word_offset"] for field in immediate["payload_layout"]] == [0, 3]
+    assert kernel.events.event_types[0].payload_stride_words == 4
+    assert kernel.events.event_types[0].fields[0].value_type == TypeRef(ValueType.VEC3)
+    assert kernel.events.routes[0].source_stage.value == "update"
 
     source = gpu.emitters[0]
     assert source.event_output_stages == ("update",)
@@ -147,7 +174,15 @@ def test_event_output_lowers_to_stage_end_gpu_append_with_typed_defaults():
     assert "atomicAdd(event_output_counters" in source.update
     assert "state.spawn_generation" in source.update
     assert "event_output_record_words" in source.update
+    assert "vec3(4.0, 5.0, 6.0)" in source.update
+    assert "floatBitsToUint" in source.update
     assert "ParticleEventOutputChannels" not in source.init
+    restored = type(kernel).from_dict(kernel.to_dict())
+    assert GpuParticleGlslLowerer().lower(restored).emitters[0].update == source.update
+    corrupted = copy.deepcopy(kernel.to_dict())
+    corrupted["events"]["routes"][0]["source_stage"] = "init"
+    with pytest.raises(KernelCompileError, match="does not match its source route"):
+        type(kernel).from_dict(corrupted)
     compiled = compile_gpu_particle_spirv(gpu)
     assert set(compiled["emitters"][0]["stages"]) == set(source.stages())
 

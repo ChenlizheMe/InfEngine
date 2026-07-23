@@ -35,6 +35,7 @@ from Infernux.particle.asset import (
     SimulationSpace,
 )
 from Infernux.particle.artifact import ParticleArtifactRegistry
+from Infernux.particle.nodes import particle_graph_node_definitions
 
 from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
@@ -170,7 +171,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         node = self._model.find_node(str(node_uid))
         if node is None:
             raise KeyError(f"Particle Graph node not found: {node_uid!r}")
-        definition = COMMON_NODE_REGISTRY.get(node.type_id)
+        definition = self._definition_for_type(node.type_id)
         if definition is None:
             raise RuntimeError(
                 f"Particle Graph node type is not registered: {node.type_id!r}"
@@ -240,7 +241,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise ValueError(f"Unknown Particle Graph stage: {stage!r}")
         if not math.isfinite(float(x)) or not math.isfinite(float(y)):
             raise ValueError("Particle Graph node position must be finite")
-        definition = COMMON_NODE_REGISTRY.get(type_id)
+        definition = self._definition_for_type(type_id)
         if definition is None or type_id.startswith("particle.root."):
             raise ValueError(f"Particle Graph node type cannot be created: {type_id!r}")
         if not particle_stage_definition_filter(f"particle.{stage}")(definition):
@@ -270,7 +271,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         node = self._model.find_node(str(node_uid))
         if node is None:
             raise KeyError(f"Particle Graph node not found: {node_uid!r}")
-        definition = COMMON_NODE_REGISTRY.get(node.type_id)
+        definition = self._definition_for_type(node.type_id)
         if definition is None:
             raise RuntimeError(
                 f"Particle Graph node type is not registered: {node.type_id!r}"
@@ -410,13 +411,21 @@ class ParticleGraphEditorPanel(EditorPanel):
     def _selected_emitter(self) -> ParticleEmitterAsset:
         return self._asset.emitters[self._emitter_index]
 
+    def _definition_for_type(self, type_id: str):
+        if self._model is not None:
+            return self._model.definition_for_type(type_id)
+        return COMMON_NODE_REGISTRY.get(type_id)
+
     def _replace_emitter(self, emitter: ParticleEmitterAsset) -> None:
         emitters = list(self._asset.emitters)
         emitters[self._emitter_index] = emitter
         self._asset = replace(self._asset, emitters=tuple(emitters))
 
     def _bind_stage(self) -> None:
-        self._model = ParticleEmitterGraphAuthoringModel(self._selected_emitter())
+        self._model = ParticleEmitterGraphAuthoringModel(
+            self._selected_emitter(),
+            definition_set=particle_graph_node_definitions(self._asset),
+        )
         self._model.set_authoring_stage(self._stage)
         self._view.graph = self._model
         self._view.reset_interaction_state()
@@ -978,7 +987,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         if self._model is None or not self._selected_node_uid:
             return
         node = self._model.find_node(self._selected_node_uid)
-        definition = COMMON_NODE_REGISTRY.get(node.type_id) if node else None
+        definition = self._definition_for_type(node.type_id) if node else None
         if node is None or definition is None:
             return
         ctx.label(t("particle_graph_editor.node_settings"))

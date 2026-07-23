@@ -82,8 +82,8 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
     "event_append": KernelOpcodeSpec(
         False,
-        1,
-        frozenset({"channel_index", "payload_words"}),
+        -1,
+        frozenset({"channel_index", "payload_layout"}),
         _ALL_STAGES,
     ),
     "collide_plane_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
@@ -236,10 +236,12 @@ def validate_instruction_semantics(
     if (result_type is not None) != spec.result_required:
         mode = "requires" if spec.result_required else "must not have"
         raise KernelSemanticError(f"kernel opcode {opcode!r} {mode} a result")
-    if len(operand_types) != spec.operand_count:
+    if spec.operand_count >= 0 and len(operand_types) != spec.operand_count:
         raise KernelSemanticError(
             f"kernel opcode {opcode!r} requires {spec.operand_count} operands"
         )
+    if opcode == "event_append" and not operand_types:
+        raise KernelSemanticError("kernel event_append requires a condition operand")
     if set(immediates) != set(spec.immediate_names):
         raise KernelSemanticError(
             f"kernel opcode {opcode!r} immediates must be {sorted(spec.immediate_names)}"
@@ -415,6 +417,58 @@ def _validate_opcode_types(
     elif opcode == "kill_if":
         if operands != (bool_type,):
             raise KernelSemanticError("kernel kill_if requires one bool operand")
+    elif opcode == "event_append":
+        if operands[0] != bool_type:
+            raise KernelSemanticError("kernel event_append condition must be bool")
+        _validate_u32(immediates["channel_index"], "event channel index")
+        layout = immediates["payload_layout"]
+        if type(layout) is not list or len(layout) != len(operands) - 1:
+            raise KernelSemanticError(
+                "kernel event_append payload layout must match its operands"
+            )
+        next_word = 0
+        for index, (field, operand) in enumerate(zip(layout, operands[1:])):
+            if type(field) is not dict or set(field) != {
+                "stable_id",
+                "type",
+                "word_offset",
+                "word_count",
+            }:
+                raise KernelSemanticError("kernel event_append field layout is invalid")
+            if type(field["stable_id"]) is not str or not field["stable_id"]:
+                raise KernelSemanticError("kernel event_append field identity is invalid")
+            try:
+                field_type = TypeRef.from_dict(field["type"])
+            except (TypeError, ValueError) as exc:
+                raise KernelSemanticError(
+                    "kernel event_append field type is invalid"
+                ) from exc
+            if field_type != operand:
+                raise KernelSemanticError(
+                    f"kernel event_append field {index} type does not match its operand"
+                )
+            expected_words = {
+                ValueType.BOOL: 1,
+                ValueType.I32: 1,
+                ValueType.U32: 1,
+                ValueType.F32: 1,
+                ValueType.VEC2: 2,
+                ValueType.VEC3: 3,
+                ValueType.VEC4: 4,
+                ValueType.COLOR: 4,
+                ValueType.MAT3: 12,
+                ValueType.MAT4: 16,
+            }.get(field_type.value_type)
+            if (
+                type(field["word_offset"]) is not int
+                or field["word_offset"] != next_word
+                or type(field["word_count"]) is not int
+                or field["word_count"] != expected_words
+            ):
+                raise KernelSemanticError(
+                    "kernel event_append field word layout is invalid"
+                )
+            next_word += expected_words
     elif opcode in {"collide_plane_position", "collide_plane_velocity"}:
         simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
         if result_type != simulation_vec3 or operands != (

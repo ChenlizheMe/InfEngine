@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import math
 from typing import Any, Mapping
 
@@ -65,9 +66,11 @@ class ExpressionCompiler:
         self,
         registry: NodeDefinitionRegistry = COMMON_NODE_REGISTRY,
         type_system: TypeSystem = PORTABLE_TYPE_SYSTEM,
+        definition_fingerprint: str = "",
     ) -> None:
         self._registry = registry
         self._types = type_system
+        self._definition_fingerprint = str(definition_fingerprint)
 
     def compile(self, document: GraphDocument, outputs) -> ExpressionProgram:
         by_uid = {node.uid: node for node in document.nodes}
@@ -193,10 +196,15 @@ class ExpressionCompiler:
             return values[key]
 
         compiled_outputs = tuple(emit(str(node_uid), str(port_id)) for node_uid, port_id in outputs)
+        semantic_hash = document.semantic_hash()
+        if self._definition_fingerprint:
+            semantic_hash = hashlib.sha256(
+                f"{semantic_hash}\n{self._definition_fingerprint}".encode("utf-8")
+            ).hexdigest()
         return ExpressionProgram(
             tuple(instructions),
             compiled_outputs,
-            document.semantic_hash(),
+            semantic_hash,
         )
 
     def _validate(self, document, by_uid) -> list[ExpressionDiagnostic]:

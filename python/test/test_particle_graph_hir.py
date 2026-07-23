@@ -35,6 +35,7 @@ from Infernux.particle import (
     decode_particle_runtime_metadata,
 )
 from Infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
+from Infernux.particle.nodes import particle_event_output_type_id
 
 
 def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
@@ -138,15 +139,15 @@ def test_particle_event_routes_reject_implicit_feedback_cycles():
         )
 
 
-def _event_output_stage(route_id: str) -> GraphDocument:
+def _event_output_stage(route_id: str, source_stage: str = "update") -> GraphDocument:
     return GraphDocument(
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "event.output",
-                "particle.event.output",
-                properties={"route": route_id, "condition": True},
+                particle_event_output_type_id(route_id, source_stage),
+                properties={"condition": True},
             ),
         ),
         links=(
@@ -165,7 +166,7 @@ def _event_output_stage(route_id: str) -> GraphDocument:
 @pytest.mark.parametrize(
     ("route", "match"),
     (
-        (None, "unknown route"),
+        (None, "unknown node type"),
         (
             ParticleEventRoute("route", "event", "other", "update", "source"),
             "belongs to emitter",
@@ -178,9 +179,10 @@ def _event_output_stage(route_id: str) -> GraphDocument:
 )
 def test_particle_event_output_requires_a_matching_source_route(route, match):
     route_id = "missing" if route is None else route.stable_id
+    node_stage = route.source_stage if route is not None else "update"
     source = ParticleEmitterAsset(
         stable_id="source",
-        update=_event_output_stage(route_id),
+        update=_event_output_stage(route_id, node_stage),
     )
     other = ParticleEmitterAsset(stable_id="other")
     asset = ParticleGraphAsset(
@@ -191,6 +193,36 @@ def test_particle_event_output_requires_a_matching_source_route(route, match):
 
     with pytest.raises(ParticleCompileError, match=match):
         ParticleGraphCompiler().compile(asset)
+
+
+def test_particle_event_schema_fingerprint_invalidates_stage_expression_programs():
+    source = ParticleEmitterAsset(
+        stable_id="source",
+        update=_event_output_stage("route"),
+    )
+    target = ParticleEmitterAsset(stable_id="target")
+    route = ParticleEventRoute("route", "event", "source", "update", "target")
+
+    def compile_default(default: float):
+        event_type = ParticleEventType(
+            "event",
+            "Event",
+            16,
+            (ParticleEventField("weight", "Weight", TypeRef(ValueType.F32), default),),
+        )
+        return ParticleGraphCompiler().compile(
+            ParticleGraphAsset(
+                emitters=(source, target),
+                event_types=(event_type,),
+                event_routes=(route,),
+            )
+        )
+
+    first = compile_default(1.0)
+    second = compile_default(2.0)
+    assert first.emitters[0].update.expressions.semantic_hash != (
+        second.emitters[0].update.expressions.semantic_hash
+    )
 
 
 def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attributes():
