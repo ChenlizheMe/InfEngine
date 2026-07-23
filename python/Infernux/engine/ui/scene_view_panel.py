@@ -458,6 +458,11 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             # human clicks and MCP synthetic SDL input on the same surface.
             ctx.set_cursor_pos_x(cursor_start_x)
             ctx.set_cursor_pos_y(cursor_start_y)
+            # The Scene View draws toolbar, Prefab Mode, and particle-preview
+            # controls over this full-viewport item. Let those later items own
+            # input inside their rectangles instead of being blocked by the
+            # viewport hit target underneath.
+            ctx.set_next_item_allow_overlap()
             ctx.invisible_button("##SceneViewportInput", float(scene_width), float(scene_height))
             ctx.record_semantic_item(
                 "viewport", "Scene Viewport", True, _SCENE_VIEWPORT_SEMANTIC_ID

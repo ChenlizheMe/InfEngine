@@ -16,6 +16,7 @@
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
 #include <function/scene/PrimitiveMeshes.h>
 
@@ -331,10 +332,14 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     lightingUBO.directionalLights[0].direction = glm::vec4(glm::normalize(glm::vec3(-0.8f, -1.0f, -0.6f)), 0.0f);
     // color.rgb = color * intensity, color.a = intensity
     lightingUBO.directionalLights[0].color = glm::vec4(2.0f * 1.0f, 2.0f * 0.95f, 2.0f * 0.9f, 2.0f);
+    lightingUBO.directionalLights[0].metadata =
+        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     // Fill light — back-left to keep the sphere readable under harsh normals.
     lightingUBO.directionalLights[1].direction = glm::vec4(glm::normalize(glm::vec3(0.6f, 0.3f, -0.8f)), 0.0f);
     lightingUBO.directionalLights[1].color = glm::vec4(0.6f * 0.6f, 0.6f * 0.7f, 0.6f * 0.85f, 0.6f);
+    lightingUBO.directionalLights[1].metadata =
+        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     // ------------------------------------------------------------------
     // Prepare engine globals UBO (minimal)

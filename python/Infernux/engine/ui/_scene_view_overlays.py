@@ -66,7 +66,17 @@ class SceneViewOverlaysMixin:
             ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.PREFAB_BTN_HOVERED)
             ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.PREFAB_BTN_ACTIVE)
 
-            if ctx.button(t("scene_view.exit_prefab_mode")):
+            exit_label = t("scene_view.exit_prefab_mode")
+            exit_clicked = ctx.button(exit_label)
+            record_item = getattr(ctx, "record_semantic_item", None)
+            if callable(record_item):
+                record_item(
+                    "button",
+                    exit_label,
+                    True,
+                    "scene_view.prefab.exit",
+                )
+            if exit_clicked:
                 scene_file_manager.exit_prefab_mode_with_undo()
             if ctx.is_item_hovered() and ctx.is_mouse_button_down(0):
                 overlay_hovered = True
