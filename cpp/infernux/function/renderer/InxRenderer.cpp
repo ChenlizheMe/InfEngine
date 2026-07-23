@@ -23,6 +23,8 @@
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuMigrator.h"
+#include "particle/ParticleGpuRibbonRenderer.h"
+#include "particle/ParticleGpuRibbonTopology.h"
 #include "particle/ParticleGpuSorter.h"
 #include "particle/ParticleGpuSystemManager.h"
 #include "vk/RenderGraph.h"
@@ -117,6 +119,34 @@ struct CompiledParticleMigrationProgram
     }
 };
 
+struct CompiledParticleRibbonTopologyProgram
+{
+    std::array<std::vector<uint32_t>, 5> shaders;
+
+    [[nodiscard]] particle::GpuParticleRibbonProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
+            {shaders[4].data(), shaders[4].size()},
+        };
+    }
+};
+
+struct CompiledParticleRibbonRenderProgram
+{
+    std::array<std::vector<uint32_t>, 3> shaders;
+
+    [[nodiscard]] particle::GpuParticleRibbonRenderProgram View() const noexcept
+    {
+        return {
+            {shaders[0].data(), shaders[0].size()},
+            {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()},
+        };
+    }
+};
+
 CompiledParticleSortProgram CompileParticleSortProgram()
 {
     InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
@@ -188,6 +218,48 @@ CompiledParticleMigrationProgram CompileParticleMigrationProgram()
             return {};
         result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
         std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleRibbonTopologyProgram CompileParticleRibbonTopologyProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 5> sources = {{
+        {particle::GpuParticleRibbonShaderSources::Reset(), "Infernux/ParticleRibbonReset.comp"},
+        {particle::GpuParticleRibbonShaderSources::Initialize(), "Infernux/ParticleRibbonInitialize.comp"},
+        {particle::GpuParticleRibbonShaderSources::Histogram(), "Infernux/ParticleRibbonHistogram.comp"},
+        {particle::GpuParticleRibbonShaderSources::Scan(), "Infernux/ParticleRibbonScan.comp"},
+        {particle::GpuParticleRibbonShaderSources::Scatter(), "Infernux/ParticleRibbonScatter.comp"},
+    }};
+    CompiledParticleRibbonTopologyProgram result;
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
+        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+    }
+    return result;
+}
+
+CompiledParticleRibbonRenderProgram CompileParticleRibbonRenderProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    CompiledParticleRibbonRenderProgram result;
+    const auto vertex = compiler.CompileVertexGlsl(
+        std::string(particle::GpuParticleRibbonRenderShaderSources::Vertex()), "Infernux/ParticleRibbon.vert");
+    const auto fragment = compiler.CompileFragmentGlsl(
+        std::string(particle::GpuParticleRibbonRenderShaderSources::Fragment()), "Infernux/ParticleRibbon.frag");
+    const auto picking =
+        compiler.CompileFragmentGlsl(std::string(particle::GpuParticleRibbonRenderShaderSources::PickingFragment()),
+                                     "Infernux/ParticleRibbonPicking.frag");
+    const std::array<const std::vector<char> *, 3> bytes = {&vertex, &fragment, &picking};
+    for (size_t index = 0; index < bytes.size(); ++index) {
+        if (bytes[index]->size() < 5 * sizeof(uint32_t) || bytes[index]->size() % sizeof(uint32_t) != 0)
+            return {};
+        result.shaders[index].resize(bytes[index]->size() / sizeof(uint32_t));
+        std::memcpy(result.shaders[index].data(), bytes[index]->data(), bytes[index]->size());
     }
     return result;
 }
@@ -451,12 +523,19 @@ void InxRenderer::PreparePipeline()
         const auto particleMigrationProgram = CompileParticleMigrationProgram();
         if (!particleMigrationProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
+        const auto particleRibbonTopologyProgram = CompileParticleRibbonTopologyProgram();
+        if (!particleRibbonTopologyProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle Ribbon topology kernels");
+        const auto particleRibbonRenderProgram = CompileParticleRibbonRenderProgram();
+        if (!particleRibbonRenderProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle Ribbon render shaders");
         if (!m_particleGpuSystemManager->Initialize(
                 m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetResourceManager(),
                 m_vkCore->GetDeletionQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
                 std::move(particleTextureVersionResolver), std::move(particleVectorFieldTextureResolver),
                 particleSortProgram.View(), particleCullProgram.View(), particleBoundsProgram.View(),
-                particleMigrationProgram.View())) {
+                particleMigrationProgram.View(), particleRibbonTopologyProgram.View(),
+                particleRibbonRenderProgram.View())) {
             m_particleGpuSystemManager.reset();
             INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         }

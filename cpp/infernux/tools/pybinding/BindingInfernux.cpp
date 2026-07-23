@@ -287,8 +287,9 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         if (!py::isinstance<py::dict>(item))
             throw std::invalid_argument("GPU particle outputs must contain dictionaries");
         const py::dict output = py::reinterpret_borrow<py::dict>(item);
-        for (const char *field : {"id", "stable_id", "output_type", "mesh", "material", "receive_scene_lighting",
-                                  "receive_shadows", "cast_shadows", "soft_particles", "soft_distance", "sort_mode"}) {
+        for (const char *field :
+             {"id", "stable_id", "output_type", "mesh", "material", "receive_scene_lighting", "receive_shadows",
+              "cast_shadows", "soft_particles", "soft_distance", "sort_mode", "ribbon_uv_mode", "ribbon_uv_scale"}) {
             if (!output.contains(field))
                 throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
         }
@@ -303,8 +304,10 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             if (output["mesh"].is_none())
                 throw std::invalid_argument("GPU particle Mesh Output requires a native mesh");
             decoded.mesh = py::cast<std::shared_ptr<InxMesh>>(output["mesh"]);
+        } else if (outputType == "ribbon") {
+            decoded.type = particle::GpuParticleOutputType::Ribbon;
         } else {
-            throw std::invalid_argument("GPU particle output_type must be 'sprite' or 'mesh'");
+            throw std::invalid_argument("GPU particle output_type must be 'sprite', 'mesh', or 'ribbon'");
         }
         decoded.semantics.receiveSceneLighting = py::cast<bool>(output["receive_scene_lighting"]);
         decoded.semantics.receiveShadows = py::cast<bool>(output["receive_shadows"]);
@@ -312,6 +315,18 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         decoded.semantics.softParticles = py::cast<bool>(output["soft_particles"]);
         decoded.semantics.softDistance = py::cast<float>(output["soft_distance"]);
         decoded.semantics.sortMode = DecodeParticleSortMode(py::cast<std::string>(output["sort_mode"]));
+        if (decoded.type == particle::GpuParticleOutputType::Ribbon) {
+            const std::string uvMode = py::cast<std::string>(output["ribbon_uv_mode"]);
+            if (uvMode == "stretch")
+                decoded.ribbonUvMode = particle::ParticleRibbonUvMode::Stretch;
+            else if (uvMode == "repeat")
+                decoded.ribbonUvMode = particle::ParticleRibbonUvMode::Repeat;
+            else
+                throw std::invalid_argument("GPU particle Ribbon UV mode must be 'stretch' or 'repeat'");
+            decoded.ribbonUvScale = py::cast<float>(output["ribbon_uv_scale"]);
+            if (!std::isfinite(decoded.ribbonUvScale) || decoded.ribbonUvScale <= 0.0f)
+                throw std::invalid_argument("GPU particle Ribbon UV scale must be finite and greater than zero");
+        }
         const py::dict material = py::cast<py::dict>(output["material"]);
         for (const char *field : {"render_queue", "blend_enabled", "depth_test_enabled", "depth_write_enabled"}) {
             if (!material.contains(field))

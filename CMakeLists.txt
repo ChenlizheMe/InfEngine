@@ -557,6 +557,8 @@ if(INFERNUX_BUILD_TESTS)
         cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuRibbonRenderer.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuRibbonTopology.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuRuntime.cpp
     )
     target_include_directories(infernux_particle_gpu_runtime_tests PRIVATE
@@ -832,6 +834,8 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_shader_stage_linker_tests
         cpp/tests/ShaderStageLinkerTests.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuRibbonRenderer.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuRibbonTopology.cpp
     )
     target_include_directories(infernux_shader_stage_linker_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux

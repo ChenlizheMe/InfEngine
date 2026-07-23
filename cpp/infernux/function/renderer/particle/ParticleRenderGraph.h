@@ -2,6 +2,7 @@
 
 #include "ParticleGpuBounds.h"
 #include "ParticleGpuMigrator.h"
+#include "ParticleGpuRibbonTopology.h"
 #include "ParticleGpuRuntime.h"
 
 #include <function/renderer/vk/RenderGraph.h>
@@ -55,7 +56,8 @@ class ParticleRenderGraph
     ParticleRenderGraph &operator=(ParticleRenderGraph &&) = delete;
 
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
-                              const std::string &namePrefix, ParticleGpuMigrator *migration = nullptr);
+                              const std::string &namePrefix, ParticleGpuMigrator *migration = nullptr,
+                              ParticleGpuRibbonTopology *ribbonTopology = nullptr);
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
     void Reset() noexcept;
     [[nodiscard]] bool HasCompletedMigration() const noexcept
@@ -85,6 +87,7 @@ class ParticleRenderGraph
     ParticleGpuRuntime *m_runtime = nullptr;
     ParticleGpuBounds *m_bounds = nullptr;
     ParticleGpuMigrator *m_migrator = nullptr;
+    ParticleGpuRibbonTopology *m_ribbonTopology = nullptr;
     GpuParticleFrameRequest m_request{};
     GpuParticleGraphOutputs m_outputs{};
     bool m_bootstrapPending = true;

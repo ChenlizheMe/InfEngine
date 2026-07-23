@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -107,6 +108,8 @@ struct ParticleGpuSystemManager::Impl
             std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
             GpuBillboardMaterialState fallbackMaterial;
             ParticleOutputSemantics semantics;
+            ParticleRibbonUvMode ribbonUvMode = ParticleRibbonUvMode::Stretch;
+            float ribbonUvScale = 1.0f;
             std::shared_ptr<ParticleGpuOutputRenderer> renderer;
         };
 
@@ -116,6 +119,7 @@ struct ParticleGpuSystemManager::Impl
         bool statePreservedOnPublish = false;
         std::unique_ptr<ParticleGpuRuntime> runtime;
         std::unique_ptr<ParticleGpuBounds> bounds;
+        std::shared_ptr<ParticleGpuRibbonTopology> ribbonTopology;
         std::shared_ptr<ParticleGpuMigrator> migration;
         std::shared_ptr<Emitter> migrationSource;
         GpuParticleEmitterProgram sourceProgram;
@@ -162,6 +166,8 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     std::shared_ptr<const GpuParticleBoundsProgramStorage> boundsProgram;
     std::shared_ptr<const GpuParticleMigrationProgramStorage> migrationProgram;
+    std::shared_ptr<const GpuParticleRibbonProgramStorage> ribbonTopologyProgram;
+    std::shared_ptr<const GpuParticleRibbonRenderProgramStorage> ribbonRenderProgram;
     EmitterMap emitters;
     std::shared_ptr<GraphState> graphState;
     mutable std::unordered_map<const InxPointCache *, PointCacheUpload> pointCacheUploads;
@@ -411,6 +417,22 @@ struct ParticleGpuSystemManager::Impl
     [[nodiscard]] std::shared_ptr<ParticleGpuOutputRenderer>
     CreateOutputRenderer(const Emitter &emitter, const GpuParticleOutputProgram &output, std::string *error) const
     {
+        if (output.type == GpuParticleOutputType::Ribbon) {
+            if (!emitter.ribbonTopology || !ribbonRenderProgram || !ribbonRenderProgram->IsValid()) {
+                SetError(error, "GPU particle Ribbon resources are unavailable");
+                return {};
+            }
+            auto renderer = std::make_shared<ParticleGpuRibbonRenderer>();
+            GpuRibbonRendererDesc desc;
+            desc.program = ribbonRenderProgram->View();
+            desc.topology = emitter.ribbonTopology;
+            desc.material = output.material;
+            desc.fallbackMaterial = output.fallbackMaterial;
+            desc.semantics = output.semantics;
+            desc.uvMode = output.ribbonUvMode;
+            desc.uvScale = output.ribbonUvScale;
+            return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
+        }
         if (output.type == GpuParticleOutputType::Mesh) {
             const auto meshResources = ResolveMeshResources(output.mesh, error);
             if (!meshResources)
@@ -488,6 +510,9 @@ struct ParticleGpuSystemManager::Impl
         const bool needsMesh = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
             return output.type == GpuParticleOutputType::Mesh;
         });
+        const bool needsRibbon = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
+            return output.type == GpuParticleOutputType::Ribbon;
+        });
         const bool needsLitMesh =
             std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
                 return output.type == GpuParticleOutputType::Mesh && output.semantics.receiveSceneLighting;
@@ -496,6 +521,11 @@ struct ParticleGpuSystemManager::Impl
                           (needsLitMesh && !IsSpirv(program.meshForwardPlusFragmentShader)) ||
                           !IsSpirv(program.meshPickingFragmentShader))) {
             SetError(error, "GPU particle program contains invalid mesh output SPIR-V");
+            return {};
+        }
+        if (needsRibbon && (!ribbonTopologyProgram || !ribbonTopologyProgram->IsValid() || !ribbonRenderProgram ||
+                            !ribbonRenderProgram->IsValid())) {
+            SetError(error, "GPU particle Ribbon topology or render shaders are unavailable");
             return {};
         }
         if (program.outputs.empty()) {
@@ -584,6 +614,19 @@ struct ParticleGpuSystemManager::Impl
             SetError(error, "failed to create GPU particle bounds reducer");
             return {};
         }
+        if (needsRibbon) {
+            GpuParticleRibbonDesc ribbonDesc;
+            ribbonDesc.capacity = emitter->runtime->Capacity();
+            ribbonDesc.instances = emitter->runtime->InstanceBuffer();
+            ribbonDesc.sourceIndices = emitter->runtime->RenderIndexBuffer();
+            ribbonDesc.sourceIndirectArguments = emitter->runtime->IndirectBuffer();
+            ribbonDesc.program = ribbonTopologyProgram->View();
+            emitter->ribbonTopology = std::make_shared<ParticleGpuRibbonTopology>();
+            if (!emitter->ribbonTopology->Create(device, ribbonDesc)) {
+                SetError(error, "failed to create GPU-resident Ribbon topology");
+                return {};
+            }
+        }
 
         std::unordered_set<uint64_t> outputIds;
         std::unordered_set<std::string> outputStableIds;
@@ -617,7 +660,16 @@ struct ParticleGpuSystemManager::Impl
                                     "' requires a loaded mesh and currently does not support soft fading");
                 return {};
             }
-            if (output.semantics.sortMode != ParticleSortMode::None && (!sortProgram || !sortProgram->IsValid())) {
+            if (output.type == GpuParticleOutputType::Ribbon &&
+                (output.semantics.castShadows || output.semantics.softParticles ||
+                 output.semantics.receiveSceneLighting || output.semantics.receiveShadows ||
+                 !std::isfinite(output.ribbonUvScale) || output.ribbonUvScale <= 0.0f)) {
+                SetError(error, "GPU particle Ribbon output '" + output.stableId +
+                                    "' has unsupported lighting, shadow, soft-particle, or UV semantics");
+                return {};
+            }
+            if (output.type != GpuParticleOutputType::Ribbon && output.semantics.sortMode != ParticleSortMode::None &&
+                (!sortProgram || !sortProgram->IsValid())) {
                 SetError(error, "GPU particle sorting kernels are unavailable");
                 return {};
             }
@@ -633,9 +685,21 @@ struct ParticleGpuSystemManager::Impl
                              "failed to create GPU particle output renderer for output '" + output.stableId + "'");
                 return {};
             }
-            emitter->outputs.push_back({output.id, output.stableId, output.type, output.mesh, output.material,
-                                        output.shaderProgram, output.fallbackMaterial, output.semantics,
-                                        std::move(renderer)});
+            Emitter::Output emitterOutput;
+            emitterOutput.id = output.id;
+            emitterOutput.stableId = output.stableId;
+            emitterOutput.type = output.type;
+            emitterOutput.mesh = output.mesh;
+            emitterOutput.material = output.material;
+            emitterOutput.shaderProgram = output.shaderProgram;
+            emitterOutput.fallbackMaterial = output.fallbackMaterial;
+            emitterOutput.semantics = output.semantics;
+            if (output.type == GpuParticleOutputType::Ribbon)
+                emitterOutput.semantics.sortMode = ParticleSortMode::None;
+            emitterOutput.ribbonUvMode = output.ribbonUvMode;
+            emitterOutput.ribbonUvScale = output.ribbonUvScale;
+            emitterOutput.renderer = std::move(renderer);
+            emitter->outputs.push_back(std::move(emitterOutput));
         }
         return emitter;
     }
@@ -708,8 +772,8 @@ struct ParticleGpuSystemManager::Impl
         for (const auto &[id, emitter] : candidateEmitters) {
             auto scheduler = std::make_unique<ParticleRenderGraph>();
             const std::string prefix = "GpuParticle/" + std::to_string(id);
-            if (!scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, prefix,
-                                   emitter->migration.get())) {
+            if (!scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, prefix, emitter->migration.get(),
+                                   emitter->ribbonTopology.get())) {
                 SetError(error, "failed to attach GPU particle emitter to the simulation graph");
                 return {};
             }
@@ -742,15 +806,25 @@ struct ParticleGpuSystemManager::Impl
                 entry.capacity = emitter->runtime->Capacity();
                 entry.instances = emitter->runtime->InstanceBuffer();
                 entry.renderIndices = output.renderer->RenderIndexBuffer();
-                entry.indirectArguments = emitter->runtime->IndirectBuffer();
+                entry.indirectArguments = output.type == GpuParticleOutputType::Ribbon
+                                              ? emitter->ribbonTopology->DrawIndirectBuffer()
+                                              : emitter->runtime->IndirectBuffer();
                 entry.bounds = emitter->bounds->BoundsBuffer();
                 entry.renderer = output.renderer;
-                entry.cullProgram = (output.shaderProgram || output.type == GpuParticleOutputType::Mesh ||
-                                     output.semantics.sortMode != ParticleSortMode::None)
+                entry.cullProgram = (output.type != GpuParticleOutputType::Ribbon &&
+                                     (output.shaderProgram || output.type == GpuParticleOutputType::Mesh ||
+                                      output.semantics.sortMode != ParticleSortMode::None))
                                         ? cullProgram
                                         : nullptr;
-                entry.sortProgram = output.semantics.sortMode == ParticleSortMode::None ? nullptr : sortProgram;
+                entry.sortProgram =
+                    output.type == GpuParticleOutputType::Ribbon || output.semantics.sortMode == ParticleSortMode::None
+                        ? nullptr
+                        : sortProgram;
                 entry.semantics = output.semantics;
+                if (output.type == GpuParticleOutputType::Ribbon) {
+                    entry.semantics.sortMode = ParticleSortMode::None;
+                    entry.semantics.castShadows = false;
+                }
                 entries.push_back(std::move(entry));
             }
         }
@@ -839,9 +913,11 @@ bool ParticleGpuSystemManager::Initialize(
     GpuBillboardTextureResolver textureResolver, GpuBillboardTextureVersionResolver textureVersionResolver,
     GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver, const GpuParticleSortProgram &sortProgram,
     const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
-    const GpuParticleMigrationProgram &migrationProgram)
+    const GpuParticleMigrationProgram &migrationProgram, const GpuParticleRibbonProgram &ribbonTopologyProgram,
+    const GpuParticleRibbonRenderProgram &ribbonRenderProgram)
 {
-    if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid())
+    if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
+        ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid())
         return false;
     m_impl->context = &context;
     m_impl->pipelines = &pipelines;
@@ -863,6 +939,17 @@ bool ParticleGpuSystemManager::Initialize(
         return false;
     }
     m_impl->migrationProgram = std::move(migrationStorage);
+    if (ribbonTopologyProgram.IsValid()) {
+        auto ribbonTopologyStorage = std::make_shared<GpuParticleRibbonProgramStorage>();
+        auto ribbonRenderStorage = std::make_shared<GpuParticleRibbonRenderProgramStorage>();
+        if (!ribbonTopologyStorage->Assign(ribbonTopologyProgram) ||
+            !ribbonRenderStorage->Assign(ribbonRenderProgram)) {
+            Shutdown();
+            return false;
+        }
+        m_impl->ribbonTopologyProgram = std::move(ribbonTopologyStorage);
+        m_impl->ribbonRenderProgram = std::move(ribbonRenderStorage);
+    }
     if (cullProgram.IsValid()) {
         auto storage = std::make_shared<GpuParticleCullProgramStorage>();
         if (!storage->Assign(cullProgram)) {
@@ -904,6 +991,8 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->sortProgram.reset();
     m_impl->boundsProgram.reset();
     m_impl->migrationProgram.reset();
+    m_impl->ribbonTopologyProgram.reset();
+    m_impl->ribbonRenderProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;
     m_impl->resources = nullptr;

@@ -6,6 +6,8 @@
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuMeshRenderer.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
+#include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
+#include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/renderer/rhi/RhiBuffer.h>
@@ -340,6 +342,42 @@ struct SortTrace
     {
         assert(offset == 0);
         static_cast<SortTrace *>(context)->indirectDispatches.push_back(buffer);
+    }
+};
+
+struct RibbonTrace
+{
+    std::vector<rhi::ComputePipelineHandle> pipelines;
+    std::vector<rhi::BindGroupHandle> groups;
+    std::vector<particle::GpuParticleRibbonConstants> constants;
+    std::vector<uint32_t> dispatches;
+    std::vector<rhi::BufferHandle> indirectDispatches;
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<RibbonTrace *>(context)->pipelines.push_back(pipeline);
+    }
+    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0 && group.IsValid());
+        static_cast<RibbonTrace *>(context)->groups.push_back(group);
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == sizeof(particle::GpuParticleRibbonConstants));
+        particle::GpuParticleRibbonConstants value;
+        std::memcpy(&value, data, sizeof(value));
+        static_cast<RibbonTrace *>(context)->constants.push_back(value);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        assert(y == 1 && z == 1);
+        static_cast<RibbonTrace *>(context)->dispatches.push_back(x);
+    }
+    static void DispatchIndirect(void *context, rhi::BufferHandle buffer, uint64_t offset)
+    {
+        assert(offset == 0 && buffer.IsValid());
+        static_cast<RibbonTrace *>(context)->indirectDispatches.push_back(buffer);
     }
 };
 
@@ -881,6 +919,113 @@ int main()
     gameViewSorter.Destroy();
     assert(!sorter.IsValid() && !gameViewSorter.IsValid() && sortDevice.bufferReleases == 14 &&
            sortDevice.groupReleases == 4 && sortDevice.layoutReleases == 2 && sortDevice.pipelineReleases == 8);
+
+    FakeDevice ribbonDevice;
+    std::array<std::array<uint32_t, 5>, 5> ribbonTopologyWords{};
+    for (auto &shader : ribbonTopologyWords)
+        shader[0] = 0x07230203u;
+    particle::GpuParticleRibbonDesc ribbonDesc;
+    ribbonDesc.capacity = runtime.Capacity();
+    ribbonDesc.instances = runtime.InstanceBuffer();
+    ribbonDesc.sourceIndices = runtime.RenderIndexBuffer();
+    ribbonDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+    ribbonDesc.program = {
+        {ribbonTopologyWords[0].data(), ribbonTopologyWords[0].size()},
+        {ribbonTopologyWords[1].data(), ribbonTopologyWords[1].size()},
+        {ribbonTopologyWords[2].data(), ribbonTopologyWords[2].size()},
+        {ribbonTopologyWords[3].data(), ribbonTopologyWords[3].size()},
+        {ribbonTopologyWords[4].data(), ribbonTopologyWords[4].size()},
+    };
+    particle::GpuParticleRibbonProgramStorage ribbonTopologyStorage;
+    assert(ribbonTopologyStorage.Assign(ribbonDesc.program) && ribbonTopologyStorage.IsValid());
+    auto ribbonTopology = std::make_shared<particle::ParticleGpuRibbonTopology>();
+    assert(ribbonTopology->Create(ribbonDevice, ribbonDesc));
+    assert(ribbonTopology->IsValid() && ribbonTopology->Capacity() == 1000 && ribbonTopology->BlockCount() == 4 &&
+           ribbonTopology->InstanceBuffer() == runtime.InstanceBuffer() &&
+           ribbonTopology->SourceIndexBuffer() == runtime.RenderIndexBuffer() &&
+           ribbonTopology->SourceIndirectBuffer() == runtime.IndirectBuffer() &&
+           ribbonTopology->SortedIndexBuffer() == ribbonTopology->IndexBuffer(0));
+    assert(ribbonDevice.buffers.size() == 7 && ribbonDevice.buffers[0].byteSize == 4000 &&
+           ribbonDevice.buffers[1].byteSize == 4000 && ribbonDevice.buffers[2].byteSize == 16 &&
+           rhi::HasBufferUsage(ribbonDevice.buffers[2].usage, rhi::BufferUsageFlags::Indirect) &&
+           ribbonDevice.buffers[3].byteSize == 12 &&
+           rhi::HasBufferUsage(ribbonDevice.buffers[3].usage, rhi::BufferUsageFlags::Indirect) &&
+           ribbonDevice.buffers[4].byteSize == 256 && ribbonDevice.buffers[5].byteSize == 256 &&
+           ribbonDevice.buffers[6].byteSize == 64);
+    assert(ribbonDevice.layouts.size() == 1 && ribbonDevice.layouts[0].entryCount == 10 &&
+           ribbonDevice.bindGroups.size() == 2 && ribbonDevice.bindGroups[0].bufferCount == 10 &&
+           ribbonDevice.shaderCreates == 5 && ribbonDevice.shaderReleases == 5 && ribbonDevice.pipelineCreates == 5);
+
+    RibbonTrace ribbonTrace;
+    const rhi::ComputeCommandEncoder::DispatchTable ribbonDispatch = {
+        &RibbonTrace::BindPipeline, &RibbonTrace::BindGroup, &RibbonTrace::PushConstants, &RibbonTrace::Dispatch,
+        &RibbonTrace::DispatchIndirect};
+    const rhi::ComputeCommandEncoder ribbonEncoder(&ribbonTrace, &ribbonDispatch);
+    ribbonTopology->RecordReset(ribbonEncoder);
+    ribbonTopology->RecordInitialize(ribbonEncoder);
+    ribbonTopology->RecordHistogram(ribbonEncoder, 0);
+    ribbonTopology->RecordScan(ribbonEncoder, 0);
+    ribbonTopology->RecordScatter(ribbonEncoder, 0);
+    ribbonTopology->RecordHistogram(ribbonEncoder, 8);
+    ribbonTopology->RecordHistogram(ribbonEncoder, 16);
+    ribbonTopology->RecordHistogram(ribbonEncoder, 23);
+    assert(ribbonTrace.dispatches == std::vector<uint32_t>({1, 1}));
+    assert(ribbonTrace.indirectDispatches.size() == 6 &&
+           std::all_of(ribbonTrace.indirectDispatches.begin(), ribbonTrace.indirectDispatches.end(),
+                       [&](auto buffer) { return buffer == ribbonTopology->DispatchBuffer(); }));
+    assert(ribbonTrace.constants.size() == 8 && ribbonTrace.constants[0].capacity == 1000 &&
+           ribbonTrace.constants[0].blockCount == 4 && ribbonTrace.constants[2].keyField == 2 &&
+           ribbonTrace.constants[2].digitShift == 0 && ribbonTrace.constants[5].keyField == 1 &&
+           ribbonTrace.constants[6].keyField == 0 && ribbonTrace.constants[7].keyField == 0 &&
+           ribbonTrace.constants[7].digitShift == 28);
+
+    std::array<std::array<uint32_t, 5>, 3> ribbonRenderWords{};
+    for (auto &shader : ribbonRenderWords)
+        shader[0] = 0x07230203u;
+    particle::GpuParticleRibbonRenderProgram ribbonRenderProgram = {
+        {ribbonRenderWords[0].data(), ribbonRenderWords[0].size()},
+        {ribbonRenderWords[1].data(), ribbonRenderWords[1].size()},
+        {ribbonRenderWords[2].data(), ribbonRenderWords[2].size()},
+    };
+    particle::GpuParticleRibbonRenderProgramStorage ribbonRenderStorage;
+    assert(ribbonRenderStorage.Assign(ribbonRenderProgram) && ribbonRenderStorage.IsValid());
+    particle::GpuRibbonRendererDesc ribbonRendererDesc;
+    ribbonRendererDesc.program = ribbonRenderStorage.View();
+    ribbonRendererDesc.topology = ribbonTopology;
+    ribbonRendererDesc.semantics.sortMode = particle::ParticleSortMode::None;
+    ribbonRendererDesc.uvMode = particle::ParticleRibbonUvMode::Repeat;
+    ribbonRendererDesc.uvScale = 2.5f;
+    particle::ParticleGpuRibbonRenderer ribbonRenderer;
+    assert(ribbonRenderer.Create(ribbonDevice, ribbonRendererDesc));
+    assert(ribbonRenderer.IsValid() && !ribbonRenderer.CanCastShadows() &&
+           ribbonRenderer.InstanceBuffer() == runtime.InstanceBuffer() &&
+           ribbonRenderer.RenderIndexBuffer() == ribbonTopology->SortedIndexBuffer());
+
+    GraphicsTrace ribbonGraphicsTrace;
+    const rhi::GraphicsCommandEncoder::Dispatch ribbonGraphicsDispatch = {
+        &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants, &GraphicsTrace::Draw,
+        &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder ribbonGraphicsEncoder(&ribbonGraphicsTrace, &ribbonGraphicsDispatch);
+    particle::GpuParticleViewConstants ribbonView;
+    MaterialPassPipelineDescriptor ribbonPass;
+    ribbonPass.target = ShaderCompileTarget::Forward;
+    ribbonPass.colorFormats = {rhi::PixelFormat::RGBA8UNorm};
+    ribbonPass.depthFormat = rhi::PixelFormat::D32SFloat;
+    ribbonPass.samples = rhi::SampleCount::One;
+    const rhi::RenderTargetLayoutHandle ribbonTarget{910, 1};
+    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
+                                     ribbonTopology->DrawIndirectBuffer(), ribbonView));
+    assert(ribbonGraphicsTrace.indirectBuffers ==
+           std::vector<rhi::BufferHandle>({ribbonTopology->DrawIndirectBuffer()}));
+    assert(ribbonGraphicsTrace.constants.size() == 1 && ribbonGraphicsTrace.constants[0].renderingControl[1] == 2.5f &&
+           ribbonGraphicsTrace.constants[0].renderingControl[2] == 1.0f);
+    ribbonPass.target = ShaderCompileTarget::Picking;
+    ribbonPass.colorFormats = {rhi::PixelFormat::RG32UInt};
+    assert(ribbonRenderer.RecordPickingDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
+                                            ribbonTopology->DrawIndirectBuffer(), ribbonView, 0x123456789abcdef0ull));
+    ribbonRenderer.Destroy();
+    ribbonTopology->Destroy();
+    assert(!ribbonRenderer.IsValid() && !ribbonTopology->IsValid());
 
     const auto instanceBuffer = runtime.InstanceBuffer();
     const auto renderIndexBuffer = runtime.RenderIndexBuffer();

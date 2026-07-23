@@ -18,6 +18,7 @@ struct ParticleInstance
     vec4 color;
     vec4 rotationCustom;
     vec4 scaleCustom;
+    uvec4 ribbonData;
 };
 
 layout(set = 0, binding = 3, std430) buffer Instances { ParticleInstance instances[]; };
@@ -53,6 +54,7 @@ void main()
     instances[0].color = vec4(0.9, 0.2, 0.1, 1.0);
     instances[0].rotationCustom = vec4(0.0);
     instances[0].scaleCustom = vec4(1.0, 1.0, 1.0, 0.0);
+    instances[0].ribbonData = uvec4(7u, pc.simulationStep, 0u, pc.spawnBaseId);
     indirectArgs.vertexCount = 6u;
     indirectArgs.instanceCount = 1u;
     indirectArgs.firstVertex = 0u;

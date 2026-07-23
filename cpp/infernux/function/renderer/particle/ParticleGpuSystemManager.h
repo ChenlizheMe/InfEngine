@@ -5,6 +5,8 @@
 #include "ParticleGpuCuller.h"
 #include "ParticleGpuMeshRenderer.h"
 #include "ParticleGpuMigrator.h"
+#include "ParticleGpuRibbonRenderer.h"
+#include "ParticleGpuRibbonTopology.h"
 #include "ParticleGpuSorter.h"
 #include "ParticleOutputSemantics.h"
 #include "ParticleRenderGraph.h"
@@ -43,6 +45,7 @@ enum class GpuParticleOutputType : uint8_t
 {
     Sprite,
     Mesh,
+    Ribbon,
 };
 
 struct GpuParticleOutputProgram
@@ -55,6 +58,8 @@ struct GpuParticleOutputProgram
     std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     GpuBillboardMaterialState fallbackMaterial;
     ParticleOutputSemantics semantics;
+    ParticleRibbonUvMode ribbonUvMode = ParticleRibbonUvMode::Stretch;
+    float ribbonUvScale = 1.0f;
 };
 
 struct GpuParticlePointCacheProgram
@@ -169,7 +174,9 @@ class ParticleGpuSystemManager
                                   const GpuParticleSortProgram &sortProgram = {},
                                   const GpuParticleCullProgram &cullProgram = {},
                                   const GpuParticleBoundsProgram &boundsProgram = {},
-                                  const GpuParticleMigrationProgram &migrationProgram = {});
+                                  const GpuParticleMigrationProgram &migrationProgram = {},
+                                  const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
+                                  const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
     void Shutdown() noexcept;
 
     /// Compile-then-publish replacement. The active emitter remains untouched

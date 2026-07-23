@@ -1,6 +1,8 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
+#include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
+#include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
@@ -818,6 +820,34 @@ void main() { }
         std::memcpy(&magic, spirv.data(), sizeof(magic));
         assert(magic == 0x07230203u);
     }
+
+    const std::array<std::pair<std::string_view, const char *>, 5> particleRibbonTopologyShaders = {{
+        {infernux::particle::GpuParticleRibbonShaderSources::Reset(), "ParticleRibbonReset.comp"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Initialize(), "ParticleRibbonInitialize.comp"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Histogram(), "ParticleRibbonHistogram.comp"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Scan(), "ParticleRibbonScan.comp"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Scatter(), "ParticleRibbonScatter.comp"},
+    }};
+    assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("ribbon_data") != std::string_view::npos);
+    assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("& 0xffff") == std::string_view::npos);
+    for (const auto &[source, name] : particleRibbonTopologyShaders) {
+        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
+        assert(spirv.size() >= 5 * sizeof(uint32_t));
+        uint32_t magic = 0;
+        std::memcpy(&magic, spirv.data(), sizeof(magic));
+        assert(magic == 0x07230203u);
+    }
+
+    const auto ribbonVertex = compiler.CompileVertexGlsl(
+        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex()), "ParticleRibbon.vert");
+    const auto ribbonFragment = compiler.CompileFragmentGlsl(
+        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::Fragment()), "ParticleRibbon.frag");
+    const auto ribbonPicking = compiler.CompileFragmentGlsl(
+        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::PickingFragment()),
+        "ParticleRibbonPicking.frag");
+    assert(ribbonVertex.size() >= 5 * sizeof(uint32_t));
+    assert(ribbonFragment.size() >= 5 * sizeof(uint32_t));
+    assert(ribbonPicking.size() >= 5 * sizeof(uint32_t));
 
     std::cout << "Shader stage linker tests passed\n";
     return 0;

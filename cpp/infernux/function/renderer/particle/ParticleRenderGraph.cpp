@@ -20,19 +20,25 @@ std::string StageName(const std::string &prefix, const char *stage)
 } // namespace
 
 bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
-                                 const std::string &namePrefix, ParticleGpuMigrator *migration)
+                                 const std::string &namePrefix, ParticleGpuMigrator *migration,
+                                 ParticleGpuRibbonTopology *ribbonTopology)
 {
     if (IsAttached() || !runtime.IsValid() || !bounds.IsValid() ||
         bounds.InstanceBuffer() != runtime.InstanceBuffer() ||
         bounds.SourceIndirectBuffer() != runtime.IndirectBuffer() || namePrefix.empty() || runtime.StateStride() == 0 ||
         (migration && (!migration->IsValid() || migration->DestinationStateBuffer() != runtime.StateBuffer() ||
                        migration->DestinationFreeListBuffer() != runtime.FreeListBuffer() ||
-                       migration->DestinationCounterBuffer() != runtime.CounterBuffer())))
+                       migration->DestinationCounterBuffer() != runtime.CounterBuffer())) ||
+        (ribbonTopology &&
+         (!ribbonTopology->IsValid() || ribbonTopology->InstanceBuffer() != runtime.InstanceBuffer() ||
+          ribbonTopology->SourceIndexBuffer() != runtime.RenderIndexBuffer() ||
+          ribbonTopology->SourceIndirectBuffer() != runtime.IndirectBuffer())))
         return false;
 
     m_runtime = &runtime;
     m_bounds = &bounds;
     m_migrator = migration;
+    m_ribbonTopology = ribbonTopology;
     m_migrationPending = migration != nullptr;
     m_migrationCompleted = false;
     m_bootstrapPending = !migration && runtime.NeedsBootstrap();
@@ -49,6 +55,12 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle migrationSourceCounters;
     vk::ResourceHandle migrationRanges;
     vk::ResourceHandle migrationDefaults;
+    std::array<vk::ResourceHandle, 2> ribbonIndices{};
+    vk::ResourceHandle ribbonIndirect;
+    vk::ResourceHandle ribbonDispatch;
+    vk::ResourceHandle ribbonHistograms;
+    vk::ResourceHandle ribbonBlockOffsets;
+    vk::ResourceHandle ribbonGlobalOffsets;
 
     graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
         const uint64_t capacity = runtime.Capacity();
@@ -202,6 +214,94 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             }
         };
     });
+
+    if (ribbonTopology) {
+        const uint64_t indexBytes = static_cast<uint64_t>(runtime.Capacity()) * sizeof(uint32_t);
+        const uint64_t histogramBytes =
+            static_cast<uint64_t>(ribbonTopology->BlockCount()) * ParticleGpuRibbonTopology::Radix * sizeof(uint32_t);
+        graph.AddComputePass(StageName(namePrefix, "RibbonReset"), [&](vk::PassBuilder &builder) {
+            ribbonIndices = {
+                builder.ImportBuffer(StageName(namePrefix, "RibbonIndices0"), ribbonTopology->IndexBuffer(0),
+                                     indexBytes),
+                builder.ImportBuffer(StageName(namePrefix, "RibbonIndices1"), ribbonTopology->IndexBuffer(1),
+                                     indexBytes),
+            };
+            ribbonIndirect = builder.ImportBuffer(StageName(namePrefix, "RibbonIndirect"),
+                                                  ribbonTopology->DrawIndirectBuffer(), IndirectBufferBytes);
+            ribbonDispatch = builder.ImportBuffer(StageName(namePrefix, "RibbonDispatch"),
+                                                  ribbonTopology->DispatchBuffer(), 3u * sizeof(uint32_t));
+            ribbonHistograms = builder.ImportBuffer(StageName(namePrefix, "RibbonHistograms"),
+                                                    ribbonTopology->HistogramBuffer(), histogramBytes);
+            ribbonBlockOffsets = builder.ImportBuffer(StageName(namePrefix, "RibbonBlockOffsets"),
+                                                      ribbonTopology->BlockOffsetBuffer(), histogramBytes);
+            ribbonGlobalOffsets =
+                builder.ImportBuffer(StageName(namePrefix, "RibbonGlobalOffsets"), ribbonTopology->GlobalOffsetBuffer(),
+                                     ParticleGpuRibbonTopology::Radix * sizeof(uint32_t));
+            if (!ribbonIndices[0].IsValid() || !ribbonIndices[1].IsValid() || !ribbonIndirect.IsValid() ||
+                !ribbonDispatch.IsValid() || !ribbonHistograms.IsValid() || !ribbonBlockOffsets.IsValid() ||
+                !ribbonGlobalOffsets.IsValid()) {
+                return vk::PassExecuteCallback{};
+            }
+            builder.ReadStorageBuffer(indirect);
+            ribbonIndirect = builder.WriteStorageBuffer(ribbonIndirect);
+            ribbonDispatch = builder.WriteStorageBuffer(ribbonDispatch);
+            return vk::PassExecuteCallback{[this](vk::RenderContext &context) {
+                if (m_framePending && m_ribbonTopology)
+                    m_ribbonTopology->RecordReset(context.GetComputeCommandEncoder());
+            }};
+        });
+
+        graph.AddComputePass(StageName(namePrefix, "RibbonInitialize"), [&](vk::PassBuilder &builder) {
+            builder.ReadStorageBuffer(renderIndices);
+            builder.ReadStorageBuffer(indirect);
+            builder.ReadIndirectBuffer(ribbonDispatch);
+            ribbonIndices[0] = builder.WriteStorageBuffer(ribbonIndices[0]);
+            return vk::PassExecuteCallback{[this](vk::RenderContext &context) {
+                if (m_framePending && m_ribbonTopology)
+                    m_ribbonTopology->RecordInitialize(context.GetComputeCommandEncoder());
+            }};
+        });
+
+        for (uint32_t passIndex = 0; passIndex < ParticleGpuRibbonTopology::PassCount; ++passIndex) {
+            const uint32_t input = passIndex % 2u;
+            const uint32_t output = 1u - input;
+            const std::string passPrefix = StageName(namePrefix, "RibbonRadix") + "/" + std::to_string(passIndex);
+            graph.AddComputePass(passPrefix + "/Histogram", [&, passIndex, input](vk::PassBuilder &builder) {
+                builder.ReadStorageBuffer(instances);
+                builder.ReadStorageBuffer(indirect);
+                builder.ReadStorageBuffer(ribbonIndices[input]);
+                builder.ReadIndirectBuffer(ribbonDispatch);
+                ribbonHistograms = builder.WriteStorageBuffer(ribbonHistograms);
+                return vk::PassExecuteCallback{[this, passIndex](vk::RenderContext &context) {
+                    if (m_framePending && m_ribbonTopology)
+                        m_ribbonTopology->RecordHistogram(context.GetComputeCommandEncoder(), passIndex);
+                }};
+            });
+            graph.AddComputePass(passPrefix + "/Scan", [&, passIndex](vk::PassBuilder &builder) {
+                builder.ReadStorageBuffer(ribbonHistograms);
+                ribbonBlockOffsets = builder.WriteStorageBuffer(ribbonBlockOffsets);
+                ribbonGlobalOffsets = builder.WriteStorageBuffer(ribbonGlobalOffsets);
+                return vk::PassExecuteCallback{[this, passIndex](vk::RenderContext &context) {
+                    if (m_framePending && m_ribbonTopology)
+                        m_ribbonTopology->RecordScan(context.GetComputeCommandEncoder(), passIndex);
+                }};
+            });
+            graph.AddComputePass(passPrefix + "/Scatter", [&, passIndex, input, output](vk::PassBuilder &builder) {
+                builder.ReadStorageBuffer(instances);
+                builder.ReadStorageBuffer(indirect);
+                builder.ReadStorageBuffer(ribbonIndices[input]);
+                builder.ReadStorageBuffer(ribbonHistograms);
+                builder.ReadStorageBuffer(ribbonBlockOffsets);
+                builder.ReadStorageBuffer(ribbonGlobalOffsets);
+                builder.ReadIndirectBuffer(ribbonDispatch);
+                ribbonIndices[output] = builder.WriteStorageBuffer(ribbonIndices[output]);
+                return vk::PassExecuteCallback{[this, passIndex](vk::RenderContext &context) {
+                    if (m_framePending && m_ribbonTopology)
+                        m_ribbonTopology->RecordScatter(context.GetComputeCommandEncoder(), passIndex);
+                }};
+            });
+        }
+    }
 
     graph.AddComputePass(StageName(namePrefix, "BoundsReset"), [&](vk::PassBuilder &builder) {
         builder.ReadStorageBuffer(instances);

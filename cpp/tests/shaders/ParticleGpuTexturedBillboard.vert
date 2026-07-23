@@ -6,6 +6,7 @@ struct ParticleInstance
     vec4 color;
     vec4 rotationCustom;
     vec4 scaleCustom;
+    uvec4 ribbonData;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer Instances { ParticleInstance instances[]; };
