@@ -60,8 +60,8 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
 
     if (interfaceArtifact.domain == ShaderProgramDomain::ParticleSprite) {
         Add(plan, ShaderCompileTarget::Forward, true, "particle sprite materials require a Forward variant");
-        Add(plan, ShaderCompileTarget::ForwardPlus, false,
-            "particle Forward+ variants require the shared particle lighting contract");
+        Add(plan, ShaderCompileTarget::ForwardPlus, true,
+            "particle sprite materials support the dedicated Particle Forward+ contract");
         Add(plan, ShaderCompileTarget::GBuffer, false, "particle sprites use the Forward fallback",
             ShaderCompileTarget::Forward);
         Add(plan, ShaderCompileTarget::Shadow, false,

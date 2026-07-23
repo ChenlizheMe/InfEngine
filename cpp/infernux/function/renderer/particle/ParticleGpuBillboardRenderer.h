@@ -176,6 +176,7 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
     rhi::BufferHandle m_renderIndices;
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
+    rhi::ShaderModuleHandle m_forwardPlusVertexShader;
     rhi::ShaderModuleHandle m_forwardPlusFragmentShader;
     rhi::ShaderModuleHandle m_pickingVertexShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;

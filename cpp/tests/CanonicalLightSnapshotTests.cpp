@@ -228,6 +228,18 @@ int main()
     assert(source.find("atomicOr(tile_light_masks") != std::string_view::npos);
     assert(source.find("MAX_LIGHTS") == std::string_view::npos);
     grid.Shutdown();
-    assert(device.releasedBuffers == 4 && device.releasedGroups == 4);
+
+    infernux::lighting::ForwardPlusLightGrid particleGrid;
+    assert(particleGrid.Initialize(device, 1, {shaderWords.data(), shaderWords.size()}, true));
+    const infernux::rhi::BufferHandle particleLightingBuffer{901, 1};
+    assert(particleGrid.PrepareFrame(0, 640, 360, 8, CanonicalLightAffectsParticles, canonicalBuffer,
+                                     particleLightingBuffer));
+    assert(device.layouts.back().entryCount == 4);
+    assert(device.groups.back().bufferCount == 4);
+    assert(device.groups.back().buffers[3].binding == 3 &&
+           device.groups.back().buffers[3].type == infernux::rhi::BindingType::UniformBuffer &&
+           device.groups.back().buffers[3].buffer == particleLightingBuffer);
+    particleGrid.Shutdown();
+    assert(device.releasedBuffers == 6 && device.releasedGroups == 6);
     return 0;
 }

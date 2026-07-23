@@ -83,13 +83,14 @@ ForwardPlusLightGrid::~ForwardPlusLightGrid()
 }
 
 bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlight,
-                                      const ForwardPlusGridProgram &program)
+                                      const ForwardPlusGridProgram &program, bool particleLightingConsumer)
 {
     Shutdown();
     if (framesInFlight == 0 || !program.IsValid())
         return false;
 
     m_device = &device;
+    m_particleLightingConsumer = particleLightingConsumer;
     rhi::BindingLayoutDesc layoutDesc;
     for (uint32_t binding = 0; binding < 3; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
@@ -100,6 +101,10 @@ bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlig
         consumerLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Fragment, 1};
     }
     consumerLayoutDesc.entryCount = 3;
+    if (m_particleLightingConsumer) {
+        consumerLayoutDesc.entries[consumerLayoutDesc.entryCount++] = {3, rhi::BindingType::UniformBuffer,
+                                                                       rhi::ShaderStage::Fragment, 1};
+    }
     m_consumerLayout = device.CreateBindingLayout(consumerLayoutDesc);
 
     const auto shader = device.CreateShaderModule({program.words, program.wordCount});
@@ -146,12 +151,15 @@ void ForwardPlusLightGrid::Shutdown() noexcept
     m_layout = {};
     m_consumerLayout = {};
     m_device = nullptr;
+    m_particleLightingConsumer = false;
 }
 
 bool ForwardPlusLightGrid::PrepareFrame(uint32_t frameIndex, uint32_t width, uint32_t height, uint32_t localLightCount,
-                                        uint32_t domainMask, rhi::BufferHandle canonicalLights)
+                                        uint32_t domainMask, rhi::BufferHandle canonicalLights,
+                                        rhi::BufferHandle consumerLighting)
 {
-    if (!IsValid() || frameIndex >= m_frames.size() || !canonicalLights.IsValid())
+    if (!IsValid() || frameIndex >= m_frames.size() || !canonicalLights.IsValid() ||
+        (m_particleLightingConsumer && !consumerLighting.IsValid()))
         return false;
 
     const ForwardPlusGridConfig config = BuildForwardPlusGridConfig(width, height, localLightCount, domainMask);
@@ -189,9 +197,9 @@ bool ForwardPlusLightGrid::PrepareFrame(uint32_t frameIndex, uint32_t width, uin
     }
 
     frame.config = config;
-    if (resourcesChanged || frame.canonicalLights != canonicalLights || !frame.bindGroup.IsValid() ||
-        !frame.consumerBindGroup.IsValid())
-        return RebuildBindGroup(frame, canonicalLights);
+    if (resourcesChanged || frame.canonicalLights != canonicalLights || frame.consumerLighting != consumerLighting ||
+        !frame.bindGroup.IsValid() || !frame.consumerBindGroup.IsValid())
+        return RebuildBindGroup(frame, canonicalLights, consumerLighting);
     return true;
 }
 
@@ -244,7 +252,8 @@ std::vector<ForwardPlusRetiredResources> ForwardPlusLightGrid::TakeRetiredResour
     return result;
 }
 
-bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::BufferHandle canonicalLights)
+bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::BufferHandle canonicalLights,
+                                            rhi::BufferHandle consumerLighting)
 {
     if (frame.bindGroup.IsValid())
         m_retired.push_back({frame.bindGroup, frame.consumerBindGroup, {}, {}});
@@ -261,6 +270,9 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
         return false;
 
     groupDesc.layout = m_consumerLayout;
+    if (m_particleLightingConsumer) {
+        groupDesc.buffers[groupDesc.bufferCount++] = {3, rhi::BindingType::UniformBuffer, consumerLighting, 0, 0};
+    }
     frame.consumerBindGroup = m_device->CreateBindGroup(groupDesc);
     if (!frame.consumerBindGroup.IsValid()) {
         m_device->Release(frame.bindGroup);
@@ -268,6 +280,7 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
         return false;
     }
     frame.canonicalLights = canonicalLights;
+    frame.consumerLighting = consumerLighting;
     return true;
 }
 

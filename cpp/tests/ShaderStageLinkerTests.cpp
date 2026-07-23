@@ -426,9 +426,10 @@ void surface(out SurfaceData surface)
                                                                        particleFragmentDescriptor, particleInterface);
     assert(particlePlan.IsValid());
     assert(particlePlan.Find(infernux::ShaderCompileTarget::Forward)->enabled);
-    for (const auto target : {infernux::ShaderCompileTarget::ForwardPlus, infernux::ShaderCompileTarget::GBuffer,
-                              infernux::ShaderCompileTarget::Shadow, infernux::ShaderCompileTarget::Depth,
-                              infernux::ShaderCompileTarget::Picking, infernux::ShaderCompileTarget::Motion}) {
+    assert(particlePlan.Find(infernux::ShaderCompileTarget::ForwardPlus)->enabled);
+    for (const auto target : {infernux::ShaderCompileTarget::GBuffer, infernux::ShaderCompileTarget::Shadow,
+                              infernux::ShaderCompileTarget::Depth, infernux::ShaderCompileTarget::Picking,
+                              infernux::ShaderCompileTarget::Motion}) {
         assert(!particlePlan.Find(target)->enabled);
     }
     const auto particleCompilation = compiler.CompileLinkedProgramArtifact(particleVertex, "ParticleSprite.vert",
@@ -438,7 +439,7 @@ void surface(out SurfaceData surface)
             std::cerr << error << '\n';
     }
     assert(particleCompilation.IsValid());
-    assert(particleCompilation.compiledVariants.size() == 1);
+    assert(particleCompilation.compiledVariants.size() == 2);
     assert(particleCompilation.pendingTargets.empty());
     const auto &particleForward = particleCompilation.compiledVariants.front();
     assert(particleForward.generatedVertexSource.find("readonly buffer ParticleInstances") != std::string::npos);
@@ -460,7 +461,46 @@ void surface(out SurfaceData surface)
     assert(particleArtifact.IsValid());
     assert(particleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
     assert(particleArtifact.usesParticleSceneDepthBinding);
-    assert(particleArtifact.variants.size() == 1);
+    assert(particleArtifact.variants.size() == 2);
+    assert(particleArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
+
+    const std::string litParticleFragment = R"(
+ShaderInfo
+{
+    Name "Tests/LitParticleSurface"
+    ShadingModel "PBR"
+    Surface Transparent
+    Properties
+    {
+        Color baseColor = [1.0, 0.5, 0.25, 1.0]
+    }
+}
+void surface(out SurfaceData surface)
+{
+    surface = InitSurfaceData();
+    surface.albedo = material.baseColor.rgb * v_Color;
+    surface.alpha = material.baseColor.a;
+    surface.smoothness = 0.4;
+}
+)";
+    const auto litParticleCompilation = compiler.CompileLinkedProgramArtifact(
+        particleVertex, "ParticleSprite.vert", litParticleFragment, "LitParticleSurface.frag");
+    if (!litParticleCompilation.IsValid()) {
+        for (const auto &error : litParticleCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(litParticleCompilation.IsValid());
+    assert(litParticleCompilation.compiledVariants.size() == 2);
+    const auto litParticleArtifact = litParticleCompilation.CreateRuntimeArtifact();
+    assert(litParticleArtifact.IsValid());
+    const auto *litParticleForwardPlus = litParticleArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus);
+    assert(litParticleForwardPlus != nullptr);
+    const auto &litParticleForwardPlusCompilation = litParticleCompilation.compiledVariants[1];
+    assert(litParticleForwardPlusCompilation.target == infernux::ShaderCompileTarget::ForwardPlus);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("set = 1, binding = 3") != std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ParticleLightingUBO") != std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ForwardPlusTileMaskBuffer") !=
+           std::string::npos);
 
     const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;
     const auto builtinParticleCompilation = compiler.CompileLinkedProgramArtifact(
@@ -490,7 +530,7 @@ void surface(out SurfaceData surface)
     assert(defaultParticleArtifact.IsValid());
     assert(defaultParticleArtifact.key.stages.fragmentShaderId == "particle_unlit");
     assert(defaultParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
-    assert(defaultParticleCompilation.compiledVariants.size() == 1);
+    assert(defaultParticleCompilation.compiledVariants.size() == 2);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") !=
            std::string::npos);
 

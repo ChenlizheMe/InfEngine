@@ -55,6 +55,7 @@ struct ForwardPlusGridFrame
     rhi::BindGroupHandle bindGroup;
     rhi::BindGroupHandle consumerBindGroup;
     rhi::BufferHandle canonicalLights;
+    rhi::BufferHandle consumerLighting;
     ForwardPlusGridConfig config{};
     uint64_t headerCapacityBytes = 0;
     uint64_t maskCapacityBytes = 0;
@@ -81,12 +82,14 @@ class ForwardPlusLightGrid
     ForwardPlusLightGrid(const ForwardPlusLightGrid &) = delete;
     ForwardPlusLightGrid &operator=(const ForwardPlusLightGrid &) = delete;
 
-    [[nodiscard]] bool Initialize(rhi::Device &device, uint32_t framesInFlight, const ForwardPlusGridProgram &program);
+    [[nodiscard]] bool Initialize(rhi::Device &device, uint32_t framesInFlight, const ForwardPlusGridProgram &program,
+                                  bool particleLightingConsumer = false);
     void Shutdown() noexcept;
 
     /// The caller must wait for the selected frame slot before preparing it.
     [[nodiscard]] bool PrepareFrame(uint32_t frameIndex, uint32_t width, uint32_t height, uint32_t localLightCount,
-                                    uint32_t domainMask, rhi::BufferHandle canonicalLights);
+                                    uint32_t domainMask, rhi::BufferHandle canonicalLights,
+                                    rhi::BufferHandle consumerLighting = {});
     void Record(uint32_t frameIndex, const rhi::ComputeCommandEncoder &encoder,
                 const ForwardPlusGridConstants &constants) const;
 
@@ -102,7 +105,8 @@ class ForwardPlusLightGrid
     [[nodiscard]] static std::string_view ShaderSource() noexcept;
 
   private:
-    [[nodiscard]] bool RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::BufferHandle canonicalLights);
+    [[nodiscard]] bool RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::BufferHandle canonicalLights,
+                                        rhi::BufferHandle consumerLighting);
 
     rhi::Device *m_device = nullptr;
     rhi::BindingLayoutHandle m_layout;
@@ -110,6 +114,7 @@ class ForwardPlusLightGrid
     rhi::ComputePipelineHandle m_pipeline;
     std::vector<ForwardPlusGridFrame> m_frames;
     std::vector<ForwardPlusRetiredResources> m_retired;
+    bool m_particleLightingConsumer = false;
 };
 
 } // namespace infernux::lighting

@@ -1176,6 +1176,32 @@ int main()
     assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 4 && linkedDevice.textureReleases == 3 &&
            linkedDevice.samplerReleases == 3);
 
+    auto linkedForwardPlusArtifact = std::make_shared<ShaderProgramArtifact>(*linkedArtifact);
+    linkedForwardPlusArtifact->key.revision = 8;
+    auto linkedForwardPlusVariant = linkedForwardPlusArtifact->variants.front();
+    linkedForwardPlusVariant.target = ShaderCompileTarget::ForwardPlus;
+    linkedForwardPlusArtifact->variants.push_back(std::move(linkedForwardPlusVariant));
+    assert(linkedForwardPlusArtifact->IsValid());
+    FakeDevice linkedForwardPlusDevice;
+    auto linkedForwardPlusDesc = linkedDesc;
+    linkedForwardPlusDesc.shaderProgram = linkedForwardPlusArtifact;
+    linkedForwardPlusDesc.semantics.receiveSceneLighting = true;
+    linkedForwardPlusDesc.deletionQueue = nullptr;
+    particle::ParticleGpuBillboardRenderer linkedForwardPlusBillboard;
+    assert(linkedForwardPlusBillboard.Create(linkedForwardPlusDevice, linkedForwardPlusDesc));
+    assert(linkedForwardPlusDevice.shaderCreates == 4);
+    GraphicsTrace linkedForwardPlusTrace;
+    const rhi::GraphicsCommandEncoder linkedForwardPlusEncoder(&linkedForwardPlusTrace, &graphicsDispatch);
+    auto linkedForwardPlusPass = forwardPass;
+    linkedForwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
+    const particle::GpuParticleForwardPlusBindings linkedLighting{{930, 1}, {931, 1}};
+    assert(linkedForwardPlusBillboard.RecordDraw(linkedForwardPlusEncoder, firstTarget, linkedForwardPlusPass,
+                                                 indirectBuffer, view, {}, {}, true, linkedLighting));
+    assert(linkedForwardPlusDevice.graphicsPipelineDescs.size() == 1 &&
+           linkedForwardPlusDevice.graphicsPipelineDescs[0].bindingLayoutCount == 2 &&
+           linkedForwardPlusTrace.groupSets == std::vector<uint32_t>({0, 1}));
+    linkedForwardPlusBillboard.Destroy();
+
     {
         FakeDevice meshDevice;
         std::array<uint32_t, 4> meshVertexShader = {0x07230203};

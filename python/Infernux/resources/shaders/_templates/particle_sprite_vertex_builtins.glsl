@@ -18,6 +18,7 @@ layout(push_constant) uniform ParticleViewConstants {
     vec4 camera_up;
     vec4 material_tint;
     vec4 depth_reconstruct;
+    vec4 lighting_control;
 } particleView;
 
 layout(location = 0) out vec3 v_WorldPos;
@@ -27,6 +28,7 @@ layout(location = 3) out vec3 v_Color;
 layout(location = 4) out vec2 v_TexCoord;
 layout(location = 5) out float v_ViewDepth;
 layout(location = 14) out float v_ParticleAlpha;
+layout(location = 15) flat out uint _inx_ObjectLayerMask;
 
 struct VertexInput {
     vec3 position;

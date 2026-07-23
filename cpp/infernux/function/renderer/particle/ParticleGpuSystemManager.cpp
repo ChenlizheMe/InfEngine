@@ -472,12 +472,12 @@ struct ParticleGpuSystemManager::Impl
         }
         const bool needsLegacyBillboard =
             std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
-                return output.type == GpuParticleOutputType::Sprite &&
-                       (!output.shaderProgram || output.semantics.receiveSceneLighting);
+                return output.type == GpuParticleOutputType::Sprite && !output.shaderProgram;
             });
         const bool needsLitLegacyBillboard =
             std::any_of(program.outputs.begin(), program.outputs.end(), [](const GpuParticleOutputProgram &output) {
-                return output.type == GpuParticleOutputType::Sprite && output.semantics.receiveSceneLighting;
+                return output.type == GpuParticleOutputType::Sprite && !output.shaderProgram &&
+                       output.semantics.receiveSceneLighting;
             });
         if (needsLegacyBillboard &&
             (!IsSpirv(program.billboardVertexShader) || !IsSpirv(program.billboardFragmentShader) ||
@@ -600,11 +600,18 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
                 return {};
             }
-            if (output.type == GpuParticleOutputType::Sprite && output.shaderProgram &&
-                output.semantics.receiveSceneLighting) {
+            if (output.semantics.receiveShadows) {
                 SetError(error, "GPU particle output '" + output.stableId +
-                                    "' cannot combine a custom ParticleSprite program with Receive Scene Lighting "
-                                    "until the linked Particle Forward+ contract is available");
+                                    "' cannot receive shadows until the Particle Forward+ shadow contract is "
+                                    "available");
+                return {};
+            }
+            if (output.type == GpuParticleOutputType::Sprite && output.shaderProgram &&
+                output.semantics.receiveSceneLighting &&
+                !output.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
+                SetError(error, "GPU particle output '" + output.stableId +
+                                    "' requires a linked Particle Forward+ shader variant when Receive Scene "
+                                    "Lighting is enabled");
                 return {};
             }
             if (output.type == GpuParticleOutputType::Mesh &&
@@ -1013,10 +1020,11 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
                 (output.shaderProgram && shaderProgram && output.shaderProgram->key == shaderProgram->key);
             if (sameProgram)
                 continue;
-            if (shaderProgram && output.semantics.receiveSceneLighting) {
+            if (shaderProgram && output.semantics.receiveSceneLighting &&
+                !shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
                 SetError(error, "GPU particle output '" + output.stableId +
-                                    "' cannot combine a custom ParticleSprite program with Receive Scene Lighting "
-                                    "until the linked Particle Forward+ contract is available");
+                                    "' requires a linked Particle Forward+ shader variant when Receive Scene "
+                                    "Lighting is enabled");
                 return false;
             }
             if (output.semantics.sortMode != ParticleSortMode::None && !shaderProgram) {

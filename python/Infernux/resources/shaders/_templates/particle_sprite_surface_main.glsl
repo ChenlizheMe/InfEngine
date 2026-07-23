@@ -4,6 +4,7 @@ layout(push_constant) uniform ParticleViewConstants {
     vec4 camera_up;
     vec4 material_tint;
     vec4 depth_reconstruct;
+    vec4 lighting_control;
 } particleView;
 
 layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;

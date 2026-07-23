@@ -1032,17 +1032,20 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << "\n" << LoadTemplate("picking_vertex_interface.glsl") << "\n";
                 else if (target == ShaderCompileTarget::Motion)
                     result << "\n" << LoadTemplate("motion_vertex_interface.glsl") << "\n";
-                else if (target == ShaderCompileTarget::ForwardPlus)
+                else if (target == ShaderCompileTarget::ForwardPlus && !particleSpriteDomain)
                     result << "\n" << LoadTemplate("forward_plus_vertex_interface.glsl") << "\n";
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
                 // LightingUBO — only when the shading model requires it
                 if (needsLightingUBO) {
                     result << "\n// Auto-generated LightingUBO (required by shading model)\n";
-                    result << LoadTemplate("lighting_ubo.glsl") << "\n";
+                    result << LoadTemplate(particleSpriteDomain ? "particle_lighting_ubo.glsl" : "lighting_ubo.glsl")
+                           << "\n";
                     if (target == ShaderCompileTarget::ForwardPlus) {
                         result << "\n// Canonical tiled Forward+ light resources\n";
-                        result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
+                        result << LoadTemplate(particleSpriteDomain ? "particle_forward_plus_lighting.glsl"
+                                                                    : "forward_plus_lighting.glsl")
+                               << "\n";
                     }
                 }
 
@@ -1365,7 +1368,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     } else {
         _inx_MotionVector = vec2(0.0);
     })";
-        } else if (target == ShaderCompileTarget::ForwardPlus) {
+        } else if (target == ShaderCompileTarget::ForwardPlus && !particleSpriteDomain) {
             passVertexOutput = "    _inx_ObjectLayerMask = instanceAuxData[gl_InstanceIndex].layerMask;";
         }
         ReplacePlaceholder(mainTpl, "${PASS_VERTEX_OUTPUT}", passVertexOutput);

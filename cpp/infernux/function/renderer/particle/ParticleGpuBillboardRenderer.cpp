@@ -127,11 +127,14 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
         return false;
 
     const ShaderProgramArtifact::PassVariant *linkedVariant = nullptr;
+    const ShaderProgramArtifact::PassVariant *linkedForwardPlusVariant = nullptr;
     std::vector<uint32_t> linkedVertexWords;
     std::vector<uint32_t> linkedFragmentWords;
+    std::vector<uint32_t> linkedForwardPlusVertexWords;
+    std::vector<uint32_t> linkedForwardPlusFragmentWords;
     if (desc.shaderProgram) {
         if (!desc.renderIndices.IsValid() || !desc.shaderProgram->IsValid() ||
-            desc.shaderProgram->domain != ShaderProgramDomain::ParticleSprite || desc.semantics.receiveSceneLighting)
+            desc.shaderProgram->domain != ShaderProgramDomain::ParticleSprite)
             return false;
         linkedVariant = desc.shaderProgram->FindVariant(ShaderCompileTarget::Forward);
         if (!linkedVariant)
@@ -140,6 +143,15 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
         linkedFragmentWords = CopySpirvWords(linkedVariant->fragmentSpirv);
         if (linkedVertexWords.empty() || linkedFragmentWords.empty())
             return false;
+        if (desc.semantics.receiveSceneLighting) {
+            linkedForwardPlusVariant = desc.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus);
+            if (!linkedForwardPlusVariant)
+                return false;
+            linkedForwardPlusVertexWords = CopySpirvWords(linkedForwardPlusVariant->vertexSpirv);
+            linkedForwardPlusFragmentWords = CopySpirvWords(linkedForwardPlusVariant->fragmentSpirv);
+            if (linkedForwardPlusVertexWords.empty() || linkedForwardPlusFragmentWords.empty())
+                return false;
+        }
     } else if (!desc.vertexShader.words || desc.vertexShader.wordCount == 0 || !desc.fragmentShader.words ||
                desc.fragmentShader.wordCount == 0 ||
                (desc.semantics.receiveSceneLighting &&
@@ -168,8 +180,15 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
                            ? device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()})
                            : device.CreateShaderModule({desc.fragmentShader.words, desc.fragmentShader.wordCount});
     if (m_semantics.receiveSceneLighting) {
-        m_forwardPlusFragmentShader =
-            device.CreateShaderModule({desc.forwardPlusFragmentShader.words, desc.forwardPlusFragmentShader.wordCount});
+        if (linkedForwardPlusVariant) {
+            m_forwardPlusVertexShader =
+                device.CreateShaderModule({linkedForwardPlusVertexWords.data(), linkedForwardPlusVertexWords.size()});
+            m_forwardPlusFragmentShader = device.CreateShaderModule(
+                {linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()});
+        } else {
+            m_forwardPlusFragmentShader = device.CreateShaderModule(
+                {desc.forwardPlusFragmentShader.words, desc.forwardPlusFragmentShader.wordCount});
+        }
     }
     if (desc.vertexShader.words && desc.vertexShader.wordCount && desc.pickingFragmentShader.words &&
         desc.pickingFragmentShader.wordCount) {
@@ -178,7 +197,8 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
             device.CreateShaderModule({desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
     }
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() ||
-        (m_semantics.receiveSceneLighting && !m_forwardPlusFragmentShader.IsValid())) {
+        (m_semantics.receiveSceneLighting &&
+         (!m_forwardPlusFragmentShader.IsValid() || (UsesLinkedProgram() && !m_forwardPlusVertexShader.IsValid())))) {
         Destroy();
         return false;
     }
@@ -282,6 +302,7 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
         }
         m_device->Release(m_materialBuffer);
         m_device->Release(m_layout);
+        m_device->Release(m_forwardPlusVertexShader);
         m_device->Release(m_forwardPlusFragmentShader);
         m_device->Release(m_fragmentShader);
         m_device->Release(m_vertexShader);
@@ -300,6 +321,7 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_renderIndices = {};
     m_vertexShader = {};
     m_fragmentShader = {};
+    m_forwardPlusVertexShader = {};
     m_forwardPlusFragmentShader = {};
     m_pickingVertexShader = {};
     m_pickingFragmentShader = {};
@@ -699,7 +721,10 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     }
 
     rhi::GraphicsPipelineDesc desc;
-    desc.vertexShader = picking ? m_pickingVertexShader : m_vertexShader;
+    desc.vertexShader =
+        picking ? m_pickingVertexShader
+                : (usesForwardPlusLighting && m_forwardPlusVertexShader.IsValid() ? m_forwardPlusVertexShader
+                                                                                  : m_vertexShader);
     desc.fragmentShader =
         picking ? m_pickingFragmentShader : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
     desc.renderTargetLayout = renderTargetLayout;

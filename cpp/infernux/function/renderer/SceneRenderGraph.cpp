@@ -29,6 +29,7 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Camera.h>
+#include <function/scene/LightingData.h>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -581,11 +582,13 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         } else {
             std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
             std::memcpy(spirv.data(), bytes.data(), bytes.size());
-            if (!m_forwardPlusGeometryGrid.Initialize(vkCore->GetDeviceContext().GetRhiDevice(), kMaxFramesInFlight,
-                                                      {spirv.data(), spirv.size()})) {
+            auto &rhiDevice = vkCore->GetDeviceContext().GetRhiDevice();
+            m_particleLightingBuffer = rhiDevice.RegisterBuffer(vkCore->GetLightingUbo(), sizeof(ShaderLightingUBO));
+            if (!m_forwardPlusGeometryGrid.Initialize(rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
-            } else if (!m_forwardPlusParticleGrid.Initialize(vkCore->GetDeviceContext().GetRhiDevice(),
-                                                             kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
+            } else if (!m_particleLightingBuffer.IsValid() ||
+                       !m_forwardPlusParticleGrid.Initialize(rhiDevice, kMaxFramesInFlight,
+                                                             {spirv.data(), spirv.size()}, true)) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the particle Forward+ tiled-light builder");
             } else {
                 for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
@@ -594,7 +597,8 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
                         (void)m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
                                                                      CanonicalLightAffectsGeometry, lights->buffer);
                         (void)m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                                     CanonicalLightAffectsParticles, lights->buffer);
+                                                                     CanonicalLightAffectsParticles, lights->buffer,
+                                                                     m_particleLightingBuffer);
                     }
                 }
             }
@@ -630,6 +634,9 @@ void SceneRenderGraph::Destroy()
     m_sceneDepthResolver.Destroy();
     m_forwardPlusGeometryGrid.Shutdown();
     m_forwardPlusParticleGrid.Shutdown();
+    if (m_vkCore && m_particleLightingBuffer.IsValid())
+        m_vkCore->GetDeviceContext().GetRhiDevice().Release(m_particleLightingBuffer);
+    m_particleLightingBuffer = {};
     m_transientResources.clear();
     m_parameterBlocks.clear();
 
@@ -1100,7 +1107,8 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         const auto previousParticleMasks = m_forwardPlusParticleGrid.Frame(frameIndex).lightMasks;
         const auto previousParticleLights = m_forwardPlusParticleGrid.Frame(frameIndex).canonicalLights;
         if (!m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                    CanonicalLightAffectsParticles, lights->buffer)) {
+                                                    CanonicalLightAffectsParticles, lights->buffer,
+                                                    m_particleLightingBuffer)) {
             return false;
         }
         const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);

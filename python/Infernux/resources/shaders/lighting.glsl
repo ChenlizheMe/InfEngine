@@ -75,6 +75,8 @@ vec3 getSpecularAmbientDirection(vec3 N, vec3 V, float perceptualRoughness) {
 // Shadow Mapping — Cascaded Shadow Maps with Vogel Disk Soft Shadows
 // ============================================================================
 
+#ifndef INX_PARTICLE_FORWARD_PLUS
+
 // Atlas tile offset for 2x2 cascade layout
 vec2 getCascadeAtlasOffset(int ci) {
     float u = float(ci - 2 * (ci / 2)) * 0.5; // ci % 2
@@ -198,6 +200,11 @@ float calculateShadow(vec3 worldPos, vec3 normal, float fragViewDepthVal) {
     float shadowStrength = light.shadowParams.x;
     return mix(1.0, shadow, shadowStrength);
 }
+#else
+float calculateShadow(vec3 worldPos, vec3 normal, float fragViewDepthVal) {
+    return 1.0;
+}
+#endif
 
 // ============================================================================
 // getMainLight — Unity-style main directional light accessor

@@ -639,6 +639,7 @@ class SceneRenderGraph
     SceneDepthResolver m_sceneDepthResolver;
     lighting::ForwardPlusLightGrid m_forwardPlusGeometryGrid;
     lighting::ForwardPlusLightGrid m_forwardPlusParticleGrid;
+    rhi::BufferHandle m_particleLightingBuffer;
     bool m_forwardPlusParticlesRequired = false;
 };
 

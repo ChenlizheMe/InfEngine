@@ -32,6 +32,7 @@ ${VERTEX_CALL}
     v_TexCoord = v.texCoord;
     v_ViewDepth = clipPosition.w;
     v_ParticleAlpha = instance.color.a * particleView.material_tint.a;
+    _inx_ObjectLayerMask = floatBitsToUint(particleView.lighting_control.w);
     gl_Position = clipPosition;
 ${PASS_VERTEX_OUTPUT}
 }
