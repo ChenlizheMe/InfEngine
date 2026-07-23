@@ -1076,6 +1076,16 @@ class ParticleGraphEditorPanel(EditorPanel):
                     -1,
                 )
                 new_value = options[max(0, min(current, len(options) - 1))]
+            elif value_type is ValueType.STRING and key == "uv_mode":
+                options = ["stretch", "repeat"]
+                current = options.index(value) if value in options else 0
+                current = ctx.combo(
+                    f"{label}##particle_node_{key}",
+                    current,
+                    [t(f"particle_graph_editor.uv_{option}") for option in options],
+                    -1,
+                )
+                new_value = options[max(0, min(current, len(options) - 1))]
             elif value_type is ValueType.STRING:
                 new_value = ctx.text_input(f"{label}##particle_node_{key}", str(value), 512)
             elif value_type is ValueType.CURVE:
