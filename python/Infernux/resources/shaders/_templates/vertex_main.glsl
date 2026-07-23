@@ -36,7 +36,9 @@ ${VERTEX_CALL}
     v_Tangent   = worldTangent;
     v_Color     = v.color;
     v_TexCoord  = v.texCoord;
-    v_ViewDepth = (ubo.view * worldPos).z;
+    // Right-handed view space looks down -Z; expose a positive linear eye
+    // distance so CSM splits and depth helpers share one convention.
+    v_ViewDepth = -(ubo.view * worldPos).z;
     gl_Position = ubo.proj * ubo.view * worldPos;
 ${PASS_VERTEX_OUTPUT}
 }

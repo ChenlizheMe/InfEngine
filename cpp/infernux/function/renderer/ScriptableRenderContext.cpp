@@ -107,7 +107,7 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     // (each DrawCall contains a shared_ptr<InxMaterial> whose atomic refcount
     // would be bumped N times on copy).
     const std::vector<DrawCall> *drawCallsPtr = nullptr;
-    const bool needsShadowDrawCalls = (m_vkCore->GetLightCollector().GetShadowCascadeCount() > 0);
+    const bool needsShadowDrawCalls = m_graph && m_graph->HasCameraShadows();
     CameraDrawCallResult ownedResult; // Only used for game camera path
 
     if (camera && camera != editorCam) {
@@ -155,7 +155,7 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     // Populate visible light count from the scene light collector.
     // CollectLights() runs earlier in the frame (InxRenderer::UpdateSceneLighting),
     // so the count is already available.
-    results.lightCount = m_vkCore->GetLightCollector().GetTotalLightCount();
+    results.lightCount = m_graph ? m_graph->GetCameraLightCount() : 0;
     m_cachedCullingResults = std::move(results);
 #if INFERNUX_FRAME_PROFILE
     const double elapsedMs = std::chrono::duration<double, std::milli>(Clock::now() - cullStart).count();

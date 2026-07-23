@@ -83,6 +83,11 @@ class Light(BuiltinComponent):
     def shadow_normal_bias(self, value: float) -> None: ...
 
     @property
+    def shadow_softness(self) -> float: ...
+    @shadow_softness.setter
+    def shadow_softness(self, value: float) -> None: ...
+
+    @property
     def affect_geometry(self) -> bool: ...
     @affect_geometry.setter
     def affect_geometry(self, value: bool) -> None: ...
@@ -94,17 +99,6 @@ class Light(BuiltinComponent):
 
     # ---- Methods ----
 
-    def get_light_view_matrix(self) -> Any:
-        """Return the light's view matrix for shadow mapping."""
-        ...
-    def get_light_projection_matrix(
-        self,
-        shadow_extent: float = ...,
-        near_plane: float = ...,
-        far_plane: float = ...,
-    ) -> Any:
-        """Return the light's projection matrix for shadow mapping."""
-        ...
     def serialize(self) -> str:
         """Serialize the component to a JSON string."""
         ...

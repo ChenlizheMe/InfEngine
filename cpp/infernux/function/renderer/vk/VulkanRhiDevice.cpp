@@ -142,24 +142,6 @@ VkSamplerAddressMode ToVkAddressMode(rhi::AddressMode address)
     return VK_SAMPLER_ADDRESS_MODE_MAX_ENUM;
 }
 
-bool IsValidTextureDesc(const rhi::TextureDesc &desc)
-{
-    if (!rhi::IsValidPixelFormat(desc.format) || desc.width == 0 || desc.height == 0 || desc.depthOrLayers == 0 ||
-        desc.mipLevels == 0 || desc.mipLevels > 32 || desc.usage == rhi::TextureUsageFlags::None)
-        return false;
-    if (desc.dimension == rhi::TextureDimension::Texture1D && desc.height != 1)
-        return false;
-    if (desc.samples != rhi::SampleCount::One &&
-        (desc.dimension != rhi::TextureDimension::Texture2D || desc.mipLevels != 1 || desc.cubeCompatible))
-        return false;
-    if (desc.cubeCompatible &&
-        (desc.dimension != rhi::TextureDimension::Texture2D || desc.depthOrLayers < 6 || desc.depthOrLayers % 6 != 0))
-        return false;
-    if (rhi::IsDepthFormat(desc.format))
-        return !rhi::HasTextureUsage(desc.usage, rhi::TextureUsageFlags::ColorAttachment);
-    return !rhi::HasTextureUsage(desc.usage, rhi::TextureUsageFlags::DepthStencilAttachment);
-}
-
 VkDescriptorType ToVkDescriptorType(rhi::BindingType type)
 {
     switch (type) {
@@ -234,6 +216,25 @@ VkCompareOp ToVkCompareOp(rhi::CompareFunction function)
 }
 
 } // namespace
+
+bool VulkanRhiDevice::IsValidTextureDesc(const rhi::TextureDesc &desc) noexcept
+{
+    if (!rhi::IsValidPixelFormat(desc.format) || desc.width == 0 || desc.height == 0 || desc.depthOrLayers == 0 ||
+        desc.mipLevels == 0 || desc.mipLevels > 32 || desc.usage == rhi::TextureUsageFlags::None)
+        return false;
+    if (desc.dimension == rhi::TextureDimension::Texture1D && desc.height != 1)
+        return false;
+    if (desc.samples != rhi::SampleCount::One &&
+        (desc.dimension != rhi::TextureDimension::Texture2D || desc.mipLevels != 1 || desc.cubeCompatible))
+        return false;
+    if (desc.cubeCompatible &&
+        (desc.dimension != rhi::TextureDimension::Texture2D || desc.depthOrLayers < 6 || desc.depthOrLayers % 6 != 0))
+        return false;
+    if (rhi::IsDepthFormat(desc.format))
+        return rhi::HasTextureUsage(desc.usage, rhi::TextureUsageFlags::DepthStencilAttachment) &&
+               !rhi::HasTextureUsage(desc.usage, rhi::TextureUsageFlags::ColorAttachment);
+    return !rhi::HasTextureUsage(desc.usage, rhi::TextureUsageFlags::DepthStencilAttachment);
+}
 
 const rhi::GraphicsCommandEncoder::Dispatch VulkanRhiDevice::s_graphicsDispatch = {
     &VulkanRhiDevice::BindPipeline, &VulkanRhiDevice::BindGroup, &VulkanRhiDevice::PushConstants,

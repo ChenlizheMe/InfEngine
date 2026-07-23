@@ -288,7 +288,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             throw std::invalid_argument("GPU particle outputs must contain dictionaries");
         const py::dict output = py::reinterpret_borrow<py::dict>(item);
         for (const char *field : {"id", "stable_id", "output_type", "mesh", "material", "receive_scene_lighting",
-                                  "receive_shadows", "soft_particles", "soft_distance", "sort_mode"}) {
+                                  "receive_shadows", "cast_shadows", "soft_particles", "soft_distance", "sort_mode"}) {
             if (!output.contains(field))
                 throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
         }
@@ -308,6 +308,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         }
         decoded.semantics.receiveSceneLighting = py::cast<bool>(output["receive_scene_lighting"]);
         decoded.semantics.receiveShadows = py::cast<bool>(output["receive_shadows"]);
+        decoded.semantics.castShadows = py::cast<bool>(output["cast_shadows"]);
         decoded.semantics.softParticles = py::cast<bool>(output["soft_particles"]);
         decoded.semantics.softDistance = py::cast<float>(output["soft_distance"]);
         decoded.semantics.sortMode = DecodeParticleSortMode(py::cast<std::string>(output["sort_mode"]));
@@ -986,6 +987,12 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["scene_shadow_draw_call_count"] = snapshot.sceneShadowDrawCallCount;
                                    result["game_draw_call_count"] = snapshot.gameDrawCallCount;
                                    result["game_shadow_draw_call_count"] = snapshot.gameShadowDrawCallCount;
+                                   result["scene_shadow_view_count"] = snapshot.sceneShadowViewCount;
+                                   result["game_shadow_view_count"] = snapshot.gameShadowViewCount;
+                                   result["scene_shadow_assignment_count"] = snapshot.sceneShadowAssignmentCount;
+                                   result["game_shadow_assignment_count"] = snapshot.gameShadowAssignmentCount;
+                                   result["scene_shadow_resource_identity"] = snapshot.sceneShadowResourceIdentity;
+                                   result["game_shadow_resource_identity"] = snapshot.gameShadowResourceIdentity;
                                    result["light_count"] = snapshot.lightCount;
                                    result["canonical_light_gpu_buffer_ready"] =
                                        snapshot.canonicalLightGpuBufferReady;
@@ -2191,6 +2198,7 @@ PYBIND11_MODULE(_Infernux, m)
                 py::dict result;
                 result["receive_scene_lighting"] = semantics->receiveSceneLighting;
                 result["receive_shadows"] = semantics->receiveShadows;
+                result["cast_shadows"] = semantics->castShadows;
                 result["soft_particles"] = semantics->softParticles;
                 result["soft_distance"] = semantics->softDistance;
                 result["sort_mode"] = ParticleSortModeName(semantics->sortMode);

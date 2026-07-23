@@ -359,6 +359,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             return false;
         }
         if (command && command->type == GraphCommandType::DrawShadowCasters) {
+            if (command->shaderTarget != ShaderCompileTarget::Shadow) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: shadow pass '", pass.name,
+                             "' requires the Shadow shader target");
+                return false;
+            }
             if (!pass.writeColors.empty()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: shadow pass '", pass.name,
                              "' cannot write color targets");
@@ -503,6 +508,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
 
 } // namespace
 
+bool SceneRenderGraph::ValidateGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples)
+{
+    return ValidatePythonGraphDescription(desc, activeFrameSamples);
+}
+
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================
@@ -540,10 +550,30 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     // Initialize the underlying RenderGraph with device context and pipeline manager
     m_renderGraph->Initialize(&vkCore->GetDeviceContext(), &vkCore->GetPipelineManager(), &vkCore->GetDeletionQueue());
 
-    // Allocate separate geometry and particle views of the same canonical
-    // per-camera ABI. Their light grids differ by influence domain, while the
-    // shadow atlas and camera lighting lifetime remain shared.
+    // Allocate a complete camera-local lighting domain. Geometry and particles
+    // share this camera's atlas and LightingUBO, but Scene, Game and future
+    // camera graphs never overwrite one another's shadow state.
     auto &rhiDevice = vkCore->GetDeviceContext().GetRhiDevice();
+    rhi::BufferDesc lightingBufferDesc{};
+    lightingBufferDesc.byteSize = sizeof(ShaderLightingUBO);
+    lightingBufferDesc.usage = rhi::BufferUsageFlags::Uniform;
+    lightingBufferDesc.memory = rhi::BufferMemory::Upload;
+    for (auto &buffer : m_cameraLightingBuffers) {
+        buffer = rhiDevice.CreateBuffer(lightingBufferDesc);
+        if (!buffer.IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local LightingUBO");
+            return false;
+        }
+    }
+    if (!m_cameraCanonicalLights.Initialize(rhiDevice, kMaxFramesInFlight)) {
+        INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local canonical light buffers");
+        return false;
+    }
+    m_shadowCameraResourceId = vkCore->CreateShadowCameraResources();
+    if (m_shadowCameraResourceId == 0) {
+        INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local shadow resource identity");
+        return false;
+    }
     m_particlePerViewLayout = rhiDevice.RegisterBindingLayout(vkCore->GetPerViewDescSetLayout());
     if (!m_particlePerViewLayout.IsValid()) {
         INXLOG_ERROR("SceneRenderGraph: failed to register the canonical particle per-view descriptor layout");
@@ -558,6 +588,9 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
             INXLOG_ERROR("SceneRenderGraph: failed to allocate the canonical per-view descriptor resources [", i, "]");
             return false;
         }
+        const VkBuffer lightingBuffer = rhiDevice.Resolve(m_cameraLightingBuffers[i]);
+        vkCore->UpdatePerViewLightingBuffer(m_perViewDescSets[i], lightingBuffer, sizeof(ShaderLightingUBO));
+        vkCore->UpdatePerViewLightingBuffer(m_particlePerViewDescSets[i], lightingBuffer, sizeof(ShaderLightingUBO));
     }
 
     // Initialize fullscreen effect renderer for FullscreenQuad passes
@@ -593,21 +626,20 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         } else {
             std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
             std::memcpy(spirv.data(), bytes.data(), bytes.size());
-            m_particleLightingBuffer = rhiDevice.RegisterBuffer(vkCore->GetLightingUbo(), sizeof(ShaderLightingUBO));
             if (!m_forwardPlusGeometryGrid.Initialize(rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
-            } else if (!m_particleLightingBuffer.IsValid() || !m_particlePerViewLayout.IsValid() ||
-                       !m_forwardPlusParticleGrid.Initialize(rhiDevice, kMaxFramesInFlight,
-                                                             {spirv.data(), spirv.size()})) {
+            } else if (!m_particlePerViewLayout.IsValid() || !m_forwardPlusParticleGrid.Initialize(
+                                                              rhiDevice, kMaxFramesInFlight,
+                                                              {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the particle Forward+ tiled-light builder");
             } else {
                 for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
-                    const auto *lights = vkCore->GetCanonicalLightGpuFrame(frameIndex);
-                    if (lights && lights->buffer.IsValid()) {
-                        (void)m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                                     CanonicalLightAffectsGeometry, lights->buffer);
-                        (void)m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                                     CanonicalLightAffectsParticles, lights->buffer);
+                    const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
+                    if (lights.buffer.IsValid()) {
+                        (void)m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                                     CanonicalLightAffectsGeometry, lights.buffer);
+                        (void)m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                                     CanonicalLightAffectsParticles, lights.buffer);
                     }
                 }
             }
@@ -650,11 +682,15 @@ void SceneRenderGraph::Destroy()
             group = {};
         }
         rhiDevice.Release(m_particlePerViewLayout);
-        if (m_particleLightingBuffer.IsValid())
-            rhiDevice.Release(m_particleLightingBuffer);
+        for (auto &buffer : m_cameraLightingBuffers) {
+            rhiDevice.Release(buffer);
+            buffer = {};
+        }
+        m_cameraCanonicalLights.Shutdown();
+        m_vkCore->DestroyShadowCameraResources(m_shadowCameraResourceId);
     }
     m_particlePerViewLayout = {};
-    m_particleLightingBuffer = {};
+    m_shadowCameraResourceId = 0;
     m_transientResources.clear();
     m_parameterBlocks.clear();
 
@@ -674,6 +710,36 @@ VkDescriptorSet SceneRenderGraph::GetPerViewDescriptorSet() const
         return VK_NULL_HANDLE;
     uint32_t frameIdx = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
     return m_perViewDescSets[frameIdx];
+}
+
+void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
+                                           const ShaderLightingUBO &environmentLighting)
+{
+    if (!m_vkCore || !scene)
+        return;
+
+    m_cameraLightCollector.CollectLights(scene, cameraPosition);
+    if (environmentLighting.ambientEquatorColor.a > 0.0f) {
+        m_cameraLightCollector.SetAmbientGradient(glm::vec3(environmentLighting.ambientSkyColor),
+                                                   glm::vec3(environmentLighting.ambientEquatorColor),
+                                                   glm::vec3(environmentLighting.ambientGroundColor));
+    } else {
+        m_cameraLightCollector.SetAmbientColor(glm::vec3(environmentLighting.ambientSkyColor),
+                                                environmentLighting.ambientSkyColor.a);
+    }
+    m_cameraLightCollector.ComputeShadowVP(scene, cameraPosition, static_cast<float>(GetShadowMapResolution()), camera);
+    m_cameraLightCollector.BuildShaderLightingUBO();
+
+    const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+    auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+    const ShaderLightingUBO &lighting = m_cameraLightCollector.GetShaderLightingUBO();
+    if (!m_cameraLightingBuffers[frameIndex].IsValid() ||
+        !rhiDevice.WriteBuffer(m_cameraLightingBuffers[frameIndex], 0, &lighting, sizeof(lighting))) {
+        INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local LightingUBO");
+    }
+    if (!m_cameraCanonicalLights.Update(frameIndex, m_cameraLightCollector.GetCanonicalLightSnapshot())) {
+        INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local canonical lights");
+    }
 }
 
 // ============================================================================
@@ -805,7 +871,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         const std::string passTag = command->passTag;
         MaterialPassPipelineDescriptor materialPass =
             vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(command->shaderTarget);
-        if (commandType == GraphCommandType::DrawRenderers) {
+        if (commandType == GraphCommandType::DrawRenderers || commandType == GraphCommandType::DrawShadowCasters) {
             materialPass.colorFormats.clear();
             uint32_t passSamples = graphFrameSamples;
             auto colorOutputs = passDesc.writeColors;
@@ -876,7 +942,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 // Shadow caster pass: draw filtered objects using shadow pipeline
                 // with lightVP from SceneLightCollector. The shadow pipeline is
                 // lazily created inside DrawShadowCasters().
-                vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, lightIndex);
+                vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax,
+                                          m_shadowCameraResourceId, m_cameraLightCollector.GetShadowFrame(),
+                                          lightIndex);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer) {
@@ -987,6 +1055,36 @@ bool SceneRenderGraph::IsPythonGraphCurrent(uint64_t sourceRevision) const
 {
     return sourceRevision != 0 && m_hasPythonGraph && m_pythonGraphSourceRevision == sourceRevision && m_vkCore &&
            m_pythonCallbackSamples == m_vkCore->GetMaterialPipelineManager().GetSampleCount();
+}
+
+uint32_t SceneRenderGraph::GetShadowMapResolution() const
+{
+    for (const auto &pass : m_pythonGraphDesc.passes) {
+        const bool drawsShadows =
+            std::any_of(pass.commands.begin(), pass.commands.end(), [](const GraphCommandDesc &command) {
+                return command.type == GraphCommandType::DrawShadowCasters;
+            });
+        if (!drawsShadows || pass.writeDepth.empty())
+            continue;
+
+        const auto texture =
+            std::find_if(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
+                         [&](const GraphTextureDesc &candidate) { return candidate.name == pass.writeDepth; });
+        if (texture == m_pythonGraphDesc.textures.end())
+            return 0;
+
+        uint32_t width = texture->width;
+        uint32_t height = texture->height;
+        if (texture->sizeDivisor > 0u) {
+            width = std::max(m_width / texture->sizeDivisor, 1u);
+            height = std::max(m_height / texture->sizeDivisor, 1u);
+        } else {
+            width = width > 0u ? width : m_width;
+            height = height > 0u ? height : m_height;
+        }
+        return width == height ? width : 0u;
+    }
+    return 0;
 }
 
 // ============================================================================
@@ -1104,15 +1202,15 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         (m_forwardPlusParticlesRequired && !m_forwardPlusParticleGrid.IsValid()))
         return false;
     const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
-    const auto *lights = m_vkCore->GetCanonicalLightGpuFrame(frameIndex);
-    if (!lights || !lights->buffer.IsValid())
+    const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
+    if (!lights.buffer.IsValid())
         return false;
 
     const auto previousHeaders = m_forwardPlusGeometryGrid.Frame(frameIndex).headers;
     const auto previousMasks = m_forwardPlusGeometryGrid.Frame(frameIndex).lightMasks;
     const auto previousLights = m_forwardPlusGeometryGrid.Frame(frameIndex).canonicalLights;
-    if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                CanonicalLightAffectsGeometry, lights->buffer)) {
+    if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                CanonicalLightAffectsGeometry, lights.buffer)) {
         return false;
     }
     const auto &frame = m_forwardPlusGeometryGrid.Frame(frameIndex);
@@ -1124,8 +1222,8 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         const auto previousParticleHeaders = m_forwardPlusParticleGrid.Frame(frameIndex).headers;
         const auto previousParticleMasks = m_forwardPlusParticleGrid.Frame(frameIndex).lightMasks;
         const auto previousParticleLights = m_forwardPlusParticleGrid.Frame(frameIndex).canonicalLights;
-        if (!m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                    CanonicalLightAffectsParticles, lights->buffer)) {
+        if (!m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                    CanonicalLightAffectsParticles, lights.buffer)) {
             return false;
         }
         const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
@@ -1139,18 +1237,51 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
     const VkDescriptorSet descriptorSet = m_perViewDescSets[frameIndex];
     if (descriptorSet == VK_NULL_HANDLE)
         return false;
-    m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights->buffer, lights->dataBytes, frame.headers,
-                                              frame.config.headerBytes, frame.lightMasks, frame.config.maskBytes);
+    auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+    const PerViewBufferBindingState geometryBindings{
+        rhiDevice.Resolve(lights.buffer), rhiDevice.Resolve(frame.headers), rhiDevice.Resolve(frame.lightMasks),
+        rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]), lights.dataBytes, frame.config.headerBytes,
+        frame.config.maskBytes, true};
+    auto bindingsDiffer = [](const PerViewBufferBindingState &left, const PerViewBufferBindingState &right) {
+        return !left.initialized || left.canonicalLights != right.canonicalLights ||
+               left.tileHeaders != right.tileHeaders || left.tileLightMasks != right.tileLightMasks ||
+               left.lighting != right.lighting || left.canonicalBytes != right.canonicalBytes ||
+               left.tileHeaderBytes != right.tileHeaderBytes || left.tileLightMaskBytes != right.tileLightMaskBytes;
+    };
+    const bool geometryBindingsDirty = bindingsDiffer(m_geometryBindingState[frameIndex], geometryBindings);
+    bool particleBindingsDirty = false;
+    PerViewBufferBindingState particleBindings{};
+    if (m_forwardPlusParticlesRequired) {
+        const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
+        particleBindings = {rhiDevice.Resolve(lights.buffer), rhiDevice.Resolve(particleFrame.headers),
+                            rhiDevice.Resolve(particleFrame.lightMasks),
+                            rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]), lights.dataBytes,
+                            particleFrame.config.headerBytes, particleFrame.config.maskBytes, true};
+        particleBindingsDirty = bindingsDiffer(m_particleBindingState[frameIndex], particleBindings);
+    }
+    if ((geometryBindingsDirty && m_geometryBindingState[frameIndex].initialized) ||
+        (particleBindingsDirty && m_particleBindingState[frameIndex].initialized)) {
+        m_vkCore->GetDeviceContext().WaitIdle();
+    }
+    if (geometryBindingsDirty) {
+        m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights.buffer, lights.dataBytes, frame.headers,
+                                                  frame.config.headerBytes, frame.lightMasks, frame.config.maskBytes,
+                                                  m_cameraLightingBuffers[frameIndex], sizeof(ShaderLightingUBO));
+        m_geometryBindingState[frameIndex] = geometryBindings;
+    }
     if (m_forwardPlusParticlesRequired) {
         if (m_particlePerViewDescSets[frameIndex] == VK_NULL_HANDLE || !m_particlePerViewLayout.IsValid() ||
-            !m_particlePerViewGroups[frameIndex].IsValid() || !m_particleLightingBuffer.IsValid()) {
+            !m_particlePerViewGroups[frameIndex].IsValid() || !m_cameraLightingBuffers[frameIndex].IsValid()) {
             return false;
         }
-        const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
-        m_vkCore->UpdatePerViewForwardPlusBuffers(
-            m_particlePerViewDescSets[frameIndex], lights->buffer, lights->dataBytes, particleFrame.headers,
-            particleFrame.config.headerBytes, particleFrame.lightMasks, particleFrame.config.maskBytes,
-            m_particleLightingBuffer, sizeof(ShaderLightingUBO));
+        if (particleBindingsDirty) {
+            const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
+            m_vkCore->UpdatePerViewForwardPlusBuffers(
+                m_particlePerViewDescSets[frameIndex], lights.buffer, lights.dataBytes, particleFrame.headers,
+                particleFrame.config.headerBytes, particleFrame.lightMasks, particleFrame.config.maskBytes,
+                m_cameraLightingBuffers[frameIndex], sizeof(ShaderLightingUBO));
+            m_particleBindingState[frameIndex] = particleBindings;
+        }
     }
     return true;
 }
@@ -1260,8 +1391,12 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
             INXLOG_WARN("SceneRenderGraph: no valid shadowMap input handle for per-view descriptor; binding fallback "
                         "white texture");
         }
-        m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
-        m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
+        if (!m_shadowBindingState[frameIndex].fallback) {
+            m_vkCore->GetDeviceContext().WaitIdle();
+            m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
+            m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
+            m_shadowBindingState[frameIndex] = {};
+        }
         return;
     }
 
@@ -1274,17 +1409,24 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
                 "SceneRenderGraph: shadow map view/sampler unavailable (view=", view == VK_NULL_HANDLE ? "null" : "ok",
                 ", sampler=", shadowSampler == VK_NULL_HANDLE ? "null" : "ok", "); binding fallback white texture");
         }
-        m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
-        m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
+        if (!m_shadowBindingState[frameIndex].fallback) {
+            m_vkCore->GetDeviceContext().WaitIdle();
+            m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
+            m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
+            m_shadowBindingState[frameIndex] = {};
+        }
         return;
     }
 
-    m_vkCore->UpdatePerViewShadowMap(graphShadowDesc, view, shadowSampler,
-                                     m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                                                             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    m_vkCore->UpdatePerViewShadowMap(particleShadowDesc, view, shadowSampler,
-                                     m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                                                             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    const VkImageLayout imageLayout = m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                              : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    const auto &bound = m_shadowBindingState[frameIndex];
+    if (!bound.fallback && bound.imageView == view && bound.sampler == shadowSampler && bound.layout == imageLayout)
+        return;
+    m_vkCore->GetDeviceContext().WaitIdle();
+    m_vkCore->UpdatePerViewShadowMap(graphShadowDesc, view, shadowSampler, imageLayout);
+    m_vkCore->UpdatePerViewShadowMap(particleShadowDesc, view, shadowSampler, imageLayout);
+    m_shadowBindingState[frameIndex] = {view, shadowSampler, imageLayout, false};
 }
 
 void SceneRenderGraph::OnResize(uint32_t width, uint32_t height)
@@ -1959,15 +2101,15 @@ void SceneRenderGraph::BuildRenderGraph()
         std::array<ForwardPlusGraphResources, kMaxFramesInFlight> particleForwardPlusResources{};
         if (UsesForwardPlus()) {
             for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
-                const auto *lights = m_vkCore->GetCanonicalLightGpuFrame(frameIndex);
+                const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
                 const auto &gridFrame = m_forwardPlusGeometryGrid.Frame(frameIndex);
-                if (!lights || !lights->buffer.IsValid() || !gridFrame.config.IsValid())
+                if (!lights.buffer.IsValid() || !gridFrame.config.IsValid())
                     continue;
                 const std::string prefix = "ForwardPlus/Geometry/Frame" + std::to_string(frameIndex);
                 m_renderGraph->AddComputePass(prefix + "/Build", [&, frameIndex, prefix](vk::PassBuilder &builder) {
                     auto &resources = forwardPlusResources[frameIndex];
                     resources.canonicalLights =
-                        builder.ImportBuffer(prefix + "/CanonicalLights", lights->buffer, lights->capacityBytes);
+                        builder.ImportBuffer(prefix + "/CanonicalLights", lights.buffer, lights.capacityBytes);
                     resources.headers =
                         builder.ImportBuffer(prefix + "/TileHeaders", gridFrame.headers, gridFrame.headerCapacityBytes);
                     resources.lightMasks = builder.ImportBuffer(prefix + "/TileLightMasks", gridFrame.lightMasks,
@@ -1996,15 +2138,15 @@ void SceneRenderGraph::BuildRenderGraph()
             }
             if (m_forwardPlusParticlesRequired) {
                 for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
-                    const auto *lights = m_vkCore->GetCanonicalLightGpuFrame(frameIndex);
+                    const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
                     const auto &gridFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
-                    if (!lights || !lights->buffer.IsValid() || !gridFrame.config.IsValid())
+                    if (!lights.buffer.IsValid() || !gridFrame.config.IsValid())
                         continue;
                     const std::string prefix = "ForwardPlus/Particles/Frame" + std::to_string(frameIndex);
                     m_renderGraph->AddComputePass(prefix + "/Build", [&, frameIndex, prefix](vk::PassBuilder &builder) {
                         auto &resources = particleForwardPlusResources[frameIndex];
                         resources.canonicalLights =
-                            builder.ImportBuffer(prefix + "/CanonicalLights", lights->buffer, lights->capacityBytes);
+                            builder.ImportBuffer(prefix + "/CanonicalLights", lights.buffer, lights.capacityBytes);
                         resources.headers = builder.ImportBuffer(prefix + "/TileHeaders", gridFrame.headers,
                                                                  gridFrame.headerCapacityBytes);
                         resources.lightMasks = builder.ImportBuffer(prefix + "/TileLightMasks", gridFrame.lightMasks,
@@ -2052,9 +2194,12 @@ void SceneRenderGraph::BuildRenderGraph()
             auto callback = callbackIt->second;
             std::vector<particle::GpuParticleDrawEntry> particleEntries;
             MaterialPassPipelineDescriptor particlePass;
-            if (m_particleDrawRegistry && command && command->type == GraphCommandType::DrawRenderers &&
-                (command->shaderTarget == ShaderCompileTarget::Forward ||
-                 command->shaderTarget == ShaderCompileTarget::ForwardPlus)) {
+            const bool particleSurfacePass = command && command->type == GraphCommandType::DrawRenderers &&
+                                             (command->shaderTarget == ShaderCompileTarget::Forward ||
+                                              command->shaderTarget == ShaderCompileTarget::ForwardPlus);
+            const bool particleShadowPass = command && command->type == GraphCommandType::DrawShadowCasters &&
+                                            command->shaderTarget == ShaderCompileTarget::Shadow;
+            if (m_particleDrawRegistry && (particleSurfacePass || particleShadowPass)) {
                 particleEntries = m_particleDrawRegistry->Snapshot(command->queueMin, command->queueMax);
                 const auto particlePassIt = m_pythonMaterialPasses.find(passDesc.name);
                 if (particlePassIt != m_pythonMaterialPasses.end())
@@ -2064,6 +2209,8 @@ void SceneRenderGraph::BuildRenderGraph()
                 particleEntries.erase(
                     std::remove_if(particleEntries.begin(), particleEntries.end(),
                                    [&](const auto &entry) {
+                                       if (particleShadowPass)
+                                           return !entry.semantics.castShadows || !entry.renderer->CanCastShadows();
                                        return entry.semantics.sortMode != particle::ParticleSortMode::None &&
                                               particleGraphResources.find(entry.id) == particleGraphResources.end();
                                    }),
@@ -2668,6 +2815,9 @@ void SceneRenderGraph::BuildRenderGraph()
             const bool usesShadowRendererList = command && command->type == GraphCommandType::DrawShadowCasters;
             const bool usesVisibleRendererList = command && (command->type == GraphCommandType::DrawRenderers ||
                                                              command->type == GraphCommandType::DrawSkybox);
+            const int shadowQueueMin = command ? command->queueMin : 0;
+            const int shadowQueueMax = command ? command->queueMax : 2999;
+            const int shadowLightIndex = command ? command->lightIndex : 0;
             const vk::ResourceHandle rendererListHandle =
                 usesShadowRendererList ? m_shadowRendererList
                                        : (usesVisibleRendererList ? m_visibleRendererList : vk::ResourceHandle{});
@@ -2720,7 +2870,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle indirectArguments;
                     rhi::BufferHandle drawRenderIndices = entry.renderIndices;
                     const auto sorted = particleGraphResources.find(entry.id);
-                    if (sorted != particleGraphResources.end()) {
+                    if (!usesShadowRendererList && sorted != particleGraphResources.end()) {
                         instances = sorted->second.instances;
                         renderIndices = sorted->second.renderIndices;
                         indirectArguments = sorted->second.indirectArguments;
@@ -2911,7 +3061,8 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 return [this, callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,
                         usesShadowRendererList, localVkCore, particlePackets, particlePass, particleSceneDepth,
-                        particleSceneDepthIsDepth, passName = passDesc.name](vk::RenderContext &ctx) {
+                        particleSceneDepthIsDepth, shadowQueueMin, shadowQueueMax, shadowLightIndex,
+                        passName = passDesc.name](vk::RenderContext &ctx) {
                     if (rendererListHandle.IsValid()) {
                         const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
                         if (usesShadowRendererList) {
@@ -2921,6 +3072,25 @@ void SceneRenderGraph::BuildRenderGraph()
                             if (!localVkCore->UsesDrawCalls(drawCalls))
                                 localVkCore->SetDrawCalls(drawCalls);
                         }
+                    }
+                    if (isShadowPass) {
+                        const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);
+                        auto &encoder = ctx.GetGraphicsCommandEncoder();
+                        localVkCore->DrawShadowCasters(
+                            ctx.GetCommandBuffer(), passWidth, passHeight, shadowQueueMin, shadowQueueMax,
+                            m_shadowCameraResourceId, m_cameraLightCollector.GetShadowFrame(), shadowLightIndex,
+                            [&](uint32_t, const lighting::ShadowView &activeShadowView) {
+                                particle::GpuParticleViewConstants shadowView;
+                                std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
+                                            sizeof(activeShadowView.viewProjection));
+                                for (const auto &packet : particlePackets) {
+                                    [[maybe_unused]] const bool recorded =
+                                        packet.renderer->RecordDraw(encoder, renderTargetLayout, particlePass,
+                                                                    ctx.GetBufferHandle(packet.indirectArguments),
+                                                                    shadowView, packet.drawRenderIndices);
+                                }
+                            });
+                        return;
                     }
                     if (callback)
                         callback(ctx, passWidth, passHeight);

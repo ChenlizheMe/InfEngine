@@ -632,6 +632,7 @@ class ParticleSystem(InxComponent):
                             "material": self._gpu_material_binding(output),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
+                            "cast_shadows": output.cast_shadows,
                             "soft_particles": output.soft_particles,
                             "soft_distance": output.soft_distance,
                             "sort_mode": output.sort_mode,

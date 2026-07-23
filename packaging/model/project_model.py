@@ -104,6 +104,7 @@ def _default_scene_document() -> dict:
                             "renderMode": 0,
                             "shadowBias": 0.0,
                             "shadowNormalBias": 0.01,
+                            "shadowSoftness": 1.5,
                             "shadowStrength": 1.0,
                             "shadows": 2,
                             "spotAngle": 30.0,

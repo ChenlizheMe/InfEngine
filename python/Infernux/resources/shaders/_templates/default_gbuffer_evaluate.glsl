@@ -39,7 +39,7 @@ void evaluate(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1,
                                    albedo, metallic,
                                    roughness, perceptualRoughness,
                                    F0, f90, energyCompensation,
-                                   mainLight.shadow);
+                                   v_ViewDepth, mainLight.shadow);
 
     vec3 diffuseIrradiance = mix(sampleAmbientProbe(N),
                                  sampleAmbientProbeAverage(),

@@ -47,6 +47,10 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     {
         return false;
     }
+    [[nodiscard]] bool CanCastShadows() const noexcept override
+    {
+        return true;
+    }
     [[nodiscard]] uint32_t VertexCount() const noexcept override
     {
         return m_indexCount;

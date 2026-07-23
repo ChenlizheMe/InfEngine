@@ -1,6 +1,9 @@
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <cstdint>
 #include <type_traits>
@@ -35,6 +38,23 @@ int main()
     rhi::TextureDesc nullTextureDesc;
     nullTextureDesc.format = rhi::PixelFormat::RGBA8UNorm;
     assert(!device.CreateTexture(nullTextureDesc).IsValid());
+
+    rhi::TextureDesc depthTextureDesc;
+    depthTextureDesc.format = rhi::PixelFormat::D32SFloat;
+    depthTextureDesc.usage = rhi::TextureUsageFlags::Sampled;
+    assert(!vk::VulkanRhiDevice::IsValidTextureDesc(depthTextureDesc));
+    depthTextureDesc.usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::DepthStencilAttachment;
+    assert(vk::VulkanRhiDevice::IsValidTextureDesc(depthTextureDesc));
+    depthTextureDesc.usage = rhi::TextureUsageFlags::ColorAttachment | rhi::TextureUsageFlags::DepthStencilAttachment;
+    assert(!vk::VulkanRhiDevice::IsValidTextureDesc(depthTextureDesc));
+
+    rhi::TextureDesc colorTextureDesc;
+    colorTextureDesc.format = rhi::PixelFormat::RGBA8UNorm;
+    colorTextureDesc.usage = rhi::TextureUsageFlags::ColorAttachment;
+    assert(vk::VulkanRhiDevice::IsValidTextureDesc(colorTextureDesc));
+    colorTextureDesc.usage = rhi::TextureUsageFlags::ColorAttachment | rhi::TextureUsageFlags::DepthStencilAttachment;
+    assert(!vk::VulkanRhiDevice::IsValidTextureDesc(colorTextureDesc));
+
     assert(!device.CreateTextureView({}).IsValid());
     assert(!device.CreateSampler({}).IsValid());
 

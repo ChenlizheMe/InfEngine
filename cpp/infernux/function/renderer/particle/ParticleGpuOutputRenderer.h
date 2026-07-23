@@ -46,6 +46,10 @@ class ParticleGpuOutputRenderer
     [[nodiscard]] virtual bool IsValid() const noexcept = 0;
     [[nodiscard]] virtual int32_t RenderQueue() const noexcept = 0;
     [[nodiscard]] virtual bool RequiresSceneDepth() const noexcept = 0;
+    [[nodiscard]] virtual bool CanCastShadows() const noexcept
+    {
+        return false;
+    }
     [[nodiscard]] virtual uint32_t VertexCount() const noexcept = 0;
     [[nodiscard]] virtual rhi::BufferHandle InstanceBuffer() const noexcept = 0;
     [[nodiscard]] virtual rhi::BufferHandle RenderIndexBuffer() const noexcept = 0;

@@ -281,7 +281,10 @@ struct CanonicalLightData {
     vec4 direction_spot;
     vec4 color_intensity;
     vec4 attenuation;
+    vec4 area_right_width;
+    vec4 area_up_height;
     uvec4 metadata;
+    uvec4 identity_shadow;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer CanonicalLights {
@@ -301,6 +304,9 @@ layout(push_constant) uniform ForwardPlusGridConstants {
 bool overlaps_tile(CanonicalLightData light, uvec2 tile) {
     vec4 clip = pc.view_projection * vec4(light.position_range.xyz, 1.0);
     float radius = max(light.position_range.w, 0.0);
+    if (light.metadata.x == 3u) {
+        radius += 0.5 * length(vec2(light.area_right_width.w, light.area_up_height.w));
+    }
     if (clip.w <= radius + 0.0001) return true;
 
     vec2 center_ndc = clip.xy / clip.w;

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <function/renderer/lighting/ShadowFrame.h>
 #include <glm/glm.hpp>
 #include <vector>
 
@@ -26,6 +27,7 @@ class Camera;
 constexpr uint32_t MAX_DIRECTIONAL_LIGHTS = 4;
 constexpr uint32_t MAX_POINT_LIGHTS = 64;
 constexpr uint32_t MAX_SPOT_LIGHTS = 32;
+constexpr uint32_t MAX_AREA_LIGHTS = 16;
 
 /**
  * @brief GPU-side directional light data (std140 layout)
@@ -37,6 +39,7 @@ struct alignas(16) DirectionalLightData
     glm::vec4 direction;    ///< xyz = direction (world space), w = unused
     glm::vec4 color;        ///< rgb = color * intensity, a = intensity
     glm::vec4 shadowParams; ///< x = strength, y = bias, z = normalBias, w = enabled
+    glm::uvec4 metadata;    ///< x = culling mask, y = influence domains, z = first shadow view, w = view count
 };
 
 /**
@@ -44,9 +47,11 @@ struct alignas(16) DirectionalLightData
  */
 struct alignas(16) PointLightData
 {
-    glm::vec4 position;    ///< xyz = world position, w = range
-    glm::vec4 color;       ///< rgb = color * intensity, a = intensity
-    glm::vec4 attenuation; ///< x = constant, y = linear, z = quadratic, w = unused
+    glm::vec4 position;     ///< xyz = world position, w = range
+    glm::vec4 color;        ///< rgb = color * intensity, a = intensity
+    glm::vec4 attenuation;  ///< x = finite range, yzw = reserved
+    glm::vec4 shadowParams; ///< x = strength, y = bias, z = normalBias, w = shadow mode
+    glm::uvec4 metadata;    ///< x = culling mask, y = influence domains, z = first shadow view, w = view count
 };
 
 /**
@@ -54,11 +59,33 @@ struct alignas(16) PointLightData
  */
 struct alignas(16) SpotLightData
 {
-    glm::vec4 position;    ///< xyz = world position, w = range
-    glm::vec4 direction;   ///< xyz = direction (world space), w = unused
-    glm::vec4 color;       ///< rgb = color * intensity, a = intensity
-    glm::vec4 spotParams;  ///< x = cos(innerAngle), y = cos(outerAngle), z = unused, w = unused
-    glm::vec4 attenuation; ///< x = constant, y = linear, z = quadratic, w = unused
+    glm::vec4 position;     ///< xyz = world position, w = range
+    glm::vec4 direction;    ///< xyz = direction (world space), w = unused
+    glm::vec4 color;        ///< rgb = color * intensity, a = intensity
+    glm::vec4 spotParams;   ///< x = cos(innerAngle), y = cos(outerAngle), z = unused, w = unused
+    glm::vec4 attenuation;  ///< x = finite range, yzw = reserved
+    glm::vec4 shadowParams; ///< x = strength, y = bias, z = normalBias, w = shadow mode
+    glm::uvec4 metadata;    ///< x = culling mask, y = influence domains, z = first shadow view, w = view count
+};
+
+struct alignas(16) AreaLightData
+{
+    glm::vec4 positionRange;
+    glm::vec4 direction;
+    glm::vec4 rightWidth;
+    glm::vec4 upHeight;
+    glm::vec4 color;
+    glm::vec4 shadowParams;
+    glm::uvec4 metadata;
+};
+
+struct alignas(16) ShadowViewGpuData
+{
+    glm::mat4 viewProjection{1.0f};
+    glm::vec4 atlasScaleOffset{};
+    glm::vec4 depthTexel{};
+    glm::vec4 splitData{};
+    glm::uvec4 metadata{};
 };
 
 /**
@@ -91,6 +118,9 @@ struct alignas(16) LightingUBO
 
     // Spot lights
     SpotLightData spotLights[MAX_SPOT_LIGHTS];
+
+    // Rectangle area lights
+    AreaLightData areaLights[MAX_AREA_LIGHTS];
 
     // Fog settings (Unity-style)
     glm::vec4 fogColor;  ///< rgb = fog color, a = fog enabled
@@ -131,30 +161,15 @@ struct alignas(16) SimpleLightingUBO
 };
 
 /**
- * @brief Number of shadow cascades (single shadow map for now, CSM later).
- */
-constexpr uint32_t NUM_SHADOW_CASCADES = 4;
-
-/**
  * @brief Shader-compatible Lighting UBO structure.
  *
  * This structure EXACTLY matches the layout in lit.frag shader.
  * Use this for GPU upload to ensure byte-perfect alignment.
  *
- * Layout (std140):
- *   offset 0:    ivec4 lightCounts
- *   offset 16:   vec4 ambientColor
- *   offset 32:   vec4 ambientSkyColor
- *   offset 48:   vec4 ambientEquatorColor
- *   offset 64:   vec4 ambientGroundColor
- *   offset 80:   vec4 cameraPos
- *   offset 96:   DirectionalLightData[4]  (48 bytes each = 192 bytes)
- *   offset 288:  PointLightData[64]       (48 bytes each = 3072 bytes)
- *   offset 3360: SpotLightData[32]        (80 bytes each = 2560 bytes)
- *   offset 5920: mat4 lightVP[4]          (64 bytes each = 256 bytes)
- *   offset 6176: vec4 shadowCascadeSplits (split distances for CSM)
- *   offset 6192: vec4 shadowMapParams     (resolution, enabled, etc.)
- *   Total: 6208 bytes
+ * The matching GLSL declaration is generated from
+ * resources/shaders/_templates/lighting_ubo.glsl. Compile-time
+ * member and
+ * record assertions below guard the shared std140 contract.
  */
 struct alignas(16) ShaderLightingUBO
 {
@@ -172,17 +187,18 @@ struct alignas(16) ShaderLightingUBO
     DirectionalLightData directionalLights[MAX_DIRECTIONAL_LIGHTS];
     PointLightData pointLights[MAX_POINT_LIGHTS];
     SpotLightData spotLights[MAX_SPOT_LIGHTS];
+    AreaLightData areaLights[MAX_AREA_LIGHTS];
 
-    // Shadow mapping data (appended after lights array)
-    glm::mat4 lightVP[NUM_SHADOW_CASCADES]; ///< Light view-projection matrices per cascade
-    glm::vec4 shadowCascadeSplits;          ///< x,y,z,w = cascade split distances (view-space Z)
-    glm::vec4 shadowMapParams;              ///< x = resolution, y = enabled(1/0), z = numCascades, w = unused
+    glm::uvec4 shadowViewHeader; ///< x = view count, y = atlas size, zw = generation
+    ShadowViewGpuData shadowViews[lighting::MaxShadowViews];
 };
 
 // Compile-time size verification
-static_assert(sizeof(DirectionalLightData) == 48, "DirectionalLightData must be 48 bytes");
-static_assert(sizeof(PointLightData) == 48, "PointLightData must be 48 bytes");
-static_assert(sizeof(SpotLightData) == 80, "SpotLightData must be 80 bytes");
+static_assert(sizeof(DirectionalLightData) == 64, "DirectionalLightData must be 64 bytes");
+static_assert(sizeof(PointLightData) == 80, "PointLightData must be 80 bytes");
+static_assert(sizeof(SpotLightData) == 112, "SpotLightData must be 112 bytes");
+static_assert(sizeof(AreaLightData) == 112, "AreaLightData must be 112 bytes");
+static_assert(sizeof(ShadowViewGpuData) == 128, "ShadowViewGpuData must be 128 bytes");
 
 // ============================================================================
 // Canonical light snapshot (std430-compatible, uncapped)
@@ -193,6 +209,7 @@ enum class CanonicalLightType : uint32_t
     Directional = 0,
     Point = 1,
     Spot = 2,
+    Area = 3,
 };
 
 enum CanonicalLightFlags : uint32_t
@@ -212,16 +229,19 @@ enum CanonicalLightFlags : uint32_t
  */
 struct alignas(16) CanonicalLightData
 {
-    glm::vec4 positionRange;     ///< xyz = world position, w = range (0 for directional)
-    glm::vec4 directionOuterCos; ///< xyz = ray direction, w = cos(outer spot half-angle)
-    glm::vec4 colorIntensity;    ///< xyz = linear color, w = intensity
-    glm::vec4 shadowAndInnerCos; ///< x = strength, y = bias, z = normal bias, w = cos(inner half-angle)
-    glm::uvec4 metadata;         ///< x = type, y = culling mask, z = shadow mode, w = flags
+    glm::vec4 positionRange;      ///< xyz = world position, w = range (0 for directional)
+    glm::vec4 directionOuterCos;  ///< xyz = ray direction, w = cos(outer spot half-angle)
+    glm::vec4 colorIntensity;     ///< xyz = linear color, w = intensity
+    glm::vec4 shadowAndInnerCos;  ///< x = strength, y = bias, z = normal bias, w = cos(inner half-angle)
+    glm::vec4 areaRightWidth;     ///< xyz = rectangle right, w = width
+    glm::vec4 areaUpHeight;       ///< xyz = rectangle up, w = height
+    glm::uvec4 metadata;          ///< x = type, y = culling mask, z = shadow mode, w = flags
+    glm::uvec4 identityAndShadow; ///< xy = stable light id, z = first shadow view, w = view count
 };
 
 static_assert(alignof(CanonicalLightData) == 16, "CanonicalLightData alignment must match std430");
-static_assert(sizeof(CanonicalLightData) == 80, "CanonicalLightData must be 80 bytes");
-static_assert(offsetof(CanonicalLightData, metadata) == 64, "CanonicalLightData metadata offset must match GLSL");
+static_assert(sizeof(CanonicalLightData) == 128, "CanonicalLightData must be 128 bytes");
+static_assert(offsetof(CanonicalLightData, metadata) == 96, "CanonicalLightData metadata offset must match GLSL");
 
 struct CanonicalLightSnapshot
 {
@@ -344,23 +364,12 @@ class SceneLightCollector
     void BuildShaderLightingUBO();
 
     /**
-     * @brief Set shadow mapping data for GPU upload.
+     * @brief Build all shadow views for the camera and active lights.
      *
-     * Must be called BEFORE BuildShaderLightingUBO() so the data is
-     * included in the UBO memcpy.
-     *
-     * @param lightVP Light view-projection matrix (cascade 0)
-     * @param resolution Shadow map resolution in pixels
-     */
-    void SetShadowData(const glm::mat4 &lightVP, float resolution);
-
-    /**
-     * @brief Compute cascaded shadow VP matrices from the first shadow-casting directional light.
-     *
-     * Finds the first enabled directional light with shadows, splits the camera
-     * frustum into NUM_SHADOW_CASCADES slices, and fits a tight ortho projection
-     * per cascade with texel snapping to prevent shadow swimming.
-     *
+     * Directional lights use
+     * stable practical cascades. Spot, point and area
+     * lights contribute one or more local views to the same
+     * atlas.
      * Must be called AFTER CollectLights() and BEFORE BuildShaderLightingUBO().
      *
      * @param scene         Active scene to search for lights
@@ -371,27 +380,9 @@ class SceneLightCollector
     void ComputeShadowVP(Scene *scene, const glm::vec3 &cameraPos, float shadowMapResolution,
                          const Camera *camera = nullptr);
 
-    /**
-     * @brief Get the computed shadow light view-projection matrix.
-     *
-     * Valid after ComputeShadowVP() has been called for the current frame.
-     */
-    [[nodiscard]] const glm::mat4 &GetShadowLightVP(uint32_t cascade = 0) const
+    [[nodiscard]] const lighting::ShadowFrame &GetShadowFrame() const noexcept
     {
-        return m_shadowLightVPs[cascade < NUM_SHADOW_CASCADES ? cascade : 0];
-    }
-
-    [[nodiscard]] uint32_t GetShadowCascadeCount() const
-    {
-        return m_shadowCascadeCount;
-    }
-    [[nodiscard]] const std::array<float, NUM_SHADOW_CASCADES> &GetShadowCascadeSplits() const
-    {
-        return m_shadowCascadeSplits;
-    }
-    [[nodiscard]] float GetShadowMapResolution() const
-    {
-        return m_shadowMapResolution;
+        return m_shadowFrame;
     }
 
     /**
@@ -399,7 +390,7 @@ class SceneLightCollector
      */
     [[nodiscard]] bool IsShadowEnabled() const
     {
-        return m_shadowEnabled;
+        return !m_shadowFrame.views.empty();
     }
 
     /**
@@ -431,7 +422,7 @@ class SceneLightCollector
      */
     [[nodiscard]] uint32_t GetTotalLightCount() const
     {
-        return m_directionalLightCount + m_pointLightCount + m_spotLightCount;
+        return m_directionalLightCount + m_pointLightCount + m_spotLightCount + m_areaLightCount;
     }
 
     // ========================================================================
@@ -479,17 +470,14 @@ class SceneLightCollector
      */
     void AddSpotLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
 
+    void AddAreaLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
+
     void AddCanonicalLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
 
     /**
      * @brief Sort point lights by importance (distance to camera, intensity).
      */
     void SortPointLightsByImportance(const glm::vec3 &cameraPosition);
-
-    /**
-     * @brief Calculate attenuation factors for a given range.
-     */
-    static glm::vec3 CalculateAttenuation(float range);
 
     /**
      * @brief Prepare the simplified UBO from the full UBO.
@@ -506,20 +494,20 @@ class SceneLightCollector
     uint32_t m_directionalLightCount = 0;
     uint32_t m_pointLightCount = 0;
     uint32_t m_spotLightCount = 0;
+    uint32_t m_areaLightCount = 0;
+    std::array<uint64_t, MAX_DIRECTIONAL_LIGHTS> m_directionalLightIds{};
+    std::array<uint64_t, MAX_POINT_LIGHTS> m_pointLightIds{};
+    std::array<uint64_t, MAX_SPOT_LIGHTS> m_spotLightIds{};
+    std::array<uint64_t, MAX_AREA_LIGHTS> m_areaLightIds{};
 
-    // Shadow data (set before BuildShaderLightingUBO)
-    std::array<glm::mat4, NUM_SHADOW_CASCADES> m_shadowLightVPs{glm::mat4(1.0f), glm::mat4(1.0f), glm::mat4(1.0f),
-                                                                glm::mat4(1.0f)};
-    std::array<float, NUM_SHADOW_CASCADES> m_shadowCascadeSplits{0.f, 0.f, 0.f, 0.f};
-    uint32_t m_shadowCascadeCount = 0;
-    float m_shadowMapResolution = 0.0f;
-    bool m_shadowEnabled = false;
+    lighting::ShadowFrame m_shadowFrame;
 
     // Temporary storage for sorting
     struct PointLightSortData
     {
         PointLightData data;
         float importance;
+        uint64_t lightId = 0;
     };
     std::vector<PointLightSortData> m_pointLightSortBuffer;
 };

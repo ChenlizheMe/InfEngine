@@ -1,5 +1,7 @@
 #pragma once
 
+#include <function/renderer/lighting/ShadowFrame.h>
+
 // Minimal includes required for public API value types and POD members
 #include "CaptureService.h"
 #include "GpuResidency.h"
@@ -72,6 +74,12 @@ struct RendererFrameTelemetrySnapshot
     size_t sceneShadowDrawCallCount = 0;
     size_t gameDrawCallCount = 0;
     size_t gameShadowDrawCallCount = 0;
+    uint32_t sceneShadowViewCount = 0;
+    uint32_t gameShadowViewCount = 0;
+    uint32_t sceneShadowAssignmentCount = 0;
+    uint32_t gameShadowAssignmentCount = 0;
+    uint64_t sceneShadowResourceIdentity = 0;
+    uint64_t gameShadowResourceIdentity = 0;
     size_t lightCount = 0;
     bool canonicalLightGpuBufferReady = false;
     uint64_t canonicalLightGpuBytes = 0;
@@ -594,16 +602,6 @@ class InxRenderer
     /// by FindGameCameraCached() and cleared at the start of each DrawFrame.
     class Camera *m_cachedGameCamera = nullptr;
     bool m_gameCameraCacheValid = false;
-
-    // Per-camera shadow VP data for multi-camera shadow isolation.
-    // Editor camera shadow data goes into m_lightCollector (default path).
-    // Game camera shadow data is stored here and patched into the lighting
-    // UBO inline before the game render graph executes.
-    bool m_hasGameShadowData = false;
-    std::array<glm::mat4, 4> m_gameShadowVPs{};
-    std::array<float, 4> m_gameShadowSplits{};
-    uint32_t m_gameShadowCascadeCount = 0;
-    float m_gameShadowMapResolution = 0.0f;
 
     // Scriptable render pipeline (nullptr = default C++ path)
     std::shared_ptr<RenderPipelineCallback> m_renderPipeline;

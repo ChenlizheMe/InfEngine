@@ -370,6 +370,7 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "material": output.material.to_dict(),
                         "receive_scene_lighting": output.receive_scene_lighting,
                         "receive_shadows": output.receive_shadows,
+                        "cast_shadows": output.cast_shadows,
                         "soft_particles": output.soft_particles,
                         "soft_distance": output.soft_distance,
                         "sort_mode": output.sort_mode,

@@ -538,6 +538,18 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.vulkan_rhi_device COMMAND infernux_vulkan_rhi_device_tests)
 
+    add_executable(infernux_scene_render_graph_validation_tests
+        cpp/tests/SceneRenderGraphValidationTests.cpp
+    )
+    target_include_directories(infernux_scene_render_graph_validation_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_scene_render_graph_validation_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_scene_render_graph_validation_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.scene_render_graph_validation COMMAND infernux_scene_render_graph_validation_tests)
+
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp

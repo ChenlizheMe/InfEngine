@@ -22,6 +22,7 @@
 #include "RenderGraphDescription.h"
 #include "RendererList.h"
 #include "SceneDepthResolver.h"
+#include "lighting/CanonicalLightGpuBuffer.h"
 #include "lighting/ForwardPlusLightGrid.h"
 #include "vk/RenderGraph.h"
 #include "vk/VkDeviceContext.h"
@@ -41,6 +42,8 @@ class InxVkCoreModular;
 class InxMaterial;
 class InxScreenUIRenderer;
 class SceneRenderTarget;
+class Camera;
+class Scene;
 namespace particle
 {
 class ParticleGpuDrawRegistry;
@@ -158,6 +161,9 @@ class SceneRenderGraph
      */
     void ApplyPythonGraph(const RenderGraphDescription &desc);
 
+    /// Validate a backend-neutral graph description before applying it.
+    [[nodiscard]] static bool ValidateGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples);
+
     /// Upload changed runtime parameter blocks without rebuilding graph topology.
     void UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
 
@@ -198,6 +204,10 @@ class SceneRenderGraph
     {
         return m_hasPythonGraph ? m_pythonGraphDesc.msaaSamples : 0;
     }
+
+    /// Return the square shadow atlas extent declared by this graph, or zero
+    /// when the graph has no shadow-caster pass.
+    [[nodiscard]] uint32_t GetShadowMapResolution() const;
 
     /// Set the globally validated sample count used by this view. Scene and
     /// game graphs currently share material pipelines and therefore must use
@@ -421,14 +431,12 @@ class SceneRenderGraph
         return m_hasCachedCameraVP;
     }
 
-    /// @brief Clear cached draw calls and camera state.
+    /// @brief Drop only camera-dependent submissions for an inactive view.
     ///
-    /// Scene switching destroys the source meshes/components immediately.
-    /// Any cross-frame cache that still references those draw calls becomes
-    /// invalid and must be dropped before the next render submission.
-    /// Also forces a full render graph rebuild so that stale transient
-    /// VkImage handles are not used in barrier insertion.
-    void ClearCachedFrameState()
+    /// Hiding an editor panel must not invalidate the compiled pipeline or its
+    /// resource description.  The Game view still relies on that shared
+    /// pipeline description when it builds the per-camera shadow layout.
+    void ClearCachedViewSubmission()
     {
         m_cachedRenderers.Clear();
         m_hasCachedDrawCalls = false;
@@ -439,6 +447,18 @@ class SceneRenderGraph
         m_hasCachedCameraVP = false;
         m_previousViewProj = glm::mat4(1.0f);
         m_cameraHistoryValid = false;
+    }
+
+    /// @brief Clear cached draw calls and camera state.
+    ///
+    /// Scene switching destroys the source meshes/components immediately.
+    /// Any cross-frame cache that still references those draw calls becomes
+    /// invalid and must be dropped before the next render submission.
+    /// Also forces a full render graph rebuild so that stale transient
+    /// VkImage handles are not used in barrier insertion.
+    void ClearCachedFrameState()
+    {
+        ClearCachedViewSubmission();
         m_needsRebuild = true;
         // Prevent Execute() from running the old compiled graph before
         // EnsureGraphBuilt() has a chance to rebuild it.  Without this,
@@ -484,6 +504,30 @@ class SceneRenderGraph
 
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
     [[nodiscard]] VkDescriptorSet GetPerViewDescriptorSet() const;
+
+    /// Build immutable lighting and shadow state owned by this camera graph.
+    void StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
+                             const ShaderLightingUBO &environmentLighting);
+    [[nodiscard]] bool HasCameraShadows() const noexcept
+    {
+        return !m_cameraLightCollector.GetShadowFrame().views.empty();
+    }
+    [[nodiscard]] uint32_t GetCameraLightCount() const noexcept
+    {
+        return m_cameraLightCollector.GetTotalLightCount();
+    }
+    [[nodiscard]] uint32_t GetCameraShadowViewCount() const noexcept
+    {
+        return static_cast<uint32_t>(m_cameraLightCollector.GetShadowFrame().views.size());
+    }
+    [[nodiscard]] uint32_t GetCameraShadowAssignmentCount() const noexcept
+    {
+        return static_cast<uint32_t>(m_cameraLightCollector.GetShadowFrame().assignments.size());
+    }
+    [[nodiscard]] uint64_t GetShadowResourceIdentity() const noexcept
+    {
+        return m_shadowCameraResourceId;
+    }
 
     /**
      * @brief Explicit MSAA resolve from 4x MSAA color to 1x color target
@@ -629,6 +673,33 @@ class SceneRenderGraph
     VkDescriptorSet m_particlePerViewDescSets[kMaxFramesInFlight] = {};
     rhi::BindingLayoutHandle m_particlePerViewLayout;
     rhi::BindGroupHandle m_particlePerViewGroups[kMaxFramesInFlight] = {};
+    rhi::BufferHandle m_cameraLightingBuffers[kMaxFramesInFlight] = {};
+    lighting::CanonicalLightGpuBuffer m_cameraCanonicalLights;
+    SceneLightCollector m_cameraLightCollector;
+    uint64_t m_shadowCameraResourceId = 0;
+
+    struct PerViewBufferBindingState
+    {
+        VkBuffer canonicalLights = VK_NULL_HANDLE;
+        VkBuffer tileHeaders = VK_NULL_HANDLE;
+        VkBuffer tileLightMasks = VK_NULL_HANDLE;
+        VkBuffer lighting = VK_NULL_HANDLE;
+        uint64_t canonicalBytes = 0;
+        uint64_t tileHeaderBytes = 0;
+        uint64_t tileLightMaskBytes = 0;
+        bool initialized = false;
+    };
+    PerViewBufferBindingState m_geometryBindingState[kMaxFramesInFlight] = {};
+    PerViewBufferBindingState m_particleBindingState[kMaxFramesInFlight] = {};
+
+    struct PerViewShadowBindingState
+    {
+        VkImageView imageView = VK_NULL_HANDLE;
+        VkSampler sampler = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        bool fallback = true;
+    };
+    PerViewShadowBindingState m_shadowBindingState[kMaxFramesInFlight] = {};
 
     // Resource handle bound to the graph's "shadowMap" sampler input.
     // Resolved after Compile() so the per-view descriptor can be updated
@@ -642,7 +713,6 @@ class SceneRenderGraph
     SceneDepthResolver m_sceneDepthResolver;
     lighting::ForwardPlusLightGrid m_forwardPlusGeometryGrid;
     lighting::ForwardPlusLightGrid m_forwardPlusParticleGrid;
-    rhi::BufferHandle m_particleLightingBuffer;
     bool m_forwardPlusParticlesRequired = false;
 };
 

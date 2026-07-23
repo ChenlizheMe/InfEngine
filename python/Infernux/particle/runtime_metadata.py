@@ -130,6 +130,7 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         "material",
         "receive_scene_lighting",
         "receive_shadows",
+        "cast_shadows",
         "soft_particles",
         "soft_distance",
         "sort_mode",
@@ -142,6 +143,7 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         or not value["output_type"]
         or type(value["receive_scene_lighting"]) is not bool
         or type(value["receive_shadows"]) is not bool
+        or type(value["cast_shadows"]) is not bool
         or type(value["soft_particles"]) is not bool
         or type(value["soft_distance"]) not in {int, float}
         or not math.isfinite(float(value["soft_distance"]))
@@ -156,6 +158,7 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         AssetReference.from_dict(value["material"]),
         value["receive_scene_lighting"],
         value["receive_shadows"],
+        value["cast_shadows"],
         value["soft_particles"],
         float(value["soft_distance"]),
         value["sort_mode"],

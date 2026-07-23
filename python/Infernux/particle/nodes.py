@@ -212,6 +212,7 @@ PARTICLE_NODE_DEFINITIONS = (
             PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
+            PropertyDef("cast_shadows", TypeRef(ValueType.BOOL), False),
             PropertyDef("sort", TypeRef(ValueType.STRING), "none"),
         ),
         {"particle_hir": "render.mesh"},

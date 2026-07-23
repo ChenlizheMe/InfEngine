@@ -70,6 +70,7 @@ class GPUMaterialPreview
     std::unique_ptr<vk::VkBufferHandle> m_previewInstanceBuffer;
     std::unique_ptr<vk::VkBufferHandle> m_previewSkinInstanceBuffer;
     std::unique_ptr<vk::VkBufferHandle> m_previewSkinPaletteBuffer;
+    std::unique_ptr<vk::VkBufferHandle> m_previewInstanceAuxBuffer;
     VkDescriptorPool m_previewGlobalsPool = VK_NULL_HANDLE;
     VkDescriptorSet m_previewGlobalsSet = VK_NULL_HANDLE;
     std::shared_ptr<vk::ImageReadbackTicket> m_activeReadback;

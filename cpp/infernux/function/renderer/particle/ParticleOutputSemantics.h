@@ -19,6 +19,7 @@ struct ParticleOutputSemantics
 {
     bool receiveSceneLighting = false;
     bool receiveShadows = false;
+    bool castShadows = false;
     bool softParticles = false;
     float softDistance = 1.0f;
     ParticleSortMode sortMode = ParticleSortMode::BackToFront;

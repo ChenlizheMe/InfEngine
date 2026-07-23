@@ -947,17 +947,17 @@ class Light(Component):
     range: float
     spot_angle: float
     outer_spot_angle: float
+    area_size: Vector2
+    area_two_sided: bool
     shadows: LightShadows
     shadow_strength: float
     shadow_bias: float
+    shadow_normal_bias: float
+    shadow_softness: float
+    affect_geometry: bool
+    affect_particles: bool
+    culling_mask: int
 
-    def get_light_view_matrix(self) -> List[float]: ...
-    def get_light_projection_matrix(
-        self,
-        shadow_extent: float = 20.0,
-        near_plane: float = 0.1,
-        far_plane: float = 100.0,
-    ) -> List[float]: ...
     def serialize(self) -> str: ...
 
 

@@ -250,15 +250,17 @@ ParticleGpuMeshRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle rende
 {
     if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
-         pass.target != ShaderCompileTarget::Picking)) {
+         pass.target != ShaderCompileTarget::Shadow && pass.target != ShaderCompileTarget::Picking)) {
         return {};
     }
     const bool picking = pass.target == ShaderCompileTarget::Picking;
+    const bool shadow = pass.target == ShaderCompileTarget::Shadow;
     const bool usesForwardPlusLighting =
         pass.target == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting;
     if (usesForwardPlusLighting && !forwardPlusLayout.IsValid())
         return {};
-    const auto state = picking ? GpuBillboardMaterialState{3000, false, true, true} : ResolveMaterialState();
+    const auto state =
+        (picking || shadow) ? GpuBillboardMaterialState{3000, false, true, true} : ResolveMaterialState();
     const uint8_t signature = PipelineStateSignature(state);
     const auto found = std::find_if(m_pipelines.begin(), m_pipelines.end(), [&](const auto &entry) {
         return entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&

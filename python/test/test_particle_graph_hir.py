@@ -24,10 +24,12 @@ from Infernux.particle import (
     ParticleScriptError,
     ParticleArtifactError,
     ParticleArtifactRegistry,
+    ParticleRuntimeMetadataError,
     PointCache,
     ScalarRange,
     SimulationSpace,
     VectorField,
+    decode_particle_runtime_metadata,
 )
 from Infernux.graph import AssetReference, TypeRef, ValueType
 
@@ -247,6 +249,7 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
     assert smoke.render_plan.outputs[0].material == AssetReference(guid="six-way-smoke-guid")
     assert smoke.render_plan.outputs[0].receive_scene_lighting is True
     assert smoke.render_plan.outputs[0].receive_shadows is True
+    assert smoke.render_plan.outputs[0].cast_shadows is False
     assert smoke.render_plan.outputs[0].soft_particles is True
     assert smoke.render_plan.outputs[0].soft_distance == pytest.approx(0.35)
 
@@ -262,6 +265,35 @@ def test_particle_graph_compiler_rejects_rendering_without_output():
 
     with pytest.raises(ParticleCompileError, match="at least one output"):
         ParticleGraphCompiler().compile(asset)
+
+
+def test_particle_sprite_output_rejects_static_mesh_shadow_property():
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "output.sprite",
+                "particle.output.sprite",
+                properties={"cast_shadows": True},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-to-sprite",
+                "root.rendering",
+                "out",
+                "output.sprite",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    with pytest.raises(ParticleCompileError, match="unknown properties"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+        )
 
 
 def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
@@ -307,6 +339,7 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     )
     assert output.material == AssetReference(guid="debris-material-guid")
     assert output.soft_particles is False
+    assert output.cast_shadows is False
     assert output.sort_mode == "none"
     orientation = next(
         attribute
@@ -354,6 +387,7 @@ def test_particle_graph_compiles_lit_shadow_receiving_static_mesh_output():
                     "mesh": AssetReference(guid="mesh-guid").to_dict(),
                     "receive_scene_lighting": True,
                     "receive_shadows": True,
+                    "cast_shadows": True,
                 },
             ),
         ),
@@ -369,12 +403,15 @@ def test_particle_graph_compiles_lit_shadow_receiving_static_mesh_output():
         ),
     )
 
-    output = ParticleGraphCompiler().compile(
-        ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
-    ).emitters[0].render_plan.outputs[0]
+    graph_asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(rendering=rendering),)
+    )
+    restored_graph = ParticleGraphAsset.from_json(graph_asset.canonical_json())
+    output = ParticleGraphCompiler().compile(restored_graph).emitters[0].render_plan.outputs[0]
 
     assert output.receive_scene_lighting is True
     assert output.receive_shadows is True
+    assert output.cast_shadows is True
 
 
 def test_particle_graph_rejects_sorted_static_mesh_output():
@@ -710,6 +747,7 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
         '''particles.mesh(
                 mesh=AssetReference(guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"),
                 material=AssetReference(guid="debris-material-guid"),
+                cast_shadows=True,
                 sort="none",
             )''',
     )
@@ -728,6 +766,16 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
 
     assert output.output_type == "mesh"
     assert output.mesh.guid == "mesh-guid"
+    assert output.cast_shadows is True
+    default_output = ParticleScriptCompiler().compile(
+        source.replace("                cast_shadows=True,\n", ""),
+        source_name="MeshOutputDefault.particle.py",
+    ).emitters[0].render_plan.outputs[0]
+    assert default_output.cast_shadows is False
+    graph_program = ParticleGraphCompiler().compile(
+        ParticleScriptCompiler().parse(source, source_name="MeshOutput.particle.py")
+    )
+    assert graph_program.emitters[0].render_plan.outputs[0] == output
     assert output.material.guid == "debris-material-guid"
     assert output.sort_mode == "none"
     assert emitter.init.operations[-1].opcode == "attribute.set_orientation"
@@ -973,6 +1021,13 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert script_artifact.hir["emitters"][0]["render_plan"][0][
         "receive_scene_lighting"
     ] is True
+    assert script_artifact.hir["emitters"][0]["render_plan"][0]["cast_shadows"] is False
+    runtime_metadata = decode_particle_runtime_metadata(script_artifact.hir)
+    assert runtime_metadata.emitters[0].outputs[0].cast_shadows is False
+    stale_hir = copy.deepcopy(script_artifact.hir)
+    stale_hir["emitters"][0]["render_plan"][0].pop("cast_shadows")
+    with pytest.raises(ParticleRuntimeMetadataError, match="is invalid"):
+        decode_particle_runtime_metadata(stale_hir)
     assert graph_artifact.artifact_path.endswith("smoke-graph.inxparticle")
 
 

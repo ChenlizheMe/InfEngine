@@ -10,6 +10,7 @@
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/MaterialPipelineManager.h>
+#include <function/renderer/RenderInstanceHistory.h>
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/vk/DescriptorBindTrace.h>
 #include <function/renderer/vk/VkRenderUtils.h>
@@ -354,8 +355,12 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     ShaderProgram *primaryProgram = passBindings.front().program;
 
     if (primaryProgram->HasDeclaredDescriptorSet(1)) {
-        if (m_fallbackShadowDescSet == VK_NULL_HANDLE)
+        if (m_fallbackShadowDescSet == VK_NULL_HANDLE) {
             m_fallbackShadowDescSet = m_vkCore->AllocatePerViewDescriptorSet();
+            if (m_fallbackShadowDescSet != VK_NULL_HANDLE)
+                m_vkCore->UpdatePerViewLightingBuffer(m_fallbackShadowDescSet, lightingUBOBuf,
+                                                      sizeof(ShaderLightingUBO));
+        }
         shadowDesc = m_fallbackShadowDescSet;
         if (shadowDesc == VK_NULL_HANDLE) {
             INXLOG_WARN("GPUMaterialPreview: shader requires set 1 but no shadow descriptor is available");
@@ -380,6 +385,10 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     vkCmdUpdateBuffer(cmd, m_previewSkinInstanceBuffer->GetBuffer(), 0, sizeof(emptySkinInstance),
                       emptySkinInstance.data());
     vkCmdUpdateBuffer(cmd, m_previewSkinPaletteBuffer->GetBuffer(), 0, sizeof(identityBone), &identityBone);
+    GPUInstanceAuxData instanceAux{};
+    instanceAux.previousModel = previewModel;
+    instanceAux.layerMask = ~0u;
+    vkCmdUpdateBuffer(cmd, m_previewInstanceAuxBuffer->GetBuffer(), 0, sizeof(instanceAux), &instanceAux);
 
     // Memory barrier: make UBO writes visible to shaders
     VkMemoryBarrier uboBarrier{};
@@ -697,8 +706,9 @@ bool GPUMaterialPreview::EnsureViewResources()
     m_previewInstanceBuffer = rm.CreateStorageBuffer(sizeof(glm::mat4), false);
     m_previewSkinInstanceBuffer = rm.CreateStorageBuffer(64, false);
     m_previewSkinPaletteBuffer = rm.CreateStorageBuffer(sizeof(glm::mat4), false);
+    m_previewInstanceAuxBuffer = rm.CreateStorageBuffer(sizeof(GPUInstanceAuxData), false);
     if (!m_previewSceneUbo || !m_previewLightingUbo || !m_previewGlobalsUbo || !m_previewInstanceBuffer ||
-        !m_previewSkinInstanceBuffer || !m_previewSkinPaletteBuffer)
+        !m_previewSkinInstanceBuffer || !m_previewSkinPaletteBuffer || !m_previewInstanceAuxBuffer)
         throw std::runtime_error("Failed to allocate isolated material-preview view buffers");
 
     VkDescriptorPoolSize poolSizes[2]{};
@@ -726,13 +736,14 @@ bool GPUMaterialPreview::EnsureViewResources()
     if (vkAllocateDescriptorSets(device, &allocateInfo, &m_previewGlobalsSet) != VK_SUCCESS)
         throw std::runtime_error("Failed to allocate isolated material-preview globals descriptor set");
 
-    VkDescriptorBufferInfo buffers[4]{};
+    VkDescriptorBufferInfo buffers[5]{};
     buffers[0] = {m_previewGlobalsUbo->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
     buffers[1] = {m_previewInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     buffers[2] = {m_previewSkinInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     buffers[3] = {m_previewSkinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet writes[4]{};
-    for (uint32_t binding = 0; binding < 4; ++binding) {
+    buffers[4] = {m_previewInstanceAuxBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet writes[5]{};
+    for (uint32_t binding = 0; binding < 5; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = m_previewGlobalsSet;
         writes[binding].dstBinding = binding;
@@ -741,7 +752,7 @@ bool GPUMaterialPreview::EnsureViewResources()
             binding == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[binding].pBufferInfo = &buffers[binding];
     }
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
     return true;
 }
 
@@ -755,6 +766,7 @@ void GPUMaterialPreview::DestroyViewResources()
     }
     m_previewSkinPaletteBuffer.reset();
     m_previewSkinInstanceBuffer.reset();
+    m_previewInstanceAuxBuffer.reset();
     m_previewInstanceBuffer.reset();
     m_previewGlobalsUbo.reset();
     m_previewLightingUbo.reset();

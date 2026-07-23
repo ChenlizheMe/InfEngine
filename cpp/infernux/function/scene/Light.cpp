@@ -53,12 +53,15 @@ nlohmann::json Light::SerializeDocument() const
     // Spot settings
     j["spotAngle"] = m_spotAngle;
     j["outerSpotAngle"] = m_outerSpotAngle;
+    j["areaSize"] = {m_areaSize.x, m_areaSize.y};
+    j["areaTwoSided"] = m_areaTwoSided;
 
     // Shadows
     j["shadows"] = static_cast<int>(m_shadows);
     j["shadowStrength"] = m_shadowStrength;
     j["shadowBias"] = m_shadowBias;
     j["shadowNormalBias"] = m_shadowNormalBias;
+    j["shadowSoftness"] = m_shadowSoftness;
 
     // Rendering
     j["renderMode"] = static_cast<int>(m_renderMode);
@@ -75,19 +78,23 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
     ValidateComponentDocument(j, "Light",
-                              {"lightType", "color", "intensity", "range", "spotAngle", "outerSpotAngle", "shadows",
-                               "shadowStrength", "shadowBias", "shadowNormalBias", "renderMode", "cullingMask",
-                               "influenceDomains", "baked"});
+                              {"lightType", "color", "intensity", "range", "spotAngle", "outerSpotAngle", "areaSize",
+                               "areaTwoSided", "shadows", "shadowStrength", "shadowBias", "shadowNormalBias",
+                               "shadowSoftness",
+                               "renderMode", "cullingMask", "influenceDomains", "baked"});
     const int lightType = RequireInteger(j, "lightType", "Light");
     RequireFiniteVector(j, "color", 3, "Light");
     const float intensity = RequireFiniteFloat(j, "intensity", "Light");
     const float range = RequireFiniteFloat(j, "range", "Light");
     const float spotAngle = RequireFiniteFloat(j, "spotAngle", "Light");
     const float outerSpotAngle = RequireFiniteFloat(j, "outerSpotAngle", "Light");
+    RequireFiniteVector(j, "areaSize", 2, "Light");
+    RequireBoolean(j, "areaTwoSided", "Light");
     const int shadows = RequireInteger(j, "shadows", "Light");
     const float shadowStrength = RequireFiniteFloat(j, "shadowStrength", "Light");
     const float shadowBias = RequireFiniteFloat(j, "shadowBias", "Light");
     const float shadowNormalBias = RequireFiniteFloat(j, "shadowNormalBias", "Light");
+    const float shadowSoftness = RequireFiniteFloat(j, "shadowSoftness", "Light");
     const int renderMode = RequireInteger(j, "renderMode", "Light");
     const uint64_t cullingMask = RequireUnsignedInteger(j, "cullingMask", "Light");
     const uint64_t influenceDomains = RequireUnsignedInteger(j, "influenceDomains", "Light");
@@ -99,9 +106,12 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
         throw std::invalid_argument("Light intensity and range are invalid");
     if (spotAngle <= 0.0f || outerSpotAngle < spotAngle || outerSpotAngle >= 180.0f)
         throw std::invalid_argument("Light spot cone angles are invalid");
+    if (j["areaSize"][0].get<float>() <= 0.0f || j["areaSize"][1].get<float>() <= 0.0f)
+        throw std::invalid_argument("Light area size is invalid");
     if (shadows < static_cast<int>(LightShadows::None) || shadows > static_cast<int>(LightShadows::Soft))
         throw std::invalid_argument("Light.shadows is unsupported");
-    if (shadowStrength < 0.0f || shadowStrength > 1.0f || shadowBias < 0.0f || shadowNormalBias < 0.0f)
+    if (shadowStrength < 0.0f || shadowStrength > 1.0f || shadowBias < 0.0f || shadowNormalBias < 0.0f ||
+        shadowSoftness < 0.25f || shadowSoftness > 8.0f)
         throw std::invalid_argument("Light shadow parameters are invalid");
     if (renderMode < static_cast<int>(LightRenderMode::Auto) ||
         renderMode > static_cast<int>(LightRenderMode::ForceVertex))
@@ -125,10 +135,13 @@ bool Light::DeserializeDocument(const nlohmann::json &j)
         m_range = j["range"].get<float>();
         m_spotAngle = j["spotAngle"].get<float>();
         m_outerSpotAngle = j["outerSpotAngle"].get<float>();
+        m_areaSize = glm::vec2(j["areaSize"][0].get<float>(), j["areaSize"][1].get<float>());
+        m_areaTwoSided = j["areaTwoSided"].get<bool>();
         m_shadows = static_cast<LightShadows>(j["shadows"].get<int>());
         m_shadowStrength = j["shadowStrength"].get<float>();
         m_shadowBias = j["shadowBias"].get<float>();
         m_shadowNormalBias = j["shadowNormalBias"].get<float>();
+        m_shadowSoftness = j["shadowSoftness"].get<float>();
         m_renderMode = static_cast<LightRenderMode>(j["renderMode"].get<int>());
         m_cullingMask = j["cullingMask"].get<uint32_t>();
         m_influenceDomains = j["influenceDomains"].get<uint32_t>();
@@ -138,64 +151,6 @@ bool Light::DeserializeDocument(const nlohmann::json &j)
     } catch (const std::exception &e) {
         INXLOG_ERROR("Light::Deserialize failed: ", e.what());
         return false;
-    }
-}
-
-// ============================================================================
-// Shadow mapping — light view/projection helpers
-// ============================================================================
-
-glm::mat4 Light::GetLightViewMatrix(const glm::vec3 &shadowCenter) const
-{
-    // Default: look along -Z
-    glm::vec3 lightDir = glm::vec3(0.0f, -1.0f, 0.0f);
-    glm::vec3 lightPos = glm::vec3(0.0f, 10.0f, 0.0f);
-
-    // If attached to a GameObject, use its transform
-    if (GetGameObject()) {
-        Transform *transform = GetGameObject()->GetTransform();
-        if (transform) {
-            lightDir = transform->GetWorldForward();
-            lightPos = transform->GetWorldPosition();
-        }
-    }
-
-    // For directional lights, center the shadow frustum on shadowCenter
-    // (typically the camera position) and place the light far along -lightDir
-    if (m_lightType == LightType::Directional) {
-        lightPos = shadowCenter - lightDir * 50.0f;
-    }
-
-    glm::vec3 target = lightPos + lightDir;
-    glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
-
-    // Avoid degenerate case when light points straight up/down
-    if (std::abs(glm::dot(lightDir, up)) > 0.99f) {
-        up = glm::vec3(0.0f, 0.0f, 1.0f);
-    }
-
-    return glm::lookAt(lightPos, target, up);
-}
-
-glm::mat4 Light::GetLightProjectionMatrix(float shadowExtent, float nearPlane, float farPlane) const
-{
-    switch (m_lightType) {
-    case LightType::Directional:
-        // Orthographic projection for directional light shadows
-        return glm::ortho(-shadowExtent, shadowExtent, -shadowExtent, shadowExtent, nearPlane, farPlane);
-
-    case LightType::Spot: {
-        // Perspective projection matching the spot cone angle
-        float fov = glm::radians(m_outerSpotAngle * 2.0f);
-        return glm::perspective(fov, 1.0f, nearPlane, m_range);
-    }
-
-    case LightType::Point:
-    case LightType::Area:
-    default:
-        // Point light shadow map requires cubemap — not yet supported
-        // Return identity as placeholder
-        return glm::mat4(1.0f);
     }
 }
 
@@ -210,10 +165,13 @@ std::unique_ptr<Component> Light::Clone() const
     clone->m_range = m_range;
     clone->m_spotAngle = m_spotAngle;
     clone->m_outerSpotAngle = m_outerSpotAngle;
+    clone->m_areaSize = m_areaSize;
+    clone->m_areaTwoSided = m_areaTwoSided;
     clone->m_shadows = m_shadows;
     clone->m_shadowStrength = m_shadowStrength;
     clone->m_shadowBias = m_shadowBias;
     clone->m_shadowNormalBias = m_shadowNormalBias;
+    clone->m_shadowSoftness = m_shadowSoftness;
     clone->m_renderMode = m_renderMode;
     clone->m_cullingMask = m_cullingMask;
     clone->m_influenceDomains = m_influenceDomains;

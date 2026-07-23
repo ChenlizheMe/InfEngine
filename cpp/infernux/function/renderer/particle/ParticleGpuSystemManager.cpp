@@ -591,6 +591,10 @@ struct ParticleGpuSystemManager::Impl
         outputStableIds.reserve(program.outputs.size());
         emitter->outputs.reserve(program.outputs.size());
         for (const auto &output : program.outputs) {
+            if (output.semantics.castShadows && output.type != GpuParticleOutputType::Mesh) {
+                SetError(error, "only static mesh particle outputs can cast shadows");
+                return {};
+            }
             if (output.id == 0 || output.stableId.empty() || !outputIds.insert(output.id).second ||
                 !outputStableIds.insert(output.stableId).second) {
                 SetError(error, "GPU particle output identity must be valid and unique per emitter");

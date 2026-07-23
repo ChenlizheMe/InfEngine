@@ -55,6 +55,18 @@ void HashCombine(size_t &seed, uint64_t value)
     seed ^= hash + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
 }
 
+ShadowViewGpuData PackShadowView(const lighting::ShadowView &view, uint32_t atlasSize)
+{
+    ShadowViewGpuData result{};
+    result.viewProjection = view.viewProjection;
+    result.atlasScaleOffset = view.atlas.ScaleOffset(atlasSize);
+    result.depthTexel =
+        glm::vec4(view.nearPlane, view.farPlane, view.worldUnitsPerTexel, view.filterRadiusTexels);
+    result.splitData = glm::vec4(view.splitNear, view.splitFar, 0.0f, 0.0f);
+    result.metadata = glm::uvec4(static_cast<uint32_t>(view.type), view.subView, 0u, 0u);
+    return result;
+}
+
 } // namespace
 
 // ============================================================================
@@ -802,99 +814,6 @@ void InxVkCoreModular::CmdUpdateLightingUBO(VkCommandBuffer cmdBuf)
     vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
 
     m_lightingUBODirty = false;
-}
-
-void InxVkCoreModular::CmdUpdateShadowDataForCamera(VkCommandBuffer cmdBuf, const glm::mat4 *lightVPs,
-                                                    uint32_t cascadeCount, const float *cascadeSplits,
-                                                    float mapResolution)
-{
-    if (!m_lightingUbo)
-        return;
-
-    VkBuffer buffer = m_lightingUbo->GetBuffer();
-
-    // Build the shadow portion we need to patch
-    glm::mat4 vpData[NUM_SHADOW_CASCADES];
-    for (uint32_t i = 0; i < NUM_SHADOW_CASCADES; ++i)
-        vpData[i] = (i < cascadeCount) ? lightVPs[i] : glm::mat4(1.0f);
-
-    glm::vec4 splitVec(cascadeCount > 0 ? cascadeSplits[0] : 0.0f, cascadeCount > 1 ? cascadeSplits[1] : 0.0f,
-                       cascadeCount > 2 ? cascadeSplits[2] : 0.0f, cascadeCount > 3 ? cascadeSplits[3] : 0.0f);
-
-    float cascadeRes = mapResolution * 0.5f;
-    glm::vec4 params(mapResolution, cascadeCount > 0 ? 1.0f : 0.0f, static_cast<float>(cascadeCount), cascadeRes);
-
-    // Offsets into ShaderLightingUBO
-    constexpr VkDeviceSize vpOffset = offsetof(ShaderLightingUBO, lightVP);
-    constexpr VkDeviceSize splitOffset = offsetof(ShaderLightingUBO, shadowCascadeSplits);
-    constexpr VkDeviceSize paramsOffset = offsetof(ShaderLightingUBO, shadowMapParams);
-
-    // Barrier before writes
-    vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);
-
-    vkCmdUpdateBuffer(cmdBuf, buffer, vpOffset, sizeof(vpData), vpData);
-    vkCmdUpdateBuffer(cmdBuf, buffer, splitOffset, sizeof(glm::vec4), &splitVec);
-    vkCmdUpdateBuffer(cmdBuf, buffer, paramsOffset, sizeof(glm::vec4), &params);
-
-    // Also update per-cascade shadow UBOs (used by shadow caster rendering)
-    const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
-    struct ShadowUBO
-    {
-        glm::mat4 model, view, proj;
-    };
-    for (uint32_t ci = 0; ci < cascadeCount && ci < NUM_SHADOW_CASCADES; ++ci) {
-        uint32_t bufIdx = frameIndex * NUM_SHADOW_CASCADES + ci;
-        if (bufIdx >= m_shadowUboBuffers.size())
-            break;
-        VkBuffer shadowBuffer = m_shadowUboBuffers[bufIdx];
-        if (shadowBuffer == VK_NULL_HANDLE)
-            continue;
-        ShadowUBO ubo{glm::mat4(1.0f), glm::mat4(1.0f), lightVPs[ci]};
-        vkCmdUpdateBuffer(cmdBuf, shadowBuffer, 0, sizeof(ShadowUBO), &ubo);
-    }
-
-    // Barrier after writes
-    vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
-}
-
-void InxVkCoreModular::CmdRestoreEditorShadowData(VkCommandBuffer cmdBuf)
-{
-    if (!m_lightingUbo)
-        return;
-
-    VkBuffer buffer = m_lightingUbo->GetBuffer();
-
-    // Restore lightVP, cascade splits, and shadow params from the staged
-    // editor lighting UBO that was prepared at the start of this frame.
-    constexpr VkDeviceSize vpOffset = offsetof(ShaderLightingUBO, lightVP);
-    constexpr VkDeviceSize splitOffset = offsetof(ShaderLightingUBO, shadowCascadeSplits);
-    constexpr VkDeviceSize paramsOffset = offsetof(ShaderLightingUBO, shadowMapParams);
-
-    vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);
-
-    vkCmdUpdateBuffer(cmdBuf, buffer, vpOffset, sizeof(m_stagedLightingUBO.lightVP), m_stagedLightingUBO.lightVP);
-    vkCmdUpdateBuffer(cmdBuf, buffer, splitOffset, sizeof(glm::vec4), &m_stagedLightingUBO.shadowCascadeSplits);
-    vkCmdUpdateBuffer(cmdBuf, buffer, paramsOffset, sizeof(glm::vec4), &m_stagedLightingUBO.shadowMapParams);
-
-    // Also restore per-cascade shadow UBOs to editor camera VPs
-    const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
-    const uint32_t cascadeCount = m_lightCollector.GetShadowCascadeCount();
-    struct ShadowUBO
-    {
-        glm::mat4 model, view, proj;
-    };
-    for (uint32_t ci = 0; ci < cascadeCount && ci < NUM_SHADOW_CASCADES; ++ci) {
-        uint32_t bufIdx = frameIndex * NUM_SHADOW_CASCADES + ci;
-        if (bufIdx >= m_shadowUboBuffers.size())
-            break;
-        VkBuffer shadowBuffer = m_shadowUboBuffers[bufIdx];
-        if (shadowBuffer == VK_NULL_HANDLE)
-            continue;
-        ShadowUBO ubo{glm::mat4(1.0f), glm::mat4(1.0f), m_lightCollector.GetShadowLightVP(ci)};
-        vkCmdUpdateBuffer(cmdBuf, shadowBuffer, 0, sizeof(ShadowUBO), &ubo);
-    }
-
-    vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
 }
 
 // ============================================================================

@@ -1018,6 +1018,24 @@ void MaterialPipelineManager::RetireMaterialUBO(InxMaterial::DetachedUBO resourc
 
 size_t MaterialPipelineManager::CollectUnusedRenderData()
 {
+    // Forward and semantic pass caches all keep strong references to the same
+    // material. Comparing use_count() with one makes every material that has
+    // ever rendered a Shadow/Depth/Picking pass immortal. Count only references
+    // owned by this manager; a material is live when somebody outside these
+    // caches still owns it.
+    std::unordered_map<const InxMaterial *, size_t> internalReferences;
+    internalReferences.reserve(m_renderDataMap.size());
+    for (const auto &[name, data] : m_renderDataMap) {
+        (void)name;
+        if (data && data->material)
+            ++internalReferences[data->material.get()];
+    }
+    for (const auto &[key, data] : m_passRenderDataMap) {
+        (void)key;
+        if (data && data->material)
+            ++internalReferences[data->material.get()];
+    }
+
     std::vector<std::string> unused;
     unused.reserve(m_renderDataMap.size());
     for (const auto &[name, data] : m_renderDataMap) {
@@ -1026,7 +1044,9 @@ size_t MaterialPipelineManager::CollectUnusedRenderData()
         // Registry-owned builtins naturally have another strong owner. Do not
         // use IsBuiltin() as a lifetime signal: runtime materials created from
         // a built-in shader carry that flag too and still need reclamation.
-        if (data->material.use_count() == 1)
+        const auto internal = internalReferences.find(data->material.get());
+        const size_t internalCount = internal == internalReferences.end() ? 0u : internal->second;
+        if (data->material.use_count() <= internalCount)
             unused.push_back(name);
     }
     for (const auto &name : unused)

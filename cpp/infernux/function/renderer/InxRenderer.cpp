@@ -554,18 +554,6 @@ void InxRenderer::PreparePipeline()
                     const glm::mat4 previousGameViewProj = m_gameRenderGraph->GetPreviousViewProj();
                     m_vkCore->CmdUpdateUniformBuffer(cmdBuf, gameView, gameProj, &previousGameViewProj);
 
-                    {
-                        glm::mat4 invView = glm::inverse(gameView);
-                        glm::vec3 gameCamPos(invView[3]);
-                        m_vkCore->CmdUpdateLightingCameraPos(cmdBuf, gameCamPos);
-                    }
-
-                    if (m_hasGameShadowData) {
-                        m_vkCore->CmdUpdateShadowDataForCamera(cmdBuf, m_gameShadowVPs.data(), m_gameShadowCascadeCount,
-                                                               m_gameShadowSplits.data(), m_gameShadowMapResolution);
-                        m_vkCore->SetShadowCascadeVPOverride(m_gameShadowVPs.data(), m_gameShadowCascadeCount);
-                    }
-
                     m_vkCore->SetActiveShadowDescriptorSet(m_gameRenderGraph->GetPerViewDescriptorSet());
 #if INFERNUX_FRAME_PROFILE
                     auto exTg0 = ExClock::now();
@@ -575,31 +563,15 @@ void InxRenderer::PreparePipeline()
 #if INFERNUX_FRAME_PROFILE
                     auto exTg1 = ExClock::now();
 #endif
-                    // Clear cascade VP override after game view execution
-                    m_vkCore->SetShadowCascadeVPOverride(nullptr, 0);
                     m_gameRenderGraph->ResolveSceneMsaa(cmdBuf);
 #if INFERNUX_FRAME_PROFILE
                     auto exTg2 = ExClock::now();
 #endif
 
-                    // Restore lighting UBO shadow fields + shadow cascade UBOs
-                    // back to editor values so that (a) any post-view passes see
-                    // correct editor data, and (b) the buffer ends the frame with
-                    // the same data the next frame will write, eliminating visual
-                    // artefacts from cross-frame GPU pipeline overlap.
-                    // Only needed when the scene view is actually active and has
-                    // valid cached state; otherwise no editor passes will run and
-                    // the UBO will be overwritten at the start of the next frame.
                     if (sceneViewActive) {
-                        m_vkCore->CmdRestoreEditorShadowData(cmdBuf);
-
                         if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedCameraVP()) {
                             m_vkCore->CmdUpdateUniformBuffer(cmdBuf, m_sceneRenderGraph->GetCachedView(),
                                                              m_sceneRenderGraph->GetCachedProj());
-                            const glm::mat4 &editorView = m_sceneRenderGraph->GetCachedView();
-                            glm::mat4 invEditorView = glm::inverse(editorView);
-                            glm::vec3 editorCamPos(invEditorView[3]);
-                            m_vkCore->CmdUpdateLightingCameraPos(cmdBuf, editorCamPos);
                         }
 
                         if (m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls()) {
@@ -1028,16 +1000,18 @@ void InxRenderer::DrawFrame()
     // Grow all instance streams before vkBeginCommandBuffer so a picking or
     // motion pass cannot rewrite an already-bound descriptor set.
     {
-        size_t totalDrawCalls = 0;
+        size_t requiredInstances = 0;
         if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedDrawCalls())
-            totalDrawCalls += m_sceneRenderGraph->GetCachedDrawCalls().size();
+            requiredInstances += m_sceneRenderGraph->GetCachedDrawCalls().size();
         if (sceneViewActive && m_sceneRenderGraph && m_sceneRenderGraph->HasCachedShadowDrawCalls())
-            totalDrawCalls += m_sceneRenderGraph->GetCachedShadowDrawCalls().size();
+            requiredInstances +=
+                m_sceneRenderGraph->GetCachedShadowDrawCalls().size() * m_sceneRenderGraph->GetCameraShadowViewCount();
         if (gameViewActive && m_gameRenderGraph && m_gameRenderGraph->HasCachedDrawCalls())
-            totalDrawCalls += m_gameRenderGraph->GetCachedDrawCalls().size();
+            requiredInstances += m_gameRenderGraph->GetCachedDrawCalls().size();
         if (gameViewActive && m_gameRenderGraph && m_gameRenderGraph->HasCachedShadowDrawCalls())
-            totalDrawCalls += m_gameRenderGraph->GetCachedShadowDrawCalls().size();
-        m_vkCore->PreallocateInstances(totalDrawCalls);
+            requiredInstances +=
+                m_gameRenderGraph->GetCachedShadowDrawCalls().size() * m_gameRenderGraph->GetCameraShadowViewCount();
+        m_vkCore->PreallocateInstances(requiredInstances);
     }
 
     // Render frame with scene camera
@@ -1579,10 +1553,6 @@ void InxRenderer::WaitForGpuIdle()
     if (m_gameRenderGraph) {
         m_gameRenderGraph->ClearCachedFrameState();
     }
-
-    m_hasGameShadowData = false;
-    m_gameShadowCascadeCount = 0;
-    m_gameShadowMapResolution = 0.0f;
 
     // Drop the currently staged draw list as well. If the upcoming frame skips
     // re-submitting one of the graphs (for example because no valid game camera
@@ -2323,59 +2293,42 @@ void InxRenderer::UpdateSceneLighting()
     m_frameDetailTiming.lightingCollectMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
 
-    // Compute shadow VP from the first shadow-casting directional light.
-    // Must happen BEFORE UpdateLightingUBO which uploads lightVP to GPU.
-    // Use the editor camera for the scene view's shadow cascades.
     Camera *editorCam = SceneRenderBridge::Instance().GetEditorCamera();
 #if INFERNUX_FRAME_PROFILE
     t0 = Clock::now();
 #endif
-    collector.ComputeShadowVP(activeScene, cameraPos, 4096.0f, editorCam);
+    m_vkCore->UpdateLightingUBO(cameraPos);
+    const ShaderLightingUBO environmentLighting = collector.GetShaderLightingUBO();
+    if (m_sceneRenderGraph && editorCam)
+        m_sceneRenderGraph->StageCameraLighting(activeScene, editorCam, cameraPos, environmentLighting);
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lightingShadowEditorMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
 
-    // Compute separate shadow VP for the game camera (if active).
-    // This data is patched into the lighting UBO inline before the game
-    // render graph executes, preventing shadow contamination from the
-    // editor camera's frustum shape.
-    m_hasGameShadowData = false;
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lightingShadowGameMs = 0.0;
 #endif
     if (m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game)) {
         Camera *gameCam = FindGameCameraCached();
         if (gameCam) {
-            SceneLightCollector gameCollector;
-            // Skip CollectLights — it produces identical results to the
-            // editor collector (same scene, same lights).  Only the
-            // shadow VP matrices differ per camera.
 #if INFERNUX_FRAME_PROFILE
             t0 = Clock::now();
 #endif
-            gameCollector.ComputeShadowVP(activeScene, cameraPos, 4096.0f, gameCam);
+            glm::vec3 gameCameraPosition = cameraPos;
+            if (const Transform *transform = gameCam->GetTransform())
+                gameCameraPosition = transform->GetWorldPosition();
+            if (m_gameRenderGraph)
+                m_gameRenderGraph->StageCameraLighting(activeScene, gameCam, gameCameraPosition, environmentLighting);
 #if INFERNUX_FRAME_PROFILE
             m_frameDetailTiming.lightingShadowGameMs =
                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
-            if (gameCollector.IsShadowEnabled()) {
-                m_hasGameShadowData = true;
-                m_gameShadowCascadeCount = gameCollector.GetShadowCascadeCount();
-                m_gameShadowMapResolution = gameCollector.GetShadowMapResolution();
-                const auto &splits = gameCollector.GetShadowCascadeSplits();
-                for (uint32_t i = 0; i < 4; ++i) {
-                    m_gameShadowVPs[i] = gameCollector.GetShadowLightVP(i);
-                    m_gameShadowSplits[i] = splits[i];
-                }
-            }
         }
     }
 
-    // Build shader-compatible UBO and upload to GPU
 #if INFERNUX_FRAME_PROFILE
     t0 = Clock::now();
 #endif
-    m_vkCore->UpdateLightingUBO(cameraPos);
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.lightingUploadMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
@@ -2429,6 +2382,9 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.sceneRenderGraphCurrentExecuted = m_sceneRenderGraph->HasExecutedCurrentGraph();
         snapshot.sceneRenderGraphPassNames = m_sceneRenderGraph->GetExecutedPassNames();
         snapshot.sceneRenderGraphDebug = m_sceneRenderGraph->GetDebugString();
+        snapshot.sceneShadowViewCount = m_sceneRenderGraph->GetCameraShadowViewCount();
+        snapshot.sceneShadowAssignmentCount = m_sceneRenderGraph->GetCameraShadowAssignmentCount();
+        snapshot.sceneShadowResourceIdentity = m_sceneRenderGraph->GetShadowResourceIdentity();
         if (m_sceneRenderGraph->HasCachedDrawCalls())
             snapshot.sceneDrawCallCount = m_sceneRenderGraph->GetCachedDrawCalls().size();
         if (m_sceneRenderGraph->HasCachedShadowDrawCalls())
@@ -2440,6 +2396,9 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.gameRenderGraphCurrentExecuted = m_gameRenderGraph->HasExecutedCurrentGraph();
         snapshot.gameRenderGraphPassNames = m_gameRenderGraph->GetExecutedPassNames();
         snapshot.gameRenderGraphDebug = m_gameRenderGraph->GetDebugString();
+        snapshot.gameShadowViewCount = m_gameRenderGraph->GetCameraShadowViewCount();
+        snapshot.gameShadowAssignmentCount = m_gameRenderGraph->GetCameraShadowAssignmentCount();
+        snapshot.gameShadowResourceIdentity = m_gameRenderGraph->GetShadowResourceIdentity();
         if (m_gameRenderGraph->HasCachedDrawCalls())
             snapshot.gameDrawCallCount = m_gameRenderGraph->GetCachedDrawCalls().size();
         if (m_gameRenderGraph->HasCachedShadowDrawCalls())
@@ -3050,11 +3009,11 @@ void InxRenderer::SetSceneViewVisible(bool visible)
         return;
     m_sceneViewVisible = visible;
 
-    // When hiding the scene view, clear stale cached draw calls so they
-    // don't poison CleanupDrawCallBuffers (keeping zombie buffers alive)
-    // and don't interfere with the game view's rendering state.
+    // Hiding a panel only invalidates its camera-dependent submissions.  The
+    // compiled graph description remains authoritative for shared pipeline
+    // settings such as the shadow atlas resolution.
     if (!visible && m_sceneRenderGraph) {
-        m_sceneRenderGraph->ClearCachedFrameState();
+        m_sceneRenderGraph->ClearCachedViewSubmission();
     }
 }
 

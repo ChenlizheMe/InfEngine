@@ -235,48 +235,6 @@ void InxVkCoreModular::CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm:
     vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
 }
 
-void InxVkCoreModular::CmdUpdateShadowUBO(VkCommandBuffer cmdBuf)
-{
-    if (m_shadowUboBuffers.empty()) {
-        if (!EnsureShadowPipeline(VK_NULL_HANDLE)) {
-            return;
-        }
-    }
-
-    const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
-    const uint32_t cascadeCount = m_lightCollector.GetShadowCascadeCount();
-    if (cascadeCount == 0)
-        return;
-
-    struct ShadowUBO
-    {
-        glm::mat4 model;
-        glm::mat4 view;
-        glm::mat4 proj;
-    };
-
-    vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);
-
-    for (uint32_t ci = 0; ci < cascadeCount; ++ci) {
-        uint32_t bufIdx = frameIndex * NUM_SHADOW_CASCADES + ci;
-        if (bufIdx >= m_shadowUboBuffers.size())
-            break;
-
-        ShadowUBO shadowUbo{};
-        shadowUbo.model = glm::mat4(1.0f);
-        shadowUbo.view = glm::mat4(1.0f);
-        shadowUbo.proj = m_lightCollector.GetShadowLightVP(ci);
-
-        VkBuffer shadowBuffer = m_shadowUboBuffers[bufIdx];
-        if (shadowBuffer == VK_NULL_HANDLE)
-            continue;
-
-        vkCmdUpdateBuffer(cmdBuf, shadowBuffer, 0, sizeof(ShadowUBO), &shadowUbo);
-    }
-
-    vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
-}
-
 // ============================================================================
 // Filtered draw — renders only draw calls within a queue range
 // ============================================================================
@@ -914,7 +872,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 // ============================================================================
 
 void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
-                                         int queueMax, int lightIndex)
+                                         int queueMax, ShadowCameraResourceId resourceId,
+                                         const lighting::ShadowFrame &shadowFrame, int lightIndex,
+                                         const ShadowViewDrawCallback &additionalDraws)
 {
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
@@ -928,22 +888,18 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     // by the Light component. A former "shadowType" string parameter here was
     // a dead end and has been removed.
 
-    // Currently only light index 0 (first directional light) is supported.
-    // Log a warning if callers request a different index so the mismatch is visible.
-    if (lightIndex != 0) {
-        INXLOG_WARN("DrawShadowCasters: lightIndex=", lightIndex,
-                    " requested but only index 0 is supported; using light 0");
-    }
+    (void)lightIndex;
 
     // Skip if shadow pipeline infrastructure not ready (lazy init)
-    if (!m_shadowPipelineReady) {
-        if (!EnsureShadowPipeline(VK_NULL_HANDLE)) {
-            return;
-        }
-    }
-
-    const uint32_t cascadeCount = m_lightCollector.GetShadowCascadeCount();
-    if (cascadeCount == 0)
+    if (!EnsureShadowPipeline(VK_NULL_HANDLE) || !EnsureShadowCameraResources(resourceId))
+        return;
+    auto resourcesIt = m_shadowCameraResources.find(resourceId);
+    if (resourcesIt == m_shadowCameraResources.end())
+        return;
+    ShadowCameraResources &cameraResources = resourcesIt->second;
+    const uint32_t viewCount =
+        std::min<uint32_t>(static_cast<uint32_t>(shadowFrame.views.size()), lighting::MaxShadowViews);
+    if (viewCount == 0)
         return;
 
 #if INFERNUX_FRAME_PROFILE
@@ -952,13 +908,24 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
 
+    struct ShadowUBO
+    {
+        glm::mat4 model;
+        glm::mat4 view;
+        glm::mat4 proj;
+    };
+    for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex) {
+        const uint32_t bufferIndex = frameIndex * lighting::MaxShadowViews + viewIndex;
+        if (bufferIndex >= cameraResources.mappedPointers.size() || !cameraResources.mappedPointers[bufferIndex])
+            return;
+        const ShadowUBO shadowUbo{glm::mat4(1.0f), glm::mat4(1.0f),
+                                  shadowFrame.views[viewIndex].viewProjection};
+        std::memcpy(cameraResources.mappedPointers[bufferIndex], &shadowUbo, sizeof(shadowUbo));
+    }
+
     // Bind shadow pipeline once
     // NOTE: Per-material shadow pipelines override this in the inner loop
     VkPipeline lastBoundPipeline = VK_NULL_HANDLE;
-
-    // Atlas layout: 2x2 tiles inside the full shadow map
-    uint32_t tileW = width / 2;
-    uint32_t tileH = height / 2;
 
     // Pre-build draw list (filter once, reuse for all cascades)
     m_shadowDrawScratch.clear();
@@ -998,7 +965,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     m_drawShadowEligible += static_cast<uint64_t>(m_shadowDrawScratch.size());
 #endif
 
-    if (m_shadowDrawScratch.empty()) {
+    if (m_shadowDrawScratch.empty() && !additionalDraws) {
 #if INFERNUX_FRAME_PROFILE
         m_drawSubMs[12] += std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();
 #endif
@@ -1028,21 +995,14 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
     uint64_t issuedDraws = 0;
 
-    // Pre-extract frustums for all cascades (for per-cascade AABB culling)
-    // Use override VPs when set (game camera), otherwise fall back to m_lightCollector (editor camera).
-    Frustum cascadeFrustums[NUM_SHADOW_CASCADES];
-    for (uint32_t ci = 0; ci < cascadeCount && ci < NUM_SHADOW_CASCADES; ++ci) {
-        if (m_shadowCascadeVPOverride && ci < m_shadowCascadeVPOverrideCount) {
-            cascadeFrustums[ci].ExtractFromMatrix(m_shadowCascadeVPOverride[ci]);
-        } else {
-            cascadeFrustums[ci].ExtractFromMatrix(m_lightCollector.GetShadowLightVP(ci));
-        }
-    }
+    std::array<Frustum, lighting::MaxShadowViews> shadowFrustums{};
+    for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex)
+        shadowFrustums[viewIndex].ExtractFromMatrix(shadowFrame.views[viewIndex].viewProjection);
 
     size_t maxShadowBoneMatrices = m_skinPaletteWriteOffset;
     for (const auto &sd : m_shadowDrawScratch) {
         if (sd.dc->skinBoneMatrices)
-            maxShadowBoneMatrices += sd.dc->skinBoneMatrices->size() * cascadeCount;
+            maxShadowBoneMatrices += sd.dc->skinBoneMatrices->size() * viewCount;
     }
     const VkBuffer previousInstanceBuffer =
         m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
@@ -1055,8 +1015,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()
             : VK_NULL_HANDLE;
 
-    EnsureInstanceBufferCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * cascadeCount);
-    EnsureSkinBuffersCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * cascadeCount,
+    EnsureInstanceBufferCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * viewCount);
+    EnsureSkinBuffersCapacity(frameIndex, m_instanceWriteOffset + m_shadowDrawScratch.size() * viewCount,
                               maxShadowBoneMatrices);
 
     const bool instanceBufferChanged = m_instanceBuffers[frameIndex].buffer &&
@@ -1082,14 +1042,20 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         }
     }
 
-    for (uint32_t ci = 0; ci < cascadeCount; ++ci) {
-        uint32_t descIdx = frameIndex * NUM_SHADOW_CASCADES + ci;
-        if (descIdx >= m_shadowDescSets.size())
+    for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex) {
+        const uint32_t descIdx = frameIndex * lighting::MaxShadowViews + viewIndex;
+        if (descIdx >= cameraResources.descriptorSets.size())
             break;
 
-        // Set viewport/scissor to cascade's atlas tile
-        uint32_t tileX = (ci % 2) * tileW;
-        uint32_t tileY = (ci / 2) * tileH;
+        const lighting::ShadowView &shadowView = shadowFrame.views[viewIndex];
+        if (!shadowView.atlas.IsValid())
+            continue;
+        const uint32_t tileX = shadowView.atlas.x + shadowView.atlas.guard;
+        const uint32_t tileY = shadowView.atlas.y + shadowView.atlas.guard;
+        const uint32_t tileW = std::min(shadowView.atlas.InnerSize(), width - std::min(tileX, width));
+        const uint32_t tileH = std::min(shadowView.atlas.InnerSize(), height - std::min(tileY, height));
+        if (tileW == 0 || tileH == 0)
+            continue;
 
         VkViewport viewport{};
         viewport.x = static_cast<float>(tileX);
@@ -1106,24 +1072,26 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
         // Bind per-cascade descriptor set (set 0)
-        VkDescriptorSet cascadeDescSet = m_shadowDescSets[descIdx];
+        VkDescriptorSet cascadeDescSet = cameraResources.descriptorSets[descIdx];
         vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawShadowCasters.Set0", cmdBuf,
                                               VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout, 0, 1,
                                               &cascadeDescSet, 0, nullptr);
 
-        const Frustum &cascadeFrustum = cascadeFrustums[ci];
+        const Frustum &shadowFrustum = shadowFrustums[viewIndex];
         VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
         VkDescriptorSet lastBoundShadowMaterialDescSet = VK_NULL_HANDLE;
 
         // Per-cascade frustum cull into a compact index list, then upload
         // model matrices for visible objects and batch by (pipeline, VB, submesh).
-        m_shadowCascadeVisible.clear();
-        m_shadowCascadeVisible.reserve(m_shadowDrawScratch.size());
+        m_shadowViewVisible.clear();
+        m_shadowViewVisible.reserve(m_shadowDrawScratch.size());
         for (size_t si = 0; si < m_shadowDrawScratch.size(); ++si) {
             const auto &sd = m_shadowDrawScratch[si];
-            if (sd.worldBounds.IsValid() && !cascadeFrustum.IntersectsAABB(sd.worldBounds))
+            if ((sd.dc->layerMask & shadowView.cullingMask) == 0u)
                 continue;
-            m_shadowCascadeVisible.push_back(static_cast<uint32_t>(si));
+            if (sd.worldBounds.IsValid() && !shadowFrustum.IntersectsAABB(sd.worldBounds))
+                continue;
+            m_shadowViewVisible.push_back(static_cast<uint32_t>(si));
         }
 
 #if INFERNUX_FRAME_PROFILE
@@ -1132,9 +1100,14 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         stageStart = stageNow;
 #endif
 
-        const uint32_t visibleCount = static_cast<uint32_t>(m_shadowCascadeVisible.size());
-        if (visibleCount == 0)
+        const uint32_t visibleCount = static_cast<uint32_t>(m_shadowViewVisible.size());
+        if (visibleCount == 0) {
+            if (additionalDraws) {
+                additionalDraws(viewIndex, shadowView);
+                lastBoundPipeline = VK_NULL_HANDLE;
+            }
             continue;
+        }
 
         // Upload model matrices for this cascade's visible objects into the shared SSBO
         const uint32_t writeBase = m_instanceWriteOffset;
@@ -1150,7 +1123,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
         glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
         for (uint32_t vi = 0; vi < visibleCount; ++vi) {
-            matrices[writeBase + vi] = m_shadowDrawScratch[m_shadowCascadeVisible[vi]].dc->worldMatrix;
+            matrices[writeBase + vi] = m_shadowDrawScratch[m_shadowViewVisible[vi]].dc->worldMatrix;
         }
 
         if (frameIndex < m_skinInstanceBuffers.size() && frameIndex < m_skinPaletteBuffers.size()) {
@@ -1187,7 +1160,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 };
 
                 for (uint32_t vi = 0; vi < visibleCount; ++vi) {
-                    const DrawCall *dc = m_shadowDrawScratch[m_shadowCascadeVisible[vi]].dc;
+                    const DrawCall *dc = m_shadowDrawScratch[m_shadowViewVisible[vi]].dc;
                     skinInstances[writeBase + vi] = resolveSkinData(dc ? dc->skinBoneMatrices : nullptr);
                 }
             }
@@ -1218,7 +1191,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 glm::mat4 model;
                 glm::mat4 normalMat;
             } pushData;
-            pushData.model = m_shadowDrawScratch[m_shadowCascadeVisible[batchStart]].dc->worldMatrix;
+            pushData.model = m_shadowDrawScratch[m_shadowViewVisible[batchStart]].dc->worldMatrix;
             pushData.normalMat = glm::mat4(1.0f);
             vkCmdPushConstants(cmdBuf, m_shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushData),
                                &pushData);
@@ -1232,7 +1205,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         };
 
         for (uint32_t vi = 0; vi < visibleCount; ++vi) {
-            const auto &sd = m_shadowDrawScratch[m_shadowCascadeVisible[vi]];
+            const auto &sd = m_shadowDrawScratch[m_shadowViewVisible[vi]];
 
             VkBuffer vb = sd.bufIt->second.vertexBuffer->GetBuffer();
 
@@ -1282,6 +1255,13 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
         emitShadowBatch();
 
+        if (additionalDraws) {
+            additionalDraws(viewIndex, shadowView);
+            // The callback owns its RHI pipeline state. Geometry must bind its
+            // pipeline again before recording the next cascade.
+            lastBoundPipeline = VK_NULL_HANDLE;
+        }
+
 #if INFERNUX_FRAME_PROFILE
         stageNow = Clock::now();
         m_drawSubMs[18] += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
@@ -1300,6 +1280,115 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 // ============================================================================
 // Shadow Pipeline Management
 // ============================================================================
+
+InxVkCoreModular::ShadowCameraResourceId InxVkCoreModular::CreateShadowCameraResources()
+{
+    const ShadowCameraResourceId resourceId = m_nextShadowCameraResourceId++;
+    m_shadowCameraResources.try_emplace(resourceId);
+    return resourceId;
+}
+
+void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResources &resources) noexcept
+{
+    const VkDevice device = GetDevice();
+    const VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
+    if (allocator != VK_NULL_HANDLE) {
+        for (size_t index = 0; index < resources.uniformBuffers.size(); ++index) {
+            if (resources.uniformBuffers[index] != VK_NULL_HANDLE)
+                vmaDestroyBuffer(allocator, resources.uniformBuffers[index], resources.allocations[index]);
+        }
+    }
+    resources.uniformBuffers.clear();
+    resources.allocations.clear();
+    resources.mappedPointers.clear();
+    resources.descriptorSets.clear();
+    if (device != VK_NULL_HANDLE && resources.descriptorPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device, resources.descriptorPool, nullptr);
+    resources.descriptorPool = VK_NULL_HANDLE;
+}
+
+void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResourceId resourceId) noexcept
+{
+    auto found = m_shadowCameraResources.find(resourceId);
+    if (found == m_shadowCameraResources.end())
+        return;
+    DestroyShadowCameraResources(found->second);
+    m_shadowCameraResources.erase(found);
+}
+
+bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resourceId)
+{
+    if (resourceId == 0 || m_shadowDescSetLayout == VK_NULL_HANDLE)
+        return false;
+    auto found = m_shadowCameraResources.find(resourceId);
+    if (found == m_shadowCameraResources.end())
+        return false;
+    ShadowCameraResources &resources = found->second;
+    if (!resources.descriptorSets.empty())
+        return true;
+
+    const uint32_t totalSets = m_maxFramesInFlight * lighting::MaxShadowViews;
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSize.descriptorCount = totalSets;
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets = totalSets;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    if (vkCreateDescriptorPool(GetDevice(), &poolInfo, nullptr, &resources.descriptorPool) != VK_SUCCESS) {
+        INXLOG_ERROR("Failed to create camera-local shadow descriptor pool");
+        return false;
+    }
+
+    resources.descriptorSets.resize(totalSets, VK_NULL_HANDLE);
+    std::vector<VkDescriptorSetLayout> layouts(totalSets, m_shadowDescSetLayout);
+    VkDescriptorSetAllocateInfo allocationInfo{};
+    allocationInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocationInfo.descriptorPool = resources.descriptorPool;
+    allocationInfo.descriptorSetCount = totalSets;
+    allocationInfo.pSetLayouts = layouts.data();
+    if (vkAllocateDescriptorSets(GetDevice(), &allocationInfo, resources.descriptorSets.data()) != VK_SUCCESS) {
+        INXLOG_ERROR("Failed to allocate camera-local shadow descriptor sets");
+        DestroyShadowCameraResources(resources);
+        return false;
+    }
+
+    const VkDeviceSize uboSize = sizeof(glm::mat4) * 3;
+    resources.uniformBuffers.resize(totalSets, VK_NULL_HANDLE);
+    resources.allocations.resize(totalSets, VK_NULL_HANDLE);
+    resources.mappedPointers.resize(totalSets, nullptr);
+    const VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
+    for (uint32_t index = 0; index < totalSets; ++index) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = uboSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaAllocationCreateInfo memoryInfo{};
+        memoryInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        memoryInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        memoryInfo.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        VmaAllocationInfo allocation{};
+        if (vmaCreateBuffer(allocator, &bufferInfo, &memoryInfo, &resources.uniformBuffers[index],
+                            &resources.allocations[index], &allocation) != VK_SUCCESS) {
+            INXLOG_ERROR("Failed to create camera-local shadow UBO");
+            DestroyShadowCameraResources(resources);
+            return false;
+        }
+        resources.mappedPointers[index] = allocation.pMappedData;
+        VkDescriptorBufferInfo descriptorInfo{resources.uniformBuffers[index], 0, uboSize};
+        VkWriteDescriptorSet write{};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = resources.descriptorSets[index];
+        write.dstBinding = 0;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        write.descriptorCount = 1;
+        write.pBufferInfo = &descriptorInfo;
+        vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
+    }
+    return true;
+}
 
 bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*/)
 {
@@ -1419,89 +1508,6 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkRenderPass /*compatibleRenderPass*
         }
     }
 
-    // --- Create descriptor pool (frames × cascades) ---
-    const uint32_t totalSets = m_maxFramesInFlight * NUM_SHADOW_CASCADES;
-    if (m_shadowDescPool == VK_NULL_HANDLE) {
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        poolSize.descriptorCount = totalSets;
-
-        VkDescriptorPoolCreateInfo poolInfo{};
-        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets = totalSets;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
-
-        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_shadowDescPool) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to create shadow descriptor pool");
-            return false;
-        }
-    }
-
-    // --- Allocate descriptor sets (frames × cascades) ---
-    if (m_shadowDescSets.empty()) {
-        m_shadowDescSets.resize(totalSets, VK_NULL_HANDLE);
-        std::vector<VkDescriptorSetLayout> setLayouts(totalSets, m_shadowDescSetLayout);
-
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = m_shadowDescPool;
-        allocInfo.descriptorSetCount = totalSets;
-        allocInfo.pSetLayouts = setLayouts.data();
-
-        if (vkAllocateDescriptorSets(device, &allocInfo, m_shadowDescSets.data()) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to allocate shadow descriptor sets");
-            return false;
-        }
-    }
-
-    // --- Create per-frame per-cascade UBO buffers ---
-    if (m_shadowUboBuffers.empty()) {
-        VkDeviceSize uboSize = sizeof(glm::mat4) * 3;
-
-        m_shadowUboBuffers.resize(totalSets, VK_NULL_HANDLE);
-        m_shadowUboAllocations.resize(totalSets, VK_NULL_HANDLE);
-        m_shadowUboMappedPtrs.resize(totalSets, nullptr);
-
-        VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
-        for (uint32_t i = 0; i < totalSets; ++i) {
-            VkBufferCreateInfo bufInfo{};
-            bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            bufInfo.size = uboSize;
-            bufInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-            bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-            VmaAllocationCreateInfo allocCreateInfo{};
-            allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-            allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-            allocCreateInfo.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-            VmaAllocationInfo vmaAllocInfo{};
-            VkResult result = vmaCreateBuffer(allocator, &bufInfo, &allocCreateInfo, &m_shadowUboBuffers[i],
-                                              &m_shadowUboAllocations[i], &vmaAllocInfo);
-            if (result != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to create shadow UBO buffer via VMA");
-                return false;
-            }
-            m_shadowUboMappedPtrs[i] = vmaAllocInfo.pMappedData;
-
-            VkDescriptorBufferInfo bufDesc{};
-            bufDesc.buffer = m_shadowUboBuffers[i];
-            bufDesc.offset = 0;
-            bufDesc.range = uboSize;
-
-            VkWriteDescriptorSet write{};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = m_shadowDescSets[i];
-            write.dstBinding = 0;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            write.descriptorCount = 1;
-            write.pBufferInfo = &bufDesc;
-
-            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-        }
-    }
-
     // --- Create shadow depth sampler ---
     if (m_shadowDepthSampler == VK_NULL_HANDLE) {
         if (!CreateShadowDepthSampler()) {
@@ -1547,8 +1553,10 @@ bool InxVkCoreModular::CreateShadowDepthSampler()
 {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    // Depth is compared manually in GLSL. Linear-filtering raw depth before
+    // comparison creates false penumbras and makes hard shadows unstable.
+    samplerInfo.magFilter = VK_FILTER_NEAREST;
+    samplerInfo.minFilter = VK_FILTER_NEAREST;
     samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
@@ -1579,11 +1587,11 @@ void InxVkCoreModular::CleanupShadowPipeline()
     // replacements were flushed before this device-idle cleanup path.
     m_shadowMaterialBindingCache.clear();
     m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
-    if (m_shadowDescPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_shadowDescPool, nullptr);
-        m_shadowDescPool = VK_NULL_HANDLE;
-        m_shadowDescSets.clear();
+    for (auto &[resourceId, resources] : m_shadowCameraResources) {
+        (void)resourceId;
+        DestroyShadowCameraResources(resources);
     }
+    m_shadowCameraResources.clear();
     if (m_shadowDescSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, m_shadowDescSetLayout, nullptr);
         m_shadowDescSetLayout = VK_NULL_HANDLE;
@@ -1596,17 +1604,6 @@ void InxVkCoreModular::CleanupShadowPipeline()
     if (m_shadowMaterialDescSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, m_shadowMaterialDescSetLayout, nullptr);
         m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;
-    }
-    if (!m_shadowUboBuffers.empty()) {
-        VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
-        for (size_t i = 0; i < m_shadowUboBuffers.size(); ++i) {
-            if (m_shadowUboBuffers[i] != VK_NULL_HANDLE) {
-                vmaDestroyBuffer(allocator, m_shadowUboBuffers[i], m_shadowUboAllocations[i]);
-            }
-        }
-        m_shadowUboBuffers.clear();
-        m_shadowUboAllocations.clear();
-        m_shadowUboMappedPtrs.clear();
     }
     if (m_shadowDepthSampler != VK_NULL_HANDLE) {
         vkDestroySampler(device, m_shadowDepthSampler, nullptr);
@@ -2211,6 +2208,22 @@ void InxVkCoreModular::UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDe
         }
     }
     vkUpdateDescriptorSets(GetDevice(), writeCount, writes.data(), 0, nullptr);
+}
+
+void InxVkCoreModular::UpdatePerViewLightingBuffer(VkDescriptorSet perViewDescSet, VkBuffer lightingUbo,
+                                                   uint64_t lightingUboBytes)
+{
+    if (perViewDescSet == VK_NULL_HANDLE || lightingUbo == VK_NULL_HANDLE || lightingUboBytes == 0)
+        return;
+    VkDescriptorBufferInfo info{lightingUbo, 0, lightingUboBytes};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = perViewDescSet;
+    write.dstBinding = 4;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo = &info;
+    vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
 }
 
 } // namespace infernux

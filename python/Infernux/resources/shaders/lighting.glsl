@@ -75,13 +75,6 @@ vec3 getSpecularAmbientDirection(vec3 N, vec3 V, float perceptualRoughness) {
 // Shadow Mapping — Cascaded Shadow Maps with Vogel Disk Soft Shadows
 // ============================================================================
 
-// Atlas tile offset for 2x2 cascade layout
-vec2 getCascadeAtlasOffset(int ci) {
-    float u = float(ci - 2 * (ci / 2)) * 0.5; // ci % 2
-    float v = float(ci / 2) * 0.5;
-    return vec2(u, v);
-}
-
 // Interleaved gradient noise — per-pixel pseudo-random rotation
 float interleavedGradientNoise(vec2 screenPos) {
     vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
@@ -96,61 +89,80 @@ vec2 vogelDiskSample(int sampleIdx, int totalSamples, float phi) {
     return vec2(cos(theta), sin(theta)) * r;
 }
 
-// Per-cascade bias scale proportional to texel-to-world size ratio
-float getCascadeBiasScale(int ci) {
-    float split0 = max(lighting.shadowCascadeSplits[0], 1.0);
-    float splitI = lighting.shadowCascadeSplits[ci];
-    return max(sqrt(splitI / split0), 1.0);
+float sampleShadowView(uint viewIndex, vec3 worldPos, vec3 normal, vec3 toLight, vec4 shadowParams) {
+    if (viewIndex >= lighting.shadowViewHeader.x || shadowParams.w < 0.5 || shadowParams.x <= 0.0) return 1.0;
+    ShadowViewData shadowView = lighting.shadowViews[viewIndex];
+    float worldTexel = max(shadowView.depthTexel.z, 0.000001);
+    float slope = 1.0 - max(dot(normalize(normal), normalize(toLight)), 0.0);
+    vec3 biasedPosition = worldPos + normalize(normal) * shadowParams.z;
+    biasedPosition += normalize(toLight) * (shadowParams.y + slope * worldTexel);
+
+    vec4 clip = shadowView.viewProjection * vec4(biasedPosition, 1.0);
+    if (abs(clip.w) < 0.000001) return 1.0;
+    vec3 ndc = clip.xyz / clip.w;
+    vec2 localUv = ndc.xy * 0.5 + 0.5;
+    if (any(lessThan(localUv, vec2(0.0))) || any(greaterThan(localUv, vec2(1.0))) ||
+        ndc.z <= 0.0 || ndc.z >= 1.0) return 1.0;
+
+    vec2 atlasScale = shadowView.atlasScaleOffset.xy;
+    vec2 atlasOffset = shadowView.atlasScaleOffset.zw;
+    vec2 atlasUv = atlasOffset + localUv * atlasScale;
+    float atlasSize = max(float(lighting.shadowViewHeader.y), 1.0);
+    vec2 texel = vec2(1.0 / atlasSize);
+    vec2 tileMin = atlasOffset + texel * 0.5;
+    vec2 tileMax = atlasOffset + atlasScale - texel * 0.5;
+
+    int sampleCount = shadowParams.w > 1.5 ? 16 : 1;
+    float visibility = 0.0;
+    float rotation = interleavedGradientNoise(gl_FragCoord.xy) * 6.283185;
+    float radius = max(shadowView.depthTexel.w, 0.0);
+    for (int sampleIndex = 0; sampleIndex < 16; ++sampleIndex) {
+        if (sampleIndex >= sampleCount) break;
+        vec2 offset = sampleCount == 1 ? vec2(0.0)
+                                       : vogelDiskSample(sampleIndex, sampleCount, rotation) * radius * texel;
+        float storedDepth = texture(shadowMap, clamp(atlasUv + offset, tileMin, tileMax)).r;
+        visibility += ndc.z <= storedDepth ? 1.0 : 0.0;
+    }
+    return mix(1.0, visibility / float(sampleCount), shadowParams.x);
 }
 
-// Sample shadow for a specific cascade index
-float sampleCascadeShadow(vec3 worldPos, vec3 normal, int ci) {
-    DirectionalLightData mainLight = lighting.directionalLights[0];
-    vec3 lightDir = normalize(-mainLight.direction.xyz);
-    float cosTheta = max(dot(normal, lightDir), 0.0);
-    float userBias = mainLight.shadowParams.y;
-    float userNormalBias = mainLight.shadowParams.z;
-    float cascadeScale = getCascadeBiasScale(ci);
-    float slopeBias = (1.0 - cosTheta) * userBias * 2.0;
-    float bias = (userBias + slopeBias) * cascadeScale;
-    vec3 biasedPos = worldPos + normal * userNormalBias * cascadeScale;
-
-    vec4 lightClipPos = lighting.lightVP[ci] * vec4(biasedPos, 1.0);
-    vec3 projCoords = lightClipPos.xyz / lightClipPos.w;
-    projCoords.xy = projCoords.xy * 0.5 + 0.5;
-
-    if (projCoords.x < 0.0 || projCoords.x > 1.0 ||
-        projCoords.y < 0.0 || projCoords.y > 1.0 ||
-        projCoords.z > 1.0 || projCoords.z < 0.0) {
-        return 1.0;
-    }
-
-    float currentDepth = projCoords.z;
-    vec2 atlasOffset = getCascadeAtlasOffset(ci);
-    vec2 atlasUV = atlasOffset + projCoords.xy * 0.5;
-    float texelSize = 2.0 / lighting.shadowMapParams.x;
-    float shadowType = mainLight.shadowParams.w;
-    float shadow = 0.0;
-
-    vec2 tileMin = atlasOffset + vec2(texelSize);
-    vec2 tileMax = atlasOffset + vec2(0.5) - vec2(texelSize);
-
-    if (shadowType < 1.5) {
-        float closestDepth = texture(shadowMap, clamp(atlasUV, tileMin, tileMax)).r;
-        shadow = (currentDepth - bias > closestDepth) ? 0.0 : 1.0;
-    } else {
-        float noise = interleavedGradientNoise(gl_FragCoord.xy);
-        float rotation = noise * 6.283185;
-        float radius = 1.5 * texelSize;
-        for (int s = 0; s < 16; ++s) {
-            vec2 diskOffset = vogelDiskSample(s, 16, rotation) * radius;
-            vec2 sampleUV = clamp(atlasUV + diskOffset, tileMin, tileMax);
-            float sampleDepth = texture(shadowMap, sampleUV).r;
-            shadow += (currentDepth - bias > sampleDepth) ? 0.0 : 1.0;
+float sampleDirectionalViews(uint firstView, uint viewCount, vec4 shadowParams,
+                             vec3 worldPos, vec3 normal, vec3 toLight, float viewDepth) {
+    uint availableViews = lighting.shadowViewHeader.x;
+    if (viewCount == 0u || firstView >= availableViews) return 1.0;
+    viewCount = min(viewCount, availableViews - firstView);
+    uint selected = viewCount - 1u;
+    for (uint index = 0u; index < viewCount; ++index) {
+        if (viewDepth < lighting.shadowViews[firstView + index].splitData.y) {
+            selected = index;
+            break;
         }
-        shadow *= 0.0625;
+    }
+    float shadow = sampleShadowView(firstView + selected, worldPos, normal, toLight, shadowParams);
+    if (selected + 1u < viewCount) {
+        ShadowViewData current = lighting.shadowViews[firstView + selected];
+        float overlap = max((current.splitData.y - current.splitData.x) * 0.1, 0.0001);
+        float blend = smoothstep(0.0, overlap, current.splitData.y - viewDepth);
+        float nextShadow = sampleShadowView(firstView + selected + 1u, worldPos, normal, toLight, shadowParams);
+        shadow = mix(nextShadow, shadow, blend);
     }
     return shadow;
+}
+
+uint pointShadowFace(vec3 directionFromLight) {
+    vec3 a = abs(directionFromLight);
+    if (a.x >= a.y && a.x >= a.z) return directionFromLight.x >= 0.0 ? 0u : 1u;
+    if (a.y >= a.z) return directionFromLight.y >= 0.0 ? 2u : 3u;
+    return directionFromLight.z >= 0.0 ? 4u : 5u;
+}
+
+float sampleLocalShadow(uint firstView, uint viewCount, uint lightType, vec4 shadowParams,
+                        vec3 lightPosition, vec3 worldPos, vec3 normal, vec3 toLight) {
+    uint availableViews = lighting.shadowViewHeader.x;
+    if (viewCount == 0u || firstView >= availableViews) return 1.0;
+    viewCount = min(viewCount, availableViews - firstView);
+    uint offset = lightType == 2u ? 0u : min(pointShadowFace(worldPos - lightPosition), viewCount - 1u);
+    return sampleShadowView(firstView + offset, worldPos, normal, toLight, shadowParams);
 }
 
 /**
@@ -162,44 +174,19 @@ float calculateShadow(vec3 worldPos, vec3 normal, float fragViewDepthVal) {
 #ifdef INX_PARTICLE_FORWARD_PLUS
     if (!inxParticleReceivesShadows()) return 1.0;
 #endif
+    if (lighting.shadowViewHeader.x == 0u) return 1.0;
+#ifdef INX_FORWARD_PLUS_PASS
+    if (canonicalLightCountsAndGeneration.x == 0u) return 1.0;
+    CanonicalLightData light = canonicalLights[0];
+    return sampleDirectionalViews(light.identityAndShadow.z, light.identityAndShadow.w,
+                                  vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)), worldPos, normal,
+                                  normalize(-light.directionOuterCos.xyz), fragViewDepthVal);
+#else
+    if (lighting.lightCounts.x <= 0) return 1.0;
     DirectionalLightData light = lighting.directionalLights[0];
-    float shadowType = light.shadowParams.w;
-    if (shadowType < 0.5) return 1.0;
-    if (lighting.shadowMapParams.y < 0.5) return 1.0;
-
-    int cascadeCount = int(lighting.shadowMapParams.z);
-    if (cascadeCount < 1) return 1.0;
-
-    float viewDepth = fragViewDepthVal;
-    int cascadeIdx = cascadeCount - 1;
-    for (int i = 0; i < 4; ++i) {
-        if (i >= cascadeCount) break;
-        if (viewDepth < lighting.shadowCascadeSplits[i]) {
-            cascadeIdx = i;
-            break;
-        }
-    }
-
-    float shadow = sampleCascadeShadow(worldPos, normal, cascadeIdx);
-
-    if (cascadeIdx < cascadeCount - 1) {
-        float splitDist = lighting.shadowCascadeSplits[cascadeIdx];
-        float prevSplit = 0.0;
-        if (cascadeIdx > 0) {
-            prevSplit = lighting.shadowCascadeSplits[cascadeIdx - 1];
-        }
-        float cascadeRange = splitDist - prevSplit;
-        float blendZone = cascadeRange * 0.1;
-        float distToEdge = splitDist - viewDepth;
-        if (distToEdge < blendZone && blendZone > 0.0) {
-            float t = smoothstep(0.0, blendZone, distToEdge);
-            float nextShadow = sampleCascadeShadow(worldPos, normal, cascadeIdx + 1);
-            shadow = mix(nextShadow, shadow, t);
-        }
-    }
-
-    float shadowStrength = light.shadowParams.x;
-    return mix(1.0, shadow, shadowStrength);
+    return sampleDirectionalViews(light.metadata.z, light.metadata.w, light.shadowParams, worldPos, normal,
+                                  normalize(-light.direction.xyz), fragViewDepthVal);
+#endif
 }
 // ============================================================================
 // getMainLight — Unity-style main directional light accessor
@@ -243,6 +230,38 @@ Light getMainLight(vec3 worldPos, vec3 normal, float fragViewDepthVal) {
     return l;
 }
 
+vec3 evaluateRectangleAreaLight(vec3 lightPosition, vec3 rayDirection, vec4 rightWidth, vec4 upHeight,
+                                vec3 lightColor, float intensity, float range, bool twoSided,
+                                uint firstShadowView, uint shadowViewCount, vec4 shadowParams,
+                                vec3 worldPos, vec3 N, vec3 V, vec3 albedo, float metallic,
+                                float roughness, float perceptualRoughness, vec3 F0, float f90,
+                                vec3 energyCompensation) {
+    vec3 fromLight = worldPos - lightPosition;
+    float emitterFacing = dot(normalize(rayDirection), normalize(fromLight));
+    emitterFacing = twoSided ? abs(emitterFacing) : max(emitterFacing, 0.0);
+    if (emitterFacing <= 0.0001) return vec3(0.0);
+
+    vec3 right = normalize(rightWidth.xyz) * rightWidth.w * 0.5;
+    vec3 up = normalize(upHeight.xyz) * upHeight.w * 0.5;
+    vec3 samples[4] = vec3[4](lightPosition - right - up, lightPosition + right - up,
+                              lightPosition + right + up, lightPosition - right + up);
+    vec3 result = vec3(0.0);
+    vec3 centerToLight = normalize(lightPosition - worldPos);
+    float shadow = sampleLocalShadow(firstShadowView, shadowViewCount, 3u, shadowParams,
+                                     lightPosition, worldPos, N, centerToLight);
+    for (int sampleIndex = 0; sampleIndex < 4; ++sampleIndex) {
+        vec3 lightVector = samples[sampleIndex] - worldPos;
+        float distanceToLight = length(lightVector);
+        if (distanceToLight <= 0.00001 || distanceToLight >= range) continue;
+        vec3 L = lightVector / distanceToLight;
+        float attenuation = calculateAttenuation(vec3(range, 0.0, 0.0), distanceToLight);
+        vec3 radiance = lightColor * intensity * attenuation * emitterFacing * shadow * 0.25;
+        result += evaluatePBRLight(N, V, L, radiance, albedo, metallic, roughness,
+                                   perceptualRoughness, F0, f90, energyCompensation);
+    }
+    return result;
+}
+
 // ============================================================================
 // calculateAllLighting — Full PBR lighting evaluation (directional + point + spot)
 // ============================================================================
@@ -261,19 +280,28 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
                           vec3 albedo, float metallic,
                           float roughness, float perceptualRoughness,
                           vec3 F0, float f90, vec3 energyCompensation,
-                          float shadow) {
+                          float viewDepth, float shadow) {
     vec3 Lo = vec3(0.0);
+#ifdef INX_PARTICLE_FORWARD_PLUS
+    const uint currentLightDomain = 2u;
+#else
+    const uint currentLightDomain = 1u;
+#endif
 
     // Directional lights
 #ifdef INX_FORWARD_PLUS_PASS
     uint directionalCount = canonicalLightCountsAndGeneration.x;
     for (uint i = 0u; i < directionalCount; ++i) {
         CanonicalLightData light = canonicalLights[i];
-        if ((light.metadata.w & 1u) == 0u) continue;
+        if ((light.metadata.w & currentLightDomain) == 0u) continue;
         if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
         vec3 L = normalize(-light.directionOuterCos.xyz);
         vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w;
-        float lightShadow = (i == 0u) ? shadow : 1.0;
+        float lightShadow =
+            i == 0u ? shadow
+                    : sampleDirectionalViews(
+                          light.identityAndShadow.z, light.identityAndShadow.w,
+                          vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)), worldPos, N, L, viewDepth);
         Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                roughness, perceptualRoughness,
                                F0, f90, energyCompensation) * lightShadow;
@@ -288,24 +316,36 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
             lightMask &= lightMask - 1u;
             if (localIndex >= tileHeader.z) continue;
             CanonicalLightData light = canonicalLights[directionalCount + localIndex];
+            if ((light.metadata.w & currentLightDomain) == 0u) continue;
             if ((light.metadata.y & _inx_ObjectLayerMask) == 0u) continue;
+            if (light.metadata.x == 3u) {
+                Lo += evaluateRectangleAreaLight(
+                    light.positionRange.xyz, light.directionOuterCos.xyz, light.areaRightWidth,
+                    light.areaUpHeight, light.colorIntensity.rgb, light.colorIntensity.w,
+                    light.positionRange.w, light.directionOuterCos.w > 0.5, light.identityAndShadow.z,
+                    light.identityAndShadow.w, vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)),
+                    worldPos, N, V, albedo, metallic, roughness, perceptualRoughness, F0, f90,
+                    energyCompensation);
+                continue;
+            }
             vec3 lightVec = light.positionRange.xyz - worldPos;
             float distanceToLight = length(lightVec);
             float range = max(light.positionRange.w, 0.0001);
             if (distanceToLight <= 0.00001 || distanceToLight >= range) continue;
 
             vec3 L = lightVec / distanceToLight;
-            float normalizedDistance = distanceToLight / range;
-            float rangeWindow = max(1.0 - normalizedDistance * normalizedDistance *
-                                          normalizedDistance * normalizedDistance, 0.0);
-            float attenuation = (rangeWindow * rangeWindow) / max(distanceToLight * distanceToLight, 0.01);
+            float attenuation = calculateAttenuation(vec3(range, 0.0, 0.0), distanceToLight);
             if (light.metadata.x == 2u) {
                 float cone = dot(L, -normalize(light.directionOuterCos.xyz));
                 attenuation *= smoothstep(light.directionOuterCos.w, light.shadowAndInnerCos.w, cone);
             }
             if (attenuation <= 0.0001) continue;
 
-            vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation;
+            float localShadow = sampleLocalShadow(
+                light.identityAndShadow.z, light.identityAndShadow.w, light.metadata.x,
+                vec4(light.shadowAndInnerCos.xyz, float(light.metadata.z)), light.positionRange.xyz,
+                worldPos, N, L);
+            vec3 radiance = light.colorIntensity.rgb * light.colorIntensity.w * attenuation * localShadow;
             Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                    roughness, perceptualRoughness,
                                    F0, f90, energyCompensation);
@@ -314,9 +354,14 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
 #else
     for (int i = 0; i < lighting.lightCounts.x && i < MAX_DIRECTIONAL_LIGHTS; ++i) {
         DirectionalLightData light = lighting.directionalLights[i];
+        if ((light.metadata.y & currentLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
         vec3 L        = normalize(-light.direction.xyz);
         vec3 radiance = light.color.rgb * light.color.w;
-        float lightShadow = (i == 0) ? shadow : 1.0;
+        float lightShadow =
+            i == 0 ? shadow
+                   : sampleDirectionalViews(light.metadata.z, light.metadata.w, light.shadowParams, worldPos, N, L,
+                                            viewDepth);
         Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                roughness, perceptualRoughness,
                                F0, f90, energyCompensation) * lightShadow;
@@ -325,13 +370,17 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
     // Point lights
     for (int i = 0; i < lighting.lightCounts.y && i < MAX_POINT_LIGHTS; ++i) {
         PointLightData light = lighting.pointLights[i];
+        if ((light.metadata.y & currentLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
         vec3  lightVec = light.position.xyz - worldPos;
         float distance = length(lightVec);
         if (distance > 1e-5) {
             vec3  L = lightVec / distance;
             float attenuation = calculateAttenuation(light.attenuation.xyz, distance);
             if (attenuation > 0.001) {
-                vec3 radiance = light.color.rgb * light.color.w * attenuation;
+                float localShadow = sampleLocalShadow(light.metadata.z, light.metadata.w, 1u, light.shadowParams,
+                                                      light.position.xyz, worldPos, N, L);
+                vec3 radiance = light.color.rgb * light.color.w * attenuation * localShadow;
                 Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                        roughness, perceptualRoughness,
                                        F0, f90, energyCompensation);
@@ -342,6 +391,8 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
     // Spot lights
     for (int i = 0; i < lighting.lightCounts.z && i < MAX_SPOT_LIGHTS; ++i) {
         SpotLightData light = lighting.spotLights[i];
+        if ((light.metadata.y & currentLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
         vec3  lightVec = light.position.xyz - worldPos;
         float distance = length(lightVec);
         if (distance > 1e-5) {
@@ -351,13 +402,26 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
             if (spotFalloff > 0.0) {
                 float attenuation = calculateAttenuation(light.attenuation.xyz, distance);
                 if (attenuation > 0.001) {
-                    vec3 radiance = light.color.rgb * light.color.w * attenuation * spotFalloff;
+                    float localShadow = sampleLocalShadow(light.metadata.z, light.metadata.w, 2u, light.shadowParams,
+                                                          light.position.xyz, worldPos, N, L);
+                    vec3 radiance = light.color.rgb * light.color.w * attenuation * spotFalloff * localShadow;
                     Lo += evaluatePBRLight(N, V, L, radiance, albedo, metallic,
                                            roughness, perceptualRoughness,
                                            F0, f90, energyCompensation);
                 }
             }
         }
+    }
+
+    for (int i = 0; i < lighting.lightCounts.w && i < MAX_AREA_LIGHTS; ++i) {
+        AreaLightData light = lighting.areaLights[i];
+        if ((light.metadata.y & currentLightDomain) == 0u) continue;
+        if ((light.metadata.x & _inx_ObjectLayerMask) == 0u) continue;
+        Lo += evaluateRectangleAreaLight(
+            light.positionRange.xyz, light.direction.xyz, light.rightWidth, light.upHeight,
+            light.color.rgb, light.color.w, light.positionRange.w, light.direction.w > 0.5,
+            light.metadata.z, light.metadata.w, light.shadowParams, worldPos, N, V, albedo,
+            metallic, roughness, perceptualRoughness, F0, f90, energyCompensation);
     }
 #endif
 

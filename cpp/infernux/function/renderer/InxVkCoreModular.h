@@ -282,8 +282,15 @@ class InxVkCoreModular
      * Hard/soft selection lives on the Light component (shadowParams.w in the
      * lighting UBO), not on this pass — the shadow map itself is filter-agnostic.
      */
+    using ShadowViewDrawCallback = std::function<void(uint32_t viewIndex, const lighting::ShadowView &view)>;
+    using ShadowCameraResourceId = uint64_t;
+
+    [[nodiscard]] ShadowCameraResourceId CreateShadowCameraResources();
+    void DestroyShadowCameraResources(ShadowCameraResourceId resourceId) noexcept;
+
     void DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin, int queueMax,
-                           int lightIndex = 0);
+                           ShadowCameraResourceId resourceId, const lighting::ShadowFrame &shadowFrame,
+                           int lightIndex = 0, const ShadowViewDrawCallback &additionalDraws = {});
 
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
     void SetDrawCalls(const std::vector<DrawCall> *drawCalls);
@@ -826,6 +833,9 @@ class InxVkCoreModular
                                          uint64_t tileLightMaskBytes, rhi::BufferHandle lightingUbo = {},
                                          uint64_t lightingUboBytes = 0);
 
+    /// Bind the camera-local LightingUBO even when the pipeline does not use Forward+.
+    void UpdatePerViewLightingBuffer(VkDescriptorSet perViewDescSet, VkBuffer lightingUbo, uint64_t lightingUboBytes);
+
     /// @brief Set the active per-view descriptor set for subsequent draw calls.
     void SetActiveShadowDescriptorSet(VkDescriptorSet descSet)
     {
@@ -836,14 +846,6 @@ class InxVkCoreModular
     [[nodiscard]] VkDescriptorSet GetActiveShadowDescriptorSet() const
     {
         return m_activeShadowDescSet;
-    }
-
-    /// @brief Override shadow cascade VPs for CPU-side frustum culling in DrawShadowCasters.
-    /// Pass nullptr to clear the override (falls back to m_lightCollector).
-    void SetShadowCascadeVPOverride(const glm::mat4 *vpArray, uint32_t count)
-    {
-        m_shadowCascadeVPOverride = vpArray;
-        m_shadowCascadeVPOverrideCount = count;
     }
 
     // ========================================================================
@@ -955,31 +957,11 @@ class InxVkCoreModular
     /// without re-uploading the full 6 KB lighting UBO.
     void CmdUpdateLightingCameraPos(VkCommandBuffer cmdBuf, const glm::vec3 &cameraPos);
 
-    /// @brief Inline-update ONLY the shadow VP matrices, cascade splits and
-    /// shadow map params in the lighting UBO, plus the per-cascade shadow UBOs.
-    ///
-    /// Used for multi-camera shadow isolation: each camera's shadows are
-    /// independently computed and patched before its render graph executes.
-    void CmdUpdateShadowDataForCamera(VkCommandBuffer cmdBuf, const glm::mat4 *lightVPs, uint32_t cascadeCount,
-                                      const float *cascadeSplits, float mapResolution);
-
-    /// @brief Restore the lighting UBO shadow fields and per-cascade shadow
-    /// UBOs back to the editor camera values that were staged at the start of
-    /// the frame.  Called after the game view finishes rendering so that
-    /// subsequent passes and cross-frame GPU overlap see consistent editor data.
-    void CmdRestoreEditorShadowData(VkCommandBuffer cmdBuf);
-
     /// @brief Cache the lighting UBO data for inline command-buffer update.
     ///
     /// Called on the CPU timeline (before DrawFrame). The cached data is
     /// pushed to the GPU via CmdUpdateLightingUBO during command recording.
     void StageLightingUBO(const glm::vec3 &cameraPosition);
-
-    /// @brief Inline-update the per-frame shadow UBO in a command buffer.
-    ///
-    /// Uses vkCmdUpdateBuffer with explicit barriers so shadow VP updates are
-    /// serialized on the GPU timeline (driver-robust across vendors).
-    void CmdUpdateShadowUBO(VkCommandBuffer cmdBuf);
 
   private:
     // ========================================================================
@@ -1353,7 +1335,7 @@ class InxVkCoreModular
         AABB worldBounds; // Cached for per-cascade frustum culling
     };
     std::vector<ShadowDraw> m_shadowDrawScratch;
-    std::vector<uint32_t> m_shadowCascadeVisible; ///< Per-cascade visible indices into m_shadowDrawScratch
+    std::vector<uint32_t> m_shadowViewVisible; ///< Per-view visible indices into m_shadowDrawScratch
 
     struct ResolvedShadowMaterial
     {
@@ -1371,11 +1353,16 @@ class InxVkCoreModular
     VkPipelineLayout m_shadowPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool m_shadowDescPool = VK_NULL_HANDLE;
-    std::vector<VkDescriptorSet> m_shadowDescSets;
-    std::vector<VkBuffer> m_shadowUboBuffers;
-    std::vector<VmaAllocation> m_shadowUboAllocations;
-    std::vector<void *> m_shadowUboMappedPtrs;
+    struct ShadowCameraResources
+    {
+        VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> descriptorSets;
+        std::vector<VkBuffer> uniformBuffers;
+        std::vector<VmaAllocation> allocations;
+        std::vector<void *> mappedPointers;
+    };
+    std::unordered_map<ShadowCameraResourceId, ShadowCameraResources> m_shadowCameraResources;
+    ShadowCameraResourceId m_nextShadowCameraResourceId = 1;
     VkSampler m_shadowDepthSampler = VK_NULL_HANDLE;
     VkRenderPass m_shadowCompatRenderPass = VK_NULL_HANDLE; ///< For pipeline compatibility
     bool m_shadowPipelineReady = false;
@@ -1414,6 +1401,8 @@ class InxVkCoreModular
 
     /// @brief Lazily create/recreate shadow pipeline resources.
     bool EnsureShadowPipeline(VkRenderPass compatibleRenderPass);
+    bool EnsureShadowCameraResources(ShadowCameraResourceId resourceId);
+    void DestroyShadowCameraResources(ShadowCameraResources &resources) noexcept;
     [[nodiscard]] VkDescriptorPool CreateShadowMaterialDescriptorPoolPage(uint32_t maxSets);
     [[nodiscard]] ShadowDescriptorAllocation AllocateShadowMaterialDescriptorSet();
     [[nodiscard]] VkDescriptorSet EnsureShadowMaterialBinding(const std::shared_ptr<InxMaterial> &material,
@@ -1436,11 +1425,6 @@ class InxVkCoreModular
     /// Valid dummy bindings for layout set 2 (never freed per material).
     VkDescriptorSet m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
     VkDescriptorSet m_activeShadowDescSet = VK_NULL_HANDLE; ///< Currently active per-view desc for draw calls
-
-    /// Shadow cascade VP override for DrawShadowCasters CPU-side frustum culling.
-    /// When non-null, overrides m_lightCollector cascade VPs (used for game camera).
-    const glm::mat4 *m_shadowCascadeVPOverride = nullptr;
-    uint32_t m_shadowCascadeVPOverrideCount = 0;
 
     /// @brief Create per-view descriptor set layout and pool.
     bool CreatePerViewDescriptorResources();
@@ -1526,10 +1510,10 @@ class InxVkCoreModular
     void ResetPerFrameGpuStreamOffsets();
 
   public:
-    /// @brief Pre-allocate all instance streams for the current frame and
+    /// @brief Pre-allocate the exact upper bound of instance stream entries for the current frame and
     /// update their descriptor bindings. Must be called before command-buffer
     /// recording begins.
-    void PreallocateInstances(size_t totalDrawCalls);
+    void PreallocateInstances(size_t requiredInstances);
 
     /// @brief Write a single instance matrix into the frame's instance SSBO.
     /// Grows the buffer and refreshes the descriptor if needed.

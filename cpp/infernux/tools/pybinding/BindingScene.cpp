@@ -1122,6 +1122,9 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("spot_angle", &Light::GetSpotAngle, &Light::SetSpotAngle, "Inner spot angle in degrees")
         .def_property("outer_spot_angle", &Light::GetOuterSpotAngle, &Light::SetOuterSpotAngle,
                       "Outer spot angle in degrees")
+        .def_property("area_size", &Light::GetAreaSize, &Light::SetAreaSize, "Rectangle area-light width and height")
+        .def_property("area_two_sided", &Light::GetAreaTwoSided, &Light::SetAreaTwoSided,
+                      "Whether the rectangle emits from both sides")
 
         // Shadows
         .def_property("shadows", &Light::GetShadows, &Light::SetShadows, "Shadow type (None, Hard, Soft)")
@@ -1129,6 +1132,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("shadow_bias", &Light::GetShadowBias, &Light::SetShadowBias, "Shadow depth bias")
         .def_property("shadow_normal_bias", &Light::GetShadowNormalBias, &Light::SetShadowNormalBias,
                       "Shadow normal-offset bias (world units along the surface normal)")
+        .def_property("shadow_softness", &Light::GetShadowSoftness, &Light::SetShadowSoftness,
+                      "Soft-shadow filter radius in shadow-map texels")
 
         // Influence domains are orthogonal to the GameObject layer mask.
         .def_property("affect_geometry", &Light::GetAffectGeometry, &Light::SetAffectGeometry,
@@ -1137,12 +1142,6 @@ void RegisterSceneBindings(py::module_ &m)
                       "Whether this light affects particle renderers")
         .def_property("culling_mask", &Light::GetCullingMask, &Light::SetCullingMask,
                       "Layer bitmask selecting which GameObjects this light affects")
-
-        // Shadow mapping matrices
-        .def("get_light_view_matrix", &Light::GetLightViewMatrix, "Get the light's view matrix for shadow mapping")
-        .def("get_light_projection_matrix", &Light::GetLightProjectionMatrix, py::arg("shadow_extent") = 20.0f,
-             py::arg("near_plane") = 0.1f, py::arg("far_plane") = 100.0f,
-             "Get the light's projection matrix for shadow mapping")
 
         // Serialization
         .def("serialize", &Light::Serialize, "Serialize Light to JSON string");

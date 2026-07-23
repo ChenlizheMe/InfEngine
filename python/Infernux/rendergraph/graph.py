@@ -393,6 +393,7 @@ class RenderPassBuilder:
             light_index: Index of the shadow-casting light (0 = first directional).
         """
         self._action = "draw_shadow_casters"
+        self._material_pass = "shadow"
         self._queue_min, self._queue_max = queue_range
         self._light_index = light_index
         return self
@@ -1467,6 +1468,7 @@ class RenderGraph:
             "forward_plus": MaterialPassType.FORWARD_PLUS,
             "gbuffer": MaterialPassType.GBUFFER,
             "depth": MaterialPassType.DEPTH,
+            "shadow": MaterialPassType.SHADOW,
             "picking": MaterialPassType.PICKING,
             "motion": MaterialPassType.MOTION,
         }

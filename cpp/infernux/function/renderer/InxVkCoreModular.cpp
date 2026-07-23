@@ -722,7 +722,6 @@ void InxVkCoreModular::RecordCommandBuffer(uint32_t imageIndex)
         m_uboDirty = false;
     }
     CmdUpdateLightingUBO(cmdBuf);
-    CmdUpdateShadowUBO(cmdBuf);
     CmdUpdateGlobals(cmdBuf);
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();

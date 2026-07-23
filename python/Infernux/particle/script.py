@@ -88,6 +88,7 @@ class ParticleStream:
         material: AssetReference = AssetReference(),
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,
+        cast_shadows: bool = False,
         sort: str = "none",
     ) -> None: ...
 

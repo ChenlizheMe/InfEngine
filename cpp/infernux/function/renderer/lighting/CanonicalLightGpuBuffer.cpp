@@ -12,7 +12,10 @@ namespace
 
 uint64_t BufferCapacity(uint64_t required)
 {
-    constexpr uint64_t minimum = 256;
+    // Canonical light counts are bounded by the renderer ABI. Keeping a modest
+    // fixed floor avoids replacing a graph-imported buffer while an older
+    // frame is still using it.
+    constexpr uint64_t minimum = 64u * 1024u;
     uint64_t capacity = minimum;
     while (capacity < required) {
         if (capacity > std::numeric_limits<uint64_t>::max() / 2u)

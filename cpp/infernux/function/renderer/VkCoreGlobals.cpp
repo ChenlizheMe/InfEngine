@@ -335,7 +335,8 @@ void InxVkCoreModular::EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t 
     // NOTE: Do NOT call UpdateInstanceBufferDescriptor() here.
     // This function can be called mid-recording, and updating a descriptor set
     // that is already bound in the command buffer invalidates it.
-    // The descriptor is updated once before any draws in PreallocateInstances().
+    // PreallocateInstances() publishes a descriptor revision only when the
+    // backing buffer actually changes.
 
     // Old instance buffers may still be referenced by commands already
     // recorded earlier in this same command buffer. Defer final destruction
@@ -452,27 +453,43 @@ void InxVkCoreModular::ResetPerFrameGpuStreamOffsets()
     }
 }
 
-void InxVkCoreModular::PreallocateInstances(size_t totalDrawCalls)
+void InxVkCoreModular::PreallocateInstances(size_t requiredInstances)
 {
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
 
     ResetPerFrameGpuStreamOffsets();
 
-    if (totalDrawCalls == 0)
+    if (requiredInstances == 0)
         return;
 
-    // Upper bound: every draw call can appear once in an opaque pass and
-    // once per shadow cascade.  Pre-allocating here guarantees the buffer
-    // never grows mid-recording, avoiding descriptor-set-update-while-bound.
-    const size_t maxInstances = totalDrawCalls * (1 + NUM_SHADOW_CASCADES);
-    EnsureInstanceBufferCapacity(frameIndex, maxInstances);
-    EnsureSkinBuffersCapacity(frameIndex, maxInstances, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY);
-    EnsureInstanceAuxBufferCapacity(frameIndex, maxInstances);
+    const VkBuffer previousInstanceBuffer =
+        m_instanceBuffers[frameIndex].buffer ? m_instanceBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
+    const VkBuffer previousSkinInstanceBuffer = m_skinInstanceBuffers[frameIndex].buffer
+                                                    ? m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()
+                                                    : VK_NULL_HANDLE;
+    const VkBuffer previousSkinPaletteBuffer =
+        m_skinPaletteBuffers[frameIndex].buffer ? m_skinPaletteBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
+    const VkBuffer previousInstanceAuxBuffer =
+        m_instanceAuxBuffers[frameIndex].buffer ? m_instanceAuxBuffers[frameIndex].buffer->GetBuffer() : VK_NULL_HANDLE;
 
-    // Safe to update the descriptor now — no draws have been recorded yet.
-    UpdateInstanceBufferDescriptor(frameIndex);
-    UpdateSkinBufferDescriptors(frameIndex);
-    UpdateInstanceAuxBufferDescriptor(frameIndex);
+    EnsureInstanceBufferCapacity(frameIndex, requiredInstances);
+    EnsureSkinBuffersCapacity(frameIndex, requiredInstances, SKIN_PALETTE_BUFFER_INITIAL_CAPACITY);
+    EnsureInstanceAuxBufferCapacity(frameIndex, requiredInstances);
+
+    // Descriptor sets may also be referenced by asynchronous preview command
+    // buffers. Even rewriting an identical binding invalidates those recorded
+    // commands, so only publish a descriptor revision when storage changed.
+    if (m_instanceBuffers[frameIndex].buffer &&
+        previousInstanceBuffer != m_instanceBuffers[frameIndex].buffer->GetBuffer())
+        UpdateInstanceBufferDescriptor(frameIndex);
+    if ((m_skinInstanceBuffers[frameIndex].buffer &&
+         previousSkinInstanceBuffer != m_skinInstanceBuffers[frameIndex].buffer->GetBuffer()) ||
+        (m_skinPaletteBuffers[frameIndex].buffer &&
+         previousSkinPaletteBuffer != m_skinPaletteBuffers[frameIndex].buffer->GetBuffer()))
+        UpdateSkinBufferDescriptors(frameIndex);
+    if (m_instanceAuxBuffers[frameIndex].buffer &&
+        previousInstanceAuxBuffer != m_instanceAuxBuffers[frameIndex].buffer->GetBuffer())
+        UpdateInstanceAuxBufferDescriptor(frameIndex);
 }
 
 bool InxVkCoreModular::WriteInstanceMatrix(uint32_t frameIndex, uint32_t instanceIndex, const glm::mat4 &matrix)

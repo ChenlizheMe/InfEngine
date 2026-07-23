@@ -1032,7 +1032,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << "\n" << LoadTemplate("picking_vertex_interface.glsl") << "\n";
                 else if (target == ShaderCompileTarget::Motion)
                     result << "\n" << LoadTemplate("motion_vertex_interface.glsl") << "\n";
-                else if (target == ShaderCompileTarget::ForwardPlus && !particleSpriteDomain)
+                else if ((target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
+                          target == ShaderCompileTarget::GBuffer) &&
+                         !particleSpriteDomain)
                     result << "\n" << LoadTemplate("forward_plus_vertex_interface.glsl") << "\n";
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
@@ -1054,6 +1056,14 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << LoadTemplate(particleSpriteDomain ? "particle_sprite_fragment_varyings.glsl"
                                                             : "fragment_varyings.glsl")
                        << "\n";
+                if (needsLightingUBO && !particleSpriteDomain) {
+                    if (target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
+                        target == ShaderCompileTarget::GBuffer) {
+                        result << "\n" << LoadTemplate("object_layer_fragment_interface.glsl") << "\n";
+                    } else {
+                        result << "\nconst uint _inx_ObjectLayerMask = 0xffffffffu;\n";
+                    }
+                }
                 if (linkedInterface && !desc.inputs.empty())
                     result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
 
@@ -1368,7 +1378,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     } else {
         _inx_MotionVector = vec2(0.0);
     })";
-        } else if (target == ShaderCompileTarget::ForwardPlus && !particleSpriteDomain) {
+        } else if ((target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
+                    target == ShaderCompileTarget::GBuffer) &&
+                   !particleSpriteDomain) {
             passVertexOutput = "    _inx_ObjectLayerMask = instanceAuxData[gl_InstanceIndex].layerMask;";
         }
         ReplacePlaceholder(mainTpl, "${PASS_VERTEX_OUTPUT}", passVertexOutput);

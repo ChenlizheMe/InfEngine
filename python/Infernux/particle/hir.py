@@ -54,6 +54,7 @@ class ParticleOutputDescriptor:
     material: AssetReference
     receive_scene_lighting: bool
     receive_shadows: bool
+    cast_shadows: bool
     soft_particles: bool
     soft_distance: float
     sort_mode: str
@@ -169,6 +170,7 @@ class ParticleGraphCompiler:
                             "material": output.material.to_dict(),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
+                            "cast_shadows": output.cast_shadows,
                             "soft_particles": output.soft_particles,
                             "soft_distance": output.soft_distance,
                             "sort": output.sort_mode,
@@ -310,6 +312,7 @@ class ParticleGraphCompiler:
             AssetReference.from_dict(parameters["material"]),
             bool(parameters["receive_scene_lighting"]),
             bool(parameters["receive_shadows"]),
+            bool(parameters["cast_shadows"]) if output_type == "mesh" else False,
             bool(parameters.get("soft_particles", False)),
             float(parameters.get("soft_distance", 1.0)),
             str(parameters["sort"]),

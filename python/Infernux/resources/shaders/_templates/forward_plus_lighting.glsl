@@ -6,7 +6,10 @@ struct CanonicalLightData {
     vec4 directionOuterCos;
     vec4 colorIntensity;
     vec4 shadowAndInnerCos;
+    vec4 areaRightWidth;
+    vec4 areaUpHeight;
     uvec4 metadata;
+    uvec4 identityAndShadow;
 };
 
 layout(std430, set = 1, binding = 1) readonly buffer CanonicalLightBuffer {
@@ -19,8 +22,6 @@ layout(std430, set = 1, binding = 2) readonly buffer ForwardPlusTileHeaderBuffer
 layout(std430, set = 1, binding = 3) readonly buffer ForwardPlusTileMaskBuffer {
     uint forwardPlusTileMasks[];
 };
-
-layout(location = 15) flat in uint _inx_ObjectLayerMask;
 
 uvec4 inxForwardPlusTileHeader() {
     uvec4 grid = forwardPlusTileHeaders[0];
