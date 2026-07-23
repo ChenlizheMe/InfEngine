@@ -80,6 +80,12 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "greater_equal": KernelOpcodeSpec(True, 2),
     "logical_not": KernelOpcodeSpec(True, 1),
     "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
+    "event_append": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset({"channel_index", "payload_words"}),
+        _ALL_STAGES,
+    ),
     "collide_plane_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
     "collide_plane_velocity": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
     "collide_sphere_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),

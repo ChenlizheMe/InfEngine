@@ -716,6 +716,7 @@ class GpuParticleEmitterSource:
     kernel_hash: str
     attribute_fields: tuple[tuple[str, str, str, int, int], ...]
     state_stride: int
+    event_output_stages: tuple[str, ...]
     bootstrap: str
     init: str
     event_init: str
@@ -750,6 +751,7 @@ class GpuParticleEmitterSource:
                 for stable_id, field, glsl_type, offset, byte_size in self.attribute_fields
             ],
             "state_stride": self.state_stride,
+            "event_output_stages": list(self.event_output_stages),
             "data_interfaces": [dict(value) for value in self.data_interfaces],
             "data_interface_layout": dict(self.data_interface_layout),
             "stages": self.stages(),
@@ -788,9 +790,9 @@ class GpuParticleGlslLowerer:
         data_interface_layout = _data_interface_layout(emitter)
         prelude = _shader_prelude(fields, emitter.random_seed, data_interface_layout)
         bootstrap = prelude + _bootstrap_main()
-        init_body, _ = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.init)
-        update_body, _ = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.update)
-        rendering_body, exports = _StageCompiler(emitter, fields, data_interface_layout).compile(
+        init_body, _, init_events = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.init)
+        update_body, _, update_events = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.update)
+        rendering_body, exports, rendering_events = _StageCompiler(emitter, fields, data_interface_layout).compile(
             emitter.rendering
         )
         required = {"builtin.position", "builtin.size", "builtin.color", "builtin.rotation"}
@@ -807,12 +809,30 @@ class GpuParticleGlslLowerer:
                 for stable_id, value_type, field, offset, byte_size in attribute_layout
             ),
             state_stride,
+            tuple(
+                stage
+                for stage, body in (
+                    ("init", init_events),
+                    ("update", update_events),
+                    ("rendering", rendering_events),
+                )
+                if body
+            ),
             bootstrap,
-            prelude + _init_main(init_body, emitter, fields),
-            prelude + _event_init_bindings() + _event_init_main(init_body, emitter, fields),
-            prelude + _update_main(update_body, emitter, fields),
+            prelude
+            + (_event_output_bindings(3) if init_events else "")
+            + _init_main(init_body, init_events, emitter, fields),
+            prelude
+            + _event_init_bindings()
+            + (_event_output_bindings(4) if init_events else "")
+            + _event_init_main(init_body, init_events, emitter, fields),
+            prelude
+            + (_event_output_bindings(3) if update_events else "")
+            + _update_main(update_body, update_events, emitter, fields),
             prelude + _render_reset_main(),
-            prelude + _rendering_main(rendering_body, exports),
+            prelude
+            + (_event_output_bindings(3) if rendering_events else "")
+            + _rendering_main(rendering_body, rendering_events, exports),
             tuple(interface.to_dict() for interface in emitter.data_interfaces),
             data_interface_layout,
         )
@@ -1167,6 +1187,7 @@ class _StageCompiler:
         self._values: dict[str, str] = {}
         self._exports: dict[str, str] = {}
         self._lines: list[str] = []
+        self._event_lines: list[str] = []
         self._point_cache_samples = {
             (
                 sample["interface"],
@@ -1183,10 +1204,14 @@ class _StageCompiler:
             for interface in data_interface_layout.get("vector_fields", ())
         }
 
-    def compile(self, function: ParticleKernelFunction) -> tuple[str, dict[str, str]]:
+    def compile(self, function: ParticleKernelFunction) -> tuple[str, dict[str, str], str]:
         for instruction in function.instructions:
             self._compile_instruction(instruction)
-        return "\n".join(f"    {line}" for line in self._lines), dict(self._exports)
+        return (
+            "\n".join(f"    {line}" for line in self._lines),
+            dict(self._exports),
+            "\n".join(f"    {line}" for line in self._event_lines),
+        )
 
     def _compile_instruction(self, instruction: KernelInstruction) -> None:
         opcode = instruction.opcode
@@ -1307,6 +1332,48 @@ class _StageCompiler:
             return
         elif opcode == "kill_if":
             self._lines.append(f"particle_alive = particle_alive && !({operands[0]});")
+            return
+        elif opcode == "event_append":
+            channel_index = int(immediate["channel_index"])
+            payload_words = immediate["payload_words"]
+            if channel_index < 0 or not isinstance(payload_words, list) or any(
+                type(word) is not int or not 0 <= word <= 0xFFFFFFFF
+                for word in payload_words
+            ):
+                raise GpuParticleCompileError("GPU event append metadata is invalid")
+            suffix = len(self._event_lines)
+            id_field = self._field("builtin.id")[1]
+            self._event_lines.extend(
+                (
+                    f"if (pc.reserved != 0u && particle_alive && ({operands[0]})) {{",
+                    f"    const uint inx_event_channel_index_{suffix} = {channel_index}u;",
+                    f"    ParticleEventOutputChannel inx_event_channel_{suffix} = "
+                    f"event_output_channels[inx_event_channel_index_{suffix}];",
+                    f"    uint inx_event_slot_{suffix} = atomicAdd("
+                    f"event_output_counters[inx_event_channel_index_{suffix}].x, 1u);",
+                    f"    if (inx_event_slot_{suffix} < inx_event_channel_{suffix}.capacity) {{",
+                    f"        uint inx_event_base_{suffix} = inx_event_channel_{suffix}.record_base_words + "
+                    f"inx_event_slot_{suffix} * inx_event_channel_{suffix}.record_stride_words;",
+                    f"        event_output_record_words[inx_event_base_{suffix} + 0u] = "
+                    f"inx_event_channel_{suffix}.event_type_index;",
+                    f"        event_output_record_words[inx_event_base_{suffix} + 1u] = "
+                    f"inx_event_channel_{suffix}.source_emitter_index;",
+                    f"        event_output_record_words[inx_event_base_{suffix} + 2u] = state.{id_field};",
+                    f"        event_output_record_words[inx_event_base_{suffix} + 3u] = state.spawn_generation;",
+                )
+            )
+            self._event_lines.extend(
+                f"        event_output_record_words[inx_event_base_{suffix} + {4 + index}u] = {word}u;"
+                for index, word in enumerate(payload_words)
+            )
+            self._event_lines.extend(
+                (
+                    "    } else {",
+                    f"        atomicAdd(event_output_counters[inx_event_channel_index_{suffix}].y, 1u);",
+                    "    }",
+                    "}",
+                )
+            )
             return
         elif opcode == "collide_plane_position":
             expression = f"inx_collide_plane_position({', '.join(operands)})"
@@ -2171,6 +2238,7 @@ void main() {
 
 def _init_main(
     body: str,
+    event_body: str,
     emitter: ParticleEmitterKernelIR,
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
@@ -2191,6 +2259,7 @@ void main() {{
 {body}
     particle_alive = particle_alive && ({finite});
     state.alive = particle_alive ? 1u : 0u;
+{event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
 }}
@@ -2228,8 +2297,37 @@ layout(std430, set = 3, binding = 3) readonly buffer ParticleEventSpawnIndices {
 """
 
 
+def _event_output_bindings(set_index: int) -> str:
+    return f"""
+struct ParticleEventOutputChannel {{
+    uint record_base_words;
+    uint record_stride_words;
+    uint capacity;
+    uint source_emitter_index;
+    uint target_emitter_index;
+    uint event_type_index;
+    uint payload_stride_words;
+    uint spawn_count;
+    uint spawn_base_indices;
+    uint target_capacity;
+    uint reserved0;
+    uint reserved1;
+}};
+layout(std430, set = {set_index}, binding = 0) readonly buffer ParticleEventOutputChannels {{
+    ParticleEventOutputChannel event_output_channels[];
+}};
+layout(std430, set = {set_index}, binding = 1) buffer ParticleEventOutputRecords {{
+    uint event_output_record_words[];
+}};
+layout(std430, set = {set_index}, binding = 2) buffer ParticleEventOutputCounters {{
+    uvec4 event_output_counters[];
+}};
+"""
+
+
 def _event_init_main(
     body: str,
+    event_body: str,
     emitter: ParticleEmitterKernelIR,
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
@@ -2261,6 +2359,7 @@ void main() {{
 {body}
     particle_alive = particle_alive && ({finite});
     state.alive = particle_alive ? 1u : 0u;
+{event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
 }}
@@ -2269,6 +2368,7 @@ void main() {{
 
 def _update_main(
     body: str,
+    event_body: str,
     emitter: ParticleEmitterKernelIR,
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
@@ -2282,6 +2382,7 @@ void main() {{
 {body}
     particle_alive = particle_alive && ({finite});
     state.alive = particle_alive ? 1u : 0u;
+{event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
 }}
@@ -2301,7 +2402,7 @@ void main() {
 """
 
 
-def _rendering_main(body: str, exports: dict[str, str]) -> str:
+def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
     position = exports["builtin.position"]
     size = exports["builtin.size"]
     color = exports["builtin.color"]
@@ -2339,6 +2440,7 @@ void main() {{
         inx_push_free(particle_index);
         return;
     }}
+{event_body}
     uint output_index = atomicAdd(counters.visible_count, 1u);
     if (output_index >= pc.capacity) return;
     instances[output_index].position_size = vec4({world_position}, {size});

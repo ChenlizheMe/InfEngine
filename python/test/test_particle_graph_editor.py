@@ -80,6 +80,16 @@ def test_particle_data_expression_nodes_are_creatable_in_simulation_stages():
     assert position.uid.startswith("update::")
 
 
+def test_particle_event_output_is_available_in_every_emitter_stage():
+    emitter = ParticleGraphAsset().emitters[0]
+
+    for document in (emitter.init, emitter.update, emitter.rendering):
+        registered = {
+            definition.type_id for definition in _stage_model(document).registered_types()
+        }
+        assert "particle.event.output" in registered
+
+
 def test_default_rendering_stage_opens_without_overlapping_output():
     rendering = ParticleGraphAsset().emitters[0].rendering
     positions = {node.uid: node.position for node in rendering.nodes}

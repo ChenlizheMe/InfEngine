@@ -118,6 +118,7 @@ struct GpuParticleEmitterProgram
     std::string stableId;
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
+    uint32_t eventOutputStageMask = 0;
     bool preserveState = false;
     struct StateMigration
     {

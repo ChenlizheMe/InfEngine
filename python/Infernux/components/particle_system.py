@@ -604,6 +604,7 @@ class ParticleSystem(InxComponent):
                 type(glsl_emitter) is not dict
                 or glsl_emitter.get("stable_id") != emitter.stable_id
                 or type(glsl_emitter.get("state_stride")) is not int
+                or type(glsl_emitter.get("event_output_stages")) is not list
             ):
                 raise RuntimeError("ParticleGraph GPU layout does not match its runtime schedule")
             decoded = decode_gpu_particle_spirv(artifact.gpu_spirv, index)
@@ -645,6 +646,7 @@ class ParticleSystem(InxComponent):
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
+                    "event_output_stages": list(glsl_emitter["event_output_stages"]),
                     "preserve_state": preserve_state,
                     "migration": migration,
                     "data_interface_layout": self._gpu_data_interface_layout(

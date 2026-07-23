@@ -16,6 +16,9 @@ from Infernux.particle import (
     GpuParticleCompileError,
     ParticleAttribute,
     ParticleEmitterAsset,
+    ParticleEventField,
+    ParticleEventRoute,
+    ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleKernelLowerer,
@@ -58,6 +61,95 @@ def _kill_if_gpu_source():
     emitter = ParticleEmitterAsset(stable_id="kill", update=update)
     hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
     return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+
+
+def _event_output_program():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "impact.output",
+                "particle.event.output",
+                properties={"route": "impact-route", "condition": True},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "event.stream",
+                "root.update",
+                "out",
+                "impact.output",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+    source = ParticleEmitterAsset(stable_id="source", update=update)
+    target = ParticleEmitterAsset(stable_id="target")
+    impact = ParticleEventType(
+        "impact",
+        "Impact",
+        64,
+        (
+            ParticleEventField(
+                "position",
+                "Position",
+                TypeRef(ValueType.VEC3, CoordinateSpace.WORLD),
+                [1.0, 2.0, 3.0],
+            ),
+            ParticleEventField(
+                "kind",
+                "Kind",
+                TypeRef(ValueType.U32),
+                7,
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            stable_id="event-output-graph",
+            emitters=(source, target),
+            event_types=(impact,),
+            event_routes=(
+                ParticleEventRoute(
+                    "impact-route",
+                    "impact",
+                    "source",
+                    "update",
+                    "target",
+                    2,
+                ),
+            ),
+        )
+    )
+    kernel = ParticleKernelLowerer().lower(hir)
+    return kernel, GpuParticleGlslLowerer().lower(kernel)
+
+
+def test_event_output_lowers_to_stage_end_gpu_append_with_typed_defaults():
+    kernel, gpu = _event_output_program()
+    instruction = next(
+        instruction
+        for instruction in kernel.emitters[0].update.instructions
+        if instruction.opcode == "event_append"
+    )
+    immediate = instruction.immediate_dict()
+    assert immediate["channel_index"] == 0
+    assert immediate["payload_words"] == [
+        struct.unpack("<I", struct.pack("<f", value))[0]
+        for value in (1.0, 2.0, 3.0)
+    ] + [7]
+
+    source = gpu.emitters[0]
+    assert source.event_output_stages == ("update",)
+    assert "layout(std430, set = 3, binding = 1)" in source.update
+    assert "atomicAdd(event_output_counters" in source.update
+    assert "state.spawn_generation" in source.update
+    assert "event_output_record_words" in source.update
+    assert "ParticleEventOutputChannels" not in source.init
+    compiled = compile_gpu_particle_spirv(gpu)
+    assert set(compiled["emitters"][0]["stages"]) == set(source.stages())
 
 
 def _noise_gpu_source():

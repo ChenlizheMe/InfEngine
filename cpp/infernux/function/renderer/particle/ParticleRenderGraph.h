@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleGpuBounds.h"
+#include "ParticleGpuEventDomain.h"
 #include "ParticleGpuMigrator.h"
 #include "ParticleGpuRibbonTopology.h"
 #include "ParticleGpuRuntime.h"
@@ -57,7 +58,8 @@ class ParticleRenderGraph
 
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
                               const std::string &namePrefix, ParticleGpuMigrator *migration = nullptr,
-                              ParticleGpuRibbonTopology *ribbonTopology = nullptr);
+                              ParticleGpuRibbonTopology *ribbonTopology = nullptr,
+                              ParticleGpuEventDomain *eventDomain = nullptr);
     [[nodiscard]] bool CanBeginFrame(const GpuParticleFrameRequest &request) const noexcept;
     [[nodiscard]] bool BeginFrame(const GpuParticleFrameRequest &request) noexcept;
     void Reset() noexcept;
@@ -89,6 +91,7 @@ class ParticleRenderGraph
     ParticleGpuBounds *m_bounds = nullptr;
     ParticleGpuMigrator *m_migrator = nullptr;
     ParticleGpuRibbonTopology *m_ribbonTopology = nullptr;
+    ParticleGpuEventDomain *m_eventDomain = nullptr;
     GpuParticleFrameRequest m_request{};
     GpuParticleGraphOutputs m_outputs{};
     bool m_bootstrapPending = true;

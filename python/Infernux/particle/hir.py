@@ -148,8 +148,8 @@ class ParticleGraphCompiler:
     """Lower strict ParticleGraph assets into backend-independent HIR."""
 
     def compile(self, asset: ParticleGraphAsset) -> ParticleProgramHIR:
-        emitters = tuple(self._compile_emitter(emitter) for emitter in asset.emitters)
         events = self._compile_events(asset)
+        emitters = tuple(self._compile_emitter(emitter, events) for emitter in asset.emitters)
         return ParticleProgramHIR(
             asset.stable_id,
             asset.name,
@@ -365,7 +365,11 @@ class ParticleGraphCompiler:
             tuple(routes),
         )
 
-    def _compile_emitter(self, emitter) -> ParticleEmitterHIR:
+    def _compile_emitter(
+        self,
+        emitter,
+        events: ParticleEventSchedule,
+    ) -> ParticleEmitterHIR:
         init = self._compile_stage(ParticleStage.INIT, emitter.init, emitter.settings)
         update = self._compile_stage(ParticleStage.UPDATE, emitter.update, emitter.settings)
         rendering = self._compile_stage(
@@ -373,6 +377,27 @@ class ParticleGraphCompiler:
             emitter.rendering,
             emitter.settings,
         )
+        routes_by_id = {route.stable_id: route for route in events.routes}
+        for stage in (init, update, rendering):
+            for operation in stage.operations:
+                if operation.opcode != "event.emit":
+                    continue
+                route_id = str(operation.parameter_dict()["route"])
+                route = routes_by_id.get(route_id)
+                if route is None:
+                    raise ParticleCompileError(
+                        f"Event Output {operation.source_node_uid!r} references unknown route {route_id!r}"
+                    )
+                if route.source_emitter_id != emitter.stable_id:
+                    raise ParticleCompileError(
+                        f"Event Output route {route_id!r} belongs to emitter "
+                        f"{route.source_emitter_id!r}, not {emitter.stable_id!r}"
+                    )
+                if route.source_stage is not stage.stage:
+                    raise ParticleCompileError(
+                        f"Event Output route {route_id!r} belongs to the "
+                        f"{route.source_stage.value} stage, not {stage.stage.value}"
+                    )
         outputs = tuple(
             self._compile_output(operation)
             for operation in rendering.operations
@@ -488,7 +513,7 @@ class ParticleGraphCompiler:
             if operation.opcode in collision_opcodes
         ]
         if collision_indices and any(
-            operation.opcode not in collision_opcodes
+            operation.opcode not in collision_opcodes | {"event.emit"}
             for operation in update.operations[collision_indices[0] :]
         ):
             raise ParticleCompileError(

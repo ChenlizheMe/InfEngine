@@ -6,11 +6,20 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import struct
 from typing import Any, Mapping
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 
-from .hir import ParticleEmitterHIR, ParticleProgramHIR, ParticleStage, ParticleStageHIR
+from .hir import (
+    ParticleEmitterHIR,
+    ParticleEventRouteHIR,
+    ParticleEventSchedule,
+    ParticleEventTypeHIR,
+    ParticleProgramHIR,
+    ParticleStage,
+    ParticleStageHIR,
+)
 from .data_interface import (
     ParticleDataInterface,
     PointCache,
@@ -478,7 +487,18 @@ class ParticleKernelLowerer:
     """Lower Particle Program HIR into backend-neutral executable kernels."""
 
     def lower(self, program: ParticleProgramHIR) -> ParticleKernelProgram:
-        emitters = tuple(self._lower_emitter(emitter) for emitter in program.emitters)
+        routes = {
+            route.stable_id: (index, route)
+            for index, route in enumerate(program.events.routes)
+        }
+        event_types = {
+            event_type.type_index: event_type
+            for event_type in program.events.event_types
+        }
+        emitters = tuple(
+            self._lower_emitter(emitter, routes, event_types)
+            for emitter in program.emitters
+        )
         contract = KernelRuntimeContract()
         return ParticleKernelProgram(
             program.behavior_hash,
@@ -487,7 +507,12 @@ class ParticleKernelLowerer:
             contract,
         )
 
-    def _lower_emitter(self, emitter: ParticleEmitterHIR) -> ParticleEmitterKernelIR:
+    def _lower_emitter(
+        self,
+        emitter: ParticleEmitterHIR,
+        routes: Mapping[str, tuple[int, ParticleEventRouteHIR]],
+        event_types: Mapping[int, ParticleEventTypeHIR],
+    ) -> ParticleEmitterKernelIR:
         schema = tuple(
             (attribute.stable_id, attribute.value_type, attribute.default)
             for attribute in emitter.attributes
@@ -498,13 +523,20 @@ class ParticleKernelLowerer:
             emitter.stable_id,
             emitter.settings.seed,
             schema,
-            self._lower_init(emitter, types, defaults),
-            self._lower_update(emitter, types),
-            self._lower_rendering(emitter, types),
+            self._lower_init(emitter, types, defaults, routes, event_types),
+            self._lower_update(emitter, types, routes, event_types),
+            self._lower_rendering(emitter, types, routes, event_types),
             emitter.data_interfaces,
         )
 
-    def _lower_init(self, emitter, attribute_types, defaults) -> ParticleKernelFunction:
+    def _lower_init(
+        self,
+        emitter,
+        attribute_types,
+        defaults,
+        routes,
+        event_types,
+    ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.INIT, attribute_types)
         for stable_id in sorted(defaults):
             if stable_id == "builtin.id":
@@ -654,11 +686,26 @@ class ParticleKernelLowerer:
                         source,
                     )
                 builder.store(stable_id, value, source)
+            elif operation.opcode == "event.emit":
+                self._lower_event_output(
+                    builder,
+                    operation,
+                    expression_values,
+                    routes,
+                    event_types,
+                    source,
+                )
             else:
                 raise KernelCompileError(f"unsupported Init operation {operation.opcode!r}")
         return builder.finish()
 
-    def _lower_update(self, emitter, attribute_types) -> ParticleKernelFunction:
+    def _lower_update(
+        self,
+        emitter,
+        attribute_types,
+        routes,
+        event_types,
+    ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.UPDATE, attribute_types)
         delta_time = builder.emit(
             "load_uniform",
@@ -822,6 +869,15 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.emit_void("kill_if", (condition,), {}, source)
+            elif operation.opcode == "event.emit":
+                self._lower_event_output(
+                    builder,
+                    operation,
+                    expression_values,
+                    routes,
+                    event_types,
+                    source,
+                )
             elif operation.opcode in {"collision.plane", "collision.sphere"}:
                 # Collisions are lowered after the implicit position integration below.
                 continue
@@ -953,9 +1009,29 @@ class ParticleKernelLowerer:
         )
         return builder.finish()
 
-    def _lower_rendering(self, emitter, attribute_types) -> ParticleKernelFunction:
+    def _lower_rendering(
+        self,
+        emitter,
+        attribute_types,
+        routes,
+        event_types,
+    ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.RENDERING, attribute_types)
-        builder.lower_expressions(emitter.rendering)
+        expression_values = builder.lower_expressions(emitter.rendering)
+        for operation in emitter.rendering.operations:
+            if operation.opcode != "event.emit":
+                continue
+            self._lower_event_output(
+                builder,
+                operation,
+                expression_values,
+                routes,
+                event_types,
+                KernelSourceRef(
+                    operation.source_node_uid,
+                    operation=f"rendering.{operation.opcode}",
+                ),
+            )
         for stable_id in (
             "builtin.position",
             "builtin.size",
@@ -980,6 +1056,43 @@ class ParticleKernelLowerer:
                 KernelSourceRef(operation="render.export"),
             )
         return builder.finish()
+
+    @staticmethod
+    def _lower_event_output(
+        builder,
+        operation,
+        expression_values,
+        routes,
+        event_types,
+        source,
+    ) -> None:
+        parameters = operation.parameter_dict()
+        bindings = dict(operation.value_bindings)
+        route_id = str(parameters["route"])
+        try:
+            channel_index, route = routes[route_id]
+            event_type = event_types[route.event_type_index]
+        except KeyError as exc:
+            raise KernelCompileError(
+                f"Event Output references unavailable route {route_id!r}"
+            ) from exc
+        condition = builder.operation_value(
+            "condition",
+            bindings,
+            expression_values,
+            parameters,
+            TypeRef(ValueType.BOOL),
+            source,
+        )
+        builder.emit_void(
+            "event_append",
+            (condition,),
+            {
+                "channel_index": channel_index,
+                "payload_words": _event_default_words(event_type),
+            },
+            source,
+        )
 
 
 class _KernelBuilder:
@@ -1189,6 +1302,60 @@ def _kernel_semantic_hash(
     }
     encoded = json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _event_default_words(event_type: ParticleEventTypeHIR) -> list[int]:
+    words: list[int] = []
+
+    def flatten(value):
+        if isinstance(value, (list, tuple)):
+            result = []
+            for item in value:
+                result.extend(flatten(item))
+            return result
+        return [value]
+
+    def float_word(value) -> int:
+        return struct.unpack("<I", struct.pack("<f", float(value)))[0]
+
+    for field in event_type.fields:
+        kind = field.value_type.value_type
+        values = flatten(field.default)
+        if kind is ValueType.BOOL:
+            encoded = [1 if bool(values[0]) else 0]
+        elif kind is ValueType.I32:
+            encoded = [int(values[0]) & 0xFFFFFFFF]
+        elif kind is ValueType.U32:
+            encoded = [int(values[0])]
+        elif kind is ValueType.F32:
+            encoded = [float_word(values[0])]
+        elif kind in {
+            ValueType.VEC2,
+            ValueType.VEC3,
+            ValueType.VEC4,
+            ValueType.COLOR,
+            ValueType.MAT4,
+        }:
+            encoded = [float_word(value) for value in values]
+        elif kind is ValueType.MAT3:
+            if len(values) != 9:
+                raise KernelCompileError("mat3 event defaults require nine scalar values")
+            encoded = []
+            for column in range(3):
+                encoded.extend(float_word(value) for value in values[column * 3 : column * 3 + 3])
+                encoded.append(0)
+        else:
+            raise KernelCompileError(
+                f"event payload type {kind.value!r} is not portable"
+            )
+        if len(encoded) != field.word_count:
+            raise KernelCompileError(
+                f"event field {field.stable_id!r} default does not match its word layout"
+            )
+        words.extend(encoded)
+    if len(words) != event_type.payload_stride_words:
+        raise KernelCompileError("event payload defaults do not match the event ABI")
+    return words
 
 
 __all__ = [

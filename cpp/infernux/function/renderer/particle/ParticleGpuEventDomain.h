@@ -192,6 +192,7 @@ class ParticleGpuEventDomain
         return m_hasInputForCurrentStep;
     }
     [[nodiscard]] rhi::BindGroupHandle CurrentEventInputGroup(uint32_t channelIndex) const noexcept;
+    [[nodiscard]] rhi::BindGroupHandle CurrentEventOutputGroup() const noexcept;
     [[nodiscard]] rhi::BufferHandle CurrentIndirectArguments() const noexcept;
     [[nodiscard]] bool MatchesTargets(const std::vector<GpuParticleEventTargetDesc> &targets) const noexcept;
     [[nodiscard]] uint32_t ChannelTargetEmitterIndex(uint32_t channelIndex) const noexcept;
@@ -214,9 +215,12 @@ class ParticleGpuEventDomain
     std::vector<rhi::BindGroupHandle> m_allocateGroups;
     std::vector<rhi::BindGroupHandle> m_eventInputGroups;
     rhi::ComputePipelineHandle m_allocatePipeline;
+    rhi::BindingLayoutHandle m_outputLayout;
+    std::vector<rhi::BindGroupHandle> m_outputGroups;
     bool m_hasPreparedPage = false;
     bool m_hasInputForCurrentStep = false;
     uint32_t m_currentReadPageIndex = 0;
+    uint32_t m_currentWritePageIndex = 0;
     uint64_t m_nextPrepareEpoch = 0;
 };
 

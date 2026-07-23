@@ -283,6 +283,34 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
         }
     }
 
+    rhi::BindingLayoutDesc outputLayoutDesc;
+    for (uint32_t binding = 0; binding < 3; ++binding)
+        outputLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    outputLayoutDesc.entryCount = 3;
+    m_outputLayout = device.CreateBindingLayout(outputLayoutDesc);
+    if (!m_outputLayout.IsValid()) {
+        Destroy();
+        return false;
+    }
+    m_outputGroups.resize(pageCount);
+    for (uint32_t pageIndex = 0; pageIndex < pageCount; ++pageIndex) {
+        rhi::BindGroupDesc groupDesc;
+        groupDesc.layout = m_outputLayout;
+        const std::array<rhi::BufferHandle, 3> buffers = {
+            m_channelTable,
+            m_pages[pageIndex].records,
+            m_pages[pageIndex].counters,
+        };
+        for (uint32_t binding = 0; binding < buffers.size(); ++binding)
+            groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
+        groupDesc.bufferCount = static_cast<uint32_t>(buffers.size());
+        m_outputGroups[pageIndex] = device.CreateBindGroup(groupDesc);
+        if (!m_outputGroups[pageIndex].IsValid()) {
+            Destroy();
+            return false;
+        }
+    }
+
     rhi::BindingLayoutDesc layoutDesc;
     for (uint32_t binding = 0; binding < 5; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
@@ -403,6 +431,9 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
 void ParticleGpuEventDomain::Destroy() noexcept
 {
     if (m_device) {
+        for (auto &group : m_outputGroups)
+            m_device->Release(group);
+        m_device->Release(m_outputLayout);
         m_device->Release(m_allocatePipeline);
         for (auto &group : m_eventInputGroups)
             m_device->Release(group);
@@ -422,16 +453,19 @@ void ParticleGpuEventDomain::Destroy() noexcept
         m_device->Release(m_channelTable);
     }
     m_pages.clear();
+    m_outputGroups.clear();
     m_prepareGroups.clear();
     m_allocateGroups.clear();
     m_eventInputGroups.clear();
     m_allocatePipeline = {};
+    m_outputLayout = {};
     m_allocateLayout = {};
     m_preparePipeline = {};
     m_prepareLayout = {};
     m_hasPreparedPage = false;
     m_hasInputForCurrentStep = false;
     m_currentReadPageIndex = 0;
+    m_currentWritePageIndex = 0;
     m_nextPrepareEpoch = 0;
     m_channelTable = {};
     m_targets.clear();
@@ -450,13 +484,16 @@ bool ParticleGpuEventDomain::IsValid() const noexcept
     return m_device && m_graphInstanceId != 0 && m_eventAbiHash != 0 && m_channelCount > 0 && m_recordBufferBytes > 0 &&
            m_spawnIndexBufferBytes > 0 && m_channelTable.IsValid() && m_pages.size() >= MinimumPageCount &&
            m_prepareLayout.IsValid() && m_preparePipeline.IsValid() && m_allocateLayout.IsValid() &&
-           m_allocatePipeline.IsValid() && m_prepareGroups.size() == m_pages.size() &&
-           m_allocateGroups.size() == routePageCount && m_eventInputGroups.size() == routePageCount &&
+           m_allocatePipeline.IsValid() && m_outputLayout.IsValid() && m_outputGroups.size() == m_pages.size() &&
+           m_prepareGroups.size() == m_pages.size() && m_allocateGroups.size() == routePageCount &&
+           m_eventInputGroups.size() == routePageCount &&
            std::all_of(m_prepareGroups.begin(), m_prepareGroups.end(),
                        [](const auto &group) { return group.IsValid(); }) &&
            std::all_of(m_allocateGroups.begin(), m_allocateGroups.end(),
                        [](const auto &group) { return group.IsValid(); }) &&
            std::all_of(m_eventInputGroups.begin(), m_eventInputGroups.end(),
+                       [](const auto &group) { return group.IsValid(); }) &&
+           std::all_of(m_outputGroups.begin(), m_outputGroups.end(),
                        [](const auto &group) { return group.IsValid(); }) &&
            std::all_of(m_pages.begin(), m_pages.end(), [](const auto &page) { return page.IsValid(); });
 }
@@ -473,6 +510,7 @@ void ParticleGpuEventDomain::RecordPrepare(const rhi::ComputeCommandEncoder &enc
     if (!IsValid() || !encoder.IsValid())
         return;
     const uint32_t pageIndex = static_cast<uint32_t>(m_nextPrepareEpoch % m_pages.size());
+    m_currentWritePageIndex = pageIndex;
     m_currentReadPageIndex = (pageIndex + static_cast<uint32_t>(m_pages.size()) - 1u) % m_pages.size();
     m_hasInputForCurrentStep = m_hasPreparedPage;
     GpuParticleEventPrepareConstants constants;
@@ -505,6 +543,14 @@ rhi::BindGroupHandle ParticleGpuEventDomain::CurrentEventInputGroup(uint32_t cha
     if (!IsValid() || !m_hasInputForCurrentStep || channelIndex >= m_channelCount)
         return {};
     return m_eventInputGroups[static_cast<size_t>(m_currentReadPageIndex) * m_channelCount + channelIndex];
+}
+
+rhi::BindGroupHandle ParticleGpuEventDomain::CurrentEventOutputGroup() const noexcept
+{
+    if (!IsValid() || m_outputGroups.empty())
+        return {};
+    const uint32_t pageIndex = m_hasPreparedPage ? m_currentWritePageIndex : 0u;
+    return pageIndex < m_outputGroups.size() ? m_outputGroups[pageIndex] : rhi::BindGroupHandle{};
 }
 
 rhi::BufferHandle ParticleGpuEventDomain::CurrentIndirectArguments() const noexcept

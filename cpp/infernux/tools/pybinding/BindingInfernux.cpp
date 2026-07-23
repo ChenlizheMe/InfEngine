@@ -89,9 +89,9 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
-    for (const char *field :
-         {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask", "artifact_revision",
-          "stable_id", "capacity", "state_stride", "stages", "billboard", "mesh_shaders", "outputs"}) {
+    for (const char *field : {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask",
+                              "artifact_revision", "stable_id", "capacity", "state_stride", "event_output_stages",
+                              "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -106,6 +106,23 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     program.stableId = py::cast<std::string>(value["stable_id"]);
     program.capacity = py::cast<uint32_t>(value["capacity"]);
     program.stateStride = py::cast<uint32_t>(value["state_stride"]);
+    const py::sequence eventOutputStages = py::cast<py::sequence>(value["event_output_stages"]);
+    for (const py::handle item : eventOutputStages) {
+        const std::string stage = py::cast<std::string>(item);
+        particle::GpuKernelStage decoded;
+        if (stage == "init")
+            decoded = particle::GpuKernelStage::Init;
+        else if (stage == "update")
+            decoded = particle::GpuKernelStage::Update;
+        else if (stage == "rendering")
+            decoded = particle::GpuKernelStage::Rendering;
+        else
+            throw std::invalid_argument("GPU particle event output stage is invalid");
+        const uint32_t bit = 1u << static_cast<uint32_t>(decoded);
+        if ((program.eventOutputStageMask & bit) != 0u)
+            throw std::invalid_argument("GPU particle event output stages must be unique");
+        program.eventOutputStageMask |= bit;
+    }
     if (value.contains("preserve_state"))
         program.preserveState = py::cast<bool>(value["preserve_state"]);
     if (value.contains("migration") && !value["migration"].is_none()) {

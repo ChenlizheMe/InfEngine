@@ -537,9 +537,10 @@ int main()
             assert(eventDevice.buffers[base + 3].byteSize == events.SpawnIndexBufferBytes());
         }
         assert(events.Page(0) != nullptr && events.Page(2) != nullptr && events.Page(3) == nullptr);
-        assert(eventDevice.layouts.size() == 3 && eventDevice.layouts[1].entryCount == 5 &&
-               eventDevice.layouts[2].entryCount == 5);
-        assert(eventDevice.bindGroups.size() == 15 && eventDevice.bindGroups[0].bufferCount == 5);
+        assert(eventDevice.layouts.size() == 4 && eventDevice.layouts[1].entryCount == 3 &&
+               eventDevice.layouts[2].entryCount == 5 && eventDevice.layouts[3].entryCount == 5);
+        assert(eventDevice.bindGroups.size() == 18 && eventDevice.bindGroups[0].bufferCount == 3 &&
+               eventDevice.bindGroups[3].bufferCount == 5);
         assert(eventDevice.computePipelineDescs.size() == 2 && eventDevice.computePipelineDescs[0].pushConstantBytes ==
                                                                    sizeof(particle::GpuParticleEventPrepareConstants));
         EventTrace eventTrace;
@@ -547,17 +548,21 @@ int main()
             &EventTrace::BindPipeline, &EventTrace::BindGroup, &EventTrace::PushConstants, &EventTrace::Dispatch,
             &EventTrace::DispatchIndirect};
         const rhi::ComputeCommandEncoder eventEncoder(&eventTrace, &eventDispatch);
+        const auto initialOutputGroup = events.CurrentEventOutputGroup();
+        assert(initialOutputGroup.IsValid());
         events.RecordPrepare(eventEncoder);
         const std::array<uint32_t, 3> expectedEventDispatch = {1, 1, 1};
         assert(eventTrace.pipeline.IsValid() && eventTrace.group.IsValid() && eventTrace.constants.channelCount == 2 &&
                eventTrace.constants.hasInput == 0 && eventTrace.dispatch == expectedEventDispatch);
         const auto firstEventGroup = eventTrace.group;
+        assert(events.CurrentEventOutputGroup() == initialOutputGroup);
         events.RecordPrepare(eventEncoder);
-        assert(eventTrace.constants.hasInput == 1 && eventTrace.group != firstEventGroup);
+        assert(eventTrace.constants.hasInput == 1 && eventTrace.group != firstEventGroup &&
+               events.CurrentEventOutputGroup() != initialOutputGroup);
         events.RecordAllocate(eventEncoder, 0);
         events.Destroy();
-        assert(!events.IsValid() && eventDevice.bufferReleases == 13 && eventDevice.groupReleases == 15 &&
-               eventDevice.layoutReleases == 2 && eventDevice.pipelineReleases == 2);
+        assert(!events.IsValid() && eventDevice.bufferReleases == 13 && eventDevice.groupReleases == 18 &&
+               eventDevice.layoutReleases == 3 && eventDevice.pipelineReleases == 2);
 
         eventDesc.framesInFlight = 1;
         eventDesc.channels[1].eventTypeIndex = eventDesc.channels[0].eventTypeIndex;
@@ -703,7 +708,7 @@ int main()
         assert(compatible.IsValid() && sharingDevice.bufferReleases == 0);
         compatible.Destroy();
         assert(sharingDevice.bufferReleases == 7 && sharingDevice.pipelineReleases == 12 &&
-               sharingDevice.groupReleases == 4 && sharingDevice.layoutReleases == 5);
+               sharingDevice.groupReleases == 4 && sharingDevice.layoutReleases == 6);
     }
 
     {
@@ -768,8 +773,8 @@ int main()
         assert(pointCacheRuntime.Create(pointCacheDevice, pointCacheDesc));
         assert(pointCacheRuntime.IsValid());
         assert(pointCacheDevice.buffers.size() == 10);
-        assert(pointCacheDevice.layouts.size() == 4 && pointCacheDevice.layouts[0].entryCount == 4 &&
-               pointCacheDevice.layouts[3].entryCount == 3);
+        assert(pointCacheDevice.layouts.size() == 5 && pointCacheDevice.layouts[0].entryCount == 4 &&
+               pointCacheDevice.layouts[4].entryCount == 3);
         assert(pointCacheDevice.bindGroups.size() == 3 && pointCacheDevice.bindGroups[2].bufferCount == 3);
         assert(pointCacheDevice.computePipelineDescs.size() == 6 &&
                pointCacheDevice.computePipelineDescs[0].bindingLayoutCount == 2 &&
@@ -810,7 +815,7 @@ int main()
         pointCacheRuntime.RecordUpdate(pointCacheEncoder, 11, 3, 1.0f / 60.0f);
         assert(pointCacheTrace.groups.size() == 2 && pointCacheTrace.groupSets == std::vector<uint32_t>({0, 1}));
         pointCacheRuntime.Destroy();
-        assert(pointCacheDevice.bufferReleases == 8 && pointCacheDevice.layoutReleases == 4 &&
+        assert(pointCacheDevice.bufferReleases == 8 && pointCacheDevice.layoutReleases == 5 &&
                pointCacheDevice.groupReleases == 3 && pointCacheDevice.pipelineReleases == 6);
     }
 
@@ -839,7 +844,7 @@ int main()
     assert(device.buffers[6].byteSize == sizeof(particle::GpuParticleTransforms) &&
            device.buffers[6].memory == rhi::BufferMemory::Upload);
     assert(device.shaderCreates == 6 && device.shaderReleases == 6);
-    assert(device.layoutCreates == 3 && device.groupCreates == 2 && device.pipelineCreates == 6);
+    assert(device.layoutCreates == 4 && device.groupCreates == 2 && device.pipelineCreates == 6);
 
     particle::GpuParticleTransforms transforms;
     assert(runtime.UpdateTransforms(transforms));
@@ -1196,7 +1201,7 @@ int main()
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({4, 7, 0, 4}));
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({4, 3, 7, 0, 4}));
     assert(device.groupBufferCounts == std::vector<uint32_t>({7, 0, 2}));
     assert(device.groupTextureCounts == std::vector<uint32_t>({0, 0, 2}));
     assert(device.bindGroups.back().textures[0].binding == 2 && device.bindGroups.back().textures[1].binding == 15 &&
@@ -1620,11 +1625,11 @@ int main()
 
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
-    if (device.pipelineReleases != 6 || device.groupReleases != 6 || device.layoutReleases != 5) {
+    if (device.pipelineReleases != 6 || device.groupReleases != 6 || device.layoutReleases != 6) {
         std::cerr << "release counts: pipelines=" << device.pipelineReleases << " groups=" << device.groupReleases
                   << " layouts=" << device.layoutReleases << '\n';
     }
-    assert(device.pipelineReleases == 6 && device.groupReleases == 6 && device.layoutReleases == 5);
+    assert(device.pipelineReleases == 6 && device.groupReleases == 6 && device.layoutReleases == 6);
     assert(device.textureReleases == 4 && device.samplerReleases == 4);
     assert(device.shaderReleases == 10);
     assert(device.bufferReleases == 7);

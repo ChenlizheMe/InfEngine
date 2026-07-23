@@ -21,7 +21,7 @@ std::string StageName(const std::string &prefix, const char *stage)
 
 bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &runtime, ParticleGpuBounds &bounds,
                                  const std::string &namePrefix, ParticleGpuMigrator *migration,
-                                 ParticleGpuRibbonTopology *ribbonTopology)
+                                 ParticleGpuRibbonTopology *ribbonTopology, ParticleGpuEventDomain *eventDomain)
 {
     if (IsAttached() || !runtime.IsValid() || !bounds.IsValid() ||
         bounds.InstanceBuffer() != runtime.InstanceBuffer() ||
@@ -32,13 +32,17 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         (ribbonTopology &&
          (!ribbonTopology->IsValid() || ribbonTopology->InstanceBuffer() != runtime.InstanceBuffer() ||
           ribbonTopology->SourceIndexBuffer() != runtime.RenderIndexBuffer() ||
-          ribbonTopology->SourceIndirectBuffer() != runtime.IndirectBuffer())))
+          ribbonTopology->SourceIndirectBuffer() != runtime.IndirectBuffer())) ||
+        ((runtime.HasEventOutput(GpuKernelStage::Init) || runtime.HasEventOutput(GpuKernelStage::Update) ||
+          runtime.HasEventOutput(GpuKernelStage::Rendering)) &&
+         (!eventDomain || !eventDomain->IsValid())))
         return false;
 
     m_runtime = &runtime;
     m_bounds = &bounds;
     m_migrator = migration;
     m_ribbonTopology = ribbonTopology;
+    m_eventDomain = eventDomain;
     m_migrationPending = migration != nullptr;
     m_migrationCompleted = false;
     m_bootstrapPending = !migration && runtime.NeedsBootstrap();
@@ -61,6 +65,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle ribbonHistograms;
     vk::ResourceHandle ribbonBlockOffsets;
     vk::ResourceHandle ribbonGlobalOffsets;
+    std::vector<vk::ResourceHandle> eventRecords;
+    std::vector<vk::ResourceHandle> eventCounters;
 
     graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
         const uint64_t capacity = runtime.Capacity();
@@ -81,6 +87,21 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                                             ParticleGpuBounds::BoundsBufferBytes);
         boundsDispatch = builder.ImportBuffer(StageName(namePrefix, "BoundsDispatch"), bounds.DispatchBuffer(),
                                               ParticleGpuBounds::DispatchBufferBytes);
+        if (eventDomain) {
+            eventRecords.reserve(eventDomain->PageCount());
+            eventCounters.reserve(eventDomain->PageCount());
+            for (uint32_t pageIndex = 0; pageIndex < eventDomain->PageCount(); ++pageIndex) {
+                const auto *page = eventDomain->Page(pageIndex);
+                if (!page)
+                    return vk::PassExecuteCallback{};
+                eventRecords.push_back(
+                    builder.ImportBuffer(StageName(namePrefix, "EventRecords") + std::to_string(pageIndex),
+                                         page->records, eventDomain->RecordBufferBytes()));
+                eventCounters.push_back(builder.ImportBuffer(
+                    StageName(namePrefix, "EventCounters") + std::to_string(pageIndex), page->counters,
+                    uint64_t(eventDomain->ChannelCount()) * sizeof(GpuParticleEventCounter)));
+            }
+        }
         if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
             !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !boundsBuffer.IsValid() ||
             !boundsDispatch.IsValid())
@@ -100,7 +121,9 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
         !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !boundsBuffer.IsValid() ||
-        !boundsDispatch.IsValid()) {
+        !boundsDispatch.IsValid() ||
+        std::any_of(eventRecords.begin(), eventRecords.end(), [](const auto &handle) { return !handle.IsValid(); }) ||
+        std::any_of(eventCounters.begin(), eventCounters.end(), [](const auto &handle) { return !handle.IsValid(); })) {
         m_runtime = nullptr;
         m_bounds = nullptr;
         return false;
@@ -165,12 +188,19 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
         counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
+        if (runtime.HasEventOutput(GpuKernelStage::Init)) {
+            for (auto &handle : eventRecords)
+                handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
+            for (auto &handle : eventCounters)
+                handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
+        }
         return [this](vk::RenderContext &context) {
             if (!m_framePending || !m_request.simulate || m_request.spawnCount == 0 || !m_runtime)
                 return;
             m_runtime->RecordInit(context.GetComputeCommandEncoder(), m_request.spawnCount, m_request.spawnBaseId,
                                   m_request.spawnGeneration, m_request.systemSeed, m_request.simulationStep,
-                                  m_request.deltaTime);
+                                  m_request.deltaTime,
+                                  m_eventDomain ? m_eventDomain->CurrentEventOutputGroup() : rhi::BindGroupHandle{});
         };
     });
 
@@ -179,11 +209,18 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
         counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
+        if (runtime.HasEventOutput(GpuKernelStage::Update)) {
+            for (auto &handle : eventRecords)
+                handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
+            for (auto &handle : eventCounters)
+                handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
+        }
         return [this](vk::RenderContext &context) {
             if (!m_framePending || !m_request.simulate || !m_runtime)
                 return;
             m_runtime->RecordUpdate(context.GetComputeCommandEncoder(), m_request.systemSeed, m_request.simulationStep,
-                                    m_request.deltaTime);
+                                    m_request.deltaTime,
+                                    m_eventDomain ? m_eventDomain->CurrentEventOutputGroup() : rhi::BindGroupHandle{});
         };
     });
 
@@ -205,12 +242,20 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         renderIndices = builder.ReadWrite(renderIndices, rhi::PipelineStage::ComputeShader);
         indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
+        if (runtime.HasEventOutput(GpuKernelStage::Rendering)) {
+            for (auto &handle : eventRecords)
+                handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
+            for (auto &handle : eventCounters)
+                handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
+        }
         return [this](vk::RenderContext &context) {
             if (!m_framePending)
                 return;
             if (m_request.render && m_runtime) {
-                m_runtime->RecordRendering(context.GetComputeCommandEncoder(), m_request.systemSeed,
-                                           m_request.simulationStep);
+                m_runtime->RecordRendering(
+                    context.GetComputeCommandEncoder(), m_request.systemSeed, m_request.simulationStep,
+                    m_eventDomain ? m_eventDomain->CurrentEventOutputGroup() : rhi::BindGroupHandle{},
+                    m_request.simulate);
             }
         };
     });

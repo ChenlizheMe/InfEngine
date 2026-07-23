@@ -362,6 +362,7 @@ struct ParticleGpuSystemManager::Impl
     {
         runtimeDesc.capacity = program.capacity;
         runtimeDesc.stateStride = program.stateStride;
+        runtimeDesc.eventOutputStageMask = program.eventOutputStageMask;
         for (size_t index = 0; index < program.kernels.size(); ++index)
             runtimeDesc.kernels[index] = {program.kernels[index].data(), program.kernels[index].size()};
         runtimeDesc.eventInitKernel = {program.eventInitKernel.data(), program.eventInitKernel.size()};
@@ -932,8 +933,8 @@ struct ParticleGpuSystemManager::Impl
                         auto spawnIndices =
                             builder.ImportBuffer(routePrefix + "/InitSpawnIndices" + std::to_string(pageIndex),
                                                  page->spawnIndices, domain->SpawnIndexBufferBytes());
-                        builder.ReadStorageBuffer(records);
-                        builder.ReadStorageBuffer(counters);
+                        builder.ReadWrite(records, rhi::PipelineStage::ComputeShader);
+                        builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
                         builder.ReadStorageBuffer(spawnIndices);
                         builder.ReadIndirectBuffer(indirect);
                         graph->SetResourceInitialState(records, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
@@ -978,7 +979,8 @@ struct ParticleGpuSystemManager::Impl
                                 context.GetComputeCommandEncoder(), domain->CurrentEventInputGroup(channelIndex),
                                 domain->CurrentIndirectArguments(),
                                 static_cast<uint64_t>(channelIndex) * sizeof(GpuParticleEventDispatchArguments),
-                                channelIndex, request.systemSeed, request.simulationStep, request.deltaTime);
+                                channelIndex, request.systemSeed, request.simulationStep, request.deltaTime,
+                                domain->CurrentEventOutputGroup());
                         }
                         if (isLastChannel)
                             frame->active = false;
@@ -991,8 +993,11 @@ struct ParticleGpuSystemManager::Impl
         for (const auto &[id, emitter] : candidateEmitters) {
             auto scheduler = std::make_unique<ParticleRenderGraph>();
             const std::string prefix = "GpuParticle/" + std::to_string(id);
+            const auto eventDomain = candidateEventDomains.find(emitter->graphInstanceId);
+            ParticleGpuEventDomain *eventDomainPointer =
+                eventDomain != candidateEventDomains.end() ? eventDomain->second.get() : nullptr;
             if (!scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, prefix, emitter->migration.get(),
-                                   emitter->ribbonTopology.get())) {
+                                   emitter->ribbonTopology.get(), eventDomainPointer)) {
                 SetError(error, "failed to attach GPU particle emitter to the simulation graph");
                 return {};
             }

@@ -249,6 +249,15 @@ PARTICLE_NODE_DEFINITIONS = (
         "lifecycle.kill_if",
         (PropertyDef("condition", TypeRef(ValueType.BOOL), False),),
     ),
+    _operation(
+        "particle.event.output",
+        "Event Output",
+        "event.emit",
+        (
+            PropertyDef("route", TypeRef(ValueType.STRING), ""),
+            PropertyDef("condition", TypeRef(ValueType.BOOL), True),
+        ),
+    ),
     NodeDef(
         "particle.output.sprite",
         "Sprite Output",

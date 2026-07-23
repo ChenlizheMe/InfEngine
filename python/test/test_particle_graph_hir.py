@@ -138,6 +138,61 @@ def test_particle_event_routes_reject_implicit_feedback_cycles():
         )
 
 
+def _event_output_stage(route_id: str) -> GraphDocument:
+    return GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "event.output",
+                "particle.event.output",
+                properties={"route": route_id, "condition": True},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "event.stream",
+                "root.update",
+                "out",
+                "event.output",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("route", "match"),
+    (
+        (None, "unknown route"),
+        (
+            ParticleEventRoute("route", "event", "other", "update", "source"),
+            "belongs to emitter",
+        ),
+        (
+            ParticleEventRoute("route", "event", "source", "init", "other"),
+            "belongs to the init stage",
+        ),
+    ),
+)
+def test_particle_event_output_requires_a_matching_source_route(route, match):
+    route_id = "missing" if route is None else route.stable_id
+    source = ParticleEmitterAsset(
+        stable_id="source",
+        update=_event_output_stage(route_id),
+    )
+    other = ParticleEmitterAsset(stable_id="other")
+    asset = ParticleGraphAsset(
+        emitters=(source, other),
+        event_types=(ParticleEventType("event", "Event", 16),),
+        event_routes=() if route is None else (route,),
+    )
+
+    with pytest.raises(ParticleCompileError, match=match):
+        ParticleGraphCompiler().compile(asset)
+
+
 def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attributes():
     attributes = list(ParticleEmitterAsset().attributes)
     color_index = next(

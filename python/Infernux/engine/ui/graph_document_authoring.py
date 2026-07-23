@@ -547,6 +547,8 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
         type_id = definition.type_id
         if type_id.startswith("common."):
             return True
+        if type_id == "particle.event.output":
+            return stage in {"init", "update", "rendering"}
         if stage in {"init", "update"} and type_id.startswith(
             ("particle.attribute.", "particle.point_cache.", "particle.vector_field.")
         ):
