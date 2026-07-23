@@ -443,10 +443,7 @@ struct ParticleGpuSystemManager::Impl
                                                   emitter.billboardForwardPlusFragmentShader.size()};
         rendererDesc.pickingFragmentShader = {emitter.billboardPickingFragmentShader.data(),
                                               emitter.billboardPickingFragmentShader.size()};
-        // The shared lit particle ABI owns lighting, depth fading, and sorted
-        // instance addressing. ParticleSprite linked programs remain the
-        // unlit customization path until they publish a Forward+ contract.
-        rendererDesc.shaderProgram = output.semantics.receiveSceneLighting ? nullptr : output.shaderProgram;
+        rendererDesc.shaderProgram = output.shaderProgram;
         rendererDesc.instances = emitter.runtime->InstanceBuffer();
         rendererDesc.renderIndices = emitter.runtime->RenderIndexBuffer();
         rendererDesc.material = output.material;
@@ -601,6 +598,13 @@ struct ParticleGpuSystemManager::Impl
             }
             if (!output.semantics.IsValid()) {
                 SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
+                return {};
+            }
+            if (output.type == GpuParticleOutputType::Sprite && output.shaderProgram &&
+                output.semantics.receiveSceneLighting) {
+                SetError(error, "GPU particle output '" + output.stableId +
+                                    "' cannot combine a custom ParticleSprite program with Receive Scene Lighting "
+                                    "until the linked Particle Forward+ contract is available");
                 return {};
             }
             if (output.type == GpuParticleOutputType::Mesh &&
@@ -1009,6 +1013,12 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
                 (output.shaderProgram && shaderProgram && output.shaderProgram->key == shaderProgram->key);
             if (sameProgram)
                 continue;
+            if (shaderProgram && output.semantics.receiveSceneLighting) {
+                SetError(error, "GPU particle output '" + output.stableId +
+                                    "' cannot combine a custom ParticleSprite program with Receive Scene Lighting "
+                                    "until the linked Particle Forward+ contract is available");
+                return false;
+            }
             if (output.semantics.sortMode != ParticleSortMode::None && !shaderProgram) {
                 SetError(error,
                          "GPU particle sorted output '" + output.stableId + "' cannot use a legacy billboard material");

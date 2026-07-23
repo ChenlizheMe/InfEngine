@@ -1110,6 +1110,11 @@ int main()
     };
     linkedDesc.deletionQueue = &linkedDeletionQueue;
 
+    auto linkedLitDesc = linkedDesc;
+    linkedLitDesc.semantics.receiveSceneLighting = true;
+    particle::ParticleGpuBillboardRenderer linkedLitBillboard;
+    assert(!linkedLitBillboard.Create(linkedDevice, linkedLitDesc));
+
     particle::ParticleGpuBillboardRenderer linkedBillboard;
     assert(linkedBillboard.Create(linkedDevice, linkedDesc));
     assert(linkedDevice.shaderCreates == 2 && linkedDevice.buffers.size() == 1);

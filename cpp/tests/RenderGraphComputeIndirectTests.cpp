@@ -917,6 +917,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Invalid GPU particle output semantics disturbed the active revision"))
         return false;
 
+    auto unsupportedLinkedLightingProgram = managedProgram;
+    unsupportedLinkedLightingProgram.artifactRevision = 2;
+    unsupportedLinkedLightingProgram.billboardForwardPlusFragmentShader = particleFragmentCode;
+    unsupportedLinkedLightingProgram.outputs[0].semantics.receiveSceneLighting = true;
+    if (!Require(!particleSystems.CreateOrReplace(unsupportedLinkedLightingProgram, &managedError) &&
+                     managedError.find("cannot combine a custom ParticleSprite program with Receive Scene Lighting") !=
+                         std::string::npos &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1,
+                 "Custom lit ParticleSprite publication silently replaced the linked program"))
+        return false;
+
     auto linkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
     linkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 11};
     linkedParticleProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
