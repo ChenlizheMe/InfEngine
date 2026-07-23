@@ -822,6 +822,9 @@ class ParticleKernelLowerer:
                     source,
                 )
                 builder.emit_void("kill_if", (condition,), {}, source)
+            elif operation.opcode == "collision.plane":
+                # Plane collision is lowered after the implicit position integration below.
+                continue
             else:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
 
@@ -842,6 +845,82 @@ class ParticleKernelLowerer:
             KernelSourceRef(operation="update.integrate_position"),
         )
         builder.store("builtin.position", position, KernelSourceRef(operation="update.integrate_position"))
+        for operation in emitter.update.operations:
+            if operation.opcode != "collision.plane":
+                continue
+            source = KernelSourceRef(
+                operation.source_node_uid,
+                operation="update.collision.plane",
+            )
+            parameters = operation.parameter_dict()
+            bindings = dict(operation.value_bindings)
+            position = builder.load("builtin.position", source)
+            velocity = builder.load("builtin.velocity", source)
+            point = builder.operation_value(
+                "point",
+                bindings,
+                expression_values,
+                parameters,
+                attribute_types["builtin.position"],
+                source,
+            )
+            normal = builder.operation_value(
+                "normal",
+                bindings,
+                expression_values,
+                parameters,
+                attribute_types["builtin.position"],
+                source,
+            )
+            radius = builder.operation_value(
+                "radius",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            restitution = builder.operation_value(
+                "restitution",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            friction = builder.operation_value(
+                "friction",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            collision_operands = (
+                position,
+                velocity,
+                point,
+                normal,
+                radius,
+                restitution,
+                friction,
+            )
+            resolved_position = builder.emit(
+                "collide_plane_position",
+                attribute_types["builtin.position"],
+                collision_operands,
+                {},
+                source,
+            )
+            resolved_velocity = builder.emit(
+                "collide_plane_velocity",
+                attribute_types["builtin.velocity"],
+                collision_operands,
+                {},
+                source,
+            )
+            builder.store("builtin.position", resolved_position, source)
+            builder.store("builtin.velocity", resolved_velocity, source)
         lifetime = builder.load("builtin.lifetime", KernelSourceRef(operation="update.kill_expired"))
         alive = builder.emit(
             "less_than",

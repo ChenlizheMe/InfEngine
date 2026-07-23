@@ -25,6 +25,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -198,6 +199,13 @@ class InputManager
     ///        as gameplay cursor lock to Python game scripts or ImGui suppression.
     void SetEditorMouseCapture(bool captured);
 
+    /// @brief Consume all relative mouse movement received during editor capture.
+    ///
+    /// Editor UI construction can run slower than the renderer. Keeping this
+    /// accumulator independent from the per-frame gameplay delta prevents
+    /// Scene view navigation from dropping motion between UI updates.
+    [[nodiscard]] std::pair<float, float> ConsumeEditorMouseDelta();
+
     /// @brief Returns true when cursor lock is active.
     [[nodiscard]] bool IsCursorLocked() const
     {
@@ -238,6 +246,8 @@ class InputManager
     float m_mouseY = 0.f;
     float m_mouseDX = 0.f;
     float m_mouseDY = 0.f;
+    float m_editorMouseDX = 0.f;
+    float m_editorMouseDY = 0.f;
     float m_scrollX = 0.f;
     float m_scrollY = 0.f;
 

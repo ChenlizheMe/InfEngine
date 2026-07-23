@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from Infernux.components.particle_system import ParticleSystem
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.core.assets import AssetManager
 from Infernux.core.material import Material
+from Infernux.debug import Debug
 from Infernux.graph import (
     AssetReference,
     GraphDocument,
@@ -28,6 +30,9 @@ from Infernux.particle import (
     VectorField,
 )
 from Infernux.lib import AssetRegistry
+
+
+particle_system_module = importlib.import_module("Infernux.components.particle_system")
 
 
 def test_gpu_particle_default_material_state_matches_output_geometry(monkeypatch):
@@ -175,6 +180,41 @@ def test_particle_system_editor_preview_reuses_runtime_without_play_mode(
     component.editor_preview_end()
     assert component._editor_preview_active is False
     component._remove_native_batch()
+
+
+def test_particle_system_throttles_repeated_compile_failures(scene, monkeypatch):
+    component = ParticleSystem()
+    component.graph = ParticleGraphAsset(stable_id="compile-failure-throttle")
+    game_object = scene.create_game_object("CompileFailureThrottleProbe")
+    game_object.add_py_component(component)
+    component.awake()
+
+    now = [100.0]
+    attempts = []
+    errors = []
+    monkeypatch.setattr(particle_system_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        component,
+        "_compile_particle_graph",
+        lambda graph: attempts.append(graph) or False,
+    )
+    monkeypatch.setattr(Debug, "log_error", staticmethod(errors.append))
+
+    assert component._compile_asset() is False
+    assert len(attempts) == 1
+    now[0] = 100.5
+    assert component._compile_asset() is False
+    assert len(attempts) == 1
+    now[0] = 101.0
+    assert component._compile_asset() is False
+    assert len(attempts) == 2
+
+    component._report_compile_failure(RuntimeError("invalid particle material"))
+    component._report_compile_failure(RuntimeError("invalid particle material"))
+    assert len(errors) == 1
+    now[0] = 106.0
+    component._report_compile_failure(RuntimeError("invalid particle material"))
+    assert len(errors) == 2
 
 
 class _MixedParticleNative:

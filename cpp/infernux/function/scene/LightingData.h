@@ -376,9 +376,11 @@ class SceneLightCollector
      * @param cameraPos     Camera world position
      * @param shadowMapResolution  Shadow atlas resolution (e.g. 4096)
      * @param camera        Camera whose frustum drives cascade fitting (nullptr = active camera)
+     * @param
+     * visibleDepthRange Camera-space depth occupied by this camera's visible renderers
      */
     void ComputeShadowVP(Scene *scene, const glm::vec3 &cameraPos, float shadowMapResolution,
-                         const Camera *camera = nullptr);
+                         const Camera *camera = nullptr, const lighting::ShadowDepthRange &visibleDepthRange = {});
 
     [[nodiscard]] const lighting::ShadowFrame &GetShadowFrame() const noexcept
     {

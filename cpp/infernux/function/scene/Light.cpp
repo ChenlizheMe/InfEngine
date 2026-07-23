@@ -59,8 +59,11 @@ nlohmann::json Light::SerializeDocument() const
     // Shadows
     j["shadows"] = static_cast<int>(m_shadows);
     j["shadowStrength"] = m_shadowStrength;
-    j["shadowBias"] = m_shadowBias;
-    j["shadowNormalBias"] = m_shadowNormalBias;
+    // Bias is currently an engine policy rather than an authoring parameter.
+    // Keep canonical constants in the native document until the surrounding
+    // component document is migrated as a whole.
+    j["shadowBias"] = ShadowDepthBiasTexels;
+    j["shadowNormalBias"] = ShadowNormalBiasTexels;
     j["shadowSoftness"] = m_shadowSoftness;
 
     // Rendering
@@ -80,8 +83,7 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
     ValidateComponentDocument(j, "Light",
                               {"lightType", "color", "intensity", "range", "spotAngle", "outerSpotAngle", "areaSize",
                                "areaTwoSided", "shadows", "shadowStrength", "shadowBias", "shadowNormalBias",
-                               "shadowSoftness",
-                               "renderMode", "cullingMask", "influenceDomains", "baked"});
+                               "shadowSoftness", "renderMode", "cullingMask", "influenceDomains", "baked"});
     const int lightType = RequireInteger(j, "lightType", "Light");
     RequireFiniteVector(j, "color", 3, "Light");
     const float intensity = RequireFiniteFloat(j, "intensity", "Light");
@@ -110,8 +112,9 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
         throw std::invalid_argument("Light area size is invalid");
     if (shadows < static_cast<int>(LightShadows::None) || shadows > static_cast<int>(LightShadows::Soft))
         throw std::invalid_argument("Light.shadows is unsupported");
-    if (shadowStrength < 0.0f || shadowStrength > 1.0f || shadowBias < 0.0f || shadowNormalBias < 0.0f ||
-        shadowSoftness < 0.25f || shadowSoftness > 8.0f)
+    (void)shadowBias;
+    (void)shadowNormalBias;
+    if (shadowStrength < 0.0f || shadowStrength > 1.0f || shadowSoftness < 0.25f || shadowSoftness > 8.0f)
         throw std::invalid_argument("Light shadow parameters are invalid");
     if (renderMode < static_cast<int>(LightRenderMode::Auto) ||
         renderMode > static_cast<int>(LightRenderMode::ForceVertex))
@@ -139,8 +142,8 @@ bool Light::DeserializeDocument(const nlohmann::json &j)
         m_areaTwoSided = j["areaTwoSided"].get<bool>();
         m_shadows = static_cast<LightShadows>(j["shadows"].get<int>());
         m_shadowStrength = j["shadowStrength"].get<float>();
-        m_shadowBias = j["shadowBias"].get<float>();
-        m_shadowNormalBias = j["shadowNormalBias"].get<float>();
+        // Legacy documents still carry these keys, but authored values do not
+        // affect runtime behavior while bias is owned by the renderer.
         m_shadowSoftness = j["shadowSoftness"].get<float>();
         m_renderMode = static_cast<LightRenderMode>(j["renderMode"].get<int>());
         m_cullingMask = j["cullingMask"].get<uint32_t>();
@@ -169,8 +172,6 @@ std::unique_ptr<Component> Light::Clone() const
     clone->m_areaTwoSided = m_areaTwoSided;
     clone->m_shadows = m_shadows;
     clone->m_shadowStrength = m_shadowStrength;
-    clone->m_shadowBias = m_shadowBias;
-    clone->m_shadowNormalBias = m_shadowNormalBias;
     clone->m_shadowSoftness = m_shadowSoftness;
     clone->m_renderMode = m_renderMode;
     clone->m_cullingMask = m_cullingMask;

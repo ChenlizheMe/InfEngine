@@ -195,6 +195,9 @@ def test_native_capture_service_cannot_use_platform_screen_capture():
     assert not [symbol for symbol in _FORBIDDEN_NATIVE_CAPTURE_SYMBOLS if symbol in source]
     assert "ImageReadbackTicket" in source
     assert "record.snapshot.engineFrame = engineFrame;" in source
+    assert "DisplayFloatToUnorm8" in source
+    assert "std::pow(value, 1.0F / 2.4F)" not in source
+    assert "value / (1.0F + value)" not in source
 
     renderer_source = (repo_root / "cpp/infernux/function/renderer/InxRenderer.cpp").read_text(encoding="utf-8")
     assert "RequestRenderTargetReadback(gameView), m_frameCount" in renderer_source

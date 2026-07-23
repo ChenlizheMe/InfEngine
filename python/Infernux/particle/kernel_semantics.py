@@ -80,6 +80,8 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "greater_equal": KernelOpcodeSpec(True, 2),
     "logical_not": KernelOpcodeSpec(True, 1),
     "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
+    "collide_plane_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
+    "collide_plane_velocity": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
     "export_attribute": KernelOpcodeSpec(
         False, 1, frozenset({"attribute"}), _RENDER_ONLY
     ),
@@ -405,6 +407,21 @@ def _validate_opcode_types(
     elif opcode == "kill_if":
         if operands != (bool_type,):
             raise KernelSemanticError("kernel kill_if requires one bool operand")
+    elif opcode in {"collide_plane_position", "collide_plane_velocity"}:
+        simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if result_type != simulation_vec3 or operands != (
+            simulation_vec3,
+            simulation_vec3,
+            simulation_vec3,
+            simulation_vec3,
+            f32,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires simulation-space position, velocity, plane point, "
+                "plane normal, radius, restitution and friction"
+            )
     elif opcode == "convert_space":
         if result_type is None or operands[0].value_type != result_type.value_type:
             raise KernelSemanticError("kernel space conversion must preserve value type")

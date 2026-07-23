@@ -97,8 +97,7 @@ class SceneViewCameraMixin:
         
         if (right_down or middle_down) and not right_just_pressed and not middle_just_pressed:
             if self._camera_capture_active:
-                mouse_delta_x = mgr.mouse_delta_x
-                mouse_delta_y = mgr.mouse_delta_y
+                mouse_delta_x, mouse_delta_y = mgr.consume_editor_mouse_delta()
             else:
                 raw_dx = ctx.get_mouse_pos_x() - self._last_mouse_x
                 raw_dy = ctx.get_mouse_pos_y() - self._last_mouse_y

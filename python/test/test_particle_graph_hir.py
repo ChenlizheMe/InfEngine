@@ -837,6 +837,78 @@ class TrailGraph(ParticleScript):
     }.issubset({attribute.stable_id for attribute in emitter.attributes})
 
 
+def test_plane_collision_graph_and_script_share_terminal_update_contract():
+    source = '''
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class CollisionGraph(ParticleScript):
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings(capacity=1024)
+
+        def init(self, ctx, particles):
+            particles.set_velocity((1.0, -2.0, 0.0))
+
+        def update(self, ctx, particles):
+            particles.acceleration((0.0, -9.81, 0.0))
+            particles.collide_plane(
+                point=(0.0, 0.0, 0.0),
+                normal=(0.0, 1.0, 0.0),
+                radius=0.1,
+                restitution=0.6,
+                friction=0.2,
+            )
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="Collision.particle.py")
+    emitter = compiler.compile(source, source_name="Collision.particle.py").emitters[0]
+
+    assert emitter.update.operations[-1].opcode == "collision.plane"
+    assert emitter.update.operations[-1].parameter_dict() == {
+        "friction": 0.2,
+        "normal": [0.0, 1.0, 0.0],
+        "point": [0.0, 0.0, 0.0],
+        "radius": 0.1,
+        "restitution": 0.6,
+    }
+    assert emitter == ParticleGraphCompiler().compile(asset).emitters[0]
+
+
+@pytest.mark.parametrize(
+    "properties, message",
+    [
+        ({"normal": [0.0, 0.0, 0.0]}, "normal must be non-zero"),
+        ({"radius": -0.1}, "radius must be non-negative"),
+        ({"restitution": 1.1}, "restitution must be between 0 and 1"),
+        ({"friction": -0.1}, "friction must be between 0 and 1"),
+    ],
+)
+def test_plane_collision_rejects_invalid_static_parameters(properties, message):
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_plane",
+                properties=properties,
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    with pytest.raises(ParticleCompileError, match=message):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+
+
 @pytest.mark.parametrize(
     "properties, message",
     [

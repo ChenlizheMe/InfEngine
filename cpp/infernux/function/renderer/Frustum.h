@@ -231,9 +231,16 @@ class Frustum
 
     /// @brief Test if an AABB intersects or is inside the frustum
     /// Uses the "positive vertex" optimization
-    [[nodiscard]] bool IntersectsAABB(const AABB &aabb) const
+    /// @param ignoreNearPlane Skip the near-plane test. Directional shadow
+    /// cascades pancake casters between the light and the cascade volume in
+    /// the vertex shader, so casters beyond the near plane must survive
+    /// CPU culling to still stamp their shadow into the map.
+    [[nodiscard]] bool IntersectsAABB(const AABB &aabb, bool ignoreNearPlane = false) const
     {
-        for (const auto &plane : m_planes) {
+        for (int index = 0; index < PlaneIndex::Count; ++index) {
+            if (ignoreNearPlane && index == Near)
+                continue;
+            const Plane &plane = m_planes[index];
             // Find the "positive vertex" - the corner farthest along the plane normal
             glm::vec3 pVertex;
             pVertex.x = (plane.normal.x >= 0.0f) ? aabb.max.x : aabb.min.x;

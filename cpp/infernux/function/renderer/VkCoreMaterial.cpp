@@ -60,8 +60,7 @@ ShadowViewGpuData PackShadowView(const lighting::ShadowView &view, uint32_t atla
     ShadowViewGpuData result{};
     result.viewProjection = view.viewProjection;
     result.atlasScaleOffset = view.atlas.ScaleOffset(atlasSize);
-    result.depthTexel =
-        glm::vec4(view.nearPlane, view.farPlane, view.worldUnitsPerTexel, view.filterRadiusTexels);
+    result.depthTexel = glm::vec4(view.nearPlane, view.farPlane, view.worldUnitsPerTexel, view.filterRadiusTexels);
     result.splitData = glm::vec4(view.splitNear, view.splitFar, 0.0f, 0.0f);
     result.metadata = glm::uvec4(static_cast<uint32_t>(view.type), view.subView, 0u, 0u);
     return result;
@@ -1319,18 +1318,25 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     auto inputAssembly = vkrender::MakeTriangleListInputAssembly();
 
     vkrender::DynamicViewportScissorState dynVpScissor;
+    const std::array<VkDynamicState, 3> shadowDynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_DEPTH_BIAS,
+    };
+    dynVpScissor.dynamicState.dynamicStateCount = static_cast<uint32_t>(shadowDynamicStates.size());
+    dynVpScissor.dynamicState.pDynamicStates = shadowDynamicStates.data();
 
-    // Rasterization: the receiver shader owns all user-visible bias. A fixed
-    // raster bias here made Light.shadowBias=0 lie and caused detached contact
-    // shadows. Respecting the material cull mode also keeps the shadow
-    // silhouette consistent with the visible surface.
+    // Directional depth bias is applied dynamically in raster space. Unlike a
+    // world-space caster translation this follows polygon slope without
+    // detaching contact shadows by a full cascade texel. Local lights retain
+    // their perspective-scaled vertex bias and set the dynamic values to zero.
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
     rasterizer.cullMode = static_cast<VkCullModeFlags>(matCullMode);
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    rasterizer.depthBiasEnable = VK_FALSE;
+    rasterizer.depthBiasEnable = VK_TRUE;
     rasterizer.depthBiasConstantFactor = 0.0f;
     rasterizer.depthBiasSlopeFactor = 0.0f;
     rasterizer.depthBiasClamp = 0.0f;

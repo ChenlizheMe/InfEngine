@@ -302,6 +302,40 @@ class ParticleGraphCompiler:
                 f"particle ribbon output {invalid_ribbon_uv.output_id!r} requires uv_mode "
                 "'stretch' or 'repeat' and a finite positive uv_scale"
             )
+        collision_indices = [
+            index
+            for index, operation in enumerate(update.operations)
+            if operation.opcode == "collision.plane"
+        ]
+        if collision_indices and any(
+            operation.opcode != "collision.plane"
+            for operation in update.operations[collision_indices[0] :]
+        ):
+            raise ParticleCompileError(
+                "Plane Collision must be the final operation group in the Update stream"
+            )
+        for operation in (
+            update.operations[index] for index in collision_indices
+        ):
+            parameters = operation.parameter_dict()
+            bindings = dict(operation.value_bindings)
+            normal = parameters["normal"]
+            if "normal" not in bindings and (
+                not isinstance(normal, (list, tuple))
+                or len(normal) != 3
+                or sum(float(value) * float(value) for value in normal) <= 1.0e-12
+            ):
+                raise ParticleCompileError("Plane Collision normal must be non-zero")
+            for name in ("radius", "restitution", "friction"):
+                if name in bindings:
+                    continue
+                value = float(parameters[name])
+                if name == "radius" and value < 0.0:
+                    raise ParticleCompileError("Plane Collision radius must be non-negative")
+                if name != "radius" and not 0.0 <= value <= 1.0:
+                    raise ParticleCompileError(
+                        f"Plane Collision {name} must be between 0 and 1"
+                    )
         orientation_opcodes = {
             "attribute.set_orientation",
             "integrate.angular_velocity_3d",

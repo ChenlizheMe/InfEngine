@@ -41,6 +41,42 @@ namespace infernux
 namespace
 {
 
+lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const std::vector<DrawCall> &drawCalls)
+{
+    lighting::ShadowDepthRange result{};
+    if (!camera || !camera->GetTransform())
+        return result;
+
+    const glm::vec3 cameraPosition = camera->GetTransform()->GetWorldPosition();
+    const glm::vec3 cameraForward = glm::normalize(camera->GetTransform()->GetWorldForward());
+    float nearest = std::numeric_limits<float>::max();
+    float farthest = 0.0f;
+    for (const DrawCall &drawCall : drawCalls) {
+        if (!drawCall.frustumVisible || !drawCall.worldBounds.IsValid())
+            continue;
+        const glm::vec3 center = (drawCall.worldBounds.min + drawCall.worldBounds.max) * 0.5f;
+        const glm::vec3 extent = (drawCall.worldBounds.max - drawCall.worldBounds.min) * 0.5f;
+        const float centerDepth = glm::dot(center - cameraPosition, cameraForward);
+        const float depthRadius = glm::dot(glm::abs(cameraForward), extent);
+        const float objectFar = centerDepth + depthRadius;
+        if (objectFar <= 0.0f)
+            continue;
+
+        // A huge receiver crossing the camera should not collapse the entire
+        // logarithmic distribution onto the near clip plane.
+        const float boundedRadius = std::min(depthRadius, std::max(centerDepth * 0.5f, 0.0f));
+        nearest = std::min(nearest, std::max(centerDepth - boundedRadius, camera->GetNearClip()));
+        farthest = std::max(farthest, objectFar);
+    }
+    if (farthest <= 0.0f || nearest == std::numeric_limits<float>::max())
+        return result;
+
+    const float span = std::max(farthest - nearest, camera->GetNearClip());
+    result.nearDepth = nearest;
+    result.farDepth = std::min(farthest + span * 0.05f, camera->GetFarClip());
+    return result;
+}
+
 bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
 {
     return a.name == b.name && a.format == b.format && a.isBackbuffer == b.isBackbuffer && a.isDepth == b.isDepth &&
@@ -628,9 +664,9 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
             std::memcpy(spirv.data(), bytes.data(), bytes.size());
             if (!m_forwardPlusGeometryGrid.Initialize(rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
-            } else if (!m_particlePerViewLayout.IsValid() || !m_forwardPlusParticleGrid.Initialize(
-                                                              rhiDevice, kMaxFramesInFlight,
-                                                              {spirv.data(), spirv.size()})) {
+            } else if (!m_particlePerViewLayout.IsValid() ||
+                       !m_forwardPlusParticleGrid.Initialize(rhiDevice, kMaxFramesInFlight,
+                                                             {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the particle Forward+ tiled-light builder");
             } else {
                 for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
@@ -721,13 +757,17 @@ void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const g
     m_cameraLightCollector.CollectLights(scene, cameraPosition);
     if (environmentLighting.ambientEquatorColor.a > 0.0f) {
         m_cameraLightCollector.SetAmbientGradient(glm::vec3(environmentLighting.ambientSkyColor),
-                                                   glm::vec3(environmentLighting.ambientEquatorColor),
-                                                   glm::vec3(environmentLighting.ambientGroundColor));
+                                                  glm::vec3(environmentLighting.ambientEquatorColor),
+                                                  glm::vec3(environmentLighting.ambientGroundColor));
     } else {
         m_cameraLightCollector.SetAmbientColor(glm::vec3(environmentLighting.ambientSkyColor),
-                                                environmentLighting.ambientSkyColor.a);
+                                               environmentLighting.ambientSkyColor.a);
     }
-    m_cameraLightCollector.ComputeShadowVP(scene, cameraPosition, static_cast<float>(GetShadowMapResolution()), camera);
+    const lighting::ShadowDepthRange visibleDepthRange =
+        m_hasCachedDrawCalls ? VisibleShadowDepthRange(camera, m_cachedRenderers.DrawCalls())
+                             : lighting::ShadowDepthRange{};
+    m_cameraLightCollector.ComputeShadowVP(scene, cameraPosition, static_cast<float>(GetShadowMapResolution()), camera,
+                                           visibleDepthRange);
     m_cameraLightCollector.BuildShaderLightingUBO();
 
     const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
@@ -942,9 +982,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 // Shadow caster pass: draw filtered objects using shadow pipeline
                 // with lightVP from SceneLightCollector. The shadow pipeline is
                 // lazily created inside DrawShadowCasters().
-                vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax,
-                                          m_shadowCameraResourceId, m_cameraLightCollector.GetShadowFrame(),
-                                          lightIndex);
+                vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, m_shadowCameraResourceId,
+                                          m_cameraLightCollector.GetShadowFrame(), lightIndex);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer) {
@@ -1238,10 +1277,14 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
     if (descriptorSet == VK_NULL_HANDLE)
         return false;
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
-    const PerViewBufferBindingState geometryBindings{
-        rhiDevice.Resolve(lights.buffer), rhiDevice.Resolve(frame.headers), rhiDevice.Resolve(frame.lightMasks),
-        rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]), lights.dataBytes, frame.config.headerBytes,
-        frame.config.maskBytes, true};
+    const PerViewBufferBindingState geometryBindings{rhiDevice.Resolve(lights.buffer),
+                                                     rhiDevice.Resolve(frame.headers),
+                                                     rhiDevice.Resolve(frame.lightMasks),
+                                                     rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]),
+                                                     lights.dataBytes,
+                                                     frame.config.headerBytes,
+                                                     frame.config.maskBytes,
+                                                     true};
     auto bindingsDiffer = [](const PerViewBufferBindingState &left, const PerViewBufferBindingState &right) {
         return !left.initialized || left.canonicalLights != right.canonicalLights ||
                left.tileHeaders != right.tileHeaders || left.tileLightMasks != right.tileLightMasks ||
@@ -1253,10 +1296,14 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
     PerViewBufferBindingState particleBindings{};
     if (m_forwardPlusParticlesRequired) {
         const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
-        particleBindings = {rhiDevice.Resolve(lights.buffer), rhiDevice.Resolve(particleFrame.headers),
+        particleBindings = {rhiDevice.Resolve(lights.buffer),
+                            rhiDevice.Resolve(particleFrame.headers),
                             rhiDevice.Resolve(particleFrame.lightMasks),
-                            rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]), lights.dataBytes,
-                            particleFrame.config.headerBytes, particleFrame.config.maskBytes, true};
+                            rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]),
+                            lights.dataBytes,
+                            particleFrame.config.headerBytes,
+                            particleFrame.config.maskBytes,
+                            true};
         particleBindingsDirty = bindingsDiffer(m_particleBindingState[frameIndex], particleBindings);
     }
     if ((geometryBindingsDirty && m_geometryBindingState[frameIndex].initialized) ||
@@ -3083,6 +3130,22 @@ void SceneRenderGraph::BuildRenderGraph()
                                 particle::GpuParticleViewConstants shadowView;
                                 std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
                                             sizeof(activeShadowView.viewProjection));
+                                // Particle billboards expand along these axes in
+                                // the vertex shader; the caster pass must face
+                                // the light, not the camera, or the quads
+                                // collapse into degenerate shadow silhouettes.
+                                shadowView.cameraRight = {
+                                    activeShadowView.viewRight.x,
+                                    activeShadowView.viewRight.y,
+                                    activeShadowView.viewRight.z,
+                                    0.0f,
+                                };
+                                shadowView.cameraUp = {
+                                    activeShadowView.viewUp.x,
+                                    activeShadowView.viewUp.y,
+                                    activeShadowView.viewUp.z,
+                                    0.0f,
+                                };
                                 for (const auto &packet : particlePackets) {
                                     [[maybe_unused]] const bool recorded =
                                         packet.renderer->RecordDraw(encoder, renderTargetLayout, particlePass,

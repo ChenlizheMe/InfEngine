@@ -221,6 +221,7 @@ uint inx_particle_point_shadow_face(vec3 direction_from_light) {
 }
 
 float inx_particle_shadow_bilinear_pcf(vec2 atlas_uv, float receiver_depth,
+                                       vec2 receiver_plane_gradient,
                                        vec2 tile_min, vec2 tile_max, float atlas_size) {
     vec2 inverse_atlas = vec2(1.0 / atlas_size);
     vec2 pixel = atlas_uv * atlas_size - vec2(0.5);
@@ -229,14 +230,42 @@ float inx_particle_shadow_bilinear_pcf(vec2 atlas_uv, float receiver_depth,
     vec2 gather_uv = (base + vec2(1.0)) * inverse_atlas;
     gather_uv = clamp(gather_uv, tile_min + inverse_atlas * 0.5, tile_max - inverse_atlas * 0.5);
     vec4 depths = textureGather(particle_shadow_map, gather_uv, 0);
-    vec4 comparison = step(vec4(receiver_depth), depths);
+    vec4 receiver_depths;
+    receiver_depths.w = receiver_depth + dot(receiver_plane_gradient,
+        gather_uv + vec2(-0.5, -0.5) * inverse_atlas - atlas_uv);
+    receiver_depths.z = receiver_depth + dot(receiver_plane_gradient,
+        gather_uv + vec2( 0.5, -0.5) * inverse_atlas - atlas_uv);
+    receiver_depths.x = receiver_depth + dot(receiver_plane_gradient,
+        gather_uv + vec2(-0.5,  0.5) * inverse_atlas - atlas_uv);
+    receiver_depths.y = receiver_depth + dot(receiver_plane_gradient,
+        gather_uv + vec2( 0.5,  0.5) * inverse_atlas - atlas_uv);
+    vec4 comparison = step(receiver_depths, depths);
     float lower = mix(comparison.w, comparison.z, fraction.x);
     float upper = mix(comparison.x, comparison.y, fraction.x);
     return mix(lower, upper, fraction.y);
 }
 
-float inx_particle_shadow_tent_weight(int index) {
-    return (index == 0 || index == 3) ? 1.0 : 3.0;
+vec2 inx_particle_shadow_receiver_plane_gradient(vec2 shadow_uv, float shadow_depth,
+                                                  float atlas_size) {
+    vec2 uv_dx = dFdx(shadow_uv);
+    vec2 uv_dy = dFdy(shadow_uv);
+    float depth_dx = dFdx(shadow_depth);
+    float depth_dy = dFdy(shadow_depth);
+    float determinant = uv_dx.x * uv_dy.y - uv_dx.y * uv_dy.x;
+    if (abs(determinant) <= 1e-10) return vec2(0.0);
+    vec2 gradient = vec2(
+        uv_dy.y * depth_dx - uv_dx.y * depth_dy,
+        -uv_dy.x * depth_dx + uv_dx.x * depth_dy) / determinant;
+    float max_gradient = 0.002 * atlas_size;
+    return clamp(gradient, vec2(-max_gradient), vec2(max_gradient));
+}
+
+mat2 inx_particle_shadow_kernel_rotation(vec2 atlas_uv, float atlas_size) {
+    vec2 cell = floor(atlas_uv * atlas_size);
+    float phase = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453) * 6.2831853;
+    float sine = sin(phase);
+    float cosine = cos(phase);
+    return mat2(cosine, -sine, sine, cosine);
 }
 
 float inx_particle_sample_shadow_view_visibility(uint view_index, vec3 world_position, vec3 normal,
@@ -244,19 +273,13 @@ float inx_particle_sample_shadow_view_visibility(uint view_index, vec3 world_pos
                                                   bool soft_filter) {
     if (view.rendering_control.x < 0.5 || view_index >= particle_lighting.shadow_view_header.x) return 1.0;
     ParticleShadowViewData shadow_view = particle_lighting.shadow_views[view_index];
-    vec3 N = normalize(normal);
-    vec3 L = normalize(to_light);
-    float n_dot_l = clamp(dot(N, L), 0.0, 1.0);
-    float slope = clamp(sqrt(max(1.0 - n_dot_l * n_dot_l, 0.0)) / max(n_dot_l, 0.2), 0.0, 4.0);
-    vec4 unbiassed_clip = shadow_view.view_projection * vec4(world_position, 1.0);
-    float perspective_scale = shadow_view.metadata.x == 0u
-        ? 1.0
-        : clamp(abs(unbiassed_clip.w) / max(shadow_view.depth_texel.y, 0.000001), 0.001, 1.0);
-    float world_texel = max(shadow_view.depth_texel.z * perspective_scale, 0.000001);
-    vec3 biased_position = world_position;
-    biased_position += N * (shadow_params.z * world_texel * (1.0 + slope));
-    biased_position += L * (shadow_params.y * world_texel);
-    vec4 clip = shadow_view.view_projection * vec4(biased_position, 1.0);
+    vec3 receiver_position = world_position;
+    if (shadow_view.metadata.x == 0u) {
+        float normal_scale = 1.0 - clamp(dot(normalize(normal), normalize(to_light)), 0.0, 1.0);
+        receiver_position += normalize(normal) *
+            (shadow_params.z * shadow_view.depth_texel.z * normal_scale);
+    }
+    vec4 clip = shadow_view.view_projection * vec4(receiver_position, 1.0);
     if (abs(clip.w) < 0.000001) return 1.0;
     vec3 ndc = clip.xyz / clip.w;
     vec2 local_uv = ndc.xy * 0.5 + 0.5;
@@ -269,23 +292,32 @@ float inx_particle_sample_shadow_view_visibility(uint view_index, vec3 world_pos
     vec2 texel = vec2(1.0 / atlas_size);
     vec2 tile_min = atlas_offset + texel * 0.5;
     vec2 tile_max = atlas_offset + atlas_scale - texel * 0.5;
-    if (!soft_filter)
-        return inx_particle_shadow_bilinear_pcf(atlas_uv, ndc.z, tile_min, tile_max, atlas_size);
-
-    float radius = clamp(shadow_view.depth_texel.w, 0.5, 3.5);
-    float step_size = radius / 1.5;
-    float visibility = 0.0;
-    float total_weight = 0.0;
-    for (int y = 0; y < 4; ++y) {
-        for (int x = 0; x < 4; ++x) {
-            float weight = inx_particle_shadow_tent_weight(x) * inx_particle_shadow_tent_weight(y);
-            vec2 offset = (vec2(float(x), float(y)) - vec2(1.5)) * step_size * texel;
-            visibility += inx_particle_shadow_bilinear_pcf(
-                atlas_uv + offset, ndc.z, tile_min, tile_max, atlas_size) * weight;
-            total_weight += weight;
-        }
+    vec2 receiver_plane_gradient =
+        inx_particle_shadow_receiver_plane_gradient(atlas_uv, ndc.z, atlas_size);
+    if (!soft_filter) {
+        return inx_particle_shadow_bilinear_pcf(
+            atlas_uv, ndc.z, receiver_plane_gradient, tile_min, tile_max, atlas_size);
     }
-    return visibility / max(total_weight, 1.0);
+
+    const vec2 filter_disk[16] = vec2[](
+        vec2(-0.942, -0.399), vec2( 0.946, -0.769), vec2(-0.094, -0.929), vec2( 0.345,  0.294),
+        vec2(-0.916,  0.458), vec2(-0.815, -0.879), vec2(-0.382,  0.277), vec2( 0.974,  0.756),
+        vec2( 0.443, -0.975), vec2( 0.537, -0.474), vec2(-0.265, -0.418), vec2( 0.792,  0.191),
+        vec2(-0.242,  0.997), vec2(-0.814,  0.914), vec2( 0.200,  0.786), vec2( 0.144, -0.141));
+    // Keep particle and geometry shadow filtering bit-for-bit equivalent: a
+    // stable per-texel rotation, fixed Poisson budget and no blocker search.
+    mat2 kernel_rotation = inx_particle_shadow_kernel_rotation(atlas_uv, atlas_size);
+    float radius = shadow_view.metadata.x == 0u
+        ? clamp(1.5 + shadow_view.depth_texel.w * 1.75, 2.0, 16.0)
+        : clamp(shadow_view.depth_texel.w, 0.75, 8.0);
+    float visibility = 0.0;
+    for (int index = 0; index < 16; ++index) {
+        vec2 offset = kernel_rotation * filter_disk[index] * radius * texel;
+        float tap_depth = ndc.z + dot(receiver_plane_gradient, offset);
+        visibility += inx_particle_shadow_bilinear_pcf(
+            atlas_uv + offset, tap_depth, receiver_plane_gradient, tile_min, tile_max, atlas_size);
+    }
+    return visibility * 0.0625;
 }
 
 float inx_particle_sample_shadow_view(uint view_index, vec3 world_position, vec3 normal,
@@ -321,6 +353,11 @@ float inx_particle_directional_shadow(CanonicalLightData light, vec3 world_posit
         float next_shadow = inx_particle_sample_shadow_view(
             first_view + selected + 1u, world_position, normal, to_light, shadow_params);
         shadow = mix(next_shadow, shadow, blend);
+    } else {
+        ParticleShadowViewData last = particle_lighting.shadow_views[first_view + selected];
+        float fade_width = max((last.split_data.y - last.split_data.x) * 0.1, 0.0001);
+        float fade = smoothstep(last.split_data.y - fade_width, last.split_data.y, view_depth);
+        shadow = mix(shadow, 1.0, fade);
     }
     return shadow;
 }
@@ -590,14 +627,30 @@ void main() {
     vec3 particle_scale = instance.scale_custom.xyz * instance.position_size.w;
     vec3 world_position = instance.position_size.xyz +
         rotation * (vertex.position.xyz * particle_scale);
-    gl_Position = view.view_projection * vec4(world_position, 1.0);
-    out_color = instance.color * vertex.color;
     vec3 inverse_scale = sign(particle_scale) / max(abs(particle_scale), vec3(1e-6));
     vec3 transformed_normal = rotation * (vertex.normal.xyz * inverse_scale);
     float normal_length_squared = dot(transformed_normal, transformed_normal);
     out_normal = normal_length_squared > 1e-12
         ? transformed_normal * inversesqrt(normal_length_squared)
         : vec3(0.0, 1.0, 0.0);
+    vec4 unbiassed_clip = view.view_projection * vec4(world_position, 1.0);
+    if (view.rendering_control.y > 0.5) {
+        vec3 to_light = view.camera_right.w > 0.5
+            ? normalize(view.camera_right.xyz - world_position)
+            : normalize(view.camera_right.xyz);
+        float perspective_scale = view.camera_right.w > 0.5
+            ? clamp(abs(unbiassed_clip.w) / max(view.camera_up.w, 0.000001), 0.001, 1.0)
+            : 1.0;
+        float world_texel = max(view.camera_up.z * perspective_scale, 0.000001);
+        float normal_scale = 1.0 - clamp(dot(out_normal, to_light), 0.0, 1.0);
+        world_position -= to_light * (view.camera_up.x * world_texel);
+        world_position -= out_normal * (view.camera_up.y * world_texel * normal_scale);
+    }
+    gl_Position = view.view_projection * vec4(world_position, 1.0);
+    if (view.rendering_control.y > 0.5 && view.camera_right.w < 0.5) {
+        gl_Position.z = max(gl_Position.z, 0.0);
+    }
+    out_color = instance.color * vertex.color;
     out_uv = vertex.uv.xy;
     out_world_position = world_position;
     out_view_depth = gl_Position.w;
@@ -1252,6 +1305,10 @@ class _StageCompiler:
         elif opcode == "kill_if":
             self._lines.append(f"particle_alive = particle_alive && !({operands[0]});")
             return
+        elif opcode == "collide_plane_position":
+            expression = f"inx_collide_plane_position({', '.join(operands)})"
+        elif opcode == "collide_plane_velocity":
+            expression = f"inx_collide_plane_velocity({', '.join(operands)})"
         elif opcode == "export_attribute":
             self._exports[immediate["attribute"]] = operands[0]
             return
@@ -1995,6 +2052,24 @@ vec3 inx_vector_noise_3d(vec3 position, float frequency, uint seed) {{
 vec2 inx_safe_normalize(vec2 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec2(0.0); }}
 vec3 inx_safe_normalize(vec3 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec3(0.0); }}
 vec4 inx_safe_normalize(vec4 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec4(0.0); }}
+
+vec3 inx_collide_plane_position(vec3 position, vec3 velocity, vec3 point, vec3 normal,
+                                float radius, float restitution, float friction) {{
+    vec3 n = inx_safe_normalize(normal);
+    float penetration = max(radius, 0.0) - dot(position - point, n);
+    return penetration > 0.0 ? position + n * penetration : position;
+}}
+
+vec3 inx_collide_plane_velocity(vec3 position, vec3 velocity, vec3 point, vec3 normal,
+                                float radius, float restitution, float friction) {{
+    vec3 n = inx_safe_normalize(normal);
+    float normal_speed = dot(velocity, n);
+    bool collision = dot(position - point, n) < max(radius, 0.0) && normal_speed < 0.0;
+    if (!collision) return velocity;
+    vec3 tangent_velocity = velocity - n * normal_speed;
+    return tangent_velocity * (1.0 - clamp(friction, 0.0, 1.0))
+         - n * normal_speed * clamp(restitution, 0.0, 1.0);
+}}
 
 vec3 inx_shape_random(uvec3 slots, uint particle_id, uint generation) {{
     return vec3(inx_random01(0u, slots.x, particle_id, generation),

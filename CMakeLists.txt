@@ -511,6 +511,12 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/external
     )
     target_link_libraries(infernux_canonical_light_snapshot_tests PRIVATE glm::glm)
+    # Match the runtime GLM conventions so shadow math is tested under the
+    # exact same handedness and clip-depth range the engine renders with.
+    target_compile_definitions(infernux_canonical_light_snapshot_tests PRIVATE
+        GLM_FORCE_DEPTH_ZERO_TO_ONE
+        GLM_FORCE_LEFT_HANDED
+    )
     if(MSVC)
         target_compile_options(infernux_canonical_light_snapshot_tests PRIVATE /utf-8)
     endif()

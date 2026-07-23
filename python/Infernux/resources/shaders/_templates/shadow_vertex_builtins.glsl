@@ -10,6 +10,8 @@ layout(std140, binding = 0) uniform ShadowUBO {
     mat4 _unused_model;
     mat4 view;
     mat4 proj;
+    vec4 light_vector; // xyz = toward-light direction or local-light position, w = position flag
+    vec4 bias;         // xy = depth/normal bias in texels, z = world texel size, w = far plane
 } shadowUBO;
 
 layout(push_constant) uniform PushConstants {

@@ -47,11 +47,11 @@ float HalfToFloat(uint16_t value)
     return sign ? -result : result;
 }
 
-unsigned char LinearHdrToSrgb8(float value)
+unsigned char DisplayFloatToUnorm8(float value)
 {
-    value = std::max(value, 0.0F);
-    value = value / (1.0F + value);
-    value = value <= 0.0031308F ? value * 12.92F : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
+    // Scene/Game float targets are sampled by ImGui into the UNORM swapchain
+    // without an additional transfer function. Match that visible path exactly
+    // so engine captures and the editor viewport have identical color values.
     return static_cast<unsigned char>(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F);
 }
 
@@ -77,9 +77,9 @@ std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
             throw std::runtime_error("Capture readback byte size does not match RGBA16F dimensions");
         const auto *source = reinterpret_cast<const uint16_t *>(raw.data());
         for (size_t i = 0; i < pixelCount; ++i) {
-            pixels[i * 4U + 0U] = LinearHdrToSrgb8(HalfToFloat(source[i * 4U + 0U]));
-            pixels[i * 4U + 1U] = LinearHdrToSrgb8(HalfToFloat(source[i * 4U + 1U]));
-            pixels[i * 4U + 2U] = LinearHdrToSrgb8(HalfToFloat(source[i * 4U + 2U]));
+            pixels[i * 4U + 0U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 0U]));
+            pixels[i * 4U + 1U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 1U]));
+            pixels[i * 4U + 2U] = DisplayFloatToUnorm8(HalfToFloat(source[i * 4U + 2U]));
             pixels[i * 4U + 3U] =
                 static_cast<unsigned char>(std::clamp(HalfToFloat(source[i * 4U + 3U]), 0.0F, 1.0F) * 255.0F + 0.5F);
         }
@@ -91,9 +91,9 @@ std::vector<unsigned char> ConvertToRgba8(const vk::ImageReadbackTicket &ticket)
             throw std::runtime_error("Capture readback byte size does not match RGBA32F dimensions");
         const auto *source = reinterpret_cast<const float *>(raw.data());
         for (size_t i = 0; i < pixelCount; ++i) {
-            pixels[i * 4U + 0U] = LinearHdrToSrgb8(source[i * 4U + 0U]);
-            pixels[i * 4U + 1U] = LinearHdrToSrgb8(source[i * 4U + 1U]);
-            pixels[i * 4U + 2U] = LinearHdrToSrgb8(source[i * 4U + 2U]);
+            pixels[i * 4U + 0U] = DisplayFloatToUnorm8(source[i * 4U + 0U]);
+            pixels[i * 4U + 1U] = DisplayFloatToUnorm8(source[i * 4U + 1U]);
+            pixels[i * 4U + 2U] = DisplayFloatToUnorm8(source[i * 4U + 2U]);
             pixels[i * 4U + 3U] =
                 static_cast<unsigned char>(std::clamp(source[i * 4U + 3U], 0.0F, 1.0F) * 255.0F + 0.5F);
         }

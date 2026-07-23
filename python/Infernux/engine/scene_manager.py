@@ -762,8 +762,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin, SceneConfirmationMixin)
             light.color = Vector3(1.0, 0.95, 0.9)
             light.intensity = 1.0
             light.shadows = LightShadows.Soft
-            light.shadow_bias = 0.5
-            light.shadow_normal_bias = 0.5
   
 
     # ------------------------------------------------------------------

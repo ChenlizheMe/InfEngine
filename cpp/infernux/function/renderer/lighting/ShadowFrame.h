@@ -20,6 +20,17 @@ namespace infernux::lighting
 constexpr uint32_t MaxShadowViews = 64;
 constexpr uint32_t DirectionalCascadeCount = 4;
 
+struct ShadowDepthRange
+{
+    float nearDepth = 0.0f;
+    float farDepth = 0.0f;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return std::isfinite(nearDepth) && std::isfinite(farDepth) && nearDepth > 0.0f && farDepth > nearDepth;
+    }
+};
+
 enum class ShadowViewType : uint32_t
 {
     DirectionalCascade,
@@ -77,9 +88,8 @@ class ShadowAtlasAllocator
             if (it->width < allocationSize || it->height < allocationSize)
                 continue;
             const uint64_t area = static_cast<uint64_t>(it->width) * it->height;
-            const uint64_t bestArea =
-                best == m_free.end() ? std::numeric_limits<uint64_t>::max()
-                                     : static_cast<uint64_t>(best->width) * best->height;
+            const uint64_t bestArea = best == m_free.end() ? std::numeric_limits<uint64_t>::max()
+                                                           : static_cast<uint64_t>(best->width) * best->height;
             if (area < bestArea || (area == bestArea && std::tie(it->y, it->x) < std::tie(best->y, best->x))) {
                 best = it;
             }
@@ -90,8 +100,7 @@ class ShadowAtlasAllocator
         const FreeRect free = *best;
         m_free.erase(best);
         if (free.width > allocationSize)
-            m_free.push_back(
-                {free.x + allocationSize, free.y, free.width - allocationSize, allocationSize});
+            m_free.push_back({free.x + allocationSize, free.y, free.width - allocationSize, allocationSize});
         if (free.height > allocationSize)
             m_free.push_back({free.x, free.y + allocationSize, free.width, free.height - allocationSize});
         return ShadowAtlasRect{free.x, free.y, allocationSize, guard};
@@ -166,6 +175,16 @@ struct ShadowView
     float filterRadiusTexels = 1.5f;
     float splitNear = 0.0f;
     float splitFar = 0.0f;
+    // Directional views store a normalized direction toward the light. Local
+    // views store the light position and resolve the direction per vertex.
+    glm::vec3 lightVector{0.0f, 1.0f, 0.0f};
+    bool lightVectorIsPosition = false;
+    float depthBiasTexels = 0.0f;
+    float normalBiasTexels = 0.0f;
+    // Light-space basis of this view (world space). Camera-facing effects
+    // (particle billboards) reuse it to face the light in the caster pass.
+    glm::vec3 viewRight{1.0f, 0.0f, 0.0f};
+    glm::vec3 viewUp{0.0f, 1.0f, 0.0f};
     uint32_t cullingMask = 0xffffffffu;
 };
 
@@ -221,6 +240,47 @@ struct ShadowCamera
     return splits;
 }
 
+/// Longest camera-space distance four cascades are allowed to span for a
+/// scene whose visible content starts near the camera. Beyond this the lit
+/// pass fades shadows out instead of stretching the last cascade into
+/// meter-sized texels. Scenes viewed from afar scale the cap with the
+/// nearest visible receiver so distant-only content keeps its shadows.
+constexpr float MaxStableShadowDistance = 200.0f;
+
+[[nodiscard]] inline std::array<float, 5> AdaptiveCascadeSplits(float nearClip, const ShadowDepthRange &visibleRange,
+                                                                float cameraFarClip)
+{
+    nearClip = std::max(nearClip, 0.001f);
+    cameraFarClip = std::max(cameraFarClip, nearClip + 0.001f);
+    const float visibleNear =
+        visibleRange.IsValid() ? glm::clamp(visibleRange.nearDepth, nearClip, cameraFarClip) : nearClip;
+    const float visibleFar =
+        visibleRange.IsValid() ? glm::clamp(visibleRange.farDepth, visibleNear, cameraFarClip) : cameraFarClip;
+
+    // 10% headroom keeps the far-fade band of the last cascade beyond the
+    // farthest visible receiver when the range fits the scene tightly.
+    const float distanceCap = std::max(MaxStableShadowDistance, visibleNear * 4.0f);
+    const float shadowFar = glm::clamp(visibleFar * 1.1f, nearClip + 0.01f, std::min(distanceCap, cameraFarClip));
+    const float distributionNear = glm::clamp(visibleNear, nearClip, shadowFar * 0.5f);
+
+    // Practical split scheme: a logarithmic distribution concentrates
+    // resolution near the camera, the uniform term bounds how much of the
+    // range the far cascades have to swallow. A pure logarithm wastes the
+    // two half-atlas cascades on the first few meters whenever a large
+    // ground plane stretches the visible range.
+    constexpr float lambda = 0.75f;
+    std::array<float, 5> splits{};
+    splits[0] = nearClip;
+    for (uint32_t index = 1; index < DirectionalCascadeCount; ++index) {
+        const float ratio = static_cast<float>(index) / static_cast<float>(DirectionalCascadeCount);
+        const float logarithmic = distributionNear * std::pow(shadowFar / distributionNear, ratio);
+        const float uniform = distributionNear + (shadowFar - distributionNear) * ratio;
+        splits[index] = std::max(glm::mix(uniform, logarithmic, lambda), splits[index - 1] + 0.001f);
+    }
+    splits.back() = std::max(shadowFar, splits[DirectionalCascadeCount - 1] + 0.001f);
+    return splits;
+}
+
 [[nodiscard]] inline std::array<glm::vec3, 8> FrustumSliceCorners(const ShadowCamera &camera, float sliceNear,
                                                                   float sliceFar)
 {
@@ -242,11 +302,10 @@ struct ShadowCamera
 }
 
 [[nodiscard]] inline ShadowView BuildStableDirectionalCascade(uint64_t lightId, uint32_t cascade,
-                                                              const ShadowCamera &camera, glm::vec3 rayDirection,
-                                                              float splitNear, float splitFar,
+                                                              const std::array<glm::vec3, 8> &corners,
+                                                              glm::vec3 rayDirection, float splitNear, float splitFar,
                                                               const ShadowAtlasRect &atlas)
 {
-    const auto corners = FrustumSliceCorners(camera, splitNear, splitFar);
     glm::vec3 center(0.0f);
     for (const glm::vec3 &corner : corners)
         center += corner;
@@ -275,10 +334,8 @@ struct ShadowCamera
     glm::vec3 centerInLight = glm::vec3(lightRotation * glm::vec4(center, 1.0f));
     centerInLight.x = std::round(centerInLight.x / worldUnitsPerTexel) * worldUnitsPerTexel;
     centerInLight.y = std::round(centerInLight.y / worldUnitsPerTexel) * worldUnitsPerTexel;
-    const glm::vec3 snappedWorldCenter =
-        glm::vec3(glm::inverse(lightRotation) * glm::vec4(centerInLight, 1.0f));
-    const glm::mat4 view =
-        glm::lookAtRH(snappedWorldCenter - rayDirection * eyeDistance, snappedWorldCenter, up);
+    const glm::vec3 snappedWorldCenter = glm::vec3(glm::inverse(lightRotation) * glm::vec4(centerInLight, 1.0f));
+    const glm::mat4 view = glm::lookAtRH(snappedWorldCenter - rayDirection * eyeDistance, snappedWorldCenter, up);
 
     const float nearPlane = 0.1f;
     const float farPlane = eyeDistance + radius + casterMargin;
@@ -294,7 +351,19 @@ struct ShadowCamera
     result.worldUnitsPerTexel = worldUnitsPerTexel;
     result.splitNear = splitNear;
     result.splitFar = splitFar;
+    result.lightVector = -rayDirection;
+    result.viewRight = glm::vec3(view[0][0], view[1][0], view[2][0]);
+    result.viewUp = glm::vec3(view[0][1], view[1][1], view[2][1]);
     return result;
+}
+
+[[nodiscard]] inline ShadowView BuildStableDirectionalCascade(uint64_t lightId, uint32_t cascade,
+                                                              const ShadowCamera &camera, glm::vec3 rayDirection,
+                                                              float splitNear, float splitFar,
+                                                              const ShadowAtlasRect &atlas)
+{
+    return BuildStableDirectionalCascade(lightId, cascade, FrustumSliceCorners(camera, splitNear, splitFar),
+                                         rayDirection, splitNear, splitFar, atlas);
 }
 
 [[nodiscard]] inline ShadowView BuildSpotShadowView(uint64_t lightId, glm::vec3 position, glm::vec3 rayDirection,
@@ -320,6 +389,10 @@ struct ShadowCamera
     result.nearPlane = nearPlane;
     result.farPlane = farPlane;
     result.worldUnitsPerTexel = worldUnitsPerTexel;
+    result.lightVector = position;
+    result.lightVectorIsPosition = true;
+    result.viewRight = glm::vec3(view[0][0], view[1][0], view[2][0]);
+    result.viewUp = glm::vec3(view[0][1], view[1][1], view[2][1]);
     return result;
 }
 
@@ -347,6 +420,10 @@ struct ShadowCamera
         result.nearPlane = nearPlane;
         result.farPlane = farPlane;
         result.worldUnitsPerTexel = worldUnitsPerTexel;
+        result.lightVector = position;
+        result.lightVectorIsPosition = true;
+        result.viewRight = glm::vec3(view[0][0], view[1][0], view[2][0]);
+        result.viewUp = glm::vec3(view[0][1], view[1][1], view[2][1]);
     }
     return views;
 }

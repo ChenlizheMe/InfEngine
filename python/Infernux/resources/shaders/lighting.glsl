@@ -103,19 +103,22 @@ float sampleShadowViewVisibility(uint viewIndex, vec3 worldPos, vec3 normal, vec
     float nDotL = clamp(dot(N, L), 0.0, 1.0);
     float slope = clamp(sqrt(max(1.0 - nDotL * nDotL, 0.0)) / max(nDotL, 0.2), 0.0, 4.0);
 
-    // Perspective shadow texels grow with distance from the light. Store the
-    // far-plane footprint once, then scale it back to the receiver depth so a
-    // nearby object is not biased as if it lived at the end of the light range.
+    // World-space size of one shadow texel at the receiver. Perspective views
+    // (metadata.x != 0) store the far-plane footprint; scale it back to the
+    // receiver's distance so nearby surfaces are not over-biased.
     vec4 unbiassedClip = shadowView.viewProjection * vec4(worldPos, 1.0);
     float perspectiveScale = shadowView.metadata.x == 0u
         ? 1.0
         : clamp(abs(unbiassedClip.w) / max(shadowView.depthTexel.y, 0.000001), 0.001, 1.0);
     float worldTexel = max(shadowView.depthTexel.z * perspectiveScale, 0.000001);
+    float filterTexels = softFilter ? clamp(shadowView.depthTexel.w, 0.5, 4.0) : 1.0;
 
-    // Bias is measured in shadow texels. There is deliberately no implicit
-    // slope or raster bias: setting both controls to zero means exactly zero.
+    // Unified receiver bias for every light type, measured in shadow texels:
+    // the normal offset lifts the receiver off its surface proportionally to
+    // the surface slope and the PCF footprint, the light-direction offset
+    // absorbs depth quantization of the map.
     vec3 biasedPosition = worldPos;
-    biasedPosition += N * (shadowParams.z * worldTexel * (1.0 + slope));
+    biasedPosition += N * (shadowParams.z * worldTexel * (0.5 * filterTexels + slope));
     biasedPosition += L * (shadowParams.y * worldTexel);
 
     vec4 clip = shadowView.viewProjection * vec4(biasedPosition, 1.0);
@@ -136,11 +139,10 @@ float sampleShadowViewVisibility(uint viewIndex, vec3 worldPos, vec3 normal, vec
     if (!softFilter)
         return shadowBilinearPcf(atlasUv, ndc.z, tileMin, tileMax, atlasSize);
 
-    // Each tap is itself a hardware-filtered 2x2 depth comparison. A fixed 4x4
-    // tent is temporally stable without TAA; the previous random per-pixel
-    // rotation traded staircase edges for visible noise and crawl.
-    float radius = clamp(shadowView.depthTexel.w, 0.5, 3.5);
-    float stepSize = radius / 1.5;
+    // Deterministic 4x4 tent PCF. Each tap is itself a hardware-filtered 2x2
+    // depth comparison, so the kernel covers (3*step + 2) texels while staying
+    // free of spatial and temporal noise. Pure PCF - no blocker search.
+    float stepSize = filterTexels / 1.5;
     float visibility = 0.0;
     float totalWeight = 0.0;
     for (int y = 0; y < 4; ++y) {
@@ -180,6 +182,11 @@ float sampleDirectionalViews(uint firstView, uint viewCount, vec4 shadowParams,
         float blend = smoothstep(0.0, overlap, current.splitData.y - viewDepth);
         float nextShadow = sampleShadowView(firstView + selected + 1u, worldPos, normal, toLight, shadowParams);
         shadow = mix(nextShadow, shadow, blend);
+    } else {
+        ShadowViewData last = lighting.shadowViews[firstView + selected];
+        float fadeWidth = max((last.splitData.y - last.splitData.x) * 0.1, 0.0001);
+        float fade = smoothstep(last.splitData.y - fadeWidth, last.splitData.y, viewDepth);
+        shadow = mix(shadow, 1.0, fade);
     }
     return shadow;
 }

@@ -136,6 +136,66 @@ def test_numpy_aot_runtime_uses_dense_contiguous_storage_and_stable_output_buffe
     assert "opcode" not in program.emitters[0].update.source
 
 
+def test_numpy_plane_collision_resolves_penetration_bounce_and_tangent_friction():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "velocity",
+                "particle.init.set_velocity",
+                properties={"value": [1.0, -2.0, 0.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.init", "out", "velocity", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_plane",
+                properties={"radius": 0.25, "restitution": 0.5, "friction": 0.25},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    settings = EmitterSettings(
+        capacity=1,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+        lifetime=ScalarRange(10.0, 10.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(settings=settings, init=init, update=update),)
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    program = NumpyParticleCompiler().compile(
+        hir, ParticleKernelLowerer().lower(hir)
+    )
+    runtime = program.create_runtime()
+
+    runtime.tick(0.0)
+
+    np.testing.assert_allclose(
+        runtime.attributes["builtin.position"][0], [0.0, 0.25, 0.0]
+    )
+    np.testing.assert_allclose(
+        runtime.attributes["builtin.velocity"][0], [0.75, 1.0, 0.0]
+    )
+
+
 def test_numpy_random_matches_portable_scalar_golden_for_every_particle():
     settings = EmitterSettings(
         capacity=8,

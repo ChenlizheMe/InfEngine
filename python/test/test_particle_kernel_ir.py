@@ -192,6 +192,45 @@ def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contra
     assert set(topology).issubset(exports)
 
 
+def test_plane_collision_lowers_after_position_integration_with_portable_state_writes():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_plane",
+                properties={"radius": 0.25, "restitution": 0.5, "friction": 0.25},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    emitter = _lower(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    ).emitters[0]
+    instructions = emitter.update.instructions
+    opcodes = [instruction.opcode for instruction in instructions]
+
+    position_collision = opcodes.index("collide_plane_position")
+    velocity_collision = opcodes.index("collide_plane_velocity")
+    integrate_store = max(
+        index
+        for index, instruction in enumerate(instructions[:position_collision])
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.position"
+    )
+    assert integrate_store < position_collision < velocity_collision
+    assert {
+        instruction.immediate_dict()["attribute"]
+        for instruction in instructions[velocity_collision + 1 :]
+        if instruction.opcode == "store_attribute"
+    }.issuperset({"builtin.position", "builtin.velocity"})
+
+
 def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
     first_emitter = ParticleEmitterAsset(
         stable_id="data-emitter",

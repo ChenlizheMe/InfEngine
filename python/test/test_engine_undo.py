@@ -1265,7 +1265,7 @@ class TestSelectionUndoIntegration:
     def _apply_fn(self, ids):
         self.sel.set_ids(ids)
 
-    def test_editor_navigation_does_not_push_main_undo(self, _reset_undo_manager):
+    def test_editor_navigation_pushes_non_dirty_undo(self, _reset_undo_manager):
         module = _direct_import(
             "Infernux.engine._bootstrap_selection",
             "engine/_bootstrap_selection.py",
@@ -1274,9 +1274,21 @@ class TestSelectionUndoIntegration:
         selection = module.BootstrapSelectionMixin()
         selection._prev_selection_ids = []
         selection._prev_selected_file = ""
+        selection._apply_editor_selection_undo = lambda ids, path: (
+            setattr(selection, "_prev_selection_ids", list(ids)),
+            setattr(selection, "_prev_selected_file", path or ""),
+        )
         selection._record_editor_selection_change([42], "")
 
-        assert _reset_undo_manager._undo_stack == []
+        assert len(_reset_undo_manager._undo_stack) == 1
+        assert isinstance(_reset_undo_manager._undo_stack[0], EditorSelectionCommand)
+        assert not _reset_undo_manager._undo_stack[0].marks_dirty
+        assert selection._prev_selection_ids == [42]
+
+        _reset_undo_manager.undo()
+        assert selection._prev_selection_ids == []
+
+        _reset_undo_manager.redo()
         assert selection._prev_selection_ids == [42]
 
     def test_select_undo_redo_cycle(self, _reset_undo_manager, _fresh_selection):

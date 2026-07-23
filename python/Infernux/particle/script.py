@@ -76,6 +76,15 @@ class ParticleStream:
     def set_ribbon_order(self, value: int) -> None: ...
     def break_ribbon(self, value: bool) -> None: ...
     def acceleration(self, value) -> None: ...
+    def collide_plane(
+        self,
+        *,
+        point=(0.0, 0.0, 0.0),
+        normal=(0.0, 1.0, 0.0),
+        radius: float = 0.0,
+        restitution: float = 0.5,
+        friction: float = 0.1,
+    ) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
     def rotate_orientation(self, degrees_per_second) -> None: ...
     def kill_if(self, condition: bool) -> None: ...
@@ -136,6 +145,7 @@ class ParticleScriptCompiler:
         },
         "update": {
             "acceleration": ("particle.update.acceleration", "value"),
+            "collide_plane": ("particle.update.collide_plane", ""),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
             "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),

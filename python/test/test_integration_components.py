@@ -1271,8 +1271,8 @@ class TestLight:
         light = go.add_component("Light")
         assert light.light_type == LightType.Directional
         assert light.intensity == pytest.approx(1.0)
-        assert light.shadow_bias == pytest.approx(0.5)
-        assert light.shadow_normal_bias == pytest.approx(0.5)
+        assert light.shadow_bias == pytest.approx(1.0)
+        assert light.shadow_normal_bias == pytest.approx(1.0)
         assert light.affect_geometry is True
         assert light.affect_particles is True
 

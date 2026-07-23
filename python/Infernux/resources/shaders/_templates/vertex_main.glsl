@@ -36,9 +36,11 @@ ${VERTEX_CALL}
     v_Tangent   = worldTangent;
     v_Color     = v.color;
     v_TexCoord  = v.texCoord;
-    // Right-handed view space looks down -Z; expose a positive linear eye
-    // distance so CSM splits and depth helpers share one convention.
-    v_ViewDepth = -(ubo.view * worldPos).z;
+    // GLM_FORCE_LEFT_HANDED view space looks down +Z, so (view * pos).z is
+    // already the positive eye depth. Take abs() so CSM cascade selection and
+    // depth helpers always receive a positive linear depth regardless of the
+    // view-matrix handedness.
+    v_ViewDepth = abs((ubo.view * worldPos).z);
     gl_Position = ubo.proj * ubo.view * worldPos;
 ${PASS_VERTEX_OUTPUT}
 }

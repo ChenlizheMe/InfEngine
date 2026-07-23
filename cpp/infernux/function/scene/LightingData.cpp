@@ -316,7 +316,7 @@ void SceneLightCollector::SetCameraPosition(const glm::vec3 &position)
 }
 
 void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraPos, float shadowMapResolution,
-                                          const Camera *camera)
+                                          const Camera *camera, const lighting::ShadowDepthRange &visibleDepthRange)
 {
     m_shadowFrame = {};
     if (!scene || !std::isfinite(shadowMapResolution) || shadowMapResolution < 1.0f)
@@ -343,6 +343,49 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             shadowCamera.up = glm::normalize(transform->GetWorldUp());
         }
     }
+
+    // Cascades must cover exactly what the camera renders. Unproject the real
+    // view-projection matrix instead of rebuilding the frustum from
+    // fov/aspect: any drift between the two (render-target aspect updates,
+    // orthographic or oblique projections) shows up as shadows clipped along
+    // a straight light-space edge, worst when the camera is close to objects.
+    bool haveFrustumCorners = false;
+    std::array<glm::vec3, 4> frustumNearCorners{};
+    std::array<glm::vec3, 4> frustumFarCorners{};
+    if (camera) {
+        const glm::mat4 inverseViewProjection = glm::inverse(camera->GetViewProjectionMatrix());
+        const std::array<glm::vec2, 4> ndcCorners = {glm::vec2(-1.0f, -1.0f), glm::vec2(1.0f, -1.0f),
+                                                     glm::vec2(1.0f, 1.0f), glm::vec2(-1.0f, 1.0f)};
+        haveFrustumCorners = true;
+        for (size_t index = 0; index < ndcCorners.size(); ++index) {
+            const glm::vec4 nearPoint = inverseViewProjection * glm::vec4(ndcCorners[index], 0.0f, 1.0f);
+            const glm::vec4 farPoint = inverseViewProjection * glm::vec4(ndcCorners[index], 1.0f, 1.0f);
+            if (std::abs(nearPoint.w) < 1e-9f || std::abs(farPoint.w) < 1e-9f) {
+                haveFrustumCorners = false;
+                break;
+            }
+            frustumNearCorners[index] = glm::vec3(nearPoint) / nearPoint.w;
+            frustumFarCorners[index] = glm::vec3(farPoint) / farPoint.w;
+            for (int component = 0; component < 3; ++component) {
+                if (!std::isfinite(frustumNearCorners[index][component]) ||
+                    !std::isfinite(frustumFarCorners[index][component])) {
+                    haveFrustumCorners = false;
+                }
+            }
+            if (!haveFrustumCorners)
+                break;
+        }
+    }
+    // Points along a frustum edge vary linearly in view depth, so a slice at
+    // view depth d sits at fraction (d - near) / (far - near) along each edge.
+    const float frustumDepthRange = std::max(shadowCamera.farClip - shadowCamera.nearClip, 0.001f);
+    const auto frustumSliceAt = [&](float viewDepth) {
+        const float t = glm::clamp((viewDepth - shadowCamera.nearClip) / frustumDepthRange, 0.0f, 1.0f);
+        std::array<glm::vec3, 4> corners{};
+        for (size_t index = 0; index < corners.size(); ++index)
+            corners[index] = glm::mix(frustumNearCorners[index], frustumFarCorners[index], t);
+        return corners;
+    };
 
     std::vector<Light *> shadowLights;
     for (Light *light : SceneManager::Instance().GetActiveLights()) {
@@ -388,28 +431,46 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             // Keep the two camera-near cascades at half-atlas resolution. The
             // former 2:1:1:0.5 distribution made a 4096 atlas behave like a
             // 1024 map immediately after the first split.
-            const std::array<uint32_t, lighting::DirectionalCascadeCount> mainSizes{
-                atlasSize / 2u, atlasSize / 2u, atlasSize / 4u, atlasSize / 4u};
+            const std::array<uint32_t, lighting::DirectionalCascadeCount> mainSizes{atlasSize / 2u, atlasSize / 2u,
+                                                                                    atlasSize / 4u, atlasSize / 4u};
             const std::array<uint32_t, lighting::DirectionalCascadeCount> secondarySizes{
                 atlasSize / 4u, atlasSize / 4u, atlasSize / 8u, atlasSize / 8u};
             const auto &sizes = mainDirectional ? mainSizes : secondarySizes;
-            const float shadowDistance = std::min(shadowCamera.farClip, 160.0f);
-            const auto splits = lighting::PracticalCascadeSplits(shadowCamera.nearClip, shadowDistance, 0.72f);
+            // Fit each camera to its visible depth range. Distant objects move
+            // the logarithmic distribution outward without wasting close-up
+            // resolution in ordinary scenes.
+            const auto splits =
+                lighting::AdaptiveCascadeSplits(shadowCamera.nearClip, visibleDepthRange, shadowCamera.farClip);
             const auto tiles = atlas.AllocateBatchWithFallback(sizes, std::max(atlasSize / 16u, 16u), 4);
             if (!tiles)
                 continue;
             for (uint32_t cascade = 0; cascade < lighting::DirectionalCascadeCount; ++cascade) {
-                m_shadowFrame.views.push_back(lighting::BuildStableDirectionalCascade(
-                    lightId, cascade, shadowCamera, direction, splits[cascade], splits[cascade + 1],
-                    (*tiles)[cascade]));
+                if (haveFrustumCorners) {
+                    const auto nearSlice = frustumSliceAt(splits[cascade]);
+                    const auto farSlice = frustumSliceAt(splits[cascade + 1]);
+                    const std::array<glm::vec3, 8> sliceCorners = {nearSlice[0], nearSlice[1], nearSlice[2],
+                                                                   nearSlice[3], farSlice[0],  farSlice[1],
+                                                                   farSlice[2],  farSlice[3]};
+                    m_shadowFrame.views.push_back(
+                        lighting::BuildStableDirectionalCascade(lightId, cascade, sliceCorners, direction,
+                                                                splits[cascade], splits[cascade + 1], (*tiles)[cascade]));
+                } else {
+                    m_shadowFrame.views.push_back(
+                        lighting::BuildStableDirectionalCascade(lightId, cascade, shadowCamera, direction,
+                                                                splits[cascade], splits[cascade + 1], (*tiles)[cascade]));
+                }
             }
             mainDirectional = false;
         } else if (light->GetLightType() == LightType::Spot) {
             if (firstView + 1u > lighting::MaxShadowViews)
                 continue;
-            const std::array<uint32_t, 1> preferredSize{m_shadowFrame.atlasSize / 4u};
-            const auto tiles = atlas.AllocateBatchWithFallback(
-                preferredSize, std::max(m_shadowFrame.atlasSize / 32u, 16u), 4);
+            // Spend the available atlas budget on the active light first. A
+            // lone spot should not be capped at quarter resolution; the
+            // allocator still halves this request when higher-priority views
+            // already occupy the atlas.
+            const std::array<uint32_t, 1> preferredSize{m_shadowFrame.atlasSize / 2u};
+            const auto tiles =
+                atlas.AllocateBatchWithFallback(preferredSize, std::max(m_shadowFrame.atlasSize / 32u, 16u), 4);
             if (!tiles)
                 continue;
             m_shadowFrame.views.push_back(lighting::BuildSpotShadowView(
@@ -418,11 +479,13 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             constexpr uint32_t faceCount = 6u;
             if (firstView + faceCount > lighting::MaxShadowViews)
                 continue;
-            const uint32_t faceSize = m_shadowFrame.atlasSize / 8u;
-            const std::array<uint32_t, faceCount> faceSizes{
-                faceSize, faceSize, faceSize, faceSize, faceSize, faceSize};
-            const auto tiles = atlas.AllocateBatchWithFallback(
-                faceSizes, std::max(m_shadowFrame.atlasSize / 32u, 16u), 4);
+            // Six quarter-atlas faces fit in an otherwise empty atlas. Under
+            // pressure AllocateBatchWithFallback reduces the whole cubemap
+            // uniformly, preserving equal resolution across every seam.
+            const uint32_t faceSize = m_shadowFrame.atlasSize / 4u;
+            const std::array<uint32_t, faceCount> faceSizes{faceSize, faceSize, faceSize, faceSize, faceSize, faceSize};
+            const auto tiles =
+                atlas.AllocateBatchWithFallback(faceSizes, std::max(m_shadowFrame.atlasSize / 32u, 16u), 4);
             if (!tiles)
                 continue;
             const auto type = light->GetLightType() == LightType::Area ? lighting::ShadowViewType::AreaFace
@@ -436,6 +499,8 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             for (uint32_t index = firstView; index < firstView + viewCount; ++index) {
                 m_shadowFrame.views[index].cullingMask = light->GetCullingMask();
                 m_shadowFrame.views[index].filterRadiusTexels = light->GetShadowSoftness();
+                m_shadowFrame.views[index].depthBiasTexels = light->GetShadowBias();
+                m_shadowFrame.views[index].normalBiasTexels = light->GetShadowNormalBias();
             }
             m_shadowFrame.assignments.push_back({lightId, firstView, viewCount});
         }
@@ -514,8 +579,7 @@ void SceneLightCollector::BuildShaderLightingUBO()
     const uint32_t shadowViewCount =
         std::min<uint32_t>(static_cast<uint32_t>(m_shadowFrame.views.size()), lighting::MaxShadowViews);
     m_shaderLightingUBO.shadowViewHeader =
-        glm::uvec4(shadowViewCount, m_shadowFrame.atlasSize,
-                   static_cast<uint32_t>(m_canonicalLightSnapshot.generation),
+        glm::uvec4(shadowViewCount, m_shadowFrame.atlasSize, static_cast<uint32_t>(m_canonicalLightSnapshot.generation),
                    static_cast<uint32_t>(m_canonicalLightSnapshot.generation >> 32u));
     for (uint32_t index = 0; index < lighting::MaxShadowViews; ++index) {
         auto &gpuView = m_shaderLightingUBO.shadowViews[index];
@@ -526,8 +590,7 @@ void SceneLightCollector::BuildShaderLightingUBO()
         const auto &view = m_shadowFrame.views[index];
         gpuView.viewProjection = view.viewProjection;
         gpuView.atlasScaleOffset = view.atlas.ScaleOffset(m_shadowFrame.atlasSize);
-        gpuView.depthTexel =
-            glm::vec4(view.nearPlane, view.farPlane, view.worldUnitsPerTexel, view.filterRadiusTexels);
+        gpuView.depthTexel = glm::vec4(view.nearPlane, view.farPlane, view.worldUnitsPerTexel, view.filterRadiusTexels);
         gpuView.splitData = glm::vec4(view.splitNear, view.splitFar, 0.0f, 0.0f);
         gpuView.metadata = glm::uvec4(static_cast<uint32_t>(view.type), view.subView, 0u, 0u);
     }

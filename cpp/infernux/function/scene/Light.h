@@ -69,6 +69,9 @@ constexpr uint32_t AllLightInfluenceDomains =
 class Light : public Component
 {
   public:
+    static constexpr float ShadowDepthBiasTexels = 1.0f;
+    static constexpr float ShadowNormalBiasTexels = 1.0f;
+
     Light() = default;
     ~Light() override;
 
@@ -206,20 +209,12 @@ class Light : public Component
 
     [[nodiscard]] float GetShadowBias() const
     {
-        return m_shadowBias;
-    }
-    void SetShadowBias(float bias)
-    {
-        m_shadowBias = std::max(bias, 0.0f);
+        return ShadowDepthBiasTexels;
     }
 
     [[nodiscard]] float GetShadowNormalBias() const
     {
-        return m_shadowNormalBias;
-    }
-    void SetShadowNormalBias(float bias)
-    {
-        m_shadowNormalBias = std::max(bias, 0.0f);
+        return ShadowNormalBiasTexels;
     }
 
     [[nodiscard]] float GetShadowSoftness() const
@@ -316,11 +311,6 @@ class Light : public Component
     // Shadows
     LightShadows m_shadows = LightShadows::Hard;
     float m_shadowStrength = 1.0f;
-    // Bias values are expressed in shadow-map texels. Keeping both values in
-    // the same resolution-independent unit makes a light behave consistently
-    // when the pipeline changes its shadow atlas size.
-    float m_shadowBias = 0.5f;
-    float m_shadowNormalBias = 0.5f;
     float m_shadowSoftness = 1.5f;
 
     // Rendering

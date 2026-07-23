@@ -231,8 +231,6 @@ class HierarchyCreationService:
         if light_comp:
             light_comp.light_type = light_type
             light_comp.shadows = LightShadows.Hard
-            light_comp.shadow_bias = 0.5
-            light_comp.shadow_normal_bias = 0.5
             if light_type == LightType.Directional and obj.transform:
                 obj.transform.euler_angles = Vector3(50.0, -30.0, 0.0)
             elif light_type == LightType.Point:

@@ -1020,6 +1020,17 @@ def _compile_stage(
                 f"    np.logical_and(state.alive[particle_slice], np.logical_not({source}), "
                 f"out=state.alive[particle_slice])"
             )
+        elif opcode in {"collide_plane_position", "collide_plane_velocity"}:
+            operands = operand_names(instruction)
+            output = result_buffer(instruction)
+            helper = (
+                "_collide_plane_position"
+                if opcode == "collide_plane_position"
+                else "_collide_plane_velocity"
+            )
+            lines.append(
+                f"    {helper}({output}, {', '.join(operands)}, workspace, count)"
+            )
         elif opcode == "export_attribute":
             source = operand_names(instruction)[0]
             stable_id = immediates["attribute"]
@@ -1047,6 +1058,8 @@ def _compile_stage(
         "_gradients": tuple(gradients),
         "_convert_space": _convert_space,
         "_normalize": _normalize,
+        "_collide_plane_position": _collide_plane_position,
+        "_collide_plane_velocity": _collide_plane_velocity,
         "_random_range": _random_range,
         "_sample_shape": _sample_shape,
         "_sample_point_cache": _sample_point_cache,
@@ -1410,6 +1423,92 @@ def _normalize(output, source, length_scratch) -> None:
         out=output,
         where=length_scratch[:, None] > 0.0,
     )
+
+
+def _collision_normal(normal, workspace, count):
+    normalized = workspace.sample_vector[:count]
+    source = np.broadcast_to(normal, (count, 3))
+    _normalize(normalized, source, workspace.random_float[0][:count])
+    return normalized
+
+
+def _collide_plane_position(
+    output,
+    position,
+    velocity,
+    point,
+    normal,
+    radius,
+    restitution,
+    friction,
+    workspace,
+    count,
+) -> None:
+    del velocity, restitution, friction
+    normalized = _collision_normal(normal, workspace, count)
+    delta = workspace.field_fraction[:count]
+    np.subtract(position, point, out=delta)
+    np.multiply(delta, normalized, out=delta)
+    distance = workspace.random_float[1][:count]
+    np.sum(delta, axis=1, out=distance)
+    clamped_radius = workspace.random_float[2][:count]
+    np.maximum(radius, 0.0, out=clamped_radius)
+    np.subtract(distance, clamped_radius, out=distance)
+    penetrating = workspace.sample_valid[:count]
+    np.less(distance, 0.0, out=penetrating)
+    correction = workspace.field_coordinates[:count]
+    np.negative(distance, out=distance)
+    np.multiply(normalized, distance[:, None], out=correction)
+    np.copyto(output, position, casting="unsafe")
+    np.add(output, correction, out=output, where=penetrating[:, None])
+
+
+def _collide_plane_velocity(
+    output,
+    position,
+    velocity,
+    point,
+    normal,
+    radius,
+    restitution,
+    friction,
+    workspace,
+    count,
+) -> None:
+    normalized = _collision_normal(normal, workspace, count)
+    temporary = workspace.field_fraction[:count]
+    np.subtract(position, point, out=temporary)
+    np.multiply(temporary, normalized, out=temporary)
+    distance = workspace.random_float[1][:count]
+    np.sum(temporary, axis=1, out=distance)
+    clamped_radius = workspace.random_float[2][:count]
+    np.maximum(radius, 0.0, out=clamped_radius)
+    penetrating = workspace.sample_valid[:count]
+    np.less(distance, clamped_radius, out=penetrating)
+
+    normal_component = workspace.field_coordinates[:count]
+    np.multiply(velocity, normalized, out=normal_component)
+    normal_speed = workspace.random_float[3][:count]
+    np.sum(normal_component, axis=1, out=normal_speed)
+    moving_into_plane = workspace.field_valid[:count]
+    np.less(normal_speed, 0.0, out=moving_into_plane)
+    np.logical_and(penetrating, moving_into_plane, out=penetrating)
+
+    np.multiply(normalized, normal_speed[:, None], out=temporary)
+    np.subtract(velocity, temporary, out=temporary)
+    clamped_friction = workspace.random_float[4][:count]
+    np.clip(friction, 0.0, 1.0, out=clamped_friction)
+    np.subtract(1.0, clamped_friction, out=clamped_friction)
+    np.multiply(temporary, clamped_friction[:, None], out=temporary)
+
+    clamped_restitution = workspace.random_float[5][:count]
+    np.clip(restitution, 0.0, 1.0, out=clamped_restitution)
+    np.negative(normal_speed, out=normal_speed)
+    np.multiply(clamped_restitution, normal_speed, out=clamped_restitution)
+    np.multiply(normalized, clamped_restitution[:, None], out=normal_component)
+    np.add(temporary, normal_component, out=temporary)
+    np.copyto(output, velocity, casting="unsafe")
+    np.copyto(output, temporary, where=penetrating[:, None])
 
 
 def _sample_point_cache(output, index_or_id, sample, context, workspace) -> None:

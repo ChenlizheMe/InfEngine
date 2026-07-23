@@ -36,6 +36,22 @@
 namespace infernux
 {
 
+namespace
+{
+
+struct alignas(16) ShadowPassUniformData
+{
+    glm::mat4 model{1.0f};
+    glm::mat4 view{1.0f};
+    glm::mat4 projection{1.0f};
+    glm::vec4 lightVector{}; ///< xyz = direction toward light or local-light position; w = position flag
+    glm::vec4 bias{};        ///< xy = depth/normal bias in texels, z = world texel size, w = far plane
+};
+
+static_assert(sizeof(ShadowPassUniformData) == 224);
+
+} // namespace
+
 // ============================================================================
 // Rendering
 // ============================================================================
@@ -908,17 +924,16 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
 
-    struct ShadowUBO
-    {
-        glm::mat4 model;
-        glm::mat4 view;
-        glm::mat4 proj;
-    };
     for (uint32_t viewIndex = 0; viewIndex < viewCount; ++viewIndex) {
         const uint32_t bufferIndex = frameIndex * lighting::MaxShadowViews + viewIndex;
         if (bufferIndex >= cameraResources.mappedPointers.size() || !cameraResources.mappedPointers[bufferIndex])
             return;
-        const ShadowUBO shadowUbo{glm::mat4(1.0f), glm::mat4(1.0f), shadowFrame.views[viewIndex].viewProjection};
+        const lighting::ShadowView &shadowView = shadowFrame.views[viewIndex];
+        ShadowPassUniformData shadowUbo{};
+        shadowUbo.projection = shadowView.viewProjection;
+        shadowUbo.lightVector = glm::vec4(shadowView.lightVector, shadowView.lightVectorIsPosition ? 1.0f : 0.0f);
+        shadowUbo.bias = glm::vec4(shadowView.depthBiasTexels, shadowView.normalBiasTexels,
+                                   shadowView.worldUnitsPerTexel, shadowView.farPlane);
         std::memcpy(cameraResources.mappedPointers[bufferIndex], &shadowUbo, sizeof(shadowUbo));
     }
 
@@ -1051,6 +1066,13 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         scissor.extent = {tileW, tileH};
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
+        // Unified caster bias for every view type: the slope-scaled raster
+        // bias tracks each polygon's own depth gradient (which no
+        // receiver-side term can express), while the receiver-side
+        // normal/light offsets in lighting.glsl absorb quantization. Casters
+        // themselves are never moved in world space.
+        vkCmdSetDepthBias(cmdBuf, 1.0f, 0.0f, 2.0f);
+
         // The complete shadow descriptor state is bound per batch below. Set 0
         // belongs to this camera and this shadow view.
         VkDescriptorSet cascadeDescSet = cameraResources.descriptorSets[descIdx];
@@ -1061,13 +1083,18 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
         // Per-cascade frustum cull into a compact index list, then upload
         // model matrices for visible objects and batch by (pipeline, VB, submesh).
+        // Directional cascades must not cull against the light-space near
+        // plane: casters between the light and the cascade volume are pancaked
+        // onto the near plane by the shadow vertex shader, so rejecting them
+        // here would punch holes into shadows cast by tall or distant objects.
+        const bool ignoreNearPlane = shadowView.type == lighting::ShadowViewType::DirectionalCascade;
         m_shadowViewVisible.clear();
         m_shadowViewVisible.reserve(m_shadowDrawScratch.size());
         for (size_t si = 0; si < m_shadowDrawScratch.size(); ++si) {
             const auto &sd = m_shadowDrawScratch[si];
             if ((sd.dc->layerMask & shadowView.cullingMask) == 0u)
                 continue;
-            if (sd.worldBounds.IsValid() && !shadowFrustum.IntersectsAABB(sd.worldBounds))
+            if (sd.worldBounds.IsValid() && !shadowFrustum.IntersectsAABB(sd.worldBounds, ignoreNearPlane))
                 continue;
             m_shadowViewVisible.push_back(static_cast<uint32_t>(si));
         }
@@ -1316,7 +1343,7 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
         return false;
     }
 
-    const VkDeviceSize uboSize = sizeof(glm::mat4) * 3;
+    const VkDeviceSize uboSize = sizeof(ShadowPassUniformData);
     resources.uniformBuffers.resize(totalSets, VK_NULL_HANDLE);
     resources.allocations.resize(totalSets, VK_NULL_HANDLE);
     resources.mappedPointers.resize(totalSets, nullptr);

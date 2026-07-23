@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from typing import Optional
 
 import numpy as np
@@ -75,6 +76,9 @@ class ParticleSystem(InxComponent):
     _data_interface_overrides: dict[str, AssetReference]
     _playing: bool = False
     _editor_preview_active: bool = False
+    _compile_retry_at: float = 0.0
+    _last_compile_error: str = ""
+    _last_compile_error_log_at: float = 0.0
 
     def awake(self):
         if hasattr(self, "_submitted_batch_ids"):
@@ -105,6 +109,9 @@ class ParticleSystem(InxComponent):
             self._batch_id = int(self.component_id) or 1
         self._playing = bool(playing)
         self._editor_preview_active = False
+        self._compile_retry_at = 0.0
+        self._last_compile_error = ""
+        self._last_compile_error_log_at = 0.0
 
     def _ensure_runtime_state(self, *, playing: bool = False) -> None:
         if not hasattr(self, "_submitted_batch_ids"):
@@ -256,7 +263,7 @@ class ParticleSystem(InxComponent):
         marker = object()
         previous = overrides.get(stable_id, marker)
         overrides[stable_id] = reference
-        if self._has_runtime() and not self._compile_asset():
+        if self._has_runtime() and not self._compile_asset(force=True):
             if previous is marker:
                 overrides.pop(stable_id, None)
             else:
@@ -273,7 +280,7 @@ class ParticleSystem(InxComponent):
         if not stable_id or not overrides or stable_id not in overrides:
             return False
         previous = overrides.pop(stable_id)
-        if self._has_runtime() and not self._compile_asset():
+        if self._has_runtime() and not self._compile_asset(force=True):
             overrides[stable_id] = previous
             return False
         return True
@@ -350,7 +357,10 @@ class ParticleSystem(InxComponent):
         self._remove_native_batch()
         self._clear_runtime_state()
 
-    def _compile_asset(self) -> bool:
+    def _compile_asset(self, *, force: bool = False) -> bool:
+        now = time.monotonic()
+        if not force and now < getattr(self, "_compile_retry_at", 0.0):
+            return False
         graph_ref = get_raw_field_value(self, "graph")
         if graph_ref is not None and (
             isinstance(graph_ref, ParticleGraphAsset)
@@ -361,8 +371,26 @@ class ParticleSystem(InxComponent):
                 and graph_ref.resolve() is not None
             )
         ):
-            return self._compile_particle_graph(graph_ref)
+            compiled = self._compile_particle_graph(graph_ref)
+            if compiled:
+                self._compile_retry_at = 0.0
+                self._last_compile_error = ""
+            elif self._compile_retry_at <= now:
+                self._compile_retry_at = now + 1.0
+            return compiled
         return False
+
+    def _report_compile_failure(self, exc: Exception) -> None:
+        now = time.monotonic()
+        message = str(exc)
+        self._compile_retry_at = now + 1.0
+        if (
+            message != getattr(self, "_last_compile_error", "")
+            or now - getattr(self, "_last_compile_error_log_at", 0.0) >= 5.0
+        ):
+            Debug.log_error(f"[ParticleSystem] ParticleGraph compile failed: {message}")
+            self._last_compile_error = message
+            self._last_compile_error_log_at = now
 
     def _compile_particle_graph(self, graph_ref: ParticleGraphRef) -> bool:
         try:
@@ -481,7 +509,7 @@ class ParticleSystem(InxComponent):
             else:
                 self._remove_gpu_emitters()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            Debug.log_error(f"[ParticleSystem] ParticleGraph compile failed: {exc}")
+            self._report_compile_failure(exc)
             return False
 
         self._remove_cpu_batches()
@@ -1198,6 +1226,9 @@ class ParticleSystem(InxComponent):
         self._artifact_source_key = ""
         self._emitter_to_world_cache = None
         self._gpu_transform_buffers = {}
+        self._compile_retry_at = 0.0
+        self._last_compile_error = ""
+        self._last_compile_error_log_at = 0.0
 
     @staticmethod
     def _native_engine():

@@ -15,6 +15,7 @@
 #include <InxLog.h>
 #include <algorithm>
 #include <function/audio/AudioEngine.h>
+#include <platform/input/InputManager.h>
 
 namespace
 {
@@ -28,6 +29,62 @@ double ProfileMsSince(ProfileClock::time_point start)
 
 namespace infernux
 {
+
+namespace
+{
+void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaTime)
+{
+    InputManager &input = InputManager::Instance();
+    const bool captured = input.IsEditorMouseCaptureActive();
+    const bool rightDown = captured && input.GetMouseButton(1);
+    const bool middleDown = captured && input.GetMouseButton(2);
+
+    static bool previousRightDown = false;
+    static bool previousMiddleDown = false;
+    if (rightDown != previousRightDown) {
+        if (rightDown)
+            controller.OnMouseButtonDown(1, 0.0f, 0.0f);
+        else
+            controller.OnMouseButtonUp(1, 0.0f, 0.0f);
+        previousRightDown = rightDown;
+    }
+    if (middleDown != previousMiddleDown) {
+        if (middleDown)
+            controller.OnMouseButtonDown(2, 0.0f, 0.0f);
+        else
+            controller.OnMouseButtonUp(2, 0.0f, 0.0f);
+        previousMiddleDown = middleDown;
+    }
+
+    if (captured) {
+        const auto [deltaX, deltaY] = input.ConsumeEditorMouseDelta();
+        if (rightDown && (deltaX != 0.0f || deltaY != 0.0f))
+            controller.ApplyRotation(deltaX, deltaY);
+        else if (middleDown && (deltaX != 0.0f || deltaY != 0.0f))
+            controller.ApplyPan(deltaX, deltaY);
+    }
+
+    const auto updateKey = [&](SDL_Scancode scancode, int controllerKey) {
+        if (rightDown && input.GetKey(static_cast<int>(scancode)))
+            controller.OnKeyDown(controllerKey);
+        else
+            controller.OnKeyUp(controllerKey);
+    };
+    updateKey(SDL_SCANCODE_W, 'W');
+    updateKey(SDL_SCANCODE_A, 'A');
+    updateKey(SDL_SCANCODE_S, 'S');
+    updateKey(SDL_SCANCODE_D, 'D');
+    updateKey(SDL_SCANCODE_Q, 'Q');
+    updateKey(SDL_SCANCODE_E, 'E');
+    const bool shiftDown = rightDown && (input.GetKey(SDL_SCANCODE_LSHIFT) || input.GetKey(SDL_SCANCODE_RSHIFT));
+    if (shiftDown)
+        controller.OnKeyDown(SDL_SCANCODE_LSHIFT);
+    else
+        controller.OnKeyUp(SDL_SCANCODE_LSHIFT);
+
+    controller.Update(std::max(deltaTime, 0.0f));
+}
+} // namespace
 
 SceneManager &SceneManager::Instance()
 {
@@ -205,10 +262,8 @@ void SceneManager::Update(float deltaTime)
 {
     m_lastFrameProfile = {};
 
-    // Editor camera navigation is advanced by Infernux::ProcessSceneViewInput,
-    // where the current Scene View hover/capture state is known. Updating it
-    // here would apply stale key state or move twice in one frame.
     auto t0 = ProfileClock::now();
+    UpdateCapturedEditorCamera(m_editorCamera, deltaTime);
     m_lastFrameProfile.editorCameraMs += ProfileMsSince(t0);
 
     if (!m_isPlaying && m_activeScene) {

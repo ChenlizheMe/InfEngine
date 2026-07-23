@@ -1129,9 +1129,8 @@ void RegisterSceneBindings(py::module_ &m)
         // Shadows
         .def_property("shadows", &Light::GetShadows, &Light::SetShadows, "Shadow type (None, Hard, Soft)")
         .def_property("shadow_strength", &Light::GetShadowStrength, &Light::SetShadowStrength, "Shadow strength (0-1)")
-        .def_property("shadow_bias", &Light::GetShadowBias, &Light::SetShadowBias, "Shadow depth bias")
-        .def_property("shadow_normal_bias", &Light::GetShadowNormalBias, &Light::SetShadowNormalBias,
-                      "Shadow normal-offset bias (world units along the surface normal)")
+        .def_property_readonly("shadow_bias", &Light::GetShadowBias, "Engine-managed shadow depth bias")
+        .def_property_readonly("shadow_normal_bias", &Light::GetShadowNormalBias, "Engine-managed shadow normal bias")
         .def_property("shadow_softness", &Light::GetShadowSoftness, &Light::SetShadowSoftness,
                       "Soft-shadow filter radius in shadow-map texels")
 

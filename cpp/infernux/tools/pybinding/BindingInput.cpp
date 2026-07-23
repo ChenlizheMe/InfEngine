@@ -75,6 +75,8 @@ void RegisterInputBindings(py::module_ &m)
                                "True when cursor is locked (relative mouse mode)")
         .def("set_editor_mouse_capture", &InputManager::SetEditorMouseCapture, py::arg("captured"),
              "Enable or disable editor-only Scene view mouse capture without marking gameplay cursor lock")
+        .def("consume_editor_mouse_delta", &InputManager::ConsumeEditorMouseDelta,
+             "Return and clear relative mouse movement accumulated since the last editor UI update")
         .def_property_readonly("is_editor_mouse_capture_active", &InputManager::IsEditorMouseCaptureActive,
                                "True when the Scene view editor camera is using relative mouse capture")
         .def_property_readonly("is_synthetic_input_frame", &InputManager::IsSyntheticInputFrame,

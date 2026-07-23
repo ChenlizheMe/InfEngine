@@ -184,18 +184,30 @@ class BootstrapSelectionMixin:
         return True
 
     def _record_editor_selection_change(self, new_ids: list, file_path: str):
-        """Track editor navigation without polluting the scene-edit Undo stack.
-
-        Create/delete/reparent commands already restore their relevant
-        selection explicitly. Recording every click here makes Ctrl+Z undo
-        navigation before the property edit the user is trying to revert.
-        """
+        """Record hierarchy/project navigation as a non-dirty Undo step."""
         from Infernux.engine.ui.asset_resource_preview import release_all_preview_authoring
+        from Infernux.engine.undo import EditorSelectionCommand, UndoManager
 
         release_all_preview_authoring()
+        previous_ids = list(self._prev_selection_ids)
+        previous_file = self._prev_selected_file or ""
+        next_ids = list(new_ids)
         next_file = file_path or ""
-        self._prev_selection_ids = list(new_ids)
+        self._prev_selection_ids = next_ids
         self._prev_selected_file = next_file
+
+        if previous_ids == next_ids and previous_file == next_file:
+            return
+        manager = UndoManager.instance()
+        if manager is None or manager.is_executing:
+            return
+        manager.record(EditorSelectionCommand(
+            previous_ids,
+            previous_file,
+            next_ids,
+            next_file,
+            self._apply_editor_selection_undo,
+        ))
 
     def _record_selection_change(self, new_ids: list):
         self._record_editor_selection_change(new_ids, "")

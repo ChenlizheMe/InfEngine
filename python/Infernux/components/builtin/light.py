@@ -213,22 +213,17 @@ class Light(BuiltinComponent):
         visible_when=lambda comp: int(comp.shadows) > 0,
         tooltip="Shadow strength (0-1)",
     )
-    shadow_bias = CppProperty(
-        "shadow_bias",
-        FieldType.FLOAT,
-        default=0.5,
-        range=(0.0, 4.0),
-        visible_when=lambda comp: int(comp.shadows) > 0,
-        tooltip="Depth bias in shadow-map texels. Zero applies no hidden bias.",
-    )
-    shadow_normal_bias = CppProperty(
-        "shadow_normal_bias",
-        FieldType.FLOAT,
-        default=0.5,
-        range=(0.0, 4.0),
-        visible_when=lambda comp: int(comp.shadows) > 0,
-        tooltip="Normal bias in shadow-map texels. It scales with the active cascade resolution.",
-    )
+
+    @property
+    def shadow_bias(self) -> float:
+        """Engine-managed depth bias, expressed in shadow-map texels."""
+        return float(self._require_cpp_component().shadow_bias)
+
+    @property
+    def shadow_normal_bias(self) -> float:
+        """Engine-managed normal bias, expressed in shadow-map texels."""
+        return float(self._require_cpp_component().shadow_normal_bias)
+
     shadow_softness = CppProperty(
         "shadow_softness",
         FieldType.FLOAT,
