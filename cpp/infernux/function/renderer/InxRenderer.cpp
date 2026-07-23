@@ -466,8 +466,12 @@ void InxRenderer::PreparePipeline()
             m_sceneRenderGraph = std::make_unique<SceneRenderGraph>();
         }
         if (m_sceneRenderGraph) {
-            m_sceneRenderGraph->Initialize(m_vkCore.get(), m_sceneRenderTarget.get());
-            m_sceneRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+            if (!m_sceneRenderGraph->Initialize(m_vkCore.get(), m_sceneRenderTarget.get())) {
+                INXLOG_ERROR("Failed to initialize the Scene View render graph");
+                m_sceneRenderGraph.reset();
+            } else {
+                m_sceneRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+            }
         }
 
         // Hook RenderGraph execution into the pre-render callback
@@ -3004,7 +3008,11 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
 
         // Create a dedicated SceneRenderGraph for game camera
         m_gameRenderGraph = std::make_unique<SceneRenderGraph>();
-        m_gameRenderGraph->Initialize(m_vkCore.get(), m_gameRenderTarget.get());
+        if (!m_gameRenderGraph->Initialize(m_vkCore.get(), m_gameRenderTarget.get())) {
+            INXLOG_ERROR("Failed to initialize the Game View render graph");
+            m_gameRenderGraph.reset();
+            return;
+        }
         m_gameRenderGraph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
         m_gameRenderGraph->SetEffectiveMsaaSamples(GetMsaaSamples());
 

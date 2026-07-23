@@ -52,12 +52,14 @@ layout(push_constant) uniform ViewConstants {
     vec4 material_tint;
     vec4 depth_reconstruct;
     vec4 lighting_control;
+    vec4 rendering_control;
 } view;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec2 out_uv;
 layout(location = 2) out vec3 out_world_position;
 layout(location = 3) out vec3 out_world_normal;
+layout(location = 4) out float out_view_depth;
 
 const vec2 corners[6] = vec2[](
     vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0),
@@ -85,6 +87,7 @@ void main() {
     out_uv = uvs[gl_VertexIndex % 6];
     out_world_position = world_position;
     out_world_normal = normalize(cross(view.camera_right.xyz, view.camera_up.xyz));
+    out_view_depth = gl_Position.w;
 }
 """
 
@@ -104,6 +107,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 material_tint;
     vec4 depth_reconstruct;
     vec4 lighting_control;
+    vec4 rendering_control;
 } view;
 
 float particle_eye_depth(float device_depth) {
@@ -125,6 +129,27 @@ void main() {
 """
 
 _PARTICLE_FORWARD_PLUS_LIGHTING_GLSL = """
+const int INX_MAX_DIRECTIONAL_LIGHTS = 4;
+const int INX_MAX_POINT_LIGHTS = 64;
+const int INX_MAX_SPOT_LIGHTS = 32;
+
+struct ParticleDirectionalLightData {
+    vec4 direction;
+    vec4 color;
+    vec4 shadow_params;
+};
+struct ParticlePointLightData {
+    vec4 position;
+    vec4 color;
+    vec4 attenuation;
+};
+struct ParticleSpotLightData {
+    vec4 position;
+    vec4 direction;
+    vec4 color;
+    vec4 spot_params;
+    vec4 attenuation;
+};
 struct CanonicalLightData {
     vec4 position_range;
     vec4 direction_spot;
@@ -133,19 +158,71 @@ struct CanonicalLightData {
     uvec4 metadata;
 };
 
-layout(set = 1, binding = 0, std430) readonly buffer CanonicalLights {
+layout(set = 1, binding = 0) uniform sampler2D particle_shadow_map;
+layout(set = 1, binding = 1, std430) readonly buffer CanonicalLights {
     uvec4 counts_generation;
     CanonicalLightData lights[];
 };
-layout(set = 1, binding = 1, std430) readonly buffer ParticleTileHeaders {
+layout(set = 1, binding = 2, std430) readonly buffer ParticleTileHeaders {
     uvec4 tile_headers[];
 };
-layout(set = 1, binding = 2, std430) readonly buffer ParticleTileLightMasks {
+layout(set = 1, binding = 3, std430) readonly buffer ParticleTileLightMasks {
     uint tile_light_masks[];
 };
+layout(std140, set = 1, binding = 4) uniform ParticleLighting {
+    ivec4 light_counts;
+    vec4 ambient_color;
+    vec4 ambient_sky_color;
+    vec4 ambient_equator_color;
+    vec4 ambient_ground_color;
+    vec4 camera_position;
+    ParticleDirectionalLightData directional_lights[INX_MAX_DIRECTIONAL_LIGHTS];
+    ParticlePointLightData point_lights[INX_MAX_POINT_LIGHTS];
+    ParticleSpotLightData spot_lights[INX_MAX_SPOT_LIGHTS];
+    mat4 light_vp[4];
+    vec4 shadow_cascade_splits;
+    vec4 shadow_map_params;
+} particle_lighting;
 
-vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, vec3 albedo, bool two_sided) {
-    vec3 result = albedo * 0.08;
+vec2 inx_particle_shadow_tile(int cascade_index) {
+    return vec2(float(cascade_index & 1), float(cascade_index >> 1)) * 0.5;
+}
+
+float inx_particle_shadow(vec3 world_position, vec3 normal, float view_depth) {
+    if (view.rendering_control.x < 0.5 || particle_lighting.shadow_map_params.y < 0.5 ||
+        particle_lighting.light_counts.x <= 0) return 1.0;
+    int cascade_count = clamp(int(particle_lighting.shadow_map_params.z), 1, 4);
+    int cascade_index = 0;
+    if (cascade_count > 1 && view_depth > particle_lighting.shadow_cascade_splits.x) cascade_index = 1;
+    if (cascade_count > 2 && view_depth > particle_lighting.shadow_cascade_splits.y) cascade_index = 2;
+    if (cascade_count > 3 && view_depth > particle_lighting.shadow_cascade_splits.z) cascade_index = 3;
+
+    vec4 shadow_params = particle_lighting.directional_lights[0].shadow_params;
+    if (shadow_params.w < 0.5 || shadow_params.x <= 0.0) return 1.0;
+    vec3 biased_position = world_position + normal * shadow_params.z;
+    vec4 clip = particle_lighting.light_vp[cascade_index] * vec4(biased_position, 1.0);
+    vec3 ndc = clip.xyz / max(clip.w, 0.00001);
+    vec2 tile_min = inx_particle_shadow_tile(cascade_index);
+    vec2 atlas_uv = tile_min + (ndc.xy * 0.5 + 0.5) * 0.5;
+    float current_depth = ndc.z - shadow_params.y;
+    if (current_depth <= 0.0 || current_depth >= 1.0) return 1.0;
+
+    float visibility = 0.0;
+    float texel = 1.0 / max(particle_lighting.shadow_map_params.x, 1.0);
+    int radius = shadow_params.w > 1.5 ? 1 : 0;
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
+            vec2 sample_uv = clamp(atlas_uv + vec2(x, y) * texel, tile_min + vec2(texel),
+                                   tile_min + vec2(0.5 - texel));
+            visibility += current_depth <= texture(particle_shadow_map, sample_uv).r ? 1.0 : 0.0;
+        }
+    }
+    float sample_count = float((radius * 2 + 1) * (radius * 2 + 1));
+    return mix(1.0, visibility / sample_count, shadow_params.x);
+}
+
+vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, float view_depth, vec3 albedo, bool two_sided) {
+    vec3 result = albedo * particle_lighting.ambient_color.rgb * particle_lighting.ambient_color.w;
     uint object_layer_mask = floatBitsToUint(view.lighting_control.w);
     uint directional_count = counts_generation.x;
     for (uint index = 0u; index < directional_count; ++index) {
@@ -155,7 +232,8 @@ vec3 inx_particle_forward_plus(vec3 world_position, vec3 normal, vec3 albedo, bo
         vec3 direction = normalize(-light.direction_spot.xyz);
         float ndotl = dot(normal, direction);
         ndotl = two_sided ? abs(ndotl) : max(ndotl, 0.0);
-        result += albedo * light.color_intensity.rgb * light.color_intensity.w * ndotl;
+        float shadow = index == 0u ? inx_particle_shadow(world_position, normal, view_depth) : 1.0;
+        result += albedo * light.color_intensity.rgb * light.color_intensity.w * ndotl * shadow;
     }
 
     uvec4 grid = tile_headers[0];
@@ -199,6 +277,7 @@ layout(location = 0) in vec4 in_color;
 layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec3 in_world_position;
 layout(location = 3) in vec3 in_world_normal;
+layout(location = 4) in float in_view_depth;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 2) uniform sampler2D texSampler;
@@ -211,6 +290,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 material_tint;
     vec4 depth_reconstruct;
     vec4 lighting_control;
+    vec4 rendering_control;
 } view;
 """ + _PARTICLE_FORWARD_PLUS_LIGHTING_GLSL + """
 float particle_eye_depth(float device_depth) {
@@ -226,7 +306,7 @@ void main() {
     base.a *= 1.0 - smoothstep(1.0 - edge_width, 1.0, length(centered_uv));
     if (view.lighting_control.x > 0.5) {
         base.rgb = inx_particle_forward_plus(
-            in_world_position, normalize(in_world_normal), base.rgb, true
+            in_world_position, normalize(in_world_normal), in_view_depth, base.rgb, true
         );
     }
     if (view.camera_up.w > 0.5) {
@@ -292,12 +372,14 @@ layout(push_constant) uniform ViewConstants {
     vec4 material_tint;
     vec4 depth_reconstruct;
     vec4 lighting_control;
+    vec4 rendering_control;
 } view;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec3 out_normal;
 layout(location = 2) out vec2 out_uv;
 layout(location = 3) out vec3 out_world_position;
+layout(location = 4) out float out_view_depth;
 
 void main() {
     uint particle_index = render_indices[gl_InstanceIndex];
@@ -329,6 +411,7 @@ void main() {
     out_normal = normalize(rotation * vertex.normal.xyz);
     out_uv = vertex.uv.xy;
     out_world_position = world_position;
+    out_view_depth = gl_Position.w;
 }
 """
 
@@ -346,6 +429,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 material_tint;
     vec4 depth_reconstruct;
     vec4 lighting_control;
+    vec4 rendering_control;
 } view;
 
 void main() {
@@ -359,6 +443,7 @@ layout(location = 0) in vec4 in_color;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec3 in_world_position;
+layout(location = 4) in float in_view_depth;
 layout(location = 0) out vec4 out_color;
 
 layout(push_constant) uniform ViewConstants {
@@ -368,13 +453,14 @@ layout(push_constant) uniform ViewConstants {
     vec4 material_tint;
     vec4 depth_reconstruct;
     vec4 lighting_control;
+    vec4 rendering_control;
 } view;
 """ + _PARTICLE_FORWARD_PLUS_LIGHTING_GLSL + """
 void main() {
     vec4 base = in_color * view.material_tint;
     if (view.lighting_control.x > 0.5) {
         base.rgb = inx_particle_forward_plus(
-            in_world_position, normalize(in_normal), base.rgb, false
+            in_world_position, normalize(in_normal), in_view_depth, base.rgb, false
         );
     }
     out_color = base;

@@ -6,14 +6,14 @@ struct CanonicalLightData {
     uvec4 metadata;
 };
 
-layout(std430, set = 1, binding = 0) readonly buffer CanonicalLightBuffer {
+layout(std430, set = 1, binding = 1) readonly buffer CanonicalLightBuffer {
     uvec4 canonicalLightCountsAndGeneration;
     CanonicalLightData canonicalLights[];
 };
-layout(std430, set = 1, binding = 1) readonly buffer ForwardPlusTileHeaderBuffer {
+layout(std430, set = 1, binding = 2) readonly buffer ForwardPlusTileHeaderBuffer {
     uvec4 forwardPlusTileHeaders[];
 };
-layout(std430, set = 1, binding = 2) readonly buffer ForwardPlusTileMaskBuffer {
+layout(std430, set = 1, binding = 3) readonly buffer ForwardPlusTileMaskBuffer {
     uint forwardPlusTileMasks[];
 };
 

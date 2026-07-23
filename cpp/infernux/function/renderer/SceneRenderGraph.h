@@ -626,6 +626,9 @@ class SceneRenderGraph
     // from stomping a set the GPU is still sampling in the previous frame.
     static constexpr uint32_t kMaxFramesInFlight = 2;
     VkDescriptorSet m_perViewDescSets[kMaxFramesInFlight] = {};
+    VkDescriptorSet m_particlePerViewDescSets[kMaxFramesInFlight] = {};
+    rhi::BindingLayoutHandle m_particlePerViewLayout;
+    rhi::BindGroupHandle m_particlePerViewGroups[kMaxFramesInFlight] = {};
 
     // Resource handle bound to the graph's "shadowMap" sampler input.
     // Resolved after Compile() so the per-view descriptor can be updated

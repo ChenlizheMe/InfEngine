@@ -540,12 +540,23 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     // Initialize the underlying RenderGraph with device context and pipeline manager
     m_renderGraph->Initialize(&vkCore->GetDeviceContext(), &vkCore->GetPipelineManager(), &vkCore->GetDeletionQueue());
 
-    // Allocate per-graph shadow descriptor sets (one per frame-in-flight)
-    // for multi-camera isolation without host/device descriptor races.
+    // Allocate separate geometry and particle views of the same canonical
+    // per-camera ABI. Their light grids differ by influence domain, while the
+    // shadow atlas and camera lighting lifetime remain shared.
+    auto &rhiDevice = vkCore->GetDeviceContext().GetRhiDevice();
+    m_particlePerViewLayout = rhiDevice.RegisterBindingLayout(vkCore->GetPerViewDescSetLayout());
+    if (!m_particlePerViewLayout.IsValid()) {
+        INXLOG_ERROR("SceneRenderGraph: failed to register the canonical particle per-view descriptor layout");
+        return false;
+    }
     for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
         m_perViewDescSets[i] = vkCore->AllocatePerViewDescriptorSet();
-        if (m_perViewDescSets[i] == VK_NULL_HANDLE) {
-            INXLOG_WARN("SceneRenderGraph: Failed to allocate per-view descriptor set [", i, "]");
+        m_particlePerViewDescSets[i] = vkCore->AllocatePerViewDescriptorSet();
+        m_particlePerViewGroups[i] = rhiDevice.RegisterBindGroup(m_particlePerViewDescSets[i]);
+        if (m_perViewDescSets[i] == VK_NULL_HANDLE || m_particlePerViewDescSets[i] == VK_NULL_HANDLE ||
+            !m_particlePerViewGroups[i].IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: failed to allocate the canonical per-view descriptor resources [", i, "]");
+            return false;
         }
     }
 
@@ -582,13 +593,12 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         } else {
             std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
             std::memcpy(spirv.data(), bytes.data(), bytes.size());
-            auto &rhiDevice = vkCore->GetDeviceContext().GetRhiDevice();
             m_particleLightingBuffer = rhiDevice.RegisterBuffer(vkCore->GetLightingUbo(), sizeof(ShaderLightingUBO));
             if (!m_forwardPlusGeometryGrid.Initialize(rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
-            } else if (!m_particleLightingBuffer.IsValid() ||
+            } else if (!m_particleLightingBuffer.IsValid() || !m_particlePerViewLayout.IsValid() ||
                        !m_forwardPlusParticleGrid.Initialize(rhiDevice, kMaxFramesInFlight,
-                                                             {spirv.data(), spirv.size()}, true)) {
+                                                             {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the particle Forward+ tiled-light builder");
             } else {
                 for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
@@ -597,8 +607,7 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
                         (void)m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
                                                                      CanonicalLightAffectsGeometry, lights->buffer);
                         (void)m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                                     CanonicalLightAffectsParticles, lights->buffer,
-                                                                     m_particleLightingBuffer);
+                                                                     CanonicalLightAffectsParticles, lights->buffer);
                     }
                 }
             }
@@ -634,8 +643,17 @@ void SceneRenderGraph::Destroy()
     m_sceneDepthResolver.Destroy();
     m_forwardPlusGeometryGrid.Shutdown();
     m_forwardPlusParticleGrid.Shutdown();
-    if (m_vkCore && m_particleLightingBuffer.IsValid())
-        m_vkCore->GetDeviceContext().GetRhiDevice().Release(m_particleLightingBuffer);
+    if (m_vkCore) {
+        auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+        for (auto &group : m_particlePerViewGroups) {
+            rhiDevice.Release(group);
+            group = {};
+        }
+        rhiDevice.Release(m_particlePerViewLayout);
+        if (m_particleLightingBuffer.IsValid())
+            rhiDevice.Release(m_particleLightingBuffer);
+    }
+    m_particlePerViewLayout = {};
     m_particleLightingBuffer = {};
     m_transientResources.clear();
     m_parameterBlocks.clear();
@@ -1107,8 +1125,7 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         const auto previousParticleMasks = m_forwardPlusParticleGrid.Frame(frameIndex).lightMasks;
         const auto previousParticleLights = m_forwardPlusParticleGrid.Frame(frameIndex).canonicalLights;
         if (!m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights->localCount,
-                                                    CanonicalLightAffectsParticles, lights->buffer,
-                                                    m_particleLightingBuffer)) {
+                                                    CanonicalLightAffectsParticles, lights->buffer)) {
             return false;
         }
         const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
@@ -1120,8 +1137,21 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
 
     RetireForwardPlusResources();
     const VkDescriptorSet descriptorSet = m_perViewDescSets[frameIndex];
+    if (descriptorSet == VK_NULL_HANDLE)
+        return false;
     m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights->buffer, lights->dataBytes, frame.headers,
                                               frame.config.headerBytes, frame.lightMasks, frame.config.maskBytes);
+    if (m_forwardPlusParticlesRequired) {
+        if (m_particlePerViewDescSets[frameIndex] == VK_NULL_HANDLE || !m_particlePerViewLayout.IsValid() ||
+            !m_particlePerViewGroups[frameIndex].IsValid() || !m_particleLightingBuffer.IsValid()) {
+            return false;
+        }
+        const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
+        m_vkCore->UpdatePerViewForwardPlusBuffers(
+            m_particlePerViewDescSets[frameIndex], lights->buffer, lights->dataBytes, particleFrame.headers,
+            particleFrame.config.headerBytes, particleFrame.lightMasks, particleFrame.config.maskBytes,
+            m_particleLightingBuffer, sizeof(ShaderLightingUBO));
+    }
     return true;
 }
 
@@ -1218,7 +1248,9 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     }
 
     VkDescriptorSet graphShadowDesc = GetPerViewDescriptorSet();
-    if (graphShadowDesc == VK_NULL_HANDLE) {
+    const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+    VkDescriptorSet particleShadowDesc = m_particlePerViewDescSets[frameIndex];
+    if (graphShadowDesc == VK_NULL_HANDLE || particleShadowDesc == VK_NULL_HANDLE) {
         return;
     }
 
@@ -1229,6 +1261,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
                         "white texture");
         }
         m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
+        m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
         return;
     }
 
@@ -1242,10 +1275,14 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
                 ", sampler=", shadowSampler == VK_NULL_HANDLE ? "null" : "ok", "); binding fallback white texture");
         }
         m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
+        m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
         return;
     }
 
     m_vkCore->UpdatePerViewShadowMap(graphShadowDesc, view, shadowSampler,
+                                     m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                             : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    m_vkCore->UpdatePerViewShadowMap(particleShadowDesc, view, shadowSampler,
                                      m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                                                              : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
@@ -2903,9 +2940,10 @@ void SceneRenderGraph::BuildRenderGraph()
                         particle::GpuParticleForwardPlusBindings particleLighting;
                         if (particlePass.target == ShaderCompileTarget::ForwardPlus && m_forwardPlusParticlesRequired) {
                             const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
-                            const auto &lightingFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
-                            particleLighting.layout = m_forwardPlusParticleGrid.ConsumerLayout();
-                            particleLighting.group = lightingFrame.consumerBindGroup;
+                            if (m_particlePerViewLayout.IsValid() && m_particlePerViewGroups[frameIndex].IsValid()) {
+                                particleLighting.layout = m_particlePerViewLayout;
+                                particleLighting.group = m_particlePerViewGroups[frameIndex];
+                            }
                         }
                         for (const auto &packet : particlePackets) {
                             auto packetView = view;

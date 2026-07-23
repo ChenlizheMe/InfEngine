@@ -657,6 +657,7 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     constants.lightingControl[0] = usesForwardPlusLighting ? 1.0f : 0.0f;
     constants.lightingControl[1] = m_semantics.sortMode != ParticleSortMode::None ? 1.0f : 0.0f;
     constants.lightingControl[2] = ResolveMaterialFloat("softness", 0.18f);
+    constants.renderingControl[0] = m_semantics.receiveShadows ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     if (usesForwardPlusLighting)
@@ -690,6 +691,7 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandE
     };
     std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
     constants.lightingControl[1] = m_semantics.sortMode != ParticleSortMode::None ? 1.0f : 0.0f;
+    constants.renderingControl[0] = 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),

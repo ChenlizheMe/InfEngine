@@ -1432,18 +1432,23 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
             // Check via IR: desc.imports already parsed all @import from source
             bool hasSurfaceImport = false;
             bool hasObjectUtilsImport = false;
+            bool hasParticleSurfaceUtilsImport = false;
             for (const auto &imp : desc.imports) {
                 if (imp == "surface")
                     hasSurfaceImport = true;
                 if (imp == "lib/object_utils")
                     hasObjectUtilsImport = true;
+                if (imp == "lib/particle_surface_utils")
+                    hasParticleSurfaceUtilsImport = true;
             }
             if (!hasSurfaceImport) {
                 resolvedSource = "@import: surface\n" + resolvedSource;
             }
             const bool particleSpriteDomain =
                 linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite;
-            if (!hasObjectUtilsImport && !particleSpriteDomain) {
+            if (particleSpriteDomain && !hasParticleSurfaceUtilsImport) {
+                resolvedSource = "@import: lib/particle_surface_utils\n" + resolvedSource;
+            } else if (!particleSpriteDomain && !hasObjectUtilsImport) {
                 resolvedSource = "@import: lib/object_utils\n" + resolvedSource;
             }
         }

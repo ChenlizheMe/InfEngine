@@ -342,20 +342,45 @@ def test_particle_graph_rejects_static_mesh_output_without_mesh_asset():
         )
 
 
-@pytest.mark.parametrize(
-    "unsupported_properties",
-    (
-        {"receive_scene_lighting": True},
-        {"receive_scene_lighting": True, "receive_shadows": True},
-        {"sort": "back_to_front"},
-    ),
-)
-def test_particle_graph_rejects_unimplemented_static_mesh_output_semantics(
-    unsupported_properties,
-):
+def test_particle_graph_compiles_lit_shadow_receiving_static_mesh_output():
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "output.mesh",
+                "particle.output.mesh",
+                properties={
+                    "mesh": AssetReference(guid="mesh-guid").to_dict(),
+                    "receive_scene_lighting": True,
+                    "receive_shadows": True,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-to-mesh",
+                "root.rendering",
+                "out",
+                "output.mesh",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    output = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+    ).emitters[0].render_plan.outputs[0]
+
+    assert output.receive_scene_lighting is True
+    assert output.receive_shadows is True
+
+
+def test_particle_graph_rejects_sorted_static_mesh_output():
     properties = {
         "mesh": AssetReference(guid="mesh-guid").to_dict(),
-        **unsupported_properties,
+        "sort": "back_to_front",
     }
     rendering = GraphDocument(
         "particle.rendering",
@@ -379,7 +404,7 @@ def test_particle_graph_rejects_unimplemented_static_mesh_output_semantics(
 
     with pytest.raises(
         ParticleCompileError,
-        match="currently supports unlit, unsorted, non-soft rendering only",
+        match="currently supports unsorted, non-soft rendering only",
     ):
         ParticleGraphCompiler().compile(
             ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))

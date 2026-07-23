@@ -650,6 +650,14 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
 
     const ShaderStagePair stages{vertShaderName, fragShaderName};
     const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
+    if (artifact && artifact->domain != ShaderProgramDomain::Mesh) {
+        static std::unordered_set<std::string> reportedNonGeometryPrograms;
+        if (reportedNonGeometryPrograms.insert(stages.ToString()).second) {
+            INXLOG_WARN("Geometry material pipeline rejected non-geometry shader program '", stages.ToString(),
+                        "'; the owning domain renderer must consume this material");
+        }
+        return false;
+    }
     const auto *forward = artifact ? artifact->FindVariant(ShaderCompileTarget::Forward) : nullptr;
     const auto *vertCode = forward ? &forward->vertexSpirv : m_shaderCache.FindVertCode(vertShaderName);
     const auto *fragCode = forward ? &forward->fragmentSpirv : m_shaderCache.FindFragCode(fragShaderName);

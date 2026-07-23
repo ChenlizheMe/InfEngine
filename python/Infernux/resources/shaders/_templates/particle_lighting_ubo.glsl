@@ -24,8 +24,8 @@ struct SpotLightData {
 };
 
 // Read-only view lighting shared with the regular material renderer. Particle
-// Forward+ owns a separate descriptor ABI so set 0 remains material-local.
-layout(std140, set = 1, binding = 3) uniform ParticleLightingUBO {
+// set 0 remains dedicated to instances and material resources.
+layout(std140, set = 1, binding = 4) uniform ParticleLightingUBO {
     ivec4 lightCounts;
     vec4 ambientColor;
     vec4 ambientSkyColor;
@@ -39,3 +39,7 @@ layout(std140, set = 1, binding = 3) uniform ParticleLightingUBO {
     vec4 shadowCascadeSplits;
     vec4 shadowMapParams;
 } lighting;
+
+layout(set = 1, binding = 0) uniform sampler2D shadowMap;
+
+bool inxParticleReceivesShadows();

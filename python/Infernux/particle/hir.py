@@ -254,9 +254,7 @@ class ParticleGraphCompiler:
                 for output in outputs
                 if output.output_type == "mesh"
                 and (
-                    output.receive_scene_lighting
-                    or output.receive_shadows
-                    or output.soft_particles
+                    output.soft_particles
                     or output.sort_mode != "none"
                 )
             ),
@@ -265,7 +263,7 @@ class ParticleGraphCompiler:
         if unsupported_mesh_semantics is not None:
             raise ParticleCompileError(
                 f"particle mesh output {unsupported_mesh_semantics.output_id!r} currently "
-                "supports unlit, unsorted, non-soft rendering only"
+                "supports unsorted, non-soft rendering only"
             )
         orientation_opcodes = {
             "attribute.set_orientation",

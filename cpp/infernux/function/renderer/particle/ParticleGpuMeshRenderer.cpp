@@ -207,6 +207,7 @@ bool ParticleGpuMeshRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &enco
     auto constants = view;
     constants.materialTint = ResolveMaterialTint();
     constants.lightingControl[0] = usesForwardPlusLighting ? 1.0f : 0.0f;
+    constants.renderingControl[0] = m_semantics.receiveShadows ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     if (usesForwardPlusLighting)

@@ -497,8 +497,12 @@ void surface(out SurfaceData surface)
     assert(litParticleForwardPlus != nullptr);
     const auto &litParticleForwardPlusCompilation = litParticleCompilation.compiledVariants[1];
     assert(litParticleForwardPlusCompilation.target == infernux::ShaderCompileTarget::ForwardPlus);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("set = 1, binding = 0") != std::string::npos);
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("set = 1, binding = 3") != std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("set = 1, binding = 4") != std::string::npos);
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ParticleLightingUBO") != std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("inxParticleReceivesShadows") !=
+           std::string::npos);
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ForwardPlusTileMaskBuffer") !=
            std::string::npos);
 
@@ -533,6 +537,15 @@ void surface(out SurfaceData surface)
     assert(defaultParticleCompilation.compiledVariants.size() == 2);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") !=
            std::string::npos);
+
+    const auto builtinLitParticleCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
+        ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");
+    assert(builtinLitParticleCompilation.IsValid());
+    const auto builtinLitParticleArtifact = builtinLitParticleCompilation.CreateRuntimeArtifact();
+    assert(builtinLitParticleArtifact.IsValid());
+    assert(builtinLitParticleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
+    assert(builtinLitParticleArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
 
     const auto builtinLitCompilation =
         compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",

@@ -2025,19 +2025,24 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     if (device == VK_NULL_HANDLE)
         return false;
 
-    // Canonical per-view ABI. Forward shaders only consume binding 0; tiled
-    // Forward+ variants additionally consume the three storage buffers.
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    // Canonical per-view ABI. Geometry uses binding 0 plus the tiled buffers;
+    // particles also consume binding 4 because their set 0 remains dedicated
+    // to simulation instances and material resources.
+    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    for (uint32_t binding = 1; binding < bindings.size(); ++binding) {
+    for (uint32_t binding = 1; binding <= 3; ++binding) {
         bindings[binding].binding = binding;
         bindings[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         bindings[binding].descriptorCount = 1;
         bindings[binding].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     }
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -2051,11 +2056,13 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     ShaderProgram::SetPerViewDescSetLayout(m_perViewDescSetLayout);
 
     // Pool: enough for multiple render graphs (scene + game + future cameras)
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[0].descriptorCount = 16;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSizes[1].descriptorCount = 48;
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[2].descriptorCount = 16;
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2164,7 +2171,8 @@ void InxVkCoreModular::ClearPerViewShadowMap(VkDescriptorSet perViewDescSet)
 void InxVkCoreModular::UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDescSet,
                                                        rhi::BufferHandle canonicalLights, uint64_t canonicalBytes,
                                                        rhi::BufferHandle tileHeaders, uint64_t tileHeaderBytes,
-                                                       rhi::BufferHandle tileLightMasks, uint64_t tileLightMaskBytes)
+                                                       rhi::BufferHandle tileLightMasks, uint64_t tileLightMaskBytes,
+                                                       rhi::BufferHandle lightingUbo, uint64_t lightingUboBytes)
 {
     if (perViewDescSet == VK_NULL_HANDLE || canonicalBytes == 0 || tileHeaderBytes == 0 || tileLightMaskBytes == 0)
         return;
@@ -2178,16 +2186,31 @@ void InxVkCoreModular::UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDe
     if (std::any_of(infos.begin(), infos.end(), [](const auto &info) { return info.buffer == VK_NULL_HANDLE; }))
         return;
 
-    std::array<VkWriteDescriptorSet, 3> writes{};
-    for (uint32_t index = 0; index < writes.size(); ++index) {
-        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[index].dstSet = perViewDescSet;
-        writes[index].dstBinding = index + 1u;
-        writes[index].descriptorCount = 1;
-        writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[index].pBufferInfo = &infos[index];
+    std::array<VkWriteDescriptorSet, 4> writes{};
+    uint32_t writeCount = 0;
+    for (uint32_t index = 0; index < infos.size(); ++index) {
+        auto &write = writes[writeCount++];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = perViewDescSet;
+        write.dstBinding = index + 1u;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &infos[index];
     }
-    vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    VkDescriptorBufferInfo lightingInfo{};
+    if (lightingUbo.IsValid() && lightingUboBytes > 0) {
+        lightingInfo = {rhiDevice.Resolve(lightingUbo), 0, lightingUboBytes};
+        if (lightingInfo.buffer != VK_NULL_HANDLE) {
+            auto &write = writes[writeCount++];
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = perViewDescSet;
+            write.dstBinding = 4;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write.pBufferInfo = &lightingInfo;
+        }
+    }
+    vkUpdateDescriptorSets(GetDevice(), writeCount, writes.data(), 0, nullptr);
 }
 
 } // namespace infernux

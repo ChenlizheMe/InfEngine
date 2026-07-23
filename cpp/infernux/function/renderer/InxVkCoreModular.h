@@ -801,7 +801,7 @@ class InxVkCoreModular
     // Per-View Descriptor Set (set 1) — multi-camera shadow isolation
     // ========================================================================
 
-    /// @brief Get the per-view descriptor set layout (set 1: binding 0 = shadow map sampler).
+    /// @brief Get the canonical per-view descriptor layout used by geometry and particles.
     /// Used by SceneRenderGraph to allocate per-graph descriptor sets.
     [[nodiscard]] VkDescriptorSetLayout GetPerViewDescSetLayout() const
     {
@@ -823,7 +823,8 @@ class InxVkCoreModular
     void UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDescSet, rhi::BufferHandle canonicalLights,
                                          uint64_t canonicalBytes, rhi::BufferHandle tileHeaders,
                                          uint64_t tileHeaderBytes, rhi::BufferHandle tileLightMasks,
-                                         uint64_t tileLightMaskBytes);
+                                         uint64_t tileLightMaskBytes, rhi::BufferHandle lightingUbo = {},
+                                         uint64_t lightingUboBytes = 0);
 
     /// @brief Set the active per-view descriptor set for subsequent draw calls.
     void SetActiveShadowDescriptorSet(VkDescriptorSet descSet)

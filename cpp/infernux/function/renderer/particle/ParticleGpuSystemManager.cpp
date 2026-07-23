@@ -600,12 +600,6 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle output '" + output.stableId + "' has invalid rendering semantics");
                 return {};
             }
-            if (output.semantics.receiveShadows) {
-                SetError(error, "GPU particle output '" + output.stableId +
-                                    "' cannot receive shadows until the Particle Forward+ shadow contract is "
-                                    "available");
-                return {};
-            }
             if (output.type == GpuParticleOutputType::Sprite && output.shaderProgram &&
                 output.semantics.receiveSceneLighting &&
                 !output.shaderProgram->FindVariant(ShaderCompileTarget::ForwardPlus)) {
@@ -614,10 +608,9 @@ struct ParticleGpuSystemManager::Impl
                                     "Lighting is enabled");
                 return {};
             }
-            if (output.type == GpuParticleOutputType::Mesh &&
-                (!output.mesh || output.semantics.receiveShadows || output.semantics.softParticles)) {
+            if (output.type == GpuParticleOutputType::Mesh && (!output.mesh || output.semantics.softParticles)) {
                 SetError(error, "GPU particle mesh output '" + output.stableId +
-                                    "' requires a loaded mesh and currently does not support shadows or soft fading");
+                                    "' requires a loaded mesh and currently does not support soft fading");
                 return {};
             }
             if (output.semantics.sortMode != ParticleSortMode::None && (!sortProgram || !sortProgram->IsValid())) {

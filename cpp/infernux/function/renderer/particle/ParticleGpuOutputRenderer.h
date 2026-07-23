@@ -18,6 +18,7 @@ struct alignas(16) GpuParticleViewConstants
     std::array<float, 4> materialTint{1.0f, 1.0f, 1.0f, 1.0f};
     std::array<float, 4> depthReconstruct{};
     std::array<float, 4> lightingControl{};
+    std::array<float, 4> renderingControl{};
 };
 
 struct GpuParticleForwardPlusBindings
@@ -69,6 +70,6 @@ class ParticleGpuOutputRenderer
                                                  rhi::BufferHandle renderIndices = {}) = 0;
 };
 
-static_assert(sizeof(GpuParticleViewConstants) == 144);
+static_assert(sizeof(GpuParticleViewConstants) == 160);
 
 } // namespace infernux::particle

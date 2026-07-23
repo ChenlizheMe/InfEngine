@@ -5,6 +5,7 @@ layout(push_constant) uniform ParticleViewConstants {
     vec4 material_tint;
     vec4 depth_reconstruct;
     vec4 lighting_control;
+    vec4 rendering_control;
 } particleView;
 
 layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
@@ -13,6 +14,10 @@ float _inxParticleEyeDepth(float deviceDepth) {
     float numerator = particleView.depth_reconstruct.y - deviceDepth * particleView.depth_reconstruct.w;
     float denominator = deviceDepth * particleView.depth_reconstruct.z - particleView.depth_reconstruct.x;
     return max(0.0, -numerator / (abs(denominator) > 1e-7 ? denominator : 1e-7));
+}
+
+bool inxParticleReceivesShadows() {
+    return particleView.rendering_control.x > 0.5;
 }
 
 void main() {
