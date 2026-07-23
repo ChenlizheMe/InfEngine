@@ -240,6 +240,36 @@ struct DepthResolveTrace
     }
 };
 
+struct EventTrace
+{
+    rhi::ComputePipelineHandle pipeline;
+    rhi::BindGroupHandle group;
+    particle::GpuParticleEventPrepareConstants constants{};
+    std::array<uint32_t, 3> dispatch{};
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<EventTrace *>(context)->pipeline = pipeline;
+    }
+    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex == 0);
+        static_cast<EventTrace *>(context)->group = group;
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == sizeof(particle::GpuParticleEventPrepareConstants));
+        std::memcpy(&static_cast<EventTrace *>(context)->constants, data, byteSize);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        static_cast<EventTrace *>(context)->dispatch = {x, y, z};
+    }
+    static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    {
+    }
+};
+
 struct GraphicsTrace
 {
     std::vector<rhi::GraphicsPipelineHandle> pipelines;
@@ -470,7 +500,9 @@ int main()
         };
 
         particle::ParticleGpuEventDomain events;
-        assert(events.Create(eventDevice, eventDesc));
+        std::array<uint32_t, 5> eventShader = {0x07230203u, 0u, 0u, 0u, 0u};
+        const particle::GpuParticleEventProgram eventProgram = {eventShader.data(), eventShader.size()};
+        assert(events.Create(eventDevice, eventDesc, eventProgram));
         assert(events.IsValid() && events.GraphInstanceId() == 71 && events.EventAbiHash() == 0x12345678u &&
                events.PageCount() == 3 && events.ChannelCount() == 2);
         assert(events.RecordBufferBytes() == (128u * 7u + 64u * 5u) * sizeof(uint32_t));
@@ -488,15 +520,32 @@ int main()
         assert(events.WritePage(0) == events.WritePage(3));
         assert(events.ReadPage(1) == events.WritePage(0));
         assert(events.ReadPage(3) == events.WritePage(2));
+        assert(eventDevice.layouts.size() == 1 && eventDevice.layouts[0].entryCount == 5);
+        assert(eventDevice.bindGroups.size() == 3 && eventDevice.bindGroups[0].bufferCount == 5);
+        assert(eventDevice.computePipelineDescs.size() == 1 && eventDevice.computePipelineDescs[0].pushConstantBytes ==
+                                                                   sizeof(particle::GpuParticleEventPrepareConstants));
+        EventTrace eventTrace;
+        const rhi::ComputeCommandEncoder::DispatchTable eventDispatch = {
+            &EventTrace::BindPipeline, &EventTrace::BindGroup, &EventTrace::PushConstants, &EventTrace::Dispatch,
+            &EventTrace::DispatchIndirect};
+        const rhi::ComputeCommandEncoder eventEncoder(&eventTrace, &eventDispatch);
+        events.RecordPrepare(eventEncoder);
+        const std::array<uint32_t, 3> expectedEventDispatch = {1, 1, 1};
+        assert(eventTrace.pipeline.IsValid() && eventTrace.group.IsValid() && eventTrace.constants.channelCount == 2 &&
+               eventTrace.constants.hasInput == 0 && eventTrace.dispatch == expectedEventDispatch);
+        const auto firstEventGroup = eventTrace.group;
+        events.RecordPrepare(eventEncoder);
+        assert(eventTrace.constants.hasInput == 1 && eventTrace.group != firstEventGroup);
         events.Destroy();
-        assert(!events.IsValid() && eventDevice.bufferReleases == 10);
+        assert(!events.IsValid() && eventDevice.bufferReleases == 10 && eventDevice.groupReleases == 3 &&
+               eventDevice.layoutReleases == 1 && eventDevice.pipelineReleases == 1);
 
         eventDesc.framesInFlight = 1;
         eventDesc.channels[1].eventTypeIndex = eventDesc.channels[0].eventTypeIndex;
         eventDesc.channels[1].sourceEmitterIndex = eventDesc.channels[0].sourceEmitterIndex;
         eventDesc.channels[1].targetEmitterIndex = eventDesc.channels[0].targetEmitterIndex;
         const size_t bufferCount = eventDevice.buffers.size();
-        assert(!events.Create(eventDevice, eventDesc) && eventDevice.buffers.size() == bufferCount);
+        assert(!events.Create(eventDevice, eventDesc, eventProgram) && eventDevice.buffers.size() == bufferCount);
     }
 
     {

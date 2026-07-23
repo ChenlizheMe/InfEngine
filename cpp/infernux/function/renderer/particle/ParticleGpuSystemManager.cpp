@@ -155,14 +155,22 @@ struct ParticleGpuSystemManager::Impl
         bool lastRender = false;
     };
 
+    struct EventFrameState
+    {
+        std::shared_ptr<ParticleGpuEventDomain> domain;
+        bool pending = false;
+    };
+
     struct GraphState
     {
         std::unique_ptr<vk::RenderGraph> graph;
         std::vector<std::unique_ptr<ParticleRenderGraph>> schedulers;
         std::unordered_map<uint64_t, ParticleRenderGraph *> schedulerById;
+        std::unordered_map<uint64_t, std::shared_ptr<EventFrameState>> eventFrames;
     };
 
     using EmitterMap = std::map<uint64_t, std::shared_ptr<Emitter>>;
+    using EventDomainMap = std::unordered_map<uint64_t, std::shared_ptr<ParticleGpuEventDomain>>;
 
     vk::VkDeviceContext *context = nullptr;
     vk::VkPipelineManager *pipelines = nullptr;
@@ -176,10 +184,11 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleSortProgramStorage> sortProgram;
     std::shared_ptr<const GpuParticleBoundsProgramStorage> boundsProgram;
     std::shared_ptr<const GpuParticleMigrationProgramStorage> migrationProgram;
+    std::shared_ptr<const GpuParticleEventProgramStorage> eventProgram;
     std::shared_ptr<const GpuParticleRibbonProgramStorage> ribbonTopologyProgram;
     std::shared_ptr<const GpuParticleRibbonRenderProgramStorage> ribbonRenderProgram;
     EmitterMap emitters;
-    std::unordered_map<uint64_t, std::shared_ptr<ParticleGpuEventDomain>> eventDomains;
+    EventDomainMap eventDomains;
     std::shared_ptr<GraphState> graphState;
     mutable std::unordered_map<const InxPointCache *, PointCacheUpload> pointCacheUploads;
     mutable std::unordered_map<const InxMesh *, MeshUpload> meshUploads;
@@ -777,11 +786,50 @@ struct ParticleGpuSystemManager::Impl
         return true;
     }
 
-    [[nodiscard]] std::shared_ptr<GraphState> BuildGraph(const EmitterMap &candidateEmitters, std::string *error) const
+    [[nodiscard]] std::shared_ptr<GraphState> BuildGraph(const EmitterMap &candidateEmitters,
+                                                         const EventDomainMap &candidateEventDomains,
+                                                         std::string *error) const
     {
         auto state = std::make_shared<GraphState>();
         state->graph = std::make_unique<vk::RenderGraph>();
         state->graph->Initialize(context, pipelines, deletionQueue);
+        state->eventFrames.reserve(candidateEventDomains.size());
+        for (const auto &[graphInstanceId, domain] : candidateEventDomains) {
+            if (!domain || !domain->IsValid()) {
+                SetError(error, "GPU particle event graph contains an invalid event domain");
+                return {};
+            }
+            auto frame = std::make_shared<EventFrameState>();
+            frame->domain = domain;
+            state->eventFrames.emplace(graphInstanceId, frame);
+            const std::string prefix = "GpuParticleEvent/" + std::to_string(graphInstanceId);
+            state->graph->AddComputePass(prefix + "/Prepare", [domain, frame, prefix](vk::PassBuilder &builder) {
+                auto channelTable =
+                    builder.ImportBuffer(prefix + "/Channels", domain->ChannelTable(),
+                                         uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventChannelRecord));
+                builder.ReadStorageBuffer(channelTable);
+                for (uint32_t pageIndex = 0; pageIndex < domain->PageCount(); ++pageIndex) {
+                    const auto *page = domain->WritePage(pageIndex);
+                    if (!page)
+                        continue;
+                    auto counters =
+                        builder.ImportBuffer(prefix + "/Counters" + std::to_string(pageIndex), page->counters,
+                                             uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventCounter));
+                    auto indirect = builder.ImportBuffer(
+                        prefix + "/Indirect" + std::to_string(pageIndex), page->indirectArguments,
+                        uint64_t(domain->ChannelCount()) * sizeof(GpuParticleEventDispatchArguments));
+                    builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+                    builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
+                }
+                builder.SetSideEffect();
+                return [domain, frame](vk::RenderContext &context) {
+                    if (!frame->pending)
+                        return;
+                    domain->RecordPrepare(context.GetComputeCommandEncoder());
+                    frame->pending = false;
+                };
+            });
+        }
         state->schedulers.reserve(candidateEmitters.size());
         state->schedulerById.reserve(candidateEmitters.size());
         for (const auto &[id, emitter] : candidateEmitters) {
@@ -795,7 +843,7 @@ struct ParticleGpuSystemManager::Impl
             state->schedulerById.emplace(id, scheduler.get());
             state->schedulers.push_back(std::move(scheduler));
         }
-        if (!candidateEmitters.empty() && !state->graph->Compile()) {
+        if ((!candidateEmitters.empty() || !candidateEventDomains.empty()) && !state->graph->Compile()) {
             SetError(error, "failed to compile the GPU particle simulation graph");
             return {};
         }
@@ -887,7 +935,7 @@ struct ParticleGpuSystemManager::Impl
             retired.push_back({std::move(emitter->migration), std::move(emitter->migrationSource)});
         }
 
-        auto replacementGraph = BuildGraph(emitters, nullptr);
+        auto replacementGraph = BuildGraph(emitters, eventDomains, nullptr);
         if (!replacementGraph) {
             for (size_t index = 0; index < completedIds.size(); ++index) {
                 auto &emitter = emitters.at(completedIds[index]);
@@ -931,11 +979,11 @@ bool ParticleGpuSystemManager::Initialize(
     GpuBillboardTextureResolver textureResolver, GpuBillboardTextureVersionResolver textureVersionResolver,
     GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver, const GpuParticleSortProgram &sortProgram,
     const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
-    const GpuParticleMigrationProgram &migrationProgram, const GpuParticleRibbonProgram &ribbonTopologyProgram,
-    const GpuParticleRibbonRenderProgram &ribbonRenderProgram)
+    const GpuParticleMigrationProgram &migrationProgram, const GpuParticleEventProgram &eventProgram,
+    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
-        ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid())
+        !eventProgram.IsValid() || ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid())
         return false;
     m_impl->context = &context;
     m_impl->pipelines = &pipelines;
@@ -957,6 +1005,12 @@ bool ParticleGpuSystemManager::Initialize(
         return false;
     }
     m_impl->migrationProgram = std::move(migrationStorage);
+    auto eventStorage = std::make_shared<GpuParticleEventProgramStorage>();
+    if (!eventStorage->Assign(eventProgram)) {
+        Shutdown();
+        return false;
+    }
+    m_impl->eventProgram = std::move(eventStorage);
     if (ribbonTopologyProgram.IsValid()) {
         auto ribbonTopologyStorage = std::make_shared<GpuParticleRibbonProgramStorage>();
         auto ribbonRenderStorage = std::make_shared<GpuParticleRibbonRenderProgramStorage>();
@@ -984,7 +1038,7 @@ bool ParticleGpuSystemManager::Initialize(
         }
         m_impl->sortProgram = std::move(storage);
     }
-    m_impl->graphState = m_impl->BuildGraph({}, nullptr);
+    m_impl->graphState = m_impl->BuildGraph({}, {}, nullptr);
     if (!m_impl->graphState) {
         Shutdown();
         return false;
@@ -1010,6 +1064,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->sortProgram.reset();
     m_impl->boundsProgram.reset();
     m_impl->migrationProgram.reset();
+    m_impl->eventProgram.reset();
     m_impl->ribbonTopologyProgram.reset();
     m_impl->ribbonRenderProgram.reset();
     m_impl->deletionQueue = nullptr;
@@ -1087,13 +1142,19 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
             candidateEventDomain = currentEventDomain->second;
         } else {
             candidateEventDomain = std::make_shared<ParticleGpuEventDomain>();
-            if (!candidateEventDomain->Create(m_impl->context->GetRhiDevice(), *program.eventDomain)) {
+            if (!candidateEventDomain->Create(m_impl->context->GetRhiDevice(), *program.eventDomain,
+                                              m_impl->eventProgram->View())) {
                 SetError(error, "failed to create GPU particle event domain");
                 return false;
             }
         }
     }
-    auto candidateGraph = m_impl->BuildGraph(candidates, error);
+    Impl::EventDomainMap candidateEventDomains = m_impl->eventDomains;
+    if (candidateEventDomain)
+        candidateEventDomains[program.graphInstanceId] = candidateEventDomain;
+    else
+        candidateEventDomains.erase(program.graphInstanceId);
+    auto candidateGraph = m_impl->BuildGraph(candidates, candidateEventDomains, error);
     if (!candidateGraph)
         return false;
     if (!m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(candidates))) {
@@ -1218,7 +1279,7 @@ void ParticleGpuSystemManager::Clear()
 {
     if (!m_impl || !m_impl->context || (m_impl->emitters.empty() && m_impl->eventDomains.empty()))
         return;
-    auto candidateGraph = m_impl->BuildGraph({}, nullptr);
+    auto candidateGraph = m_impl->BuildGraph({}, {}, nullptr);
     if (!candidateGraph)
         return;
     if (m_impl->drawRegistry && !m_impl->drawRegistry->Replace({}))
@@ -1265,6 +1326,17 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     std::unordered_set<uint64_t> emitterIds;
     emitterIds.reserve(items.size());
     const uint64_t frameIndex = items.front().request.frameIndex;
+    const auto eventFrame = m_impl->graphState->eventFrames.find(graphInstanceId);
+    if (eventFrame != m_impl->graphState->eventFrames.end()) {
+        if (!eventFrame->second || eventFrame->second->pending)
+            return false;
+        const size_t graphEmitterCount = static_cast<size_t>(
+            std::count_if(m_impl->emitters.begin(), m_impl->emitters.end(), [graphInstanceId](const auto &entry) {
+                return entry.second->graphInstanceId == graphInstanceId;
+            }));
+        if (items.size() != graphEmitterCount)
+            return false;
+    }
 
     for (const auto &item : items) {
         const auto emitter = m_impl->emitters.find(item.emitterId);
@@ -1298,6 +1370,9 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         entry.emitter->lastSimulate = entry.item->request.simulate;
         entry.emitter->lastRender = entry.item->request.render;
     }
+    if (eventFrame != m_impl->graphState->eventFrames.end()) {
+        eventFrame->second->pending = true;
+    }
     return true;
 }
 
@@ -1316,8 +1391,13 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
 {
     if (!m_impl || !m_impl->graphState || !m_impl->graphState->graph || commandBuffer == VK_NULL_HANDLE)
         return;
-    const bool hasPending = std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
-                                        [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
+    const bool hasPendingEmitter =
+        std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
+                    [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
+    const bool hasPendingEvent =
+        std::any_of(m_impl->graphState->eventFrames.begin(), m_impl->graphState->eventFrames.end(),
+                    [](const auto &entry) { return entry.second && entry.second->pending; });
+    const bool hasPending = hasPendingEmitter || hasPendingEvent;
     if (hasPending) {
         m_impl->graphState->graph->Execute(commandBuffer);
         m_impl->RetireCompletedMigrations();

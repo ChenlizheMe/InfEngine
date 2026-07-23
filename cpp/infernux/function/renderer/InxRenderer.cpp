@@ -119,6 +119,16 @@ struct CompiledParticleMigrationProgram
     }
 };
 
+struct CompiledParticleEventProgram
+{
+    std::vector<uint32_t> shader;
+
+    [[nodiscard]] particle::GpuParticleEventProgram View() const noexcept
+    {
+        return {shader.data(), shader.size()};
+    }
+};
+
 struct CompiledParticleRibbonTopologyProgram
 {
     std::array<std::vector<uint32_t>, 5> shaders;
@@ -219,6 +229,19 @@ CompiledParticleMigrationProgram CompileParticleMigrationProgram()
         result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
         std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
     }
+    return result;
+}
+
+CompiledParticleEventProgram CompileParticleEventProgram()
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    CompiledParticleEventProgram result;
+    const auto bytes = compiler.CompileComputeGlsl(std::string(particle::GpuParticleEventShaderSource::Prepare()),
+                                                   "Infernux/ParticleEventPrepare.comp");
+    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+        return {};
+    result.shader.resize(bytes.size() / sizeof(uint32_t));
+    std::memcpy(result.shader.data(), bytes.data(), bytes.size());
     return result;
 }
 
@@ -523,6 +546,9 @@ void InxRenderer::PreparePipeline()
         const auto particleMigrationProgram = CompileParticleMigrationProgram();
         if (!particleMigrationProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle migration kernels");
+        const auto particleEventProgram = CompileParticleEventProgram();
+        if (!particleEventProgram.View().IsValid())
+            INXLOG_ERROR("Failed to compile the GPU particle event preparation kernel");
         const auto particleRibbonTopologyProgram = CompileParticleRibbonTopologyProgram();
         if (!particleRibbonTopologyProgram.View().IsValid())
             INXLOG_ERROR("Failed to compile the GPU particle Ribbon topology kernels");
@@ -534,7 +560,7 @@ void InxRenderer::PreparePipeline()
                 m_vkCore->GetDeletionQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
                 std::move(particleTextureVersionResolver), std::move(particleVectorFieldTextureResolver),
                 particleSortProgram.View(), particleCullProgram.View(), particleBoundsProgram.View(),
-                particleMigrationProgram.View(), particleRibbonTopologyProgram.View(),
+                particleMigrationProgram.View(), particleEventProgram.View(), particleRibbonTopologyProgram.View(),
                 particleRibbonRenderProgram.View())) {
             m_particleGpuSystemManager.reset();
             INXLOG_ERROR("Failed to initialize the GPU particle system manager");

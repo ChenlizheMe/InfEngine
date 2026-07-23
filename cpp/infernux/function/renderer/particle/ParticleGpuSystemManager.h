@@ -184,18 +184,16 @@ class ParticleGpuSystemManager
     ParticleGpuSystemManager(ParticleGpuSystemManager &&) = delete;
     ParticleGpuSystemManager &operator=(ParticleGpuSystemManager &&) = delete;
 
-    [[nodiscard]] bool Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines,
-                                  vk::VkResourceManager &resources, FrameDeletionQueue &deletionQueue,
-                                  ParticleGpuDrawRegistry &drawRegistry,
-                                  GpuBillboardTextureResolver textureResolver = {},
-                                  GpuBillboardTextureVersionResolver textureVersionResolver = {},
-                                  GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
-                                  const GpuParticleSortProgram &sortProgram = {},
-                                  const GpuParticleCullProgram &cullProgram = {},
-                                  const GpuParticleBoundsProgram &boundsProgram = {},
-                                  const GpuParticleMigrationProgram &migrationProgram = {},
-                                  const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-                                  const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
+    [[nodiscard]] bool Initialize(
+        vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
+        FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+        GpuBillboardTextureResolver textureResolver = {},
+        GpuBillboardTextureVersionResolver textureVersionResolver = {},
+        GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
+        const GpuParticleSortProgram &sortProgram = {}, const GpuParticleCullProgram &cullProgram = {},
+        const GpuParticleBoundsProgram &boundsProgram = {}, const GpuParticleMigrationProgram &migrationProgram = {},
+        const GpuParticleEventProgram &eventProgram = {}, const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
+        const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph

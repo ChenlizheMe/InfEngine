@@ -1,13 +1,37 @@
 #pragma once
 
+#include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace infernux::particle
 {
+
+struct GpuParticleEventProgram
+{
+    const uint32_t *words = nullptr;
+    size_t wordCount = 0;
+
+    [[nodiscard]] bool IsValid() const noexcept;
+};
+
+struct GpuParticleEventProgramStorage
+{
+    std::vector<uint32_t> shader;
+
+    [[nodiscard]] bool Assign(const GpuParticleEventProgram &program);
+    [[nodiscard]] bool IsValid() const noexcept;
+    [[nodiscard]] GpuParticleEventProgram View() const noexcept;
+};
+
+struct GpuParticleEventShaderSource
+{
+    [[nodiscard]] static std::string_view Prepare() noexcept;
+};
 
 /// One statically compiled event route inside a ParticleGraph instance.
 /// Emitter indexes and eventTypeIndex are dense indexes assigned by the
@@ -61,6 +85,14 @@ struct alignas(16) GpuParticleEventDispatchArguments
     uint32_t reserved = 0;
 };
 
+struct alignas(16) GpuParticleEventPrepareConstants
+{
+    uint32_t channelCount = 0;
+    uint32_t hasInput = 0;
+    uint32_t consumerWorkgroupSize = 256;
+    uint32_t reserved = 0;
+};
+
 struct GpuParticleEventPage
 {
     rhi::BufferHandle records;
@@ -91,7 +123,8 @@ class ParticleGpuEventDomain
     ParticleGpuEventDomain(ParticleGpuEventDomain &&) = delete;
     ParticleGpuEventDomain &operator=(ParticleGpuEventDomain &&) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleEventDomainDesc &desc);
+    [[nodiscard]] bool Create(rhi::Device &device, const GpuParticleEventDomainDesc &desc,
+                              const GpuParticleEventProgram &program);
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept;
@@ -121,6 +154,7 @@ class ParticleGpuEventDomain
     }
     [[nodiscard]] const GpuParticleEventPage *WritePage(uint64_t simulationStep) const noexcept;
     [[nodiscard]] const GpuParticleEventPage *ReadPage(uint64_t simulationStep) const noexcept;
+    void RecordPrepare(const rhi::ComputeCommandEncoder &encoder);
 
   private:
     rhi::Device *m_device = nullptr;
@@ -130,10 +164,16 @@ class ParticleGpuEventDomain
     uint32_t m_channelCount = 0;
     rhi::BufferHandle m_channelTable;
     std::vector<GpuParticleEventPage> m_pages;
+    rhi::BindingLayoutHandle m_prepareLayout;
+    std::vector<rhi::BindGroupHandle> m_prepareGroups;
+    rhi::ComputePipelineHandle m_preparePipeline;
+    bool m_hasPreparedPage = false;
+    uint64_t m_nextPrepareEpoch = 0;
 };
 
 static_assert(sizeof(GpuParticleEventChannelRecord) == 32);
 static_assert(sizeof(GpuParticleEventCounter) == 16);
 static_assert(sizeof(GpuParticleEventDispatchArguments) == 16);
+static_assert(sizeof(GpuParticleEventPrepareConstants) == 16);
 
 } // namespace infernux::particle
