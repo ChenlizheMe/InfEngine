@@ -3,6 +3,7 @@
 #include "ParticleGpuBillboardRenderer.h"
 #include "ParticleGpuBounds.h"
 #include "ParticleGpuCuller.h"
+#include "ParticleGpuEventDomain.h"
 #include "ParticleGpuMeshRenderer.h"
 #include "ParticleGpuMigrator.h"
 #include "ParticleGpuRibbonRenderer.h"
@@ -146,6 +147,16 @@ struct GpuParticleBatchFrameItem
     GpuParticleTransforms transforms;
 };
 
+/// One authoritative publication transaction for a live ParticleGraph.
+/// Event transport belongs to the graph, never to an individual emitter.
+struct GpuParticleGraphProgram
+{
+    uint64_t graphInstanceId = 0;
+    std::vector<GpuParticleEmitterProgram> emitters;
+    std::vector<uint64_t> removeEmitterIds;
+    std::optional<GpuParticleEventDomainDesc> eventDomain;
+};
+
 /// CPU-side scheduling telemetry for the resident GPU particle world.
 /// This deliberately avoids reading particle counters back from the GPU.
 struct GpuParticleTelemetrySnapshot
@@ -187,23 +198,15 @@ class ParticleGpuSystemManager
                                   const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
     void Shutdown() noexcept;
 
-    /// Compile-then-publish replacement. The active emitter remains untouched
-    /// when any resource, pipeline, or graph compilation step fails.
-    [[nodiscard]] bool CreateOrReplace(const GpuParticleEmitterProgram &program, std::string *error = nullptr);
-    /// Atomically replace every supplied emitter after all runtimes, renderers,
-    /// and the aggregate simulation graph have compiled successfully.
-    [[nodiscard]] bool CreateOrReplaceBatch(const std::vector<GpuParticleEmitterProgram> &programs,
-                                            std::string *error = nullptr);
-    /// Apply replacements and removals as one publication transaction. This is
-    /// used when a saved ParticleGraph adds or removes emitters during reload.
-    [[nodiscard]] bool ApplyBatch(const std::vector<GpuParticleEmitterProgram> &programs,
-                                  const std::vector<uint64_t> &removeIds, std::string *error = nullptr);
+    /// Compile then publish one complete graph transaction. The active graph
+    /// remains untouched when any runtime, renderer, event ABI, or RenderGraph
+    /// compilation step fails.
+    [[nodiscard]] bool ApplyGraph(const GpuParticleGraphProgram &program, std::string *error = nullptr);
     /// Replace only render resources that reference this live material. The
     /// simulation runtime and all surviving particles remain untouched.
     [[nodiscard]] bool RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
                                               std::shared_ptr<const ShaderProgramArtifact> shaderProgram,
                                               std::string *error = nullptr);
-    [[nodiscard]] bool Remove(uint64_t id);
     void Clear();
 
     [[nodiscard]] bool BeginFrame(uint64_t id, const GpuParticleFrameRequest &request,
@@ -226,6 +229,8 @@ class ParticleGpuSystemManager
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
                                                                                uint64_t outputId) const;
+    [[nodiscard]] uint64_t ActiveEventAbiHash(uint64_t graphInstanceId) const;
+    [[nodiscard]] uint32_t ActiveEventPageCount(uint64_t graphInstanceId) const;
 
   private:
     struct Impl;

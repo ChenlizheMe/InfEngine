@@ -540,7 +540,7 @@ class ParticleSystem(InxComponent):
         gpu_available = bool(
             artifact is not None
             and native is not None
-            and hasattr(native, "_replace_gpu_particle_emitters")
+            and hasattr(native, "_replace_gpu_particle_graph")
             and hasattr(native, "_begin_gpu_particle_batch")
         )
         targets = []
@@ -688,7 +688,7 @@ class ParticleSystem(InxComponent):
             emitter_indices.append(index)
 
         removed = sorted(set(getattr(self, "_gpu_emitter_ids", ())) - set(emitter_ids))
-        error = native._replace_gpu_particle_emitters(programs, removed)
+        error = native._replace_gpu_particle_graph(self._batch_id, programs, removed)
         if error:
             raise RuntimeError(error)
         self._gpu_controllers = controllers
@@ -1200,9 +1200,13 @@ class ParticleSystem(InxComponent):
 
     def _remove_gpu_emitters(self) -> None:
         native = self._native_engine()
-        if native is not None and hasattr(native, "_remove_gpu_particle_emitter"):
-            for emitter_id in getattr(self, "_gpu_emitter_ids", ()):
-                native._remove_gpu_particle_emitter(emitter_id)
+        emitter_ids = list(getattr(self, "_gpu_emitter_ids", ()))
+        if (
+            emitter_ids
+            and native is not None
+            and hasattr(native, "_replace_gpu_particle_graph")
+        ):
+            native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids)
         self._gpu_emitter_ids = []
         self._gpu_emitter_indices = []
         self._gpu_controllers = []

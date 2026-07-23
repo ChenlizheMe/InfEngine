@@ -2079,8 +2079,9 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("batch_id"), "Remove a persistent particle instance batch")
         .def(
-            "_replace_gpu_particle_emitters",
-            [](Infernux &self, const py::sequence &encodedPrograms, const std::vector<uint64_t> &removeIds) {
+            "_replace_gpu_particle_graph",
+            [](Infernux &self, uint64_t graphInstanceId, const py::sequence &encodedPrograms,
+               const std::vector<uint64_t> &removeIds) {
                 auto *renderer = self.GetRenderer();
                 auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
                 if (!manager)
@@ -2106,11 +2107,16 @@ PYBIND11_MODULE(_Infernux, m)
                     }
                 }
                 std::string error;
-                if (!manager->ApplyBatch(programs, removeIds, &error))
+                particle::GpuParticleGraphProgram graphProgram;
+                graphProgram.graphInstanceId = graphInstanceId;
+                graphProgram.emitters = std::move(programs);
+                graphProgram.removeEmitterIds = removeIds;
+                if (!manager->ApplyGraph(graphProgram, &error))
                     return error.empty() ? std::string("failed to publish GPU particle program batch") : error;
                 return std::string{};
             },
-            py::arg("programs"), py::arg("remove_ids") = std::vector<uint64_t>{},
+            py::arg("graph_instance_id"), py::arg("programs"),
+            py::arg("remove_ids") = std::vector<uint64_t>{},
             "Internal control-plane publication for one saved ParticleGraph revision")
         .def(
             "_begin_gpu_particle_batch",
@@ -2151,14 +2157,6 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("graph_instance_id"), py::arg("items"),
             "Internal graph-instance GPU particle batch scheduling hook")
-        .def(
-            "_remove_gpu_particle_emitter",
-            [](Infernux &self, uint64_t emitterId) {
-                auto *renderer = self.GetRenderer();
-                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
-                return manager && manager->Remove(emitterId);
-            },
-            py::arg("emitter_id"), "Internal GPU particle emitter removal hook")
         .def(
             "_reset_gpu_particle_emitter",
             [](Infernux &self, uint64_t emitterId) {

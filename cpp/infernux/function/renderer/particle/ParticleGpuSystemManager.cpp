@@ -179,6 +179,7 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleRibbonProgramStorage> ribbonTopologyProgram;
     std::shared_ptr<const GpuParticleRibbonRenderProgramStorage> ribbonRenderProgram;
     EmitterMap emitters;
+    std::unordered_map<uint64_t, std::shared_ptr<ParticleGpuEventDomain>> eventDomains;
     std::shared_ptr<GraphState> graphState;
     mutable std::unordered_map<const InxPointCache *, PointCacheUpload> pointCacheUploads;
     mutable std::unordered_map<const InxMesh *, MeshUpload> meshUploads;
@@ -570,7 +571,8 @@ struct ParticleGpuSystemManager::Impl
         emitter->sourceProgram = program;
         auto &device = context->GetRhiDevice();
         if (program.preserveState &&
-            (!previous || previous->id != program.id || previous->stableId != program.stableId)) {
+            (!previous || previous->id != program.id || previous->graphInstanceId != program.graphInstanceId ||
+             previous->stableId != program.stableId)) {
             SetError(error, "GPU particle state preservation requires the same live emitter identity");
             return {};
         }
@@ -844,14 +846,17 @@ struct ParticleGpuSystemManager::Impl
         return entries;
     }
 
-    void Retire(std::shared_ptr<GraphState> oldGraph, EmitterMap oldEmitters)
+    void Retire(std::shared_ptr<GraphState> oldGraph, EmitterMap oldEmitters,
+                std::vector<std::shared_ptr<ParticleGpuEventDomain>> oldEventDomains = {})
     {
-        if (oldEmitters.empty())
+        if (oldEmitters.empty() && oldEventDomains.empty())
             return;
         if (deletionQueue) {
-            deletionQueue->Push([oldGraph = std::move(oldGraph), oldEmitters = std::move(oldEmitters)]() mutable {
+            deletionQueue->Push([oldGraph = std::move(oldGraph), oldEmitters = std::move(oldEmitters),
+                                 oldEventDomains = std::move(oldEventDomains)]() mutable {
                 oldGraph.reset();
                 oldEmitters.clear();
+                oldEventDomains.clear();
             });
         }
     }
@@ -995,6 +1000,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
         m_impl->drawRegistry->Clear();
     m_impl->graphState.reset();
     m_impl->emitters.clear();
+    m_impl->eventDomains.clear();
     m_impl->pointCacheUploads.clear();
     m_impl->meshUploads.clear();
     m_impl->drawRegistry = nullptr;
@@ -1012,19 +1018,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->context = nullptr;
 }
 
-bool ParticleGpuSystemManager::CreateOrReplace(const GpuParticleEmitterProgram &program, std::string *error)
-{
-    return CreateOrReplaceBatch({program}, error);
-}
-
-bool ParticleGpuSystemManager::CreateOrReplaceBatch(const std::vector<GpuParticleEmitterProgram> &programs,
-                                                    std::string *error)
-{
-    return ApplyBatch(programs, {}, error);
-}
-
-bool ParticleGpuSystemManager::ApplyBatch(const std::vector<GpuParticleEmitterProgram> &programs,
-                                          const std::vector<uint64_t> &removeIds, std::string *error)
+bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program, std::string *error)
 {
     if (error)
         error->clear();
@@ -1032,32 +1026,72 @@ bool ParticleGpuSystemManager::ApplyBatch(const std::vector<GpuParticleEmitterPr
         SetError(error, "GPU particle manager is not initialized");
         return false;
     }
-    if (programs.empty() && removeIds.empty()) {
+    if (program.graphInstanceId == 0) {
+        SetError(error, "GPU particle graph publication requires a valid graph instance id");
+        return false;
+    }
+    if (program.emitters.empty() && program.removeEmitterIds.empty() && !program.eventDomain) {
         SetError(error, "GPU particle update batch cannot be empty");
+        return false;
+    }
+    if (program.eventDomain && program.eventDomain->graphInstanceId != program.graphInstanceId) {
+        SetError(error, "GPU particle event domain does not belong to the published graph");
         return false;
     }
 
     Impl::EmitterMap candidates = m_impl->emitters;
     std::unordered_set<uint64_t> batchIds;
-    batchIds.reserve(programs.size() + removeIds.size());
-    for (const uint64_t id : removeIds) {
+    batchIds.reserve(program.emitters.size() + program.removeEmitterIds.size());
+    for (const uint64_t id : program.removeEmitterIds) {
         if (id == 0 || !batchIds.insert(id).second) {
             SetError(error, "GPU particle update batch contains invalid or duplicate removal ids");
             return false;
         }
+        const auto existing = m_impl->emitters.find(id);
+        if (existing != m_impl->emitters.end() && existing->second->graphInstanceId != program.graphInstanceId) {
+            SetError(error, "GPU particle graph cannot remove another graph's emitter");
+            return false;
+        }
         candidates.erase(id);
     }
-    for (const auto &program : programs) {
-        if (!batchIds.insert(program.id).second) {
+    for (const auto &emitterProgram : program.emitters) {
+        if (emitterProgram.graphInstanceId != program.graphInstanceId) {
+            SetError(error, "GPU particle update batch mixes multiple graph instances");
+            return false;
+        }
+        if (!batchIds.insert(emitterProgram.id).second) {
             SetError(error, "GPU particle update batch contains duplicate or conflicting emitter ids");
             return false;
         }
-        const auto previous = m_impl->emitters.find(program.id);
+        const auto previous = m_impl->emitters.find(emitterProgram.id);
+        if (previous != m_impl->emitters.end() && previous->second->graphInstanceId != program.graphInstanceId) {
+            SetError(error, "GPU particle emitter id is already owned by another graph");
+            return false;
+        }
         auto emitter = m_impl->CreateEmitter(
-            program, previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{}, error);
+            emitterProgram, previous != m_impl->emitters.end() ? previous->second : std::shared_ptr<Impl::Emitter>{},
+            error);
         if (!emitter)
             return false;
-        candidates[program.id] = std::move(emitter);
+        candidates[emitterProgram.id] = std::move(emitter);
+    }
+
+    std::shared_ptr<ParticleGpuEventDomain> candidateEventDomain;
+    const auto currentEventDomain = m_impl->eventDomains.find(program.graphInstanceId);
+    if (program.eventDomain) {
+        const uint32_t expectedPages =
+            std::max(program.eventDomain->framesInFlight, ParticleGpuEventDomain::MinimumPageCount);
+        if (currentEventDomain != m_impl->eventDomains.end() &&
+            currentEventDomain->second->EventAbiHash() == program.eventDomain->eventAbiHash &&
+            currentEventDomain->second->PageCount() == expectedPages) {
+            candidateEventDomain = currentEventDomain->second;
+        } else {
+            candidateEventDomain = std::make_shared<ParticleGpuEventDomain>();
+            if (!candidateEventDomain->Create(m_impl->context->GetRhiDevice(), *program.eventDomain)) {
+                SetError(error, "failed to create GPU particle event domain");
+                return false;
+            }
+        }
     }
     auto candidateGraph = m_impl->BuildGraph(candidates, error);
     if (!candidateGraph)
@@ -1069,9 +1103,16 @@ bool ParticleGpuSystemManager::ApplyBatch(const std::vector<GpuParticleEmitterPr
 
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
+    std::vector<std::shared_ptr<ParticleGpuEventDomain>> retiredEventDomains;
+    if (currentEventDomain != m_impl->eventDomains.end() && currentEventDomain->second != candidateEventDomain)
+        retiredEventDomains.push_back(currentEventDomain->second);
+    if (candidateEventDomain)
+        m_impl->eventDomains[program.graphInstanceId] = std::move(candidateEventDomain);
+    else
+        m_impl->eventDomains.erase(program.graphInstanceId);
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters = std::move(candidates);
-    m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
+    m_impl->Retire(std::move(oldGraph), std::move(oldEmitters), std::move(retiredEventDomains));
     return true;
 }
 
@@ -1173,29 +1214,9 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
     return true;
 }
 
-bool ParticleGpuSystemManager::Remove(uint64_t id)
-{
-    if (!m_impl || !m_impl->context || id == 0 || m_impl->emitters.find(id) == m_impl->emitters.end())
-        return false;
-    Impl::EmitterMap candidates = m_impl->emitters;
-    candidates.erase(id);
-    auto candidateGraph = m_impl->BuildGraph(candidates, nullptr);
-    if (!candidateGraph)
-        return false;
-    if (m_impl->drawRegistry && !m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(candidates)))
-        return false;
-
-    auto oldGraph = std::move(m_impl->graphState);
-    auto oldEmitters = std::move(m_impl->emitters);
-    m_impl->graphState = std::move(candidateGraph);
-    m_impl->emitters = std::move(candidates);
-    m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
-    return true;
-}
-
 void ParticleGpuSystemManager::Clear()
 {
-    if (!m_impl || !m_impl->context || m_impl->emitters.empty())
+    if (!m_impl || !m_impl->context || (m_impl->emitters.empty() && m_impl->eventDomains.empty()))
         return;
     auto candidateGraph = m_impl->BuildGraph({}, nullptr);
     if (!candidateGraph)
@@ -1204,9 +1225,16 @@ void ParticleGpuSystemManager::Clear()
         return;
     auto oldGraph = std::move(m_impl->graphState);
     auto oldEmitters = std::move(m_impl->emitters);
+    std::vector<std::shared_ptr<ParticleGpuEventDomain>> oldEventDomains;
+    oldEventDomains.reserve(m_impl->eventDomains.size());
+    for (auto &[id, domain] : m_impl->eventDomains) {
+        (void)id;
+        oldEventDomains.push_back(std::move(domain));
+    }
+    m_impl->eventDomains.clear();
     m_impl->graphState = std::move(candidateGraph);
     m_impl->emitters.clear();
-    m_impl->Retire(std::move(oldGraph), std::move(oldEmitters));
+    m_impl->Retire(std::move(oldGraph), std::move(oldEmitters), std::move(oldEventDomains));
 }
 
 bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameRequest &request,
@@ -1399,6 +1427,22 @@ std::optional<ParticleOutputSemantics> ParticleGpuSystemManager::ActiveOutputSem
     const auto output = std::find_if(emitter->second->outputs.begin(), emitter->second->outputs.end(),
                                      [outputId](const auto &candidate) { return candidate.id == outputId; });
     return output != emitter->second->outputs.end() ? std::optional{output->semantics} : std::nullopt;
+}
+
+uint64_t ParticleGpuSystemManager::ActiveEventAbiHash(uint64_t graphInstanceId) const
+{
+    if (!m_impl)
+        return 0;
+    const auto found = m_impl->eventDomains.find(graphInstanceId);
+    return found != m_impl->eventDomains.end() ? found->second->EventAbiHash() : 0;
+}
+
+uint32_t ParticleGpuSystemManager::ActiveEventPageCount(uint64_t graphInstanceId) const
+{
+    if (!m_impl)
+        return 0;
+    const auto found = m_impl->eventDomains.find(graphInstanceId);
+    return found != m_impl->eventDomains.end() ? found->second->PageCount() : 0;
 }
 
 } // namespace infernux::particle

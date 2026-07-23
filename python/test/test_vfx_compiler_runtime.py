@@ -224,8 +224,8 @@ class _MixedParticleNative:
         self.removed_batches = []
         self.reset_emitters = []
 
-    def _replace_gpu_particle_emitters(self, programs, removed):
-        self.program_batches.append((programs, removed))
+    def _replace_gpu_particle_graph(self, graph_instance_id, programs, removed):
+        self.program_batches.append((programs, removed, graph_instance_id))
         return ""
 
     def _begin_gpu_particle_batch(self, graph_instance_id, items):
@@ -234,9 +234,6 @@ class _MixedParticleNative:
 
     def _reset_gpu_particle_emitter(self, emitter_id):
         self.reset_emitters.append(emitter_id)
-        return True
-
-    def _remove_gpu_particle_emitter(self, emitter_id):
         return True
 
     def submit_particle_instances(self, batch_id, *args, **kwargs):
@@ -299,6 +296,7 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert native.program_batches[-1][0][0]["owner_object_id"] == int(game_object.id)
     assert native.program_batches[-1][0][0]["owner_layer_mask"] == 1 << 3
     assert native.program_batches[-1][0][0]["graph_instance_id"] == component._batch_id
+    assert native.program_batches[-1][2] == component._batch_id
     assert len(native.frames) == 1
     assert native.frames[0][0] == component._batch_id
     assert [item["emitter_id"] for item in native.frames[0][1]] == component._gpu_emitter_ids
@@ -318,7 +316,9 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert component.start_emitter(1) is True
     component.update(0.0)
     assert component._gpu_controllers[0].simulation_step == 1
+    published_gpu_ids = list(component._gpu_emitter_ids)
     component._remove_native_batch()
+    assert native.program_batches[-1] == ([], published_gpu_ids, component._batch_id)
 
 
 def test_local_particle_instances_follow_emitter_transform_and_scale():

@@ -881,8 +881,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     primaryOutput.material->SetRenderState(primaryMaterialState);
     managedProgram.outputs.push_back(primaryOutput);
     std::string managedError;
+    auto publishManagedGraph = [&](std::vector<infernux::particle::GpuParticleEmitterProgram> emitters,
+                                   std::vector<uint64_t> removeIds = {}) {
+        infernux::particle::GpuParticleGraphProgram graphProgram;
+        graphProgram.graphInstanceId = managedProgram.graphInstanceId;
+        graphProgram.emitters = std::move(emitters);
+        graphProgram.removeEmitterIds = std::move(removeIds);
+        return particleSystems.ApplyGraph(graphProgram, &managedError);
+    };
     const uint64_t pointCacheUploadsBeforeCreate = resources.resources.GetBufferUploadSubmissionCount();
-    if (!Require(particleSystems.CreateOrReplace(managedProgram, &managedError), managedError.c_str()) ||
+    if (!Require(publishManagedGraph({managedProgram}), managedError.c_str()) ||
         !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 &&
                      particleDrawRegistry.Size() == 1 &&
@@ -913,7 +921,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     auto invalidSemanticsProgram = managedProgram;
     invalidSemanticsProgram.artifactRevision = 2;
     invalidSemanticsProgram.outputs[0].semantics.receiveShadows = true;
-    if (!Require(!particleSystems.CreateOrReplace(invalidSemanticsProgram, &managedError) &&
+    if (!Require(!publishManagedGraph({invalidSemanticsProgram}) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1,
                  "Invalid GPU particle output semantics disturbed the active revision"))
         return false;
@@ -922,7 +930,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     unsupportedLinkedLightingProgram.artifactRevision = 2;
     unsupportedLinkedLightingProgram.billboardForwardPlusFragmentShader = particleFragmentCode;
     unsupportedLinkedLightingProgram.outputs[0].semantics.receiveSceneLighting = true;
-    if (!Require(!particleSystems.CreateOrReplace(unsupportedLinkedLightingProgram, &managedError) &&
+    if (!Require(!publishManagedGraph({unsupportedLinkedLightingProgram}) &&
                      managedError.find("requires a linked Particle Forward+ shader variant") != std::string::npos &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1,
                  "Custom lit ParticleSprite publication silently replaced the linked program"))
@@ -972,7 +980,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         std::make_shared<infernux::ShaderProgramArtifact>(*initialLinkedParticleProgram);
     invalidLinkedParticleProgram->variants.clear();
     invalidManagedProgram.outputs[0].shaderProgram = std::move(invalidLinkedParticleProgram);
-    if (!Require(!particleSystems.CreateOrReplace(invalidManagedProgram, &managedError) &&
+    if (!Require(!publishManagedGraph({invalidManagedProgram}) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "Invalid GPU particle replacement disturbed the active revision"))
         return false;
@@ -989,7 +997,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     secondaryMaterialState.depthWriteEnable = false;
     secondaryOutput.material->SetRenderState(secondaryMaterialState);
     managedProgram.outputs.push_back(secondaryOutput);
-    const bool managedReplacement = particleSystems.CreateOrReplace(managedProgram, &managedError);
+    const bool managedReplacement = publishManagedGraph({managedProgram});
     if (!managedReplacement || particleSystems.ActiveArtifactRevision(managedProgram.id) != 2 ||
         particleDeletionQueue.PendingCount() != 1) {
         std::cerr << "GPU particle replacement detail: success=" << managedReplacement
@@ -1015,7 +1023,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     auto incompatiblePreservation = managedProgram;
     incompatiblePreservation.artifactRevision = 3;
     incompatiblePreservation.capacity *= 2;
-    if (!Require(!particleSystems.CreateOrReplace(incompatiblePreservation, &managedError) &&
+    if (!Require(!publishManagedGraph({incompatiblePreservation}) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
                      particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
                      particleDeletionQueue.PendingCount() == 1,
@@ -1025,7 +1033,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     auto duplicateOutputProgram = managedProgram;
     duplicateOutputProgram.artifactRevision = 3;
     duplicateOutputProgram.outputs[1].stableId = duplicateOutputProgram.outputs[0].stableId;
-    if (!Require(!particleSystems.CreateOrReplace(duplicateOutputProgram, &managedError) &&
+    if (!Require(!publishManagedGraph({duplicateOutputProgram}) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
                      particleSystems.ActiveOutputCount(managedProgram.id) == 2 && particleDrawRegistry.Size() == 2 &&
                      particleDeletionQueue.PendingCount() == 1,
@@ -1041,8 +1049,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     companionProgram.outputs[0].stableId = "companion-primary";
     companionProgram.outputs[0].material = std::make_shared<infernux::InxMaterial>("companion-material");
     companionProgram.outputs[0].material->SetRenderQueue(3200);
-    if (!Require(particleSystems.CreateOrReplaceBatch({companionProgram}, &managedError) &&
-                     particleSystems.Size() == 2 && particleSystems.Contains(companionProgram.id) &&
+    if (!Require(publishManagedGraph({companionProgram}) && particleSystems.Size() == 2 &&
+                     particleSystems.Contains(companionProgram.id) &&
                      particleSystems.ActiveOutputCount(companionProgram.id) == 1 && particleDrawRegistry.Size() == 3 &&
                      particleDeletionQueue.PendingCount() == 2,
                  "GPU particle batch did not publish a valid companion emitter"))
@@ -1055,7 +1063,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     invalidCompanion.outputs[0].shaderProgram = std::move(invalidCompanionShader);
     auto candidateManagedProgram = managedProgram;
     candidateManagedProgram.artifactRevision = 3;
-    if (!Require(!particleSystems.CreateOrReplaceBatch({candidateManagedProgram, invalidCompanion}, &managedError) &&
+    if (!Require(!publishManagedGraph({candidateManagedProgram, invalidCompanion}) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 2 &&
                      particleSystems.ActiveArtifactRevision(companionProgram.id) == 2 &&
                      particleDrawRegistry.Size() == 3 && particleDeletionQueue.PendingCount() == 2,
@@ -1063,8 +1071,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     managedProgram.artifactRevision = 3;
-    if (!Require(particleSystems.ApplyBatch({managedProgram}, {companionProgram.id}, &managedError) &&
-                     particleSystems.Size() == 1 && !particleSystems.Contains(companionProgram.id) &&
+    if (!Require(publishManagedGraph({managedProgram}, {companionProgram.id}) && particleSystems.Size() == 1 &&
+                     !particleSystems.Contains(companionProgram.id) &&
                      particleSystems.ActiveArtifactRevision(managedProgram.id) == 3 &&
                      particleSystems.ActiveOutputCount(managedProgram.id) == 2 && particleDrawRegistry.Size() == 2 &&
                      particleDeletionQueue.PendingCount() == 3,
@@ -1943,11 +1951,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managerMigration.copyRanges = {{2, 2, 2, 0}};
     managerMigration.defaultStateWords = {0, 0, 0, 0};
     managedProgram.migration = std::move(managerMigration);
-    if (!Require(particleSystems.CreateOrReplace(managedProgram, &managedError) &&
-                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 4 &&
-                     particleSystems.ActiveStateWasPreserved(managedProgram.id) &&
-                     particleDeletionQueue.PendingCount() == 4,
-                 "GPU particle manager rejected a layout-migratable revision"))
+    if (!Require(
+            publishManagedGraph({managedProgram}) && particleSystems.ActiveArtifactRevision(managedProgram.id) == 4 &&
+                particleSystems.ActiveStateWasPreserved(managedProgram.id) && particleDeletionQueue.PendingCount() == 4,
+            "GPU particle manager rejected a layout-migratable revision"))
         return false;
     const auto migratingEntries = particleDrawRegistry.Snapshot(3000, 3100);
     if (!Require(migratingEntries.size() == 2 && migratingEntries.front().capacity == 64 &&
@@ -1980,7 +1987,39 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(!particleSystems.BeginFrame(managedProgram.id, postMigrationFrame, managedTransforms),
                  "GPU particle manager accepted the same engine frame twice"))
         return false;
-    if (!Require(particleSystems.Remove(managedProgram.id) && particleSystems.Size() == 0 &&
+
+    infernux::particle::GpuParticleGraphProgram managedGraphProgram;
+    managedGraphProgram.graphInstanceId = managedProgram.graphInstanceId;
+    infernux::particle::GpuParticleEventDomainDesc managedEvents;
+    managedEvents.graphInstanceId = managedProgram.graphInstanceId;
+    managedEvents.eventAbiHash = 0xfeed1234u;
+    managedEvents.framesInFlight = 2;
+    managedEvents.channels.push_back({0x44u, 0, 0, 0, 3, 64});
+    managedGraphProgram.eventDomain = managedEvents;
+    if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
+                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash &&
+                     particleSystems.ActiveEventPageCount(managedProgram.graphInstanceId) == 2,
+                 "GPU particle graph event domain was not published atomically"))
+        return false;
+
+    auto foreignGraphProgram = managedGraphProgram;
+    foreignGraphProgram.graphInstanceId += 1;
+    foreignGraphProgram.eventDomain.reset();
+    foreignGraphProgram.removeEmitterIds = {managedProgram.id};
+    if (!Require(!particleSystems.ApplyGraph(foreignGraphProgram, &managedError) &&
+                     particleSystems.Contains(managedProgram.id) &&
+                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash,
+                 "GPU particle graph crossed another graph's emitter ownership boundary"))
+        return false;
+
+    managedEvents.eventAbiHash += 1;
+    managedGraphProgram.eventDomain = managedEvents;
+    if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
+                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash,
+                 "GPU particle event ABI replacement did not publish the new domain"))
+        return false;
+    particleDeletionQueue.FlushAll();
+    if (!Require(publishManagedGraph({}, {managedProgram.id}) && particleSystems.Size() == 0 &&
                      particleDrawRegistry.Size() == 0 && particleDeletionQueue.PendingCount() == 1,
                  "GPU particle manager removal did not retire graph resources"))
         return false;

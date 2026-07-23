@@ -4,6 +4,7 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
+#include <function/renderer/particle/ParticleGpuEventDomain.h>
 #include <function/renderer/particle/ParticleGpuMeshRenderer.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
@@ -457,6 +458,47 @@ struct BoundsTrace
 
 int main()
 {
+    {
+        FakeDevice eventDevice;
+        particle::GpuParticleEventDomainDesc eventDesc;
+        eventDesc.graphInstanceId = 71;
+        eventDesc.eventAbiHash = 0x12345678u;
+        eventDesc.framesInFlight = 3;
+        eventDesc.channels = {
+            {0x1001u, 0, 1, 0, 3, 128},
+            {0x1002u, 1, 2, 1, 1, 64},
+        };
+
+        particle::ParticleGpuEventDomain events;
+        assert(events.Create(eventDevice, eventDesc));
+        assert(events.IsValid() && events.GraphInstanceId() == 71 && events.EventAbiHash() == 0x12345678u &&
+               events.PageCount() == 3 && events.ChannelCount() == 2);
+        assert(events.RecordBufferBytes() == (128u * 7u + 64u * 5u) * sizeof(uint32_t));
+        assert(eventDevice.buffers.size() == 10 && eventDevice.initialBufferBytes[0].size() == 64);
+        assert(eventDevice.buffers[0].memory == rhi::BufferMemory::Upload &&
+               eventDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage);
+        for (size_t page = 0; page < 3; ++page) {
+            const size_t base = 1 + page * 3;
+            assert(eventDevice.buffers[base].byteSize == events.RecordBufferBytes());
+            assert(eventDevice.buffers[base + 1].byteSize == 2 * sizeof(particle::GpuParticleEventCounter));
+            assert(eventDevice.buffers[base + 2].byteSize == 2 * sizeof(particle::GpuParticleEventDispatchArguments) &&
+                   rhi::HasBufferUsage(eventDevice.buffers[base + 2].usage, rhi::BufferUsageFlags::Indirect));
+        }
+        assert(events.ReadPage(0) == nullptr);
+        assert(events.WritePage(0) == events.WritePage(3));
+        assert(events.ReadPage(1) == events.WritePage(0));
+        assert(events.ReadPage(3) == events.WritePage(2));
+        events.Destroy();
+        assert(!events.IsValid() && eventDevice.bufferReleases == 10);
+
+        eventDesc.framesInFlight = 1;
+        eventDesc.channels[1].eventTypeIndex = eventDesc.channels[0].eventTypeIndex;
+        eventDesc.channels[1].sourceEmitterIndex = eventDesc.channels[0].sourceEmitterIndex;
+        eventDesc.channels[1].targetEmitterIndex = eventDesc.channels[0].targetEmitterIndex;
+        const size_t bufferCount = eventDevice.buffers.size();
+        assert(!events.Create(eventDevice, eventDesc) && eventDevice.buffers.size() == bufferCount);
+    }
+
     {
         FakeDevice resolveDevice;
         std::array<uint32_t, 5> shader = {0x07230203u, 0u, 0u, 0u, 0u};
