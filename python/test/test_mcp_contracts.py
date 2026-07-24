@@ -104,6 +104,7 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "material_set_render_queue",
         "material_set_surface_type",
         "render_effect_create",
+        "asset_create_particle_graph",
         "particle_graph_inspect_editor",
         "particle_graph_set_node_asset",
         "particle_graph_set_rendering_output",

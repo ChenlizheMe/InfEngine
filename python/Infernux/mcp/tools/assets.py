@@ -83,6 +83,17 @@ def register_asset_tools(mcp, project_path: str) -> None:
             arguments={"name": name, "directory": directory, "knowledge_token": knowledge_token},
         )
 
+    @mcp.tool(name="asset_create_particle_graph")
+    def asset_create_particle_graph(name: str, directory: str = "Assets") -> dict:
+        """Create and AOT-compile a ParticleGraph through the editor asset pipeline."""
+        return main_thread(
+            "asset_create_particle_graph",
+            lambda: _create_builtin(
+                project_path, "particlegraph", name, directory, "frag"
+            ),
+            arguments={"name": name, "directory": directory},
+        )
+
     @mcp.tool(name="asset_list")
     def asset_list(
         directory: str = "Assets",
@@ -556,10 +567,19 @@ def _create_builtin(project_path: str, kind: str, name: str, directory: str, sha
         success, message = ops.create_shader(target_dir, name, shader_type, adb)
         path = os.path.join(target_dir, base + "." + shader_type)
         existed = False
+    elif normalized == "particlegraph":
+        suffix = ".particlegraph"
+        base = name[: -len(suffix)] if name.lower().endswith(suffix) else name
+        path = os.path.join(target_dir, base + suffix)
+        track_project_path_before_change(project_path, path, "create_builtin")
+        success, message = ops.create_particlegraph(target_dir, name, adb)
+        existed = False
     elif normalized == "scene":
         raise ValueError("MCP agents must manage .scene files through scene_save/open/new, not asset_create_builtin_resource(kind='scene').")
     else:
-        raise ValueError("kind must be one of: folder, script, material, shader, scene")
+        raise ValueError(
+            "kind must be one of: folder, script, material, shader, particlegraph, scene"
+        )
 
     if not success:
         raise RuntimeError(message or f"Failed to create {kind}.")

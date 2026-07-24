@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from Infernux.mcp.tools import assets as assets_module
 from Infernux.mcp.tools import particle as module
 
 
@@ -253,3 +254,37 @@ def test_particle_graph_open_asset_rejects_non_graph_files(tmp_path, monkeypatch
 
     with pytest.raises(ValueError, match=r"requires a \.particlegraph"):
         mcp.tools["particle_graph_open_asset"]("Assets/Surface.mat")
+
+
+def test_asset_create_particle_graph_uses_the_editor_asset_pipeline(
+    tmp_path, monkeypatch
+):
+    assets = tmp_path / "Assets" / "Acceptance" / "VFX"
+    assets.mkdir(parents=True)
+    calls = []
+
+    monkeypatch.setattr(
+        assets_module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    monkeypatch.setattr(assets_module, "get_asset_database", lambda: None)
+    monkeypatch.setattr(
+        "Infernux.engine.ui.project_file_ops.create_particlegraph",
+        lambda directory, name, database: (
+            calls.append((directory, name, database)) or (True, "")
+        ),
+    )
+    mcp = _FakeMcp()
+    assets_module.register_asset_tools(mcp, str(tmp_path))
+
+    created = mcp.tools["asset_create_particle_graph"](
+        "EventAcceptance.particlegraph", "Assets/Acceptance/VFX"
+    )
+
+    assert created["kind"] == "particlegraph"
+    assert created["path"] == "Assets/Acceptance/VFX/EventAcceptance.particlegraph"
+    assert created["created"] is True
+    assert calls == [
+        (str(assets.resolve()), "EventAcceptance.particlegraph", None)
+    ]
