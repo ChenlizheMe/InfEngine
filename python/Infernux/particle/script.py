@@ -207,8 +207,8 @@ class ParticleScriptCompiler:
     _STAGE_METHODS = frozenset({"init", "update", "rendering"})
     _OPERATIONS = {
         "init": {
-            "set_velocity": ("particle.init.set_velocity", "value"),
-            "set_lifetime": ("particle.init.set_lifetime", "value"),
+            "set_velocity": ("particle.attribute.set_velocity", "value"),
+            "set_lifetime": ("particle.attribute.set_lifetime", "value"),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
             "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),

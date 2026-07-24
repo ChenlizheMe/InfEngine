@@ -190,11 +190,13 @@ int main()
     desc.renderTargetLayout = {3, 1};
     desc.samples = SampleCount::Four;
     desc.colorTargets[0].format = PixelFormat::RGBA16SFloat;
+    desc.colorTargets[0].premultipliedAlpha = true;
     desc.colorTargetCount = 1;
     desc.pushConstantStages = ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(constants);
     assert(desc.vertexShader.IsValid());
     assert(desc.colorTargets[0].format == PixelFormat::RGBA16SFloat);
+    assert(desc.colorTargets[0].premultipliedAlpha);
 
     ComputePipelineDesc computeDesc;
     computeDesc.computeShader = {9, 1};

@@ -277,6 +277,7 @@ struct ColorTargetState
 {
     PixelFormat format = PixelFormat::Undefined;
     bool blendEnabled = false;
+    bool premultipliedAlpha = false;
     uint8_t writeMask = 0x0f;
 };
 

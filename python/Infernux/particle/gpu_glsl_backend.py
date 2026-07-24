@@ -2570,6 +2570,8 @@ def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
     size = exports["builtin.size"]
     color = exports["builtin.color"]
     rotation = exports["builtin.rotation"]
+    age = exports["builtin.age"]
+    lifetime = exports["builtin.lifetime"]
     orientation = exports.get("builtin.orientation", "vec3(0.0)")
     scale = exports.get("builtin.scale", "vec3(1.0)")
     particle_id = exports["builtin.id"]
@@ -2587,6 +2589,8 @@ def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
          _finite_expression(size, TypeRef(ValueType.F32)),
          _finite_expression(color, TypeRef(ValueType.COLOR)),
          _finite_expression(rotation, TypeRef(ValueType.F32)),
+         _finite_expression(age, TypeRef(ValueType.F32)),
+         _finite_expression(lifetime, TypeRef(ValueType.F32)),
          _finite_expression(orientation, TypeRef(ValueType.VEC3)),
          _finite_expression(scale, TypeRef(ValueType.VEC3)))
     )
@@ -2609,7 +2613,8 @@ void main() {{
     instances[output_index].position_size = vec4({world_position}, {size});
     instances[output_index].color = {color};
     instances[output_index].rotation_custom = vec4({rotation}, {orientation});
-    instances[output_index].scale_custom = vec4(({scale}) * {world_scale}, 0.0);
+    float normalized_age = clamp(({age}) / max(({lifetime}), 0.000001), 0.0, 1.0);
+    instances[output_index].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
     instances[output_index].ribbon_data = uvec4(
         {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
     render_indices[output_index] = output_index;

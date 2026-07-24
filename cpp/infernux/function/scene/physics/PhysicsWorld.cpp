@@ -1311,14 +1311,33 @@ void PhysicsWorld::SetBodyMaxLinearVelocity(uint32_t bodyId, float maxVel)
 // ---- Kinematic move ----
 
 void PhysicsWorld::MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
-                                     float deltaTime)
+                                     float deltaTime, float maxSpeed)
 {
     if (!m_initialized || bodyId == 0xFFFFFFFF)
         return;
 
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
-    bi.MoveKinematic(JPH::BodyID(bodyId), JPH::RVec3(targetPos.x, targetPos.y, targetPos.z),
-                     JPH::Quat(targetRot.x, targetRot.y, targetRot.z, targetRot.w), deltaTime);
+    const JPH::BodyID id(bodyId);
+    const JPH::RVec3 target(targetPos.x, targetPos.y, targetPos.z);
+    const JPH::Quat targetQuat = ToJoltQuat(targetRot);
+
+    if (maxSpeed > 0.0f && deltaTime > 0.0f) {
+        // Cap the contact velocity the move can impart (matches PhysX's
+        // default maxDepenetrationVelocity). Excess displacement — a scripted
+        // long-range teleport, or the first sync after un-pausing — is applied
+        // as a teleport so the body never lags behind its Transform, and
+        // trigger/contact detection still sees the body at its new location
+        // in the very next step.
+        const JPH::Vec3 delta(target - bi.GetPosition(id));
+        const float maxStepDistance = maxSpeed * deltaTime;
+        const float distance = delta.Length();
+        if (distance > maxStepDistance) {
+            const JPH::RVec3 nearTarget = target - JPH::RVec3(delta * (maxStepDistance / distance));
+            bi.SetPositionAndRotation(id, nearTarget, targetQuat, JPH::EActivation::Activate);
+        }
+    }
+
+    bi.MoveKinematic(id, target, targetQuat, deltaTime);
 
     // Track the move so SettleKinematicMoves() can zero the velocity once the
     // body has arrived — MoveKinematic velocity persists in Jolt otherwise.
@@ -1350,26 +1369,8 @@ void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t bodyId, const glm::vec3 &
         bi.SetMotionType(id, JPH::EMotionType::Kinematic, JPH::EActivation::Activate);
     }
 
-    // Cap the contact velocity the drag can impart (matches PhysX's default
-    // maxDepenetrationVelocity). Any excess displacement — e.g. the first sync
-    // after un-pausing, or a scripted long-range teleport — is applied as a
-    // teleport so the body never lags behind its Transform.
-    constexpr float kMaxDragSpeed = 10.0f;
-    const JPH::RVec3 target(targetPos.x, targetPos.y, targetPos.z);
-    const JPH::Quat targetQuat = ToJoltQuat(targetRot);
-    const JPH::Vec3 delta(target - bi.GetPosition(id));
-    const float maxStepDistance = kMaxDragSpeed * deltaTime;
-    const float distance = delta.Length();
-    if (distance > maxStepDistance) {
-        const JPH::RVec3 nearTarget = target - JPH::RVec3(delta * (maxStepDistance / distance));
-        bi.SetPositionAndRotation(id, nearTarget, targetQuat, JPH::EActivation::Activate);
-    }
-    bi.MoveKinematic(id, target, targetQuat, deltaTime);
-
-    auto &state = m_kinematicMoveStates[bodyId];
-    state.movedThisStep = true;
-    state.idleSteps = 0;
-    state.restoreStatic = true;
+    MoveBodyKinematic(bodyId, targetPos, targetRot, deltaTime, kMaxTransformDriveSpeed);
+    m_kinematicMoveStates[bodyId].restoreStatic = true;
 }
 
 bool PhysicsWorld::IsBodySleeping(uint32_t bodyId) const

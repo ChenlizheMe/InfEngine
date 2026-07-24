@@ -875,7 +875,7 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
         }
         auto &attachment = attachments[index];
         attachment.blendEnable = target.blendEnabled ? VK_TRUE : VK_FALSE;
-        attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        attachment.srcColorBlendFactor = target.premultipliedAlpha ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_SRC_ALPHA;
         attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         attachment.colorBlendOp = VK_BLEND_OP_ADD;
         attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;

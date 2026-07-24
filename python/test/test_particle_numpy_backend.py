@@ -148,7 +148,7 @@ def test_numpy_plane_collision_resolves_penetration_bounce_and_tangent_friction(
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "velocity",
-                "particle.init.set_velocity",
+                "particle.attribute.set_velocity",
                 properties={"value": [1.0, -2.0, 0.0]},
             ),
         ),
@@ -208,7 +208,7 @@ def test_numpy_sphere_collision_resolves_penetration_bounce_and_tangent_friction
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "velocity",
-                "particle.init.set_velocity",
+                "particle.attribute.set_velocity",
                 properties={"value": [-2.0, 1.0, 0.0]},
             ),
         ),
@@ -388,7 +388,7 @@ def test_numpy_aot_executes_authored_random_expression_with_node_seed():
         "particle.init",
         nodes=(
             GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord("lifetime", "particle.init.set_lifetime"),
+            GraphNodeRecord("lifetime", "particle.attribute.set_lifetime"),
             GraphNodeRecord("random", "common.random.f32"),
             GraphNodeRecord("seed", "common.constant.u32", properties={"value": 73}),
         ),
@@ -808,7 +808,7 @@ def test_numpy_point_cache_sampling_uses_typed_interface_and_refreshes_generatio
         "particle.init",
         nodes=(
             GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord("velocity", "particle.init.set_velocity"),
+            GraphNodeRecord("velocity", "particle.attribute.set_velocity"),
             GraphNodeRecord(
                 "particle_id",
                 "particle.attribute.read_u32",

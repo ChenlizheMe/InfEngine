@@ -2022,6 +2022,34 @@ void SceneRenderGraph::BuildRenderGraph()
             auto sorter = sorterIt->second;
             auto &resources = resourcesIt->second;
             const std::string prefix = "GpuParticleSort/" + std::to_string(entry.id);
+            if (sorter->UsesSmallSort()) {
+                m_renderGraph->AddComputePass(prefix + "/Small", [&, sorter, entry, prefix](vk::PassBuilder &builder) {
+                    const uint64_t elementBytes = static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t);
+                    resources.indices[0] =
+                        builder.ImportBuffer(prefix + "/Indices0", sorter->IndexBuffer(0), elementBytes);
+                    m_renderGraph->SetResourceInitialState(resources.indices[0], rhi::TextureLayout::Undefined,
+                                                           rhi::Access::ShaderRead, rhi::PipelineStage::VertexShader);
+
+                    builder.ReadStorageBuffer(resources.instances);
+                    builder.ReadStorageBuffer(resources.indirectArguments);
+                    builder.ReadStorageBuffer(resources.renderIndices);
+                    // Finalize publishes the current visible count and this
+                    // indirect token. Keep the direct small-sort dispatch
+                    // ordered after it just like the radix path.
+                    builder.ReadIndirectBuffer(resources.sortDispatchArguments);
+                    resources.indices[0] = builder.WriteStorageBuffer(resources.indices[0]);
+
+                    const auto mode = entry.semantics.sortMode;
+                    return [this, sorter, mode](vk::RenderContext &ctx) {
+                        std::array<float, 16> view{};
+                        std::memcpy(view.data(), &m_cachedView[0][0], sizeof(m_cachedView));
+                        sorter->RecordSmall(ctx.GetComputeCommandEncoder(), view, mode);
+                    };
+                });
+                resources.renderIndices = resources.indices[0];
+                resources.drawRenderIndices = sorter->SortedIndices();
+                continue;
+            }
             m_renderGraph->AddComputePass(prefix + "/Generate", [&, sorter, entry, prefix](vk::PassBuilder &builder) {
                 const uint64_t elementBytes = static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t);
                 const uint64_t blockBytes =
@@ -2579,8 +2607,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     particleSceneDepth = resolvedParticleSceneDepth;
                     particleSceneDepthIsDepth = false;
                 } else {
-                    if (hasDepthContract && msaaSamples != VK_SAMPLE_COUNT_1_BIT &&
-                        !m_sceneDepthResolver.IsValid()) {
+                    if (hasDepthContract && msaaSamples != VK_SAMPLE_COUNT_1_BIT && !m_sceneDepthResolver.IsValid()) {
                         INXLOG_ERROR("SceneRenderGraph: soft particle depth resolve is unavailable for pass '",
                                      passDesc.name, "'");
                     }

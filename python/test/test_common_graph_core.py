@@ -4,6 +4,7 @@ import json
 import pytest
 
 from Infernux.graph import (
+    CoordinateSpace,
     ExpressionCompileError,
     ExpressionCompiler,
     GraphDocument,
@@ -11,6 +12,8 @@ from Infernux.graph import (
     GraphLinkRecord,
     GraphNodeRecord,
     PortKind,
+    TypeRef,
+    TypeSystem,
     ValueType,
 )
 
@@ -90,6 +93,18 @@ def test_common_expression_compiler_rejects_shape_mismatch():
 
     with pytest.raises(ExpressionCompileError, match="matching shapes"):
         ExpressionCompiler().compile(document, outputs=(("add", "result"),))
+
+
+def test_numeric_space_inherits_from_spatial_operand_but_rejects_mixed_spaces():
+    types = TypeSystem()
+    simulation = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    world = TypeRef(ValueType.VEC3, CoordinateSpace.WORLD)
+    constant = TypeRef(ValueType.VEC3)
+
+    assert types.unify_numeric(simulation, constant) == simulation
+    assert types.unify_numeric(constant, simulation) == simulation
+    with pytest.raises(TypeError, match="cannot mix simulation and world"):
+        types.unify_numeric(simulation, world)
 
 
 def test_common_lifecycle_math_preserves_color_type_and_scalar_factor():

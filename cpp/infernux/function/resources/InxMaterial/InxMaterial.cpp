@@ -192,6 +192,16 @@ bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool can
         renderState.alphaBlendOp = VK_BLEND_OP_ADD;
         return true;
     }
+    if (blend == "premultiply" || blend == "premultiplied" || blend == "premultiplied_alpha") {
+        renderState.blendEnable = true;
+        renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        renderState.colorBlendOp = VK_BLEND_OP_ADD;
+        renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+        return true;
+    }
     if (blend == "additive") {
         renderState.blendEnable = true;
         renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;

@@ -880,7 +880,7 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
             ),
             GraphNodeRecord(
                 "set.spawn.velocity",
-                "particle.init.set_velocity",
+                "particle.attribute.set_velocity",
                 (300.0, 0.0),
                 {},
             ),

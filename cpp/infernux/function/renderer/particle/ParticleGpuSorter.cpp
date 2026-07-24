@@ -72,6 +72,62 @@ uint32_t DivideRoundUp(uint32_t value, uint32_t divisor) noexcept
 
 } // namespace
 
+std::string_view GpuParticleSortShaderSources::Small() noexcept
+{
+    static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
+shared uint shared_keys[256];
+shared uint shared_indices[256];
+
+uint inx_ordered_float(float value) {
+    uint bits = floatBitsToUint(value);
+    return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
+}
+
+bool inx_greater(uint left_key, uint left_index, uint right_key, uint right_index) {
+    return left_key > right_key || (left_key == right_key && left_index > right_index);
+}
+
+void main() {
+    uint lane = gl_LocalInvocationID.x;
+    uint live_count = min(indirect_args.instance_count, pc.capacity);
+    uint particle_index = lane < live_count ? source_indices[lane] : 0xffffffffu;
+    uint key = 0xffffffffu;
+    if (lane < live_count) {
+        vec4 view_position = pc.view * vec4(instances[particle_index].position_size.xyz, 1.0);
+        key = inx_ordered_float(view_position.z);
+        key = pc.descending != 0u ? ~key : key;
+    }
+    shared_keys[lane] = key;
+    shared_indices[lane] = particle_index;
+    barrier();
+
+    // The visible set is deliberately small on this path. Odd-even sorting
+    // keeps every compare/exchange disjoint within a phase, which avoids the
+    // shared-memory corruption that is easy to introduce in an in-place
+    // bitonic implementation while retaining deterministic particle-ID ties.
+    for (uint phase = 0u; phase < live_count; ++phase) {
+        uint left = lane * 2u + (phase & 1u);
+        uint right = left + 1u;
+        if (right < live_count && inx_greater(
+                shared_keys[left], shared_indices[left],
+                shared_keys[right], shared_indices[right])) {
+            uint key = shared_keys[left];
+            uint index = shared_indices[left];
+            shared_keys[left] = shared_keys[right];
+            shared_indices[left] = shared_indices[right];
+            shared_keys[right] = key;
+            shared_indices[right] = index;
+        }
+        barrier();
+    }
+
+    if (lane < live_count)
+        input_indices[lane] = shared_indices[lane];
+}
+)glsl");
+    return Source;
+}
+
 std::string_view GpuParticleSortShaderSources::Generate() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
@@ -183,16 +239,17 @@ void main() {
 
 bool GpuParticleSortProgram::IsValid() const noexcept
 {
-    return IsShaderBytecodeValid(generate) && IsShaderBytecodeValid(histogram) && IsShaderBytecodeValid(scan) &&
-           IsShaderBytecodeValid(scatter);
+    return IsShaderBytecodeValid(small) && IsShaderBytecodeValid(generate) && IsShaderBytecodeValid(histogram) &&
+           IsShaderBytecodeValid(scan) && IsShaderBytecodeValid(scatter);
 }
 
 bool GpuParticleSortProgramStorage::Assign(const GpuParticleSortProgram &program)
 {
     if (!program.IsValid())
         return false;
-    const std::array<ShaderBytecode, 4> sources = {program.generate, program.histogram, program.scan, program.scatter};
-    std::array<std::vector<uint32_t>, 4> candidate;
+    const std::array<ShaderBytecode, 5> sources = {program.small, program.generate, program.histogram, program.scan,
+                                                   program.scatter};
+    std::array<std::vector<uint32_t>, 5> candidate;
     for (size_t index = 0; index < sources.size(); ++index)
         candidate[index].assign(sources[index].words, sources[index].words + sources[index].wordCount);
     shaders = std::move(candidate);
@@ -207,10 +264,9 @@ bool GpuParticleSortProgramStorage::IsValid() const noexcept
 GpuParticleSortProgram GpuParticleSortProgramStorage::View() const noexcept
 {
     return {
-        {shaders[0].data(), shaders[0].size()},
-        {shaders[1].data(), shaders[1].size()},
-        {shaders[2].data(), shaders[2].size()},
-        {shaders[3].data(), shaders[3].size()},
+        {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
+        {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
+        {shaders[4].data(), shaders[4].size()},
     };
 }
 
@@ -283,10 +339,10 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
         }
     }
 
-    const std::array<ShaderBytecode, 4> shaders = {desc.program.generate, desc.program.histogram, desc.program.scan,
-                                                   desc.program.scatter};
-    std::array<rhi::ComputePipelineHandle *, 4> pipelines = {&m_generatePipeline, &m_histogramPipeline, &m_scanPipeline,
-                                                             &m_scatterPipeline};
+    const std::array<ShaderBytecode, 5> shaders = {desc.program.small, desc.program.generate, desc.program.histogram,
+                                                   desc.program.scan, desc.program.scatter};
+    std::array<rhi::ComputePipelineHandle *, 5> pipelines = {&m_smallPipeline, &m_generatePipeline,
+                                                             &m_histogramPipeline, &m_scanPipeline, &m_scatterPipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
         const auto shader = device.CreateShaderModule({shaders[index].words, shaders[index].wordCount});
         if (!shader.IsValid()) {
@@ -311,6 +367,7 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
 void ParticleGpuSorter::Destroy() noexcept
 {
     if (m_device) {
+        m_device->Release(m_smallPipeline);
         m_device->Release(m_scatterPipeline);
         m_device->Release(m_scanPipeline);
         m_device->Release(m_histogramPipeline);
@@ -340,6 +397,7 @@ void ParticleGpuSorter::Destroy() noexcept
     m_globalOffsets = {};
     m_layout = {};
     m_groups.fill({});
+    m_smallPipeline = {};
     m_generatePipeline = {};
     m_histogramPipeline = {};
     m_scanPipeline = {};
@@ -351,7 +409,7 @@ bool ParticleGpuSorter::IsValid() const noexcept
     return m_device && m_capacity > 0 && m_blockCount > 0 && m_instances.IsValid() && m_indirectArguments.IsValid() &&
            m_sourceIndices.IsValid() && m_dispatchArguments.IsValid() && m_layout.IsValid() && m_groups[0].IsValid() &&
            m_groups[1].IsValid() && m_generatePipeline.IsValid() && m_histogramPipeline.IsValid() &&
-           m_scanPipeline.IsValid() && m_scatterPipeline.IsValid();
+           m_scanPipeline.IsValid() && m_scatterPipeline.IsValid() && m_smallPipeline.IsValid();
 }
 
 GpuParticleSortConstants ParticleGpuSorter::Constants(uint32_t passIndex) const noexcept
@@ -361,6 +419,15 @@ GpuParticleSortConstants ParticleGpuSorter::Constants(uint32_t passIndex) const 
     constants.blockCount = m_blockCount;
     constants.digitShift = (passIndex % PassCount) * 4u;
     return constants;
+}
+
+void ParticleGpuSorter::RecordSmall(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,
+                                    ParticleSortMode mode) const
+{
+    auto constants = Constants();
+    constants.view = view;
+    constants.descending = mode == ParticleSortMode::BackToFront ? 1u : 0u;
+    RecordDirect(encoder, m_smallPipeline, m_groups[0], constants, 1);
 }
 
 void ParticleGpuSorter::RecordGenerate(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,

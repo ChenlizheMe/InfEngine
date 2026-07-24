@@ -212,6 +212,10 @@ class PhysicsWorld
 
     // ---- Kinematic move ----
 
+    /// Speed cap for transform-driven body moves (gizmo drags, kinematic
+    /// transform writes). Matches PhysX's default maxDepenetrationVelocity.
+    static constexpr float kMaxTransformDriveSpeed = 10.0f;
+
     /// Move a kinematic body towards target position/rotation over deltaTime.
     ///
     /// Jolt implements this by giving the body the velocity needed to reach
@@ -220,7 +224,14 @@ class PhysicsWorld
     /// that does not receive a new target before the next Step() has its
     /// velocity zeroed so it stops exactly at the target instead of gliding
     /// away from its Transform forever.
-    void MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot, float deltaTime);
+    ///
+    /// With maxSpeed > 0 the velocity the move can impart is capped: excess
+    /// displacement is applied as a teleport, and only the final stretch is
+    /// driven with velocity. Transform writes use this so long-range scripted
+    /// teleports stay teleports while gizmo drags carry momentum. Script APIs
+    /// (Rigidbody::MovePosition) pass 0 — uncapped, like Unity.
+    void MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot, float deltaTime,
+                           float maxSpeed = 0.0f);
 
     /// Move a collider-only (static) body to a new pose with real velocity so
     /// overlapping dynamic bodies receive momentum (Unity-like drag push).

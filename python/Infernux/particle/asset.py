@@ -176,9 +176,6 @@ class EmitterSettings:
     seed: int = 1
     spawn_rate: float = 10.0
     bursts: tuple[ParticleBurst, ...] = ()
-    lifetime: ScalarRange = ScalarRange(5.0, 5.0)
-    initial_speed: ScalarRange = ScalarRange(1.0, 1.0)
-    gravity: tuple[float, float, float] = (0.0, -9.81, 0.0)
     shape: EmitterShape = EmitterShape()
 
     def __post_init__(self) -> None:
@@ -190,14 +187,9 @@ class EmitterSettings:
             raise ParticleGraphSchemaError("emitter seed must be an unsigned 32-bit integer")
         if not math.isfinite(float(self.spawn_rate)) or float(self.spawn_rate) < 0.0:
             raise ParticleGraphSchemaError("spawn rate must be finite and non-negative")
-        if len(self.gravity) != 3 or any(not math.isfinite(float(value)) for value in self.gravity):
-            raise ParticleGraphSchemaError("gravity requires three finite values")
-        object.__setattr__(self, "gravity", tuple(float(value) for value in self.gravity))
         bursts = tuple(self.bursts)
         if not all(isinstance(value, ParticleBurst) for value in bursts):
             raise ParticleGraphSchemaError("emitter bursts must contain ParticleBurst values")
-        if not isinstance(self.lifetime, ScalarRange) or not isinstance(self.initial_speed, ScalarRange):
-            raise ParticleGraphSchemaError("emitter lifetime and initial_speed must be ScalarRange values")
         if not isinstance(self.shape, EmitterShape):
             raise ParticleGraphSchemaError("emitter shape must be an EmitterShape")
         object.__setattr__(self, "bursts", bursts)
@@ -210,9 +202,6 @@ class EmitterSettings:
             "seed": self.seed,
             "spawn_rate": float(self.spawn_rate),
             "bursts": [burst.to_dict() for burst in self.bursts],
-            "lifetime": self.lifetime.to_dict(),
-            "initial_speed": self.initial_speed.to_dict(),
-            "gravity": list(self.gravity),
             "shape": self.shape.to_dict(),
         }
 
@@ -220,11 +209,11 @@ class EmitterSettings:
     def from_dict(cls, value, location: str) -> "EmitterSettings":
         expected = {
             "capacity", "target", "simulation_space", "seed", "spawn_rate", "bursts",
-            "lifetime", "initial_speed", "gravity", "shape",
+            "shape",
         }
         _exact_object(value, expected, location)
-        if type(value["bursts"]) is not list or type(value["gravity"]) is not list:
-            raise ParticleGraphSchemaError(f"{location}.bursts and gravity must be arrays")
+        if type(value["bursts"]) is not list:
+            raise ParticleGraphSchemaError(f"{location}.bursts must be an array")
         return cls(
             capacity=value["capacity"],
             target=value["target"],
@@ -235,9 +224,6 @@ class EmitterSettings:
                 ParticleBurst.from_dict(item, f"{location}.bursts[{index}]")
                 for index, item in enumerate(value["bursts"])
             ),
-            lifetime=ScalarRange.from_dict(value["lifetime"], f"{location}.lifetime"),
-            initial_speed=ScalarRange.from_dict(value["initial_speed"], f"{location}.initial_speed"),
-            gravity=tuple(value["gravity"]),
             shape=EmitterShape.from_dict(value["shape"], f"{location}.shape"),
         )
 
@@ -293,7 +279,58 @@ def default_stage_graph(stage: str) -> GraphDocument:
     domain, root_uid, root_type = _ROOTS[stage]
     nodes = [GraphNodeRecord(root_uid, root_type, (0.0, 0.0))]
     links = []
-    if stage == "rendering":
+    if stage == "init":
+        nodes.extend(
+            (
+                GraphNodeRecord(
+                    "init.lifetime",
+                    "particle.attribute.set_lifetime",
+                    (280.0, -70.0),
+                    properties={"value": 5.0},
+                ),
+                GraphNodeRecord(
+                    "init.velocity",
+                    "particle.attribute.set_velocity",
+                    (560.0, -70.0),
+                    properties={"value": [0.0, 1.0, 0.0]},
+                ),
+            )
+        )
+        links.extend(
+            (
+                GraphLinkRecord(
+                    "root-to-lifetime", root_uid, "out", "init.lifetime", "in", PortKind.STREAM
+                ),
+                GraphLinkRecord(
+                    "lifetime-to-velocity",
+                    "init.lifetime",
+                    "out",
+                    "init.velocity",
+                    "in",
+                    PortKind.STREAM,
+                ),
+            )
+        )
+    elif stage == "update":
+        nodes.append(
+            GraphNodeRecord(
+                "update.acceleration",
+                "particle.update.acceleration",
+                (280.0, -70.0),
+                properties={"value": [0.0, -9.81, 0.0]},
+            )
+        )
+        links.append(
+            GraphLinkRecord(
+                "root-to-acceleration",
+                root_uid,
+                "out",
+                "update.acceleration",
+                "in",
+                PortKind.STREAM,
+            )
+        )
+    elif stage == "rendering":
         nodes.append(GraphNodeRecord("output.sprite", "particle.output.sprite", (280.0, 0.0)))
         links.append(
             GraphLinkRecord(

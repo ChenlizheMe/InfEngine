@@ -951,14 +951,10 @@ class ParticleGraphCompiler:
         if stage is ParticleStage.INIT:
             return (
                 ParticleOperation(
-                    "settings.initialize",
+                    "emitter.sample_shape",
                     tuple(
                         sorted(
                             {
-                                "initial_speed_min": settings.initial_speed.minimum,
-                                "initial_speed_max": settings.initial_speed.maximum,
-                                "lifetime_min": settings.lifetime.minimum,
-                                "lifetime_max": settings.lifetime.maximum,
                                 "seed": settings.seed,
                                 "shape": settings.shape.kind.value,
                                 "shape_space": settings.shape.space.value,
@@ -969,14 +965,6 @@ class ParticleGraphCompiler:
                         )
                     ),
                     "settings.init",
-                ),
-            )
-        if stage is ParticleStage.UPDATE:
-            return (
-                ParticleOperation(
-                    "settings.gravity",
-                    (("value", list(settings.gravity)),),
-                    "settings.update",
                 ),
             )
         return ()

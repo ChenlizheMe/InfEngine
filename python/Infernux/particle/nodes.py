@@ -261,13 +261,13 @@ PARTICLE_NODE_DEFINITIONS = (
         target_opcodes={"particle_hir": "stage.rendering"},
     ),
     _operation(
-        "particle.init.set_velocity",
+        "particle.attribute.set_velocity",
         "Set Velocity",
         "attribute.set_velocity",
         (PropertyDef("value", TypeRef(ValueType.VEC3), [0.0, 1.0, 0.0]),),
     ),
     _operation(
-        "particle.init.set_lifetime",
+        "particle.attribute.set_lifetime",
         "Set Lifetime",
         "attribute.set_lifetime",
         (PropertyDef("value", TypeRef(ValueType.F32), 5.0),),

@@ -735,13 +735,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::InxShaderLoader sortCompiler(false, true, false, true, false, true, false, false, false, false);
     if (!VerifyVectorFieldSampling(resources, sortCompiler))
         return false;
-    const std::array<std::string_view, 4> sortSources = {
+    const std::array<std::string_view, 5> sortSources = {
+        infernux::particle::GpuParticleSortShaderSources::Small(),
         infernux::particle::GpuParticleSortShaderSources::Generate(),
         infernux::particle::GpuParticleSortShaderSources::Histogram(),
         infernux::particle::GpuParticleSortShaderSources::Scan(),
         infernux::particle::GpuParticleSortShaderSources::Scatter(),
     };
-    std::array<std::vector<uint32_t>, 4> sortCode;
+    std::array<std::vector<uint32_t>, 5> sortCode;
     for (size_t index = 0; index < sortSources.size(); ++index) {
         sortCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
             std::string(sortSources[index]), "Tests/ParticleSort" + std::to_string(index) + ".comp"));
@@ -749,10 +750,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             return false;
     }
     const infernux::particle::GpuParticleSortProgram sortProgram = {
-        {sortCode[0].data(), sortCode[0].size()},
-        {sortCode[1].data(), sortCode[1].size()},
-        {sortCode[2].data(), sortCode[2].size()},
-        {sortCode[3].data(), sortCode[3].size()},
+        {sortCode[0].data(), sortCode[0].size()}, {sortCode[1].data(), sortCode[1].size()},
+        {sortCode[2].data(), sortCode[2].size()}, {sortCode[3].data(), sortCode[3].size()},
+        {sortCode[4].data(), sortCode[4].size()},
     };
     const std::array<std::string_view, 3> cullSources = {
         infernux::particle::GpuParticleCullShaderSources::Reset(),
@@ -2015,11 +2015,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleSystems.ActiveEventPageCount(managedProgram.graphInstanceId) == 2,
                  "GPU particle graph event domain was not published atomically"))
         return false;
-    const uint64_t initialEventDomainSerial =
-        particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId);
+    const uint64_t initialEventDomainSerial = particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId);
     managedGraphProgram.emitters[1].preserveState = true;
-    if (!Require(initialEventDomainSerial != 0 &&
-                     particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
+    if (!Require(initialEventDomainSerial != 0 && particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
                      particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId) ==
                          initialEventDomainSerial,
                  "Compatible GPU particle hot reload replaced its event domain"))

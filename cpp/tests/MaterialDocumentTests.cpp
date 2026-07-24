@@ -149,6 +149,12 @@ void VerifyShaderDefaultsReplacePreviousShaderState()
     assert(nextParticleState.blendEnable);
     assert(nextParticleState.renderQueue == 3000);
     assert(material.GetPassTag() == "particle");
+
+    material.ApplyShaderRenderMeta("none", "false", "", "premultiplied", 3000, "particle", "", "");
+    const auto &premultipliedState = material.GetRenderState();
+    assert(premultipliedState.blendEnable);
+    assert(premultipliedState.srcColorBlendFactor == VK_BLEND_FACTOR_ONE);
+    assert(premultipliedState.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
 }
 
 void VerifyMaterialOverridesSurviveShaderDefaults()

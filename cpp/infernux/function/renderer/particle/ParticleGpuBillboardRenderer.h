@@ -29,6 +29,7 @@ struct GpuBillboardMaterialState
     bool blendEnabled = true;
     bool depthTestEnabled = true;
     bool depthWriteEnabled = false;
+    bool premultipliedAlpha = false;
 };
 
 enum class GpuBillboardTextureStatus : uint8_t

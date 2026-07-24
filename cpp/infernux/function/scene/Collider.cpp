@@ -627,7 +627,11 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
         bool isKinematicBody = (rb != nullptr && rb->IsEnabled() && rb->IsKinematic());
         bool movedWithVelocity = false;
         if (isKinematicBody && fixedDeltaTime > 0.0f) {
-            physicsWorld.MoveBodyKinematic(actor.bodyId, pos, rot, fixedDeltaTime);
+            // Cap the drive speed: a transform write that jumps far (scripted
+            // teleport) must land the body immediately, not launch it across
+            // the scene at delta/dt.
+            physicsWorld.MoveBodyKinematic(actor.bodyId, pos, rot, fixedDeltaTime,
+                                           PhysicsWorld::kMaxTransformDriveSpeed);
         } else if (!rb && fixedDeltaTime > 0.0f && hasRigidbodies) {
             // Collider-only body moved while the simulation is stepping
             // (gizmo drag / scripted move). A static teleport only produces

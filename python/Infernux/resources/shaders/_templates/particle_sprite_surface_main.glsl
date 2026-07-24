@@ -26,18 +26,28 @@ void main() {
     SurfaceData s = InitSurfaceData();
     s.normalWS = normalize(v_Normal);
 ${SURFACE_CALL}
-    s.alpha *= v_ParticleAlpha;
+    float postSurfaceCoverage = v_ParticleAlpha;
     if (particleView.camera_up.w > 0.5) {
         ivec2 depthSize = textureSize(_InxParticleSceneDepth, 0);
         ivec2 depthCoord = clamp(ivec2(gl_FragCoord.xy), ivec2(0), depthSize - ivec2(1));
         float sceneDepth = _inxParticleEyeDepth(texelFetch(_InxParticleSceneDepth, depthCoord, 0).r);
         float particleDepth = _inxParticleEyeDepth(gl_FragCoord.z);
-        s.alpha *= clamp((sceneDepth - particleDepth) / max(particleView.camera_right.w, 1e-4), 0.0, 1.0);
+        float softCoverage = smoothstep(
+            0.0,
+            1.0,
+            clamp((sceneDepth - particleDepth) / max(particleView.camera_right.w, 1e-4), 0.0, 1.0));
+        postSurfaceCoverage *= softCoverage;
     }
+    s.alpha *= postSurfaceCoverage;
     if (!gl_FrontFacing)
         s.normalWS = -s.normalWS;
     if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
     vec4 _forwardResult;
     evaluate(s, _forwardResult);
+    // Premultiplied outputs must fade color and alpha by identical coverage.
+    // Otherwise soft intersections leave bright horizontal bands where alpha
+    // approaches zero but the custom shading model still emits lit RGB.
+    if (particleView.rendering_control.y > 0.5)
+        _forwardResult.rgb *= postSurfaceCoverage;
     outColor = _forwardResult;
 }

@@ -32,6 +32,8 @@ ${VERTEX_CALL}
     v_Color = v.color;
     v_TexCoord = v.texCoord;
     v_ViewDepth = clipPosition.w;
+    v_ParticleNormalizedAge = instance.scale_custom.w;
+    v_ParticleId = instance.ribbon_data.w;
     v_ParticleAlpha = instance.color.a * particleView.material_tint.a;
     _inx_ObjectLayerMask = floatBitsToUint(particleView.lighting_control.w);
     gl_Position = clipPosition;

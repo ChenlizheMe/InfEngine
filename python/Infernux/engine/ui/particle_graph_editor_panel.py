@@ -35,7 +35,6 @@ from Infernux.particle.asset import (
     ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphSchemaError,
-    ScalarRange,
     SimulationSpace,
 )
 from Infernux.particle.artifact import ParticleArtifactRegistry
@@ -2478,32 +2477,6 @@ class ParticleGraphEditorPanel(EditorPanel):
                 )
             ),
         )
-
-        ctx.separator()
-        ctx.label(t("particle_graph_editor.initial_state"))
-        life_min = max(
-            0.0,
-            float(ctx.drag_float(f"{t('particle_graph_editor.lifetime_min')}##particle_life_min", settings.lifetime.minimum, 0.05, 0.0, 1.0e7)),
-        )
-        life_max = max(
-            life_min,
-            float(ctx.drag_float(f"{t('particle_graph_editor.lifetime_max')}##particle_life_max", settings.lifetime.maximum, 0.05, life_min, 1.0e7)),
-        )
-        values["lifetime"] = ScalarRange(life_min, life_max)
-
-        speed_min = float(
-            ctx.drag_float(f"{t('particle_graph_editor.speed_min')}##particle_speed_min", settings.initial_speed.minimum, 0.05, -1.0e7, 1.0e7)
-        )
-        speed_max = max(
-            speed_min,
-            float(ctx.drag_float(f"{t('particle_graph_editor.speed_max')}##particle_speed_max", settings.initial_speed.maximum, 0.05, speed_min, 1.0e7)),
-        )
-        values["initial_speed"] = ScalarRange(speed_min, speed_max)
-        gravity = tuple(
-            float(ctx.drag_float(f"{t('particle_graph_editor.gravity')} {axis}##particle_gravity_{axis}", value, 0.05, -1.0e7, 1.0e7))
-            for axis, value in zip("XYZ", settings.gravity)
-        )
-        values["gravity"] = gravity
 
         ctx.separator()
         ctx.label(t("particle_graph_editor.emission_shape"))

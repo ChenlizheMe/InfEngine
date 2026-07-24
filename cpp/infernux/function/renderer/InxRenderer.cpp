@@ -66,15 +66,14 @@ namespace
 
 struct CompiledParticleSortProgram
 {
-    std::array<std::vector<uint32_t>, 4> shaders;
+    std::array<std::vector<uint32_t>, 5> shaders;
 
     [[nodiscard]] particle::GpuParticleSortProgram View() const noexcept
     {
         return {
-            {shaders[0].data(), shaders[0].size()},
-            {shaders[1].data(), shaders[1].size()},
-            {shaders[2].data(), shaders[2].size()},
-            {shaders[3].data(), shaders[3].size()},
+            {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
+            {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
+            {shaders[4].data(), shaders[4].size()},
         };
     }
 };
@@ -160,7 +159,8 @@ struct CompiledParticleRibbonRenderProgram
 CompiledParticleSortProgram CompileParticleSortProgram()
 {
     InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-    const std::array<std::pair<std::string_view, const char *>, 4> sources = {{
+    const std::array<std::pair<std::string_view, const char *>, 5> sources = {{
+        {particle::GpuParticleSortShaderSources::Small(), "Infernux/ParticleSortSmall.comp"},
         {particle::GpuParticleSortShaderSources::Generate(), "Infernux/ParticleSortGenerate.comp"},
         {particle::GpuParticleSortShaderSources::Histogram(), "Infernux/ParticleSortHistogram.comp"},
         {particle::GpuParticleSortShaderSources::Scan(), "Infernux/ParticleSortScan.comp"},

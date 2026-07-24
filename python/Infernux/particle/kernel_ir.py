@@ -863,18 +863,7 @@ class ParticleKernelLowerer:
             source = KernelSourceRef(operation.source_node_uid, operation=f"init.{operation.opcode}")
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
-            if operation.opcode == "settings.initialize":
-                lifetime = builder.random_range(
-                    float(parameters["lifetime_min"]),
-                    float(parameters["lifetime_max"]),
-                    source,
-                )
-                builder.store("builtin.lifetime", lifetime, source)
-                speed = builder.random_range(
-                    float(parameters["initial_speed_min"]),
-                    float(parameters["initial_speed_max"]),
-                    source,
-                )
+            if operation.opcode == "emitter.sample_shape":
                 shape_parameters = {
                     "shape": parameters["shape"],
                     "shape_space": parameters["shape_space"],
@@ -905,34 +894,6 @@ class ParticleKernelLowerer:
                         source,
                     )
                 builder.store("builtin.position", position, source)
-                shape_parameters["random_slots"] = list(builder.next_random_slots(3))
-                direction = builder.emit(
-                    "sample_shape_direction",
-                    shape_type,
-                    (),
-                    shape_parameters,
-                    source,
-                )
-                if shape_type != attribute_types["builtin.velocity"]:
-                    direction = builder.emit(
-                        "convert_space",
-                        attribute_types["builtin.velocity"],
-                        (direction,),
-                        {
-                            "from": shape_type.space.value,
-                            "to": attribute_types["builtin.velocity"].space.value,
-                            "semantic": "direction",
-                        },
-                        source,
-                    )
-                velocity = builder.emit(
-                    "multiply",
-                    attribute_types["builtin.velocity"],
-                    (direction, speed),
-                    {},
-                    source,
-                )
-                builder.store("builtin.velocity", velocity, source)
             elif operation.opcode == "attribute.set_velocity":
                 value = builder.operation_value(
                     "value",
@@ -1035,7 +996,21 @@ class ParticleKernelLowerer:
             source = KernelSourceRef(operation.source_node_uid, operation=f"update.{operation.opcode}")
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
-            if operation.opcode in {"settings.gravity", "integrate.acceleration"}:
+            if operation.opcode in {"attribute.set_velocity", "attribute.set_lifetime"}:
+                stable_id = {
+                    "attribute.set_velocity": "builtin.velocity",
+                    "attribute.set_lifetime": "builtin.lifetime",
+                }[operation.opcode]
+                value = builder.operation_value(
+                    "value",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types[stable_id],
+                    source,
+                )
+                builder.store(stable_id, value, source)
+            elif operation.opcode == "integrate.acceleration":
                 acceleration = builder.operation_value(
                     "value",
                     bindings,

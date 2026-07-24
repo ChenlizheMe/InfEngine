@@ -27,6 +27,12 @@ class KernelStage(str, Enum):
     RENDERING = "rendering"
 
 
+def _matches_numeric_result(operand: TypeRef, result: TypeRef) -> bool:
+    if operand.value_type != result.value_type:
+        return False
+    return operand.space in {CoordinateSpace.NONE, result.space}
+
+
 @dataclass(frozen=True)
 class KernelOpcodeSpec:
     result_required: bool
@@ -309,21 +315,36 @@ def _validate_opcode_types(
             raise KernelSemanticError("kernel event payload result layout is invalid")
         _validate_literal(result_type, immediates["default"])
     elif opcode in {"add", "subtract", "divide"}:
-        if result_type is None or operands != (result_type, result_type):
+        if result_type is None or not all(
+            _matches_numeric_result(operand, result_type) for operand in operands
+        ):
             raise KernelSemanticError(
                 f"kernel {opcode} requires two operands matching its result"
             )
     elif opcode == "multiply":
         if result_type is None or not (
-            operands == (result_type, result_type)
-            or operands == (result_type, f32)
-            or operands == (f32, result_type)
+            all(_matches_numeric_result(operand, result_type) for operand in operands)
+            or (
+                len(operands) == 2
+                and operands[1] == f32
+                and _matches_numeric_result(operands[0], result_type)
+            )
+            or (
+                len(operands) == 2
+                and operands[0] == f32
+                and _matches_numeric_result(operands[1], result_type)
+            )
         ):
             raise KernelSemanticError(
                 "kernel multiply requires matching operands or one f32 scalar"
             )
     elif opcode == "lerp":
-        if result_type is None or operands != (result_type, result_type, f32):
+        if result_type is None or not (
+            len(operands) == 3
+            and _matches_numeric_result(operands[0], result_type)
+            and _matches_numeric_result(operands[1], result_type)
+            and operands[2] == f32
+        ):
             raise KernelSemanticError(
                 "kernel lerp requires two operands matching its result and one f32 factor"
             )

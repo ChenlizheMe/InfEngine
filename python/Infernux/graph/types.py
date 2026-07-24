@@ -106,23 +106,34 @@ class TypeSystem:
     def unify_numeric(self, left: TypeRef, right: TypeRef) -> TypeRef:
         if left.value_type not in self._NUMERIC or right.value_type not in self._NUMERIC:
             raise TypeError(f"numeric operation cannot use {left} and {right}")
-        if left.space != right.space:
+        if (
+            left.space is not CoordinateSpace.NONE
+            and right.space is not CoordinateSpace.NONE
+            and left.space != right.space
+        ):
             raise TypeError(
                 f"numeric operation cannot mix {left.space.value} and {right.space.value}"
             )
+        result_space = (
+            left.space
+            if left.space is not CoordinateSpace.NONE
+            else right.space
+        )
         if left == right:
             return left
         scalar = {ValueType.I32, ValueType.U32, ValueType.F32}
         if left.value_type in scalar and right.value_type in scalar:
             if ValueType.F32 in {left.value_type, right.value_type}:
-                return TypeRef(ValueType.F32, left.space)
+                return TypeRef(ValueType.F32, result_space)
             if left.value_type != right.value_type:
                 raise TypeError("signed and unsigned integers require an explicit cast")
-            return left
+            return TypeRef(left.value_type, result_space)
+        if left.value_type == right.value_type:
+            return TypeRef(left.value_type, result_space)
         if left.value_type is ValueType.COLOR and right.value_type is ValueType.VEC4:
-            return TypeRef(ValueType.VEC4, left.space)
+            return TypeRef(ValueType.VEC4, result_space)
         if left.value_type is ValueType.VEC4 and right.value_type is ValueType.COLOR:
-            return TypeRef(ValueType.VEC4, left.space)
+            return TypeRef(ValueType.VEC4, result_space)
         raise TypeError(f"numeric operation requires matching shapes, got {left} and {right}")
 
 

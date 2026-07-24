@@ -102,7 +102,7 @@ bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
 uint8_t PipelineStateSignature(const GpuBillboardMaterialState &state) noexcept
 {
     return static_cast<uint8_t>((state.blendEnabled ? 1u : 0u) | (state.depthTestEnabled ? 2u : 0u) |
-                                (state.depthWriteEnabled ? 4u : 0u));
+                                (state.depthWriteEnabled ? 4u : 0u) | (state.premultipliedAlpha ? 8u : 0u));
 }
 
 } // namespace
@@ -249,7 +249,9 @@ GpuBillboardMaterialState ParticleGpuRibbonRenderer::ResolveMaterialState() cons
     if (!m_material || m_material->IsDeleted())
         return m_fallbackMaterial;
     const auto &state = m_material->GetRenderState();
-    return {state.renderQueue, state.blendEnable, state.depthTestEnable, state.depthWriteEnable};
+    return {state.renderQueue, state.blendEnable, state.depthTestEnable, state.depthWriteEnable,
+            state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
+                state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA};
 }
 
 std::array<float, 4> ParticleGpuRibbonRenderer::ResolveMaterialTint() const noexcept
@@ -381,6 +383,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];
         desc.colorTargets[index].blendEnabled = state.blendEnabled;
+        desc.colorTargets[index].premultipliedAlpha = state.premultipliedAlpha;
     }
     desc.colorTargetCount = static_cast<uint32_t>(pass.colorFormats.size());
     desc.bindingLayouts[0] = m_layout;

@@ -192,6 +192,51 @@ def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contra
     assert set(topology).issubset(exports)
 
 
+def test_kernel_math_promotes_unspaced_constants_into_simulation_space():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord("noise", "common.noise.vector3d"),
+            GraphNodeRecord(
+                "scale",
+                "common.constant.vec3",
+                properties={"value": [0.2, 0.06, 0.2]},
+            ),
+            GraphNodeRecord("multiply", "common.math.multiply"),
+            GraphNodeRecord(
+                "buoyancy",
+                "common.constant.vec3",
+                properties={"value": [0.0, 0.12, 0.0]},
+            ),
+            GraphNodeRecord("add", "common.math.add"),
+            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+        ),
+        links=(
+            GraphLinkRecord("stream", "root.update", "out", "acceleration", "in", PortKind.STREAM),
+            GraphLinkRecord("position", "position", "value", "noise", "position"),
+            GraphLinkRecord("noise", "noise", "value", "multiply", "a"),
+            GraphLinkRecord("scale", "scale", "value", "multiply", "b"),
+            GraphLinkRecord("scaled", "multiply", "result", "add", "a"),
+            GraphLinkRecord("buoyancy", "buoyancy", "value", "add", "b"),
+            GraphLinkRecord("result", "add", "result", "acceleration", "value"),
+        ),
+    )
+
+    kernel = _lower(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    ).emitters[0].update
+    simulation = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+    math = [
+        instruction
+        for instruction in kernel.instructions
+        if instruction.source.node_uid in {"multiply", "add"}
+    ]
+
+    assert [instruction.result_type for instruction in math] == [simulation, simulation]
+
+
 def test_plane_collision_lowers_after_position_integration_with_portable_state_writes():
     update = GraphDocument(
         "particle.update",
@@ -611,7 +656,7 @@ def test_random_expression_preserves_authored_node_seed_in_kernel_ir():
         "particle.init",
         nodes=(
             GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord("lifetime", "particle.init.set_lifetime"),
+            GraphNodeRecord("lifetime", "particle.attribute.set_lifetime"),
             GraphNodeRecord("random", "common.random.f32"),
             GraphNodeRecord("seed", "common.constant.u32", properties={"value": 73}),
         ),

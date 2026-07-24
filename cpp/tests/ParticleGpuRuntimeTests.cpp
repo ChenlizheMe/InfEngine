@@ -985,7 +985,7 @@ int main()
            cullDevice.groupReleases == 2 && cullDevice.layoutReleases == 2 && cullDevice.pipelineReleases == 6);
 
     FakeDevice sortDevice;
-    std::array<std::array<uint32_t, 5>, 4> sortWords{};
+    std::array<std::array<uint32_t, 5>, 5> sortWords{};
     for (auto &shader : sortWords)
         shader[0] = 0x07230203u;
     particle::GpuParticleSorterDesc sorterDesc;
@@ -995,10 +995,9 @@ int main()
     sorterDesc.sourceIndices = runtime.RenderIndexBuffer();
     sorterDesc.dispatchArguments = {700, 1};
     sorterDesc.program = {
-        {sortWords[0].data(), sortWords[0].size()},
-        {sortWords[1].data(), sortWords[1].size()},
-        {sortWords[2].data(), sortWords[2].size()},
-        {sortWords[3].data(), sortWords[3].size()},
+        {sortWords[0].data(), sortWords[0].size()}, {sortWords[1].data(), sortWords[1].size()},
+        {sortWords[2].data(), sortWords[2].size()}, {sortWords[3].data(), sortWords[3].size()},
+        {sortWords[4].data(), sortWords[4].size()},
     };
     particle::GpuParticleSortProgramStorage sortProgramStorage;
     assert(sortProgramStorage.Assign(sorterDesc.program) && sortProgramStorage.IsValid());
@@ -1019,7 +1018,7 @@ int main()
     assert(sortDevice.layouts.size() == 2 && sortDevice.layouts[0].entryCount == 11 &&
            sortDevice.bindGroups.size() == 4 && sortDevice.bindGroups[0].bufferCount == 11 &&
            sortDevice.bindGroups[1].bufferCount == 11);
-    assert(sortDevice.shaderCreates == 8 && sortDevice.shaderReleases == 8 && sortDevice.pipelineCreates == 8);
+    assert(sortDevice.shaderCreates == 10 && sortDevice.shaderReleases == 10 && sortDevice.pipelineCreates == 10);
 
     SortTrace sortTrace;
     const rhi::ComputeCommandEncoder::DispatchTable sortDispatch = {&SortTrace::BindPipeline, &SortTrace::BindGroup,
@@ -1055,7 +1054,24 @@ int main()
     sorter.Destroy();
     gameViewSorter.Destroy();
     assert(!sorter.IsValid() && !gameViewSorter.IsValid() && sortDevice.bufferReleases == 14 &&
-           sortDevice.groupReleases == 4 && sortDevice.layoutReleases == 2 && sortDevice.pipelineReleases == 8);
+           sortDevice.groupReleases == 4 && sortDevice.layoutReleases == 2 && sortDevice.pipelineReleases == 10);
+
+    FakeDevice smallSortDevice;
+    auto smallSorterDesc = sorterDesc;
+    smallSorterDesc.capacity = 64;
+    particle::ParticleGpuSorter smallSorter;
+    assert(smallSorter.Create(smallSortDevice, smallSorterDesc));
+    assert(smallSorter.IsValid() && smallSorter.UsesSmallSort() && smallSorter.BlockCount() == 1);
+    SortTrace smallSortTrace;
+    const rhi::ComputeCommandEncoder smallSortEncoder(&smallSortTrace, &sortDispatch);
+    smallSorter.RecordSmall(smallSortEncoder, sortView, particle::ParticleSortMode::BackToFront);
+    assert(smallSortTrace.dispatches == std::vector<uint32_t>({1}) && smallSortTrace.indirectDispatches.empty());
+    assert(smallSortTrace.constants.size() == 1 && smallSortTrace.constants[0].view == sortView &&
+           smallSortTrace.constants[0].descending == 1 && smallSortTrace.constants[0].capacity == 64 &&
+           smallSortTrace.constants[0].blockCount == 1);
+    smallSorter.Destroy();
+    assert(!smallSorter.IsValid() && smallSortDevice.bufferReleases == 7 && smallSortDevice.groupReleases == 2 &&
+           smallSortDevice.layoutReleases == 1 && smallSortDevice.pipelineReleases == 5);
 
     FakeDevice ribbonDevice;
     std::array<std::array<uint32_t, 5>, 5> ribbonTopologyWords{};
@@ -1242,7 +1258,8 @@ int main()
     assert(graphicsDesc.pushConstantStages == (rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment));
     assert(graphicsDesc.samples == rhi::SampleCount::Four);
     assert(graphicsDesc.depth.testEnabled && !graphicsDesc.depth.writeEnabled);
-    assert(graphicsDesc.colorTargetCount == 1 && graphicsDesc.colorTargets[0].blendEnabled);
+    assert(graphicsDesc.colorTargetCount == 1 && graphicsDesc.colorTargets[0].blendEnabled &&
+           !graphicsDesc.colorTargets[0].premultipliedAlpha);
     assert(graphicsTrace.pipelines.size() == 2 && graphicsTrace.groups.size() == 2 &&
            graphicsTrace.constants.size() == 2 && graphicsTrace.indirectBuffers.size() == 2);
 
@@ -1278,15 +1295,18 @@ int main()
     assert(!updatedGraphicsDesc.colorTargets[0].blendEnabled && updatedGraphicsDesc.depth.writeEnabled);
     liveMaterialState.blendEnable = true;
     liveMaterialState.depthWriteEnable = false;
+    liveMaterialState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    liveMaterialState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     billboardDesc.material->SetRenderState(liveMaterialState);
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
-    assert(device.graphicsPipelineCreates == 2 && device.graphicsPipelineReleases == 0);
+    assert(device.graphicsPipelineCreates == 3 && device.graphicsPipelineReleases == 0);
+    assert(device.graphicsPipelineDescs.back().colorTargets[0].premultipliedAlpha);
 
     MaterialPassPipelineDescriptor unsupportedPass = forwardPass;
     unsupportedPass.target = ShaderCompileTarget::GBuffer;
     assert(!billboard.RecordDraw(graphicsEncoder, firstTarget, unsupportedPass, indirectBuffer, view));
     billboard.Destroy();
-    assert(!billboard.IsValid() && device.graphicsPipelineReleases == 2);
+    assert(!billboard.IsValid() && device.graphicsPipelineReleases == 3);
 
     {
         FakeDevice litDevice;
@@ -1361,6 +1381,7 @@ int main()
     linkedArtifact->domain = ShaderProgramDomain::ParticleSprite;
     linkedArtifact->usesParticleSceneDepthBinding = true;
     linkedArtifact->materialBufferSize = 32;
+    linkedArtifact->alphaClipThresholdOffset = 20;
     linkedArtifact->compatibilitySignature = 99;
     linkedArtifact->properties = {
         {"baseColor", "Color", "[1.0, 1.0, 1.0, 1.0]", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 0,
@@ -1434,10 +1455,12 @@ int main()
     assert(linkedTextureResolves == 2 && linkedDevice.writes == 1 && linkedDevice.writtenBytes[0].size() == 32);
     glm::vec4 packedColor{};
     float packedIntensity = 0.0f;
+    float packedAlphaClipThreshold = -1.0f;
     std::memcpy(&packedColor, linkedDevice.writtenBytes[0].data(), sizeof(packedColor));
     std::memcpy(&packedIntensity, linkedDevice.writtenBytes[0].data() + 16, sizeof(packedIntensity));
-    assert(packedColor == inx::color::SrgbToLinear(glm::vec4(0.2f, 0.4f, 0.6f, 0.8f)) &&
-           packedIntensity == 3.5f);
+    std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes[0].data() + 20, sizeof(packedAlphaClipThreshold));
+    assert(packedColor == inx::color::SrgbToLinear(glm::vec4(0.2f, 0.4f, 0.6f, 0.8f)) && packedIntensity == 3.5f &&
+           packedAlphaClipThreshold == 0.0f);
 
     GraphicsTrace linkedGraphicsTrace;
     const rhi::GraphicsCommandEncoder linkedGraphicsEncoder(&linkedGraphicsTrace, &graphicsDispatch);
@@ -1473,6 +1496,23 @@ int main()
     linkedDeletionQueue.Tick();
     linkedDeletionQueue.Tick();
     assert(linkedDevice.groupReleases == 3 && linkedDevice.textureReleases == 1 && linkedDevice.samplerReleases == 1);
+
+    auto linkedMaterialState = linkedDesc.material->GetRenderState();
+    linkedMaterialState.alphaClipEnabled = true;
+    linkedMaterialState.alphaClipThreshold = 0.35f;
+    linkedDesc.material->SetRenderState(linkedMaterialState);
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes.back().data() + 20,
+                sizeof(packedAlphaClipThreshold));
+    assert(packedAlphaClipThreshold == 0.35f);
+
+    linkedMaterialState.alphaClipEnabled = false;
+    linkedDesc.material->SetRenderState(linkedMaterialState);
+    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes.back().data() + 20,
+                sizeof(packedAlphaClipThreshold));
+    assert(packedAlphaClipThreshold == 0.0f);
+
     linkedBillboard.Destroy();
     assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 4 && linkedDevice.textureReleases == 3 &&
            linkedDevice.samplerReleases == 3);

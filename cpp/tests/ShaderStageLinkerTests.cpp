@@ -452,8 +452,16 @@ void surface(out SurfaceData surface)
     assert(particleForward.generatedVertexSource.find("readonly buffer ParticleInstances") != std::string::npos);
     assert(particleForward.generatedVertexSource.find("layout(location = 14) out float v_ParticleAlpha;") !=
            std::string::npos);
+    assert(particleForward.generatedVertexSource.find("layout(location = 12) out float v_ParticleNormalizedAge;") !=
+           std::string::npos);
+    assert(particleForward.generatedVertexSource.find("v_ParticleNormalizedAge = instance.scale_custom.w;") !=
+           std::string::npos);
+    assert(particleForward.generatedVertexSource.find("v_ParticleId = instance.ribbon_data.w;") !=
+           std::string::npos);
     assert(particleForward.generatedVertexSource.find("UniformBufferObject") == std::string::npos);
     assert(particleForward.generatedFragmentSource.find("layout(location = 14) in float v_ParticleAlpha;") !=
+           std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("layout(location = 12) in float v_ParticleNormalizedAge;") !=
            std::string::npos);
     assert(particleForward.generatedFragmentSource.find("s.alpha *= v_ParticleAlpha;") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 2") != std::string::npos);

@@ -13,6 +13,7 @@ namespace infernux::particle
 
 struct GpuParticleSortProgram
 {
+    ShaderBytecode small;
     ShaderBytecode generate;
     ShaderBytecode histogram;
     ShaderBytecode scan;
@@ -25,7 +26,7 @@ struct GpuParticleSortProgram
 /// keep only this immutable program while allocating independent workspaces.
 struct GpuParticleSortProgramStorage
 {
-    std::array<std::vector<uint32_t>, 4> shaders;
+    std::array<std::vector<uint32_t>, 5> shaders;
 
     [[nodiscard]] bool Assign(const GpuParticleSortProgram &program);
     [[nodiscard]] bool IsValid() const noexcept;
@@ -34,6 +35,7 @@ struct GpuParticleSortProgramStorage
 
 struct GpuParticleSortShaderSources
 {
+    [[nodiscard]] static std::string_view Small() noexcept;
     [[nodiscard]] static std::string_view Generate() noexcept;
     [[nodiscard]] static std::string_view Histogram() noexcept;
     [[nodiscard]] static std::string_view Scan() noexcept;
@@ -67,6 +69,7 @@ class ParticleGpuSorter
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t Radix = 16;
     static constexpr uint32_t PassCount = 8;
+    static constexpr uint32_t SmallSortCapacity = WorkgroupSize;
 
     ParticleGpuSorter() = default;
     ~ParticleGpuSorter();
@@ -108,6 +111,11 @@ class ParticleGpuSorter
     {
         return m_indices[0];
     }
+
+    [[nodiscard]] bool UsesSmallSort() const noexcept
+    {
+        return m_capacity <= SmallSortCapacity;
+    }
     [[nodiscard]] rhi::BufferHandle KeyBuffer(uint32_t pingPong) const noexcept
     {
         return pingPong < m_keys.size() ? m_keys[pingPong] : rhi::BufferHandle{};
@@ -129,6 +137,8 @@ class ParticleGpuSorter
         return m_globalOffsets;
     }
 
+    void RecordSmall(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,
+                     ParticleSortMode mode) const;
     void RecordGenerate(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,
                         ParticleSortMode mode) const;
     void RecordHistogram(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const;
@@ -156,6 +166,7 @@ class ParticleGpuSorter
     rhi::BufferHandle m_globalOffsets;
     rhi::BindingLayoutHandle m_layout;
     std::array<rhi::BindGroupHandle, 2> m_groups{};
+    rhi::ComputePipelineHandle m_smallPipeline;
     rhi::ComputePipelineHandle m_generatePipeline;
     rhi::ComputePipelineHandle m_histogramPipeline;
     rhi::ComputePipelineHandle m_scanPipeline;

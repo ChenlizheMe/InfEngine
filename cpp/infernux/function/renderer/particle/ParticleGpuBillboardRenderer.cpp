@@ -18,7 +18,7 @@ namespace
 uint8_t PipelineStateSignature(const GpuBillboardMaterialState &state) noexcept
 {
     return static_cast<uint8_t>((state.blendEnabled ? 1u : 0u) | (state.depthTestEnabled ? 2u : 0u) |
-                                (state.depthWriteEnabled ? 4u : 0u));
+                                (state.depthWriteEnabled ? 4u : 0u) | (state.premultipliedAlpha ? 8u : 0u));
 }
 
 rhi::ShaderStage ToRhiStages(ShaderProgramStageMask stages) noexcept
@@ -370,7 +370,9 @@ GpuBillboardMaterialState ParticleGpuBillboardRenderer::ResolveMaterialState() c
     if (m_material && !m_material->IsDeleted()) {
         const auto &renderState = m_material->GetRenderState();
         state = {renderState.renderQueue, renderState.blendEnable, renderState.depthTestEnable,
-                 renderState.depthWriteEnable};
+                 renderState.depthWriteEnable,
+                 renderState.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
+                     renderState.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA};
     }
 
     // Soft particles sample the completed opaque depth buffer. Keep that
@@ -471,8 +473,12 @@ bool ParticleGpuBillboardRenderer::RefreshMaterialBuffer(bool force)
         }
     }
     if (m_shaderProgram->alphaClipThresholdOffset) {
-        const float threshold =
-            m_material && !m_material->IsDeleted() ? m_material->GetRenderState().alphaClipThreshold : 0.5f;
+        float threshold = 0.0f;
+        if (m_material && !m_material->IsDeleted()) {
+            const RenderState &renderState = m_material->GetRenderState();
+            if (renderState.alphaClipEnabled)
+                threshold = renderState.alphaClipThreshold;
+        }
         (void)WriteValue(bytes, *m_shaderProgram->alphaClipThresholdOffset, threshold);
     }
     if (!m_device->WriteBuffer(m_materialBuffer, 0, bytes.data(), bytes.size()))
@@ -682,6 +688,7 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     constants.lightingControl[1] = m_semantics.sortMode != ParticleSortMode::None ? 1.0f : 0.0f;
     constants.lightingControl[2] = ResolveMaterialFloat("softness", 0.18f);
     constants.renderingControl[0] = m_semantics.receiveShadows ? 1.0f : 0.0f;
+    constants.renderingControl[1] = ResolveMaterialState().premultipliedAlpha ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     if (usesForwardPlusLighting)
@@ -761,6 +768,7 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     for (size_t index = 0; index < pass.colorFormats.size(); ++index) {
         desc.colorTargets[index].format = pass.colorFormats[index];
         desc.colorTargets[index].blendEnabled = materialState.blendEnabled;
+        desc.colorTargets[index].premultipliedAlpha = materialState.premultipliedAlpha;
     }
     desc.colorTargetCount = static_cast<uint32_t>(pass.colorFormats.size());
     desc.bindingLayouts[0] = m_layout;

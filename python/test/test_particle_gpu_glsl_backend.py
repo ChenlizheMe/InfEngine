@@ -457,7 +457,7 @@ def _point_cache_gpu_source():
         "particle.init",
         nodes=(
             GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord("velocity", "particle.init.set_velocity"),
+            GraphNodeRecord("velocity", "particle.attribute.set_velocity"),
             GraphNodeRecord("particle_id", "particle.attribute.read_u32"),
             GraphNodeRecord(
                 "sample",
@@ -684,6 +684,11 @@ def test_gpu_lowerer_emits_lifecycle_divide_lerp_rotation_and_attribute_stores()
     ).emitters[0].rendering
     assert "rotation_custom = vec4(" in rendering
     assert ".a_builtin_rotation" in rendering
+    assert "float normalized_age = clamp(" in rendering
+    assert ".a_builtin_age" in rendering
+    assert ".a_builtin_lifetime" in rendering
+    assert "scale_custom = vec4(" in rendering
+    assert ", normalized_age);" in rendering
 
 
 def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():

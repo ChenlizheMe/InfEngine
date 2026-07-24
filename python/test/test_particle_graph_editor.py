@@ -49,14 +49,14 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     model = _stage_model(document)
 
     assert model.remove_node("root.init") is False
-    assert "particle.init.set_velocity" in {
+    assert "particle.attribute.set_velocity" in {
         definition.type_id for definition in model.registered_types()
     }
     assert "particle.update.acceleration" not in {
         definition.type_id for definition in model.registered_types()
     }
 
-    velocity = model.add_node("particle.init.set_velocity", 240.0, 20.0)
+    velocity = model.add_node("particle.attribute.set_velocity", 240.0, 20.0)
     velocity.data["value"] = [1.0, 2.0, 3.0]
     assert model.add_link("root.init", "out", velocity.uid, "in") is not None
 
@@ -164,7 +164,7 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
     ]
     assert model.remove_node("init::root.init") is False
 
-    velocity = model.add_node("particle.init.set_velocity", 220.0, 0.0)
+    velocity = model.add_node("particle.attribute.set_velocity", 220.0, 0.0)
     acceleration = model.add_node("particle.update.acceleration", 220.0, 230.0)
     assert model.add_link("init::root.init", "out", velocity.uid, "in") is not None
     assert model.add_link("update::root.update", "out", acceleration.uid, "in") is not None
@@ -173,7 +173,7 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
     documents = model.to_documents()
     assert [node.type_id for node in documents["init"].nodes] == [
         "particle.root.init",
-        "particle.init.set_velocity",
+        "particle.attribute.set_velocity",
     ]
     assert [node.type_id for node in documents["update"].nodes] == [
         "particle.root.update",
@@ -276,10 +276,10 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
-    panel._on_node_add("particle.init.set_velocity", 220.0, 0.0)
+    panel._on_node_add("particle.attribute.set_velocity", 220.0, 0.0)
     velocity = next(
         node for node in panel._model.nodes
-        if node.type_id == "particle.init.set_velocity"
+        if node.type_id == "particle.attribute.set_velocity"
     )
     panel._on_link_created("init::root.init", "out", velocity.uid, "in")
     panel._select_stage("rendering")
@@ -291,11 +291,11 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     assert restored._stage == "rendering"
     assert [node.type_id for node in restored.asset.emitters[0].init.nodes] == [
         "particle.root.init",
-        "particle.init.set_velocity",
+        "particle.attribute.set_velocity",
     ]
     assert [node.type_id for node in restored._model.nodes] == [
         "particle.root.init",
-        "particle.init.set_velocity",
+        "particle.attribute.set_velocity",
         "particle.root.update",
         "particle.root.rendering",
         "particle.output.sprite",

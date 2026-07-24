@@ -669,12 +669,12 @@ def test_particle_graph_stream_order_lowers_to_stage_operations():
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "velocity",
-                "particle.init.set_velocity",
+                "particle.attribute.set_velocity",
                 properties={"value": [0.0, 2.0, 0.0]},
             ),
             GraphNodeRecord(
                 "lifetime",
-                "particle.init.set_lifetime",
+                "particle.attribute.set_lifetime",
                 properties={"value": 3.0},
             ),
         ),

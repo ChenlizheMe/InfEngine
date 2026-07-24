@@ -684,7 +684,13 @@ void SceneManager::SyncTransforms()
     MeshCollider::FlushCompletedCooking(true);
     FlushPendingBroadphase();
     PhysicsECSStore::Instance().MarkAllCollidersDirty();
-    SyncCollidersToPhysics();
+    // During play, route moved kinematic / collider-only bodies through the
+    // velocity-driven move paths — the editor gizmo calls Physics.sync_transforms
+    // after every drag frame, and a dt of 0 would degrade those moves into
+    // zero-velocity teleports that push dynamic bodies aside without imparting
+    // any momentum. Outside play nothing steps the simulation, so moves must
+    // remain teleports.
+    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
 }
 
 void SceneManager::ForceAllBodiesToCurrentTransform()
