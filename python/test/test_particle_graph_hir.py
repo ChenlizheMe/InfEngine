@@ -909,6 +909,139 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert program.behavior_hash == ParticleGraphCompiler().compile(asset).behavior_hash
 
 
+PARTICLE_SCRIPT_EVENT_SOURCE = '''\
+from Infernux.particle import (
+    ParticleScript, ParticleEmitter, EmitterSettings,
+    EventField, EventType, EventRoute,
+)
+
+class ImpactGraph(ParticleScript):
+    stable_id = "impact-graph"
+    event_types = (
+        EventType(
+            stable_id="impact",
+            name="Impact",
+            capacity_per_step=128,
+            fields=(
+                EventField("energy", "Energy", "f32", 1.0),
+                EventField("tint", "Tint", "color", (1.0, 1.0, 1.0, 1.0)),
+            ),
+        ),
+    )
+    event_routes = (
+        EventRoute(
+            stable_id="source-to-sparks",
+            event_type_id="impact",
+            source_emitter_id="source",
+            source_stage="update",
+            target_emitter_id="sparks",
+            spawn_count=3,
+        ),
+    )
+
+    class Source(ParticleEmitter):
+        stable_id = "source"
+        settings = EmitterSettings(capacity=1024)
+
+        def init(self, ctx, particles):
+            particles.set_size(2.0)
+
+        def update(self, ctx, particles):
+            particles.emit_event(
+                route="source-to-sparks",
+                condition=particles.age >= particles.lifetime,
+                payload={
+                    "energy": particles.size,
+                    "tint": particles.color,
+                },
+            )
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings(capacity=2048)
+
+        def init(self, ctx, particles):
+            particles.set_size(ctx.event_payload(
+                route="source-to-sparks", field="energy"
+            ))
+            particles.set_color(ctx.event_payload(
+                route="source-to-sparks", field="tint"
+            ))
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+
+
+def test_particle_script_typed_events_lower_through_the_graph_event_abi():
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(
+        PARTICLE_SCRIPT_EVENT_SOURCE, source_name="Impact.particle.py"
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    kernel = ParticleKernelLowerer().lower(hir)
+
+    assert [value.stable_id for value in asset.event_types] == ["impact"]
+    assert [value.stable_id for value in asset.event_routes] == [
+        "source-to-sparks"
+    ]
+    assert hir.events.routes[0].spawn_count == 3
+    assert kernel.events.routes[0].source_stage == "update"
+    assert any(
+        instruction.opcode == "event_append"
+        for instruction in kernel.emitters[0].update.instructions
+    )
+    payloads = [
+        instruction
+        for instruction in kernel.emitters[1].init.instructions
+        if instruction.opcode == "event_payload"
+    ]
+    assert [value.result_type.value_type.value for value in payloads] == [
+        "f32",
+        "color",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            PARTICLE_SCRIPT_EVENT_SOURCE.replace(
+                'source_stage="update"', 'source_stage="init"'
+            ),
+            "does not originate",
+        ),
+        (
+            PARTICLE_SCRIPT_EVENT_SOURCE.replace(
+                '"energy": particles.size,', '"missing": particles.size,'
+            ),
+            "unknown event payload field",
+        ),
+        (
+            PARTICLE_SCRIPT_EVENT_SOURCE.replace(
+                "        def update(self, ctx, particles):\n            pass",
+                '''        def update(self, ctx, particles):
+            particles.set_size(ctx.event_payload(
+                route="source-to-sparks", field="energy"
+            ))''',
+            ),
+            "event_payload is only available in Init",
+        ),
+    ],
+)
+def test_particle_script_typed_events_reject_invalid_routes_and_payloads(
+    source, message
+):
+    with pytest.raises(ParticleScriptError, match=message):
+        ParticleScriptCompiler().parse(source, source_name="InvalidEvent.particle.py")
+
+
 def test_particle_script_static_mesh_output_matches_graph_contract():
     source = PARTICLE_SCRIPT_SOURCE.replace(
         '''particles.sprite(
