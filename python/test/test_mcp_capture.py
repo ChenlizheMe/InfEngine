@@ -51,6 +51,7 @@ class _FakeNative:
     def __init__(self) -> None:
         self.output_path = ""
         self.cancelled: list[int] = []
+        self.pick_request = ()
 
     def request_capture(self, source: str, output_path: str) -> int:
         assert source in {"scene", "game"}
@@ -74,6 +75,18 @@ class _FakeNative:
     def cancel_capture(self, capture_id: int) -> bool:
         self.cancelled.append(capture_id)
         return True
+
+    def request_scene_object_pick(self, x, y, width, height) -> int:
+        self.pick_request = (x, y, width, height)
+        return 23
+
+    def query_scene_object_pick(self, request_id: int) -> dict:
+        assert request_id == 23
+        return {
+            "status": "completed",
+            "object_id": 987654321,
+            "error": "",
+        }
 
 
 def _config(*, recording_enabled: bool, build_profile: str = "debug_feedback") -> dict:
@@ -159,6 +172,34 @@ def test_capture_cancel_routes_to_native_service(tmp_path, monkeypatch):
 
     assert result == {"ok": True, "data": {"capture_id": 17, "cancelled": True}}
     assert native.cancelled == [17]
+
+
+def test_scene_gpu_pick_uses_normalized_render_target_coordinates(tmp_path, monkeypatch):
+    mcp, native = _register(tmp_path, monkeypatch, recording_enabled=False)
+
+    requested = mcp.tools["scene_pick_request"](0.25, 0.75, 800, 600)
+    assert requested["ok"] is True
+    assert requested["data"]["request_id"] == 23
+    assert requested["data"]["selection_changed"] is False
+    assert native.pick_request == (199.75, 449.25, 800.0, 600.0)
+
+    status = mcp.tools["scene_pick_status"](23)
+    assert status["data"]["status"] == "completed"
+    assert status["data"]["object_id"] == 987654321
+    assert status["data"]["terminal"] is True
+    assert status["data"]["selection_changed"] is False
+
+
+def test_scene_gpu_pick_rejects_invalid_coordinates(tmp_path, monkeypatch):
+    mcp, _native = _register(tmp_path, monkeypatch)
+
+    for args in [(-0.1, 0.5, 800, 600), (0.5, 1.1, 800, 600), (0.5, 0.5, 0, 600)]:
+        try:
+            mcp.tools["scene_pick_request"](*args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid Scene pick arguments were accepted: {args}")
 
 
 def test_capture_module_cannot_import_screen_capture_backends():

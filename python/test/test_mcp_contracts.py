@@ -110,6 +110,8 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "particle_graph_set_node_asset",
         "particle_graph_set_rendering_output",
         "particle_graph_reload_editor",
+        "scene_pick_request",
+        "scene_pick_status",
         "runtime_wait",
         "runtime_run_for",
         "runtime_read_errors",
