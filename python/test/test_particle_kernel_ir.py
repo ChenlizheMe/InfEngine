@@ -115,6 +115,60 @@ def test_update_stage_can_rewrite_lifetime_velocity_and_flipbook_frame():
     assert "builtin.flipbook_frame" in render_exports
 
 
+def test_rendering_stage_can_rewrite_particle_attributes_before_export():
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "lifetime",
+                "particle.attribute.set_lifetime",
+                properties={"value": 12.0},
+            ),
+            GraphNodeRecord(
+                "flipbook",
+                "particle.attribute.set_flipbook_frame",
+                properties={"value": 7.5},
+            ),
+            GraphNodeRecord("output", "particle.output.sprite"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "lifetime-stream", "root.rendering", "out", "lifetime", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord(
+                "flipbook-stream", "lifetime", "out", "flipbook", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord(
+                "output-stream", "flipbook", "out", "output", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    emitter = _lower(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+    ).emitters[0]
+    instructions = emitter.rendering.instructions
+    stores = [
+        instruction.immediate_dict()["attribute"]
+        for instruction in instructions
+        if instruction.opcode == "store_attribute"
+    ]
+    exports = [
+        instruction.immediate_dict()["attribute"]
+        for instruction in instructions
+        if instruction.opcode == "export_attribute"
+    ]
+
+    assert stores == ["builtin.lifetime", "builtin.flipbook_frame"]
+    assert "builtin.lifetime" in exports
+    assert "builtin.flipbook_frame" in exports
+    assert max(
+        index for index, instruction in enumerate(instructions) if instruction.opcode == "store_attribute"
+    ) < min(
+        index for index, instruction in enumerate(instructions) if instruction.opcode == "export_attribute"
+    )
+
+
 def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
     init = GraphDocument(
         "particle.init",

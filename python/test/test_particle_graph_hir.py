@@ -946,6 +946,8 @@ class SmokeGraph(ParticleScript):
             particles.rotate(180.0)
 
         def rendering(self, ctx, particles):
+            particles.set_lifetime(8.0)
+            particles.set_flipbook_frame(3.5)
             particles.sprite(
                 material=AssetReference(guid="six-way-smoke-guid"),
                 receive_scene_lighting=True,
@@ -972,6 +974,10 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert [operation.opcode for operation in emitter.update.operations[-2:]] == [
         "integrate.acceleration",
         "integrate.angular_velocity",
+    ]
+    assert [operation.opcode for operation in emitter.rendering.operations[:2]] == [
+        "attribute.set_lifetime",
+        "attribute.set_flipbook_frame",
     ]
     assert emitter.render_plan.outputs[0].receive_scene_lighting is True
     assert emitter.render_plan.outputs[0].receive_shadows is True

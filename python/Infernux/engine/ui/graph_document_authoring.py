@@ -581,7 +581,7 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
             return type_id.startswith(f"particle.event.output.{stage}.")
         if type_id.startswith("particle.event.payload."):
             return stage == "init"
-        if stage in {"init", "update"} and type_id.startswith(
+        if stage in {"init", "update", "rendering"} and type_id.startswith(
             ("particle.attribute.", "particle.point_cache.", "particle.vector_field.")
         ):
             return True

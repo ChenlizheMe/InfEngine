@@ -68,7 +68,7 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     assert all(link.kind.value == "stream" for link in restored.links)
 
 
-def test_particle_data_expression_nodes_are_creatable_in_simulation_stages():
+def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage():
     emitter = ParticleGraphAsset().emitters[0]
     init_types = {
         definition.type_id for definition in _stage_model(emitter.init).registered_types()
@@ -85,10 +85,14 @@ def test_particle_data_expression_nodes_are_creatable_in_simulation_stages():
         "particle.attribute.read_vec3",
         "particle.point_cache.sample_position",
         "particle.vector_field.sample",
+        "particle.attribute.set_lifetime",
     ):
         assert type_id in init_types
         assert type_id in update_types
-        assert type_id not in rendering_types
+        assert type_id in rendering_types
+
+    assert "particle.update.acceleration" not in rendering_types
+    assert "particle.output.sprite" not in update_types
 
     model = ParticleEmitterGraphAuthoringModel(emitter)
     model.prepare_node_creation("update")

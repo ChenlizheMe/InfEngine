@@ -32,6 +32,24 @@ vec2 getUV() {
     return v_TexCoord;
 }
 
+vec2 getParticleLocalUV() {
+    return v_ParticleLocalTexCoord;
+}
+
+vec2 getParticleFlipbookNextUV() {
+    return v_ParticleFlipbookNextTexCoord;
+}
+
+float getParticleFlipbookBlend() {
+    return v_ParticleFlipbookBlend;
+}
+
+vec4 sampleParticleFlipbook(sampler2D textureSampler) {
+    vec4 currentFrame = texture(textureSampler, v_TexCoord);
+    vec4 nextFrame = texture(textureSampler, v_ParticleFlipbookNextTexCoord);
+    return mix(currentFrame, nextFrame, v_ParticleFlipbookBlend);
+}
+
 float getViewDepth() {
     return v_ViewDepth;
 }
@@ -53,7 +71,11 @@ vec3 sampleNormal(sampler2D normalMap, vec2 uv, float scale) {
 }
 
 vec3 sampleNormal(sampler2D normalMap, float scale) {
-    return sampleNormal(normalMap, v_TexCoord, scale);
+    vec3 currentNormal = texture(normalMap, v_TexCoord).rgb * 2.0 - 1.0;
+    vec3 nextNormal = texture(normalMap, v_ParticleFlipbookNextTexCoord).rgb * 2.0 - 1.0;
+    vec3 tangentNormal = normalize(mix(currentNormal, nextNormal, v_ParticleFlipbookBlend));
+    tangentNormal.xy *= scale;
+    return normalize(getTBN() * normalize(tangentNormal));
 }
 
 vec3 sampleNormalFromHeight(sampler2D heightMap, vec2 uv, float strength, vec2 texelSize) {
@@ -84,11 +106,11 @@ vec3 sampleNormalWithDetail(sampler2D baseMap, sampler2D detailMap,
 }
 
 vec3 sampleAlbedo(sampler2D textureSampler) {
-    return texture(textureSampler, v_TexCoord).rgb;
+    return sampleParticleFlipbook(textureSampler).rgb;
 }
 
 vec4 sampleAlbedoAlpha(sampler2D textureSampler) {
-    return texture(textureSampler, v_TexCoord);
+    return sampleParticleFlipbook(textureSampler);
 }
 
 vec3 sampleAlbedo(sampler2D textureSampler, vec2 uv) {
@@ -100,7 +122,7 @@ vec4 sampleAlbedoAlpha(sampler2D textureSampler, vec2 uv) {
 }
 
 float sampleGrayscale(sampler2D textureSampler) {
-    return texture(textureSampler, v_TexCoord).r;
+    return sampleParticleFlipbook(textureSampler).r;
 }
 
 float sampleGrayscale(sampler2D textureSampler, vec2 uv) {
@@ -108,7 +130,7 @@ float sampleGrayscale(sampler2D textureSampler, vec2 uv) {
 }
 
 vec3 sampleEmission(sampler2D textureSampler) {
-    return texture(textureSampler, v_TexCoord).rgb;
+    return sampleParticleFlipbook(textureSampler).rgb;
 }
 
 vec3 sampleEmission(sampler2D textureSampler, vec2 uv) {
@@ -116,7 +138,7 @@ vec3 sampleEmission(sampler2D textureSampler, vec2 uv) {
 }
 
 vec3 sampleORM(sampler2D textureSampler) {
-    return texture(textureSampler, v_TexCoord).rgb;
+    return sampleParticleFlipbook(textureSampler).rgb;
 }
 
 vec3 sampleORM(sampler2D textureSampler, vec2 uv) {

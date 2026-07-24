@@ -456,13 +456,21 @@ void surface(out SurfaceData surface)
            std::string::npos);
     assert(particleForward.generatedVertexSource.find("v_ParticleNormalizedAge = instance.scale_custom.w;") !=
            std::string::npos);
+    assert(particleForward.generatedVertexSource.find("v_ParticleFlipbookNextTexCoord") != std::string::npos);
+    assert(particleForward.generatedVertexSource.find("v_ParticleFlipbookBlend = fract(authoredFrame);") !=
+           std::string::npos);
     assert(particleForward.generatedVertexSource.find("v_ParticleId = instance.ribbon_data.w;") != std::string::npos);
     assert(particleForward.generatedVertexSource.find("UniformBufferObject") == std::string::npos);
     assert(particleForward.generatedFragmentSource.find("layout(location = 14) in float v_ParticleAlpha;") !=
            std::string::npos);
     assert(particleForward.generatedFragmentSource.find("layout(location = 12) in float v_ParticleNormalizedAge;") !=
            std::string::npos);
-    assert(particleForward.generatedFragmentSource.find("s.alpha *= v_ParticleAlpha;") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("layout(location = 10) in vec2 v_ParticleFlipbookNextTexCoord;") !=
+           std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("sampleParticleFlipbook") != std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("float postSurfaceCoverage = v_ParticleAlpha;") !=
+           std::string::npos);
+    assert(particleForward.generatedFragmentSource.find("s.alpha *= postSurfaceCoverage;") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 2") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 14") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("set = 0, binding = 15") != std::string::npos);
@@ -518,6 +526,10 @@ void surface(out SurfaceData surface)
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ParticleLightingUBO") != std::string::npos);
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("inxParticleReceivesShadows") !=
            std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("postSurfaceCoverage") !=
+           std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("_forwardResult.rgb *= postSurfaceCoverage") !=
+           std::string::npos);
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ForwardPlusTileMaskBuffer") !=
            std::string::npos);
 
@@ -552,6 +564,10 @@ void surface(out SurfaceData surface)
     assert(defaultParticleCompilation.compiledVariants.size() == 2);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") !=
            std::string::npos);
+    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
+               "vec4 texColor = sampleAlbedoAlpha(texSampler);") != std::string::npos);
+    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
+               "getParticleLocalUV()") != std::string::npos);
 
     const auto builtinLitParticleCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",

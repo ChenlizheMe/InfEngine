@@ -1329,19 +1329,59 @@ class ParticleKernelLowerer:
         builder = _KernelBuilder(KernelStage.RENDERING, attribute_types)
         expression_values = builder.lower_expressions(emitter.rendering)
         for operation in emitter.rendering.operations:
-            if operation.opcode != "event.emit":
-                continue
-            self._lower_event_output(
-                builder,
-                operation,
-                expression_values,
-                routes,
-                event_types,
-                KernelSourceRef(
-                    operation.source_node_uid,
-                    operation=f"rendering.{operation.opcode}",
-                ),
+            source = KernelSourceRef(
+                operation.source_node_uid,
+                operation=f"rendering.{operation.opcode}",
             )
+            parameters = operation.parameter_dict()
+            bindings = dict(operation.value_bindings)
+            attribute_targets = {
+                "attribute.set_velocity": ("builtin.velocity", "value"),
+                "attribute.set_lifetime": ("builtin.lifetime", "value"),
+                "attribute.set_flipbook_frame": ("builtin.flipbook_frame", "value"),
+                "attribute.set_color": ("builtin.color", "value"),
+                "attribute.set_size": ("builtin.size", "value"),
+                "attribute.set_scale": ("builtin.scale", "value"),
+                "attribute.set_rotation": ("builtin.rotation", "value"),
+                "attribute.set_orientation": ("builtin.orientation", "degrees"),
+                "attribute.set_strip_id": ("builtin.ribbon_strip_id", "value"),
+                "attribute.set_ribbon_order": ("builtin.ribbon_order", "value"),
+                "attribute.set_ribbon_break": ("builtin.ribbon_break", "value"),
+            }
+            target = attribute_targets.get(operation.opcode)
+            if target is not None:
+                stable_id, property_name = target
+                value = builder.operation_value(
+                    property_name,
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types[stable_id],
+                    source,
+                )
+                if operation.opcode == "attribute.set_orientation":
+                    radians_per_degree = builder.constant(
+                        TypeRef(ValueType.F32),
+                        math.pi / 180.0,
+                        source,
+                    )
+                    value = builder.emit(
+                        "multiply",
+                        attribute_types[stable_id],
+                        (value, radians_per_degree),
+                        {},
+                        source,
+                    )
+                builder.store(stable_id, value, source)
+            elif operation.opcode == "event.emit":
+                self._lower_event_output(
+                    builder,
+                    operation,
+                    expression_values,
+                    routes,
+                    event_types,
+                    source,
+                )
         for stable_id in (
             "builtin.position",
             "builtin.size",

@@ -24,11 +24,17 @@ void main() {
     v.color = instance.color.rgb * particleView.material_tint.rgb;
     vec2 flipbookGrid = max(particleView.rendering_control.zw, vec2(1.0));
     float flipbookCount = flipbookGrid.x * flipbookGrid.y;
-    float flipbookFrame = mod(floor(max(instance.custom_data.x, 0.0)), flipbookCount);
+    float authoredFrame = max(instance.custom_data.x, 0.0);
+    float flipbookFrame = mod(floor(authoredFrame), flipbookCount);
+    float nextFlipbookFrame = mod(flipbookFrame + 1.0, flipbookCount);
     vec2 flipbookCell = vec2(
         mod(flipbookFrame, flipbookGrid.x),
         floor(flipbookFrame / flipbookGrid.x));
-    v.texCoord = (_inxParticleUvs[gl_VertexIndex % 6] + flipbookCell) / flipbookGrid;
+    vec2 nextFlipbookCell = vec2(
+        mod(nextFlipbookFrame, flipbookGrid.x),
+        floor(nextFlipbookFrame / flipbookGrid.x));
+    vec2 particleLocalUv = _inxParticleUvs[gl_VertexIndex % 6];
+    v.texCoord = (particleLocalUv + flipbookCell) / flipbookGrid;
 ${VERTEX_CALL}
 
     vec4 clipPosition = particleView.view_projection * vec4(v.position, 1.0);
@@ -38,6 +44,9 @@ ${VERTEX_CALL}
     v_Color = v.color;
     v_TexCoord = v.texCoord;
     v_ViewDepth = clipPosition.w;
+    v_ParticleLocalTexCoord = particleLocalUv;
+    v_ParticleFlipbookNextTexCoord = (particleLocalUv + nextFlipbookCell) / flipbookGrid;
+    v_ParticleFlipbookBlend = fract(authoredFrame);
     v_ParticleNormalizedAge = instance.scale_custom.w;
     v_ParticleId = instance.ribbon_data.w;
     v_ParticleAlpha = instance.color.a * particleView.material_tint.a;

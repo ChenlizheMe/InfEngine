@@ -208,36 +208,27 @@ class ParticleScriptCompiler:
     """Parse the public DSL into ParticleGraph without executing source code."""
 
     _STAGE_METHODS = frozenset({"init", "update", "rendering"})
+    _ATTRIBUTE_OPERATIONS = {
+        "set_velocity": ("particle.attribute.set_velocity", "value"),
+        "set_lifetime": ("particle.attribute.set_lifetime", "value"),
+        "set_flipbook_frame": ("particle.attribute.set_flipbook_frame", "value"),
+        "set_rotation": ("particle.attribute.set_rotation", "value"),
+        "set_orientation": ("particle.attribute.set_orientation", "degrees"),
+        "set_color": ("particle.attribute.set_color", "value"),
+        "set_size": ("particle.attribute.set_size", "value"),
+        "set_scale": ("particle.attribute.set_scale", "value"),
+        "set_strip_id": ("particle.attribute.set_strip_id", "value"),
+        "set_ribbon_order": ("particle.attribute.set_ribbon_order", "value"),
+        "break_ribbon": ("particle.attribute.set_ribbon_break", "value"),
+    }
     _OPERATIONS = {
-        "init": {
-            "set_velocity": ("particle.attribute.set_velocity", "value"),
-            "set_lifetime": ("particle.attribute.set_lifetime", "value"),
-            "set_flipbook_frame": ("particle.attribute.set_flipbook_frame", "value"),
-            "set_rotation": ("particle.attribute.set_rotation", "value"),
-            "set_orientation": ("particle.attribute.set_orientation", "degrees"),
-            "set_color": ("particle.attribute.set_color", "value"),
-            "set_size": ("particle.attribute.set_size", "value"),
-            "set_scale": ("particle.attribute.set_scale", "value"),
-            "set_strip_id": ("particle.attribute.set_strip_id", "value"),
-            "set_ribbon_order": ("particle.attribute.set_ribbon_order", "value"),
-            "break_ribbon": ("particle.attribute.set_ribbon_break", "value"),
-        },
+        "init": dict(_ATTRIBUTE_OPERATIONS),
         "update": {
-            "set_velocity": ("particle.attribute.set_velocity", "value"),
-            "set_lifetime": ("particle.attribute.set_lifetime", "value"),
-            "set_flipbook_frame": ("particle.attribute.set_flipbook_frame", "value"),
+            **_ATTRIBUTE_OPERATIONS,
             "acceleration": ("particle.update.acceleration", "value"),
             "collide_plane": ("particle.update.collide_plane", ""),
             "collide_sphere": ("particle.update.collide_sphere", ""),
             "collide_sdf": ("particle.update.collide_sdf", ""),
-            "set_rotation": ("particle.attribute.set_rotation", "value"),
-            "set_orientation": ("particle.attribute.set_orientation", "degrees"),
-            "set_color": ("particle.attribute.set_color", "value"),
-            "set_size": ("particle.attribute.set_size", "value"),
-            "set_scale": ("particle.attribute.set_scale", "value"),
-            "set_strip_id": ("particle.attribute.set_strip_id", "value"),
-            "set_ribbon_order": ("particle.attribute.set_ribbon_order", "value"),
-            "break_ribbon": ("particle.attribute.set_ribbon_break", "value"),
             "rotate": ("particle.update.rotate", "degrees_per_second"),
             "rotate_orientation": (
                 "particle.update.rotate_orientation",
@@ -246,6 +237,7 @@ class ParticleScriptCompiler:
             "kill_if": ("particle.update.kill_if", "condition"),
         },
         "rendering": {
+            **_ATTRIBUTE_OPERATIONS,
             "sprite": ("particle.output.sprite", ""),
             "mesh": ("particle.output.mesh", ""),
             "ribbon": ("particle.output.ribbon", ""),

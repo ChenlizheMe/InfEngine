@@ -645,17 +645,17 @@ class ParticleGraphCompiler:
         scale_opcodes = {"attribute.set_scale"}
         needs_orientation = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in orientation_opcodes
-            for stage in (init, update)
+            for stage in (init, update, rendering)
             for operation in stage.operations
         )
         needs_scale = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in scale_opcodes
-            for stage in (init, update)
+            for stage in (init, update, rendering)
             for operation in stage.operations
         )
         needs_flipbook_frame = any(
             operation.opcode == "attribute.set_flipbook_frame"
-            for stage in (init, update)
+            for stage in (init, update, rendering)
             for operation in stage.operations
         )
         attributes = emitter.attributes
