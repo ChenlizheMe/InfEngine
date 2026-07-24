@@ -1,5 +1,5 @@
 #version 450
-@shader_id: outline_composite
+@shader_id: Outline Composite
 @hidden
 
 // Screen-space edge detection + compositing for Blender/Unity style outline.

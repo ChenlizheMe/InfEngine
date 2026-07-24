@@ -80,6 +80,7 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
         if (InxGUISemantics::IsCaptureEnabled())
             ctx->RecordSemanticWindow("menu_bar", "Main Menu", "menu_bar");
         RenderProjectMenu(ctx);
+        RenderSceneMenu(ctx);
         RenderDynamicMenus(ctx);
         RenderWindowMenu(ctx);
         ImGui::EndMainMenuBar();
@@ -175,6 +176,25 @@ void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
     if (SemanticMenuItem(ctx, T("menu.preferences"), "", prefOpen, true, "menu.project.preferences")) {
         if (togglePreferences)
             togglePreferences();
+    }
+
+    ImGui::EndMenu();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Scene menu — per-scene settings (environment / lighting)
+// ════════════════════════════════════════════════════════════════════
+
+void MenuBarPanel::RenderSceneMenu(InxGUIContext *ctx)
+{
+    if (!BeginSemanticMenu(ctx, T("menu.scene"), "menu.scene"))
+        return;
+
+    // Environment (skybox + ambient) settings toggle
+    bool envOpen = isEnvironmentSettingsOpen ? isEnvironmentSettingsOpen() : false;
+    if (SemanticMenuItem(ctx, T("menu.environment_settings"), "", envOpen, true, "menu.scene.environment_settings")) {
+        if (toggleEnvironmentSettings)
+            toggleEnvironmentSettings();
     }
 
     ImGui::EndMenu();

@@ -30,7 +30,7 @@ class SharpenEffect(FullScreenEffect):
 
     name = "Sharpen"
     injection_point = "after_post_process"
-    default_order = 850  # after film grain (800), before final output
+    default_order = 920  # after tone mapping (900), before film grain (950)
     menu_path = "Post-processing/Sharpen"
 
     # ---- Serialized parameters ----
@@ -47,7 +47,7 @@ class SharpenEffect(FullScreenEffect):
     # ------------------------------------------------------------------
 
     def get_shader_list(self) -> List[str]:
-        return ["fullscreen_triangle", "sharpen_cas"]
+        return ["Fullscreen Triangle", "Sharpen CAS"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from Infernux.rendergraph.graph import Format
@@ -57,7 +57,7 @@ class SharpenEffect(FullScreenEffect):
             bus,
             output_name="_sharpen_out",
             pass_name="Sharpen_CAS",
-            shader_name="sharpen_cas",
+            shader_name="Sharpen CAS",
             format=Format.RGBA16_SFLOAT,
             params={"intensity": self.intensity},
         )

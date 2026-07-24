@@ -96,6 +96,18 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "collide_plane_velocity": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
     "collide_sphere_position": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
     "collide_sphere_velocity": KernelOpcodeSpec(True, 7, stages=_UPDATE_ONLY),
+    "collide_sdf_position": KernelOpcodeSpec(
+        True,
+        5,
+        frozenset({"interface", "inverted"}),
+        _UPDATE_ONLY,
+    ),
+    "collide_sdf_velocity": KernelOpcodeSpec(
+        True,
+        5,
+        frozenset({"interface", "inverted"}),
+        _UPDATE_ONLY,
+    ),
     "export_attribute": KernelOpcodeSpec(
         False, 1, frozenset({"attribute"}), _RENDER_ONLY
     ),
@@ -524,6 +536,23 @@ def _validate_opcode_types(
                 f"kernel {opcode} requires simulation-space position, velocity and sphere "
                 "center followed by sphere radius, particle radius, restitution and friction"
             )
+    elif opcode in {"collide_sdf_position", "collide_sdf_velocity"}:
+        simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if result_type != simulation_vec3 or operands != (
+            simulation_vec3,
+            simulation_vec3,
+            f32,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires simulation-space position and velocity followed by "
+                "particle radius, restitution and friction"
+            )
+        if type(immediates["interface"]) is not str or not immediates["interface"].strip():
+            raise KernelSemanticError("SDF collision interface cannot be empty")
+        if type(immediates["inverted"]) is not bool:
+            raise KernelSemanticError("SDF collision inverted must be a boolean")
     elif opcode == "convert_space":
         if result_type is None or operands[0].value_type != result_type.value_type:
             raise KernelSemanticError("kernel space conversion must preserve value type")

@@ -1,6 +1,6 @@
 #version 450
 
-@shader_id: Infernux/Grid
+@shader_id: Grid
 @cull: none
 @hidden
 @property: fadeStart, Float, 15.0
@@ -78,7 +78,9 @@ void main() {
     float farGridAlpha = major * 0.4;
     float lineAlpha = mix(nearGridAlpha, farGridAlpha, lodFactor);
 
-    vec3 lineColor = vec3(0.8);
+    // 0.8 sRGB expressed in linear space — the scene buffer is linear and is
+    // sRGB-encoded by the display encode pass, keeping the familiar gray.
+    vec3 lineColor = vec3(0.6038);
 
     // ---- Distance fade (XZ plane) ----
     float dist = length(coord - cameraPos.xz);

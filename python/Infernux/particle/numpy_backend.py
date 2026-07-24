@@ -15,6 +15,8 @@ from Infernux.graph.ramp import Curve, Gradient
 from .asset import EmitterSettings, ExecutionTarget
 from .data_interface import (
     PointCache,
+    SdfFilter,
+    SdfVolume,
     VectorField,
     VectorFieldBoundary,
     VectorFieldFilter,
@@ -236,6 +238,115 @@ def _default_vector_field_resolver(interface: VectorField):
     return asset
 
 
+class _NumpySdfBinding:
+    def __init__(self, interface: SdfVolume, asset: Any) -> None:
+        if asset is None or not hasattr(asset, "volume_array"):
+            raise NumpyParticleBackendError(
+                f"SDF interface {interface.stable_id!r} did not resolve to a Texture3D"
+            )
+        self.interface = interface
+        self.asset = asset
+        self._generation = -1
+        self._volume = np.empty((0, 0, 0, 4), dtype=np.float32)
+        self._field_to_space = np.asarray(
+            interface.field_to_space, dtype=np.float32
+        ).reshape(4, 4)
+        self._space_to_field = np.empty((4, 4), dtype=np.float32)
+        self._field_to_space_with_bake = np.empty((4, 4), dtype=np.float32)
+        self.refresh()
+
+    @property
+    def volume(self) -> np.ndarray:
+        self.refresh()
+        return self._volume
+
+    def refresh(self) -> None:
+        generation = int(self.asset.generation)
+        if generation == self._generation:
+            return
+        try:
+            source = np.asarray(self.asset.volume_array())
+            bake_basis = np.asarray(self.asset.bake_basis, dtype=np.float32).reshape(4, 4)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise NumpyParticleBackendError(
+                f"SDF interface {self.interface.stable_id!r} has no usable volume generation"
+            ) from exc
+        if (
+            source.ndim != 4
+            or source.shape[3] != 4
+            or source.dtype not in {np.dtype(np.float16), np.dtype(np.float32)}
+            or min(source.shape[:3], default=0) <= 1
+            or not np.isfinite(source).all()
+            or not np.isfinite(bake_basis).all()
+        ):
+            raise NumpyParticleBackendError(
+                f"SDF interface {self.interface.stable_id!r} volume is invalid"
+            )
+        self._field_to_space_with_bake = self._field_to_space @ bake_basis
+        try:
+            self._space_to_field = np.linalg.inv(
+                self._field_to_space_with_bake
+            ).astype(np.float32)
+        except np.linalg.LinAlgError as exc:
+            raise NumpyParticleBackendError(
+                f"SDF interface {self.interface.stable_id!r} transform is singular"
+            ) from exc
+        self._volume = np.ascontiguousarray(source, dtype=np.float32)
+        self._generation = generation
+
+    def sampling_matrices(
+        self, context: "_RuntimeContext"
+    ) -> tuple[np.ndarray, np.ndarray, np.float32]:
+        simulation_to_space = context.conversion(
+            CoordinateSpace.SIMULATION.value,
+            self.interface.space.value,
+        )
+        space_to_simulation = context.conversion(
+            self.interface.space.value,
+            CoordinateSpace.SIMULATION.value,
+        )
+        field_to_simulation = (
+            space_to_simulation @ self._field_to_space_with_bake
+        )
+        linear = field_to_simulation[:3, :3]
+        try:
+            normal_to_simulation = np.linalg.inv(linear).T.astype(np.float32)
+        except np.linalg.LinAlgError as exc:
+            raise NumpyParticleBackendError(
+                f"SDF interface {self.interface.stable_id!r} normal transform is singular"
+            ) from exc
+        minimum_scale = np.float32(
+            min(float(np.linalg.norm(linear[:, axis])) for axis in range(3))
+            * self.interface.distance_scale
+        )
+        if not np.isfinite(minimum_scale) or minimum_scale <= 0.0:
+            raise NumpyParticleBackendError(
+                f"SDF interface {self.interface.stable_id!r} distance transform is invalid"
+            )
+        return (
+            self._space_to_field @ simulation_to_space,
+            normal_to_simulation,
+            minimum_scale,
+        )
+
+
+def _default_sdf_resolver(interface: SdfVolume):
+    from Infernux.lib import AssetRegistry
+
+    reference = interface.texture
+    if not reference.guid:
+        identity = reference.path_hint or "<empty reference>"
+        raise NumpyParticleBackendError(
+            f"SDF interface {interface.stable_id!r} requires an imported texture GUID; got {identity!r}"
+        )
+    asset = AssetRegistry.instance().load_texture_by_guid(reference.guid)
+    if asset is None:
+        raise NumpyParticleBackendError(
+            f"SDF interface {interface.stable_id!r} cannot load {reference.guid!r}"
+        )
+    return asset
+
+
 class _RuntimeContext:
     def __init__(self, system_seed: int) -> None:
         if type(system_seed) is not int or not 0 <= system_seed <= 0xFFFFFFFF:
@@ -308,6 +419,11 @@ class _StageWorkspace:
         self.field_weight = np.empty(capacity, dtype=np.float32)
         self.field_valid = np.empty(capacity, dtype=np.bool_)
         self.field_component_valid = np.empty((capacity, 3), dtype=np.bool_)
+        self.sdf_coordinates = np.empty((capacity, 3), dtype=np.float32)
+        self.sdf_normal = np.empty((capacity, 3), dtype=np.float32)
+        self.sdf_distance = np.empty(capacity, dtype=np.float32)
+        self.sdf_sample_a = np.empty(capacity, dtype=np.float32)
+        self.sdf_sample_b = np.empty(capacity, dtype=np.float32)
         self.random_float = tuple(
             np.empty(capacity, dtype=np.float32) for _index in range(6)
         )
@@ -335,6 +451,7 @@ class NumpyParticleEmitterProgram:
     outputs: tuple[ParticleOutputDescriptor, ...]
     point_caches: tuple[tuple[str, _NumpyPointCacheBinding], ...] = ()
     vector_fields: tuple[tuple[str, _NumpyVectorFieldBinding], ...] = ()
+    sdf_volumes: tuple[tuple[str, _NumpySdfBinding], ...] = ()
 
     def create_runtime(self, *, system_seed: int = 0) -> "NumpyParticleEmitterRuntime":
         return NumpyParticleEmitterRuntime(self, system_seed=system_seed)
@@ -367,6 +484,7 @@ class NumpyParticleCompiler:
         emitter_ids: Collection[str] | None = None,
         point_cache_resolver: Callable[[PointCache], Any] | None = None,
         vector_field_resolver: Callable[[VectorField], Any] | None = None,
+        sdf_resolver: Callable[[SdfVolume], Any] | None = None,
     ) -> NumpyParticleProgram:
         try:
             metadata = decode_particle_runtime_metadata(hir)
@@ -438,17 +556,36 @@ class NumpyParticleCompiler:
                 )
                 for stable_id in sorted(referenced_vector_fields)
             }
+            referenced_sdfs = {
+                instruction.immediate_dict()["interface"]
+                for function in (emitter.init, emitter.update, emitter.rendering)
+                for instruction in function.instructions
+                if instruction.opcode in {"collide_sdf_position", "collide_sdf_velocity"}
+            }
+            sdf_by_id = {
+                interface.stable_id: interface
+                for interface in emitter.data_interfaces
+                if isinstance(interface, SdfVolume)
+            }
+            resolve_sdf = sdf_resolver or _default_sdf_resolver
+            sdf_volumes = {
+                stable_id: _NumpySdfBinding(
+                    sdf_by_id[stable_id], resolve_sdf(sdf_by_id[stable_id])
+                )
+                for stable_id in sorted(referenced_sdfs)
+            }
             programs.append(
                 NumpyParticleEmitterProgram(
                     emitter.stable_id,
                     settings,
                     emitter,
-                    _compile_stage(emitter.init, emitter.random_seed, point_caches, vector_fields),
-                    _compile_stage(emitter.update, emitter.random_seed, point_caches, vector_fields),
-                    _compile_stage(emitter.rendering, emitter.random_seed, point_caches, vector_fields),
+                    _compile_stage(emitter.init, emitter.random_seed, point_caches, vector_fields, sdf_volumes),
+                    _compile_stage(emitter.update, emitter.random_seed, point_caches, vector_fields, sdf_volumes),
+                    _compile_stage(emitter.rendering, emitter.random_seed, point_caches, vector_fields, sdf_volumes),
                     outputs,
                     tuple(point_caches.items()),
                     tuple(vector_fields.items()),
+                    tuple(sdf_volumes.items()),
                 )
             )
         return NumpyParticleProgram(kernel.kernel_hash, tuple(programs))
@@ -817,6 +954,7 @@ def _compile_stage(
     emitter_seed: int,
     point_caches: Mapping[str, _NumpyPointCacheBinding],
     vector_fields: Mapping[str, _NumpyVectorFieldBinding],
+    sdf_volumes: Mapping[str, _NumpySdfBinding],
 ) -> NumpyStageExecutable:
     constants: list[Any] = []
     attributes: list[str] = []
@@ -826,6 +964,7 @@ def _compile_stage(
         tuple[_NumpyPointCacheBinding, str, TypeRef, str, str]
     ] = []
     vector_field_samples: list[_NumpyVectorFieldBinding] = []
+    sdf_samples: list[tuple[_NumpySdfBinding, bool]] = []
     curves: list[tuple[Any, ...]] = []
     gradients: list[tuple[Any, ...]] = []
     scratch_types: list[TypeRef] = []
@@ -1032,6 +1171,20 @@ def _compile_stage(
             lines.append(
                 f"    {helper}({output}, {', '.join(operands)}, workspace, count)"
             )
+        elif opcode in {"collide_sdf_position", "collide_sdf_velocity"}:
+            operands = operand_names(instruction)
+            output = result_buffer(instruction)
+            try:
+                binding = sdf_volumes[immediates["interface"]]
+            except KeyError as exc:
+                raise NumpyParticleBackendError(
+                    f"NumPy backend has no SDF binding {immediates['interface']!r}"
+                ) from exc
+            sdf_samples.append((binding, immediates["inverted"]))
+            lines.append(
+                f"    _{opcode}({output}, {', '.join(operands)}, "
+                f"_sdf_samples[{len(sdf_samples) - 1}], context, workspace, count)"
+            )
         elif opcode == "export_attribute":
             source = operand_names(instruction)[0]
             stable_id = immediates["attribute"]
@@ -1055,6 +1208,7 @@ def _compile_stage(
         "_conversions": tuple(conversions),
         "_point_cache_samples": tuple(point_cache_samples),
         "_vector_field_samples": tuple(vector_field_samples),
+        "_sdf_samples": tuple(sdf_samples),
         "_curves": tuple(curves),
         "_gradients": tuple(gradients),
         "_convert_space": _convert_space,
@@ -1063,6 +1217,8 @@ def _compile_stage(
         "_collide_plane_velocity": _collide_plane_velocity,
         "_collide_sphere_position": _collide_sphere_position,
         "_collide_sphere_velocity": _collide_sphere_velocity,
+        "_collide_sdf_position": _collide_sdf_position,
+        "_collide_sdf_velocity": _collide_sdf_velocity,
         "_random_range": _random_range,
         "_sample_shape": _sample_shape,
         "_sample_point_cache": _sample_point_cache,
@@ -1609,6 +1765,174 @@ def _collide_sphere_velocity(
     np.add(tangent, normal_component, out=tangent)
     np.copyto(output, velocity, casting="unsafe")
     np.copyto(output, tangent, where=collision[:, None])
+
+
+def _sample_sdf_trilinear(output, coordinates, binding, workspace, count) -> None:
+    volume = binding.volume
+    depth, height, width, _components = volume.shape
+    dimensions = (width, height, depth)
+    base = workspace.field_base[:count]
+    next_index = workspace.field_next[:count]
+    fraction = workspace.field_fraction[:count]
+    np.multiply(coordinates, dimensions, out=fraction)
+    np.subtract(fraction, np.float32(0.5), out=fraction)
+    np.floor(fraction, out=base, casting="unsafe")
+    np.subtract(fraction, base, out=fraction)
+    np.clip(base, (0, 0, 0), (width - 1, height - 1, depth - 1), out=base)
+    np.add(base, 1, out=next_index)
+    np.minimum(next_index, (width - 1, height - 1, depth - 1), out=next_index)
+
+    output.fill(0.0)
+    flat = volume.reshape(-1, 4)
+    corner = workspace.field_corner[:count]
+    linear_index = workspace.field_linear_index[:count]
+    texel = workspace.field_texel[:count]
+    weight = workspace.field_weight[:count]
+    for z in (0, 1):
+        for y in (0, 1):
+            for x in (0, 1):
+                np.copyto(corner[:, 0], next_index[:, 0] if x else base[:, 0])
+                np.copyto(corner[:, 1], next_index[:, 1] if y else base[:, 1])
+                np.copyto(corner[:, 2], next_index[:, 2] if z else base[:, 2])
+                _field_linear_indices(linear_index, corner, width, height)
+                np.take(flat, linear_index, axis=0, out=texel)
+                np.copyto(weight, fraction[:, 0] if x else 1.0 - fraction[:, 0])
+                np.multiply(
+                    weight,
+                    fraction[:, 1] if y else 1.0 - fraction[:, 1],
+                    out=weight,
+                )
+                np.multiply(
+                    weight,
+                    fraction[:, 2] if z else 1.0 - fraction[:, 2],
+                    out=weight,
+                )
+                np.add(output, texel[:, 0] * weight, out=output)
+
+
+def _sample_sdf_collision(position, sample, context, workspace, count):
+    binding, inverted = sample
+    volume = binding.volume
+    depth, height, width, _components = volume.shape
+    simulation_to_field, normal_to_simulation, distance_scale = (
+        binding.sampling_matrices(context)
+    )
+    coordinates = workspace.sdf_coordinates[:count]
+    np.matmul(position, simulation_to_field[:3, :3].T, out=coordinates)
+    np.add(coordinates, simulation_to_field[:3, 3], out=coordinates)
+    np.add(coordinates, np.float32(0.5), out=coordinates)
+
+    component_valid = workspace.field_component_valid[:count]
+    valid = workspace.field_valid[:count]
+    np.greater_equal(coordinates, np.float32(0.0), out=component_valid)
+    np.all(component_valid, axis=1, out=valid)
+    np.less_equal(coordinates, np.float32(1.0), out=component_valid)
+    np.logical_and(valid, np.all(component_valid, axis=1), out=valid)
+    np.clip(coordinates, np.float32(0.0), np.float32(1.0), out=coordinates)
+
+    distance = workspace.sdf_distance[:count]
+    _sample_sdf_trilinear(distance, coordinates, binding, workspace, count)
+    np.multiply(distance, distance_scale, out=distance)
+
+    gradient = workspace.sdf_normal[:count]
+    offset_coordinates = workspace.field_coordinates[:count]
+    sample_a = workspace.sdf_sample_a[:count]
+    sample_b = workspace.sdf_sample_b[:count]
+    texel_steps = (1.0 / width, 1.0 / height, 1.0 / depth)
+    for axis, step in enumerate(texel_steps):
+        np.copyto(offset_coordinates, coordinates)
+        np.subtract(offset_coordinates[:, axis], np.float32(step), out=offset_coordinates[:, axis])
+        np.clip(offset_coordinates, np.float32(0.0), np.float32(1.0), out=offset_coordinates)
+        _sample_sdf_trilinear(sample_a, offset_coordinates, binding, workspace, count)
+        np.copyto(offset_coordinates, coordinates)
+        np.add(offset_coordinates[:, axis], np.float32(step), out=offset_coordinates[:, axis])
+        np.clip(offset_coordinates, np.float32(0.0), np.float32(1.0), out=offset_coordinates)
+        _sample_sdf_trilinear(sample_b, offset_coordinates, binding, workspace, count)
+        np.subtract(sample_b, sample_a, out=gradient[:, axis])
+        np.divide(gradient[:, axis], np.float32(2.0 * step), out=gradient[:, axis])
+
+    np.matmul(gradient, normal_to_simulation.T, out=offset_coordinates)
+    _normalize(gradient, offset_coordinates, workspace.sdf_sample_a[:count])
+    if inverted:
+        np.negative(distance, out=distance)
+        np.negative(gradient, out=gradient)
+    return gradient, distance, valid
+
+
+def _collide_sdf_position(
+    output,
+    position,
+    velocity,
+    particle_radius,
+    restitution,
+    friction,
+    sample,
+    context,
+    workspace,
+    count,
+) -> None:
+    del velocity, restitution, friction
+    normal, distance, valid = _sample_sdf_collision(
+        position, sample, context, workspace, count
+    )
+    radius = workspace.random_float[0][:count]
+    np.maximum(particle_radius, 0.0, out=radius)
+    penetration = workspace.random_float[1][:count]
+    np.subtract(radius, distance, out=penetration)
+    colliding = workspace.sample_valid[:count]
+    np.greater(penetration, 0.0, out=colliding)
+    np.logical_and(colliding, valid, out=colliding)
+    correction = workspace.field_fraction[:count]
+    np.multiply(normal, penetration[:, None], out=correction)
+    np.copyto(output, position, casting="unsafe")
+    np.add(output, correction, out=output, where=colliding[:, None])
+
+
+def _collide_sdf_velocity(
+    output,
+    position,
+    velocity,
+    particle_radius,
+    restitution,
+    friction,
+    sample,
+    context,
+    workspace,
+    count,
+) -> None:
+    normal, distance, valid = _sample_sdf_collision(
+        position, sample, context, workspace, count
+    )
+    radius = workspace.random_float[0][:count]
+    np.maximum(particle_radius, 0.0, out=radius)
+    colliding = workspace.sample_valid[:count]
+    np.less(distance, radius, out=colliding)
+    np.logical_and(colliding, valid, out=colliding)
+
+    normal_component = workspace.field_fraction[:count]
+    np.multiply(velocity, normal, out=normal_component)
+    normal_speed = workspace.random_float[1][:count]
+    np.sum(normal_component, axis=1, out=normal_speed)
+    moving_into_surface = workspace.field_valid[:count]
+    np.less(normal_speed, 0.0, out=moving_into_surface)
+    np.logical_and(colliding, moving_into_surface, out=colliding)
+
+    tangent = workspace.field_coordinates[:count]
+    np.multiply(normal, normal_speed[:, None], out=tangent)
+    np.subtract(velocity, tangent, out=tangent)
+    clamped_friction = workspace.random_float[2][:count]
+    np.clip(friction, 0.0, 1.0, out=clamped_friction)
+    np.subtract(1.0, clamped_friction, out=clamped_friction)
+    np.multiply(tangent, clamped_friction[:, None], out=tangent)
+
+    clamped_restitution = workspace.random_float[3][:count]
+    np.clip(restitution, 0.0, 1.0, out=clamped_restitution)
+    np.negative(normal_speed, out=normal_speed)
+    np.multiply(clamped_restitution, normal_speed, out=clamped_restitution)
+    np.multiply(normal, clamped_restitution[:, None], out=normal_component)
+    np.add(tangent, normal_component, out=tangent)
+    np.copyto(output, velocity, casting="unsafe")
+    np.copyto(output, tangent, where=colliding[:, None])
 
 
 def _sample_point_cache(output, index_or_id, sample, context, workspace) -> None:

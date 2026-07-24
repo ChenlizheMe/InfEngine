@@ -1,5 +1,5 @@
 #version 450
-@shader_id: outline_mask
+@shader_id: Outline Mask
 @hidden
 
 layout(std140, binding = 0) uniform UniformBufferObject {

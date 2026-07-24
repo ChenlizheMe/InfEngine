@@ -209,7 +209,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
 
         Returns:
             Shader ids such as
-            ``["bloom_prefilter", "bloom_downsample", ...]``.
+            ``["Bloom Prefilter", "Bloom Downsample", ...]``.
         """
         return []
 

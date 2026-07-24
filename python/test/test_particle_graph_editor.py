@@ -504,6 +504,82 @@ def test_particle_graph_editor_rejects_wrong_asset_kind(tmp_path):
         panel.set_node_asset_reference(node.uid, "mesh", str(texture_path))
 
 
+def test_particle_graph_editor_authors_typed_sdf_data_interface(tmp_path, monkeypatch):
+    from Infernux.engine.ui import particle_graph_editor_panel as module
+
+    sdf_path = tmp_path / "Collision.inxsdf"
+    sdf_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(module, "_asset_guid_from_path", lambda _path: "sdf-guid")
+    monkeypatch.setattr(
+        module,
+        "_portable_asset_path_hint",
+        lambda _path: "Assets/VFX/Collision.inxsdf",
+    )
+
+    panel = module.ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    emitter_id = panel.asset.emitters[0].stable_id
+    interface = panel.add_authoring_data_interface(
+        emitter_id, "sdf_volume", "Collision Volume"
+    )
+    interface_id = interface["stable_id"]
+
+    bound = panel.set_authoring_data_interface_asset(
+        emitter_id, interface_id, str(sdf_path)
+    )
+    patched = panel.patch_authoring_data_interface(
+        emitter_id,
+        interface_id,
+        {
+            "space": "emitter_local",
+            "distance_scale": 2.5,
+            "filtering": "nearest",
+        },
+    )
+    collision = panel.add_authoring_node(
+        "update", "particle.update.collide_sdf", 220.0, 380.0
+    )
+    selected = panel.set_node_property(collision["uid"], "interface", interface_id)
+
+    assert bound["texture"] == {
+        "guid": "sdf-guid",
+        "path_hint": "Assets/VFX/Collision.inxsdf",
+    }
+    assert patched["space"] == "emitter_local"
+    assert patched["distance_scale"] == 2.5
+    assert patched["filtering"] == "nearest"
+    assert selected["value"] == interface_id
+    snapshot = panel.authoring_snapshot()
+    emitter_snapshot = snapshot["emitters"][0]
+    assert emitter_snapshot["data_interfaces"][0]["stable_id"] == interface_id
+
+    with pytest.raises(ValueError, match="still referenced"):
+        panel.remove_authoring_data_interface(emitter_id, interface_id)
+    panel.set_node_property(collision["uid"], "interface", "")
+    removed = panel.remove_authoring_data_interface(emitter_id, interface_id)
+    assert removed["changed"] is True
+    assert panel.authoring_snapshot()["emitters"][0]["data_interfaces"] == []
+
+
+def test_particle_graph_editor_rejects_wrong_data_interface_kind():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    emitter_id = panel.asset.emitters[0].stable_id
+    vector_field = panel.add_authoring_data_interface(
+        emitter_id, "vector_field", "Wind"
+    )
+    collision = panel.add_authoring_node(
+        "update", "particle.update.collide_sdf", 220.0, 380.0
+    )
+
+    with pytest.raises(ValueError, match="requires a SdfVolume"):
+        panel.set_node_property(
+            collision["uid"], "interface", vector_field["stable_id"]
+        )
+
+
 def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 

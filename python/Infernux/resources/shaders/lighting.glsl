@@ -1,15 +1,15 @@
-@shader_id: lighting
+@shader_id: Lighting
 
 // ============================================================================
 // lighting.glsl — Importable lighting utilities for PBR shaders
 //
 // Provides Unity-style helper functions so custom lit shaders can use shadows
 // and lighting without duplicating the full lighting loop. Requires the
-// auto-injected LightingUBO and shadowMap sampler (@shading_model: pbr).
+// auto-injected LightingUBO and shadowMap sampler (@shading_model: PBR).
 //
 // Usage in a custom shader:
-//   @shading_model: pbr
-//   @import: lighting
+//   @shading_model: PBR
+//   @import: Lighting
 //   void main() {
 //       Light mainLight = getMainLight(worldPos, normal);
 //       vec3 color = mainLight.color * mainLight.attenuation * mainLight.shadow;
@@ -17,7 +17,7 @@
 //   }
 // ============================================================================
 
-@import: pbr
+@import: PBR
 
 // ============================================================================
 // Light struct — similar to Unity's Light struct in URP
@@ -62,13 +62,38 @@ vec3 sampleAmbientProbeAverage() {
     return max((sky + equator + ground) * 0.33333333, vec3(0.0));
 }
 
+// Cosine-convolved irradiance of the tri-color ambient model.
+//
+// sampleAmbientProbe() returns the *radiance* model used to draw the sky
+// (sharp horizon band, equator tint). Diffuse GI must instead integrate that
+// radiance against a cosine lobe over the hemisphere around N — Unity does
+// this by baking its tri-color ambient into spherical harmonics. For a
+// hard-banded hemisphere model the cosine convolution collapses to a soft
+// linear-in-y blend through the equator color, which is what we return here.
+vec3 sampleAmbientIrradiance(vec3 direction) {
+    float mode = lighting.ambientEquatorColor.a;
+    if (mode < 0.5) {
+        return lighting.ambientColor.rgb * lighting.ambientColor.a;
+    }
+
+    vec3 sky     = lighting.ambientSkyColor.rgb * lighting.ambientSkyColor.a;
+    vec3 equator = lighting.ambientEquatorColor.rgb;
+    vec3 ground  = lighting.ambientGroundColor.rgb * lighting.ambientGroundColor.a;
+
+    float y = clamp(direction.y, -1.0, 1.0);
+    vec3 irradiance = (y >= 0.0) ? mix(equator, sky, y) : mix(equator, ground, -y);
+    return max(irradiance, vec3(0.0));
+}
+
 vec3 getSpecularAmbientDirection(vec3 N, vec3 V, float perceptualRoughness) {
     vec3 R = reflect(-V, N);
-    // Blend from mirror reflection R toward normal N as roughness increases.
-    // Using linear smoothness (not squared) preserves more view-angle
-    // responsiveness on rough surfaces, matching Unity's behavior.
-    float lerpFactor = saturate(1.0 - perceptualRoughness);
-    return normalize(mix(N, R, lerpFactor));
+    // Dominant direction of the GGX specular lobe (Frostbite / HDRP
+    // GetSpecularDominantDir): bend the mirror reflection toward the normal
+    // as roughness grows. Uses LINEAR roughness — mid-rough surfaces keep
+    // most of their view-dependence instead of collapsing onto N.
+    float roughness = perceptualRoughness * perceptualRoughness;
+    float lerpFactor = (1.0 - roughness) * (sqrt(1.0 - roughness) + roughness);
+    return normalize(mix(N, R, saturate(lerpFactor)));
 }
 
 // ============================================================================
@@ -136,8 +161,22 @@ float sampleShadowViewVisibility(uint viewIndex, vec3 worldPos, vec3 normal, vec
     vec2 tileMin = atlasOffset + texel * 0.5;
     vec2 tileMax = atlasOffset + atlasScale - texel * 0.5;
 
-    if (!softFilter)
-        return shadowBilinearPcf(atlasUv, ndc.z, tileMin, tileMax, atlasSize);
+    if (!softFilter) {
+        // Hard shadows still anti-alias the edge: four bilinear comparisons
+        // spaced one texel apart form a compact tent that widens the
+        // transition to ~2 texels. A single bilinear tap leaves a one-texel
+        // staircase that is obvious at native (1:1) viewport scale even with
+        // a large atlas, while the game view usually hides it behind its
+        // fixed-resolution downscale.
+        float visibility = 0.0;
+        for (int y = 0; y < 2; ++y) {
+            for (int x = 0; x < 2; ++x) {
+                vec2 offset = (vec2(float(x), float(y)) - vec2(0.5)) * texel;
+                visibility += shadowBilinearPcf(atlasUv + offset, ndc.z, tileMin, tileMax, atlasSize);
+            }
+        }
+        return visibility * 0.25;
+    }
 
     // Deterministic 4x4 tent PCF. Each tap is itself a hardware-filtered 2x2
     // depth comparison, so the kernel covers (3*step + 2) texels while staying

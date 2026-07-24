@@ -42,7 +42,7 @@ ShaderInfo
     DepthWrite On
     CastShadows On
     ReceiveShadows Off
-    Imports ["lib/common", "lib/color"]
+    Imports ["Lib Common", "Lib Color"]
     Capabilities [ForwardPlus, Deferred, Shadow]
 
     Properties
@@ -97,8 +97,8 @@ void surface (out SurfaceData surface) { }
 
     const std::string legacySurfaceSource = R"(
 #version 450
-// @shader_id: legacy_surface
-// @shading_model: unlit
+// @shader_id: Legacy Surface
+// @shading_model: Unlit
 // @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 void surface(out SurfaceData s)
 {
@@ -124,7 +124,7 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     const infernux::ShaderDescriptor descriptor = compiler.ParseShaderSource(richSource, "WaveSurface.frag");
     assert(descriptor.usesStructuredInfo);
     assert(descriptor.shaderId == "Tests/WaveSurface");
-    assert(descriptor.shadingModel == "pbr");
+    assert(descriptor.shadingModel == "PBR");
     assert(descriptor.hasSurfaceFunc);
     assert(!descriptor.hasMainFunc);
     assert(descriptor.properties.size() == 2);
@@ -158,7 +158,7 @@ void vertex(inout VertexInput v) {
 #version 450
 ShaderInfo {
     Name "Tests/StructuredUnlit"
-    ShadingModel "unlit"
+    ShadingModel "Unlit"
     Surface Opaque
     Queue 2000
     Properties {

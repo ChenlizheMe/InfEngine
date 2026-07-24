@@ -20,6 +20,7 @@
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 
+#include <core/types/ColorSpace.h>
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -27,6 +28,8 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxTexture/InxTexture.h>
+#include <function/scene/Scene.h>
+#include <function/scene/SceneManager.h>
 
 #include <algorithm>
 #include <array>
@@ -275,6 +278,11 @@ void CopyPropertyToUBO(const MaterialProperty &prop, uint8_t *uboData, uint32_t 
 {
     if (offset + sizeof(T) <= uboSize) {
         T value = std::get<T>(prop.value);
+        // Authored Color properties are sRGB; shading runs in linear space.
+        if constexpr (std::is_same_v<T, glm::vec4>) {
+            if (prop.type == MaterialPropertyType::Color)
+                value = inx::color::SrgbToLinear(value);
+        }
         std::memcpy(uboData + offset, &value, sizeof(T));
     }
 }
@@ -644,9 +652,43 @@ void InxVkCoreModular::ReleaseGpuPreviews()
 bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material,
                                                       const std::string &vertShaderName,
                                                       const std::string &fragShaderName, VkBuffer sceneUbo,
-                                                      VkBuffer lightingUbo)
+                                                      VkBuffer lightingUbo, bool reportDomainMismatch)
 {
     if (!material) {
+        return false;
+    }
+
+    const ShaderStagePair stages{vertShaderName, fragShaderName};
+    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
+    if (artifact && artifact->domain != ShaderProgramDomain::Mesh) {
+        MaterialRenderData *previous = m_materialPipelineManager.GetRenderData(material->GetMaterialKey());
+        const bool hasLastKnownGood = previous && previous->isValid && previous->pipeline != VK_NULL_HANDLE &&
+                                      previous->pipelineLayout != VK_NULL_HANDLE &&
+                                      previous->descriptorSet != VK_NULL_HANDLE &&
+                                      m_materialPipelineManager.IsDescriptorSetLive(previous->descriptorSet);
+
+        if (reportDomainMismatch) {
+            static std::unordered_set<std::string> reportedDomainMismatches;
+            const std::string materialName = material->GetName().empty() ? material->GetMaterialKey()
+                                                                         : material->GetName();
+            const std::string failureKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
+            if (reportedDomainMismatches.insert(failureKey).second) {
+                INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses shader program '",
+                             stages.ToString(), "' with domain '", ShaderProgramDomainName(artifact->domain),
+                             "', but MeshRenderer geometry requires domain 'Mesh'. Use a Mesh-domain vertex/fragment "
+                             "shader pair, or use this material through ParticleSystem. ",
+                             hasLastKnownGood ? "The rejected rebuild did not replace the previous valid GPU pipeline."
+                                              : "This material cannot be rendered by MeshRenderer.");
+            }
+        }
+
+        // Shader selection dirties the material before its domain is known. A
+        // previous geometry generation remains valid and is intentionally kept
+        // active until the user selects another shader pair.
+        if (hasLastKnownGood) {
+            material->ClearPipelineDirty();
+            return true;
+        }
         return false;
     }
 
@@ -659,16 +701,6 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
                                         renderMeta->alphaClip);
     }
 
-    const ShaderStagePair stages{vertShaderName, fragShaderName};
-    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
-    if (artifact && artifact->domain != ShaderProgramDomain::Mesh) {
-        static std::unordered_set<std::string> reportedNonGeometryPrograms;
-        if (reportedNonGeometryPrograms.insert(stages.ToString()).second) {
-            INXLOG_WARN("Geometry material pipeline rejected non-geometry shader program '", stages.ToString(),
-                        "'; the owning domain renderer must consume this material");
-        }
-        return false;
-    }
     const auto *forward = artifact ? artifact->FindVariant(ShaderCompileTarget::Forward) : nullptr;
     const auto *vertCode = forward ? &forward->vertexSpirv : m_shaderCache.FindVertCode(vertShaderName);
     const auto *fragCode = forward ? &forward->fragmentSpirv : m_shaderCache.FindFragCode(fragShaderName);
@@ -746,28 +778,75 @@ void InxVkCoreModular::UpdateLightingUBO(const glm::vec3 &cameraPosition)
 
 void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)
 {
-    // Sync ambient color from skybox material properties
-    auto skyMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
-    if (skyMat) {
-        const auto *skyTopProp = skyMat->GetProperty("skyTopColor");
-        const auto *horizonProp = skyMat->GetProperty("skyHorizonColor");
-        const auto *groundProp = skyMat->GetProperty("groundColor");
-        const auto *exposureProp = skyMat->GetProperty("exposure");
-        if (skyTopProp && groundProp) {
-            glm::vec3 skyTop = glm::vec3(std::get<glm::vec4>(skyTopProp->value));
-            glm::vec3 ground = glm::vec3(std::get<glm::vec4>(groundProp->value));
-            glm::vec3 equator;
-            if (horizonProp) {
-                equator = glm::vec3(std::get<glm::vec4>(horizonProp->value));
-            } else {
-                equator = glm::mix(ground, skyTop, 0.5f);
-            }
-            float exposure = 0.8f;
-            if (exposureProp) {
-                exposure = std::get<float>(exposureProp->value);
-            }
-            m_lightCollector.SetAmbientGradient(skyTop * exposure, equator * exposure, ground * exposure);
+    // Environment lighting follows the active scene's settings (Unity-style
+    // Lighting > Environment): ambient is derived from the skybox material,
+    // an explicit gradient, or a flat color.
+    Scene *activeScene = SceneManager::Instance().GetActiveScene();
+    const SceneEnvironmentSettings env =
+        activeScene ? activeScene->GetEnvironment() : SceneEnvironmentSettings{};
+    using AmbientSource = SceneEnvironmentSettings::AmbientSource;
+
+    // The builtin procedural sky has no backing asset — its parameters are
+    // scene data. Push them onto the shared builtin material so the skybox
+    // draw and the ambient sync below both see the scene's values (only
+    // writing on change to avoid dirtying the material UBO every frame).
+    if (env.skyboxMaterialGuid.empty()) {
+        if (auto builtinSky = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural")) {
+            const auto syncColor = [&](const char *name, const glm::vec3 &value) {
+                const glm::vec4 desired(value, 1.0f);
+                const auto *prop = builtinSky->GetProperty(name);
+                if (!prop || !std::holds_alternative<glm::vec4>(prop->value) ||
+                    std::get<glm::vec4>(prop->value) != desired)
+                    builtinSky->SetColor(name, desired);
+            };
+            syncColor("skyTopColor", env.skyTopColor);
+            syncColor("skyHorizonColor", env.skyHorizonColor);
+            syncColor("groundColor", env.skyGroundColor);
+            const auto *exposureProp = builtinSky->GetProperty("exposure");
+            if (!exposureProp || !std::holds_alternative<float>(exposureProp->value) ||
+                std::get<float>(exposureProp->value) != env.skyExposure)
+                builtinSky->SetFloat("exposure", env.skyExposure);
         }
+    }
+
+    switch (static_cast<AmbientSource>(env.ambientSource)) {
+    case AmbientSource::Gradient:
+        m_lightCollector.SetAmbientGradient(env.ambientSkyColor, env.ambientEquatorColor, env.ambientGroundColor,
+                                            env.ambientIntensity);
+        break;
+    case AmbientSource::Color:
+        m_lightCollector.SetAmbientColor(env.ambientColor, env.ambientIntensity);
+        break;
+    case AmbientSource::Skybox:
+    default: {
+        std::shared_ptr<InxMaterial> skyMat =
+            activeScene ? activeScene->ResolveSkyboxMaterial()
+                        : AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+        bool applied = false;
+        if (skyMat) {
+            const auto *skyTopProp = skyMat->GetProperty("skyTopColor");
+            const auto *horizonProp = skyMat->GetProperty("skyHorizonColor");
+            const auto *groundProp = skyMat->GetProperty("groundColor");
+            const auto *exposureProp = skyMat->GetProperty("exposure");
+            if (skyTopProp && groundProp) {
+                const glm::vec3 skyTop = glm::vec3(std::get<glm::vec4>(skyTopProp->value));
+                const glm::vec3 ground = glm::vec3(std::get<glm::vec4>(groundProp->value));
+                const glm::vec3 equator = horizonProp ? glm::vec3(std::get<glm::vec4>(horizonProp->value))
+                                                      : glm::mix(ground, skyTop, 0.5f);
+                float exposure = 1.0f;
+                if (exposureProp && std::holds_alternative<float>(exposureProp->value))
+                    exposure = std::get<float>(exposureProp->value);
+                m_lightCollector.SetAmbientGradient(skyTop, equator, ground, exposure * env.ambientIntensity);
+                applied = true;
+            }
+        }
+        // Custom sky materials without the procedural color properties fall
+        // back to a neutral gradient scaled by the ambient intensity.
+        if (!applied)
+            m_lightCollector.SetAmbientGradient(glm::vec3(0.5f), glm::vec3(0.4f), glm::vec3(0.25f),
+                                                env.ambientIntensity);
+        break;
+    }
     }
 
     // Build the shader-compatible UBO from collected lights

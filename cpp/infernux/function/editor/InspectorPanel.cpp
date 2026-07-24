@@ -1289,8 +1289,12 @@ void InspectorPanel::RenderAddComponentButton(InxGUIContext *ctx)
 
 void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
 {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, EditorTheme::POPUP_ADD_COMP_PAD);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::POPUP_ADD_COMP_SPC);
+    // Unity-style component browser: generous bleed, full-width search and
+    // tall rows with a clear hover band.
+    const float em = ImGui::GetFontSize();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(em * 18.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.7f, em * 0.7f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.4f, em * 0.4f));
 
     if (ImGui::BeginPopup("##add_component_popup")) {
         const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
@@ -1299,7 +1303,7 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
         // Search field
         if (m_addCompNeedsFocus)
             ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(EditorTheme::ADD_COMP_SEARCH_W);
+        ImGui::SetNextItemWidth(std::max(EditorTheme::ADD_COMP_SEARCH_W, ImGui::GetContentRegionAvail().x));
         const bool submitFirst =
             ImGui::InputTextWithHint("##comp_search", Tr("inspector.search_components").c_str(), m_addCompSearch,
                                      sizeof(m_addCompSearch), ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1348,8 +1352,12 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
 
             std::sort(categoryOrder.begin(), categoryOrder.end());
 
+            const float rowHeight = ImGui::GetTextLineHeight() + ImGui::GetFontSize() * 0.55f;
             for (const auto &cat : categoryOrder) {
+                // Muted category header, Unity-style section grouping.
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.55f, 1.0f));
                 ImGui::TextUnformatted(cat.c_str());
+                ImGui::PopStyleColor();
                 ImGui::Separator();
 
                 for (const auto *entry : categories[cat]) {
@@ -1361,7 +1369,11 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
                         assignedKeyboardFocus = true;
                     }
                     const bool activateFromKeyboard = submitFirst && !handledKeyboardSelection;
-                    const bool selected = ImGui::Selectable(selectLabel.c_str());
+                    // Taller rows with vertically centered labels give the
+                    // hover highlight a solid, easy-to-track band.
+                    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+                    const bool selected = ImGui::Selectable(selectLabel.c_str(), false, 0, ImVec2(0.0f, rowHeight));
+                    ImGui::PopStyleVar();
                     if (ctx && captureSemantics)
                         ctx->RecordSemanticItem("component_option", entry->displayName, true,
                                                 "inspector.add_component.option." + std::to_string(uid));

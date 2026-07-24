@@ -1,5 +1,5 @@
 #version 450
-@shader_id: sharpen_cas
+@shader_id: Sharpen CAS
 @hidden
 
 // Contrast Adaptive Sharpening (CAS) — AMD FidelityFX inspired.

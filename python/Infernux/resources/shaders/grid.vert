@@ -1,6 +1,6 @@
 #version 450
 
-@shader_id: Infernux/Grid
+@shader_id: Grid
 @cull: none
 @hidden
 

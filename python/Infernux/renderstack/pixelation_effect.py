@@ -89,7 +89,7 @@ class PixelationEffect(FullScreenEffect):
         self.sampling = self._normalize_sampling(self.sampling)
 
     def get_shader_list(self):
-        return ["fullscreen_triangle", "pixelation"]
+        return ["Fullscreen Triangle", "Pixelation"]
 
     def setup_passes(self, graph, bus) -> None:
         from Infernux.rendergraph.graph import Format
@@ -101,7 +101,7 @@ class PixelationEffect(FullScreenEffect):
             bus,
             output_name="_pixelation_out",
             pass_name="Pixelation_Apply",
-            shader_name="pixelation",
+            shader_name="Pixelation",
             format=Format.RGBA16_SFLOAT,
             params={
                 "pixelSize": float(max(1, min(int(self.pixel_size), 256))),

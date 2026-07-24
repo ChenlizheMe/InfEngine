@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-from Infernux.components.serialized_field import serialized_field
+from Infernux.components.serialized_field import Color, serialized_field
 
 if TYPE_CHECKING:
     from Infernux.rendergraph.graph import RenderGraph
@@ -35,9 +35,10 @@ class VignetteEffect(FullScreenEffect):
     smoothness: float = serialized_field(default=0.3, range=(0.01, 1.0), slider=False)
     roundness: float = serialized_field(default=1.0, range=(0.0, 1.0), slider=False)
     rounded: bool = serialized_field(default=False)
+    color: Color = Color(0.0, 0.0, 0.0, 1.0)
 
     def get_shader_list(self) -> List[str]:
-        return ["fullscreen_triangle", "vignette"]
+        return ["Fullscreen Triangle", "Vignette"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from Infernux.rendergraph.graph import Format
@@ -47,12 +48,15 @@ class VignetteEffect(FullScreenEffect):
             bus,
             output_name="_vignette_out",
             pass_name="Vignette_Apply",
-            shader_name="vignette",
+            shader_name="Vignette",
             format=Format.RGBA16_SFLOAT,
             params={
                 "intensity": self.intensity,
                 "smoothness": self.smoothness,
                 "roundness": self.roundness,
                 "rounded": 1.0 if self.rounded else 0.0,
+                "colorR": self.color[0],
+                "colorG": self.color[1],
+                "colorB": self.color[2],
             },
         )

@@ -1,7 +1,7 @@
 #version 450
 
-@shader_id: lit
-@shading_model: pbr
+@shader_id: Lit
+@shading_model: PBR
 @queue: 2000
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 @property: metallic, Float, 0.0

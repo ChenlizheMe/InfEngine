@@ -1,5 +1,5 @@
 #version 450
-@shader_id: bloom_prefilter
+@shader_id: Bloom Prefilter
 @hidden
 
 // Bloom prefilter pass — aligned with Unity's Bloom

@@ -9,11 +9,12 @@ namespace
 {
 
 using infernux::InxMaterial;
+using infernux::RenderStateOverride;
 using infernux::ShaderAssetReference;
 
 void VerifyRemovedFieldRejection()
 {
-    InxMaterial material("Current", "lit");
+    InxMaterial material("Current", "Lit");
     auto invalid = material.SerializeDocument();
     invalid["material_version"] = 4;
 
@@ -24,9 +25,9 @@ void VerifyRemovedFieldRejection()
 
 void VerifyStableReferencesAndClone()
 {
-    InxMaterial material("Stable", "unlit");
-    const ShaderAssetReference vertex{"vertex-guid", "standard", "Assets/Shaders/Standard.vert"};
-    const ShaderAssetReference fragment{"fragment-guid", "unlit", "Assets/Shaders/Unlit.frag"};
+    InxMaterial material("Stable", "Unlit");
+    const ShaderAssetReference vertex{"vertex-guid", "Standard", "Assets/Shaders/Standard.vert"};
+    const ShaderAssetReference fragment{"fragment-guid", "Unlit", "Assets/Shaders/Unlit.frag"};
     material.SetVertShaderReference(vertex);
     material.SetFragShaderReference(fragment);
 
@@ -45,9 +46,9 @@ void VerifyStableReferencesAndClone()
 
 void VerifyTransactionalFailure()
 {
-    InxMaterial material("Stable", "unlit");
-    material.SetVertShaderReference({"vertex-guid", "standard", "Assets/Shaders/Standard.vert"});
-    material.SetFragShaderReference({"fragment-guid", "unlit", "Assets/Shaders/Unlit.frag"});
+    InxMaterial material("Stable", "Unlit");
+    material.SetVertShaderReference({"vertex-guid", "Standard", "Assets/Shaders/Standard.vert"});
+    material.SetFragShaderReference({"fragment-guid", "Unlit", "Assets/Shaders/Unlit.frag"});
     const auto before = material.SerializeDocument();
 
     auto invalid = before;
@@ -68,7 +69,7 @@ void VerifyTransactionalFailure()
 
 void VerifyRenderStateVersioning()
 {
-    InxMaterial material("LiveState", "unlit");
+    InxMaterial material("LiveState", "Unlit");
     const uint64_t initialVersion = material.GetVersion();
     material.SetRenderQueue(3042);
     assert(material.GetVersion() == initialVersion + 1);
@@ -85,28 +86,28 @@ void VerifyRenderStateVersioning()
 
 void VerifyShaderReferenceVersioning()
 {
-    InxMaterial material("LiveShader", "unlit");
+    InxMaterial material("LiveShader", "Unlit");
     const uint64_t initialVersion = material.GetVersion();
-    material.SetVertShader("standard");
+    material.SetVertShader("Standard");
     assert(material.GetVersion() == initialVersion + 1);
-    material.SetVertShader("standard");
+    material.SetVertShader("Standard");
     assert(material.GetVersion() == initialVersion + 1);
 
-    const ShaderAssetReference reference{"vertex-guid", "standard", "Assets/Shaders/Standard.vert"};
+    const ShaderAssetReference reference{"vertex-guid", "Standard", "Assets/Shaders/Standard.vert"};
     material.SetVertShaderReference(reference);
     assert(material.GetVersion() == initialVersion + 2);
     material.SetVertShaderReference(reference);
     assert(material.GetVersion() == initialVersion + 2);
 
-    material.SetShader("unlit");
+    material.SetShader("Unlit");
     assert(material.GetVersion() == initialVersion + 3);
-    assert((material.GetVertShaderReference() == ShaderAssetReference{"", "unlit", ""}));
-    assert((material.GetFragShaderReference() == ShaderAssetReference{"", "unlit", ""}));
+    assert((material.GetVertShaderReference() == ShaderAssetReference{"", "Unlit", ""}));
+    assert((material.GetFragShaderReference() == ShaderAssetReference{"", "Unlit", ""}));
 }
 
 void VerifyPropertyRemoval()
 {
-    InxMaterial material("PropertyRemoval", "unlit");
+    InxMaterial material("PropertyRemoval", "Unlit");
     material.SetFloat("blend_enable", 1.0f);
     const uint64_t populatedVersion = material.GetVersion();
     assert(material.HasProperty("blend_enable"));
@@ -116,6 +117,60 @@ void VerifyPropertyRemoval()
     assert(material.GetVersion() == populatedVersion + 1);
     assert(!material.RemoveProperty("blend_enable"));
     assert(material.GetVersion() == populatedVersion + 1);
+}
+
+void VerifyShaderDefaultsReplacePreviousShaderState()
+{
+    InxMaterial material("ShaderDefaults", "Particle Unlit");
+    auto particleState = material.GetRenderState();
+    particleState.cullMode = VK_CULL_MODE_NONE;
+    particleState.depthWriteEnable = false;
+    particleState.blendEnable = true;
+    particleState.renderQueue = 3000;
+    particleState.stencilTestEnable = true;
+    particleState.stencilFront.compareOp = VK_COMPARE_OP_ALWAYS;
+    particleState.stencilBack.compareOp = VK_COMPARE_OP_ALWAYS;
+    material.SetRenderState(particleState);
+    material.SetPassTag("particle");
+
+    material.ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "");
+    const auto &litState = material.GetRenderState();
+    assert(litState.cullMode == VK_CULL_MODE_BACK_BIT);
+    assert(litState.depthWriteEnable);
+    assert(!litState.blendEnable);
+    assert(litState.renderQueue == 2000);
+    assert(!litState.stencilTestEnable);
+    assert(material.GetPassTag().empty());
+
+    material.ApplyShaderRenderMeta("none", "false", "", "alpha", 3000, "particle", "", "");
+    const auto &nextParticleState = material.GetRenderState();
+    assert(nextParticleState.cullMode == VK_CULL_MODE_NONE);
+    assert(!nextParticleState.depthWriteEnable);
+    assert(nextParticleState.blendEnable);
+    assert(nextParticleState.renderQueue == 3000);
+    assert(material.GetPassTag() == "particle");
+}
+
+void VerifyMaterialOverridesSurviveShaderDefaults()
+{
+    InxMaterial material("ShaderOverrides", "Lit");
+    auto state = material.GetRenderState();
+    state.cullMode = VK_CULL_MODE_FRONT_BIT;
+    state.depthWriteEnable = false;
+    state.blendEnable = true;
+    state.renderQueue = 3456;
+    material.SetRenderState(state);
+    material.MarkOverride(RenderStateOverride::CullMode);
+    material.MarkOverride(RenderStateOverride::DepthWrite);
+    material.MarkOverride(RenderStateOverride::BlendEnable);
+    material.MarkOverride(RenderStateOverride::RenderQueue);
+
+    material.ApplyShaderRenderMeta("back", "true", "", "off", 2000, "", "", "");
+    const auto &preserved = material.GetRenderState();
+    assert(preserved.cullMode == VK_CULL_MODE_FRONT_BIT);
+    assert(!preserved.depthWriteEnable);
+    assert(preserved.blendEnable);
+    assert(preserved.renderQueue == 3456);
 }
 
 } // namespace
@@ -128,6 +183,8 @@ int main()
     VerifyRenderStateVersioning();
     VerifyShaderReferenceVersioning();
     VerifyPropertyRemoval();
+    VerifyShaderDefaultsReplacePreviousShaderState();
+    VerifyMaterialOverridesSurviveShaderDefaults();
     std::cout << "Material document tests passed\n";
     return 0;
 }

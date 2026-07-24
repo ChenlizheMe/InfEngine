@@ -239,7 +239,10 @@ int main()
 
         const infernux::lighting::ShadowDepthRange visibleDepth{2.0f, 3000.0f};
         const auto splits = infernux::lighting::AdaptiveCascadeSplits(0.1f, visibleDepth, 5000.0f);
-        assert(splits.front() == 0.1f);
+        // The first cascade anchors at half the nearest visible receiver
+        // depth, not at the camera near plane, so an empty foreground does
+        // not consume cascade resolution.
+        assert(splits.front() == 1.0f);
         // Huge visible ranges are capped: four cascades never stretch across
         // kilometers of depth, the lit pass fades shadows out past the cap.
         assert(splits.back() <= infernux::lighting::MaxStableShadowDistance + 0.001f);

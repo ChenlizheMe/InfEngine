@@ -65,6 +65,13 @@ struct GpuPointCacheLayoutDesc
 
 struct GpuVectorFieldDesc
 {
+    enum class Kind : uint8_t
+    {
+        VectorField,
+        SignedDistanceField,
+    };
+
+    Kind kind = Kind::VectorField;
     uint32_t interfaceIndex = 0;
     uint32_t textureBinding = 0;
     bool worldSpace = true;

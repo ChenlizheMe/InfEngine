@@ -1,5 +1,5 @@
 #version 450
-@shader_id: white_balance
+@shader_id: White Balance
 @hidden
 
 // White Balance post-process — adjusts color temperature and tint.

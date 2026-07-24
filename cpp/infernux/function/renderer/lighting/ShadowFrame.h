@@ -261,16 +261,26 @@ constexpr float MaxStableShadowDistance = 200.0f;
     // farthest visible receiver when the range fits the scene tightly.
     const float distanceCap = std::max(MaxStableShadowDistance, visibleNear * 4.0f);
     const float shadowFar = glm::clamp(visibleFar * 1.1f, nearClip + 0.01f, std::min(distanceCap, cameraFarClip));
-    const float distributionNear = glm::clamp(visibleNear, nearClip, shadowFar * 0.5f);
+    // Anchor the first cascade near the closest visible receiver instead of
+    // the camera near plane. When the camera looks at a distant band of
+    // content (empty foreground), starting at the near plane would spend the
+    // dense cascades on empty meters. The 0.5 factor keeps margin for content
+    // that moves toward the camera between two frames.
+    const float shadowNear = glm::clamp(std::max(nearClip, visibleNear * 0.5f), nearClip, shadowFar * 0.5f);
+    const float distributionNear = glm::clamp(visibleNear, shadowNear, shadowFar * 0.8f);
 
     // Practical split scheme: a logarithmic distribution concentrates
     // resolution near the camera, the uniform term bounds how much of the
-    // range the far cascades have to swallow. A pure logarithm wastes the
-    // two half-atlas cascades on the first few meters whenever a large
-    // ground plane stretches the visible range.
-    constexpr float lambda = 0.75f;
+    // range the far cascades have to swallow. The blend adapts to the range
+    // ratio: a shallow scene (e.g. 15 m of visible depth) distributes almost
+    // uniformly, because a log split would spend the two half-atlas cascades
+    // on millimeter texels in the first few meters while the far cascades —
+    // where most receivers actually sit — blur out. Deep ranges keep the
+    // log-heavy blend so close-up shadows stay dense.
+    const float rangeRatio = shadowFar / std::max(distributionNear, 0.001f);
+    const float lambda = glm::clamp(0.35f + 0.13f * (std::log2(rangeRatio) - 3.0f), 0.35f, 0.75f);
     std::array<float, 5> splits{};
-    splits[0] = nearClip;
+    splits[0] = shadowNear;
     for (uint32_t index = 1; index < DirectionalCascadeCount; ++index) {
         const float ratio = static_cast<float>(index) / static_cast<float>(DirectionalCascadeCount);
         const float logarithmic = distributionNear * std::pow(shadowFar / distributionNear, ratio);

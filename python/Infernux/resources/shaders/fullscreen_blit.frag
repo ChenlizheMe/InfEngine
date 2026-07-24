@@ -1,5 +1,5 @@
 #version 450
-@shader_id: fullscreen_blit
+@shader_id: Fullscreen Blit
 @hidden
 
 // Simple pass-through blit shader for fullscreen copy operations.

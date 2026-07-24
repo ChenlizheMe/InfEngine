@@ -1,5 +1,5 @@
 #version 450
-@shader_id: outline
+@shader_id: Outline
 @hidden
 @property: _OutlineWidth, Float, 0.03
 

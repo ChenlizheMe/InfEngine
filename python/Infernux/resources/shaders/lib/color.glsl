@@ -1,4 +1,4 @@
-@shader_id: lib/color
+@shader_id: Lib Color
 
 // ============================================================================
 // lib/color.glsl — Color space conversions and adjustments
@@ -7,7 +7,7 @@
 // Provides: sRGB/linear, HSV/HSL, brightness, contrast, saturation,
 // white balance, channel mixer, color mask, invert, replace color,
 // channel split/combine, tone mapping.
-// Usage: @import: lib/color
+// Usage: @import: Lib Color
 // ============================================================================
 
 // ============================================================================

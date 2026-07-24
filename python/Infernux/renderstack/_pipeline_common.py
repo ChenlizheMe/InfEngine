@@ -40,7 +40,7 @@ FORWARD_CLEAR_COLOR = (0.1, 0.1, 0.1, 1.0)
 DEFERRED_GBUFFER_CLEAR_COLOR = (0.0, 0.0, 0.0, 0.0)
 DEFERRED_LIGHTING_CLEAR_COLOR = (0.0, 0.0, 0.0, 1.0)
 
-DEFERRED_LIGHTING_SHADER = "deferred_lighting"
+DEFERRED_LIGHTING_SHADER = "Deferred Lighting"
 
 
 def _config() -> EngineConfig:

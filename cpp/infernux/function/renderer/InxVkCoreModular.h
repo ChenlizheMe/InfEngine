@@ -271,8 +271,10 @@ class InxVkCoreModular
      *
      * Uses per-material shadow pipelines (auto-generated shadow variants) with
      * the material's culling mode. Receiver bias is applied by the lighting
-     * shader in resolution-independent shadow texels. The light VP is obtained from
-     * SceneLightCollector. Shadow infrastructure is created lazily on first use.
+     * shader in resolution-independent
+     * shadow texels. The light VP is obtained from
+     * SceneLightCollector. Shadow infrastructure is created lazily
+     * on first use.
      *
      * @param cmdBuf Vulkan command buffer (inside a render pass)
      * @param width  Shadow map width
@@ -726,7 +728,8 @@ class InxVkCoreModular
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                  const std::string &fragShaderName);
     bool RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
-                                        const std::string &fragShaderName, VkBuffer sceneUbo, VkBuffer lightingUbo);
+                                        const std::string &fragShaderName, VkBuffer sceneUbo, VkBuffer lightingUbo,
+                                        bool reportDomainMismatch = true);
 
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
     BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size);
@@ -1132,6 +1135,11 @@ class InxVkCoreModular
 
     // Reflection-based material pipeline manager
     MaterialPipelineManager m_materialPipelineManager;
+
+    // Geometry-domain rejections are terminal for one material/stage pair.
+    // The draw path keeps the previous complete pipeline generation instead
+    // of attempting to combine its Forward pass with incompatible new passes.
+    std::unordered_set<std::string> m_rejectedGeometryMaterialPrograms;
 
     // Texture cache (GPU textures keyed by name/GUID, thread-safe)
     VkTextureCache m_textureCache;

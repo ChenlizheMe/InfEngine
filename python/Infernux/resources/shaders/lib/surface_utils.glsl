@@ -1,8 +1,8 @@
-@shader_id: lib/surface_utils
+@shader_id: Lib Surface Utils
 
-@import: lib/normal_utils
-@import: lib/camera
-@import: lib/common
+@import: Lib Normal Utils
+@import: Lib Camera
+@import: Lib Common
 
 // ============================================================================
 // lib/surface_utils.glsl — Surface shader utility functions

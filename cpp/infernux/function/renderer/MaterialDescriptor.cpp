@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
+#include <core/types/ColorSpace.h>
 #include <cstring>
 
 namespace infernux
@@ -161,9 +162,14 @@ void MaterialUBO::Update(const InxMaterial &material)
             WriteData(offset, &value, sizeof(glm::vec3));
             break;
         }
-        case MaterialPropertyType::Float4:
-        case MaterialPropertyType::Color: {
+        case MaterialPropertyType::Float4: {
             glm::vec4 value = std::get<glm::vec4>(prop.value);
+            WriteData(offset, &value, sizeof(glm::vec4));
+            break;
+        }
+        case MaterialPropertyType::Color: {
+            // Authored colors are sRGB; shading runs in linear space.
+            glm::vec4 value = inx::color::SrgbToLinear(std::get<glm::vec4>(prop.value));
             WriteData(offset, &value, sizeof(glm::vec4));
             break;
         }

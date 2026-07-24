@@ -1,6 +1,6 @@
-@shader_id: math
+@shader_id: Math
 
-@import: lib/common
+@import: Lib Common
 
 // ============================================================================
 // math.glsl — Shared math constants and utility functions
@@ -21,18 +21,28 @@ vec3 saturateVec3(vec3 x) {
 //   ground ──smoothstep──▶ equator ──smoothstep──▶ sky
 //   nadir (-1)           horizon (0)              zenith (+1)
 //
-// SKY_EDGE / GROUND_EDGE control how far the equator band extends.
-// Smaller = narrower equator band, sharper transition.
+// SKY_EDGE / GROUND_EDGE control how far the equator band extends on each
+// side of the horizon. The band is asymmetric on purpose:
+//   - below the horizon it dies out quickly (narrow + hard cut to ground)
+//   - above the horizon it fades wider and softer into the sky
 vec3 skyGradient(float y, vec3 sky, vec3 equator, vec3 ground) {
-    const float SKY_EDGE    = 0.6;
-    const float GROUND_EDGE = 0.28;
+    const float SKY_EDGE    = 0.45;   // horizon -> sky reach (wide, soft)
+    const float GROUND_EDGE = 0.10;   // horizon -> ground reach (narrow, hard)
     const float EQUATOR_STRENGTH = 0.35;  // how much equator tints the horizon (0=none, 1=full)
 
     // Base: direct sky↔ground blend through the horizon
     float t = smoothstep(-GROUND_EDGE, SKY_EDGE, y);
     vec3 base = mix(ground, sky, t);
 
-    // Equator: thin additive tint near horizon only
-    float horizonMask = 1.0 - smoothstep(0.0, max(SKY_EDGE, GROUND_EDGE), abs(y));
+    // Equator band, per-side falloff:
+    //  - ground side: short reach, sharpened (squared) for a hard transition
+    //  - sky side: longer reach, plain smoothstep for a soft fade
+    float horizonMask;
+    if (y < 0.0) {
+        float s = 1.0 - smoothstep(0.0, GROUND_EDGE, -y);
+        horizonMask = s * s;
+    } else {
+        horizonMask = 1.0 - smoothstep(0.0, SKY_EDGE, y);
+    }
     return mix(base, equator, horizonMask * EQUATOR_STRENGTH);
 }

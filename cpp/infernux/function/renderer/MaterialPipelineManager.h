@@ -292,6 +292,11 @@ class MaterialPipelineManager
     // Material name -> render data
     std::unordered_map<std::string, std::unique_ptr<MaterialRenderData>> m_renderDataMap;
 
+    // Last Forward configuration that failed while a valid generation was
+    // still available. Keep drawing that generation without retrying the same
+    // invalid shader pairing every frame.
+    std::unordered_map<std::string, size_t> m_failedForwardPipelineHashes;
+
     std::unordered_map<MaterialPassRenderDataKey, std::unique_ptr<MaterialPassRenderData>,
                        MaterialPassRenderDataKeyHash>
         m_passRenderDataMap;

@@ -1,6 +1,6 @@
 #version 450
 
-@shader_id: error
+@shader_id: Error
 @hidden
 
 // The error material uses the canonical mesh vertex path. Keeping it in the

@@ -1,5 +1,5 @@
 #version 450
-@shader_id: flat_white
+@shader_id: Flat White
 @hidden
 
 layout(std140, binding = 0) uniform UniformBufferObject {

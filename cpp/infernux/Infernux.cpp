@@ -647,8 +647,20 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
         m_renderer = std::make_unique<InxRenderer>();
         m_renderer->SetShaderProgramArtifactResolver([this](const std::shared_ptr<InxMaterial> &material) {
             const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(material);
-            if (prepared.usesLinkedArtifact && !prepared.success)
-                INXLOG_ERROR("Failed to prepare linked shader program: ", prepared.error);
+            if (prepared.usesLinkedArtifact && !prepared.success) {
+                static std::unordered_set<std::string> reportedFailures;
+                const std::string materialKey = material ? material->GetMaterialKey() : std::string("<null>");
+                const std::string stages = material
+                                               ? material->GetVertShaderName() + "|" + material->GetFragShaderName()
+                                               : std::string("<unknown>");
+                const std::string failureKey = materialKey + "|" + stages + "|" + prepared.error;
+                if (reportedFailures.insert(failureKey).second) {
+                    INXLOG_ERROR("Material shader rebuild rejected for '", materialKey, "' (", stages,
+                                 "): ", prepared.error,
+                                 ". The previous valid GPU pipeline remains active; this failure will not be retried "
+                                 "until the shader inputs change.");
+                }
+            }
         });
     }
 }
@@ -2947,9 +2959,9 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
         // Track built-in fallback shaders used for the renderer's default program.
         if (!recursive) {
             const auto *forward = shaderAsset->FindVariant(ShaderCompileTarget::Forward);
-            if (shaderId == "standard" && ext == ".vert")
+            if (shaderId == "Standard" && ext == ".vert")
                 defaultVertCode = forward->spirv;
-            else if (shaderId == "unlit" && ext == ".frag")
+            else if (shaderId == "Unlit" && ext == ".frag")
                 defaultFragCode = forward->spirv;
         }
     };

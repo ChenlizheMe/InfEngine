@@ -1,5 +1,5 @@
 #version 450
-@shader_id: outline_mask
+@shader_id: Outline Mask
 @hidden
 
 layout(location = 0) out vec4 outColor;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 
 from Infernux.mcp.tools import assets as assets_module
@@ -114,6 +115,27 @@ class _Panel:
     def patch_authoring_emitter_settings(self, emitter_id, values):
         self.calls.append(("patch-emitter-settings", emitter_id, values))
         return {"stable_id": emitter_id, "settings": values, "changed": True}
+
+    def add_authoring_data_interface(self, emitter_id, kind, name):
+        self.calls.append(("add-data-interface", emitter_id, kind, name))
+        return {"stable_id": "interface-id", "kind": kind, "name": name}
+
+    def set_authoring_data_interface_asset(self, emitter_id, interface_id, path):
+        self.calls.append(("set-data-interface-asset", emitter_id, interface_id, path))
+        return {
+            "stable_id": interface_id,
+            "kind": "sdf_volume",
+            "texture": {"guid": "sdf-guid", "path_hint": "Assets/Collision.inxsdf"},
+            "changed": True,
+        }
+
+    def patch_authoring_data_interface(self, emitter_id, interface_id, values):
+        self.calls.append(("patch-data-interface", emitter_id, interface_id, values))
+        return {"stable_id": interface_id, **values, "changed": True}
+
+    def remove_authoring_data_interface(self, emitter_id, interface_id):
+        self.calls.append(("remove-data-interface", emitter_id, interface_id))
+        return {"stable_id": interface_id, "kind": "sdf_volume", "changed": True}
 
     def remove_authoring_emitter(self, emitter_id):
         self.calls.append(("remove-emitter", emitter_id))
@@ -231,6 +253,8 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     mesh_path.write_text("o Shard\nv 0 0 0\n", encoding="utf-8")
     graph_path = assets / "Sparks.particlegraph"
     graph_path.write_text("{}", encoding="utf-8")
+    sdf_path = assets / "Collision.inxsdf"
+    sdf_path.write_text("{}", encoding="utf-8")
     panel = _Panel(graph_path)
     monkeypatch.setattr(module, "_require_particle_graph_panel", lambda: panel)
     monkeypatch.setattr(module, "_open_particle_graph_panel", lambda _path: panel)
@@ -267,6 +291,18 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     )
     patched_settings = mcp.tools["particle_graph_patch_emitter_settings"](
         "target", {"capacity": 8}
+    )
+    data_interface = mcp.tools["particle_graph_add_data_interface"](
+        "target", "sdf_volume", "Collision"
+    )
+    data_asset = mcp.tools["particle_graph_set_data_interface_asset"](
+        "target", "interface-id", "Assets/Collision.inxsdf"
+    )
+    data_patch = mcp.tools["particle_graph_patch_data_interface"](
+        "target", "interface-id", {"distance_scale": 2.0}
+    )
+    data_removed = mcp.tools["particle_graph_remove_data_interface"](
+        "target", "interface-id"
     )
     event_type = mcp.tools["particle_graph_add_event_type"](
         "Impact",
@@ -328,6 +364,10 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert emitter["emitter"]["stable_id"] == "target"
     assert emitter_settings["changed"] is True
     assert patched_settings["settings"] == {"capacity": 8}
+    assert data_interface["interface"]["kind"] == "sdf_volume"
+    assert data_asset["interface"]["texture"]["guid"] == "sdf-guid"
+    assert data_patch["interface"]["distance_scale"] == 2.0
+    assert data_removed["interface"]["changed"] is True
     assert event_type["event_type_id"] == "event-id"
     assert event_type["event_type"]["stable_id"] == "event-id"
     assert event_route["event_route_id"] == "route-id"
@@ -357,6 +397,20 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         ("add-emitter", "Target"),
         ("emitter-settings", "target", {"spawn_rate": 0.0}),
         ("patch-emitter-settings", "target", {"capacity": 8}),
+        ("add-data-interface", "target", "sdf_volume", "Collision"),
+        (
+            "set-data-interface-asset",
+            "target",
+            "interface-id",
+            str(sdf_path.resolve()),
+        ),
+        (
+            "patch-data-interface",
+            "target",
+            "interface-id",
+            {"distance_scale": 2.0},
+        ),
+        ("remove-data-interface", "target", "interface-id"),
         (
             "event-type",
             "Impact",
@@ -474,6 +528,50 @@ def test_asset_create_particle_graph_uses_the_editor_asset_pipeline(
     assert calls == [
         (str(assets.resolve()), "EventAcceptance.particlegraph", None)
     ]
+
+
+def test_asset_create_sdf_volume_writes_current_import_source(tmp_path, monkeypatch):
+    assets = tmp_path / "Assets" / "VFX"
+    assets.mkdir(parents=True)
+    notifications = []
+    monkeypatch.setattr(
+        assets_module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    monkeypatch.setattr(
+        assets_module,
+        "track_project_path_before_change",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        assets_module,
+        "notify_asset_changed",
+        lambda path, kind: notifications.append((path, kind)),
+    )
+    mcp = _FakeMcp()
+    assets_module.register_asset_tools(mcp, str(tmp_path))
+
+    created = mcp.tools["asset_create_sdf_volume"](
+        "Collision",
+        "Assets/VFX",
+        "sphere",
+        9,
+        0.3,
+        None,
+        False,
+    )
+
+    target = assets / "Collision.inxsdf"
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert created["path"] == "Assets/VFX/Collision.inxsdf"
+    assert created["dimensions"] == [9, 9, 9]
+    assert document["$schema"] == "infernux.sdf"
+    assert document["storage_order"] == "x_fastest"
+    assert document["distance_unit"] == "field"
+    assert len(document["distances"]) == 9 ** 3
+    assert min(document["distances"]) < 0.0 < max(document["distances"])
+    assert notifications == [(str(target.resolve()), "created")]
 
 
 def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):

@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "GameObject.h"
 #include "ObjectHandle.h"
+#include "SceneEnvironment.h"
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -14,6 +15,7 @@ namespace infernux
 {
 
 class SceneCommitToken;
+class InxMaterial;
 
 /**
  * @brief Scene container that holds all GameObjects.
@@ -48,6 +50,24 @@ class Scene
     {
         m_name = name;
     }
+
+    /// Per-scene environment (skybox material + ambient) settings.
+    [[nodiscard]] const SceneEnvironmentSettings &GetEnvironment() const
+    {
+        return m_environment;
+    }
+    [[nodiscard]] SceneEnvironmentSettings &GetEnvironment()
+    {
+        return m_environment;
+    }
+    void SetEnvironment(const SceneEnvironmentSettings &environment)
+    {
+        m_environment = environment;
+    }
+
+    /// Resolve the active skybox material: the environment's material asset
+    /// when set and loadable, otherwise the builtin procedural sky.
+    [[nodiscard]] std::shared_ptr<InxMaterial> ResolveSkyboxMaterial() const;
 
     // ========================================================================
     // GameObject management
@@ -395,6 +415,9 @@ class Scene
     bool m_isLoaded = false;
     bool m_isPlaying = false;
     bool m_hasStarted = false;
+
+    // Per-scene environment (skybox material + ambient) settings
+    SceneEnvironmentSettings m_environment;
 
     // Structure version counter (bumped on add/remove/reparent)
     uint64_t m_structureVersion = 0;

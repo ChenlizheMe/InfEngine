@@ -1,6 +1,6 @@
-@shader_id: lib/object_utils
+@shader_id: Lib Object Utils
 
-@import: lib/surface_utils
+@import: Lib Surface Utils
 
 // ============================================================================
 // lib/object_utils.glsl — Per-object fragment data toolkit
@@ -9,7 +9,7 @@
 // Requires: fragment varyings (v_WorldPos, v_Normal, v_Tangent, v_Color,
 //           v_TexCoord, v_ViewDepth) + InfGlobals UBO.
 //
-// Usage: @import: lib/object_utils
+// Usage: @import: Lib Object Utils
 //
 // Includes (via lib/surface_utils → lib/normal_utils, lib/camera, lib/common):
 //

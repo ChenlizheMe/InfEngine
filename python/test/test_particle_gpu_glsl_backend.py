@@ -24,6 +24,7 @@ from Infernux.particle import (
     ParticleGraphCompiler,
     ParticleKernelLowerer,
     PointCache,
+    SdfVolume,
     VectorField,
     build_gpu_particle_migration,
     compile_gpu_particle_spirv,
@@ -534,6 +535,44 @@ def _vector_field_gpu_source(*, boundary="zero", filtering="linear"):
     return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
+def _sdf_gpu_source():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_sdf",
+                properties={
+                    "interface": "collision-field",
+                    "particle_radius": 0.05,
+                    "restitution": 0.5,
+                    "friction": 0.2,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        stable_id="sdf-emitter",
+        update=update,
+        data_interfaces=(
+            SdfVolume(
+                stable_id="collision-field",
+                texture=AssetReference(guid="sdf-texture-guid"),
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id="sdf-gpu", emitters=(emitter,))
+    )
+    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+
+
 def test_gpu_lowerer_emits_resident_compute_lifecycle_and_indirect_output():
     program = _gpu_source()
     assert len(program.emitters) == 1
@@ -861,10 +900,11 @@ def test_gpu_vector_field_lowering_emits_rhi_set_two_layout_and_valid_spirv():
     emitter = _vector_field_gpu_source().emitters[0]
     layout = emitter.data_interface_layout
 
-    assert layout["vector_field_metadata_binding"] == 0
-    assert layout["vector_field_stride_words"] == 32
-    assert layout["vector_fields"] == [
+    assert layout["volume_metadata_binding"] == 0
+    assert layout["volume_stride_words"] == 32
+    assert layout["volume_interfaces"] == [
         {
+            "kind": "vector_field",
             "stable_id": "wind",
             "interface_index": 0,
             "texture_binding": 1,
@@ -874,7 +914,7 @@ def test_gpu_vector_field_lowering_emits_rhi_set_two_layout_and_valid_spirv():
     ]
     assert "set = 2, binding = 0" in emitter.update
     assert "set = 2, binding = 1" in emitter.update
-    assert "uniform sampler3D inx_vf_texture_0" in emitter.update
+    assert "uniform sampler3D inx_volume_texture_0" in emitter.update
     assert "any(lessThan(uvw" in emitter.update
     assert "inx_sample_vector_field_0" in emitter.update
 
@@ -886,11 +926,34 @@ def test_gpu_vector_field_lowering_emits_rhi_set_two_layout_and_valid_spirv():
 
 def test_gpu_vector_field_repeat_nearest_policy_is_preserved_for_rhi_sampler():
     emitter = _vector_field_gpu_source(boundary="repeat", filtering="nearest").emitters[0]
-    interface = emitter.data_interface_layout["vector_fields"][0]
+    interface = emitter.data_interface_layout["volume_interfaces"][0]
 
     assert interface["boundary"] == "repeat"
     assert interface["filtering"] == "nearest"
     assert "any(lessThan(uvw" not in emitter.update
+
+
+def test_gpu_sdf_collision_uses_shared_volume_set_and_compiles_to_spirv():
+    emitter = _sdf_gpu_source().emitters[0]
+    layout = emitter.data_interface_layout
+
+    assert layout["volume_interfaces"] == [
+        {
+            "kind": "sdf",
+            "stable_id": "collision-field",
+            "interface_index": 0,
+            "texture_binding": 1,
+            "filtering": "linear",
+        }
+    ]
+    assert "inx_sample_sdf_0" in emitter.update
+    assert "inx_collide_sdf_position_0" in emitter.update
+    assert "textureSize(inx_volume_texture_0" in emitter.update
+    assert "field_position + vec3(0.5)" in emitter.update
+    compiled = native._compile_compute_glsl_batch(
+        emitter.stages(), "particle-sdf-test"
+    )
+    assert set(compiled) == set(emitter.stages())
 
 
 def test_generated_gpu_particle_kernels_compile_to_vulkan_spirv(tmp_path):

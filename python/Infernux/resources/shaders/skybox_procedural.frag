@@ -1,18 +1,18 @@
 #version 450
 
-@shader_id: Infernux/Skybox-Procedural
+@shader_id: Skybox Procedural
 @pass_tag: skybox
 @cull: back
 @depth_write: false
 @depth_test: less_equal
 @queue: 32767
-@hidden
-@property: skyTopColor, Color, [0.20, 0.28, 0.46, 1.0]
-@property: skyHorizonColor, Color, [0.50, 0.58, 0.70, 1.0]
-@property: groundColor, Color, [0.24, 0.22, 0.22, 1.0]
-@property: exposure, Float, 1.35
+@cast_shadows: off
+@property: skyTopColor, Color, [0.431, 0.494, 0.612, 1.0]
+@property: skyHorizonColor, Color, [0.651, 0.725, 0.816, 1.0]
+@property: groundColor, Color, [0.345, 0.345, 0.345, 1.0]
+@property: exposure, Float, 1.0
 
-@import: math
+@import: Math
 
 // Input from vertex shader
 layout(location = 0) in vec3 fragWorldDir;

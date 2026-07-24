@@ -24,6 +24,7 @@ from Infernux.particle import (
     ParticleKernelProgram,
     ParticleRuntimeCompatibility,
     PointCache,
+    SdfVolume,
     VectorField,
     build_gpu_particle_migration,
     classify_emitter_update,
@@ -1166,10 +1167,10 @@ class ParticleSystem(InxComponent):
         point_cache_layouts = layout.get("point_caches")
         if type(point_cache_layouts) is not list:
             raise RuntimeError("ParticleGraph GPU Point Cache layout is invalid")
-        vector_field_layouts = layout.get("vector_fields")
-        if type(vector_field_layouts) is not list:
-            raise RuntimeError("ParticleGraph GPU Vector Field layout is invalid")
-        if not point_cache_layouts and not vector_field_layouts:
+        volume_layouts = layout.get("volume_interfaces")
+        if type(volume_layouts) is not list:
+            raise RuntimeError("ParticleGraph GPU volume-interface layout is invalid")
+        if not point_cache_layouts and not volume_layouts:
             return dict(layout)
 
         interfaces = {
@@ -1244,35 +1245,38 @@ class ParticleSystem(InxComponent):
 
         result = dict(layout)
         result["point_caches"] = decoded_point_caches
-        vector_fields = {
+        volumes = {
             interface.stable_id: interface
             for interface in emitter.data_interfaces
-            if isinstance(interface, VectorField)
+            if isinstance(interface, (VectorField, SdfVolume))
         }
-        decoded_vector_fields = []
-        for encoded in vector_field_layouts:
+        decoded_volumes = []
+        for encoded in volume_layouts:
             if type(encoded) is not dict:
-                raise RuntimeError("ParticleGraph GPU Vector Field layout is invalid")
+                raise RuntimeError("ParticleGraph GPU volume-interface layout is invalid")
             stable_id = encoded.get("stable_id")
-            interface = vector_fields.get(stable_id)
+            interface = volumes.get(stable_id)
             if interface is None:
                 raise RuntimeError(
-                    f"ParticleGraph GPU Vector Field interface {stable_id!r} is missing"
+                    f"ParticleGraph GPU volume interface {stable_id!r} is missing"
                 )
             reference = self._data_interface_reference(interface)
             if not reference.guid:
                 identity = reference.path_hint or "<empty reference>"
                 raise RuntimeError(
-                    f"ParticleGraph GPU Vector Field {stable_id!r} requires an imported texture GUID; got {identity!r}"
+                    f"ParticleGraph GPU volume interface {stable_id!r} requires an imported texture GUID; got {identity!r}"
                 )
             native = registry.load_texture_by_guid(reference.guid)
             if native is None:
                 raise RuntimeError(
-                    f"ParticleGraph GPU Vector Field {stable_id!r} cannot load {reference.guid!r}"
+                    f"ParticleGraph GPU volume interface {stable_id!r} cannot load {reference.guid!r}"
                 )
-            if native.dimension != "3d" or native.semantic != "vector_field":
+            expected_semantic = (
+                "vector_field" if isinstance(interface, VectorField) else "signed_distance_field"
+            )
+            if native.dimension != "3d" or native.semantic != expected_semantic:
                 raise RuntimeError(
-                    f"ParticleGraph GPU Vector Field {stable_id!r} requires a VectorField Texture3D"
+                    f"ParticleGraph GPU volume interface {stable_id!r} requires a {expected_semantic} Texture3D"
                 )
             field_to_space = np.asarray(interface.field_to_space, dtype=np.float32).reshape(4, 4)
             bake_basis = np.asarray(native.bake_basis, dtype=np.float32).reshape(4, 4)
@@ -1281,13 +1285,18 @@ class ParticleSystem(InxComponent):
                 texture_guid=reference.guid,
                 space=interface.space.value,
                 field_to_space=(field_to_space @ bake_basis).reshape(-1).tolist(),
-                vector_scale=interface.vector_scale,
-                boundary=interface.boundary.value,
                 filtering=interface.filtering.value,
                 native=native,
             )
-            decoded_vector_fields.append(decoded)
-        result["vector_fields"] = decoded_vector_fields
+            if isinstance(interface, VectorField):
+                decoded.update(
+                    vector_scale=interface.vector_scale,
+                    boundary=interface.boundary.value,
+                )
+            else:
+                decoded.update(distance_scale=interface.distance_scale)
+            decoded_volumes.append(decoded)
+        result["volume_interfaces"] = decoded_volumes
         return result
 
     def _data_interface_reference(self, interface) -> AssetReference:

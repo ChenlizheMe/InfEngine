@@ -589,23 +589,26 @@ struct ParticleGpuSystemManager::Impl
         stableIds.clear();
         for (const auto &field : program.vectorFields.vectorFields) {
             const auto cpuData = field.texture ? field.texture->GetCpuData() : nullptr;
+            const TextureSemantic expectedSemantic = field.kind == GpuVectorFieldDesc::Kind::SignedDistanceField
+                                                         ? TextureSemantic::SignedDistanceField
+                                                         : TextureSemantic::VectorField;
             if (field.stableId.empty() || !stableIds.insert(field.stableId).second || !field.texture || !cpuData ||
                 !cpuData->IsValid() || cpuData->dimension != TextureDimension::Texture3D ||
-                cpuData->semantic != TextureSemantic::VectorField || field.texture->GetGuid().empty() ||
+                cpuData->semantic != expectedSemantic || field.texture->GetGuid().empty() ||
                 !vectorFieldTextureResolver) {
-                SetError(error, "GPU particle Vector Field bindings require unique identities and loaded VectorField "
-                                "Texture3D assets");
+                SetError(error, "GPU particle volume bindings require unique identities and matching Texture3D assets");
                 return false;
             }
             auto lease = vectorFieldTextureResolver(field.texture->GetGuid(), field.linearFiltering, field.repeat);
             if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() ||
                 !lease.sampler.IsValid() || !lease.keepAlive) {
                 SetError(error, lease.status == GpuBillboardTextureStatus::Pending
-                                    ? "GPU particle Vector Field texture upload is pending"
-                                    : "GPU particle Vector Field texture upload failed");
+                                    ? "GPU particle volume texture upload is pending"
+                                    : "GPU particle volume texture upload failed");
                 return false;
             }
             GpuVectorFieldDesc runtimeField;
+            runtimeField.kind = field.kind;
             runtimeField.interfaceIndex = field.interfaceIndex;
             runtimeField.textureBinding = field.textureBinding;
             runtimeField.worldSpace = field.worldSpace;

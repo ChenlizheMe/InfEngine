@@ -232,7 +232,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         }
         if (!m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
                                                       previewMat->GetFragShaderName(), m_previewSceneUbo->GetBuffer(),
-                                                      m_previewLightingUbo->GetBuffer()))
+                                                      m_previewLightingUbo->GetBuffer(), false))
             continue;
 
         MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
@@ -903,7 +903,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
             previewMat->ClearAllPassPipelines();
         if (!m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
                                                       previewMat->GetFragShaderName(), m_previewSceneUbo->GetBuffer(),
-                                                      m_previewLightingUbo->GetBuffer()))
+                                                      m_previewLightingUbo->GetBuffer(), false))
             continue;
         MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)

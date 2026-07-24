@@ -1,5 +1,5 @@
 #version 450
-@shader_id: bloom_downsample
+@shader_id: Bloom Downsample
 @hidden
 
 // Bloom downsample pass — 13-tap downsample filter

@@ -1,6 +1,6 @@
 #version 450
 
-@shader_id: standard
+@shader_id: Standard
 
 // Default mesh vertex shader.
 //

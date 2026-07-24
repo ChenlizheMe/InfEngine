@@ -1920,6 +1920,62 @@ void RegisterSceneBindings(py::module_ &m)
 
     py::class_<Scene>(m, "Scene")
         .def_property("name", &Scene::GetName, &Scene::SetName)
+        .def(
+            "get_environment",
+            [](const Scene &scene) {
+                const SceneEnvironmentSettings &env = scene.GetEnvironment();
+                py::dict d;
+                d["skybox_material_guid"] = env.skyboxMaterialGuid;
+                d["sky_top_color"] = py::make_tuple(env.skyTopColor.r, env.skyTopColor.g, env.skyTopColor.b);
+                d["sky_horizon_color"] =
+                    py::make_tuple(env.skyHorizonColor.r, env.skyHorizonColor.g, env.skyHorizonColor.b);
+                d["sky_ground_color"] =
+                    py::make_tuple(env.skyGroundColor.r, env.skyGroundColor.g, env.skyGroundColor.b);
+                d["sky_exposure"] = env.skyExposure;
+                d["ambient_source"] = env.ambientSource;
+                d["ambient_intensity"] = env.ambientIntensity;
+                d["ambient_color"] = py::make_tuple(env.ambientColor.r, env.ambientColor.g, env.ambientColor.b);
+                d["ambient_sky_color"] =
+                    py::make_tuple(env.ambientSkyColor.r, env.ambientSkyColor.g, env.ambientSkyColor.b);
+                d["ambient_equator_color"] =
+                    py::make_tuple(env.ambientEquatorColor.r, env.ambientEquatorColor.g, env.ambientEquatorColor.b);
+                d["ambient_ground_color"] =
+                    py::make_tuple(env.ambientGroundColor.r, env.ambientGroundColor.g, env.ambientGroundColor.b);
+                return d;
+            },
+            "Get the scene environment (skybox material + ambient) settings as a dict")
+        .def(
+            "set_environment",
+            [](Scene &scene, const py::dict &d) {
+                SceneEnvironmentSettings env = scene.GetEnvironment();
+                const auto readColor = [&](const char *key, glm::vec3 &out) {
+                    if (!d.contains(key))
+                        return;
+                    py::sequence seq = d[key].cast<py::sequence>();
+                    out = glm::vec3(seq[0].cast<float>(), seq[1].cast<float>(), seq[2].cast<float>());
+                };
+                if (d.contains("skybox_material_guid"))
+                    env.skyboxMaterialGuid = d["skybox_material_guid"].cast<std::string>();
+                readColor("sky_top_color", env.skyTopColor);
+                readColor("sky_horizon_color", env.skyHorizonColor);
+                readColor("sky_ground_color", env.skyGroundColor);
+                if (d.contains("sky_exposure"))
+                    env.skyExposure = glm::clamp(d["sky_exposure"].cast<float>(), 0.0f, 8.0f);
+                if (d.contains("ambient_source"))
+                    env.ambientSource = glm::clamp(d["ambient_source"].cast<int>(), 0, 2);
+                if (d.contains("ambient_intensity"))
+                    env.ambientIntensity = glm::clamp(d["ambient_intensity"].cast<float>(), 0.0f, 8.0f);
+                readColor("ambient_color", env.ambientColor);
+                readColor("ambient_sky_color", env.ambientSkyColor);
+                readColor("ambient_equator_color", env.ambientEquatorColor);
+                readColor("ambient_ground_color", env.ambientGroundColor);
+                scene.SetEnvironment(env);
+            },
+            py::arg("settings"),
+            "Update scene environment settings from a dict (missing keys keep their current value)")
+        .def(
+            "resolve_skybox_material", [](const Scene &scene) { return scene.ResolveSkyboxMaterial(); },
+            "Resolve the active skybox material (environment asset or builtin procedural sky)")
         .def("set_playing", &Scene::SetPlaying, py::arg("playing"), "Set the scene play-state flag")
         .def("create_game_object", &Scene::CreateGameObject, py::return_value_policy::reference,
              py::arg("name") = "GameObject", "Create a new empty GameObject in this scene")

@@ -458,7 +458,7 @@ class SpriteRenderer(BuiltinComponent):
             native = getattr(mat, '_native', None) or getattr(mat, 'native', mat)
             path = getattr(native, 'file_path', '') or ''
             # Default material has no saved path and uses sprite_unlit
-            return frag == 'sprite_unlit' and not path
+            return frag == 'Sprite Unlit' and not path
         except Exception:
             return False
 
@@ -590,7 +590,7 @@ class SpriteRenderer(BuiltinComponent):
         try:
             frag = getattr(native_mat, "frag_shader_name", None)
             path = getattr(native_mat, "file_path", "") or ""
-            if frag == "sprite_unlit" and not path and getattr(native_mat, "name", "") != desired_name:
+            if frag == "Sprite Unlit" and not path and getattr(native_mat, "name", "") != desired_name:
                 native_mat.name = desired_name
         except Exception:
             pass
@@ -613,7 +613,7 @@ class SpriteRenderer(BuiltinComponent):
         try:
             from Infernux.core.material import Material
             mat = Material.create_unlit()
-            mat.frag_shader_name = "sprite_unlit"
+            mat.frag_shader_name = "Sprite Unlit"
             # Opaque + alpha clipping: sprites are rendered in the opaque
             # queue with hard-edge alpha test (no blending artefacts).
             mat.surface_type = "opaque"

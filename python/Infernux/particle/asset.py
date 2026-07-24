@@ -24,6 +24,7 @@ from . import nodes as _particle_nodes  # noqa: F401
 from .data_interface import (
     ParticleDataInterface,
     PointCache,
+    SdfVolume,
     VectorField,
     particle_data_interface_from_dict,
 )
@@ -348,7 +349,7 @@ class ParticleEmitterAsset:
         data_interfaces = tuple(self.data_interfaces)
         if not all(isinstance(value, ParticleAttribute) for value in attributes):
             raise ParticleGraphSchemaError("particle emitter attributes are invalid")
-        if not all(isinstance(value, (VectorField, PointCache)) for value in data_interfaces):
+        if not all(isinstance(value, (VectorField, SdfVolume, PointCache)) for value in data_interfaces):
             raise ParticleGraphSchemaError("particle emitter data interfaces are invalid")
         object.__setattr__(self, "attributes", attributes)
         object.__setattr__(self, "data_interfaces", data_interfaces)

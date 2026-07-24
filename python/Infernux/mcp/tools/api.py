@@ -908,7 +908,7 @@ def _shader_examples() -> dict[str, str]:
         "material_binding": (
             "from Infernux.core.material import Material\n"
             "mat = Material.create_unlit('MyMat')\n"
-            "mat.vert_shader_name = 'standard'\n"
+            "mat.vert_shader_name = 'Standard'\n"
             "mat.frag_shader_name = 'my_unlit'\n"
             "mat.set_color('baseColor', 1.0, 0.8, 0.4, 1.0)\n"
         ),

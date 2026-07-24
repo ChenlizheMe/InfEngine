@@ -390,6 +390,12 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
                                   "boundary", "filtering"},
                                  interfaceLocation);
                 readReference(dataInterface["texture"], interfaceLocation + ".texture");
+            } else if (kind == "sdf_volume") {
+                requireExactKeys(dataInterface,
+                                 {"kind", "stable_id", "name", "texture", "space", "field_to_space",
+                                  "distance_scale", "filtering"},
+                                 interfaceLocation);
+                readReference(dataInterface["texture"], interfaceLocation + ".texture");
             } else if (kind == "point_cache") {
                 requireExactKeys(dataInterface,
                                  {"kind", "stable_id", "name", "cache", "space", "cache_to_space", "position_channel",

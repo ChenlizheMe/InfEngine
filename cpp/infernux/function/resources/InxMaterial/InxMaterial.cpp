@@ -86,7 +86,7 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
                                                                       const std::string &textureRef)
 {
     auto material = std::make_shared<InxMaterial>(name);
-    material->SetShader("gizmo_icon");
+    material->SetShader("Gizmo Icon");
 
     RenderState state;
     state.cullMode = VK_CULL_MODE_NONE;
@@ -589,6 +589,56 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
 {
     bool changed = false;
 
+    // Shader metadata describes the complete default state, not a patch over
+    // the previously selected shader. Restore omitted fields before applying
+    // annotations so switching away from a transparent/particle shader cannot
+    // leak its culling, depth, blend, queue, stencil, or pass-tag state into a
+    // regular mesh shader. Explicit per-material overrides remain authoritative.
+    if (!m_builtin) {
+        const RenderState defaults;
+        const auto assign = [&changed](auto &target, const auto &value) {
+            if (target != value) {
+                target = value;
+                changed = true;
+            }
+        };
+
+        if (!HasOverride(RenderStateOverride::CullMode))
+            assign(m_renderState.cullMode, defaults.cullMode);
+        if (!HasOverride(RenderStateOverride::DepthWrite))
+            assign(m_renderState.depthWriteEnable, defaults.depthWriteEnable);
+        if (!HasOverride(RenderStateOverride::DepthTest))
+            assign(m_renderState.depthTestEnable, defaults.depthTestEnable);
+        if (!HasOverride(RenderStateOverride::DepthCompareOp))
+            assign(m_renderState.depthCompareOp, defaults.depthCompareOp);
+        if (!HasOverride(RenderStateOverride::BlendEnable))
+            assign(m_renderState.blendEnable, defaults.blendEnable);
+        if (!HasOverride(RenderStateOverride::BlendMode)) {
+            assign(m_renderState.srcColorBlendFactor, defaults.srcColorBlendFactor);
+            assign(m_renderState.dstColorBlendFactor, defaults.dstColorBlendFactor);
+            assign(m_renderState.colorBlendOp, defaults.colorBlendOp);
+            assign(m_renderState.srcAlphaBlendFactor, defaults.srcAlphaBlendFactor);
+            assign(m_renderState.dstAlphaBlendFactor, defaults.dstAlphaBlendFactor);
+            assign(m_renderState.alphaBlendOp, defaults.alphaBlendOp);
+        }
+        if (!HasOverride(RenderStateOverride::RenderQueue))
+            assign(m_renderState.renderQueue, defaults.renderQueue);
+
+        assign(m_renderState.stencilTestEnable, defaults.stencilTestEnable);
+        if (std::memcmp(&m_renderState.stencilFront, &defaults.stencilFront, sizeof(VkStencilOpState)) != 0) {
+            m_renderState.stencilFront = defaults.stencilFront;
+            changed = true;
+        }
+        if (std::memcmp(&m_renderState.stencilBack, &defaults.stencilBack, sizeof(VkStencilOpState)) != 0) {
+            m_renderState.stencilBack = defaults.stencilBack;
+            changed = true;
+        }
+        if (m_passTag != passTag) {
+            m_passTag = passTag;
+            changed = true;
+        }
+    }
+
     // @cull: none / front / back — skip if user has overridden CullMode
     if (!cullMode.empty() && !HasOverride(RenderStateOverride::CullMode)) {
         VkCullModeFlags newCull = m_renderState.cullMode;
@@ -633,34 +683,35 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         changed = true;
     }
 
-    // @pass_tag: set material pass tag for draw call filtering
-    // Skip for builtin materials — same reason as renderQueue above.
-    if (!m_builtin && !passTag.empty() && passTag != m_passTag) {
-        m_passTag = passTag;
-    }
-
     // @stencil: compare_op, ref, pass_op, fail_op, depth_fail_op
     changed |= ApplyStencilMeta(m_renderState, stencil);
 
-    if (changed) {
-        m_pipelineDirty = true;
-    }
-
     // @alpha_clip: <threshold> — skip if user has overridden AlphaClip
     if (!alphaClip.empty() && alphaClip != "off" && !HasOverride(RenderStateOverride::AlphaClip)) {
-        m_renderState.alphaClipEnabled = true;
+        if (!m_renderState.alphaClipEnabled) {
+            m_renderState.alphaClipEnabled = true;
+            changed = true;
+        }
+        float threshold = 0.5f;
         try {
-            m_renderState.alphaClipThreshold = std::stof(alphaClip);
+            threshold = std::stof(alphaClip);
         } catch (...) {
-            m_renderState.alphaClipThreshold = 0.5f;
+        }
+        if (m_renderState.alphaClipThreshold != threshold) {
+            m_renderState.alphaClipThreshold = threshold;
+            changed = true;
         }
         SyncAlphaClipProperty();
     } else if ((alphaClip.empty() || alphaClip == "off") && !HasOverride(RenderStateOverride::AlphaClip)) {
         if (m_renderState.alphaClipEnabled) {
             m_renderState.alphaClipEnabled = false;
+            changed = true;
             SyncAlphaClipProperty();
         }
     }
+
+    if (changed)
+        m_pipelineDirty = true;
 }
 
 void InxMaterial::SyncAlphaClipProperty()
@@ -1000,8 +1051,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
     auto material = std::make_shared<InxMaterial>("DefaultLit");
 
     // Use the shared standard vertex shader with the lit fragment shader.
-    material->SetVertShader("standard");
-    material->SetFragShader("lit");
+    material->SetVertShader("Standard");
+    material->SetFragShader("Lit");
 
     // Default lit opaque render state
     RenderState state;
@@ -1033,8 +1084,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
     auto material = std::make_shared<InxMaterial>("DefaultUnlit");
 
     // Use the shared standard vertex shader with the unlit fragment shader.
-    material->SetVertShader("standard");
-    material->SetFragShader("unlit");
+    material->SetVertShader("Standard");
+    material->SetFragShader("Unlit");
 
     // Default unlit opaque render state
     RenderState state;
@@ -1055,7 +1106,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
 std::shared_ptr<InxMaterial> InxMaterial::CreateParticleBillboardMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleBillboardMaterial");
-    material->SetShader("particle_billboard");
+    material->SetShader("Particle Billboard");
 
     RenderState state;
     state.cullMode = VK_CULL_MODE_NONE;
@@ -1080,8 +1131,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleBillboardMaterial()
 std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleSpriteMaterial");
-    material->SetVertShader("particle_sprite");
-    material->SetFragShader("particle_unlit");
+    material->SetVertShader("Particle Sprite");
+    material->SetFragShader("Particle Unlit");
 
     RenderState state;
     state.cullMode = VK_CULL_MODE_NONE;
@@ -1109,7 +1160,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
     auto material = std::make_shared<InxMaterial>("GizmoMaterial");
 
     // Use gizmo shader (simple unlit with vertex color)
-    material->SetShader("gizmo");
+    material->SetShader("Gizmo");
 
     // Gizmo render state: no culling (double-sided), depth test, depth write
     RenderState state;
@@ -1128,7 +1179,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGridMaterial()
 {
     auto material = std::make_shared<InxMaterial>("GridMaterial");
 
-    material->SetShader("Infernux/Grid");
+    material->SetShader("Grid");
 
     // Grid render state: double-sided, alpha-blended, depth test but no depth write
     RenderState state;
@@ -1170,7 +1221,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateEditorToolsMaterial()
     auto material = std::make_shared<InxMaterial>("EditorToolsMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetShader("gizmo");
+    material->SetShader("Gizmo");
 
     // Editor tools render state: always on top (no depth test), double-sided
     RenderState state;
@@ -1192,7 +1243,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmosMaterial()
     auto material = std::make_shared<InxMaterial>("ComponentGizmosMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetShader("gizmo");
+    material->SetShader("Gizmo");
 
     // Component gizmos: depth-tested (occluded by scene geometry), double-sided, LINE topology
     RenderState state;
@@ -1230,7 +1281,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
     auto material = std::make_shared<InxMaterial>("SkyboxProcedural");
 
     // Use procedural skybox shader (registered by @shader_id in .vert/.frag)
-    material->SetShader("Infernux/Skybox-Procedural");
+    material->SetShader("Skybox Procedural");
 
     // Skybox render state:
     // - Cull back faces (the outside of the cube). In the LH coordinate system,
@@ -1251,10 +1302,11 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
     material->SetRenderState(state);
 
     // Default sky properties (matching shader @property annotations)
-    material->SetColor("skyTopColor", glm::vec4(0.20f, 0.28f, 0.46f, 1.0f));
-    material->SetColor("skyHorizonColor", glm::vec4(0.50f, 0.58f, 0.70f, 1.0f));
-    material->SetColor("groundColor", glm::vec4(0.24f, 0.22f, 0.22f, 1.0f));
-    material->SetFloat("exposure", 1.35f);
+    // sRGB: zenith #6E7E9C, horizon #A6B9D0, ground #585858
+    material->SetColor("skyTopColor", glm::vec4(0.431f, 0.494f, 0.612f, 1.0f));
+    material->SetColor("skyHorizonColor", glm::vec4(0.651f, 0.725f, 0.816f, 1.0f));
+    material->SetColor("groundColor", glm::vec4(0.345f, 0.345f, 0.345f, 1.0f));
+    material->SetFloat("exposure", 1.0f);
 
     material->SetBuiltin(true);
 
@@ -1268,7 +1320,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateErrorMaterial()
     // Use dedicated error shaders: unlit magenta-black checkerboard pattern.
     // These shaders are self-contained (no material UBO, no textures) and
     // output a procedural checkerboard using world-position + UV.
-    material->SetShader("error");
+    material->SetShader("Error");
 
     // Double-sided so the error pattern is visible from all angles
     RenderState state;

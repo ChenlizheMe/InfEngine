@@ -1,7 +1,7 @@
 #version 450
 
-@shader_id: gizmo_icon
-@shading_model: unlit
+@shader_id: Gizmo Icon
+@shading_model: Unlit
 @hidden
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 @property: texSampler, Texture2D, white

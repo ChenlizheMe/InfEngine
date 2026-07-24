@@ -30,6 +30,7 @@ from Infernux.particle import (
     ParticleRuntimeMetadataError,
     PointCache,
     ScalarRange,
+    SdfVolume,
     SimulationSpace,
     VectorField,
     decode_particle_runtime_metadata,
@@ -360,6 +361,12 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
                 space="emitter_local",
                 id_channel="stable_id",
             ),
+            SdfVolume(
+                stable_id="collision-field",
+                name="Collision",
+                texture=AssetReference(path_hint="Assets/Fields/Collision.inxsdf"),
+                distance_scale=1.5,
+            ),
         ),
     )
     asset = ParticleGraphAsset(stable_id="data-graph", emitters=(emitter,))
@@ -371,6 +378,7 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
     assert [interface.stable_id for interface in hir.emitters[0].data_interfaces] == [
         "wind-field",
         "morph-points",
+        "collision-field",
     ]
     assert hir.emitters[0].data_interfaces[0].boundary.value == "repeat"
 
@@ -1287,6 +1295,58 @@ class CollisionGraph(ParticleScript):
         "sphere_radius": 2.0,
     }
     assert emitter == ParticleGraphCompiler().compile(asset).emitters[0]
+
+
+def test_sdf_collision_graph_and_script_share_typed_data_interface_contract():
+    source = '''
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
+
+class CollisionGraph(ParticleScript):
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings(capacity=1024)
+        data_interfaces = (
+            SdfVolume(
+                stable_id="collision-field",
+                texture=AssetReference(guid="sdf-texture"),
+            ),
+        )
+
+        def init(self, ctx, particles):
+            particles.set_velocity((0.0, 0.0, 0.0))
+
+        def update(self, ctx, particles):
+            particles.collide_sdf(
+                interface="collision-field",
+                particle_radius=0.1,
+                restitution=0.7,
+                friction=0.25,
+                inverted=True,
+            )
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="SdfCollision.particle.py")
+    emitter = compiler.compile(
+        source, source_name="SdfCollision.particle.py"
+    ).emitters[0]
+
+    assert emitter.update.operations[-1].opcode == "collision.sdf"
+    assert emitter.update.operations[-1].parameter_dict() == {
+        "friction": 0.25,
+        "interface": "collision-field",
+        "inverted": True,
+        "particle_radius": 0.1,
+        "restitution": 0.7,
+    }
+    assert emitter == ParticleGraphCompiler().compile(asset).emitters[0]
+
+    value = asset.to_dict()
+    value["emitters"][0]["stages"]["update"]["nodes"][1]["properties"]["interface"] = "missing"
+    with pytest.raises(ParticleCompileError, match="unknown SdfVolume"):
+        ParticleGraphCompiler().compile(ParticleGraphAsset.from_dict(value))
 
 
 @pytest.mark.parametrize(

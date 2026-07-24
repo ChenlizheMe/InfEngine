@@ -458,7 +458,7 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     for (const auto &entry : desc.entries)
         entries[entry.role] = entry.function;
     metaData.AddMetadata("shader_entries", entries.dump());
-    metaData.AddMetadata("shader_lighting_type", desc.shadingModel.empty() ? "unlit" : desc.shadingModel);
+    metaData.AddMetadata("shader_lighting_type", desc.shadingModel.empty() ? "Unlit" : desc.shadingModel);
     metaData.AddMetadata("shader_cull_mode", desc.surfaceOptions.cullMode);
     metaData.AddMetadata("shader_depth_write", desc.depthWrite);
     metaData.AddMetadata("shader_depth_test", desc.depthTest);
@@ -577,7 +577,9 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
         if (!shaderInfo.name.empty())
             desc.shaderId = shaderInfo.name;
         if (!shaderInfo.shadingModel.empty()) {
-            desc.shadingModel = toLower(shaderInfo.shadingModel);
+            // Preserve authored casing — shader_ids are Title Case with spaces
+            // (e.g. "PBR", "Unlit") and LoadShadingModel looks them up exactly.
+            desc.shadingModel = shaderInfo.shadingModel;
             desc.hasExplicitType = true;
         }
         if (!shaderInfo.surfaceType.empty())
@@ -719,7 +721,8 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     std::unordered_map<std::string, Handler> handlers = {
         {"shading_model",
          [&](const std::string &v) {
-             desc.shadingModel = toLower(v);
+             // Keep authored casing so Title Case ids like "PBR" resolve.
+             desc.shadingModel = v;
              desc.hasExplicitType = true;
          }},
         {"shader_id", [&](const std::string &v) { desc.shaderId = v; }},
@@ -1442,29 +1445,29 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
             }
         }
 
-        // Auto-inject @import: surface for surface() shader model
+        // Auto-inject the canonical surface helpers for surface() shaders.
         if (desc.hasSurfaceFunc && !desc.hasMainFunc && desc.isFragmentShader) {
             // Check via IR: desc.imports already parsed all @import from source
             bool hasSurfaceImport = false;
             bool hasObjectUtilsImport = false;
             bool hasParticleSurfaceUtilsImport = false;
             for (const auto &imp : desc.imports) {
-                if (imp == "surface")
+                if (imp == "Surface")
                     hasSurfaceImport = true;
-                if (imp == "lib/object_utils")
+                if (imp == "Lib Object Utils")
                     hasObjectUtilsImport = true;
-                if (imp == "lib/particle_surface_utils")
+                if (imp == "Lib Particle Surface Utils")
                     hasParticleSurfaceUtilsImport = true;
             }
             if (!hasSurfaceImport) {
-                resolvedSource = "@import: surface\n" + resolvedSource;
+                resolvedSource = "@import: Surface\n" + resolvedSource;
             }
             const bool particleSpriteDomain =
                 linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite;
             if (particleSpriteDomain && !hasParticleSurfaceUtilsImport) {
-                resolvedSource = "@import: lib/particle_surface_utils\n" + resolvedSource;
+                resolvedSource = "@import: Lib Particle Surface Utils\n" + resolvedSource;
             } else if (!particleSpriteDomain && !hasObjectUtilsImport) {
-                resolvedSource = "@import: lib/object_utils\n" + resolvedSource;
+                resolvedSource = "@import: Lib Object Utils\n" + resolvedSource;
             }
         }
 

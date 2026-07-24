@@ -1,5 +1,6 @@
 #include "ParticleGpuRibbonRenderer.h"
 
+#include <core/types/ColorSpace.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <algorithm>
@@ -259,8 +260,12 @@ std::array<float, 4> ParticleGpuRibbonRenderer::ResolveMaterialTint() const noex
     if (!property || (property->type != MaterialPropertyType::Color && property->type != MaterialPropertyType::Float4))
         return {1.0f, 1.0f, 1.0f, 1.0f};
     const auto *value = std::get_if<glm::vec4>(&property->value);
-    return value ? std::array<float, 4>{value->x, value->y, value->z, value->w}
-                 : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f};
+    if (!value)
+        return {1.0f, 1.0f, 1.0f, 1.0f};
+    // Authored Color properties are sRGB; shading runs in linear space.
+    const glm::vec4 tint =
+        property->type == MaterialPropertyType::Color ? inx::color::SrgbToLinear(*value) : *value;
+    return {tint.x, tint.y, tint.z, tint.w};
 }
 
 rhi::BindGroupHandle ParticleGpuRibbonRenderer::CreateBindGroup(rhi::BufferHandle renderIndices) const

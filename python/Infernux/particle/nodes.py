@@ -381,6 +381,18 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
     ),
     _operation(
+        "particle.update.collide_sdf",
+        "SDF Collision",
+        "collision.sdf",
+        (
+            PropertyDef("interface", TypeRef(ValueType.STRING), ""),
+            PropertyDef("particle_radius", TypeRef(ValueType.F32), 0.0),
+            PropertyDef("restitution", TypeRef(ValueType.F32), 0.5),
+            PropertyDef("friction", TypeRef(ValueType.F32), 0.1),
+            PropertyDef("inverted", TypeRef(ValueType.BOOL), False),
+        ),
+    ),
+    _operation(
         "particle.update.kill_if",
         "Kill If",
         "lifecycle.kill_if",

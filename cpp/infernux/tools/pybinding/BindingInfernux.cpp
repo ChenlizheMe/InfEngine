@@ -219,53 +219,71 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             program.pointCaches.pointCaches.push_back(std::move(decoded));
         }
 
-        for (const char *field : {"vector_field_metadata_binding", "vector_field_stride_words", "vector_fields"}) {
+        for (const char *field : {"volume_metadata_binding", "volume_stride_words", "volume_interfaces"}) {
             if (!layout.contains(field))
-                throw std::invalid_argument(std::string("GPU Vector Field layout is missing ") + field);
+                throw std::invalid_argument(std::string("GPU volume-interface layout is missing ") + field);
         }
-        program.vectorFields.metadataBinding = py::cast<uint32_t>(layout["vector_field_metadata_binding"]);
-        program.vectorFields.interfaceStrideWords = py::cast<uint32_t>(layout["vector_field_stride_words"]);
-        const py::sequence vectorFields = py::cast<py::sequence>(layout["vector_fields"]);
-        program.vectorFields.vectorFields.reserve(vectorFields.size());
-        for (const py::handle item : vectorFields) {
+        program.vectorFields.metadataBinding = py::cast<uint32_t>(layout["volume_metadata_binding"]);
+        program.vectorFields.interfaceStrideWords = py::cast<uint32_t>(layout["volume_stride_words"]);
+        const py::sequence volumeInterfaces = py::cast<py::sequence>(layout["volume_interfaces"]);
+        program.vectorFields.vectorFields.reserve(volumeInterfaces.size());
+        for (const py::handle item : volumeInterfaces) {
             if (!py::isinstance<py::dict>(item))
-                throw std::invalid_argument("GPU Vector Field layout must contain dictionaries");
+                throw std::invalid_argument("GPU volume-interface layout must contain dictionaries");
             const py::dict field = py::reinterpret_borrow<py::dict>(item);
-            for (const char *name : {"stable_id", "interface_index", "texture_binding", "texture_guid", "space",
-                                     "field_to_space", "vector_scale", "boundary", "filtering", "native"}) {
+            for (const char *name : {"kind", "stable_id", "interface_index", "texture_binding", "texture_guid", "space",
+                                     "field_to_space", "filtering", "native"}) {
                 if (!field.contains(name))
-                    throw std::invalid_argument(std::string("GPU Vector Field binding is missing ") + name);
+                    throw std::invalid_argument(std::string("GPU volume binding is missing ") + name);
             }
             particle::GpuParticleVectorFieldProgram decoded;
+            const std::string kind = py::cast<std::string>(field["kind"]);
+            if (kind == "vector_field")
+                decoded.kind = particle::GpuVectorFieldDesc::Kind::VectorField;
+            else if (kind == "sdf")
+                decoded.kind = particle::GpuVectorFieldDesc::Kind::SignedDistanceField;
+            else
+                throw std::invalid_argument("GPU volume-interface kind is invalid");
             decoded.stableId = py::cast<std::string>(field["stable_id"]);
             decoded.interfaceIndex = py::cast<uint32_t>(field["interface_index"]);
             decoded.textureBinding = py::cast<uint32_t>(field["texture_binding"]);
             const std::string textureGuid = py::cast<std::string>(field["texture_guid"]);
             const std::string space = py::cast<std::string>(field["space"]);
-            const std::string boundary = py::cast<std::string>(field["boundary"]);
             const std::string filtering = py::cast<std::string>(field["filtering"]);
             if (space != "world" && space != "emitter_local")
                 throw std::invalid_argument("GPU Vector Field space must be world or emitter_local");
-            if (boundary != "zero" && boundary != "clamp" && boundary != "repeat")
-                throw std::invalid_argument("GPU Vector Field boundary must be zero, clamp, or repeat");
             if (filtering != "nearest" && filtering != "linear")
-                throw std::invalid_argument("GPU Vector Field filtering must be nearest or linear");
+                throw std::invalid_argument("GPU volume filtering must be nearest or linear");
             decoded.worldSpace = space == "world";
-            decoded.repeat = boundary == "repeat";
             decoded.linearFiltering = filtering == "linear";
-            decoded.vectorScale = py::cast<float>(field["vector_scale"]);
+            if (decoded.kind == particle::GpuVectorFieldDesc::Kind::VectorField) {
+                if (!field.contains("boundary") || !field.contains("vector_scale"))
+                    throw std::invalid_argument("GPU Vector Field binding is incomplete");
+                const std::string boundary = py::cast<std::string>(field["boundary"]);
+                if (boundary != "zero" && boundary != "clamp" && boundary != "repeat")
+                    throw std::invalid_argument("GPU Vector Field boundary must be zero, clamp, or repeat");
+                decoded.repeat = boundary == "repeat";
+                decoded.vectorScale = py::cast<float>(field["vector_scale"]);
+            } else {
+                if (!field.contains("distance_scale"))
+                    throw std::invalid_argument("GPU SDF binding is missing distance_scale");
+                decoded.repeat = false;
+                decoded.vectorScale = py::cast<float>(field["distance_scale"]);
+                if (!(decoded.vectorScale > 0.0f))
+                    throw std::invalid_argument("GPU SDF distance_scale must be positive");
+            }
             const auto fieldToSpace = py::cast<std::vector<float>>(field["field_to_space"]);
             if (textureGuid.empty() || fieldToSpace.size() != decoded.fieldToSpace.size() ||
                 !std::isfinite(decoded.vectorScale) ||
                 !std::all_of(fieldToSpace.begin(), fieldToSpace.end(),
                              [](float value) { return std::isfinite(value); }))
-                throw std::invalid_argument("GPU Vector Field identity, scale, and transform must be valid");
+                throw std::invalid_argument("GPU volume identity, scale, and transform must be valid");
             std::copy(fieldToSpace.begin(), fieldToSpace.end(), decoded.fieldToSpace.begin());
             if (field["native"].is_none())
-                throw std::invalid_argument("GPU Vector Field native texture is missing");
+                throw std::invalid_argument("GPU volume native texture is missing");
             decoded.texture = py::cast<std::shared_ptr<InxTexture>>(field["native"]);
             if (!decoded.texture || decoded.texture->GetGuid() != textureGuid)
-                throw std::invalid_argument("GPU Vector Field native texture identity does not match its GUID");
+                throw std::invalid_argument("GPU volume native texture identity does not match its GUID");
             program.vectorFields.vectorFields.push_back(std::move(decoded));
         }
     }

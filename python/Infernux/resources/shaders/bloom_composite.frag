@@ -1,5 +1,5 @@
 #version 450
-@shader_id: bloom_composite
+@shader_id: Bloom Composite
 @hidden
 
 // Bloom composite pass — additive blend bloom texture onto scene color.

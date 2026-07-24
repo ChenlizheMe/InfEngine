@@ -1,18 +1,21 @@
 """
-FilmGrainEffect — Cinematic noise overlay.
+FilmGrainEffect — Physically-inspired photographic grain.
 
-Aligned with Unity URP Film Grain (simplified white noise type).
-Operates in LDR space (after_post_process) to match URP behaviour
-where grain is applied after tone mapping.
+Models the three properties that make film grain read as film rather than
+digital static: grains have a physical size (soft value-noise clumps),
+the grain is multiplicative so blacks stay clean, and the grain plate
+advances at 24 fps like a real print. Runs after tone mapping so the grain
+modulates the final displayed exposure, matching Unity URP ordering.
 
 Parameters:
-    intensity — grain strength (0 = off, 1 = heavy)
-    response  — luminance response (0 = uniform, 1 = highlights only)
+    intensity  — grain strength (0 = off, 1 = heavy)
+    response   — luminance response (0 = uniform, 1 = midtones/shadows only)
+    size       — grain size in pixels (1 = fine modern stock, 3+ = coarse)
+    colored    — independent grain per channel like color negative stock
 """
 
 from __future__ import annotations
 
-import time as _time
 from typing import List, TYPE_CHECKING
 
 from Infernux.renderstack.fullscreen_effect import FullScreenEffect
@@ -28,14 +31,26 @@ class FilmGrainEffect(FullScreenEffect):
 
     name = "Film Grain"
     injection_point = "after_post_process"
-    default_order = 800
+    # After tone mapping (900): grain modulates the final displayed image,
+    # matching real film where grain lives in the print, not the scene light.
+    default_order = 950
     menu_path = "Post-processing/Film Grain"
 
     intensity: float = serialized_field(default=0.2, range=(0.0, 1.0), slider=False)
     response: float = serialized_field(default=0.8, range=(0.0, 1.0), slider=False)
+    size: float = serialized_field(
+        default=1.6,
+        range=(0.5, 4.0),
+        slider=False,
+        tooltip="Grain size in pixels (1 = fine modern stock, 3+ = coarse vintage)",
+    )
+    colored: bool = serialized_field(
+        default=False,
+        tooltip="Independent grain per RGB channel, like color negative film",
+    )
 
     def get_shader_list(self) -> List[str]:
-        return ["fullscreen_triangle", "film_grain"]
+        return ["Fullscreen Triangle", "Film Grain"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from Infernux.rendergraph.graph import Format
@@ -45,11 +60,12 @@ class FilmGrainEffect(FullScreenEffect):
             bus,
             output_name="_filmgrain_out",
             pass_name="FilmGrain_Apply",
-            shader_name="film_grain",
+            shader_name="Film Grain",
             format=Format.RGBA16_SFLOAT,
             params={
                 "intensity": self.intensity,
                 "response": self.response,
-                "time": float(_time.perf_counter() % 1000.0),
+                "size": self.size,
+                "colored": 1.0 if self.colored else 0.0,
             },
         )

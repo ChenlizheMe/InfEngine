@@ -86,6 +86,7 @@ struct GpuParticlePointCacheLayoutProgram
 
 struct GpuParticleVectorFieldProgram
 {
+    GpuVectorFieldDesc::Kind kind = GpuVectorFieldDesc::Kind::VectorField;
     std::string stableId;
     uint32_t interfaceIndex = 0;
     uint32_t textureBinding = 0;

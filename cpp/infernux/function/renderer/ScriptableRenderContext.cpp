@@ -10,6 +10,7 @@
 #include "vk/RhiVulkanTypes.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/scene/Scene.h>
 #include <function/scene/SceneRenderer.h>
 
 #include <core/log/InxLog.h>
@@ -243,7 +244,13 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #if INFERNUX_FRAME_PROFILE
         t0 = Clock::now();
 #endif
-        auto skyboxMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+        // Scene environment picks the skybox material (falls back to the
+        // builtin procedural sky when unset or unloadable).
+        std::shared_ptr<InxMaterial> skyboxMat;
+        if (m_gizmoCtx.activeScene)
+            skyboxMat = m_gizmoCtx.activeScene->ResolveSkyboxMaterial();
+        if (!skyboxMat)
+            skyboxMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
         if (skyboxMat) {
             static constexpr uint64_t SKYBOX_OBJECT_ID = 0xFFFFFFFFFFFFFF00ULL;
             DrawCall dc;

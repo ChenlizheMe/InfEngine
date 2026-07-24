@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <core/log/InxLog.h>
+#include <core/types/ColorSpace.h>
 #include <limits>
 
 namespace infernux
@@ -91,10 +92,11 @@ void SceneLightCollector::Clear()
     m_pointLightSortBuffer.clear();
     m_shadowFrame = {};
 
-    // Set default ambient
-    m_lightingUBO.ambientSkyColor = glm::vec4(0.2f, 0.2f, 0.3f, 0.5f);
-    m_lightingUBO.ambientGroundColor = glm::vec4(0.1f, 0.1f, 0.1f, 0.3f);
-    m_lightingUBO.ambientEquatorColor = glm::vec4(0.15f, 0.15f, 0.2f, 0.0f); // mode = 0 (flat)
+    // Set default ambient (authored sRGB -> linear; alpha channels carry intensity/mode)
+    m_lightingUBO.ambientSkyColor = glm::vec4(inx::color::SrgbToLinear(glm::vec3(0.2f, 0.2f, 0.3f)), 0.5f);
+    m_lightingUBO.ambientGroundColor = glm::vec4(inx::color::SrgbToLinear(glm::vec3(0.1f, 0.1f, 0.1f)), 0.3f);
+    m_lightingUBO.ambientEquatorColor =
+        glm::vec4(inx::color::SrgbToLinear(glm::vec3(0.15f, 0.15f, 0.2f)), 0.0f); // mode = 0 (flat)
 }
 
 void SceneLightCollector::AddCanonicalLight(const Light *light, const glm::vec3 &worldPosition,
@@ -114,7 +116,7 @@ void SceneLightCollector::AddCanonicalLight(const Light *light, const glm::vec3 
     data.positionRange = glm::vec4(worldPosition, directional ? 0.0f : std::max(light->GetRange(), 0.0f));
     data.directionOuterCos =
         glm::vec4(direction, spot ? std::cos(glm::radians(light->GetOuterSpotAngle() * 0.5f)) : -1.0f);
-    data.colorIntensity = glm::vec4(light->GetColor(), std::max(light->GetIntensity(), 0.0f));
+    data.colorIntensity = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), std::max(light->GetIntensity(), 0.0f));
     data.shadowAndInnerCos = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
                                        spot ? std::cos(glm::radians(light->GetSpotAngle() * 0.5f)) : -1.0f);
     if (lightType == LightType::Area && light->GetTransform()) {
@@ -146,8 +148,8 @@ void SceneLightCollector::AddDirectionalLight(const Light *light)
 
     DirectionalLightData &data = m_lightingUBO.directionalLights[m_directionalLightCount];
     data.direction = glm::vec4(glm::normalize(direction), 0.0f);
-    // Store raw color in rgb, intensity in w (shader does color.rgb * color.w)
-    data.color = glm::vec4(light->GetColor(), light->GetIntensity());
+    // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
+    data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
 
     // Shadow parameters: x=strength, y=bias, z=normalBias, w=shadowType (0=off, 1=hard, 2=soft)
     float shadowType = 0.0f;
@@ -168,8 +170,8 @@ void SceneLightCollector::AddPointLight(const Light *light, const glm::vec3 &wor
     // Don't add to main buffer yet, add to sort buffer
     PointLightSortData sortData;
     sortData.data.position = glm::vec4(worldPosition, light->GetRange());
-    // Store raw color in rgb, intensity in w (shader does color.rgb * color.w)
-    sortData.data.color = glm::vec4(light->GetColor(), light->GetIntensity());
+    // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
+    sortData.data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
     // Store range in x for URP-style smooth attenuation (yz unused, kept for compatibility)
     sortData.data.attenuation = glm::vec4(light->GetRange(), 0.0f, 0.0f, 0.0f);
     sortData.data.shadowParams = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(),
@@ -192,8 +194,8 @@ void SceneLightCollector::AddSpotLight(const Light *light, const glm::vec3 &worl
     SpotLightData &data = m_lightingUBO.spotLights[m_spotLightCount];
     data.position = glm::vec4(worldPosition, light->GetRange());
     data.direction = glm::vec4(glm::normalize(worldDirection), 0.0f);
-    // Store raw color in rgb, intensity in w (shader does color.rgb * color.w)
-    data.color = glm::vec4(light->GetColor(), light->GetIntensity());
+    // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
+    data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
 
     // Calculate cos of angles for spot falloff
     float innerAngleRad = glm::radians(light->GetSpotAngle() * 0.5f);
@@ -252,7 +254,7 @@ void SceneLightCollector::AddAreaLight(const Light *light, const glm::vec3 &worl
     data.direction = glm::vec4(glm::normalize(worldDirection), light->GetAreaTwoSided() ? 1.0f : 0.0f);
     data.rightWidth = glm::vec4(right, size.x);
     data.upHeight = glm::vec4(up, size.y);
-    data.color = glm::vec4(light->GetColor(), light->GetIntensity());
+    data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
     data.shadowParams = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
                                   static_cast<float>(light->GetShadows()));
     data.metadata = glm::uvec4(light->GetCullingMask(), light->GetInfluenceDomains(), 0u, 0u);
@@ -286,21 +288,31 @@ void SceneLightCollector::PrepareSimpleLightingUBO()
 
 void SceneLightCollector::SetAmbientColor(const glm::vec3 &color, float intensity)
 {
-    m_lightingUBO.ambientSkyColor = glm::vec4(color, intensity);
+    m_lightingUBO.ambientSkyColor = glm::vec4(inx::color::SrgbToLinear(color), intensity);
     m_lightingUBO.ambientEquatorColor.a = 0.0f; // Flat mode
 }
 
 void SceneLightCollector::SetAmbientGradient(const glm::vec3 &skyColor, const glm::vec3 &equatorColor,
-                                             const glm::vec3 &groundColor)
+                                             const glm::vec3 &groundColor, float intensity)
 {
-    m_lightingUBO.ambientSkyColor = glm::vec4(skyColor, 1.0f);
-    m_lightingUBO.ambientEquatorColor = glm::vec4(equatorColor, 1.0f); // Gradient mode
-    m_lightingUBO.ambientGroundColor = glm::vec4(groundColor, 1.0f);
+    const float scale = std::max(intensity, 0.0f);
+    m_lightingUBO.ambientSkyColor = glm::vec4(inx::color::SrgbToLinear(skyColor) * scale, 1.0f);
+    m_lightingUBO.ambientEquatorColor =
+        glm::vec4(inx::color::SrgbToLinear(equatorColor) * scale, 1.0f); // Gradient mode
+    m_lightingUBO.ambientGroundColor = glm::vec4(inx::color::SrgbToLinear(groundColor) * scale, 1.0f);
+}
+
+void SceneLightCollector::SetAmbientLinear(const glm::vec4 &skyColor, const glm::vec4 &equatorColor,
+                                           const glm::vec4 &groundColor)
+{
+    m_lightingUBO.ambientSkyColor = skyColor;
+    m_lightingUBO.ambientEquatorColor = equatorColor;
+    m_lightingUBO.ambientGroundColor = groundColor;
 }
 
 void SceneLightCollector::SetFog(bool enabled, const glm::vec3 &color, float density, float start, float end, int mode)
 {
-    m_lightingUBO.fogColor = glm::vec4(color, enabled ? 1.0f : 0.0f);
+    m_lightingUBO.fogColor = glm::vec4(inx::color::SrgbToLinear(color), enabled ? 1.0f : 0.0f);
     m_lightingUBO.fogParams = glm::vec4(density, start, end, static_cast<float>(mode));
 }
 
@@ -428,13 +440,18 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             if (firstView + lighting::DirectionalCascadeCount > lighting::MaxShadowViews)
                 continue;
             const uint32_t atlasSize = m_shadowFrame.atlasSize;
-            // Keep the two camera-near cascades at half-atlas resolution. The
-            // former 2:1:1:0.5 distribution made a 4096 atlas behave like a
-            // 1024 map immediately after the first split.
-            const std::array<uint32_t, lighting::DirectionalCascadeCount> mainSizes{atlasSize / 2u, atlasSize / 2u,
-                                                                                    atlasSize / 4u, atlasSize / 4u};
+            // Unity-style equal cascade tiles: every cascade of a directional
+            // light uses the same resolution, so shadow quality does not fall
+            // off a cliff at a split boundary the way a 2:2:1:1 layout did.
+            // The sole shadow light fills the whole atlas with a 2x2 grid;
+            // with more shadow lights the main light keeps 3/8-atlas tiles
+            // (56% of the area), leaving room for spot/point/secondary views.
+            const bool soleShadowLight = shadowLights.size() == 1;
+            const uint32_t mainTile = soleShadowLight ? atlasSize / 2u : atlasSize * 3u / 8u;
+            const std::array<uint32_t, lighting::DirectionalCascadeCount> mainSizes{mainTile, mainTile, mainTile,
+                                                                                    mainTile};
             const std::array<uint32_t, lighting::DirectionalCascadeCount> secondarySizes{
-                atlasSize / 4u, atlasSize / 4u, atlasSize / 8u, atlasSize / 8u};
+                atlasSize / 4u, atlasSize / 4u, atlasSize / 4u, atlasSize / 4u};
             const auto &sizes = mainDirectional ? mainSizes : secondarySizes;
             // Fit each camera to its visible depth range. Distant objects move
             // the logarithmic distribution outward without wasting close-up

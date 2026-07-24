@@ -1,5 +1,5 @@
 #version 450
-@shader_id: outline_composite
+@shader_id: Outline Composite
 @hidden
 
 layout(location = 0) out vec2 outUV;

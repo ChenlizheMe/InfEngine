@@ -41,27 +41,30 @@ void evaluate(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1,
                                    F0, f90, energyCompensation,
                                    v_ViewDepth, mainLight.shadow);
 
-    vec3 diffuseIrradiance = mix(sampleAmbientProbe(N),
-                                 sampleAmbientProbeAverage(),
-                                 perceptualRoughness * perceptualRoughness * (1.0 - metallic));
+    // Indirect lighting — keep in sync with pbr.shadingmodel @target: forward.
+    // Diffuse: cosine-convolved irradiance (roughness-free, SH-style).
+    // Specular: radiance model blended toward irradiance as the GGX lobe
+    // widens (analytic prefiltered-mip stand-in, metals included), gated by
+    // AO-derived specular occlusion and geometric horizon fade.
+    vec3 diffuseIrradiance = sampleAmbientIrradiance(N);
     vec3 reflDir = getSpecularAmbientDirection(N, V, perceptualRoughness);
-    float probeBlend = perceptualRoughness * perceptualRoughness * (1.0 - metallic);
+    float prefilter = saturate(perceptualRoughness * (1.7 - 0.7 * perceptualRoughness));
     vec3 specularIrradiance = mix(sampleAmbientProbe(reflDir),
-                                  sampleAmbientProbeAverage(),
-                                  probeBlend);
+                                  sampleAmbientIrradiance(reflDir),
+                                  prefilter);
 
     vec3 kS_env = F_SchlickRoughness(F0, f90, NdotV, perceptualRoughness);
     vec3 kD_env = (1.0 - kS_env) * (1.0 - metallic);
     vec3 diffuseEnv = kD_env * albedo * diffuseIrradiance * ao;
 
     float specOcclusion = ComputeSpecularOcclusion(NdotV, ao, perceptualRoughness);
-    float smoothnessWeight = s.smoothness * s.smoothness;
-    float indirectSpecAtten = mix(smoothnessWeight, 1.0, metallic);
+    vec3 geomN = normalize(v_Normal);
+    geomN = (dot(geomN, N) < 0.0) ? -geomN : geomN;
+    float horizonFade = HorizonOcclusion(reflDir, geomN);
     vec3 specEnv = specularIrradiance
                  * (F0 * envBrdf.x + envBrdf.y)
                  * energyCompensation
-                 * specOcclusion
-                 * indirectSpecAtten
+                 * (specOcclusion * horizonFade)
                  * s.specularHighlights;
 
     vec3 ambient = diffuseEnv + specEnv;

@@ -13,7 +13,7 @@ import zlib
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 from Infernux.graph.ramp import Curve, Gradient
 
-from .data_interface import PointCache, VectorField
+from .data_interface import PointCache, SdfVolume, VectorField
 from .kernel_ir import (
     KernelCompileError,
     KernelInstruction,
@@ -1244,9 +1244,9 @@ class _StageCompiler:
             for interface in data_interface_layout.get("point_caches", ())
             for sample in interface["samples"]
         }
-        self._vector_field_samples = {
+        self._volume_interfaces = {
             interface["stable_id"]: interface["interface_index"]
-            for interface in data_interface_layout.get("vector_fields", ())
+            for interface in data_interface_layout.get("volume_interfaces", ())
         }
 
     def compile(self, function: ParticleKernelFunction) -> tuple[str, dict[str, str], str]:
@@ -1385,7 +1385,7 @@ class _StageCompiler:
         elif opcode == "sample_vector_field":
             stable_id = immediate["interface"]
             try:
-                sample_index = self._vector_field_samples[stable_id]
+                sample_index = self._volume_interfaces[stable_id]
             except KeyError as exc:
                 raise GpuParticleCompileError(
                     f"GPU vector field sample layout is missing {stable_id!r}"
@@ -1467,6 +1467,17 @@ class _StageCompiler:
             expression = f"inx_collide_sphere_position({', '.join(operands)})"
         elif opcode == "collide_sphere_velocity":
             expression = f"inx_collide_sphere_velocity({', '.join(operands)})"
+        elif opcode in {"collide_sdf_position", "collide_sdf_velocity"}:
+            try:
+                interface_index = self._volume_interfaces[immediate["interface"]]
+            except KeyError as exc:
+                raise GpuParticleCompileError(
+                    f"GPU kernel references unknown SDF interface {immediate['interface']!r}"
+                ) from exc
+            inverted = "true" if immediate["inverted"] else "false"
+            expression = (
+                f"inx_{opcode}_{interface_index}({', '.join(operands)}, {inverted})"
+            )
         elif opcode == "export_attribute":
             self._exports[immediate["attribute"]] = operands[0]
             return
@@ -1565,7 +1576,7 @@ def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
 
 def _data_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
     layout = _point_cache_layout(emitter)
-    layout.update(_vector_field_layout(emitter))
+    layout.update(_volume_interface_layout(emitter))
     return layout
 
 
@@ -1634,38 +1645,61 @@ def _point_cache_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
     }
 
 
-def _vector_field_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
+def _volume_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
     interfaces = {
         interface.stable_id: interface
         for interface in emitter.data_interfaces
         if isinstance(interface, VectorField)
     }
-    sampled: set[str] = set()
+    sdf_interfaces = {
+        interface.stable_id: interface
+        for interface in emitter.data_interfaces
+        if isinstance(interface, SdfVolume)
+    }
+    sampled: dict[str, str] = {}
     for function in (emitter.init, emitter.update, emitter.rendering):
         for instruction in function.instructions:
             if instruction.opcode != "sample_vector_field":
+                if instruction.opcode not in {
+                    "collide_sdf_position",
+                    "collide_sdf_velocity",
+                }:
+                    continue
+                stable_id = instruction.immediate_dict()["interface"]
+                if stable_id not in sdf_interfaces:
+                    raise GpuParticleCompileError(
+                        f"GPU kernel references unknown SDF interface {stable_id!r}"
+                    )
+                sampled[stable_id] = "sdf"
                 continue
             stable_id = instruction.immediate_dict()["interface"]
             if stable_id not in interfaces:
                 raise GpuParticleCompileError(
                     f"GPU kernel references unknown vector field interface {stable_id!r}"
                 )
-            sampled.add(stable_id)
+            sampled[stable_id] = "vector_field"
     if len(sampled) > 15:
         raise GpuParticleCompileError(
-            "GPU particle emitters currently support at most fifteen sampled VectorField interfaces"
+            "GPU particle emitters currently support at most fifteen sampled volume interfaces"
         )
     return {
-        "vector_field_metadata_binding": 0,
-        "vector_field_stride_words": 32,
-        "vector_fields": [
-            {
+        "volume_metadata_binding": 0,
+        "volume_stride_words": 32,
+        "volume_interfaces": [
+            ({
+                "kind": sampled[stable_id],
                 "stable_id": stable_id,
                 "interface_index": index,
                 "texture_binding": index + 1,
                 "boundary": interfaces[stable_id].boundary.value,
                 "filtering": interfaces[stable_id].filtering.value,
-            }
+            } if sampled[stable_id] == "vector_field" else {
+                "kind": "sdf",
+                "stable_id": stable_id,
+                "interface_index": index,
+                "texture_binding": index + 1,
+                "filtering": sdf_interfaces[stable_id].filtering.value,
+            })
             for index, stable_id in enumerate(sorted(sampled))
         ],
     }
@@ -1999,26 +2033,26 @@ def _point_cache_glsl(layout: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _vector_field_glsl(layout: dict[str, Any]) -> str:
-    vector_fields = layout.get("vector_fields", ())
-    if not vector_fields:
+def _volume_interface_glsl(layout: dict[str, Any]) -> str:
+    interfaces = layout.get("volume_interfaces", ())
+    if not interfaces:
         return ""
-    stride = int(layout["vector_field_stride_words"])
+    stride = int(layout["volume_stride_words"])
     lines = [
-        "layout(std430, set = 2, binding = 0) readonly buffer InxVectorFieldMetadata { uint inx_vf_meta[]; };"
+        "layout(std430, set = 2, binding = 0) readonly buffer InxVolumeMetadata { uint inx_volume_meta[]; };"
     ]
-    for interface in vector_fields:
+    for interface in interfaces:
         index = int(interface["interface_index"])
         base = index * stride
         lines.extend(
             (
-                f"layout(set = 2, binding = {int(interface['texture_binding'])}) uniform sampler3D inx_vf_texture_{index};",
-                f"mat4 inx_vf_simulation_to_field_{index}() {{",
+                f"layout(set = 2, binding = {int(interface['texture_binding'])}) uniform sampler3D inx_volume_texture_{index};",
+                f"mat4 inx_volume_simulation_to_field_{index}() {{",
                 "    return mat4(",
                 *(
                     "        vec4("
                     + ", ".join(
-                        f"uintBitsToFloat(inx_vf_meta[{base + column * 4 + row}u])"
+                        f"uintBitsToFloat(inx_volume_meta[{base + column * 4 + row}u])"
                         for row in range(4)
                     )
                     + (")," if column < 3 else ")")
@@ -2026,12 +2060,12 @@ def _vector_field_glsl(layout: dict[str, Any]) -> str:
                 ),
                 "    );",
                 "}",
-                f"mat3 inx_vf_field_to_simulation_{index}() {{",
+                f"mat3 inx_volume_direction_to_simulation_{index}() {{",
                 "    return mat3(",
                 *(
                     "        vec3("
                     + ", ".join(
-                        f"uintBitsToFloat(inx_vf_meta[{base + 16 + column * 4 + row}u])"
+                        f"uintBitsToFloat(inx_volume_meta[{base + 16 + column * 4 + row}u])"
                         for row in range(3)
                     )
                     + (")," if column < 2 else ")")
@@ -2039,19 +2073,64 @@ def _vector_field_glsl(layout: dict[str, Any]) -> str:
                 ),
                 "    );",
                 "}",
-                f"vec3 inx_sample_vector_field_{index}(vec3 simulation_position) {{",
-                f"    vec3 uvw = (inx_vf_simulation_to_field_{index}() * vec4(simulation_position, 1.0)).xyz;",
             )
         )
-        if interface["boundary"] == "zero":
-            lines.append(
-                "    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return vec3(0.0);"
+        if interface["kind"] == "vector_field":
+            lines.extend(
+                (
+                    f"vec3 inx_sample_vector_field_{index}(vec3 simulation_position) {{",
+                    f"    vec3 uvw = (inx_volume_simulation_to_field_{index}() * vec4(simulation_position, 1.0)).xyz;",
+                )
             )
+            if interface["boundary"] == "zero":
+                lines.append(
+                    "    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return vec3(0.0);"
+                )
+            lines.extend(
+                (
+                    f"    vec3 value = texture(inx_volume_texture_{index}, uvw).xyz;",
+                    f"    float scale = uintBitsToFloat(inx_volume_meta[{base + 28}u]);",
+                    f"    return inx_volume_direction_to_simulation_{index}() * value * scale;",
+                    "}",
+                )
+            )
+            continue
         lines.extend(
             (
-                f"    vec3 value = texture(inx_vf_texture_{index}, uvw).xyz;",
-                f"    float scale = uintBitsToFloat(inx_vf_meta[{base + 28}u]);",
-                f"    return inx_vf_field_to_simulation_{index}() * value * scale;",
+                f"bool inx_sample_sdf_{index}(vec3 simulation_position, bool inverted, out float distance_value, out vec3 normal) {{",
+                f"    vec3 field_position = (inx_volume_simulation_to_field_{index}() * vec4(simulation_position, 1.0)).xyz;",
+                "    vec3 uvw = field_position + vec3(0.5);",
+                "    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return false;",
+                f"    ivec3 dimensions = textureSize(inx_volume_texture_{index}, 0);",
+                "    vec3 texel = vec3(1.0) / vec3(dimensions);",
+                f"    float dx = texture(inx_volume_texture_{index}, clamp(uvw + vec3(texel.x, 0.0, 0.0), vec3(0.0), vec3(1.0))).r",
+                f"             - texture(inx_volume_texture_{index}, clamp(uvw - vec3(texel.x, 0.0, 0.0), vec3(0.0), vec3(1.0))).r;",
+                f"    float dy = texture(inx_volume_texture_{index}, clamp(uvw + vec3(0.0, texel.y, 0.0), vec3(0.0), vec3(1.0))).r",
+                f"             - texture(inx_volume_texture_{index}, clamp(uvw - vec3(0.0, texel.y, 0.0), vec3(0.0), vec3(1.0))).r;",
+                f"    float dz = texture(inx_volume_texture_{index}, clamp(uvw + vec3(0.0, 0.0, texel.z), vec3(0.0), vec3(1.0))).r",
+                f"             - texture(inx_volume_texture_{index}, clamp(uvw - vec3(0.0, 0.0, texel.z), vec3(0.0), vec3(1.0))).r;",
+                "    vec3 field_gradient = vec3(dx / (2.0 * texel.x), dy / (2.0 * texel.y), dz / (2.0 * texel.z));",
+                f"    vec3 transformed = inx_volume_direction_to_simulation_{index}() * field_gradient;",
+                "    float normal_length = length(transformed);",
+                "    normal = normal_length > 1.0e-6 ? transformed / normal_length : vec3(0.0, 1.0, 0.0);",
+                f"    distance_value = texture(inx_volume_texture_{index}, uvw).r * uintBitsToFloat(inx_volume_meta[{base + 28}u]);",
+                "    if (inverted) { distance_value = -distance_value; normal = -normal; }",
+                "    return true;",
+                "}",
+                f"vec3 inx_collide_sdf_position_{index}(vec3 position, vec3 velocity, float radius, float restitution, float friction, bool inverted) {{",
+                "    float distance_value; vec3 normal;",
+                f"    if (!inx_sample_sdf_{index}(position, inverted, distance_value, normal)) return position;",
+                "    float penetration = max(radius, 0.0) - distance_value;",
+                "    return penetration > 0.0 ? position + normal * penetration : position;",
+                "}",
+                f"vec3 inx_collide_sdf_velocity_{index}(vec3 position, vec3 velocity, float radius, float restitution, float friction, bool inverted) {{",
+                "    float distance_value; vec3 normal;",
+                f"    if (!inx_sample_sdf_{index}(position, inverted, distance_value, normal)) return velocity;",
+                "    float normal_speed = dot(velocity, normal);",
+                "    if (distance_value >= max(radius, 0.0) || normal_speed >= 0.0) return velocity;",
+                "    vec3 tangent = velocity - normal * normal_speed;",
+                "    return tangent * (1.0 - clamp(friction, 0.0, 1.0))",
+                "         - normal * normal_speed * clamp(restitution, 0.0, 1.0);",
                 "}",
             )
         )
@@ -2071,7 +2150,7 @@ def _shader_prelude(
         part
         for part in (
             _point_cache_glsl(data_interface_layout),
-            _vector_field_glsl(data_interface_layout),
+            _volume_interface_glsl(data_interface_layout),
         )
         if part
     )

@@ -1,4 +1,4 @@
-@shader_id: lib/noise
+@shader_id: Lib Noise
 
 // ============================================================================
 // lib/noise.glsl — Procedural noise functions
@@ -6,7 +6,7 @@
 // Full-coverage noise library matching Unity ShaderGraph node library.
 // Provides: hash, value noise (2D/3D), gradient/Perlin noise (2D/3D),
 // simplex noise (2D/3D), Voronoi with cells (2D/3D), FBM, domain warp.
-// Usage: @import: lib/noise
+// Usage: @import: Lib Noise
 // ============================================================================
 
 // ============================================================================

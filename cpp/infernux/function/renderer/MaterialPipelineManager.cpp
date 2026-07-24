@@ -89,16 +89,19 @@ VkRenderPass MaterialPipelineManager::BuildCompatibleRenderPass(const MaterialPa
         VkAttachmentDescription depthAttachment{};
         depthAttachment.format = rhi::ToVkFormat(pipeline.depthFormat);
         depthAttachment.samples = samples;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.loadOp = pipeline.depthReadOnly ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthAttachment.initialLayout =
+            pipeline.depthReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAttachment.finalLayout = pipeline.depthReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                             : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         attachments.push_back(depthAttachment);
 
         depthRef.attachment = static_cast<uint32_t>(attachments.size() - 1);
-        depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthRef.layout = pipeline.depthReadOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                 : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     VkSubpassDescription subpass{};
@@ -274,6 +277,7 @@ void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
     // already destroyed by ShaderProgramCache::Shutdown() above — do NOT
     // destroy them again here (double-free).
     m_renderDataMap.clear();
+    m_failedForwardPipelineHashes.clear();
 
     // Destroy Vulkan pipeline cache
     if (m_vkPipelineCache != VK_NULL_HANDLE) {
@@ -427,8 +431,21 @@ MaterialPipelineManager::GetOrCreatePassRenderData(std::shared_ptr<InxMaterial> 
     const ShaderProgramVariantKey programKey{program.GetProgramKey(), program.GetCompileTarget()};
     MaterialPassRenderDataKey key{material->GetMaterialKey(), programKey, pipeline, material->GetRenderState().Hash()};
     auto existing = m_passRenderDataMap.find(key);
-    if (existing != m_passRenderDataMap.end() && existing->second && existing->second->isValid)
-        return existing->second.get();
+    if (existing != m_passRenderDataMap.end() && existing->second && existing->second->isValid) {
+        auto &cached = *existing->second;
+        if (cached.shaderProgram == &program && cached.pipelineLayout == program.GetPipelineLayout()) {
+            // Pass pipelines borrow set 0 from the Forward generation. Refresh
+            // that borrowed handle on every cache hit so an unusual invalidation
+            // order cannot resurrect a retired descriptor.
+            cached.material = material;
+            cached.descriptorSet = forward->descriptorSet;
+            return &cached;
+        }
+
+        const VkPipeline stalePipeline = cached.pipeline;
+        m_passRenderDataMap.erase(existing);
+        RetirePipelineIfUnreferenced(stalePipeline);
+    }
 
     auto data = std::make_unique<MaterialPassRenderData>();
     data->key = key;
@@ -476,14 +493,16 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     }
 
     const std::string name = material->GetMaterialKey();
+    size_t currentHash = material->GetPipelineHash();
+    currentHash = FoldPassPipelineHash(currentHash, GetDefaultPassPipelineDescriptor(),
+                                       ShaderProgramVariantKey{programKey, ShaderCompileTarget::Forward});
 
-    // Check if already exists and valid
+    // A changed configuration is prepared transactionally below. The current
+    // generation stays active until both the new pipeline and descriptor set
+    // have been created successfully.
     auto it = m_renderDataMap.find(name);
+    MaterialRenderData *lastKnownGood = nullptr;
     if (it != m_renderDataMap.end()) {
-        size_t currentHash = material->GetPipelineHash();
-        currentHash = FoldPassPipelineHash(currentHash, GetDefaultPassPipelineDescriptor(),
-                                           ShaderProgramVariantKey{programKey, ShaderCompileTarget::Forward});
-
         if (it->second->isValid) {
             if (it->second->pipelineHash == currentHash) {
                 // Sync Vulkan handles to the (possibly new) material object.
@@ -494,16 +513,15 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
                 it->second->material = material; // update cached reference
                 return it->second.get();
             }
-            INXLOG_INFO("Material '", name, "' config changed, recreating pipeline");
-
-            // Immediately clear stale Vulkan handles from the material.
-            // If recreation fails below, the draw code will see pipeline == VK_NULL_HANDLE
-            // and correctly fall back to the error material instead of rendering with
-            // the old (now-incorrect) pipeline/descriptor set.
-            ClearForwardPassHandles(material.get());
-            it->second->isValid = false;
-            // Update stored hash so we know when the user changes config again
-            it->second->pipelineHash = currentHash;
+            lastKnownGood = it->second.get();
+            const auto failed = m_failedForwardPipelineHashes.find(name);
+            if (failed != m_failedForwardPipelineHashes.end() && failed->second == currentHash) {
+                SyncMaterialForwardPass(material.get(), lastKnownGood->pipeline, lastKnownGood->pipelineLayout,
+                                        lastKnownGood->descriptorSet, lastKnownGood->shaderProgram);
+                lastKnownGood->material = material;
+                return lastKnownGood;
+            }
+            INXLOG_INFO("Material '", name, "' config changed, preparing replacement pipeline");
         } else {
             // Render data exists but is invalid (previous creation attempt failed).
             // Only retry if the material config actually changed (user might have fixed it).
@@ -512,50 +530,55 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
                 return nullptr;
             }
             INXLOG_INFO("Material '", name, "' config changed after failure, retrying pipeline creation");
-            it->second->pipelineHash = currentHash;
         }
     }
+
+    const auto keepLastKnownGood = [&]() -> MaterialRenderData * {
+        m_failedForwardPipelineHashes[name] = currentHash;
+        if (!lastKnownGood) {
+            auto failed = m_renderDataMap.find(name);
+            if (failed == m_renderDataMap.end()) {
+                auto failedData = std::make_unique<MaterialRenderData>();
+                failedData->material = material;
+                failedData->pipelineHash = currentHash;
+                failedData->programKey = programKey;
+                failedData->isValid = false;
+                m_renderDataMap[name] = std::move(failedData);
+            } else {
+                failed->second->material = material;
+                failed->second->pipelineHash = currentHash;
+                failed->second->programKey = programKey;
+                failed->second->isValid = false;
+            }
+            ClearForwardPassHandles(material.get());
+            return nullptr;
+        }
+        SyncMaterialForwardPass(material.get(), lastKnownGood->pipeline, lastKnownGood->pipelineLayout,
+                                lastKnownGood->descriptorSet, lastKnownGood->shaderProgram);
+        lastKnownGood->material = material;
+        return lastKnownGood;
+    };
 
     // Get or create shader program (with reflection)
     ShaderProgram *program = m_shaderProgramCache->GetOrCreateProgram(programKey, vertShaderCode, fragShaderCode);
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("Failed to get shader program for material: ", name);
-        // Store an invalid render data entry so subsequent frames can detect
-        // "already failed" and skip silently (no per-frame spam).
-        if (m_renderDataMap.find(name) == m_renderDataMap.end()) {
-            auto failedData = std::make_unique<MaterialRenderData>();
-            failedData->material = material;
-            failedData->pipelineHash =
-                FoldPassPipelineHash(material->GetPipelineHash(), GetDefaultPassPipelineDescriptor(),
-                                     ShaderProgramVariantKey{programKey, ShaderCompileTarget::Forward});
-            failedData->programKey = programKey;
-            failedData->isValid = false;
-            m_renderDataMap[name] = std::move(failedData);
-        }
-        return nullptr;
+        return keepLastKnownGood();
     }
 
     // Create new render data
     auto renderData = std::make_unique<MaterialRenderData>();
     renderData->material = material;
-    renderData->pipelineHash = material->GetPipelineHash();
-    renderData->pipelineHash = FoldPassPipelineHash(renderData->pipelineHash, GetDefaultPassPipelineDescriptor(),
-                                                    ShaderProgramVariantKey{programKey, ShaderCompileTarget::Forward});
+    renderData->pipelineHash = currentHash;
     renderData->programKey = programKey;
     renderData->shaderProgram = program;
     renderData->vertModule = program->GetVertexModule();
     renderData->fragModule = program->GetFragmentModule();
     renderData->pipelineLayout = program->GetPipelineLayout();
 
-    // Create or get material descriptor set
-    renderData->materialDescSet = m_descriptorManager.GetOrCreateDescriptorSet(
-        *material, *program, sceneUBO, sceneUBOSize, lightingUBO, lightingUBOSize);
-
-    if (renderData->materialDescSet) {
-        renderData->descriptorSet = renderData->materialDescSet->descriptorSet;
-    }
-
-    // Check pipeline cache first (use shader-based key)
+    // Build the pipeline before touching the descriptor cache. Replacing a
+    // descriptor retires the previous set, so descriptor mutation cannot be
+    // allowed to precede a pipeline creation that may fail.
     size_t pipelineKey = renderData->pipelineHash;
     VkPipeline cachedPipeline = GetCachedPipeline(pipelineKey);
 
@@ -569,7 +592,7 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
 
         if (renderData->pipeline == VK_NULL_HANDLE) {
             INXLOG_ERROR("Failed to create pipeline for material: ", name);
-            return nullptr;
+            return keepLastKnownGood();
         }
 
         renderData->isValid = true;
@@ -585,7 +608,18 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
         m_pipelineCache[pipelineKey] = renderData->pipeline;
     }
 
-    // Update material with pipeline info
+    renderData->materialDescSet = m_descriptorManager.GetOrCreateDescriptorSet(
+        *material, *program, sceneUBO, sceneUBOSize, lightingUBO, lightingUBOSize);
+    if (!renderData->materialDescSet || renderData->materialDescSet->descriptorSet == VK_NULL_HANDLE) {
+        INXLOG_ERROR("Failed to create descriptor set for material: ", name);
+        return keepLastKnownGood();
+    }
+    renderData->descriptorSet = renderData->materialDescSet->descriptorSet;
+
+    // Commit only after the full replacement is valid. Semantic pass entries
+    // borrow Forward set 0 and are invalidated at this same commit point.
+    RemovePassRenderData(name);
+    m_failedForwardPipelineHashes.erase(name);
     SyncMaterialForwardPass(material.get(), renderData->pipeline, renderData->pipelineLayout, renderData->descriptorSet,
                             program);
 
@@ -616,6 +650,8 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(ShaderProgram *pro
         effectiveState.depthTestEnable = pipelineDesc.depthFormat != rhi::PixelFormat::Undefined;
         effectiveState.depthWriteEnable = pipelineDesc.depthFormat != rhi::PixelFormat::Undefined;
     }
+    if (pipelineDesc.depthReadOnly)
+        effectiveState.depthWriteEnable = false;
 
     // Debug log the cull mode being used
     const char *cullModeStr = "UNKNOWN";
@@ -959,6 +995,7 @@ void MaterialPipelineManager::RetirePipelineIfUnreferenced(VkPipeline pipeline)
 
 void MaterialPipelineManager::RemoveRenderData(const std::string &materialName)
 {
+    m_failedForwardPipelineHashes.erase(materialName);
     RemovePassRenderData(materialName);
     // Also remove the cached descriptor set so that pipeline re-creation
     // builds a fresh one with current texture bindings (avoids stale refs).

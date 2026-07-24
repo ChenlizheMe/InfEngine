@@ -19,7 +19,7 @@ from Infernux.graph.expression_ir import (
 from Infernux.graph.types import AssetReference, TypeRef, ValueType
 
 from .asset import EmitterSettings, ParticleAttribute, ParticleGraphAsset
-from .data_interface import ParticleDataInterface
+from .data_interface import ParticleDataInterface, SdfVolume
 from .nodes import particle_event_output_type_id, particle_graph_node_definitions
 
 
@@ -555,7 +555,7 @@ class ParticleGraphCompiler:
                 f"particle ribbon output {invalid_ribbon_uv.output_id!r} requires uv_mode "
                 "'stretch' or 'repeat' and a finite positive uv_scale"
             )
-        collision_opcodes = {"collision.plane", "collision.sphere"}
+        collision_opcodes = {"collision.plane", "collision.sphere", "collision.sdf"}
         collision_indices = [
             index
             for index, operation in enumerate(update.operations)
@@ -571,7 +571,11 @@ class ParticleGraphCompiler:
         for operation in (update.operations[index] for index in collision_indices):
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
-            label = "Plane Collision" if operation.opcode == "collision.plane" else "Sphere Collision"
+            label = {
+                "collision.plane": "Plane Collision",
+                "collision.sphere": "Sphere Collision",
+                "collision.sdf": "SDF Collision",
+            }[operation.opcode]
             if operation.opcode == "collision.plane":
                 normal = parameters["normal"]
                 if "normal" not in bindings and (
@@ -581,8 +585,25 @@ class ParticleGraphCompiler:
                 ):
                     raise ParticleCompileError("Plane Collision normal must be non-zero")
                 radius_names = ("radius",)
-            else:
+            elif operation.opcode == "collision.sphere":
                 radius_names = ("sphere_radius", "particle_radius")
+            else:
+                interface_id = parameters["interface"]
+                interface = next(
+                    (
+                        value
+                        for value in emitter.data_interfaces
+                        if value.stable_id == interface_id
+                    ),
+                    None,
+                )
+                if not isinstance(interface, SdfVolume):
+                    raise ParticleCompileError(
+                        f"SDF Collision references unknown SdfVolume interface {interface_id!r}"
+                    )
+                if type(parameters["inverted"]) is not bool:
+                    raise ParticleCompileError("SDF Collision inverted must be a boolean")
+                radius_names = ("particle_radius",)
             for name in (*radius_names, "restitution", "friction"):
                 if name in bindings:
                     continue

@@ -1,8 +1,11 @@
 #version 450
 
-@shader_id: particle_unlit
-@shading_model: unlit
+@shader_id: Particle Unlit
+@shading_model: Unlit
 @queue: 3000
+@blend: alpha
+@depth_write: false
+@cull: none
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 @property: texSampler, Texture2D, white
 @property: softness, Float, 0.18

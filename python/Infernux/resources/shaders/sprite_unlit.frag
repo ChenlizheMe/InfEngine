@@ -1,7 +1,7 @@
 #version 450
 
-@shader_id: sprite_unlit
-@shading_model: unlit
+@shader_id: Sprite Unlit
+@shading_model: Unlit
 @queue: 2000
 @cull: none
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]

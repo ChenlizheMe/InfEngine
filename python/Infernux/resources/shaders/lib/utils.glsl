@@ -1,13 +1,13 @@
-@shader_id: lib/utils
+@shader_id: Lib Utils
 
-@import: lib/common
-@import: lib/color
-@import: lib/noise
-@import: lib/shapes
-@import: lib/uv
-@import: lib/texture_utils
-@import: lib/lighting_utils
-@import: lib/vertex_utils
+@import: Lib Common
+@import: Lib Color
+@import: Lib Noise
+@import: Lib Shapes
+@import: Lib UV
+@import: Lib Texture Utils
+@import: Lib Lighting Utils
+@import: Lib Vertex Utils
 
 // ============================================================================
 // lib/utils.glsl — General-purpose shader utility toolkit
@@ -16,7 +16,7 @@
 // No UBO or varying dependencies — works in ANY shader type
 // (surface, fullscreen, post-processing, compute, etc.)
 //
-// Usage: @import: lib/utils
+// Usage: @import: Lib Utils
 //
 // Includes:
 //   lib/common          — constants, remap, saturate, comparison, wave, etc.
@@ -28,7 +28,7 @@
 //   lib/lighting_utils  — fresnel, GGX, Cook-Torrance, rim, attenuation, SSS
 //   lib/vertex_utils    — billboard, wind, displacement, Gerstner wave, morph
 //
-// For individual imports, use the specific library (e.g. @import: lib/noise).
+// For individual imports, use the specific library (e.g. @import: Lib Noise).
 // ============================================================================
 
 // All constants (PI, EPSILON, etc.) and utility functions (saturate, etc.)

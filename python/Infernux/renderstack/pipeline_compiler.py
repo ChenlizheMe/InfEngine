@@ -42,7 +42,7 @@ class _ImageAccumulator:
                 render_pass.set_texture("_BaseTex", self.current)
                 render_pass.set_texture("_LayerTex", image)
                 render_pass.write_color(target)
-                render_pass.fullscreen_quad("route_alpha_composite")
+                render_pass.fullscreen_quad("Route Alpha Composite")
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
@@ -53,7 +53,7 @@ class _ImageAccumulator:
                 render_pass.set_texture("_BaseTex", self.current)
                 render_pass.set_texture("_AdditiveTex", image)
                 render_pass.write_color(target)
-                render_pass.fullscreen_quad("route_additive_composite")
+                render_pass.fullscreen_quad("Route Additive Composite")
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
@@ -65,7 +65,7 @@ class _ImageAccumulator:
                 render_pass.set_texture("_BaseTex", image)
                 render_pass.set_texture("_LayerTex", self.current)
                 render_pass.write_color(target)
-                render_pass.fullscreen_quad("route_alpha_composite")
+                render_pass.fullscreen_quad("Route Alpha Composite")
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
@@ -440,7 +440,7 @@ def _compile_route(
             with graph.add_pass("PreserveOriginal") as render_pass:
                 render_pass.set_texture("_SourceTex", route_color)
                 render_pass.write_color(original_color)
-                render_pass.fullscreen_quad("fullscreen_blit")
+                render_pass.fullscreen_quad("Fullscreen Blit")
 
     resources = _effect_resources(route_color, depth, shadow_map)
     for stage in route_stages:
@@ -462,7 +462,7 @@ def _compile_route(
             render_pass.set_texture("_OriginalTex", original_color)
             render_pass.set_texture("_ProcessedTex", route_color)
             render_pass.write_color(additive)
-            render_pass.fullscreen_quad("route_additive_delta")
+            render_pass.fullscreen_quad("Route Additive Delta")
     return _RouteContribution(color=original_color, additive=additive)
 
 
@@ -591,7 +591,7 @@ def _commit_scene_to_camera(graph, scene: _ImageAccumulator, camera_color) -> No
     with graph.add_pass("CommitSceneColor") as render_pass:
         render_pass.set_texture("_SourceTex", previous_current)
         render_pass.write_color(camera_color)
-        render_pass.fullscreen_quad("fullscreen_blit")
+        render_pass.fullscreen_quad("Fullscreen Blit")
     scene.current = camera_color
     scene.alternate = previous_current
 

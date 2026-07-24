@@ -1,6 +1,6 @@
 #version 450
 
-@shader_id: shadow
+@shader_id: Shadow
 @pass_tag: shadow
 @hidden
 

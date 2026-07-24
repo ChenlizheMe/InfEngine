@@ -1145,9 +1145,11 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("toggle_build_settings", &MenuBarPanel::toggleBuildSettings)
         .def_readwrite("toggle_preferences", &MenuBarPanel::togglePreferences)
         .def_readwrite("toggle_physics_layer_matrix", &MenuBarPanel::togglePhysicsLayerMatrix)
+        .def_readwrite("toggle_environment_settings", &MenuBarPanel::toggleEnvironmentSettings)
         .def_readwrite("is_build_settings_open", &MenuBarPanel::isBuildSettingsOpen)
         .def_readwrite("is_preferences_open", &MenuBarPanel::isPreferencesOpen)
         .def_readwrite("is_physics_layer_matrix_open", &MenuBarPanel::isPhysicsLayerMatrixOpen)
+        .def_readwrite("is_environment_settings_open", &MenuBarPanel::isEnvironmentSettingsOpen)
         .def_readwrite("translate", &MenuBarPanel::translate);
 
     // ── HierarchyPanel ─────────────────────────────────────────────────

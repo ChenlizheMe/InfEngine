@@ -1,5 +1,5 @@
 #version 450
-@shader_id: chromatic_aberration
+@shader_id: Chromatic Aberration
 @hidden
 
 // Chromatic Aberration post-process — RGB channel offset from center.

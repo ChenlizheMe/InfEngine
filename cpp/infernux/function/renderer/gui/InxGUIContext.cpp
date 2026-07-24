@@ -785,6 +785,80 @@ void InxGUIContext::EndTabItem()
     ImGui::EndTabItem();
 }
 
+namespace
+{
+// ─── Unity-style popup / menu chrome ─────────────────────────────────────
+// Context menus and utility popups used to inherit the compact global
+// spacing, producing cramped menus with a thin hover band. Every popup
+// opened through InxGUIContext gets consistent, em-based (DPI-proof)
+// padding, taller rows with contiguous hover highlight, and stronger
+// hover/active feedback colors. One stack entry per open popup/menu window
+// keeps Begin/End pairs balanced across nesting.
+struct PopupContentStyle
+{
+    int styleVars = 0;
+    int styleColors = 0;
+};
+std::vector<PopupContentStyle> s_popupContentStyleStack;
+
+// Pushed *before* Begin so the popup window latches the padding.
+// Returns the number of style vars to pop right after Begin.
+int PushPopupWindowChrome()
+{
+    const float em = ImGui::GetFontSize();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(em * 0.45f, em * 0.5f));
+    return 1;
+}
+
+// Pushed when the popup is open; popped in the matching End call.
+void PushPopupContentStyle()
+{
+    PopupContentStyle entry;
+    const float em = ImGui::GetFontSize();
+    // Taller rows: Selectable/MenuItem extend their hover band across the
+    // ItemSpacing gap, so a larger vertical spacing yields a contiguous,
+    // Unity-like highlight instead of thin strips.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(em * 0.5f, em * 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(em * 0.5f, em * 0.3f));
+    entry.styleVars = 2;
+
+    // Clearer hover / click feedback, derived from the active theme so any
+    // palette keeps its identity.
+    auto lift = [](ImVec4 color, float amount) {
+        color.x = color.x + (1.0f - color.x) * amount;
+        color.y = color.y + (1.0f - color.y) * amount;
+        color.z = color.z + (1.0f - color.z) * amount;
+        color.w = std::max(color.w, 1.0f);
+        return color;
+    };
+    const ImVec4 hovered = ImGui::GetStyleColorVec4(ImGuiCol_HeaderHovered);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, lift(hovered, 0.06f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, lift(hovered, 0.16f));
+    entry.styleColors = 2;
+
+    s_popupContentStyleStack.push_back(entry);
+}
+
+void PopPopupContentStyle()
+{
+    if (s_popupContentStyleStack.empty())
+        return;
+    const PopupContentStyle entry = s_popupContentStyleStack.back();
+    s_popupContentStyleStack.pop_back();
+    ImGui::PopStyleColor(entry.styleColors);
+    ImGui::PopStyleVar(entry.styleVars);
+}
+
+// Context menus get a Unity-like minimum width so entries and shortcuts
+// are not clipped into a narrow strip.
+void ApplyContextMenuMinWidth()
+{
+    const float em = ImGui::GetFontSize();
+    ImGui::SetNextWindowSizeConstraints(ImVec2(em * 14.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
+}
+
+} // namespace
+
 /* main menu / menus */
 bool InxGUIContext::BeginMainMenuBar()
 {
@@ -798,7 +872,13 @@ void InxGUIContext::EndMainMenuBar()
 
 bool InxGUIContext::BeginMenu(const std::string &label, bool enabled, const std::string &semanticId)
 {
+    // Submenus are separate popup windows: give them the same chrome as
+    // their parent context menu.
+    const int chromeVars = PushPopupWindowChrome();
     const bool open = ImGui::BeginMenu(label.c_str(), enabled);
+    ImGui::PopStyleVar(chromeVars);
+    if (open)
+        PushPopupContentStyle();
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("menu", label, enabled, semanticId, open);
     return open;
@@ -806,6 +886,7 @@ bool InxGUIContext::BeginMenu(const std::string &label, bool enabled, const std:
 
 void InxGUIContext::EndMenu()
 {
+    PopPopupContentStyle();
     ImGui::EndMenu();
 }
 
@@ -830,6 +911,7 @@ void InxGUIContext::EndChild()
 }
 
 /* popups & tooltips */
+
 void InxGUIContext::OpenPopup(const std::string &id)
 {
     ImGui::OpenPopup(id.c_str());
@@ -837,9 +919,18 @@ void InxGUIContext::OpenPopup(const std::string &id)
 
 bool InxGUIContext::BeginPopup(const std::string &id)
 {
+    // Panels that build context menus manually (OpenPopup + BeginPopup, e.g.
+    // "##HierarchyItemContext") name them accordingly; give those the same
+    // minimum width as the BeginPopupContext* variants.
+    if (id.find("Context") != std::string::npos || id.find("context") != std::string::npos)
+        ApplyContextMenuMinWidth();
+    const int chromeVars = PushPopupWindowChrome();
     const bool open = ImGui::BeginPopup(id.c_str());
-    if (open)
+    ImGui::PopStyleVar(chromeVars);
+    if (open) {
+        PushPopupContentStyle();
         RecordSemanticWindow("popup", id, id);
+    }
     return open;
 }
 
@@ -858,6 +949,9 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
 
     const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr, static_cast<ImGuiWindowFlags>(flags));
     if (open) {
+        // Modals are closed through the shared EndPopup wrapper, which pops
+        // one content-style entry — keep the stack balanced.
+        PushPopupContentStyle();
         ImGuiWindow *window = ImGui::GetCurrentWindow();
         // Docking preserves the display order of undocked windows even when
         // they are submitted before this popup. A modal must remain above
@@ -891,10 +985,15 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
 
 bool InxGUIContext::BeginPopupContextItem(const std::string &id, int mouseButton)
 {
+    ApplyContextMenuMinWidth();
+    const int chromeVars = PushPopupWindowChrome();
     const bool open =
         ImGui::BeginPopupContextItem(id.empty() ? nullptr : id.c_str(), ContextPopupFlagsForMouseButton(mouseButton));
-    if (open)
+    ImGui::PopStyleVar(chromeVars);
+    if (open) {
+        PushPopupContentStyle();
         RecordSemanticWindow("context_menu", id, id);
+    }
     return open;
 }
 
@@ -903,14 +1002,20 @@ bool InxGUIContext::BeginPopupContextWindow(const std::string &id, int mouseButt
     ImGuiPopupFlags flags = ContextPopupFlagsForMouseButton(mouseButton);
     if (noOpenOverItems)
         flags |= ImGuiPopupFlags_NoOpenOverItems;
+    ApplyContextMenuMinWidth();
+    const int chromeVars = PushPopupWindowChrome();
     const bool open = ImGui::BeginPopupContextWindow(id.empty() ? nullptr : id.c_str(), flags);
-    if (open)
+    ImGui::PopStyleVar(chromeVars);
+    if (open) {
+        PushPopupContentStyle();
         RecordSemanticWindow("context_menu", id, id);
+    }
     return open;
 }
 
 void InxGUIContext::EndPopup()
 {
+    PopPopupContentStyle();
     ImGui::EndPopup();
 }
 

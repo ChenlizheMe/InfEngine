@@ -1,6 +1,7 @@
 #include "ParticleGpuBillboardRenderer.h"
 
 #include <core/config/EngineConfig.h>
+#include <core/types/ColorSpace.h>
 #include <function/renderer/FrameDeletionQueue.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <nlohmann/json.hpp>
@@ -52,7 +53,11 @@ bool WriteMaterialProperty(std::vector<uint8_t> &bytes, const ShaderProgramPrope
         return WriteValue(bytes, offset, std::get<glm::vec3>(property.value));
     if ((binding.type == "Float4" || binding.type == "Color") &&
         (property.type == MaterialPropertyType::Float4 || property.type == MaterialPropertyType::Color)) {
-        return WriteValue(bytes, offset, std::get<glm::vec4>(property.value));
+        glm::vec4 value = std::get<glm::vec4>(property.value);
+        // Authored Color properties are sRGB; shading runs in linear space.
+        if (property.type == MaterialPropertyType::Color)
+            value = inx::color::SrgbToLinear(value);
+        return WriteValue(bytes, offset, value);
     }
     if (binding.type == "Int" && property.type == MaterialPropertyType::Int)
         return WriteValue(bytes, offset, std::get<int>(property.value));
@@ -96,7 +101,11 @@ bool WriteDefaultProperty(std::vector<uint8_t> &bytes, const ShaderProgramProper
     }
     if (binding.type == "Float4" || binding.type == "Color") {
         glm::vec4 result{};
-        return readFloatArray(&result[0], 4) && WriteValue(bytes, offset, result);
+        if (!readFloatArray(&result[0], 4))
+            return false;
+        if (binding.type == "Color")
+            result = inx::color::SrgbToLinear(result);
+        return WriteValue(bytes, offset, result);
     }
     if (binding.type == "Mat4") {
         glm::mat4 result{0.0f};
@@ -382,8 +391,12 @@ std::array<float, 4> ParticleGpuBillboardRenderer::ResolveMaterialTint() const n
     if (!property || (property->type != MaterialPropertyType::Color && property->type != MaterialPropertyType::Float4))
         return {1.0f, 1.0f, 1.0f, 1.0f};
     const auto *value = std::get_if<glm::vec4>(&property->value);
-    return value ? std::array<float, 4>{value->x, value->y, value->z, value->w}
-                 : std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f};
+    if (!value)
+        return {1.0f, 1.0f, 1.0f, 1.0f};
+    // Authored Color properties are sRGB; shading runs in linear space.
+    const glm::vec4 tint =
+        property->type == MaterialPropertyType::Color ? inx::color::SrgbToLinear(*value) : *value;
+    return {tint.x, tint.y, tint.z, tint.w};
 }
 
 float ParticleGpuBillboardRenderer::ResolveMaterialFloat(const char *name, float fallback) const noexcept

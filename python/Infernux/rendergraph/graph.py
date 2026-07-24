@@ -486,7 +486,7 @@ class RenderPassBuilder:
         to bind input textures before calling this method.
 
         Args:
-            shader: Fragment shader id (e.g. ``"bloom_prefilter"``).
+            shader: Fragment shader id (e.g. ``"Bloom Prefilter"``).
         """
         self._action = "fullscreen_quad"
         self._shader_name = shader
@@ -987,6 +987,11 @@ class RenderGraph:
         if not self.has_injection_point("after_post_process"):
             self.injection_point("after_post_process", resources=res)
 
+        # Display encode sits between scene post-processing and the overlay
+        # UI: scene color is linear, while ScreenUI colors are authored in
+        # display (sRGB) space and must not be re-encoded.
+        self.display_encode_section()
+
         if not self.has_pass("_ScreenUI_Overlay"):
             with self.add_pass("_ScreenUI_Overlay") as p:
                 p.write_color("color")
@@ -1001,6 +1006,30 @@ class RenderGraph:
                 outputs={"color"},
                 capabilities={"fullscreen"},
             )
+
+    def display_encode_section(self) -> None:
+        """Insert the built-in linear → sRGB display-encode passes.
+
+        The swapchain and the editor viewport are UNORM surfaces without
+        hardware sRGB encoding, so every pipeline must end with an explicit
+        display encode. Scene rendering and all post-process effects operate
+        in linear HDR; this is the single place where gamma is applied.
+
+        Idempotent: calling it twice (e.g. from ``screen_ui_section`` and the
+        RenderStack build safety net) inserts the passes only once.
+        """
+        if self.has_pass("_DisplayEncode"):
+            return
+
+        self.create_texture("_display_encode", format=Format.RGBA16_SFLOAT)
+        with self.add_pass("_DisplayEncode") as p:
+            p.set_texture("_SourceTex", "color")
+            p.write_color("_display_encode")
+            p.fullscreen_quad("Display Encode")
+        with self.add_pass("_DisplayEncode_Commit") as p:
+            p.set_texture("_SourceTex", "_display_encode")
+            p.write_color("color")
+            p.fullscreen_quad("Fullscreen Blit")
 
     # ---- Pass management ----
 

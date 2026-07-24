@@ -1,7 +1,7 @@
 #version 450
 
-@shader_id: unlit
-@shading_model: unlit
+@shader_id: Unlit
+@shading_model: Unlit
 @queue: 2000
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 @property: texSampler, Texture2D, white

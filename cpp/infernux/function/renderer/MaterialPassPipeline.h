@@ -20,6 +20,7 @@ struct MaterialPassPipelineDescriptor
     std::vector<rhi::PixelFormat> colorFormats;
     rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
     rhi::SampleCount samples = rhi::SampleCount::One;
+    bool depthReadOnly = false;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
@@ -31,6 +32,8 @@ struct MaterialPassPipelineDescriptor
                 return false;
         }
         if (depthFormat != rhi::PixelFormat::Undefined && !rhi::IsDepthFormat(depthFormat))
+            return false;
+        if (depthReadOnly && depthFormat == rhi::PixelFormat::Undefined)
             return false;
 
         switch (target) {
@@ -55,7 +58,7 @@ struct MaterialPassPipelineDescriptor
                            const MaterialPassPipelineDescriptor &rhs) noexcept
     {
         return lhs.target == rhs.target && lhs.colorFormats == rhs.colorFormats && lhs.depthFormat == rhs.depthFormat &&
-               lhs.samples == rhs.samples;
+               lhs.samples == rhs.samples && lhs.depthReadOnly == rhs.depthReadOnly;
     }
 
     friend bool operator!=(const MaterialPassPipelineDescriptor &lhs,
@@ -76,6 +79,7 @@ struct MaterialPassPipelineDescriptorHash
         combine(static_cast<size_t>(descriptor.target));
         combine(static_cast<size_t>(descriptor.samples));
         combine(static_cast<size_t>(descriptor.depthFormat));
+        combine(static_cast<size_t>(descriptor.depthReadOnly));
         combine(descriptor.colorFormats.size());
         for (const rhi::PixelFormat format : descriptor.colorFormats)
             combine(static_cast<size_t>(format));

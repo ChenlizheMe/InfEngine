@@ -622,6 +622,26 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             m_materialPipelineManager.RemoveRenderData(materialKey);
             forward = nullptr;
         }
+
+        const ShaderStagePair requestedStages{owner->GetVertShaderName(), owner->GetFragShaderName()};
+        const ShaderProgramArtifact *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
+        if (!requestedArtifact && m_shaderProgramArtifactResolver) {
+            m_shaderProgramArtifactResolver(owner);
+            requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
+        }
+        if (requestedArtifact && requestedArtifact->domain != ShaderProgramDomain::Mesh) {
+            const std::string rejectionKey = materialKey + "|" + requestedStages.ToString() + "|Mesh";
+            if (m_rejectedGeometryMaterialPrograms.insert(rejectionKey).second) {
+                // The refresh performs the single user-facing domain report.
+                // It deliberately leaves a complete previous generation live.
+                RefreshMaterialPipeline(owner, requestedStages.vertexShaderId, requestedStages.fragmentShaderId);
+            }
+            if (!forward || !forward->isValid || forward->descriptorSet == VK_NULL_HANDLE ||
+                !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet))
+                return {};
+            owner->ClearPipelineDirty();
+        }
+
         if (!forward || owner->IsPipelineDirty()) {
             const std::string &vertName = owner->GetVertShaderName();
             const std::string &fragName = owner->GetFragShaderName();
@@ -641,7 +661,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
         ShaderProgram *program = forward->shaderProgram;
         if (activePass.target != ShaderCompileTarget::Forward) {
-            const ShaderStagePair stages{owner->GetVertShaderName(), owner->GetFragShaderName()};
+            // Every semantic pass belongs to the same committed generation as
+            // Forward. The material may currently hold a rejected shader pair,
+            // so resolving from the mutable asset fields would mix two ABIs.
+            const ShaderStagePair &stages = forward->programKey.stages;
             const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
             if (!artifact && m_shaderProgramArtifactResolver) {
                 m_shaderProgramArtifactResolver(owner);

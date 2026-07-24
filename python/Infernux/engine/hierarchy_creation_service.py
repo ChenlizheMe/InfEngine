@@ -330,10 +330,14 @@ class HierarchyCreationService:
             ensure_visible = getattr(hp, "set_selected_object_by_id", None)
             if callable(ensure_visible):
                 ensure_visible(obj.id)
-            else:
-                callback = getattr(hp, "on_selection_changed", None)
-                if callback:
-                    callback(obj.id)
+            # The native panel skips its selection notification when the
+            # selection manager already holds the new id (we selected it
+            # right above), so the Inspector would never hear about the new
+            # object. Always fire the Python-side selection callback — it is
+            # idempotent and syncs Inspector, outline and event bus.
+            callback = getattr(hp, "on_selection_changed", None)
+            if callable(callback):
+                callback(obj.id)
 
     def _description_for(self, kind: str) -> str:
         if kind.startswith("primitive."):

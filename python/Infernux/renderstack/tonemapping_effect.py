@@ -1,9 +1,11 @@
 """
 ToneMappingEffect — HDR-to-LDR tone mapping post-processing effect.
 
-Maps linear HDR scene color into displayable LDR range. Should be the
+Compresses linear HDR scene color into linear LDR range. Should be the
 last effect in the post-process stack (runs at ``after_post_process``)
-so that bloom and other HDR effects are applied first.
+so that bloom and other HDR effects are applied first. The output stays
+linear; the built-in display-encode pass performs the final linear→sRGB
+conversion for the UNORM swapchain.
 
 Supported operators:
     - Reinhard
@@ -54,13 +56,7 @@ class ToneMappingEffect(FullScreenEffect):
         slider=False,
         tooltip="Pre-tonemap exposure multiplier",
     )
-    gamma: float = serialized_field(
-        default=2.2,
-        range=(1.0, 3.0),
-        drag_speed=0.01,
-        slider=False,
-        tooltip="Gamma correction exponent (2.2 = standard sRGB)",
-    )
+
     @staticmethod
     def _normalize_mode_value(value) -> ToneMappingMode:
         """Ensure the mode value is a valid ToneMappingMode enum member."""
@@ -81,8 +77,8 @@ class ToneMappingEffect(FullScreenEffect):
 
     def get_shader_list(self) -> List[str]:
         return [
-            "fullscreen_triangle",
-            "tonemapping",
+            "Fullscreen Triangle",
+            "Tonemapping",
         ]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
@@ -96,11 +92,10 @@ class ToneMappingEffect(FullScreenEffect):
             bus,
             output_name="_tonemap_out",
             pass_name="ToneMap_Apply",
-            shader_name="tonemapping",
+            shader_name="Tonemapping",
             format=Format.RGBA16_SFLOAT,
             params={
                 "mode": float(int(mode)),
                 "exposure": self.exposure,
-                "gamma": self.gamma,
             },
         )

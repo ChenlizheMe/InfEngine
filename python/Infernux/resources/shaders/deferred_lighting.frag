@@ -1,5 +1,5 @@
 #version 450
-@shader_id: deferred_lighting
+@shader_id: Deferred Lighting
 @hidden
 
 // Deferred lighting pass (pre-lit hybrid deferred).

@@ -1,5 +1,5 @@
 #version 450
-@shader_id: route_alpha_composite
+@shader_id: Route Alpha Composite
 @hidden
 
 // Premultiplied-alpha composition for isolated queue, layer, and stage images.

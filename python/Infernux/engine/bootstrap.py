@@ -39,7 +39,7 @@ from Infernux.engine.ui import panel_state as _panel_state
 _log = logging.getLogger("Infernux.bootstrap")
 
 _LAYOUT_VERSION = 5
-_TOTAL_STEPS = 12
+_TOTAL_STEPS = 13
 
 
 def _iter_project_material_paths(project_path: str):
@@ -149,6 +149,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Loading scene\u2026")
         self._load_initial_scene()
 
+        self._report_progress("Compiling builtin shaders\u2026")
+        self._prewarm_builtin_pipelines()
+
         self._report_progress("Prewarming material previews\u2026")
         self._prewarm_material_previews()
 
@@ -194,6 +197,34 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         # Match Unity's default UI text density more closely. Player bootstrap
         # uses the same base size; explicit project UIText sizes stay unchanged.
         self.engine.set_gui_font(_resources.engine_font_path, 18)
+
+    def _prewarm_builtin_pipelines(self):
+        """Compile builtin material shader programs during startup.
+
+        Without this, the first mesh drawn with a builtin material (e.g. the
+        first primitive created in a fresh session) pays the full glslang
+        compilation of every pass variant (Forward / Forward+ / GBuffer /
+        Shadow / Depth / Picking / Motion) synchronously on the render
+        thread — a multi-second stall. Moving it here folds the cost into
+        the splash screen, where the launcher already shows progress.
+        """
+        if not self.engine:
+            return
+        native = self.engine.get_native_engine()
+        if native is None:
+            return
+        try:
+            from Infernux.lib import AssetRegistry
+        except Exception as exc:
+            Debug.log_suppressed("EditorBootstrap.builtin_pipeline_prewarm.import", exc)
+            return
+        for name in ("DefaultLit", "SkyboxProcedural"):
+            try:
+                material = AssetRegistry.instance().get_builtin_material(name)
+                if material is not None:
+                    native.refresh_material_pipeline(material)
+            except Exception as exc:
+                Debug.log_suppressed(f"EditorBootstrap.builtin_pipeline_prewarm[{name}]", exc)
 
     def _prewarm_material_previews(self):
         """Prewarm material preview textures once at startup.

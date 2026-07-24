@@ -1038,6 +1038,8 @@ finally:
                                 if instruction.get("opcode") not in {
                                     "sample_point_cache",
                                     "sample_vector_field",
+                                    "collide_sdf_position",
+                                    "collide_sdf_velocity",
                                 }:
                                     continue
                                 immediates = dict(instruction.get("immediates", ()))
@@ -1052,6 +1054,9 @@ finally:
                                 reference = interface.get("cache")
                                 kind, extension = "PointCache", ".inxpcache"
                             elif interface.get("kind") == "vector_field":
+                                reference = interface.get("texture")
+                                kind, extension = "Texture", ".inxtex"
+                            elif interface.get("kind") == "sdf_volume":
                                 reference = interface.get("texture")
                                 kind, extension = "Texture", ".inxtex"
                             else:

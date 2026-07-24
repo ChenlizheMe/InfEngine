@@ -1,5 +1,5 @@
 ShaderInfo
 {
-    Name "particle_sprite"
+    Name "Particle Sprite"
     Capabilities [ParticleSprite]
 }

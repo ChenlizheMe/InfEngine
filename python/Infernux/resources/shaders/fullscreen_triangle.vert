@@ -1,5 +1,5 @@
 #version 450
-@shader_id: fullscreen_triangle
+@shader_id: Fullscreen Triangle
 @hidden
 
 // Shared fullscreen triangle vertex shader for all FullScreenEffect passes.

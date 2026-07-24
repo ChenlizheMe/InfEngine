@@ -8,6 +8,8 @@
 #include "TransformECSStore.h"
 #include "core/threading/JobSystem.h"
 #include "function/resources/AssetDependencyGraph.h"
+#include "function/resources/AssetRegistry/AssetRegistry.h"
+#include "function/resources/InxMaterial/InxMaterial.h"
 #include "platform/filesystem/DocumentStore.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -94,6 +96,7 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         "isPlaying",
         "objects",
         "mainCameraComponentId",
+        "environment",
     };
     for (const auto &[key, value] : document.items()) {
         (void)value;
@@ -127,6 +130,7 @@ struct SceneCommitToken::Impl
     bool isPlaying = false;
     bool hasStarted = false;
     uint64_t structureVersion = 0;
+    SceneEnvironmentSettings environment;
 };
 
 namespace
@@ -160,6 +164,7 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
     state.isPlaying = scene.m_isPlaying;
     state.hasStarted = scene.m_hasStarted;
     state.structureVersion = scene.m_structureVersion;
+    state.environment = scene.m_environment;
 
     const std::vector<GameObject *> objects = scene.GetAllObjects();
     std::vector<Component *> components;
@@ -250,6 +255,7 @@ bool SceneCommitToken::Rollback()
         scene.m_isPlaying = state.isPlaying;
         scene.m_hasStarted = state.hasStarted;
         scene.m_structureVersion = state.structureVersion;
+        scene.m_environment = state.environment;
         for (auto &root : scene.m_rootObjects)
             root->SetScene(&scene);
         RestoreSceneComponentRegistries(scene);
@@ -1137,6 +1143,7 @@ nlohmann::json Scene::SerializeDocument() const
     json j;
     j["name"] = m_name;
     j["isPlaying"] = m_isPlaying;
+    j["environment"] = m_environment.ToJson();
 
     // Serialize main camera reference via component_id (survives deserialization)
     if (m_mainCamera) {
@@ -1196,6 +1203,19 @@ std::string Scene::Serialize() const
     return DumpSceneDocument(SerializeDocument(), m_objectsById.size());
 }
 
+std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
+{
+    if (!m_environment.skyboxMaterialGuid.empty()) {
+        auto &registry = AssetRegistry::Instance();
+        auto material = registry.GetAsset<InxMaterial>(m_environment.skyboxMaterialGuid);
+        if (!material)
+            material = registry.LoadAsset<InxMaterial>(m_environment.skyboxMaterialGuid, ResourceType::Material);
+        if (material && !material->IsDeleted())
+            return material;
+    }
+    return AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+}
+
 bool Scene::DeserializeDocument(const nlohmann::json &j)
 {
     try {
@@ -1212,6 +1232,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         // IDs avoid publishing over live registry entries before validation succeeds.
         Scene staging(j["name"].get<std::string>());
         staging.m_isPlaying = j["isPlaying"].get<bool>();
+        if (j.contains("environment"))
+            staging.m_environment = SceneEnvironmentSettings::FromJson(j["environment"]);
         staging.m_rootObjects.reserve(j["objects"].size());
         ComponentPrototypeCache prototypeCache;
         prototypeCache.reserve(16);
@@ -1421,6 +1443,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
 
         m_name = std::move(staging.m_name);
         m_isPlaying = staging.m_isPlaying;
+        m_environment = staging.m_environment;
         m_pendingPyComponents = std::move(staging.m_pendingPyComponents);
         for (size_t i = 0; i < componentIdAssignments.size(); ++i) {
             auto &[component, componentId] = componentIdAssignments[i];

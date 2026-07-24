@@ -1,7 +1,7 @@
 #version 450
 
-@shader_id: error
-@shading_model: unlit
+@shader_id: Error
+@shading_model: Unlit
 @queue: 2000
 @hidden
 

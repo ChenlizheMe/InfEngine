@@ -504,7 +504,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                     with graph.add_pass("Commit") as render_pass:
                         render_pass.set_texture("_SourceTex", effect_color)
                         render_pass.write_color(stage_color)
-                        render_pass.fullscreen_quad("fullscreen_blit")
+                        render_pass.fullscreen_quad("Fullscreen Blit")
                 bus.set(COLOR_TEXTURE, stage_color)
 
         graph._effect_stage_callback = on_effect_stage
@@ -542,6 +542,13 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         # these points would never be injected.  Calling injection_point()
         # here triggers the callback so mounted effects are properly inserted.
         ensure_standard_post_process_points(graph)
+
+        # Built-in display encode: the swapchain and editor viewport are UNORM
+        # surfaces without hardware sRGB, so every pipeline must end with an
+        # explicit linear → sRGB encode. Pipelines with a ScreenUI section
+        # already inserted it before the overlay pass; this is the fallback
+        # for pipelines without one (idempotent).
+        graph.display_encode_section()
 
         # Validate: no injection point before first pass
         graph.validate_no_ip_before_first_pass()
@@ -633,6 +640,17 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             # rebuilt native graph falls back to the full description once.
             if not context.render_compiled(camera, self._graph_desc.source_revision):
                 context.render_with_graph(camera, self._graph_desc)
+                # The native graph may have re-recorded its passes from the
+                # description, whose push constants were baked at build time.
+                # Drop this graph's upload cache so any live effect edits made
+                # since then are collected and resent on the next frame.
+                if self._effect_upload_revisions:
+                    graph_id = int(getattr(context, "graph_instance_id", 0) or 0)
+                    stale_keys = [
+                        key for key in self._effect_upload_revisions if key[0] == graph_id
+                    ]
+                    for key in stale_keys:
+                        del self._effect_upload_revisions[key]
 
     def _collect_effect_parameter_updates(self, context):
         bindings = self._compiled_effect_bindings or ()

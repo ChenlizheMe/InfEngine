@@ -76,5 +76,16 @@ int main()
     differentSamples.samples = SampleCount::One;
     assert(differentSamples != forward);
     assert(MaterialPassPipelineDescriptorHash{}(differentSamples) != MaterialPassPipelineDescriptorHash{}(forward));
+
+    auto readOnlyDepth = forward;
+    readOnlyDepth.depthReadOnly = true;
+    assert(readOnlyDepth.IsValid());
+    assert(readOnlyDepth != forward);
+    assert(MaterialPassPipelineDescriptorHash{}(readOnlyDepth) != MaterialPassPipelineDescriptorHash{}(forward));
+
+    auto invalidReadOnlyDepth = forward;
+    invalidReadOnlyDepth.depthFormat = PixelFormat::Undefined;
+    invalidReadOnlyDepth.depthReadOnly = true;
+    assert(!invalidReadOnlyDepth.IsValid());
     return 0;
 }

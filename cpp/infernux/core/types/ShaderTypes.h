@@ -11,6 +11,19 @@ enum class ShaderProgramDomain : unsigned char
     Count,
 };
 
+[[nodiscard]] constexpr const char *ShaderProgramDomainName(ShaderProgramDomain domain) noexcept
+{
+    switch (domain) {
+    case ShaderProgramDomain::Mesh:
+        return "Mesh";
+    case ShaderProgramDomain::ParticleSprite:
+        return "ParticleSprite";
+    case ShaderProgramDomain::Count:
+        return "Count";
+    }
+    return "Unknown";
+}
+
 // ============================================================================
 // ShaderCompileTarget — identifies which rendering pass variant to compile for.
 //

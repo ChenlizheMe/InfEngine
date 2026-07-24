@@ -578,9 +578,20 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
                                     "stable_id": "unused",
                                     "texture": {"guid": "unused-guid", "path_hint": ""},
                                 },
+                                {
+                                    "kind": "sdf_volume",
+                                    "stable_id": "collision",
+                                    "texture": {"guid": "sdf-guid", "path_hint": ""},
+                                },
                             ],
                             "init": {"instructions": [sample("sample_point_cache", "points")]},
-                            "update": {"instructions": [sample("sample_vector_field", "wind")]},
+                            "update": {
+                                "instructions": [
+                                    sample("sample_vector_field", "wind"),
+                                    sample("collide_sdf_position", "collision"),
+                                    sample("collide_sdf_velocity", "collision"),
+                                ]
+                            },
                             "rendering": {"instructions": []},
                         }
                     ]
@@ -598,9 +609,13 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
     unused_artifact = (
         project / "Library" / "Artifacts" / "Texture" / "unused-guid.inxtex"
     )
+    sdf_artifact = (
+        project / "Library" / "Artifacts" / "Texture" / "sdf-guid.inxtex"
+    )
     for path, payload in (
         (point_artifact, b"point-cache"),
         (texture_artifact, b"vector-field"),
+        (sdf_artifact, b"signed-distance-field"),
         (unused_artifact, b"unused"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -612,6 +627,7 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
     shipped = final_dir / "Data" / "Library" / "Artifacts"
     assert (shipped / "PointCache" / point_artifact.name).read_bytes() == b"point-cache"
     assert (shipped / "Texture" / texture_artifact.name).read_bytes() == b"vector-field"
+    assert (shipped / "Texture" / sdf_artifact.name).read_bytes() == b"signed-distance-field"
     assert not (shipped / "Texture" / unused_artifact.name).exists()
 
 

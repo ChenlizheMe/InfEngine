@@ -182,6 +182,17 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap.engine.set_window_icon(_resources.icon_path)
 
+        # Window title: "Infernux{version} - {project name}", version taken
+        # from the installed package metadata (single source: pyproject.toml).
+        try:
+            from importlib.metadata import version as _pkg_version
+            _engine_version = _pkg_version("Infernux")
+        except Exception as _exc:
+            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            _engine_version = ""
+        _project_name = os.path.basename(resolved_path(project_path))
+        bootstrap.engine.set_window_title(f"Infernux{_engine_version} - {_project_name}")
+
         # Signal the launcher splash to begin its fade-out, then wait for it
         # to finish before revealing the engine window.
         _signal_engine_loaded()

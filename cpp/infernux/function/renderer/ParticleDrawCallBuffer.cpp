@@ -40,7 +40,7 @@ void ParticleDrawCallBuffer::SetBatch(uint64_t batchId, std::vector<ParticleInst
             material = AssetRegistry::Instance().LoadAsset<InxMaterial>(materialGuid, ResourceType::Material);
         if (!material)
             throw std::invalid_argument("particle material GUID could not be resolved");
-        if (material->GetVertShaderName() != "particle_billboard")
+        if (material->GetVertShaderName() != "Particle Billboard")
             throw std::invalid_argument("particle material must use the particle_billboard vertex shader");
     }
     if (!material)
@@ -87,7 +87,7 @@ void ParticleDrawCallBuffer::SetBatchInterleaved(uint64_t batchId, const float *
             material = AssetRegistry::Instance().LoadAsset<InxMaterial>(materialGuid, ResourceType::Material);
         if (!material)
             throw std::invalid_argument("particle material GUID could not be resolved");
-        if (material->GetVertShaderName() != "particle_billboard")
+        if (material->GetVertShaderName() != "Particle Billboard")
             throw std::invalid_argument("particle material must use the particle_billboard vertex shader");
     }
     if (!material)

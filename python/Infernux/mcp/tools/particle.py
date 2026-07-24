@@ -301,6 +301,109 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={"emitter_id": emitter_id, "values": values},
         )
 
+    @mcp.tool(name="particle_graph_add_data_interface")
+    def particle_graph_add_data_interface(
+        emitter_id: str, kind: str, name: str = ""
+    ) -> dict:
+        """Add a typed Data Interface to one ParticleGraph emitter."""
+
+        def _add():
+            panel = _require_particle_graph_panel()
+            interface = panel.add_authoring_data_interface(emitter_id, kind, name)
+            return {
+                "interface": interface,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_add_data_interface",
+            _add,
+            arguments={"emitter_id": emitter_id, "kind": kind, "name": name},
+        )
+
+    @mcp.tool(name="particle_graph_set_data_interface_asset")
+    def particle_graph_set_data_interface_asset(
+        emitter_id: str, interface_id: str, asset_path: str
+    ) -> dict:
+        """Set an imported source asset on a typed ParticleGraph Data Interface."""
+
+        def _set():
+            panel = _require_particle_graph_panel()
+            target = resolve_asset_path(project_path, asset_path)
+            interface = panel.set_authoring_data_interface_asset(
+                emitter_id, interface_id, target
+            )
+            return {
+                "interface": interface,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_set_data_interface_asset",
+            _set,
+            arguments={
+                "emitter_id": emitter_id,
+                "interface_id": interface_id,
+                "asset_path": asset_path,
+            },
+        )
+
+    @mcp.tool(name="particle_graph_patch_data_interface")
+    def particle_graph_patch_data_interface(
+        emitter_id: str, interface_id: str, values: dict
+    ) -> dict:
+        """Patch editable fields on one ParticleGraph Data Interface."""
+
+        def _patch():
+            panel = _require_particle_graph_panel()
+            interface = panel.patch_authoring_data_interface(
+                emitter_id, interface_id, values
+            )
+            return {
+                "interface": interface,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_patch_data_interface",
+            _patch,
+            arguments={
+                "emitter_id": emitter_id,
+                "interface_id": interface_id,
+                "values": values,
+            },
+        )
+
+    @mcp.tool(name="particle_graph_remove_data_interface")
+    def particle_graph_remove_data_interface(
+        emitter_id: str, interface_id: str
+    ) -> dict:
+        """Remove an unreferenced Data Interface from one ParticleGraph emitter."""
+
+        def _remove():
+            panel = _require_particle_graph_panel()
+            interface = panel.remove_authoring_data_interface(
+                emitter_id, interface_id
+            )
+            return {
+                "interface": interface,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_remove_data_interface",
+            _remove,
+            arguments={"emitter_id": emitter_id, "interface_id": interface_id},
+        )
+
     @mcp.tool(name="particle_graph_remove_emitter")
     def particle_graph_remove_emitter(emitter_id: str) -> dict:
         """Remove an emitter and event routes that reference it."""
@@ -966,6 +1069,56 @@ def _register_metadata() -> None:
         side_effects=["Records one Undo transaction, marks the document dirty, and republishes the draft."],
         recovery=["Use only field names returned in the emitter settings snapshot."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_add_data_interface",
+        summary="Add a typed Data Interface to a ParticleGraph emitter.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "data interface", "sdf", "vector field"],
+        aliases=["add particle data interface", "添加粒子数据接口"],
+        preconditions=[
+            "kind must be sdf_volume, vector_field, or point_cache.",
+            "The emitter stable ID must exist in the open ParticleGraph.",
+        ],
+        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
+        recovery=["Inspect emitter data_interfaces and retry with a current stable ID."],
+        next_suggested_tools=["particle_graph_set_data_interface_asset"],
+    )
+    register_tool_metadata(
+        "particle_graph_set_data_interface_asset",
+        summary="Bind an imported source asset to a typed ParticleGraph Data Interface.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "data interface", "asset"],
+        aliases=["bind particle data asset", "绑定粒子数据资产"],
+        preconditions=[
+            "SDF volumes require .inxsdf, vector fields require .inxvfield, and point caches require .pointcache.",
+            "The source asset must already be imported and have a GUID.",
+        ],
+        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
+        recovery=["Import the matching source asset, then retry with its Assets-relative path."],
+        next_suggested_tools=["particle_graph_patch_data_interface"],
+    )
+    register_tool_metadata(
+        "particle_graph_patch_data_interface",
+        summary="Patch editable transform and sampling fields on one Data Interface.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "data interface", "settings"],
+        aliases=["edit particle data interface", "修改粒子数据接口"],
+        preconditions=["Use only fields returned by particle_graph_inspect_editor."],
+        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
+        recovery=["Use particle_graph_set_data_interface_asset for resource references."],
+        next_suggested_tools=["particle_graph_set_node_property", "editor_save_document"],
+    )
+    register_tool_metadata(
+        "particle_graph_remove_data_interface",
+        summary="Remove an unreferenced Data Interface from one ParticleGraph emitter.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "data interface", "remove"],
+        aliases=["remove particle data interface", "移除粒子数据接口"],
+        preconditions=["No graph node may still reference the interface stable ID."],
+        side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
+        recovery=["Clear or redirect referencing node properties before removal."],
+        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_remove_emitter",

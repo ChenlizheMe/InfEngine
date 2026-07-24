@@ -438,8 +438,20 @@ class SceneLightCollector
 
     /**
      * @brief Set gradient ambient (sky/equator/ground).
+     *
+     * Colors are authored sRGB; @p intensity is a linear-space multiplier
+     * applied after the sRGB -> linear conversion.
      */
-    void SetAmbientGradient(const glm::vec3 &skyColor, const glm::vec3 &equatorColor, const glm::vec3 &groundColor);
+    void SetAmbientGradient(const glm::vec3 &skyColor, const glm::vec3 &equatorColor, const glm::vec3 &groundColor,
+                            float intensity = 1.0f);
+
+    /**
+     * @brief Copy already-linear ambient values verbatim (no sRGB conversion).
+     *
+     * Used to forward ambient state from another collector's built UBO
+     * (alpha channels carry intensity/mode flags and are preserved).
+     */
+    void SetAmbientLinear(const glm::vec4 &skyColor, const glm::vec4 &equatorColor, const glm::vec4 &groundColor);
 
     /**
      * @brief Set fog parameters.

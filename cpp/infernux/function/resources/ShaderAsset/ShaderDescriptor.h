@@ -117,7 +117,7 @@ struct ShaderDescriptor
     [[nodiscard]] bool NeedsLightingUBO() const
     {
         for (const auto &import : imports) {
-            if (import == "lighting")
+            if (import == "Lighting")
                 return true;
         }
         return false;

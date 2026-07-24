@@ -18,6 +18,7 @@ from Infernux.particle import (
     ParticleArtifactRegistry,
     ParticleGraphAsset,
     PointCache,
+    SdfVolume,
     VectorField,
 )
 
@@ -149,6 +150,10 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
             stable_id="wind-field",
             texture=AssetReference(guid="wind-field-guid"),
         ).to_dict(),
+        SdfVolume(
+            stable_id="collision-field",
+            texture=AssetReference(guid="collision-field-guid"),
+        ).to_dict(),
         PointCache(
             stable_id="spawn-points",
             cache=AssetReference(guid="point-cache-guid"),
@@ -171,6 +176,7 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         assert ParticleArtifactRegistry.get(str(source)) is artifact
         assert artifact.hir["stable_id"] == "integration-smoke"
         assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
+            "collision-field-guid",
             "point-cache-guid",
             "smoke-material-guid",
             "wind-field-guid",

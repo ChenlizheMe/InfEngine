@@ -24,7 +24,7 @@ from .asset import (
     ScalarRange,
     default_stage_graph,
 )
-from .data_interface import PointCache, VectorField
+from .data_interface import PointCache, SdfVolume, VectorField
 from .hir import ParticleGraphCompiler
 from .nodes import (
     particle_event_output_type_id,
@@ -144,6 +144,15 @@ class ParticleStream:
         restitution: float = 0.5,
         friction: float = 0.1,
     ) -> None: ...
+    def collide_sdf(
+        self,
+        *,
+        interface: str,
+        particle_radius: float = 0.0,
+        restitution: float = 0.5,
+        friction: float = 0.1,
+        inverted: bool = False,
+    ) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
     def rotate_orientation(self, degrees_per_second) -> None: ...
     def kill_if(self, condition: bool) -> None: ...
@@ -213,6 +222,7 @@ class ParticleScriptCompiler:
             "acceleration": ("particle.update.acceleration", "value"),
             "collide_plane": ("particle.update.collide_plane", ""),
             "collide_sphere": ("particle.update.collide_sphere", ""),
+            "collide_sdf": ("particle.update.collide_sdf", ""),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
             "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),
@@ -427,12 +437,12 @@ class ParticleScriptCompiler:
                 )
             data_interfaces = tuple(decoded_interfaces)
         if not all(
-            isinstance(value, (VectorField, PointCache)) for value in data_interfaces
+            isinstance(value, (VectorField, SdfVolume, PointCache)) for value in data_interfaces
         ):
             raise self._error(
                 source_name,
                 data_interfaces_node or node,
-                "emitter data_interfaces must contain VectorField or PointCache values",
+                "emitter data_interfaces must contain VectorField, SdfVolume, or PointCache values",
             )
         methods = {
             item.name: item
@@ -1101,6 +1111,7 @@ class ParticleScriptCompiler:
             "EmitterShape": ("kind", "space", "radius", "angle_degrees", "dimensions"),
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),
+            "SdfVolume": (),
             "PointCache": (),
             "CurveKey": ("time", "value", "in_tangent", "out_tangent"),
             "Curve": ("keys", "pre_wrap", "post_wrap"),
@@ -1134,6 +1145,7 @@ class ParticleScriptCompiler:
             "EmitterShape": EmitterShape,
             "AssetReference": AssetReference,
             "VectorField": VectorField,
+            "SdfVolume": SdfVolume,
             "PointCache": PointCache,
             "CurveKey": CurveKey,
             "Curve": Curve,
@@ -1145,6 +1157,8 @@ class ParticleScriptCompiler:
         }[expected_name]
         try:
             if expected_name == "VectorField" and type(values.get("texture")) is dict:
+                values["texture"] = AssetReference.from_dict(values["texture"])
+            if expected_name == "SdfVolume" and type(values.get("texture")) is dict:
                 values["texture"] = AssetReference.from_dict(values["texture"])
             if expected_name == "PointCache" and type(values.get("cache")) is dict:
                 values["cache"] = AssetReference.from_dict(values["cache"])
@@ -1160,6 +1174,7 @@ class ParticleScriptCompiler:
             "EmitterShape",
             "AssetReference",
             "VectorField",
+            "SdfVolume",
             "PointCache",
             "CurveKey",
             "Curve",
@@ -1295,5 +1310,6 @@ __all__ = [
     "PointCache",
     "RenderingContext",
     "UpdateContext",
+    "SdfVolume",
     "VectorField",
 ]

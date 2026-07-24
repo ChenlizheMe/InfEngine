@@ -22,6 +22,7 @@ from .hir import (
 from .data_interface import (
     ParticleDataInterface,
     PointCache,
+    SdfVolume,
     VectorField,
     particle_data_interface_from_dict,
 )
@@ -285,7 +286,7 @@ class ParticleEmitterKernelIR:
         if len({stable_id for stable_id, _type, _default in self.attributes}) != len(self.attributes):
             raise KernelCompileError("kernel emitter attribute stable ids must be unique")
         if not all(
-            isinstance(interface, (VectorField, PointCache))
+            isinstance(interface, (VectorField, SdfVolume, PointCache))
             for interface in interfaces
         ):
             raise KernelCompileError("kernel emitter data interfaces are invalid")
@@ -313,7 +314,12 @@ class ParticleEmitterKernelIR:
     def _validate_data_interface_access(self, function: ParticleKernelFunction) -> None:
         interfaces = {interface.stable_id: interface for interface in self.data_interfaces}
         for instruction in function.instructions:
-            if instruction.opcode not in {"sample_point_cache", "sample_vector_field"}:
+            if instruction.opcode not in {
+                "sample_point_cache",
+                "sample_vector_field",
+                "collide_sdf_position",
+                "collide_sdf_velocity",
+            }:
                 continue
             stable_id = instruction.immediate_dict()["interface"]
             interface = interfaces.get(stable_id)
@@ -321,7 +327,13 @@ class ParticleEmitterKernelIR:
                 raise KernelCompileError(
                     f"kernel references unknown data interface {stable_id!r}"
                 )
-            expected_type = PointCache if instruction.opcode == "sample_point_cache" else VectorField
+            expected_type = (
+                PointCache
+                if instruction.opcode == "sample_point_cache"
+                else VectorField
+                if instruction.opcode == "sample_vector_field"
+                else SdfVolume
+            )
             if not isinstance(interface, expected_type):
                 raise KernelCompileError(
                     f"kernel data interface {stable_id!r} is not a {expected_type.__name__}"
@@ -1176,7 +1188,7 @@ class ParticleKernelLowerer:
                     event_types,
                     source,
                 )
-            elif operation.opcode in {"collision.plane", "collision.sphere"}:
+            elif operation.opcode in {"collision.plane", "collision.sphere", "collision.sdf"}:
                 # Collisions are lowered after the implicit position integration below.
                 continue
             else:
@@ -1200,7 +1212,7 @@ class ParticleKernelLowerer:
         )
         builder.store("builtin.position", position, KernelSourceRef(operation="update.integrate_position"))
         for operation in emitter.update.operations:
-            if operation.opcode not in {"collision.plane", "collision.sphere"}:
+            if operation.opcode not in {"collision.plane", "collision.sphere", "collision.sdf"}:
                 continue
             source = KernelSourceRef(
                 operation.source_node_uid,
@@ -1230,7 +1242,7 @@ class ParticleKernelLowerer:
                     normal,
                     radius,
                 )
-            else:
+            elif operation.opcode == "collision.sphere":
                 center = builder.operation_value(
                     "center", bindings, expression_values, parameters,
                     attribute_types["builtin.position"], source,
@@ -1248,6 +1260,16 @@ class ParticleKernelLowerer:
                     velocity,
                     center,
                     sphere_radius,
+                    particle_radius,
+                )
+            else:
+                particle_radius = builder.operation_value(
+                    "particle_radius", bindings, expression_values, parameters,
+                    TypeRef(ValueType.F32), source,
+                )
+                collision_operands = (
+                    position,
+                    velocity,
                     particle_radius,
                 )
             restitution = builder.operation_value(
@@ -1268,18 +1290,26 @@ class ParticleKernelLowerer:
             )
             collision_operands += (restitution, friction)
             opcode_prefix = operation.opcode.replace("collision.", "collide_")
+            immediates = (
+                {
+                    "interface": parameters["interface"],
+                    "inverted": parameters["inverted"],
+                }
+                if operation.opcode == "collision.sdf"
+                else {}
+            )
             resolved_position = builder.emit(
                 f"{opcode_prefix}_position",
                 attribute_types["builtin.position"],
                 collision_operands,
-                {},
+                immediates,
                 source,
             )
             resolved_velocity = builder.emit(
                 f"{opcode_prefix}_velocity",
                 attribute_types["builtin.velocity"],
                 collision_operands,
-                {},
+                immediates,
                 source,
             )
             builder.store("builtin.position", resolved_position, source)

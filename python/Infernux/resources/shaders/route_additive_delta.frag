@@ -1,5 +1,5 @@
 #version 450
-@shader_id: route_additive_delta
+@shader_id: Route Additive Delta
 @hidden
 
 layout(set = 0, binding = 0) uniform sampler2D _OriginalTex;

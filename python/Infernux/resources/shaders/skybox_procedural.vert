@@ -1,10 +1,9 @@
 #version 450
 
-@shader_id: Infernux/Skybox-Procedural
+@shader_id: Skybox Procedural
 @cull: back
 @depth_write: false
 @depth_test: less_equal
-@hidden
 
 layout(std140, binding = 0) uniform UniformBufferObject {
     mat4 model;

@@ -1,7 +1,7 @@
 #version 450
 
-@shader_id: sprite_lit
-@shading_model: pbr
+@shader_id: Sprite Lit
+@shading_model: PBR
 @queue: 2000
 @cull: none
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]

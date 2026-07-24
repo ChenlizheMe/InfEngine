@@ -1,5 +1,5 @@
 #version 450
-@shader_id: pixelation
+@shader_id: Pixelation
 @hidden
 
 layout(set = 0, binding = 0) uniform sampler2D _SourceTex;

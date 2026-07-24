@@ -1,6 +1,6 @@
 #version 450
 
-@shader_id: gizmo
+@shader_id: Gizmo
 @hidden
 
 // UBO: model, view, projection matrices

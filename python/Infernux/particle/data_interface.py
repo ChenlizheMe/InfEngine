@@ -26,6 +26,11 @@ class VectorFieldFilter(str, Enum):
     LINEAR = "linear"
 
 
+class SdfFilter(str, Enum):
+    NEAREST = "nearest"
+    LINEAR = "linear"
+
+
 def _identity_matrix() -> tuple[float, ...]:
     return (
         1.0,
@@ -139,6 +144,65 @@ class VectorField:
 
 
 @dataclass(frozen=True)
+class SdfVolume:
+    """A signed-distance volume sampled by particle collision kernels.
+
+    Source field coordinates use the canonical ``[-0.5, 0.5]^3`` domain. A
+    ``+0.5`` offset maps that domain to texture UVW coordinates. The imported
+    texture bake basis and ``field_to_space`` place the field in emitter-local
+    or world space; samples outside the field never collide.
+    """
+
+    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    name: str = "SDF Volume"
+    texture: AssetReference = AssetReference()
+    space: CoordinateSpace = CoordinateSpace.WORLD
+    field_to_space: tuple[float, ...] = field(default_factory=_identity_matrix)
+    distance_scale: float = 1.0
+    filtering: SdfFilter = SdfFilter.LINEAR
+
+    kind = "sdf_volume"
+
+    def __post_init__(self) -> None:
+        _validate_identity(self.stable_id, self.name, "SDF volume")
+        if not isinstance(self.texture, AssetReference):
+            raise ParticleDataInterfaceError("SDF volume texture is invalid")
+        object.__setattr__(self, "stable_id", self.stable_id.strip())
+        object.__setattr__(self, "name", self.name.strip())
+        object.__setattr__(self, "space", _validate_space(self.space, "SDF volume"))
+        object.__setattr__(
+            self,
+            "field_to_space",
+            _validate_matrix(self.field_to_space, "SDF volume"),
+        )
+        try:
+            scale = float(self.distance_scale)
+            filtering = SdfFilter(self.filtering)
+        except (TypeError, ValueError) as exc:
+            raise ParticleDataInterfaceError(
+                "SDF volume distance scale or filtering mode is invalid"
+            ) from exc
+        if not math.isfinite(scale) or scale <= 0.0:
+            raise ParticleDataInterfaceError(
+                "SDF volume distance scale must be finite and positive"
+            )
+        object.__setattr__(self, "distance_scale", scale)
+        object.__setattr__(self, "filtering", filtering)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "stable_id": self.stable_id,
+            "name": self.name,
+            "texture": self.texture.to_dict(),
+            "space": self.space.value,
+            "field_to_space": list(self.field_to_space),
+            "distance_scale": self.distance_scale,
+            "filtering": self.filtering.value,
+        }
+
+
+@dataclass(frozen=True)
 class PointCache:
     stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "Point Cache"
@@ -196,7 +260,7 @@ class PointCache:
         }
 
 
-ParticleDataInterface: TypeAlias = VectorField | PointCache
+ParticleDataInterface: TypeAlias = VectorField | SdfVolume | PointCache
 
 
 def particle_data_interface_from_dict(
@@ -255,6 +319,28 @@ def particle_data_interface_from_dict(
             color_channel=value["color_channel"],
             id_channel=value["id_channel"],
         )
+    if kind == SdfVolume.kind:
+        expected = {
+            "kind",
+            "stable_id",
+            "name",
+            "texture",
+            "space",
+            "field_to_space",
+            "distance_scale",
+            "filtering",
+        }
+        if set(value) != expected:
+            raise ParticleDataInterfaceError(f"{location} keys do not match SdfVolume")
+        return SdfVolume(
+            stable_id=value["stable_id"],
+            name=value["name"],
+            texture=AssetReference.from_dict(value["texture"]),
+            space=value["space"],
+            field_to_space=tuple(value["field_to_space"]),
+            distance_scale=value["distance_scale"],
+            filtering=value["filtering"],
+        )
     raise ParticleDataInterfaceError(f"{location} kind {kind!r} is unsupported")
 
 
@@ -262,6 +348,8 @@ __all__ = [
     "ParticleDataInterface",
     "ParticleDataInterfaceError",
     "PointCache",
+    "SdfFilter",
+    "SdfVolume",
     "VectorField",
     "VectorFieldBoundary",
     "VectorFieldFilter",

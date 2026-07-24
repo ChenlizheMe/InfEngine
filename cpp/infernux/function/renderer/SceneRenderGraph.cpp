@@ -25,6 +25,7 @@
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/error/InxError.h>
+#include <core/types/ColorSpace.h>
 #include <cstring>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -755,14 +756,12 @@ void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const g
         return;
 
     m_cameraLightCollector.CollectLights(scene, cameraPosition);
-    if (environmentLighting.ambientEquatorColor.a > 0.0f) {
-        m_cameraLightCollector.SetAmbientGradient(glm::vec3(environmentLighting.ambientSkyColor),
-                                                  glm::vec3(environmentLighting.ambientEquatorColor),
-                                                  glm::vec3(environmentLighting.ambientGroundColor));
-    } else {
-        m_cameraLightCollector.SetAmbientColor(glm::vec3(environmentLighting.ambientSkyColor),
-                                               environmentLighting.ambientSkyColor.a);
-    }
+    // environmentLighting values are already linear (converted once by the
+    // scene collector's SetAmbient* setters) — copy them verbatim to avoid a
+    // second sRGB -> linear conversion.
+    m_cameraLightCollector.SetAmbientLinear(environmentLighting.ambientSkyColor,
+                                            environmentLighting.ambientEquatorColor,
+                                            environmentLighting.ambientGroundColor);
     const lighting::ShadowDepthRange visibleDepthRange =
         m_hasCachedDrawCalls ? VisibleShadowDepthRange(camera, m_cachedRenderers.DrawCalls())
                              : lighting::ShadowDepthRange{};
@@ -834,14 +833,21 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(normalizedDesc, m_pythonGraphDesc);
     const bool callbackContractChanged = m_pythonCallbackSamples != callbackSamples;
     if (!topologyChanged && !callbackContractChanged) {
-        std::vector<GraphParameterBlockUpdate> updates;
-        for (const auto &pass : normalizedDesc.passes) {
-            const GraphCommandDesc *command = PrimaryCommand(pass);
-            if (command && !command->parameterBlock.empty()) {
-                updates.push_back({command->parameterBlock, 0, command->pushConstants});
+        // Replaying an already-applied description must not clobber live
+        // parameter blocks: effect edits arrive through UpdateParameterBlocks
+        // *after* the description was built, so the description's push
+        // constants are only authoritative when a genuinely new Python build
+        // (fresh source revision) is being applied.
+        if (desc.sourceRevision == 0 || desc.sourceRevision != m_pythonGraphSourceRevision) {
+            std::vector<GraphParameterBlockUpdate> updates;
+            for (const auto &pass : normalizedDesc.passes) {
+                const GraphCommandDesc *command = PrimaryCommand(pass);
+                if (command && !command->parameterBlock.empty()) {
+                    updates.push_back({command->parameterBlock, 0, command->pushConstants});
+                }
             }
+            UpdateParameterBlocks(updates);
         }
-        UpdateParameterBlocks(updates);
         if (desc.sourceRevision != 0) {
             m_pythonGraphSourceRevision = desc.sourceRevision;
             m_pythonGraphDesc.sourceRevision = desc.sourceRevision;
@@ -1557,7 +1563,9 @@ void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, 
 {
     m_hasCameraClearOverride = true;
     m_cameraClearFlags = clearFlags;
-    m_cameraBgColor = bgColor;
+    // Authored camera background color is sRGB; the scene color target is
+    // linear (encoded for display by the display encode pass).
+    m_cameraBgColor = inx::color::SrgbToLinear(bgColor);
 
     if (m_prevClearStateValid && m_prevCameraClearFlags != clearFlags) {
         m_needsRebuild = true;
@@ -2571,8 +2579,16 @@ void SceneRenderGraph::BuildRenderGraph()
                     particleSceneDepth = resolvedParticleSceneDepth;
                     particleSceneDepthIsDepth = false;
                 } else {
-                    INXLOG_ERROR("SceneRenderGraph: soft particle outputs in pass '", passDesc.name,
-                                 "' require a readable scene depth and an available single-sample resolve path");
+                    if (hasDepthContract && msaaSamples != VK_SAMPLE_COUNT_1_BIT &&
+                        !m_sceneDepthResolver.IsValid()) {
+                        INXLOG_ERROR("SceneRenderGraph: soft particle depth resolve is unavailable for pass '",
+                                     passDesc.name, "'");
+                    }
+                    // A queue range may deliberately overlap multiple surface
+                    // passes. Soft particles can only run after opaque depth is
+                    // complete, so an earlier pass is an ineligible route, not
+                    // a graph failure. Leave the entries for a later pass whose
+                    // contract reads the scene depth.
                     particleEntries.erase(
                         std::remove_if(particleEntries.begin(), particleEntries.end(),
                                        [](const auto &entry) { return entry.semantics.softParticles; }),

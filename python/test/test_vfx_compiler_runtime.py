@@ -29,6 +29,7 @@ from Infernux.particle import (
     ParticleGraphAsset,
     ParticleRuntimeCompatibility,
     PointCache,
+    SdfVolume,
     VectorField,
 )
 from Infernux.lib import AssetRegistry
@@ -654,7 +655,7 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     source = tmp_path / "GpuSmoke.particlegraph"
     material_path = tmp_path / "GpuSmoke.mat"
     material = Material.create_unlit("Gpu Smoke")
-    material.vert_shader_name = "particle_sprite"
+    material.vert_shader_name = "Particle Sprite"
     material.render_queue = 3075
     material.blend_enable = True
     material.depth_write_enable = False
@@ -1136,6 +1137,101 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
 
     assert component._artifact_revision == initial_artifact_revision
     assert engine._gpu_particle_vector_field_generation(emitter_id, 0) == initial_generation + 1
+    component._remove_native_batch()
+    assert engine._gpu_particle_artifact_revision(emitter_id) == 0
+
+
+def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
+    scene, engine, monkeypatch, tmp_path
+):
+    sdf_source = tmp_path / "Collision.inxsdf"
+
+    def document(distances):
+        return {
+            "$schema": "infernux.sdf",
+            "dimensions": [2, 2, 2],
+            "storage_order": "x_fastest",
+            "distance_unit": "field",
+            "bake_basis": [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ],
+            "distances": distances,
+        }
+
+    sdf_source.write_text(
+        json.dumps(document([-0.2, 0.2, -0.2, 0.2, -0.2, 0.2, -0.2, 0.2])),
+        encoding="utf-8",
+    )
+    imported = AssetManager.import_asset(
+        str(sdf_source), database=engine.get_asset_database()
+    )
+    assert imported, imported.error
+    texture = AssetRegistry.instance().load_texture_by_guid(imported.guid)
+    assert texture is not None
+    assert texture.dimension == "3d"
+    assert texture.semantic == "signed_distance_field"
+
+    update = GraphDocument(
+        "particle.update",
+        (
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision.sdf",
+                "particle.update.collide_sdf",
+                properties={"interface": "collision-field", "particle_radius": 0.02},
+            ),
+        ),
+        (
+            GraphLinkRecord(
+                "root-to-sdf",
+                "root.update",
+                "out",
+                "collision.sdf",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+    source = tmp_path / "GpuSdfCollision.particlegraph"
+    ParticleGraphAsset(
+        stable_id="gpu-sdf-system",
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="gpu-sdf-emitter",
+                settings=EmitterSettings(
+                    target=ExecutionTarget.GPU,
+                    capacity=32,
+                    spawn_rate=0.0,
+                    bursts=(ParticleBurst(0.0, 2),),
+                ),
+                data_interfaces=(
+                    SdfVolume(
+                        stable_id="collision-field",
+                        texture=AssetReference(imported.guid, str(sdf_source)),
+                    ),
+                ),
+                update=update,
+            ),
+        ),
+    ).save(str(source))
+
+    component = ParticleSystem()
+    component.graph = ParticleGraphRef(path_hint=str(source))
+    game_object = scene.create_game_object("GpuSdfProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+
+    emitter_id = component._gpu_emitter_ids[0]
+    generation = engine._gpu_particle_vector_field_generation(emitter_id, 0)
+    assert generation > 0
+    assert component._gpu_controllers[0].simulation_step == 1
     component._remove_native_batch()
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 

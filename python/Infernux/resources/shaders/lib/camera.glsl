@@ -1,10 +1,10 @@
-@shader_id: lib/camera
+@shader_id: Lib Camera
 
 // ============================================================================
 // lib/camera.glsl — Camera and screen-space utility functions
 //
 // Requires: InfGlobals UBO (auto-injected by engine at set 2, binding 0)
-// Usage: @import: lib/camera
+// Usage: @import: Lib Camera
 // ============================================================================
 
 // ---- Screen coordinates ----

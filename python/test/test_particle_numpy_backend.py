@@ -25,6 +25,7 @@ from Infernux.particle import (
     PointCache,
     ParticleRuntimeCompatibility,
     ScalarRange,
+    SdfVolume,
     VectorField,
     VectorFieldBoundary,
     VectorFieldFilter,
@@ -94,6 +95,10 @@ class _FakeVectorField:
     def replace_volume(self, volume):
         self._volume = np.asarray(volume)
         self.generation += 1
+
+
+class _FakeSdf(_FakeVectorField):
+    pass
 
 
 def _compile_runtime(settings: EmitterSettings, *, system_seed: int = 0):
@@ -258,6 +263,76 @@ def test_numpy_sphere_collision_resolves_penetration_bounce_and_tangent_friction
     )
     np.testing.assert_allclose(
         runtime.attributes["builtin.velocity"][0], [1.0, 0.75, 0.0]
+    )
+
+
+def test_numpy_sdf_collision_resolves_surface_contact_and_velocity():
+    size = 17
+    axis = (np.arange(size, dtype=np.float32) + 0.5) / size - 0.5
+    z, y, x = np.meshgrid(axis, axis, axis, indexing="ij")
+    volume = np.zeros((size, size, size, 4), dtype=np.float32)
+    volume[..., 0] = np.sqrt(x * x + y * y + z * z) - np.float32(0.25)
+    fake = _FakeSdf(volume)
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_sdf",
+                properties={
+                    "interface": "collision-field",
+                    "particle_radius": 0.05,
+                    "restitution": 0.5,
+                    "friction": 0.25,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    settings = EmitterSettings(
+        capacity=1,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+        lifetime=ScalarRange(10.0, 10.0),
+        initial_speed=ScalarRange(0.0, 0.0),
+        gravity=(0.0, 0.0, 0.0),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(
+            ParticleEmitterAsset(
+                settings=settings,
+                update=update,
+                data_interfaces=(
+                    SdfVolume(
+                        stable_id="collision-field",
+                        texture=AssetReference(guid="sdf-texture"),
+                    ),
+                ),
+            ),
+        )
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    runtime = NumpyParticleCompiler().compile(
+        hir,
+        ParticleKernelLowerer().lower(hir),
+        sdf_resolver=lambda _interface: fake,
+    ).create_runtime()
+
+    runtime.tick(0.0)
+    runtime.attributes["builtin.position"][0] = (0.1, 0.0, 0.0)
+    runtime.attributes["builtin.velocity"][0] = (-1.0, 0.5, 0.0)
+    runtime.tick(0.0)
+
+    np.testing.assert_allclose(
+        runtime.attributes["builtin.position"][0], [0.3, 0.0, 0.0], atol=2.0e-3
+    )
+    np.testing.assert_allclose(
+        runtime.attributes["builtin.velocity"][0], [0.5, 0.375, 0.0], atol=2.0e-3
     )
 
 

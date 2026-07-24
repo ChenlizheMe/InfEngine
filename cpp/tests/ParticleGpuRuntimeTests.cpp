@@ -1,4 +1,5 @@
 #include <core/config/EngineConfig.h>
+#include <core/types/ColorSpace.h>
 #include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/SceneDepthResolver.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
@@ -26,6 +27,12 @@ namespace
 {
 
 using namespace infernux;
+
+std::array<float, 4> ExpectedLinearTint(const glm::vec4 &authoredSrgb)
+{
+    const glm::vec4 linear = inx::color::SrgbToLinear(authoredSrgb);
+    return {linear.x, linear.y, linear.z, linear.w};
+}
 
 struct FakeDevice final : rhi::Device
 {
@@ -1245,7 +1252,7 @@ int main()
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
     assert(textureResolveCount == 1 && device.groupCreates == 3);
-    const std::array<float, 4> expectedTint = {0.25f, 0.5f, 0.75f, 0.8f};
+    const std::array<float, 4> expectedTint = ExpectedLinearTint({0.25f, 0.5f, 0.75f, 0.8f});
     assert(graphicsTrace.constants.back().materialTint == expectedTint);
     assert(textureResolveCount == 1 && device.groupCreates == 3);
     billboardDesc.material->SetTextureGuid("texSampler", "normal");
@@ -1429,7 +1436,8 @@ int main()
     float packedIntensity = 0.0f;
     std::memcpy(&packedColor, linkedDevice.writtenBytes[0].data(), sizeof(packedColor));
     std::memcpy(&packedIntensity, linkedDevice.writtenBytes[0].data() + 16, sizeof(packedIntensity));
-    assert(packedColor == glm::vec4(0.2f, 0.4f, 0.6f, 0.8f) && packedIntensity == 3.5f);
+    assert(packedColor == inx::color::SrgbToLinear(glm::vec4(0.2f, 0.4f, 0.6f, 0.8f)) &&
+           packedIntensity == 3.5f);
 
     GraphicsTrace linkedGraphicsTrace;
     const rhi::GraphicsCommandEncoder linkedGraphicsEncoder(&linkedGraphicsTrace, &graphicsDispatch);
@@ -1558,7 +1566,7 @@ int main()
         assert(meshDevice.graphicsPipelineDescs.size() == 1 &&
                meshDevice.graphicsPipelineDescs[0].raster.cullMode == rhi::CullMode::Back &&
                meshDevice.graphicsPipelineDescs[0].raster.frontFace == rhi::FrontFace::Clockwise);
-        const std::array<float, 4> expectedMeshTint = {0.2f, 0.4f, 0.8f, 0.75f};
+        const std::array<float, 4> expectedMeshTint = ExpectedLinearTint({0.2f, 0.4f, 0.8f, 0.75f});
         assert(meshTrace.constants.size() == 1 && meshTrace.constants[0].materialTint == expectedMeshTint);
 
         auto pickingPass = forwardPass;
@@ -1615,6 +1623,7 @@ int main()
     {
         auto registryBillboardDesc = billboardDesc;
         registryBillboardDesc.renderIndices = renderIndexBuffer;
+        registryBillboardDesc.material->SetRenderQueue(3150);
         auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
         assert(registeredBillboard->Create(device, registryBillboardDesc));
         particle::ParticleGpuDrawRegistry registry;

@@ -6,10 +6,10 @@
 // metallic — different from the engine default PBR-oriented G-Buffer packing.
 // Shadow pass is fully automatic (injected by the engine).
 //
-// Referenced by surface shaders via @shading_model: unlit
+// Referenced by surface shaders via @shading_model: Unlit
 // ============================================================================
 
-@shader_id: unlit
+@shader_id: Unlit
 
 // ============================================================================
 // @target: forward — Direct color output (no lighting)

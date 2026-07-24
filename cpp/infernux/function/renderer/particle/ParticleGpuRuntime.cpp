@@ -736,13 +736,23 @@ bool ParticleGpuRuntime::UpdateVectorFieldMetadata(const GpuParticleTransforms &
         if (!IsFinite(fieldToSimulation) || !std::isfinite(determinant) || std::abs(determinant) <= 1.0e-8f)
             return false;
         const glm::mat4 simulationToField = glm::inverse(fieldToSimulation);
-        const glm::mat3 vectorToSimulation(fieldToSimulation);
-        if (!IsFinite(simulationToField) || !IsFinite(vectorToSimulation))
+        const glm::mat3 fieldLinear(fieldToSimulation);
+        const glm::mat3 directionToSimulation = field.kind == GpuVectorFieldDesc::Kind::SignedDistanceField
+                                                    ? glm::transpose(glm::inverse(fieldLinear))
+                                                    : fieldLinear;
+        float scalar = field.vectorScale;
+        if (field.kind == GpuVectorFieldDesc::Kind::SignedDistanceField) {
+            const float minimumScale =
+                (std::min)({glm::length(fieldLinear[0]), glm::length(fieldLinear[1]), glm::length(fieldLinear[2])});
+            scalar *= minimumScale;
+        }
+        if (!IsFinite(simulationToField) || !IsFinite(directionToSimulation) || !std::isfinite(scalar) ||
+            (field.kind == GpuVectorFieldDesc::Kind::SignedDistanceField && scalar <= 0.0f))
             return false;
         const size_t base = index * m_vectorFields->interfaceStrideWords;
         StoreMatrix(m_vectorFields->metadataWords, base, simulationToField);
-        StoreNormalMatrix(m_vectorFields->metadataWords, base + 16, vectorToSimulation);
-        m_vectorFields->metadataWords[base + 28] = FloatBits(field.vectorScale);
+        StoreNormalMatrix(m_vectorFields->metadataWords, base + 16, directionToSimulation);
+        m_vectorFields->metadataWords[base + 28] = FloatBits(scalar);
     }
     return m_device->WriteBuffer(m_vectorFields->metadataBuffer, 0, m_vectorFields->metadataWords.data(),
                                  m_vectorFields->metadataWords.size() * sizeof(uint32_t));

@@ -171,7 +171,7 @@ struct FullscreenRenderer::Impl
 
         VkShaderModule vertex = core->GetShaderModule(key.shaderName, "vertex");
         if (vertex == VK_NULL_HANDLE)
-            vertex = core->GetShaderModule("fullscreen_triangle", "vertex");
+            vertex = core->GetShaderModule("Fullscreen Triangle", "vertex");
         const VkShaderModule fragment = core->GetShaderModule(key.shaderName, "fragment");
         if (vertex == VK_NULL_HANDLE || fragment == VK_NULL_HANDLE) {
             INXLOG_ERROR("FullscreenRenderer: missing shader modules for '", key.shaderName, "'");

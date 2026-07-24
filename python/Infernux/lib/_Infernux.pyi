@@ -1251,6 +1251,9 @@ class Scene:
 
     name: str
 
+    def get_environment(self) -> Dict[str, Any]: ...
+    def set_environment(self, settings: Dict[str, Any]) -> None: ...
+    def resolve_skybox_material(self) -> Optional[InxMaterial]: ...
     def set_playing(self, playing: bool) -> None: ...
     def create_game_object(self, name: str = "GameObject") -> GameObject: ...
     def create_primitive(self, type: PrimitiveType, name: str = "") -> GameObject: ...
@@ -2512,9 +2515,11 @@ class MenuBarPanel(InxGUIRenderable):
     toggle_build_settings: Any
     toggle_preferences: Any
     toggle_physics_layer_matrix: Any
+    toggle_environment_settings: Any
     is_build_settings_open: Any
     is_preferences_open: Any
     is_physics_layer_matrix_open: Any
+    is_environment_settings_open: Any
     translate: Any
 
 

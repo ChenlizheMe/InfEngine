@@ -124,7 +124,7 @@ void surface(out SurfaceData s)
     assert(artifact.IsValid());
     assert(artifact.vertex.shaderId == "Tests/WaveDeform");
     assert(artifact.fragment.shaderId == "Tests/OceanSurface");
-    assert(artifact.shadingModel == "pbr");
+    assert(artifact.shadingModel == "PBR");
     assert(artifact.varyings.size() == 3);
     assert(artifact.varyings[0].name == "waveUV");
     assert(artifact.varyings[0].location == 6);
@@ -186,7 +186,7 @@ void surface(out SurfaceData s)
     assert(runtimeArtifact.key.stages.fragmentShaderId == "Tests/OceanSurface");
     assert(runtimeArtifact.key.revision != 0);
     assert(runtimeArtifact.domain == infernux::ShaderProgramDomain::Mesh);
-    assert(runtimeArtifact.shadingModel == "pbr");
+    assert(runtimeArtifact.shadingModel == "PBR");
     assert(runtimeArtifact.materialBufferSize == artifact.materialBufferSize);
     assert(runtimeArtifact.alphaClipThresholdOffset == artifact.alphaClipThresholdOffset);
     assert(runtimeArtifact.properties.size() == artifact.properties.size());
@@ -526,8 +526,8 @@ void surface(out SurfaceData surface)
     const auto builtinParticleArtifact = builtinParticleCompilation.CreateRuntimeArtifact();
     assert(builtinParticleArtifact.IsValid());
     assert(builtinParticleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
-    assert(builtinParticleArtifact.key.stages.vertexShaderId == "particle_sprite");
-    assert(builtinParticleArtifact.key.stages.fragmentShaderId == "unlit");
+    assert(builtinParticleArtifact.key.stages.vertexShaderId == "Particle Sprite");
+    assert(builtinParticleArtifact.key.stages.fragmentShaderId == "Unlit");
     assert(builtinParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
     const auto defaultParticleCompilation = compiler.CompileLinkedProgramArtifact(
@@ -540,7 +540,7 @@ void surface(out SurfaceData surface)
     assert(defaultParticleCompilation.IsValid());
     const auto defaultParticleArtifact = defaultParticleCompilation.CreateRuntimeArtifact();
     assert(defaultParticleArtifact.IsValid());
-    assert(defaultParticleArtifact.key.stages.fragmentShaderId == "particle_unlit");
+    assert(defaultParticleArtifact.key.stages.fragmentShaderId == "Particle Unlit");
     assert(defaultParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(defaultParticleCompilation.compiledVariants.size() == 2);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") !=
@@ -565,8 +565,8 @@ void surface(out SurfaceData surface)
     assert(builtinLitCompilation.IsValid());
     const auto builtinLitArtifact = builtinLitCompilation.CreateRuntimeArtifact();
     assert(builtinLitArtifact.IsValid());
-    assert(builtinLitArtifact.key.stages.vertexShaderId == "standard");
-    assert(builtinLitArtifact.key.stages.fragmentShaderId == "lit");
+    assert(builtinLitArtifact.key.stages.vertexShaderId == "Standard");
+    assert(builtinLitArtifact.key.stages.fragmentShaderId == "Lit");
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
@@ -632,13 +632,13 @@ void surface(out SurfaceData surface)
 
     const std::string legacyStandardVertex = R"(
 #version 450
-@shader_id: standard
+@shader_id: Standard
 )";
     const auto migrationProgram = compiler.CompileLinkedForward(legacyStandardVertex, "standard.vert",
                                                                 fragmentWithoutCustomInputs, "PlainSurface.frag");
     assert(migrationProgram.IsValid());
     assert(migrationProgram.CreateRuntimeArtifact().IsValid());
-    assert(migrationProgram.CreateRuntimeArtifact().key.stages.vertexShaderId == "standard");
+    assert(migrationProgram.CreateRuntimeArtifact().key.stages.vertexShaderId == "Standard");
     assert(migrationProgram.generatedVertexSource.find("uniform MaterialProperties") == std::string::npos);
     assert(migrationProgram.generatedFragmentSource.find("uniform MaterialProperties") != std::string::npos);
 

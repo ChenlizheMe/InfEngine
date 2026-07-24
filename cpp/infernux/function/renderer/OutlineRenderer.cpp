@@ -13,6 +13,7 @@
 #include "VertexInputFilter.h"
 #include "shader/ShaderProgram.h"
 #include "shader/ShaderReflection.h"
+#include <core/types/ColorSpace.h>
 #include "vk/DescriptorBindTrace.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
@@ -152,8 +153,8 @@ bool OutlineRenderer::Initialize(InxVkCoreModular *core, SceneRenderTarget *scen
     m_sceneRenderTarget = sceneTarget;
 
     // Check if outline shaders are loaded
-    if (!m_core->HasShader("outline_mask", "vertex") || !m_core->HasShader("outline_mask", "fragment") ||
-        !m_core->HasShader("outline_composite", "vertex") || !m_core->HasShader("outline_composite", "fragment")) {
+    if (!m_core->HasShader("Outline Mask", "vertex") || !m_core->HasShader("Outline Mask", "fragment") ||
+        !m_core->HasShader("Outline Composite", "vertex") || !m_core->HasShader("Outline Composite", "fragment")) {
         INXLOG_WARN("OutlineRenderer::Initialize: outline shaders not loaded yet");
         return false;
     }
@@ -514,12 +515,12 @@ void OutlineRenderer::CreateOutlinePipelines()
         vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_outlineMaskPipelineLayout);
 
         std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-            MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_core->GetShaderModule("outline_mask", "vertex")),
-            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_core->GetShaderModule("outline_mask", "fragment")),
+            MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_core->GetShaderModule("Outline Mask", "vertex")),
+            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_core->GetShaderModule("Outline Mask", "fragment")),
         };
 
         ShaderReflection outlineMaskVertRefl;
-        const auto *outlineMaskVertSpv = m_core->GetShaderCache().FindVertCode("outline_mask");
+        const auto *outlineMaskVertSpv = m_core->GetShaderCache().FindVertCode("Outline Mask");
         if (!outlineMaskVertSpv || !outlineMaskVertRefl.Reflect(*outlineMaskVertSpv, VK_SHADER_STAGE_VERTEX_BIT)) {
             outlineMaskVertRefl.Clear();
         }
@@ -550,8 +551,8 @@ void OutlineRenderer::CreateOutlinePipelines()
         vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_outlineCompositePipelineLayout);
 
         std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-            MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_core->GetShaderModule("outline_composite", "vertex")),
-            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_core->GetShaderModule("outline_composite", "fragment")),
+            MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_core->GetShaderModule("Outline Composite", "vertex")),
+            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_core->GetShaderModule("Outline Composite", "fragment")),
         };
 
         // No vertex input (fullscreen triangle is procedural)
@@ -868,7 +869,7 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
         return VK_NULL_HANDLE;
 
     VkShaderModule vertModule = program->GetVertexModule();
-    VkShaderModule fragModule = m_core->GetShaderModule("outline_mask", "fragment");
+    VkShaderModule fragModule = m_core->GetShaderModule("Outline Mask", "fragment");
     if (vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE)
         return VK_NULL_HANDLE;
 
@@ -1154,7 +1155,9 @@ void OutlineRenderer::RenderOutlineComposite(VkCommandBuffer cmdBuf)
     };
 
     CompositePushConstants pushData;
-    pushData.outlineColor = m_outlineColor;
+    // Authored sRGB -> linear: the composite writes into the linear scene
+    // buffer, which is sRGB-encoded later by the display encode pass.
+    pushData.outlineColor = inx::color::SrgbToLinear(m_outlineColor);
     pushData.texelSize = glm::vec2(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
     pushData.outlineWidth = m_outlinePixelWidth;
     pushData._padding = 0.0f;

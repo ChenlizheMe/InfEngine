@@ -1,4 +1,4 @@
 #version 450
 
-@shader_id: gizmo_icon
+@shader_id: Gizmo Icon
 @hidden

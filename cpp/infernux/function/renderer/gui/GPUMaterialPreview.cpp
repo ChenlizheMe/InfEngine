@@ -176,10 +176,10 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     basePreviewMaterial->ClearAllPassPipelines();
     if (!EnsureResources(renderSize))
         return nullptr;
-    if (!m_vkCore->RefreshPreviewMaterialPipeline(basePreviewMaterial, basePreviewMaterial->GetVertShaderName(),
-                                                  basePreviewMaterial->GetFragShaderName(),
-                                                  m_previewSceneUbo->GetBuffer(), m_previewLightingUbo->GetBuffer())) {
-        INXLOG_WARN("GPUMaterialPreview: preview base pipeline not ready");
+    if (!m_vkCore->RefreshPreviewMaterialPipeline(
+            basePreviewMaterial, basePreviewMaterial->GetVertShaderName(), basePreviewMaterial->GetFragShaderName(),
+            m_previewSceneUbo->GetBuffer(), m_previewLightingUbo->GetBuffer(), false)) {
+        INXLOG_DEBUG("GPUMaterialPreview: material domain has no sphere preview pipeline");
         return nullptr;
     }
     ownedPreviewMaterials.push_back(basePreviewMaterial);
@@ -210,7 +210,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
 
             if (!m_vkCore->RefreshPreviewMaterialPipeline(
                     passMaterial, passMaterial->GetVertShaderName(), passMaterial->GetFragShaderName(),
-                    m_previewSceneUbo->GetBuffer(), m_previewLightingUbo->GetBuffer())) {
+                    m_previewSceneUbo->GetBuffer(), m_previewLightingUbo->GetBuffer(), false)) {
                 return nullptr;
             }
             return passMaterial;
@@ -260,7 +260,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
             if (!m_vkCore->RefreshPreviewMaterialPipeline(binding.material, passMat->GetVertShaderName(),
                                                           passMat->GetFragShaderName(), m_previewSceneUbo->GetBuffer(),
-                                                          m_previewLightingUbo->GetBuffer())) {
+                                                          m_previewLightingUbo->GetBuffer(), false)) {
                 return false;
             }
             rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(passMat->GetMaterialKey());

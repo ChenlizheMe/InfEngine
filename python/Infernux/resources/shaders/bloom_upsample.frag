@@ -1,5 +1,5 @@
 #version 450
-@shader_id: bloom_upsample
+@shader_id: Bloom Upsample
 @hidden
 
 // Bloom upsample pass — 9-tap tent filter
