@@ -177,7 +177,7 @@ def test_tonemapping_effect_accepts_integer_enum_source_value(tmp_path):
         dump_render_effect_document(
             RenderEffectAsset(
                 feature_type="infernux.post.tonemapping",
-                parameters={"mode": 2, "exposure": 1.0, "gamma": 2.2},
+                parameters={"mode": 2, "exposure": 1.0},
             )
         ),
         encoding="utf-8",
@@ -187,6 +187,23 @@ def test_tonemapping_effect_accepts_integer_enum_source_value(tmp_path):
 
     assert artifact.features[0]["feature_type"] == "infernux.post.tonemapping"
     assert artifact.features[0]["route_policy"] == "mask_and_modify"
+
+
+def test_tonemapping_effect_rejects_removed_gamma_parameter(tmp_path):
+    RenderEffectArtifactRegistry.clear()
+    path = tmp_path / "LegacyTone.effect"
+    path.write_text(
+        dump_render_effect_document(
+            RenderEffectAsset(
+                feature_type="infernux.post.tonemapping",
+                parameters={"mode": 2, "exposure": 1.0, "gamma": 2.2},
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RenderEffectCompileError, match="unknown parameters: \\['gamma'\\]"):
+        RenderEffectArtifactRegistry.compile_and_publish(str(path))
 
 
 def test_render_effect_clone_is_runtime_only_and_parameter_isolated():
