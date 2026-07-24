@@ -779,22 +779,58 @@ class GpuParticleGlslLowerer:
             raise TypeError("GPU particle lowering requires ParticleKernelProgram")
         return GpuParticleProgramSource(
             program.kernel_hash,
-            tuple(self._lower_emitter(program.kernel_hash, emitter) for emitter in program.emitters),
+            tuple(
+                self._lower_emitter(
+                    program.kernel_hash,
+                    emitter,
+                    program.events,
+                    emitter_index,
+                )
+                for emitter_index, emitter in enumerate(program.emitters)
+            ),
         )
 
     def _lower_emitter(
-        self, kernel_hash: str, emitter: ParticleEmitterKernelIR
+        self,
+        kernel_hash: str,
+        emitter: ParticleEmitterKernelIR,
+        events,
+        emitter_index: int,
     ) -> GpuParticleEmitterSource:
         fields = _attribute_fields(emitter)
         attribute_layout, state_stride = _std430_attribute_layout(fields)
         data_interface_layout = _data_interface_layout(emitter)
         prelude = _shader_prelude(fields, emitter.random_seed, data_interface_layout)
         bootstrap = prelude + _bootstrap_main()
-        init_body, _, init_events = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.init)
-        update_body, _, update_events = _StageCompiler(emitter, fields, data_interface_layout).compile(emitter.update)
-        rendering_body, exports, rendering_events = _StageCompiler(emitter, fields, data_interface_layout).compile(
-            emitter.rendering
-        )
+        init_body, _, init_events = _StageCompiler(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+        ).compile(emitter.init)
+        event_init_body, _, event_init_events = _StageCompiler(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+            event_input=True,
+        ).compile(emitter.init)
+        update_body, _, update_events = _StageCompiler(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+        ).compile(emitter.update)
+        rendering_body, exports, rendering_events = _StageCompiler(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+        ).compile(emitter.rendering)
         required = {"builtin.position", "builtin.size", "builtin.color", "builtin.rotation"}
         if not required.issubset(exports):
             missing = ", ".join(sorted(required - set(exports)))
@@ -824,8 +860,10 @@ class GpuParticleGlslLowerer:
             + _init_main(init_body, init_events, emitter, fields),
             prelude
             + _event_init_bindings()
-            + (_event_output_bindings(4) if init_events else "")
-            + _event_init_main(init_body, init_events, emitter, fields),
+            + (_event_output_bindings(4) if event_init_events else "")
+            + _event_init_main(
+                event_init_body, event_init_events, emitter, fields
+            ),
             prelude
             + (_event_output_bindings(3) if update_events else "")
             + _update_main(update_body, update_events, emitter, fields),
@@ -1181,6 +1219,10 @@ class _StageCompiler:
         emitter: ParticleEmitterKernelIR,
         fields: tuple[tuple[str, TypeRef, str], ...],
         data_interface_layout: dict[str, Any],
+        events,
+        emitter_index: int,
+        *,
+        event_input: bool = False,
     ) -> None:
         self._emitter = emitter
         self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
@@ -1188,6 +1230,9 @@ class _StageCompiler:
         self._exports: dict[str, str] = {}
         self._lines: list[str] = []
         self._event_lines: list[str] = []
+        self._events = events
+        self._emitter_index = int(emitter_index)
+        self._event_input = bool(event_input)
         self._point_cache_samples = {
             (
                 sample["interface"],
@@ -1238,6 +1283,31 @@ class _StageCompiler:
                     f"GPU backend does not implement uniform {immediate['name']!r}"
                 )
             expression = "pc.delta_time"
+        elif opcode == "event_payload":
+            channel_index = int(immediate["channel_index"])
+            if not 0 <= channel_index < len(self._events.routes):
+                raise GpuParticleCompileError(
+                    "GPU event payload references an unknown channel"
+                )
+            route = self._events.routes[channel_index]
+            if route.target_emitter_index != self._emitter_index:
+                raise GpuParticleCompileError(
+                    "GPU event payload does not belong to this emitter"
+                )
+            default = _glsl_literal(immediate["default"], result_type)
+            if self._event_input:
+                word_offset = int(immediate["word_offset"])
+                word_count = int(immediate["word_count"])
+                words = tuple(
+                    f"event_record_words[record_base + {4 + word_offset + index}u]"
+                    for index in range(word_count)
+                )
+                decoded = _event_payload_glsl_expression(words, result_type)
+                expression = (
+                    f"(channel_index == {channel_index}u ? {decoded} : {default})"
+                )
+            else:
+                expression = default
         elif opcode == "add":
             expression = f"({operands[0]} + {operands[1]})"
         elif opcode == "subtract":
@@ -2611,6 +2681,45 @@ def _event_payload_word_expressions(expression: str, value_type: TypeRef) -> lis
             for column in range(4)
             for row in range(4)
         ]
+    raise GpuParticleCompileError(
+        f"GPU event payload does not support {kind.value}"
+    )
+
+
+def _event_payload_glsl_expression(
+    words: tuple[str, ...], value_type: TypeRef
+) -> str:
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        return f"({words[0]} != 0u)"
+    if kind is ValueType.I32:
+        return f"int({words[0]})"
+    if kind is ValueType.U32:
+        return words[0]
+    if kind is ValueType.F32:
+        return f"uintBitsToFloat({words[0]})"
+    component_count = {
+        ValueType.VEC2: 2,
+        ValueType.VEC3: 3,
+        ValueType.VEC4: 4,
+        ValueType.COLOR: 4,
+    }.get(kind)
+    if component_count is not None:
+        values = ", ".join(
+            f"uintBitsToFloat({word})" for word in words[:component_count]
+        )
+        return f"{_glsl_type(value_type)}({values})"
+    if kind is ValueType.MAT3:
+        columns = []
+        for offset in (0, 4, 8):
+            values = ", ".join(
+                f"uintBitsToFloat({word})" for word in words[offset : offset + 3]
+            )
+            columns.append(f"vec3({values})")
+        return f"mat3({', '.join(columns)})"
+    if kind is ValueType.MAT4:
+        values = ", ".join(f"uintBitsToFloat({word})" for word in words)
+        return f"mat4({values})"
     raise GpuParticleCompileError(
         f"GPU event payload does not support {kind.value}"
     )

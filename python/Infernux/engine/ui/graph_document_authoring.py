@@ -357,6 +357,14 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                     if source_emitter_id == emitter.stable_id and source_stage in stages
                     else set()
                 )
+            if (
+                definition_set is not None
+                and definition.type_id in definition_set.event_target_by_type_id
+            ):
+                target_emitter_id = definition_set.event_target_by_type_id[
+                    definition.type_id
+                ]
+                stages = {"init"} if target_emitter_id == emitter.stable_id else set()
             if not stages:
                 continue
             self.register_type(_canvas_definition(definition))
@@ -571,6 +579,8 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
             return True
         if type_id.startswith("particle.event.output."):
             return type_id.startswith(f"particle.event.output.{stage}.")
+        if type_id.startswith("particle.event.payload."):
+            return stage == "init"
         if stage in {"init", "update"} and type_id.startswith(
             ("particle.attribute.", "particle.point_cache.", "particle.vector_field.")
         ):

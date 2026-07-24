@@ -678,6 +678,43 @@ class ParticleKernelProgram:
         for emitter_index, emitter in enumerate(self.emitters):
             for function in (emitter.init, emitter.update, emitter.rendering):
                 for instruction in function.instructions:
+                    if instruction.opcode == "event_payload":
+                        channel_index = instruction.immediate_dict()["channel_index"]
+                        if (
+                            type(channel_index) is not int
+                            or not 0 <= channel_index < len(self.events.routes)
+                        ):
+                            raise KernelCompileError(
+                                "kernel event_payload references an unknown channel"
+                            )
+                        route = self.events.routes[channel_index]
+                        if (
+                            route.target_emitter_index != emitter_index
+                            or function.stage is not KernelStage.INIT
+                        ):
+                            raise KernelCompileError(
+                                "kernel event_payload does not match its target route"
+                            )
+                        event_type = self.events.event_types[route.event_type_index]
+                        immediate = instruction.immediate_dict()
+                        field = next(
+                            (
+                                value
+                                for value in event_type.fields
+                                if value.word_offset == immediate["word_offset"]
+                            ),
+                            None,
+                        )
+                        if (
+                            field is None
+                            or field.word_count != immediate["word_count"]
+                            or field.value_type != instruction.result_type
+                            or field.default != immediate["default"]
+                        ):
+                            raise KernelCompileError(
+                                "kernel event_payload does not match its event field"
+                            )
+                        continue
                     if instruction.opcode != "event_append":
                         continue
                     channel_index = instruction.immediate_dict()["channel_index"]

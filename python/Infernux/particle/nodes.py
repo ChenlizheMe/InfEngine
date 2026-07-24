@@ -21,6 +21,7 @@ from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, Value
 
 
 _EVENT_OUTPUT_PREFIX = "particle.event.output"
+_EVENT_PAYLOAD_PREFIX = "particle.event.payload"
 
 
 def particle_event_payload_port_id(field_stable_id: str) -> str:
@@ -33,11 +34,19 @@ def particle_event_output_type_id(route_stable_id: str, source_stage: str) -> st
     return f"{_EVENT_OUTPUT_PREFIX}.{source_stage}.{digest}"
 
 
+def particle_event_payload_type_id(route_stable_id: str) -> str:
+    digest = hashlib.sha256(str(route_stable_id).encode("utf-8")).hexdigest()
+    return f"{_EVENT_PAYLOAD_PREFIX}.{digest}"
+
+
 @dataclass(frozen=True)
 class ParticleGraphNodeDefinitionSet:
     registry: NodeDefinitionRegistry
     event_route_by_type_id: Mapping[str, str]
     event_source_by_type_id: Mapping[str, tuple[str, str]]
+    event_input_route_by_type_id: Mapping[str, str]
+    event_target_by_type_id: Mapping[str, str]
+    event_field_by_port: Mapping[tuple[str, str], str]
     abi_fingerprint: str
 
 
@@ -52,6 +61,9 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
     emitter_names = {emitter.stable_id: emitter.name for emitter in asset.emitters}
     route_by_type_id = {}
     source_by_type_id = {}
+    input_route_by_type_id = {}
+    target_by_type_id = {}
+    field_by_port = {}
     for route in asset.event_routes:
         event_type = event_types[route.event_type_id]
         type_id = particle_event_output_type_id(route.stable_id, route.source_stage)
@@ -93,6 +105,33 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
                 {"particle_hir": "event.emit"},
             )
         )
+        if event_type.fields:
+            payload_type_id = particle_event_payload_type_id(route.stable_id)
+            if payload_type_id in input_route_by_type_id:
+                raise ValueError("particle event payload node identity collision")
+            input_route_by_type_id[payload_type_id] = route.stable_id
+            target_by_type_id[payload_type_id] = route.target_emitter_id
+            payload_ports = tuple(
+                PortDef(
+                    particle_event_payload_port_id(field.stable_id),
+                    PortDirection.OUTPUT,
+                    value_type=field.value_type,
+                    display_name=field.name,
+                )
+                for field in event_type.fields
+            )
+            for field, port in zip(event_type.fields, payload_ports):
+                field_by_port[(payload_type_id, port.id)] = field.stable_id
+            registry.register(
+                NodeDef(
+                    payload_type_id,
+                    f"Event Payload: {event_type.name} <- "
+                    f"{emitter_names.get(route.source_emitter_id, route.source_emitter_id)}",
+                    payload_ports,
+                    (),
+                    {"expression": "event_payload"},
+                )
+            )
     abi_payload = {
         "event_types": [event_type.to_dict() for event_type in asset.event_types],
         "event_routes": [route.to_dict() for route in asset.event_routes],
@@ -104,6 +143,9 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
         registry,
         MappingProxyType(route_by_type_id),
         MappingProxyType(source_by_type_id),
+        MappingProxyType(input_route_by_type_id),
+        MappingProxyType(target_by_type_id),
+        MappingProxyType(field_by_port),
         hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
     )
 
@@ -494,5 +536,6 @@ __all__ = [
     "ParticleGraphNodeDefinitionSet",
     "particle_event_output_type_id",
     "particle_event_payload_port_id",
+    "particle_event_payload_type_id",
     "particle_graph_node_definitions",
 ]

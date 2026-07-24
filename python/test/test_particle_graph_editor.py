@@ -10,14 +10,17 @@ from Infernux.engine.ui.graph_document_authoring import (
     ParticleEmitterGraphAuthoringModel,
     particle_stage_definition_filter,
 )
+from Infernux.graph.types import TypeRef, ValueType
 from Infernux.particle.asset import (
     ParticleEmitterAsset,
+    ParticleEventField,
     ParticleEventRoute,
     ParticleEventType,
     ParticleGraphAsset,
 )
 from Infernux.particle.nodes import (
     particle_event_output_type_id,
+    particle_event_payload_type_id,
     particle_graph_node_definitions,
 )
 
@@ -100,7 +103,14 @@ def test_particle_event_output_is_available_in_every_emitter_stage():
     )
     asset = ParticleGraphAsset(
         emitters=(source, target),
-        event_types=(ParticleEventType("event", "Event", 32),),
+        event_types=(
+            ParticleEventType(
+                "event",
+                "Event",
+                32,
+                (ParticleEventField("amount", "Amount", TypeRef(ValueType.F32), 1.0),),
+            ),
+        ),
         event_routes=routes,
     )
     model = ParticleEmitterGraphAuthoringModel(
@@ -123,6 +133,12 @@ def test_particle_event_output_is_available_in_every_emitter_stage():
         particle_event_output_type_id(route.stable_id, route.source_stage)
         for route in routes
     )
+    for route in routes:
+        payload_type_id = particle_event_payload_type_id(route.stable_id)
+        assert payload_type_id in target_types
+        target_model.prepare_node_creation("init")
+        node = target_model.add_node(payload_type_id, 200.0, 230.0)
+        assert target_model.stage_for_uid(node.uid) == "init"
 
 
 def test_default_rendering_stage_opens_without_overlapping_output():

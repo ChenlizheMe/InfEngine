@@ -10,7 +10,12 @@ import math
 from typing import Any, Mapping
 
 from Infernux.graph.registry import PortDirection, PortKind
-from Infernux.graph.expression_ir import ExpressionCompileError, ExpressionCompiler, ExpressionProgram
+from Infernux.graph.expression_ir import (
+    ExpressionCompileError,
+    ExpressionCompiler,
+    ExpressionInstruction,
+    ExpressionProgram,
+)
 from Infernux.graph.types import AssetReference, TypeRef, ValueType
 
 from .asset import EmitterSettings, ParticleAttribute, ParticleGraphAsset
@@ -377,16 +382,28 @@ class ParticleGraphCompiler:
         definitions,
     ) -> ParticleEmitterHIR:
         init = self._compile_stage(
-            ParticleStage.INIT, emitter.init, emitter.settings, definitions
+            ParticleStage.INIT,
+            emitter.init,
+            emitter.settings,
+            definitions,
+            events,
+            emitter,
         )
         update = self._compile_stage(
-            ParticleStage.UPDATE, emitter.update, emitter.settings, definitions
+            ParticleStage.UPDATE,
+            emitter.update,
+            emitter.settings,
+            definitions,
+            events,
+            emitter,
         )
         rendering = self._compile_stage(
             ParticleStage.RENDERING,
             emitter.rendering,
             emitter.settings,
             definitions,
+            events,
+            emitter,
         )
         routes_by_id = {route.stable_id: route for route in events.routes}
         stage_documents = {
@@ -677,6 +694,8 @@ class ParticleGraphCompiler:
         document,
         settings: EmitterSettings,
         definitions,
+        events: ParticleEventSchedule,
+        emitter,
     ) -> ParticleStageHIR:
         registry = definitions.registry
         root_type = f"particle.root.{stage.value}"
@@ -703,6 +722,14 @@ class ParticleGraphCompiler:
             )
         except ExpressionCompileError as exc:
             raise ParticleCompileError(str(exc)) from exc
+        expressions = self._resolve_event_payload_expressions(
+            expressions,
+            document,
+            stage,
+            emitter.stable_id,
+            definitions,
+            events,
+        )
         value_bindings = {
             (link.target_node, link.target_port): result_id
             for link, (result_id, _value_type) in zip(value_links, expressions.outputs)
@@ -712,6 +739,79 @@ class ParticleGraphCompiler:
             self._graph_operations(document, root.uid, value_bindings, definitions)
         )
         return ParticleStageHIR(stage, root.uid, expressions, tuple(operations))
+
+    @staticmethod
+    def _resolve_event_payload_expressions(
+        expressions: ExpressionProgram,
+        document,
+        stage: ParticleStage,
+        emitter_id: str,
+        definitions,
+        events: ParticleEventSchedule,
+    ) -> ExpressionProgram:
+        if not any(
+            instruction.opcode == "event_payload"
+            for instruction in expressions.instructions
+        ):
+            return expressions
+        if stage is not ParticleStage.INIT:
+            raise ParticleCompileError("Event Payload is only valid in the Init stage")
+
+        node_types = {node.uid: node.type_id for node in document.nodes}
+        routes = {
+            route.stable_id: (index, route)
+            for index, route in enumerate(events.routes)
+        }
+        event_types = {
+            event_type.type_index: event_type for event_type in events.event_types
+        }
+        resolved = []
+        for instruction in expressions.instructions:
+            if instruction.opcode != "event_payload":
+                resolved.append(instruction)
+                continue
+            type_id = node_types.get(instruction.source_node_uid, "")
+            route_id = definitions.event_input_route_by_type_id.get(type_id, "")
+            field_id = definitions.event_field_by_port.get(
+                (type_id, instruction.source_port_id), ""
+            )
+            route_entry = routes.get(route_id)
+            if route_entry is None or not field_id:
+                raise ParticleCompileError("Event Payload node does not match this event ABI")
+            channel_index, route = route_entry
+            if route.target_emitter_id != emitter_id:
+                raise ParticleCompileError(
+                    f"Event Payload route {route_id!r} belongs to target emitter "
+                    f"{route.target_emitter_id!r}, not {emitter_id!r}"
+                )
+            event_type = event_types[route.event_type_index]
+            field = next(
+                (value for value in event_type.fields if value.stable_id == field_id),
+                None,
+            )
+            if field is None or field.value_type != instruction.result_type:
+                raise ParticleCompileError(
+                    f"Event Payload field {field_id!r} does not match its node port"
+                )
+            resolved.append(
+                ExpressionInstruction(
+                    instruction.result_id,
+                    "event_payload",
+                    instruction.result_type,
+                    instruction.operands,
+                    instruction.source_node_uid,
+                    instruction.source_port_id,
+                    (
+                        ("channel_index", channel_index),
+                        ("word_offset", field.word_offset),
+                        ("word_count", field.word_count),
+                        ("default", field.default),
+                    ),
+                )
+            )
+        return ExpressionProgram(
+            tuple(resolved), expressions.outputs, expressions.semantic_hash
+        )
 
     def _graph_operations(self, document, root_uid: str, value_bindings, definitions):
         registry = definitions.registry

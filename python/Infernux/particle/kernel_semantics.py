@@ -49,6 +49,12 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "load_attribute": KernelOpcodeSpec(True, 0, frozenset({"attribute"})),
     "store_attribute": KernelOpcodeSpec(False, 1, frozenset({"attribute"})),
     "load_uniform": KernelOpcodeSpec(True, 0, frozenset({"name"})),
+    "event_payload": KernelOpcodeSpec(
+        True,
+        0,
+        frozenset({"channel_index", "word_offset", "word_count", "default"}),
+        _INIT_ONLY,
+    ),
     "add": KernelOpcodeSpec(True, 2),
     "subtract": KernelOpcodeSpec(True, 2),
     "multiply": KernelOpcodeSpec(True, 2),
@@ -271,6 +277,25 @@ def _validate_opcode_types(
         expected = KERNEL_RUNTIME_UNIFORMS.get(immediates["name"])
         if expected is None or result_type != expected:
             raise KernelSemanticError("kernel uniform name or result type is invalid")
+    elif opcode == "event_payload":
+        _validate_u32(immediates["channel_index"], "event channel index")
+        _validate_u32(immediates["word_offset"], "event payload word offset")
+        _validate_u32(immediates["word_count"], "event payload word count")
+        expected_words = {
+            ValueType.BOOL: 1,
+            ValueType.I32: 1,
+            ValueType.U32: 1,
+            ValueType.F32: 1,
+            ValueType.VEC2: 2,
+            ValueType.VEC3: 3,
+            ValueType.VEC4: 4,
+            ValueType.COLOR: 4,
+            ValueType.MAT3: 12,
+            ValueType.MAT4: 16,
+        }.get(result_type.value_type if result_type is not None else None)
+        if expected_words is None or immediates["word_count"] != expected_words:
+            raise KernelSemanticError("kernel event payload result layout is invalid")
+        _validate_literal(result_type, immediates["default"])
     elif opcode in {"add", "subtract", "divide"}:
         if result_type is None or operands != (result_type, result_type):
             raise KernelSemanticError(

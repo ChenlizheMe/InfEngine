@@ -35,6 +35,7 @@ from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, Value
 from Infernux.particle.nodes import (
     particle_event_output_type_id,
     particle_event_payload_port_id,
+    particle_event_payload_type_id,
 )
 
 
@@ -104,7 +105,36 @@ def _event_output_program():
         ),
     )
     source = ParticleEmitterAsset(stable_id="source", update=update)
-    target = ParticleEmitterAsset(stable_id="target")
+    target_init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "impact.payload",
+                particle_event_payload_type_id("impact-route"),
+            ),
+            GraphNodeRecord("impact.weight", "particle.attribute.set_size"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "target.stream",
+                "root.init",
+                "out",
+                "impact.weight",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "target.weight",
+                "impact.payload",
+                particle_event_payload_port_id("weight"),
+                "impact.weight",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    target = ParticleEmitterAsset(stable_id="target", init=target_init)
     impact = ParticleEventType(
         "impact",
         "Impact",
@@ -121,6 +151,12 @@ def _event_output_program():
                 "Kind",
                 TypeRef(ValueType.U32),
                 7,
+            ),
+            ParticleEventField(
+                "weight",
+                "Weight",
+                TypeRef(ValueType.F32),
+                2.5,
             ),
         ),
     )
@@ -145,7 +181,7 @@ def _event_output_program():
     return kernel, GpuParticleGlslLowerer().lower(kernel)
 
 
-def test_event_output_lowers_to_stage_end_gpu_append_with_typed_defaults():
+def test_gpu_event_payload_round_trips_from_stage_output_to_event_init():
     kernel, gpu = _event_output_program()
     instruction = next(
         instruction
@@ -158,15 +194,29 @@ def test_event_output_lowers_to_stage_end_gpu_append_with_typed_defaults():
         TypeRef(ValueType.BOOL),
         TypeRef(ValueType.VEC3),
         TypeRef(ValueType.U32),
+        TypeRef(ValueType.F32),
     ]
     assert [field["stable_id"] for field in immediate["payload_layout"]] == [
         "position",
         "kind",
+        "weight",
     ]
-    assert [field["word_offset"] for field in immediate["payload_layout"]] == [0, 3]
-    assert kernel.events.event_types[0].payload_stride_words == 4
+    assert [field["word_offset"] for field in immediate["payload_layout"]] == [0, 3, 4]
+    assert kernel.events.event_types[0].payload_stride_words == 5
     assert kernel.events.event_types[0].fields[0].value_type == TypeRef(ValueType.VEC3)
     assert kernel.events.routes[0].source_stage.value == "update"
+    target_payload = next(
+        instruction
+        for instruction in kernel.emitters[1].init.instructions
+        if instruction.opcode == "event_payload"
+    )
+    assert target_payload.result_type == TypeRef(ValueType.F32)
+    assert target_payload.immediate_dict() == {
+        "channel_index": 0,
+        "word_offset": 4,
+        "word_count": 1,
+        "default": 2.5,
+    }
 
     source = gpu.emitters[0]
     assert source.event_output_stages == ("update",)
@@ -177,6 +227,11 @@ def test_event_output_lowers_to_stage_end_gpu_append_with_typed_defaults():
     assert "vec3(4.0, 5.0, 6.0)" in source.update
     assert "floatBitsToUint" in source.update
     assert "ParticleEventOutputChannels" not in source.init
+    target_source = gpu.emitters[1]
+    assert "uintBitsToFloat" not in target_source.init
+    assert "= 2.5;" in target_source.init
+    assert "channel_index == 0u" in target_source.event_init
+    assert "event_record_words[record_base + 8u]" in target_source.event_init
     restored = type(kernel).from_dict(kernel.to_dict())
     assert GpuParticleGlslLowerer().lower(restored).emitters[0].update == source.update
     corrupted = copy.deepcopy(kernel.to_dict())
