@@ -66,8 +66,8 @@ def register_session_tools(mcp, project_path: str) -> None:
         return main_thread("mcp_supervisor_shutdown", _request_close, arguments={})
 
     @mcp.tool(name="mcp_attempt_start")
-    def mcp_attempt_start(task: str, checkpoint: str) -> dict:
-        """Start one checkpoint-bound, replayable project attempt."""
+    def mcp_attempt_start(task: str, checkpoint: str = "") -> dict:
+        """Start a replayable attempt; managed sessions require an explicit checkpoint."""
         return ok(session.start_attempt(task, checkpoint))
 
     @mcp.tool(name="mcp_attempt_stop")

@@ -359,7 +359,11 @@ def start_attempt(task: str, checkpoint: str) -> dict[str, Any]:
         raise McpPolicyError("A project attempt is already active. Stop it before starting another attempt.")
     checkpoint = str(checkpoint or "").strip()
     if not checkpoint:
-        raise McpPolicyError("Project attempts require a non-empty checkpoint identifier.")
+        if active.managed_checkpoints_required:
+            raise McpPolicyError(
+                "Managed project attempts require a checkpoint from mcp_checkpoint_list."
+            )
+        checkpoint = "session-start"
     checkpoint_proof: dict[str, Any] = {
         "managed": False,
         "checkpoint_id": checkpoint,

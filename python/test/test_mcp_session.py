@@ -197,6 +197,26 @@ def test_global_validation_writes_logic_backed_blocker(tmp_path):
     assert report["attempt_manifest_path"] == stopped["attempt_manifest_path"]
 
 
+def test_unmanaged_attempt_uses_session_start_when_checkpoint_is_omitted(tmp_path):
+    session.configure(str(tmp_path), _config("developer_assist"))
+
+    attempt = session.start_attempt("author a particle graph", "")
+    stopped = session.stop_attempt()
+
+    assert attempt["checkpoint"] == "session-start"
+    assert stopped["checkpoint"] == "session-start"
+
+
+def test_managed_attempt_still_requires_a_supervisor_checkpoint(tmp_path):
+    session.configure(
+        str(tmp_path),
+        _config("global_validation", managed_checkpoints_required=True),
+    )
+
+    with pytest.raises(session.McpPolicyError, match="mcp_checkpoint_list"):
+        session.start_attempt("validate particles", "")
+
+
 def test_global_validation_trace_persists_attempt_and_session_context(tmp_path):
     configured = session.configure(str(tmp_path), _config("global_validation", recording_enabled=True))
 
