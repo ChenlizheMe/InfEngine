@@ -91,7 +91,7 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
             # "Waiting for server to respond to `initialize` request...".
             for transport in ("streamable-http", "http"):
                 try:
-                    _server.run(transport=transport, host=host, port=int(port))
+                    _run_http_transport(_server, transport, host, int(port))
                     return
                 except Exception as exc:
                     last_error = exc
@@ -104,6 +104,18 @@ def start_server(project_path: str, *, host: str = HOST, port: int = PORT) -> bo
     _server_thread.start()
     Debug.log_internal(f"Infernux MCP HTTP server starting at {endpoint_url(host=host, port=int(port))}")
     return True
+
+
+def _run_http_transport(server, transport: str, host: str, port: int) -> None:
+    server.run(
+        transport=transport,
+        host=host,
+        port=port,
+        show_banner=False,
+        # GUI launches use pythonw.exe, where stdout/stderr are None.
+        # Uvicorn's default formatter calls isatty() before binding.
+        uvicorn_config={"log_config": None},
+    )
 
 
 def stop_server() -> None:
