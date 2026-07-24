@@ -560,6 +560,23 @@ def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
     assert "ribbon" in catalog["types"][0]["type_id"]
 
 
+def test_particle_graph_editor_rejects_camera_sort_for_ribbon_output():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    ribbon = panel.add_authoring_node(
+        "rendering", "particle.output.ribbon", 520.0, 430.0
+    )
+
+    assert ribbon["properties"]["sort"] == "none"
+    with pytest.raises(ValueError, match="requires sort='none'"):
+        panel.set_node_property(ribbon["uid"], "sort", "back_to_front")
+    snapshot = panel.authoring_snapshot()
+    saved = next(node for node in snapshot["nodes"] if node["uid"] == ribbon["uid"])
+    assert saved["properties"]["sort"] == "none"
+
+
 def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer

@@ -423,6 +423,14 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise ValueError(
                 "AssetRef properties must use particle_graph_set_node_asset"
             )
+        if (
+            node.type_id == "particle.output.ribbon"
+            and key == "sort"
+            and str(value) != "none"
+        ):
+            raise ValueError(
+                "Ribbon Output uses stable strip topology ordering and requires sort='none'"
+            )
         error = ExpressionCompiler._literal_error(field.value_type, value)
         if error:
             raise ValueError(
@@ -2384,7 +2392,11 @@ class ParticleGraphEditorPanel(EditorPanel):
                 if selected_reference:
                     new_value = selected_reference[-1]
             elif value_type is ValueType.STRING and key == "sort":
-                options = ["none", "back_to_front", "front_to_back"]
+                options = (
+                    ["none"]
+                    if node.type_id == "particle.output.ribbon"
+                    else ["none", "back_to_front", "front_to_back"]
+                )
                 current = options.index(value) if value in options else 0
                 current = ctx.combo(
                     f"{label}##particle_node_{key}",
