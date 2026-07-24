@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 import os
+from dataclasses import fields as dataclass_fields, is_dataclass, replace
 from functools import lru_cache
 from typing import Any
 
@@ -60,6 +61,56 @@ def float_close(a: float, b: float, rel_tol: float = 1e-5,
     through JSON & pybind11.
     """
     return math.isclose(a, b, rel_tol=rel_tol, abs_tol=abs_tol)
+
+
+def preserve_ui_float_precision(candidate, original):
+    """Restore Python values when a UI widget only introduced float32 noise."""
+    if type(candidate) is float and type(original) is float:
+        if math.isclose(candidate, original, rel_tol=6.0e-8, abs_tol=1.0e-8):
+            return original
+        return candidate
+    if (
+        type(candidate) is tuple
+        and type(original) is tuple
+        and len(candidate) == len(original)
+    ):
+        return tuple(
+            preserve_ui_float_precision(value, previous)
+            for value, previous in zip(candidate, original)
+        )
+    if (
+        type(candidate) is list
+        and type(original) is list
+        and len(candidate) == len(original)
+    ):
+        return [
+            preserve_ui_float_precision(value, previous)
+            for value, previous in zip(candidate, original)
+        ]
+    if (
+        type(candidate) is dict
+        and type(original) is dict
+        and set(candidate) == set(original)
+    ):
+        return {
+            key: preserve_ui_float_precision(value, original[key])
+            for key, value in candidate.items()
+        }
+    if (
+        type(candidate) is type(original)
+        and is_dataclass(candidate)
+        and not isinstance(candidate, type)
+    ):
+        return replace(
+            candidate,
+            **{
+                field.name: preserve_ui_float_precision(
+                    getattr(candidate, field.name), getattr(original, field.name)
+                )
+                for field in dataclass_fields(candidate)
+            },
+        )
+    return candidate
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -482,6 +482,27 @@ def test_node_graph_context_menu_uses_the_host_namespace():
     } <= semantic_ids
 
 
+def test_node_graph_inline_float32_round_trip_does_not_emit_a_change():
+    import struct
+
+    node = SimpleNamespace(uid="node", data={"gravity": [0.0, -9.81, 0.0]})
+    view = NodeGraphView()
+    changes = []
+    view.on_node_data_changed = lambda *args: changes.append(args)
+    float32 = lambda value: struct.unpack("f", struct.pack("f", value))[0]
+
+    view._commit_inline_value(
+        node,
+        "gravity",
+        [float32(value) for value in node.data["gravity"]],
+    )
+
+    assert changes == []
+
+    view._commit_inline_value(node, "gravity", [0.0, -8.5, 0.0])
+    assert changes == [("node", "gravity", [0.0, -9.81, 0.0], [0.0, -8.5, 0.0])]
+
+
 def test_node_graph_drop_on_occupied_input_requests_atomic_replacement():
     from Infernux.core.node_graph import (
         NodeGraph,

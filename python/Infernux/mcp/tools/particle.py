@@ -323,6 +323,46 @@ def register_particle_tools(mcp, project_path: str) -> None:
             },
         )
 
+    @mcp.tool(name="particle_graph_remove_event_route")
+    def particle_graph_remove_event_route(route_id: str) -> dict:
+        """Remove one event route and its route-private graph nodes."""
+
+        def _remove():
+            panel = _require_particle_graph_panel()
+            route = panel.remove_event_route(route_id)
+            return {
+                "event_route": route,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_remove_event_route",
+            _remove,
+            arguments={"route_id": route_id},
+        )
+
+    @mcp.tool(name="particle_graph_remove_event_type")
+    def particle_graph_remove_event_type(event_type_id: str) -> dict:
+        """Remove one event schema and cascade all dependent routes and nodes."""
+
+        def _remove():
+            panel = _require_particle_graph_panel()
+            event_type = panel.remove_event_type(event_type_id)
+            return {
+                "event_type": event_type,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_remove_event_type",
+            _remove,
+            arguments={"event_type_id": event_type_id},
+        )
+
     @mcp.tool(name="particle_graph_set_rendering_output")
     def particle_graph_set_rendering_output(node_uid: str) -> dict:
         """Connect the Rendering root stream to exactly one output node."""
@@ -354,6 +394,22 @@ def register_particle_tools(mcp, project_path: str) -> None:
             return _portable_snapshot(panel.authoring_snapshot(), project_path)
 
         return main_thread("particle_graph_reload_editor", _reload)
+
+    @mcp.tool(name="particle_graph_discard_editor")
+    def particle_graph_discard_editor() -> dict:
+        """Explicitly discard the visible ParticleGraph document's unsaved state."""
+
+        def _discard():
+            panel = _require_particle_graph_panel()
+            result = panel.discard_unsaved_changes()
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread("particle_graph_discard_editor", _discard)
 
     @mcp.tool(name="particle_system_inspect_runtime")
     def particle_system_inspect_runtime(
@@ -648,6 +704,28 @@ def _register_metadata() -> None:
         next_suggested_tools=["particle_graph_add_node", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
+        "particle_graph_remove_event_route",
+        summary="Remove a typed event route and its route-private nodes through the editor.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "route", "remove"],
+        aliases=["remove particle event route", "移除粒子事件路由"],
+        preconditions=["The route stable ID must appear in particle_graph_inspect_editor."],
+        side_effects=["Records one Undo transaction and removes derived Output/Payload nodes."],
+        recovery=["Inspect event_routes and retry with a current stable ID."],
+        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
+    )
+    register_tool_metadata(
+        "particle_graph_remove_event_type",
+        summary="Remove a typed event schema and cascade its routes through the editor.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "schema", "remove"],
+        aliases=["remove particle event type", "移除粒子事件类型"],
+        preconditions=["The event type stable ID must appear in particle_graph_inspect_editor."],
+        side_effects=["Records one Undo transaction and cascades dependent routes and nodes."],
+        recovery=["Inspect event_types and retry with a current stable ID."],
+        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
+    )
+    register_tool_metadata(
         "particle_graph_set_node_asset",
         summary="Set a Mesh or Material reference through the live ParticleGraph editor model.",
         category="assets/particle_graph",
@@ -696,6 +774,17 @@ def _register_metadata() -> None:
         preconditions=["The open ParticleGraph document must be clean and have a source path."],
         recovery=["Save the document with editor_save_document, then retry."],
         next_suggested_tools=["particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_discard_editor",
+        summary="Explicitly discard the visible ParticleGraph document before opening another asset.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "discard", "unsaved"],
+        aliases=["discard particle graph", "放弃粒子图修改"],
+        preconditions=["A ParticleGraph editor document must be visible."],
+        side_effects=["Restores the saved asset, or clears an unsaved in-memory graph."],
+        recovery=["Inspect the editor after discard before opening another asset."],
+        next_suggested_tools=["particle_graph_open_asset", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
         "particle_system_inspect_runtime",

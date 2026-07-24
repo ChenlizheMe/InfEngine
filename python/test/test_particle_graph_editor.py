@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 
 import pytest
 
@@ -324,6 +325,42 @@ def test_particle_graph_editor_discards_incompatible_transient_draft(tmp_path):
     assert restored.asset.stable_id == "current-graph"
 
 
+def test_particle_graph_editor_explicitly_discards_an_unsaved_memory_document():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    panel.add_authoring_emitter("Temporary")
+
+    result = panel.discard_unsaved_changes()
+
+    assert result == {
+        "discarded": True,
+        "previous_file_path": "",
+        "file_path": "",
+        "dirty": False,
+    }
+    assert len(panel.asset.emitters) == 1
+    assert panel.asset.event_types == ()
+    assert panel.asset.event_routes == ()
+
+
+def test_particle_graph_editor_ignores_float32_widget_round_trip_noise():
+    from Infernux.engine.ui.inspector_utils import preserve_ui_float_precision
+    from Infernux.particle.asset import EmitterSettings
+
+    original = EmitterSettings(gravity=(0.0, -9.81, 0.0), spawn_rate=3.7)
+    float32 = lambda value: struct.unpack("f", struct.pack("f", value))[0]
+    widget_value = EmitterSettings(
+        gravity=tuple(float32(value) for value in original.gravity),
+        spawn_rate=float32(original.spawn_rate),
+    )
+
+    assert preserve_ui_float_precision(widget_value, original) == original
+    changed = EmitterSettings(gravity=(0.0, -8.5, 0.0), spawn_rate=4.0)
+    assert preserve_ui_float_precision(changed, original) == changed
+
+
 def test_particle_graph_save_replaces_persisted_dirty_draft(tmp_path, monkeypatch):
     from Infernux.engine.ui import panel_state
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
@@ -603,6 +640,84 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
         instruction.opcode == "event_payload"
         for instruction in kernel.emitters[1].init.instructions
     )
+
+
+def test_particle_graph_editor_removes_event_route_nodes_transactionally():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    source_id = panel.asset.emitters[0].stable_id
+    target_id = panel.add_authoring_emitter("Target")["stable_id"]
+    event_type = panel.add_event_type(
+        "Impact",
+        32,
+        [
+            {
+                "name": "Weight",
+                "type": TypeRef(ValueType.F32).to_dict(),
+                "default": 1.0,
+            }
+        ],
+    )
+    route = panel.add_event_route(
+        event_type["stable_id"], source_id, "update", target_id, 2
+    )
+
+    panel.select_authoring_emitter(source_id)
+    output = panel.add_authoring_node(
+        "update",
+        particle_event_output_type_id(route["stable_id"], "update"),
+        240.0,
+        230.0,
+    )
+    panel.connect_stream("update::root.update", output["uid"])
+    panel.select_authoring_emitter(target_id)
+    panel.add_authoring_node(
+        "init",
+        particle_event_payload_type_id(route["stable_id"]),
+        160.0,
+        0.0,
+    )
+
+    removed = panel.remove_event_route(route["stable_id"])
+
+    assert removed == route
+    assert panel.asset.event_routes == ()
+    removed_types = {
+        particle_event_output_type_id(route["stable_id"], "update"),
+        particle_event_payload_type_id(route["stable_id"]),
+    }
+    assert not any(
+        node.type_id in removed_types
+        for emitter in panel.asset.emitters
+        for stage in (emitter.init, emitter.update, emitter.rendering)
+        for node in stage.nodes
+    )
+    ParticleGraphAsset.from_dict(panel.asset.to_dict())
+
+
+def test_particle_graph_editor_removing_emitter_cascades_event_routes():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    source_id = panel.asset.emitters[0].stable_id
+    target_id = panel.add_authoring_emitter("Target")["stable_id"]
+    event_type = panel.add_event_type("Death", 16, [])
+    panel.add_event_route(
+        event_type["stable_id"], source_id, "rendering", target_id, 1
+    )
+
+    panel.select_authoring_emitter(target_id)
+    panel._remove_selected_emitter()
+
+    assert [emitter.stable_id for emitter in panel.asset.emitters] == [source_id]
+    assert panel.asset.event_routes == ()
+    assert [value.stable_id for value in panel.asset.event_types] == [
+        event_type["stable_id"]
+    ]
+    ParticleGraphAsset.from_dict(panel.asset.to_dict())
 
 
 def test_particle_node_inspector_edits_unconnected_value_input_defaults():

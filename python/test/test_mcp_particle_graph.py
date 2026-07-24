@@ -102,6 +102,14 @@ class _Panel:
         )
         return {"stable_id": "route-id", "event_type_id": event_type_id}
 
+    def remove_event_route(self, route_id):
+        self.calls.append(("remove-event-route", route_id))
+        return {"stable_id": route_id, "event_type_id": "event-id"}
+
+    def remove_event_type(self, event_type_id):
+        self.calls.append(("remove-event-type", event_type_id))
+        return {"stable_id": event_type_id, "name": "Impact"}
+
     def set_rendering_output(self, node_uid):
         self.calls.append(("output", node_uid))
         return {"node_uid": node_uid, "link_uid": "rendering::mesh-link", "changed": True}
@@ -109,6 +117,15 @@ class _Panel:
     def reload_from_disk(self):
         self.calls.append(("reload",))
         return True
+
+    def discard_unsaved_changes(self):
+        self.calls.append(("discard",))
+        return {
+            "discarded": True,
+            "previous_file_path": "",
+            "file_path": "",
+            "dirty": False,
+        }
 
 
 def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeypatch):
@@ -166,10 +183,13 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     event_route = mcp.tools["particle_graph_add_event_route"](
         "event-id", "source", "update", "target", 2
     )
+    removed_route = mcp.tools["particle_graph_remove_event_route"]("route-id")
+    removed_type = mcp.tools["particle_graph_remove_event_type"]("event-id")
     routed = mcp.tools["particle_graph_set_rendering_output"](
         "rendering::mesh-output"
     )
     reloaded = mcp.tools["particle_graph_reload_editor"]()
+    discarded = mcp.tools["particle_graph_discard_editor"]()
 
     assert opened["file_path"] == "Assets/Sparks.particlegraph"
     assert inspected["file_path"] == "Assets/Sparks.particlegraph"
@@ -184,8 +204,11 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert emitter_settings["changed"] is True
     assert event_type["event_type"]["stable_id"] == "event-id"
     assert event_route["event_route"]["stable_id"] == "route-id"
+    assert removed_route["event_route"]["stable_id"] == "route-id"
+    assert removed_type["event_type"]["stable_id"] == "event-id"
     assert routed["changed"] is True
     assert reloaded["file_path"] == "Assets/Sparks.particlegraph"
+    assert discarded["discarded"] is True
     assert panel.calls == [
         ("rendering::mesh-output", "mesh", str(mesh_path.resolve())),
         ("add", "update", "particle.update.rotate_orientation", 120.0, 40.0),
@@ -213,8 +236,11 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             ],
         ),
         ("event-route", "event-id", "source", "update", "target", 2),
+        ("remove-event-route", "route-id"),
+        ("remove-event-type", "event-id"),
         ("output", "rendering::mesh-output"),
         ("reload",),
+        ("discard",),
     ]
 
 

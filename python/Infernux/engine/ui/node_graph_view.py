@@ -34,6 +34,7 @@ from Infernux.core.node_graph import (
     PinKind,
 )
 from Infernux.engine.i18n import t
+from Infernux.engine.ui.inspector_utils import preserve_ui_float_precision
 from Infernux.engine.ui.theme import Theme
 
 if TYPE_CHECKING:
@@ -765,6 +766,7 @@ class NodeGraphView:
 
     def _commit_inline_value(self, node: GraphNode, field_id: str, value) -> None:
         previous = copy.deepcopy(node.data.get(field_id))
+        value = preserve_ui_float_precision(value, previous)
         if previous == value:
             return
         if self.on_node_data_changed is not None:
