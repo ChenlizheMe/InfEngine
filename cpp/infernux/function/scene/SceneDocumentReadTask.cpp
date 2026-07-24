@@ -137,11 +137,7 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
 void ValidateSceneDocument(const json &document)
 {
     static const std::unordered_set<std::string> allowed = {
-        "name",
-        "isPlaying",
-        "objects",
-        "mainCameraComponentId",
-        "environment",
+        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
     };
     RequireExactFields(document, allowed, "Scene");
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||

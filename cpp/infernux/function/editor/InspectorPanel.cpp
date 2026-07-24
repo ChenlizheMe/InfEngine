@@ -330,8 +330,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
     uint64_t valueGeneration = getValueGeneration ? getValueGeneration() : 0;
     const bool objectChanged = (m_cachedObjInfoId != objId) || (m_cachedComponentListObjId != objId);
-    bool refreshSnapshots = objectChanged ||
-                            (valueGeneration != m_cachedValueGeneration) ||
+    bool refreshSnapshots = objectChanged || (valueGeneration != m_cachedValueGeneration) ||
                             ((m_frameTimeNow - m_cachedValueRefreshTime) >= VALUE_CACHE_TTL);
 
     if (objectChanged) {
@@ -494,8 +493,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
                     ImGui::PopStyleColor();
                 } else if (renderComponentBody) {
                     const auto heightIt = m_cachedComponentBodyHeights.find(comp.componentId);
-                    const float cachedHeight =
-                        heightIt != m_cachedComponentBodyHeights.end() ? heightIt->second : 0.0f;
+                    const float cachedHeight = heightIt != m_cachedComponentBodyHeights.end() ? heightIt->second : 0.0f;
                     if (cachedHeight > 0.0f && ctx && !ctx->IsVirtualizedRegionVisible(cachedHeight)) {
                         ImGui::Dummy(ImVec2(0.0f, cachedHeight));
                     } else {

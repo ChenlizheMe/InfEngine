@@ -341,8 +341,7 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         }
     };
 
-    requireExactKeys(root,
-                     {"$schema", "stable_id", "name", "emitters", "parameters", "event_types", "event_routes"},
+    requireExactKeys(root, {"$schema", "stable_id", "name", "emitters", "parameters", "event_types", "event_routes"},
                      "particle graph");
     if (!root["$schema"].is_string() || root["$schema"].get<std::string>() != "infernux.particle_graph")
         throw std::runtime_error("particle graph has an unsupported $schema");
@@ -391,10 +390,10 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
                                  interfaceLocation);
                 readReference(dataInterface["texture"], interfaceLocation + ".texture");
             } else if (kind == "sdf_volume") {
-                requireExactKeys(dataInterface,
-                                 {"kind", "stable_id", "name", "texture", "space", "field_to_space",
-                                  "distance_scale", "filtering"},
-                                 interfaceLocation);
+                requireExactKeys(
+                    dataInterface,
+                    {"kind", "stable_id", "name", "texture", "space", "field_to_space", "distance_scale", "filtering"},
+                    interfaceLocation);
                 readReference(dataInterface["texture"], interfaceLocation + ".texture");
             } else if (kind == "point_cache") {
                 requireExactKeys(dataInterface,

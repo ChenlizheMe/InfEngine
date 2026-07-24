@@ -27,10 +27,9 @@ struct CanonicalLightUpload
 [[nodiscard]] inline CanonicalLightUpload BuildCanonicalLightUpload(const CanonicalLightSnapshot &snapshot)
 {
     CanonicalLightUpload upload;
-    upload.header.countsAndGeneration =
-        glm::uvec4(static_cast<uint32_t>(snapshot.directionalLights.size()),
-                   static_cast<uint32_t>(snapshot.localLights.size()), static_cast<uint32_t>(snapshot.generation),
-                   static_cast<uint32_t>(snapshot.generation >> 32u));
+    upload.header.countsAndGeneration = glm::uvec4(
+        static_cast<uint32_t>(snapshot.directionalLights.size()), static_cast<uint32_t>(snapshot.localLights.size()),
+        static_cast<uint32_t>(snapshot.generation), static_cast<uint32_t>(snapshot.generation >> 32u));
 
     const size_t directionalBytes = snapshot.directionalLights.size() * sizeof(CanonicalLightData);
     const size_t localBytes = snapshot.localLights.size() * sizeof(CanonicalLightData);

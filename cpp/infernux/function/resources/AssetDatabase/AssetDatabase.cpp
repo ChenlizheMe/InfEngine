@@ -1064,28 +1064,27 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         item.request.metadata = *metadata->second;
         item.request.metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(asset.path));
         item.expectedSource = asset.source;
-        item.request.resolveAssetGuid =
-            [pathSnapshot = state->importPathSnapshot, projectRoot = m_projectRoot,
-             sourcePath = asset.path](const std::string &dependencyPath) {
-                if (dependencyPath.empty())
-                    return std::string{};
+        item.request.resolveAssetGuid = [pathSnapshot = state->importPathSnapshot, projectRoot = m_projectRoot,
+                                         sourcePath = asset.path](const std::string &dependencyPath) {
+            if (dependencyPath.empty())
+                return std::string{};
 
-                const auto lookup = [&pathSnapshot](const std::filesystem::path &candidate) {
-                    const auto dependency = pathSnapshot->find(FilesystemPathKey(FromFsPath(candidate)));
-                    return dependency != pathSnapshot->end() ? dependency->second : std::string{};
-                };
-                const std::filesystem::path dependency = ToFsPath(dependencyPath);
-                if (dependency.is_absolute())
-                    return lookup(dependency);
-
-                std::string guid = lookup(ToFsPath(projectRoot) / dependency);
-                if (!guid.empty())
-                    return guid;
-                guid = lookup(ToFsPath(sourcePath).parent_path() / dependency);
-                if (!guid.empty())
-                    return guid;
-                return lookup(dependency);
+            const auto lookup = [&pathSnapshot](const std::filesystem::path &candidate) {
+                const auto dependency = pathSnapshot->find(FilesystemPathKey(FromFsPath(candidate)));
+                return dependency != pathSnapshot->end() ? dependency->second : std::string{};
             };
+            const std::filesystem::path dependency = ToFsPath(dependencyPath);
+            if (dependency.is_absolute())
+                return lookup(dependency);
+
+            std::string guid = lookup(ToFsPath(projectRoot) / dependency);
+            if (!guid.empty())
+                return guid;
+            guid = lookup(ToFsPath(sourcePath).parent_path() / dependency);
+            if (!guid.empty())
+                return guid;
+            return lookup(dependency);
+        };
         state->workerImports.push_back(std::move(item));
         ++processed;
     }

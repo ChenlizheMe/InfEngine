@@ -92,11 +92,7 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         return false;
     }
     static const std::unordered_set<std::string> allowedSceneFields = {
-        "name",
-        "isPlaying",
-        "objects",
-        "mainCameraComponentId",
-        "environment",
+        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
     };
     for (const auto &[key, value] : document.items()) {
         (void)value;

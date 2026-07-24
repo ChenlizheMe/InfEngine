@@ -165,10 +165,9 @@ void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
     if (id) {
         ExpandToObject(id);
         m_scrollToObjectId = id;
-        const bool missingFromCache =
-            std::none_of(m_flatItems.begin(), m_flatItems.end(), [id](const FlatItem &item) {
-                return item.obj && item.obj->GetID() == id;
-            });
+        const bool missingFromCache = std::none_of(m_flatItems.begin(), m_flatItems.end(), [id](const FlatItem &item) {
+            return item.obj && item.obj->GetID() == id;
+        });
         m_forceRootRefresh = missingFromCache;
         if (missingFromCache) {
             Scene *scene = SceneManager::Instance().GetActiveScene();
@@ -324,10 +323,10 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
     const size_t rawRootCount = scene->GetRootObjects().size();
 
     float now = ImGui::GetTime();
-    bool canReuseStale = (allowStale && m_cachedSceneKey == sceneKey && !m_cachedRoots.empty() &&
-                          rawRootCount == m_cachedRawRootCount &&
-                          static_cast<int>(m_cachedRoots.size()) >= STALE_ROOT_THRESHOLD &&
-                          (now - m_lastRootRefreshTime) < STALE_ROOT_INTERVAL);
+    bool canReuseStale =
+        (allowStale && m_cachedSceneKey == sceneKey && !m_cachedRoots.empty() && rawRootCount == m_cachedRawRootCount &&
+         static_cast<int>(m_cachedRoots.size()) >= STALE_ROOT_THRESHOLD &&
+         (now - m_lastRootRefreshTime) < STALE_ROOT_INTERVAL);
 
     if (forceRefresh || rawRootCount != m_cachedRawRootCount || sceneKey != m_cachedSceneKey ||
         (ver != m_cachedStructureVer && !canReuseStale)) {
@@ -1661,9 +1660,8 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
         if (m_selPrimary) {
             ExpandToObject(m_selPrimary);
             const bool selectionMissingFromCache =
-                std::none_of(m_flatItems.begin(), m_flatItems.end(), [this](const FlatItem &item) {
-                    return item.obj && item.obj->GetID() == m_selPrimary;
-                });
+                std::none_of(m_flatItems.begin(), m_flatItems.end(),
+                             [this](const FlatItem &item) { return item.obj && item.obj->GetID() == m_selPrimary; });
             m_forceRootRefresh = selectionMissingFromCache;
         }
     }
@@ -1804,8 +1802,8 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorTheme::TREE_FRAME_PAD.x, EditorTheme::TREE_FRAME_PAD.y);
         ctx->PushStyleVarFloat(ImGuiStyleVar_IndentSpacing, EditorTheme::TREE_INDENT);
 
-        bool allowStale = !m_forceRootRefresh && !ctx->IsWindowFocused(0) && !ctx->IsWindowHovered() &&
-                          !m_cachedRoots.empty();
+        bool allowStale =
+            !m_forceRootRefresh && !ctx->IsWindowFocused(0) && !ctx->IsWindowHovered() && !m_cachedRoots.empty();
         {
             auto t0 = Clock::now();
             RefreshRootObjects(scene, allowStale, m_forceRootRefresh);
@@ -1862,16 +1860,14 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         // exceptional and O(n); the normal cached list remains untouched.
         if (!HasActiveSearch() && m_selPrimary != 0) {
             const bool selectedVisible =
-                std::any_of(m_flatItems.begin(), m_flatItems.end(), [this](const FlatItem &item) {
-                    return item.obj && item.obj->GetID() == m_selPrimary;
-                });
+                std::any_of(m_flatItems.begin(), m_flatItems.end(),
+                            [this](const FlatItem &item) { return item.obj && item.obj->GetID() == m_selPrimary; });
             if (!selectedVisible) {
                 GameObject *selected = scene->FindByID(m_selPrimary);
                 if (selected && selected->GetParent() == nullptr) {
-                    const bool hasVisibleChildren = std::any_of(
-                        selected->GetChildren().begin(), selected->GetChildren().end(), [this](const auto &child) {
-                            return child && !IsHidden(child->GetID());
-                        });
+                    const bool hasVisibleChildren =
+                        std::any_of(selected->GetChildren().begin(), selected->GetChildren().end(),
+                                    [this](const auto &child) { return child && !IsHidden(child->GetID()); });
                     m_flatItems.push_back({selected, 0, hasVisibleChildren});
                 }
             }
@@ -1935,8 +1931,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             // empty clipped range at the bottom.
             int firstVis = (std::max)(0, static_cast<int>((scrollY - startY) / itemH) - 2);
             firstVis = (std::min)(nItems - 1, firstVis);
-            int lastVis = (std::min)(nItems - 1,
-                                     static_cast<int>((scrollY + viewportH - startY) / itemH) + 5);
+            int lastVis = (std::min)(nItems - 1, static_cast<int>((scrollY + viewportH - startY) / itemH) + 5);
             lastVis = (std::max)(firstVis, lastVis);
 
             if (firstVis > 0)

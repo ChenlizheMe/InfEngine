@@ -667,7 +667,7 @@ void MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialNam
 }
 
 void MaterialDescriptorManager::ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,
-                                                          const std::vector<MergedDescriptorBinding> &bindings)
+                                                         const std::vector<MergedDescriptorBinding> &bindings)
 {
     if (!m_textureResolver) {
         return;

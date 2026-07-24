@@ -13,10 +13,10 @@
 #include "VertexInputFilter.h"
 #include "shader/ShaderProgram.h"
 #include "shader/ShaderReflection.h"
-#include <core/types/ColorSpace.h>
 #include "vk/DescriptorBindTrace.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
+#include <core/types/ColorSpace.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <core/error/InxError.h>

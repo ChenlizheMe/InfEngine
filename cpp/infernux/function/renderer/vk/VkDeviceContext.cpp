@@ -155,8 +155,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityF
                                  " absoluteSet=", (matched.firstSet + localIndex), " cmd=0x", matched.commandBufferRaw,
                                  " layout=0x", matched.pipelineLayoutRaw);
                 } else {
-                    INXLOG_ERROR("[VkBindTrace] no recorded bind matched invalid descriptor raw=0x",
-                                 badRawHex.str());
+                    INXLOG_ERROR("[VkBindTrace] no recorded bind matched invalid descriptor raw=0x", badRawHex.str());
                 }
             }
 

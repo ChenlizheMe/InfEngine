@@ -77,8 +77,9 @@ void TestProjectRelativeDependencyOnInitialRefresh()
 
             infernux::AssetIndex index;
             const auto indexPath = root / "Library" / "AssetIndex.json";
-            Require(index.Load(infernux::FromFsPath(indexPath), infernux::FilesystemPathKey(infernux::FromFsPath(root))),
-                    "initial refresh did not persist the asset index");
+            Require(
+                index.Load(infernux::FromFsPath(indexPath), infernux::FilesystemPathKey(infernux::FromFsPath(root))),
+                "initial refresh did not persist the asset index");
             const auto *entry = index.Find(infernux::FilesystemPathKey(infernux::FromFsPath(group)));
             Require(entry != nullptr, "effect group is absent from the initial asset index");
             Require(entry->importSucceeded, "effect group project-relative dependency failed initial import");

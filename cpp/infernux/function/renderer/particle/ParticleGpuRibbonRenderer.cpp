@@ -265,8 +265,7 @@ std::array<float, 4> ParticleGpuRibbonRenderer::ResolveMaterialTint() const noex
     if (!value)
         return {1.0f, 1.0f, 1.0f, 1.0f};
     // Authored Color properties are sRGB; shading runs in linear space.
-    const glm::vec4 tint =
-        property->type == MaterialPropertyType::Color ? inx::color::SrgbToLinear(*value) : *value;
+    const glm::vec4 tint = property->type == MaterialPropertyType::Color ? inx::color::SrgbToLinear(*value) : *value;
     return {tint.x, tint.y, tint.z, tint.w};
 }
 

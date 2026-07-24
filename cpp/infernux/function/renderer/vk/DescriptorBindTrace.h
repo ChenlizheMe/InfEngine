@@ -65,9 +65,8 @@ inline void RecordDescriptorBind(const char *, VkCommandBuffer, VkPipelineLayout
     return false;
 }
 
-inline void CmdBindDescriptorSetsTracked(const char *, VkCommandBuffer cmdBuf,
-                                         VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
-                                         uint32_t firstSet, uint32_t descriptorSetCount,
+inline void CmdBindDescriptorSetsTracked(const char *, VkCommandBuffer cmdBuf, VkPipelineBindPoint pipelineBindPoint,
+                                         VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
                                          const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
                                          const uint32_t *dynamicOffsets)
 {

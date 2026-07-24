@@ -53,19 +53,16 @@ TextureUploadBatch::TextureUploadBatch(const TextureCpuData &cpuData, const rhi:
         throw std::invalid_argument("texture upload requires valid imported mip data");
 
     const auto &baseMip = cpuData.mipLevels.front();
-    m_request.texture.dimension = cpuData.dimension == TextureDimension::Texture3D
-                                      ? rhi::TextureDimension::Texture3D
-                                      : rhi::TextureDimension::Texture2D;
+    m_request.texture.dimension = cpuData.dimension == TextureDimension::Texture3D ? rhi::TextureDimension::Texture3D
+                                                                                   : rhi::TextureDimension::Texture2D;
     m_request.texture.width = baseMip.width;
     m_request.texture.height = baseMip.height;
-    m_request.texture.depthOrLayers =
-        cpuData.dimension == TextureDimension::Texture3D ? baseMip.depth : 1U;
+    m_request.texture.depthOrLayers = cpuData.dimension == TextureDimension::Texture3D ? baseMip.depth : 1U;
     m_request.texture.mipLevels = static_cast<uint32_t>(cpuData.mipLevels.size());
     m_request.texture.format = ToRhiFormat(cpuData.format);
     m_request.texture.usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::TransferDestination;
-    m_request.view.dimension = cpuData.dimension == TextureDimension::Texture3D
-                                   ? rhi::TextureViewDimension::Texture3D
-                                   : rhi::TextureViewDimension::Texture2D;
+    m_request.view.dimension = cpuData.dimension == TextureDimension::Texture3D ? rhi::TextureViewDimension::Texture3D
+                                                                                : rhi::TextureViewDimension::Texture2D;
     m_request.view.format = m_request.texture.format;
     m_request.view.mipCount = m_request.texture.mipLevels;
     m_request.sampler = sampler;
@@ -75,15 +72,8 @@ TextureUploadBatch::TextureUploadBatch(const TextureCpuData &cpuData, const rhi:
         const auto &mip = cpuData.mipLevels[mipLevel];
         if (mip.byteOffset > cpuData.bytes.size() || mip.byteSize > cpuData.bytes.size() - mip.byteOffset)
             throw std::invalid_argument("texture upload mip byte range is outside imported storage");
-        m_subresources.push_back({cpuData.bytes.data() + mip.byteOffset,
-                                  static_cast<size_t>(mip.byteSize),
-                                  mipLevel,
-                                  0,
-                                  1,
-                                  mip.width,
-                                  mip.height,
-                                  mip.depth,
-                                  static_cast<size_t>(mip.rowPitch),
+        m_subresources.push_back({cpuData.bytes.data() + mip.byteOffset, static_cast<size_t>(mip.byteSize), mipLevel, 0,
+                                  1, mip.width, mip.height, mip.depth, static_cast<size_t>(mip.rowPitch),
                                   static_cast<size_t>(mip.slicePitch)});
     }
 }

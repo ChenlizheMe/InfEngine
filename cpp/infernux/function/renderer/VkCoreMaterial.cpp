@@ -669,8 +669,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
 
         if (reportDomainMismatch) {
             static std::unordered_set<std::string> reportedDomainMismatches;
-            const std::string materialName = material->GetName().empty() ? material->GetMaterialKey()
-                                                                         : material->GetName();
+            const std::string materialName =
+                material->GetName().empty() ? material->GetMaterialKey() : material->GetName();
             const std::string failureKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
             if (reportedDomainMismatches.insert(failureKey).second) {
                 INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses shader program '",
@@ -782,8 +782,7 @@ void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)
     // Lighting > Environment): ambient is derived from the skybox material,
     // an explicit gradient, or a flat color.
     Scene *activeScene = SceneManager::Instance().GetActiveScene();
-    const SceneEnvironmentSettings env =
-        activeScene ? activeScene->GetEnvironment() : SceneEnvironmentSettings{};
+    const SceneEnvironmentSettings env = activeScene ? activeScene->GetEnvironment() : SceneEnvironmentSettings{};
     using AmbientSource = SceneEnvironmentSettings::AmbientSource;
 
     // The builtin procedural sky has no backing asset — its parameters are
@@ -819,9 +818,9 @@ void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)
         break;
     case AmbientSource::Skybox:
     default: {
-        std::shared_ptr<InxMaterial> skyMat =
-            activeScene ? activeScene->ResolveSkyboxMaterial()
-                        : AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+        std::shared_ptr<InxMaterial> skyMat = activeScene
+                                                  ? activeScene->ResolveSkyboxMaterial()
+                                                  : AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
         bool applied = false;
         if (skyMat) {
             const auto *skyTopProp = skyMat->GetProperty("skyTopColor");
@@ -831,8 +830,8 @@ void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)
             if (skyTopProp && groundProp) {
                 const glm::vec3 skyTop = glm::vec3(std::get<glm::vec4>(skyTopProp->value));
                 const glm::vec3 ground = glm::vec3(std::get<glm::vec4>(groundProp->value));
-                const glm::vec3 equator = horizonProp ? glm::vec3(std::get<glm::vec4>(horizonProp->value))
-                                                      : glm::mix(ground, skyTop, 0.5f);
+                const glm::vec3 equator =
+                    horizonProp ? glm::vec3(std::get<glm::vec4>(horizonProp->value)) : glm::mix(ground, skyTop, 0.5f);
                 float exposure = 1.0f;
                 if (exposureProp && std::holds_alternative<float>(exposureProp->value))
                     exposure = std::get<float>(exposureProp->value);

@@ -456,8 +456,7 @@ void surface(out SurfaceData surface)
            std::string::npos);
     assert(particleForward.generatedVertexSource.find("v_ParticleNormalizedAge = instance.scale_custom.w;") !=
            std::string::npos);
-    assert(particleForward.generatedVertexSource.find("v_ParticleId = instance.ribbon_data.w;") !=
-           std::string::npos);
+    assert(particleForward.generatedVertexSource.find("v_ParticleId = instance.ribbon_data.w;") != std::string::npos);
     assert(particleForward.generatedVertexSource.find("UniformBufferObject") == std::string::npos);
     assert(particleForward.generatedFragmentSource.find("layout(location = 14) in float v_ParticleAlpha;") !=
            std::string::npos);
@@ -605,8 +604,7 @@ void surface(out SurfaceData surface)
             std::cerr << error << '\n';
     }
     assert(spriteLitCompilation.IsValid());
-    assert(spriteLitCompilation.CreateRuntimeArtifact().FindVariant(infernux::ShaderCompileTarget::Shadow) !=
-           nullptr);
+    assert(spriteLitCompilation.CreateRuntimeArtifact().FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
     const auto spriteShadow =
         std::find_if(spriteLitCompilation.compiledVariants.begin(), spriteLitCompilation.compiledVariants.end(),
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
@@ -630,10 +628,10 @@ void surface(out SurfaceData surface)
             variant.target != infernux::ShaderCompileTarget::ForwardPlus &&
             variant.target != infernux::ShaderCompileTarget::GBuffer)
             continue;
-        assert(variant.generatedVertexSource.find(
-                   "layout(location = 15) flat out uint _inx_ObjectLayerMask;") != std::string::npos);
-        assert(variant.generatedFragmentSource.find(
-                   "layout(location = 15) flat in uint _inx_ObjectLayerMask;") != std::string::npos);
+        assert(variant.generatedVertexSource.find("layout(location = 15) flat out uint _inx_ObjectLayerMask;") !=
+               std::string::npos);
+        assert(variant.generatedFragmentSource.find("layout(location = 15) flat in uint _inx_ObjectLayerMask;") !=
+               std::string::npos);
     }
 
     const std::string fragmentWithoutCustomInputs = R"(

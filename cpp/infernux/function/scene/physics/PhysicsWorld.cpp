@@ -1148,8 +1148,7 @@ void PhysicsWorld::SetBodyLinearVelocity(uint32_t bodyId, const glm::vec3 &vel)
     // An explicit velocity supersedes a pending MoveKinematic arrival stop
     // (e.g. constant-velocity kinematic platforms). Drag-converted statics
     // stay tracked so they are still restored to Static.
-    if (auto it = m_kinematicMoveStates.find(bodyId);
-        it != m_kinematicMoveStates.end() && !it->second.restoreStatic)
+    if (auto it = m_kinematicMoveStates.find(bodyId); it != m_kinematicMoveStates.end() && !it->second.restoreStatic)
         m_kinematicMoveStates.erase(it);
 }
 
@@ -1171,8 +1170,7 @@ void PhysicsWorld::SetBodyAngularVelocity(uint32_t bodyId, const glm::vec3 &vel)
     JPH::BodyInterface &bi = m_physicsSystem->GetBodyInterface();
     bi.SetAngularVelocity(JPH::BodyID(bodyId), JPH::Vec3(vel.x, vel.y, vel.z));
 
-    if (auto it = m_kinematicMoveStates.find(bodyId);
-        it != m_kinematicMoveStates.end() && !it->second.restoreStatic)
+    if (auto it = m_kinematicMoveStates.find(bodyId); it != m_kinematicMoveStates.end() && !it->second.restoreStatic)
         m_kinematicMoveStates.erase(it);
 }
 

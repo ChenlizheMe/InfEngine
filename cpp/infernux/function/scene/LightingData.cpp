@@ -468,13 +468,13 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
                     const std::array<glm::vec3, 8> sliceCorners = {nearSlice[0], nearSlice[1], nearSlice[2],
                                                                    nearSlice[3], farSlice[0],  farSlice[1],
                                                                    farSlice[2],  farSlice[3]};
-                    m_shadowFrame.views.push_back(
-                        lighting::BuildStableDirectionalCascade(lightId, cascade, sliceCorners, direction,
-                                                                splits[cascade], splits[cascade + 1], (*tiles)[cascade]));
+                    m_shadowFrame.views.push_back(lighting::BuildStableDirectionalCascade(
+                        lightId, cascade, sliceCorners, direction, splits[cascade], splits[cascade + 1],
+                        (*tiles)[cascade]));
                 } else {
-                    m_shadowFrame.views.push_back(
-                        lighting::BuildStableDirectionalCascade(lightId, cascade, shadowCamera, direction,
-                                                                splits[cascade], splits[cascade + 1], (*tiles)[cascade]));
+                    m_shadowFrame.views.push_back(lighting::BuildStableDirectionalCascade(
+                        lightId, cascade, shadowCamera, direction, splits[cascade], splits[cascade + 1],
+                        (*tiles)[cascade]));
                 }
             }
             mainDirectional = false;
