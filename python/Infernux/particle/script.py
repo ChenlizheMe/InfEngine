@@ -173,6 +173,8 @@ class ParticleStream:
         soft_particles: bool = False,
         soft_distance: float = 1.0,
         sort: str = "back_to_front",
+        alignment: str = "camera_plane",
+        alignment_axis: tuple[float, float, float] = (0.0, 1.0, 0.0),
         flipbook_columns: int = 1,
         flipbook_rows: int = 1,
     ) -> None: ...

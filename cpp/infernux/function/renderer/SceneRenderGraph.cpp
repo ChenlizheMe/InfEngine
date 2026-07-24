@@ -3207,6 +3207,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
                         std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
                         std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
+                        std::memcpy(view.alignmentReference.data(), &inverseView[3][0], sizeof(glm::vec4));
                         view.depthReconstruct = {m_cachedProj[2][2], m_cachedProj[3][2], m_cachedProj[2][3],
                                                  m_cachedProj[3][3]};
                         const auto renderTargetLayout = m_renderGraph->GetPassRenderTargetLayout(passName);

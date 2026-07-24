@@ -1384,6 +1384,7 @@ class ParticleKernelLowerer:
                 )
         for stable_id in (
             "builtin.position",
+            "builtin.velocity",
             "builtin.size",
             "builtin.scale",
             "builtin.color",

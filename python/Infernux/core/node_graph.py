@@ -100,6 +100,8 @@ class NodeInlineFieldDef:
     default: Any = None
     asset_type: str = ""
     enum_values: tuple[str, ...] = ()
+    visible_when_field: str = ""
+    visible_when_value: Any = None
 
 
 @dataclass

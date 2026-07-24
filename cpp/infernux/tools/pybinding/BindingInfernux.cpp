@@ -331,7 +331,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         for (const char *field :
              {"id", "stable_id", "output_type", "mesh", "material", "receive_scene_lighting", "receive_shadows",
               "cast_shadows", "soft_particles", "soft_distance", "sort_mode", "ribbon_uv_mode", "ribbon_uv_scale",
-              "flipbook_columns", "flipbook_rows"}) {
+              "flipbook_columns", "flipbook_rows", "sprite_alignment", "alignment_axis"}) {
             if (!output.contains(field))
                 throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
         }
@@ -357,6 +357,24 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         decoded.semantics.softParticles = py::cast<bool>(output["soft_particles"]);
         decoded.semantics.softDistance = py::cast<float>(output["soft_distance"]);
         decoded.semantics.sortMode = DecodeParticleSortMode(py::cast<std::string>(output["sort_mode"]));
+        const std::string spriteAlignment = py::cast<std::string>(output["sprite_alignment"]);
+        if (spriteAlignment == "camera_plane")
+            decoded.semantics.spriteAlignment = particle::ParticleSpriteAlignment::CameraPlane;
+        else if (spriteAlignment == "camera_position")
+            decoded.semantics.spriteAlignment = particle::ParticleSpriteAlignment::CameraPosition;
+        else if (spriteAlignment == "axis")
+            decoded.semantics.spriteAlignment = particle::ParticleSpriteAlignment::Axis;
+        else if (spriteAlignment == "velocity")
+            decoded.semantics.spriteAlignment = particle::ParticleSpriteAlignment::Velocity;
+        else
+            throw std::invalid_argument("GPU particle Sprite alignment is invalid");
+        const py::sequence alignmentAxis = py::cast<py::sequence>(output["alignment_axis"]);
+        if (alignmentAxis.size() != 3)
+            throw std::invalid_argument("GPU particle Sprite alignment axis requires three values");
+        for (size_t axis = 0; axis < decoded.semantics.alignmentAxis.size(); ++axis)
+            decoded.semantics.alignmentAxis[axis] = py::cast<float>(alignmentAxis[axis]);
+        if (!decoded.semantics.IsValid())
+            throw std::invalid_argument("GPU particle output semantics are invalid");
         decoded.flipbookColumns = py::cast<uint32_t>(output["flipbook_columns"]);
         decoded.flipbookRows = py::cast<uint32_t>(output["flipbook_rows"]);
         if (decoded.flipbookColumns == 0 || decoded.flipbookRows == 0 ||

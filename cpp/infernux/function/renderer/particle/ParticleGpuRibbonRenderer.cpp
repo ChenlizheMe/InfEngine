@@ -32,6 +32,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } view;
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec2 out_uv;

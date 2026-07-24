@@ -50,6 +50,16 @@ _PIN_COLORS = {
     "event": (0.84, 0.44, 0.40, 1.0),
 }
 
+_PROPERTY_ENUM_VALUES = {
+    "alignment": ("camera_plane", "camera_position", "axis", "velocity"),
+    "sort": ("none", "back_to_front", "front_to_back"),
+    "uv_mode": ("stretch", "repeat"),
+}
+
+_PROPERTY_VISIBILITY = {
+    "alignment_axis": ("alignment", "axis"),
+}
+
 
 def _canvas_type_name(port) -> str:
     if port.kind is not PortKind.VALUE:
@@ -89,9 +99,9 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
             item.value_type.value_type.value,
             copy.deepcopy(item.default),
             asset_type="Material" if item.id == "material" else "",
-            enum_values=("none", "back_to_front", "front_to_back")
-            if item.id == "sort"
-            else (),
+            enum_values=_PROPERTY_ENUM_VALUES.get(item.id, ()),
+            visible_when_field=_PROPERTY_VISIBILITY.get(item.id, ("", None))[0],
+            visible_when_value=_PROPERTY_VISIBILITY.get(item.id, ("", None))[1],
         )
         for item in definition.properties
         if item.value_type.value_type not in {ValueType.CURVE, ValueType.GRADIENT}

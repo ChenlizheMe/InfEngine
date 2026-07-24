@@ -138,6 +138,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         "ribbon_uv_scale",
         "flipbook_columns",
         "flipbook_rows",
+        "sprite_alignment",
+        "alignment_axis",
     }:
         raise ParticleRuntimeMetadataError(f"{location} is invalid")
     if (
@@ -162,6 +164,15 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         or not 1 <= value["flipbook_columns"] <= 4096
         or not 1 <= value["flipbook_rows"] <= 4096
         or value["flipbook_columns"] * value["flipbook_rows"] > 65536
+        or value["sprite_alignment"]
+        not in {"camera_plane", "camera_position", "axis", "velocity"}
+        or type(value["alignment_axis"]) is not list
+        or len(value["alignment_axis"]) != 3
+        or not all(type(item) in {int, float} and math.isfinite(float(item)) for item in value["alignment_axis"])
+        or (
+            value["sprite_alignment"] == "axis"
+            and sum(float(item) * float(item) for item in value["alignment_axis"]) <= 1.0e-12
+        )
     ):
         raise ParticleRuntimeMetadataError(f"{location} fields are invalid")
     return ParticleOutputDescriptor(
@@ -179,6 +190,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         float(value["ribbon_uv_scale"]),
         value["flipbook_columns"],
         value["flipbook_rows"],
+        value["sprite_alignment"],
+        tuple(float(item) for item in value["alignment_axis"]),
     )
 
 

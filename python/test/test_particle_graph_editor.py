@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import struct
+from types import SimpleNamespace
 
 import pytest
 
@@ -448,6 +449,57 @@ def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
             {"numeric_value": 0.5},
         ),
     ]
+
+
+def test_particle_graph_alignment_property_publishes_combo_semantic():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        _record_scalar_node_property_semantics,
+    )
+
+    class Context:
+        semantic_capture_enabled = True
+
+        def __init__(self):
+            self.items = []
+
+        def record_semantic_item(self, *args, **kwargs):
+            self.items.append((args, kwargs))
+
+    ctx = Context()
+    _record_scalar_node_property_semantics(
+        ctx,
+        node_uid="rendering::output.sprite",
+        key="alignment",
+        label="Billboard Alignment",
+        value_type=ValueType.STRING,
+        value="velocity",
+    )
+
+    assert ctx.items == [
+        (
+            (
+                "combo",
+                "Billboard Alignment",
+                True,
+                "particle_graph.node.rendering::output.sprite.property.alignment",
+            ),
+            {"string_value": "velocity"},
+        )
+    ]
+
+
+def test_particle_graph_alignment_axis_is_only_visible_in_axis_mode():
+    from Infernux.engine.ui.particle_graph_editor_panel import (
+        _node_property_is_visible,
+    )
+
+    node = SimpleNamespace(data={})
+    assert _node_property_is_visible(node, "alignment_axis") is False
+    node.data["alignment"] = "velocity"
+    assert _node_property_is_visible(node, "alignment_axis") is False
+    node.data["alignment"] = "axis"
+    assert _node_property_is_visible(node, "alignment_axis") is True
+    assert _node_property_is_visible(node, "material") is True
 
 
 def test_particle_graph_editor_sets_mesh_asset_through_live_authoring_model(

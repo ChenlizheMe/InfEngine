@@ -8,6 +8,9 @@ from Infernux.core.anim_state_machine import AnimParameter, AnimStateMachine
 from Infernux.engine.ui import animfsm_editor_panel as animfsm_module
 from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
 from Infernux.engine.ui.node_graph_view import NodeCreationEntry, NodeGraphView
+from Infernux.engine.ui.graph_document_authoring import _canvas_definition
+from Infernux.graph.registry import COMMON_NODE_REGISTRY
+import Infernux.particle.nodes  # noqa: F401 - registers particle node definitions
 
 
 @pytest.fixture(autouse=True)
@@ -310,6 +313,93 @@ def test_node_graph_inline_overlay_submits_layout_item_after_cursor_restore():
 
     assert (ctx.cursor_x, ctx.cursor_y) == (17.0, 29.0)
     assert ctx.dummy_calls == [(0.0, 0.0)]
+
+
+def test_node_graph_inline_enum_records_combo_semantics():
+    class _InlineEnumContext:
+        def __init__(self) -> None:
+            self.semantic_items: list[tuple] = []
+
+        @staticmethod
+        def set_cursor_pos_x(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def set_cursor_pos_y(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_id_str(_value: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_id() -> None:
+            pass
+
+        @staticmethod
+        def set_next_item_width(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def combo(_label: str, index: int, _items: list[str], _count: int) -> int:
+            return index
+
+        @staticmethod
+        def is_item_hovered() -> bool:
+            return False
+
+        @staticmethod
+        def is_item_active() -> bool:
+            return False
+
+        def record_semantic_item(self, *args, **kwargs) -> None:
+            self.semantic_items.append((args, kwargs))
+
+    node = SimpleNamespace(uid="sprite", data={"alignment": "camera_plane"})
+    layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
+    field = SimpleNamespace(
+        id="alignment",
+        default="camera_plane",
+        label="Alignment",
+        data_type="string",
+        enum_values=("camera_plane", "camera_position", "axis", "velocity"),
+    )
+    view = NodeGraphView()
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view.zoom = 1.0
+    view._semantic_capture_active = True
+    ctx = _InlineEnumContext()
+
+    view._draw_inline_field(ctx, layout, field, 40.0)
+
+    assert ctx.semantic_items == [
+        (
+            (
+                "combo",
+                "Alignment",
+                True,
+                "node_graph.inline.sprite.alignment",
+            ),
+            {"string_value": "camera_plane"},
+        )
+    ]
+
+
+def test_particle_sprite_canvas_preserves_enum_and_conditional_field_metadata():
+    definition = COMMON_NODE_REGISTRY.get("particle.output.sprite")
+    assert definition is not None
+    canvas = _canvas_definition(definition)
+    fields = {field.id: field for field in canvas.inline_fields}
+
+    assert fields["alignment"].enum_values == (
+        "camera_plane",
+        "camera_position",
+        "axis",
+        "velocity",
+    )
+    assert fields["alignment_axis"].visible_when_field == "alignment"
+    assert fields["alignment_axis"].visible_when_value == "axis"
 
 
 def test_animfsm_dirty_mode_switch_defers_to_editor_owned_confirmation():

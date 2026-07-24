@@ -56,6 +56,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } view;
 
 layout(location = 0) out vec4 out_color;
@@ -74,6 +75,38 @@ const vec2 uvs[6] = vec2[](
     vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0)
 );
 
+vec3 inx_safe_billboard_axis(vec3 value, vec3 fallback_value) {
+    float length_squared = dot(value, value);
+    return length_squared > 1.0e-10 ? value * inversesqrt(length_squared) : fallback_value;
+}
+
+void inx_billboard_basis(ParticleInstance instance, out vec3 right_axis, out vec3 up_axis) {
+    vec3 camera_right = inx_safe_billboard_axis(view.camera_right.xyz, vec3(1.0, 0.0, 0.0));
+    vec3 camera_up = inx_safe_billboard_axis(view.camera_up.xyz, vec3(0.0, 1.0, 0.0));
+    vec3 camera_normal = inx_safe_billboard_axis(cross(camera_right, camera_up), vec3(0.0, 0.0, 1.0));
+    int alignment = int(round(view.alignment_reference.w));
+    if (alignment == 0) {
+        right_axis = camera_right;
+        up_axis = camera_up;
+        return;
+    }
+    if (alignment == 1) {
+        vec3 to_camera = inx_safe_billboard_axis(
+            view.alignment_reference.xyz - instance.position_size.xyz,
+            camera_normal);
+        right_axis = inx_safe_billboard_axis(cross(camera_up, to_camera), camera_right);
+        up_axis = inx_safe_billboard_axis(cross(to_camera, right_axis), camera_up);
+        return;
+    }
+    vec3 requested_up = alignment == 2 ? view.alignment_reference.xyz : instance.custom_data.yzw;
+    up_axis = inx_safe_billboard_axis(requested_up, camera_up);
+    vec3 projected_right = cross(up_axis, camera_normal);
+    if (dot(projected_right, projected_right) <= 1.0e-10)
+        projected_right = camera_right - up_axis * dot(camera_right, up_axis);
+    right_axis = inx_safe_billboard_axis(projected_right, camera_right);
+    up_axis = inx_safe_billboard_axis(cross(camera_normal, right_axis), up_axis);
+}
+
 void main() {
     uint particle_index = view.lighting_control.y > 0.5
         ? render_indices[gl_InstanceIndex]
@@ -83,9 +116,12 @@ void main() {
     float cosine = cos(instance.rotation_custom.x);
     float sine = sin(instance.rotation_custom.x);
     corner = mat2(cosine, -sine, sine, cosine) * corner;
+    vec3 billboard_right;
+    vec3 billboard_up;
+    inx_billboard_basis(instance, billboard_right, billboard_up);
     vec3 world_position = instance.position_size.xyz +
-        (view.camera_right.xyz * corner.x * instance.scale_custom.x +
-         view.camera_up.xyz * corner.y * instance.scale_custom.y) * instance.position_size.w;
+        (billboard_right * corner.x * instance.scale_custom.x +
+         billboard_up * corner.y * instance.scale_custom.y) * instance.position_size.w;
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     out_color = instance.color;
     vec2 flipbook_grid = max(view.rendering_control.zw, vec2(1.0));
@@ -96,7 +132,7 @@ void main() {
         floor(flipbook_frame / flipbook_grid.x));
     out_uv = (uvs[gl_VertexIndex % 6] + flipbook_cell) / flipbook_grid;
     out_world_position = world_position;
-    out_world_normal = normalize(cross(view.camera_right.xyz, view.camera_up.xyz));
+    out_world_normal = normalize(cross(billboard_right, billboard_up));
     out_view_depth = gl_Position.w;
 }
 """
@@ -118,6 +154,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } view;
 
 float particle_eye_depth(float device_depth) {
@@ -516,6 +553,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } view;
 """ + _PARTICLE_FORWARD_PLUS_LIGHTING_GLSL + """
 float particle_eye_depth(float device_depth) {
@@ -601,6 +639,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } view;
 
 layout(location = 0) out vec4 out_color;
@@ -680,6 +719,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } view;
 
 void main() {
@@ -704,6 +744,7 @@ layout(push_constant) uniform ViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } view;
 """ + _PARTICLE_FORWARD_PLUS_LIGHTING_GLSL + """
 void main() {
@@ -2592,7 +2633,9 @@ def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
     ribbon_order = exports.get("builtin.ribbon_order", particle_id)
     ribbon_break = exports.get("builtin.ribbon_break", "false")
     flipbook_frame = exports.get("builtin.flipbook_frame", "0.0")
+    velocity = exports["builtin.velocity"]
     world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
+    world_velocity = f"(transforms.simulation_to_world * vec4({velocity}, 0.0)).xyz"
     world_scale = (
         "vec3(length(transforms.simulation_to_world[0].xyz), "
         "length(transforms.simulation_to_world[1].xyz), "
@@ -2632,7 +2675,7 @@ void main() {{
     instances[output_index].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
     instances[output_index].ribbon_data = uvec4(
         {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
-    instances[output_index].custom_data = vec4({flipbook_frame}, 0.0, 0.0, 0.0);
+    instances[output_index].custom_data = vec4({flipbook_frame}, {world_velocity});
     render_indices[output_index] = output_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}

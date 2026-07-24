@@ -545,6 +545,43 @@ def test_particle_sprite_output_compiles_valid_flipbook_grid_and_rejects_invalid
         compile_grid(4096, 4096)
 
 
+def test_particle_sprite_output_compiles_alignment_and_rejects_invalid_axis():
+    def compile_alignment(alignment, axis=(0.0, 1.0, 0.0)):
+        rendering = GraphDocument(
+            "particle.rendering",
+            nodes=(
+                GraphNodeRecord("root.rendering", "particle.root.rendering"),
+                GraphNodeRecord(
+                    "output.sprite",
+                    "particle.output.sprite",
+                    properties={"alignment": alignment, "alignment_axis": list(axis)},
+                ),
+            ),
+            links=(
+                GraphLinkRecord(
+                    "root-to-sprite",
+                    "root.rendering",
+                    "out",
+                    "output.sprite",
+                    "in",
+                    PortKind.STREAM,
+                ),
+            ),
+        )
+        return ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+        )
+
+    output = compile_alignment("axis", (0.0, 0.0, 1.0)).emitters[0].render_plan.outputs[0]
+    assert output.sprite_alignment == "axis"
+    assert output.alignment_axis == (0.0, 0.0, 1.0)
+
+    with pytest.raises(ParticleCompileError, match="alignment must be"):
+        compile_alignment("screen")
+    with pytest.raises(ParticleCompileError, match="alignment axis"):
+        compile_alignment("axis", (0.0, 0.0, 0.0))
+
+
 def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
     rendering = GraphDocument(
         "particle.rendering",
@@ -953,6 +990,7 @@ class SmokeGraph(ParticleScript):
                 receive_scene_lighting=True,
                 receive_shadows=True,
                 sort="back_to_front",
+                alignment="velocity",
             )
 '''
 
@@ -985,6 +1023,7 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     )
     assert emitter.render_plan.outputs[0].receive_scene_lighting is True
     assert emitter.render_plan.outputs[0].receive_shadows is True
+    assert emitter.render_plan.outputs[0].sprite_alignment == "velocity"
     assert [interface.stable_id for interface in emitter.data_interfaces] == [
         "wind-field",
         "morph-points",
@@ -1132,6 +1171,7 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
                 receive_scene_lighting=True,
                 receive_shadows=True,
                 sort="back_to_front",
+                alignment="velocity",
             )''',
         '''particles.mesh(
                 mesh=AssetReference(guid="mesh-guid", path_hint="Assets/Models/Debris.fbx"),
@@ -1692,7 +1732,7 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     runtime_metadata = decode_particle_runtime_metadata(script_artifact.hir)
     assert runtime_metadata.emitters[0].outputs[0].cast_shadows is False
     stale_hir = copy.deepcopy(script_artifact.hir)
-    stale_hir["emitters"][0]["render_plan"][0].pop("cast_shadows")
+    stale_hir["emitters"][0]["render_plan"][0].pop("sprite_alignment")
     with pytest.raises(ParticleRuntimeMetadataError, match="is invalid"):
         decode_particle_runtime_metadata(stale_hir)
     assert graph_artifact.artifact_path.endswith("smoke-graph.inxparticle")

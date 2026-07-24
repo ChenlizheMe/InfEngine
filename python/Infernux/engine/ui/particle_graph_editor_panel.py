@@ -122,10 +122,16 @@ def _record_scalar_node_property_semantics(
             kind, label, True, semantic_id, numeric_value=float(value)
         )
     elif value_type is ValueType.STRING:
-        kind = "combo" if key == "sort" else "text_input"
+        kind = "combo" if key in {"sort", "uv_mode", "alignment"} else "text_input"
         ctx.record_semantic_item(
             kind, label, True, semantic_id, string_value=str(value)
         )
+
+
+def _node_property_is_visible(node, key: str) -> bool:
+    if key == "alignment_axis":
+        return str(node.data.get("alignment", "camera_plane")) == "axis"
+    return True
 
 
 @editor_panel(
@@ -2809,6 +2815,8 @@ class ParticleGraphEditorPanel(EditorPanel):
             )
         )
         for key, value_type, default in editable_fields:
+            if not _node_property_is_visible(node, key):
+                continue
             value = copy.deepcopy(node.data.get(key, default))
             label_key = f"particle_graph_editor.property_{key}"
             label = t(label_key)
@@ -2909,6 +2917,16 @@ class ParticleGraphEditorPanel(EditorPanel):
                     f"{label}##particle_node_{key}",
                     current,
                     [t(f"particle_graph_editor.uv_{option}") for option in options],
+                    -1,
+                )
+                new_value = options[max(0, min(current, len(options) - 1))]
+            elif value_type is ValueType.STRING and key == "alignment":
+                options = ["camera_plane", "camera_position", "axis", "velocity"]
+                current = options.index(value) if value in options else 0
+                current = ctx.combo(
+                    f"{label}##particle_node_{key}",
+                    current,
+                    [t(f"particle_graph_editor.alignment_{option}") for option in options],
                     -1,
                 )
                 new_value = options[max(0, min(current, len(options) - 1))]

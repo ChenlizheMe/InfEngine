@@ -14,13 +14,16 @@ void main() {
     float cosine = cos(instance.rotation_custom.x);
     float sine = sin(instance.rotation_custom.x);
     corner = mat2(cosine, -sine, sine, cosine) * corner;
+    vec3 billboardRight;
+    vec3 billboardUp;
+    inxParticleBillboardBasis(instance, billboardRight, billboardUp);
 
     VertexInput v;
     v.position = instance.position_size.xyz +
-        (particleView.camera_right.xyz * corner.x * instance.scale_custom.x +
-         particleView.camera_up.xyz * corner.y * instance.scale_custom.y) * instance.position_size.w;
-    v.normal = normalize(cross(particleView.camera_right.xyz, particleView.camera_up.xyz));
-    v.tangent = vec4(normalize(particleView.camera_right.xyz), 1.0);
+        (billboardRight * corner.x * instance.scale_custom.x +
+         billboardUp * corner.y * instance.scale_custom.y) * instance.position_size.w;
+    v.normal = normalize(cross(billboardRight, billboardUp));
+    v.tangent = vec4(billboardRight, 1.0);
     v.color = instance.color.rgb * particleView.material_tint.rgb;
     vec2 flipbookGrid = max(particleView.rendering_control.zw, vec2(1.0));
     float flipbookCount = flipbookGrid.x * flipbookGrid.y;

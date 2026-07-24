@@ -419,6 +419,8 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "ribbon_uv_scale": output.ribbon_uv_scale,
                         "flipbook_columns": output.flipbook_columns,
                         "flipbook_rows": output.flipbook_rows,
+                        "sprite_alignment": output.sprite_alignment,
+                        "alignment_axis": list(output.alignment_axis),
                     }
                     for output in emitter.render_plan.outputs
                 ],

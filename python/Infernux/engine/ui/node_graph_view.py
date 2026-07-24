@@ -396,6 +396,10 @@ class NodeGraphView:
         # Invisible button for mouse events
         ctx.set_cursor_pos_x(0)
         ctx.set_cursor_pos_y(0)
+        # The canvas background owns panning/selection, but inline node fields
+        # are submitted afterwards and must remain the topmost interactive
+        # items for both human and synthetic pointer input.
+        ctx.set_next_item_allow_overlap()
         ctx.invisible_button("##canvas_bg", canvas_w, canvas_h)
         self._record_semantic_item(ctx, "node_graph_canvas", "Node Graph", True, "canvas")
         canvas_hovered = ctx.is_item_hovered()
@@ -789,6 +793,10 @@ class NodeGraphView:
                 }
                 detached_index = 0
                 for field_def in fields:
+                    if field_def.visible_when_field and layout.node.data.get(
+                        field_def.visible_when_field
+                    ) != field_def.visible_when_value:
+                        continue
                     if field_def.data_type == "asset_ref":
                         continue
                     row_y = input_rows.get(field_def.id)
@@ -923,6 +931,9 @@ class NodeGraphView:
             elif data_type in {"i32", "u32", "f32"}:
                 semantic_kind = "drag_float" if data_type == "f32" else "int_input"
                 semantic_values["numeric_value"] = float(new_value)
+            elif field_def.enum_values:
+                semantic_kind = "combo"
+                semantic_values["string_value"] = str(new_value)
             elif data_type == "string":
                 semantic_kind = "text_input"
                 semantic_values["string_value"] = str(new_value)

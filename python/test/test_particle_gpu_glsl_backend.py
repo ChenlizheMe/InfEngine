@@ -406,7 +406,11 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
             GraphNodeRecord(
                 "sprite",
                 "particle.output.sprite",
-                properties={"flipbook_columns": 4, "flipbook_rows": 2},
+                properties={
+                    "flipbook_columns": 4,
+                    "flipbook_rows": 2,
+                    "alignment": "velocity",
+                },
             ),
         ),
         links=(
@@ -424,6 +428,11 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
     assert "a_builtin_flipbook_frame" in emitter.init
     assert "instances[output_index].custom_data = vec4(" in emitter.rendering
     assert "instance.custom_data.x" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "instance.custom_data.yzw" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "view.alignment_reference.w" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "state.a_builtin_velocity" in emitter.rendering
+    assert "instances[output_index].custom_data = vec4(" in emitter.rendering
+    assert "transforms.simulation_to_world * vec4(" in emitter.rendering
     assert "view.rendering_control.zw" in gpu_backend._BILLBOARD_VERTEX_GLSL
     payload = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(payload, source) is payload

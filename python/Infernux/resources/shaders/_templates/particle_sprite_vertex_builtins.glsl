@@ -23,6 +23,7 @@ layout(push_constant) uniform ParticleViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } particleView;
 
 layout(location = 0) out vec3 v_WorldPos;
@@ -46,3 +47,35 @@ struct VertexInput {
     vec3 color;
     vec2 texCoord;
 };
+
+vec3 inxSafeBillboardAxis(vec3 value, vec3 fallbackValue) {
+    float lengthSquared = dot(value, value);
+    return lengthSquared > 1.0e-10 ? value * inversesqrt(lengthSquared) : fallbackValue;
+}
+
+void inxParticleBillboardBasis(ParticleInstance instance, out vec3 rightAxis, out vec3 upAxis) {
+    vec3 cameraRight = inxSafeBillboardAxis(particleView.camera_right.xyz, vec3(1.0, 0.0, 0.0));
+    vec3 cameraUp = inxSafeBillboardAxis(particleView.camera_up.xyz, vec3(0.0, 1.0, 0.0));
+    vec3 cameraNormal = inxSafeBillboardAxis(cross(cameraRight, cameraUp), vec3(0.0, 0.0, 1.0));
+    int alignment = int(round(particleView.alignment_reference.w));
+    if (alignment == 0) {
+        rightAxis = cameraRight;
+        upAxis = cameraUp;
+        return;
+    }
+    if (alignment == 1) {
+        vec3 toCamera = inxSafeBillboardAxis(
+            particleView.alignment_reference.xyz - instance.position_size.xyz,
+            cameraNormal);
+        rightAxis = inxSafeBillboardAxis(cross(cameraUp, toCamera), cameraRight);
+        upAxis = inxSafeBillboardAxis(cross(toCamera, rightAxis), cameraUp);
+        return;
+    }
+    vec3 requestedUp = alignment == 2 ? particleView.alignment_reference.xyz : instance.custom_data.yzw;
+    upAxis = inxSafeBillboardAxis(requestedUp, cameraUp);
+    vec3 projectedRight = cross(upAxis, cameraNormal);
+    if (dot(projectedRight, projectedRight) <= 1.0e-10)
+        projectedRight = cameraRight - upAxis * dot(cameraRight, upAxis);
+    rightAxis = inxSafeBillboardAxis(projectedRight, cameraRight);
+    upAxis = inxSafeBillboardAxis(cross(cameraNormal, rightAxis), upAxis);
+}

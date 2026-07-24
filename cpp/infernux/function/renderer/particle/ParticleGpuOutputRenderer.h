@@ -22,6 +22,9 @@ struct alignas(16) GpuParticleViewConstants
     std::array<float, 4> lightingControl{};
     // y is set when the vertex shader is recording a shadow caster pass.
     std::array<float, 4> renderingControl{};
+    // xyz is the camera position or an authored world axis; w selects the
+    // Sprite Output alignment mode.
+    std::array<float, 4> alignmentReference{};
 };
 
 struct GpuParticleForwardPlusBindings
@@ -77,6 +80,6 @@ class ParticleGpuOutputRenderer
                                                  rhi::BufferHandle renderIndices = {}) = 0;
 };
 
-static_assert(sizeof(GpuParticleViewConstants) == 160);
+static_assert(sizeof(GpuParticleViewConstants) == 176);
 
 } // namespace infernux::particle

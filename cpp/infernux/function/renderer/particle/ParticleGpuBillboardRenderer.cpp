@@ -695,6 +695,10 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     constants.renderingControl[1] = ResolveMaterialState().premultipliedAlpha ? 1.0f : 0.0f;
     constants.renderingControl[2] = static_cast<float>(m_flipbookColumns);
     constants.renderingControl[3] = static_cast<float>(m_flipbookRows);
+    constants.alignmentReference[3] = static_cast<float>(m_semantics.spriteAlignment);
+    if (m_semantics.spriteAlignment == ParticleSpriteAlignment::Axis)
+        std::copy(m_semantics.alignmentAxis.begin(), m_semantics.alignmentAxis.end(),
+                  constants.alignmentReference.begin());
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     if (usesForwardPlusLighting)
@@ -731,6 +735,10 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandE
     constants.renderingControl[0] = 0.0f;
     constants.renderingControl[2] = static_cast<float>(m_flipbookColumns);
     constants.renderingControl[3] = static_cast<float>(m_flipbookRows);
+    constants.alignmentReference[3] = static_cast<float>(m_semantics.spriteAlignment);
+    if (m_semantics.spriteAlignment == ParticleSpriteAlignment::Axis)
+        std::copy(m_semantics.alignmentAxis.begin(), m_semantics.alignmentAxis.end(),
+                  constants.alignmentReference.begin());
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),

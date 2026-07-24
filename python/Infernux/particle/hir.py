@@ -68,6 +68,8 @@ class ParticleOutputDescriptor:
     ribbon_uv_scale: float = 1.0
     flipbook_columns: int = 1
     flipbook_rows: int = 1
+    sprite_alignment: str = "camera_plane"
+    alignment_axis: tuple[float, float, float] = (0.0, 1.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,8 @@ class ParticleGraphCompiler:
                             "ribbon_uv_scale": output.ribbon_uv_scale,
                             "flipbook_columns": output.flipbook_columns,
                             "flipbook_rows": output.flipbook_rows,
+                            "sprite_alignment": output.sprite_alignment,
+                            "alignment_axis": list(output.alignment_axis),
                         }
                         for output in emitter.render_plan.outputs
                     ],
@@ -518,6 +522,42 @@ class ParticleGraphCompiler:
                 f"particle sprite output {invalid_flipbook.output_id!r} flipbook grid must use "
                 "1..4096 columns/rows and contain at most 65536 frames"
             )
+        invalid_alignment = next(
+            (
+                output
+                for output in outputs
+                if output.output_type == "sprite"
+                and output.sprite_alignment
+                not in {"camera_plane", "camera_position", "axis", "velocity"}
+            ),
+            None,
+        )
+        if invalid_alignment is not None:
+            raise ParticleCompileError(
+                f"particle sprite output {invalid_alignment.output_id!r} alignment must be "
+                "'camera_plane', 'camera_position', 'axis', or 'velocity'"
+            )
+        invalid_alignment_axis = next(
+            (
+                output
+                for output in outputs
+                if output.output_type == "sprite"
+                and (
+                    len(output.alignment_axis) != 3
+                    or not all(math.isfinite(value) for value in output.alignment_axis)
+                    or (
+                        output.sprite_alignment == "axis"
+                        and sum(value * value for value in output.alignment_axis) <= 1.0e-12
+                    )
+                )
+            ),
+            None,
+        )
+        if invalid_alignment_axis is not None:
+            raise ParticleCompileError(
+                f"particle sprite output {invalid_alignment_axis.output_id!r} alignment axis "
+                "must contain three finite values and be non-zero for axis alignment"
+            )
         missing_mesh = next(
             (
                 output
@@ -748,6 +788,8 @@ class ParticleGraphCompiler:
             float(parameters.get("uv_scale", 1.0)),
             int(parameters.get("flipbook_columns", 1)),
             int(parameters.get("flipbook_rows", 1)),
+            str(parameters.get("alignment", "camera_plane")),
+            tuple(float(value) for value in parameters.get("alignment_axis", (0.0, 1.0, 0.0))),
         )
 
     def _compile_stage(

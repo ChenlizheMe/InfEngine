@@ -381,3 +381,16 @@ def test_window_close_request_uses_the_native_close_event_path(tmp_path, monkeyp
         "delivered": True,
     }
     assert native.calls == [("full_speed",), ("close",)]
+
+
+def test_combo_press_is_accepted_when_popup_activation_clears_item_active_state():
+    assert input_tools._press_target_accepted(
+        {
+            "matched_target_kind": "combo",
+            "target_found": True,
+            "target_visible": True,
+            "target_enabled": True,
+            "target_under_pointer": True,
+            "target_active": False,
+        }
+    )

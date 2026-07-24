@@ -6,6 +6,7 @@ layout(push_constant) uniform ParticleViewConstants {
     vec4 depth_reconstruct;
     vec4 lighting_control;
     vec4 rendering_control;
+    vec4 alignment_reference;
 } particleView;
 
 layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;

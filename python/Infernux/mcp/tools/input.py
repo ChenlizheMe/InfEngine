@@ -924,6 +924,7 @@ def _press_target_accepted(status: dict[str, Any]) -> bool:
     reachable_without_active = {
         "menu",
         "menu_item",
+        "combo",
         "node_graph_node",
         "node_graph_node_drag_handle",
         "node_graph_port",

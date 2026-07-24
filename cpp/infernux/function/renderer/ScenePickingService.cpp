@@ -276,6 +276,7 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
             std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
             std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
             std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
+            std::memcpy(view.alignmentReference.data(), &inverseView[3][0], sizeof(glm::vec4));
             vk::VulkanGraphicsCommandContext graphicsContext;
             auto encoder =
                 m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(graphicsContext, commandBuffer);

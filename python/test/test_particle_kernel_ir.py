@@ -57,6 +57,7 @@ def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
     ]
     assert render_exports == [
         "builtin.position",
+        "builtin.velocity",
         "builtin.size",
         "builtin.color",
         "builtin.rotation",
