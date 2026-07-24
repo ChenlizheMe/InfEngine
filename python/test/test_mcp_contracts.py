@@ -114,6 +114,8 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "editor_save_focused",
         "editor_save_document",
         "project_script_write",
+        "project_build_scenes_get",
+        "project_build_scenes_set",
         "public_api_validate_script",
         "scene_new",
         "scene_save",
@@ -151,6 +153,7 @@ def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutatio
         "mcp_report_blocker",
         "project_asset_state",
         "project_wait_for_asset",
+        "project_build_scenes_get",
         "runtime_assert",
         "input_key",
         "input_text",
@@ -162,6 +165,7 @@ def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutatio
         "editor_ui_hover",
     } <= tools
     assert "project_script_write" not in tools
+    assert "project_build_scenes_set" not in tools
     assert "release_whl_read_source" not in tools
     assert "scene_new" not in tools
     assert "editor_select" not in tools
@@ -426,6 +430,50 @@ def test_project_asset_state_settles_directories_without_file_meta_or_guid(tmp_p
     assert state["meta_exists"] is False
     assert state["mapping_consistent"] is False
     assert project._asset_expectation_met(state, True) is True
+
+
+def test_project_build_scenes_set_validates_and_preserves_other_settings(tmp_path, monkeypatch):
+    assets = tmp_path / "Assets" / "Scenes"
+    assets.mkdir(parents=True)
+    start = assets / "Start.scene"
+    gallery = assets / "VFX Gallery.scene"
+    start.write_text("{}", encoding="utf-8")
+    gallery.write_text("{}", encoding="utf-8")
+    settings = tmp_path / "ProjectSettings"
+    settings.mkdir()
+    build_settings = settings / "BuildSettings.json"
+    build_settings.write_text(
+        json.dumps({"game_name": "Gallery", "lto": True, "scenes": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(project, "track_project_path_before_change", lambda *_args, **_kwargs: None)
+
+    result = project._set_build_scenes(
+        str(tmp_path),
+        ["Assets/Scenes/Start.scene", "Assets/Scenes/VFX Gallery.scene"],
+    )
+
+    saved = json.loads(build_settings.read_text(encoding="utf-8"))
+    assert result["scenes"] == [
+        "Assets/Scenes/Start.scene",
+        "Assets/Scenes/VFX Gallery.scene",
+    ]
+    assert result["startup_scene"] == "Assets/Scenes/Start.scene"
+    assert all(entry["exists"] and entry["valid_path"] for entry in result["entries"])
+    assert saved["game_name"] == "Gallery"
+    assert saved["lto"] is True
+    assert saved["scenes"] == [
+        "Assets/Scenes/Start.scene",
+        "Assets/Scenes/VFX Gallery.scene",
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate build scene"):
+        project._set_build_scenes(
+            str(tmp_path),
+            ["Assets/Scenes/Start.scene", "Assets/Scenes/Start.scene"],
+        )
+    with pytest.raises(ValueError, match="must reference a .scene"):
+        project._set_build_scenes(str(tmp_path), ["Assets/Scenes/NotAScene.txt"])
 
 
 def test_asset_identity_uses_samefile_for_alias_paths(tmp_path, monkeypatch):

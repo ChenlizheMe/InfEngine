@@ -42,7 +42,11 @@ PROFILE_DISABLED_TOOLS: dict[str, frozenset[str]] = {
     "developer_assist": frozenset(),
     # Validation observes state but never uses direct editor/scene mutation
     # shortcuts. Interactions must travel through synthetic SDL input.
-    "global_validation": frozenset({"editor_select", "mcp_batch"}),
+    "global_validation": frozenset({
+        "editor_select",
+        "mcp_batch",
+        "project_build_scenes_set",
+    }),
 }
 
 DEFAULT_CAPABILITY_CONFIG: dict[str, Any] = {

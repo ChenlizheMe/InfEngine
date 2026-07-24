@@ -223,6 +223,50 @@ class SceneManager:
         return scenes
 
     @staticmethod
+    @staticmethod
+    def _resolve_build_scene(reference: str, scenes: List[str]) -> Optional[str]:
+        """Resolve a Unity-style scene name, filename, or project path."""
+        from Infernux.engine.path_utils import portable_path, relative_path, same_path
+        from Infernux.engine.project_context import get_project_root
+
+        value = str(reference or "").strip()
+        if not value:
+            return None
+
+        root = get_project_root()
+        target = portable_path(value).casefold()
+        path_reference = "/" in target or os.path.isabs(value)
+
+        if path_reference:
+            if root:
+                absolute_target = value if os.path.isabs(value) else os.path.join(root, value)
+                for candidate in scenes:
+                    if same_path(candidate, absolute_target):
+                        return candidate
+
+            for candidate in scenes:
+                candidate_keys = {portable_path(candidate).casefold()}
+                if root:
+                    try:
+                        candidate_keys.add(relative_path(candidate, root).casefold())
+                    except ValueError:
+                        pass
+                if target in candidate_keys:
+                    return candidate
+            return None
+
+        target_filename = os.path.basename(value).casefold()
+        target_has_extension = target_filename.endswith(".scene")
+        for candidate in scenes:
+            filename = os.path.basename(candidate).casefold()
+            if target_has_extension:
+                if filename == target_filename:
+                    return candidate
+            elif os.path.splitext(filename)[0] == target_filename:
+                return candidate
+        return None
+
+    @staticmethod
     def load_scene(scene: Union[int, str]) -> bool:
         """Load a scene from the build list.
 
@@ -232,9 +276,9 @@ class SceneManager:
         Parameters
         ----------
         scene : int or str
-            If *int*, treated as a build index (0-based).
-            If *str*, treated as a scene name (filename without extension,
-            case-insensitive match).
+            If *int*, treated as a build index (0-based). If *str*, accepts a
+            scene name, filename, project-relative path, or absolute build-list
+            path using a case-insensitive match.
 
         Returns
         -------
@@ -258,12 +302,7 @@ class SceneManager:
                 )
                 return False
         elif isinstance(scene, str):
-            target = scene.lower()
-            for p in scenes:
-                name = os.path.splitext(os.path.basename(p))[0]
-                if name.lower() == target:
-                    path = p
-                    break
+            path = SceneManager._resolve_build_scene(scene, scenes)
             if path is None:
                 Debug.log_warning(
                     f"SceneManager: Scene '{scene}' not found in build list."

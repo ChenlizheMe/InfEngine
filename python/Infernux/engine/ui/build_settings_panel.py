@@ -45,16 +45,16 @@ _DISPLAY_MODES_KEYS = ["build.fullscreen_borderless", "build.windowed"]
 _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
 
 
-def _settings_path() -> Optional[str]:
-    root = get_project_root()
+def _settings_path(project_path: Optional[str] = None) -> Optional[str]:
+    root = project_path or get_project_root()
     if not root:
         return None
     return os.path.join(root, "ProjectSettings", BUILD_SETTINGS_FILE)
 
 
-def load_build_settings() -> dict:
+def load_build_settings(project_path: Optional[str] = None) -> dict:
     """Load BuildSettings.json."""
-    path = _settings_path()
+    path = _settings_path(project_path)
     if not path or not os.path.isfile(path):
         return {"scenes": []}
     try:
@@ -67,8 +67,8 @@ def load_build_settings() -> dict:
     return data
 
 
-def save_build_settings(settings: dict):
-    path = _settings_path()
+def save_build_settings(settings: dict, project_path: Optional[str] = None):
+    path = _settings_path(project_path)
     if not path:
         return
     os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 
-from Infernux.engine.path_utils import path_key, relative_path, same_path
+from Infernux.engine.path_utils import path_key, relative_path, resolved_path, same_path
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools.common import (
     get_asset_database,
@@ -13,6 +13,7 @@ from Infernux.mcp.tools.common import (
     ok,
     register_tool_metadata,
     resolve_asset_path,
+    track_project_path_before_change,
 )
 
 
@@ -89,6 +90,23 @@ def register_project_tools(mcp, project_path: str) -> None:
                 return ok({**state, "settled": False, "expected_exists": bool(exists), "polls": polls})
             time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
 
+    @mcp.tool(name="project_build_scenes_get")
+    def project_build_scenes_get() -> dict:
+        """Read the project's ordered standalone build scene list."""
+        return main_thread(
+            "project_build_scenes_get",
+            lambda: _read_build_scenes(project_path),
+        )
+
+    @mcp.tool(name="project_build_scenes_set")
+    def project_build_scenes_set(scenes: list[str]) -> dict:
+        """Atomically replace the ordered standalone build scene list."""
+        return main_thread(
+            "project_build_scenes_set",
+            lambda: _set_build_scenes(project_path, scenes),
+            arguments={"scenes": scenes},
+        )
+
     register_tool_metadata(
         "project_asset_state",
         summary="Read project asset existence and AssetDatabase GUID/path identity without reading asset contents.",
@@ -107,11 +125,92 @@ def register_project_tools(mcp, project_path: str) -> None:
         next_suggested_tools=["project_asset_state", "runtime_read_errors"],
         risk_level="low",
     )
+    register_tool_metadata(
+        "project_build_scenes_get",
+        summary="Read the ordered Build Settings scene list and report missing entries.",
+        category="project/observation",
+        side_effects=[],
+        recovery=["Use asset_search or project_asset_state if a configured scene is missing."],
+        next_suggested_tools=["project_build_scenes_set", "project_asset_state"],
+        risk_level="low",
+    )
+    register_tool_metadata(
+        "project_build_scenes_set",
+        summary="Replace the ordered Build Settings scene list with existing Assets/*.scene files.",
+        category="project/mutation",
+        preconditions=["Every scene has already been saved below the current project's Assets directory."],
+        side_effects=["Updates ProjectSettings/BuildSettings.json through the canonical document store."],
+        recovery=["Call project_build_scenes_get to inspect the committed order; use an MCP transaction to roll back the settings document when needed."],
+        next_suggested_tools=["project_build_scenes_get", "runtime_read_errors"],
+        risk_level="medium",
+    )
 
 
 def _requested_asset_path(project_path: str, path: str) -> str:
     value = str(path or "").strip()
     return resolve_asset_path(project_path, value) if value else ""
+
+
+def _read_build_scenes(project_path: str) -> dict:
+    from Infernux.engine.ui.build_settings_panel import load_build_settings
+
+    settings = load_build_settings(project_path)
+    raw_scenes = settings.get("scenes", [])
+    if type(raw_scenes) is not list:
+        raise ValueError("BuildSettings scenes must be an array")
+    entries = []
+    for index, raw_path in enumerate(raw_scenes):
+        if type(raw_path) is not str or not raw_path.strip():
+            raise ValueError(f"BuildSettings scenes[{index}] must be a non-empty string")
+        try:
+            absolute_path = resolve_asset_path(project_path, raw_path)
+            relative = relative_path(absolute_path, project_path)
+            valid_path = absolute_path.lower().endswith(".scene")
+        except ValueError:
+            absolute_path = resolved_path(raw_path)
+            relative = str(raw_path)
+            valid_path = False
+        entries.append({
+            "index": index,
+            "path": relative,
+            "exists": os.path.isfile(absolute_path),
+            "valid_path": valid_path,
+        })
+    return {
+        "scenes": [entry["path"] for entry in entries],
+        "entries": entries,
+        "startup_scene": entries[0]["path"] if entries else "",
+    }
+
+
+def _set_build_scenes(project_path: str, scenes: list[str]) -> dict:
+    if type(scenes) is not list:
+        raise ValueError("scenes must be an array of project scene paths")
+
+    absolute_scenes: list[str] = []
+    seen: set[str] = set()
+    for index, raw_path in enumerate(scenes):
+        if type(raw_path) is not str or not raw_path.strip():
+            raise ValueError(f"scenes[{index}] must be a non-empty string")
+        scene_path = resolve_asset_path(project_path, raw_path)
+        if not scene_path.lower().endswith(".scene"):
+            raise ValueError(f"scenes[{index}] must reference a .scene asset")
+        if not os.path.isfile(scene_path):
+            raise FileNotFoundError(f"Build scene does not exist: {relative_path(scene_path, project_path)}")
+        key = path_key(scene_path)
+        if key in seen:
+            raise ValueError(f"Duplicate build scene: {relative_path(scene_path, project_path)}")
+        seen.add(key)
+        absolute_scenes.append(scene_path)
+
+    from Infernux.engine.ui.build_settings_panel import load_build_settings, save_build_settings
+
+    settings_path = os.path.join(project_path, "ProjectSettings", "BuildSettings.json")
+    settings = load_build_settings(project_path)
+    settings["scenes"] = [relative_path(path, project_path) for path in absolute_scenes]
+    track_project_path_before_change(project_path, settings_path, "set_build_scenes")
+    save_build_settings(settings, project_path)
+    return _read_build_scenes(project_path)
 
 
 def _read_asset_state(project_path: str, requested_path: str, requested_guid: str) -> dict:
