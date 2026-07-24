@@ -2703,14 +2703,12 @@ bool InxRenderer::CancelCapture(uint64_t captureId)
 
 uint64_t InxRenderer::RequestScenePick(float x, float y, float viewportWidth, float viewportHeight)
 {
-    // Scene View selection is resolved synchronously by the CPU picker. Keep
-    // this legacy entry point fail-closed so older Python panels take their
-    // existing CPU fallback instead of recording the unstable GPU pick pass.
-    (void)x;
-    (void)y;
-    (void)viewportWidth;
-    (void)viewportHeight;
-    return 0;
+    if (!m_scenePickingService)
+        return 0;
+    const uint64_t requestId = m_scenePickingService->Request(x, y, viewportWidth, viewportHeight);
+    if (requestId != 0)
+        RequestFullSpeedFrame();
+    return requestId;
 }
 
 ScenePickSnapshot InxRenderer::QueryScenePick(uint64_t requestId) const
