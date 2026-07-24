@@ -288,3 +288,44 @@ def test_asset_create_particle_graph_uses_the_editor_asset_pipeline(
     assert calls == [
         (str(assets.resolve()), "EventAcceptance.particlegraph", None)
     ]
+
+
+def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
+    class _Component:
+        def runtime_diagnostics(self):
+            return {
+                "event_abi_hash": 41,
+                "event_domain_serial": 7,
+                "emitters": [{"index": 1, "target": "gpu", "simulation_step": 9}],
+            }
+
+    class _Object:
+        id = 123
+        name = "Event VFX"
+
+    component = _Component()
+    monkeypatch.setattr(module, "find_game_object", lambda object_id: _Object())
+    monkeypatch.setattr(
+        module,
+        "_find_particle_system",
+        lambda _obj, ordinal: component if ordinal == 0 else None,
+    )
+    monkeypatch.setattr(
+        module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    mcp = _FakeMcp()
+    module.register_particle_tools(mcp, "C:/Project")
+
+    state = mcp.tools["particle_system_inspect_runtime"](123)
+
+    assert state == {
+        "object_id": 123,
+        "object_name": "Event VFX",
+        "runtime": {
+            "event_abi_hash": 41,
+            "event_domain_serial": 7,
+            "emitters": [{"index": 1, "target": "gpu", "simulation_step": 9}],
+        },
+    }

@@ -242,6 +242,18 @@ class _MixedParticleNative:
         self.reset_emitters.append(emitter_id)
         return True
 
+    def _gpu_particle_artifact_revision(self, emitter_id):
+        return 17
+
+    def _gpu_particle_state_was_preserved(self, emitter_id):
+        return True
+
+    def _gpu_particle_event_abi_hash(self, graph_instance_id):
+        return 41
+
+    def _gpu_particle_event_domain_serial(self, graph_instance_id):
+        return 7
+
     def submit_particle_instances(self, batch_id, *args, **kwargs):
         return None
 
@@ -306,6 +318,13 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert len(native.frames) == 1
     assert native.frames[0][0] == component._batch_id
     assert [item["emitter_id"] for item in native.frames[0][1]] == component._gpu_emitter_ids
+    diagnostics = component.runtime_diagnostics()
+    assert diagnostics["event_abi_hash"] == 41
+    assert diagnostics["event_domain_serial"] == 7
+    assert diagnostics["emitters"][0]["target"] == "cpu"
+    assert diagnostics["emitters"][1]["target"] == "gpu"
+    assert diagnostics["emitters"][1]["artifact_revision"] == 17
+    assert diagnostics["emitters"][1]["state_preserved"] is True
 
     cpu_step = component._runtimes[0].simulation_step
     gpu_step = component._gpu_controllers[0].simulation_step

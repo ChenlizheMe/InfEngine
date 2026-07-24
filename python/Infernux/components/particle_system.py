@@ -181,6 +181,88 @@ class ParticleSystem(InxComponent):
             self._remove_emitter_batches(emitter_index)
         return True
 
+    def runtime_diagnostics(self) -> dict:
+        """Return the on-demand particle control-plane state without GPU readback."""
+        self._ensure_runtime_state()
+        metadata = getattr(self, "_particle_metadata", None)
+        targets = tuple(getattr(self, "_emitter_runtime_targets", ()))
+        compatibility = tuple(
+            getattr(self, "_emitter_reload_compatibility", ())
+        )
+        gpu = {
+            index: (emitter_id, controller)
+            for index, emitter_id, controller in zip(
+                getattr(self, "_gpu_emitter_indices", ()),
+                getattr(self, "_gpu_emitter_ids", ()),
+                getattr(self, "_gpu_controllers", ()),
+            )
+        }
+        cpu = {
+            index: runtime
+            for index, runtime in zip(
+                getattr(self, "_cpu_emitter_indices", ()),
+                getattr(self, "_runtimes", ()),
+            )
+        }
+        native = self._native_engine()
+        emitters = []
+        for index, emitter in enumerate(
+            getattr(metadata, "emitters", ()) if metadata is not None else ()
+        ):
+            target = targets[index] if index < len(targets) else None
+            runtime = cpu.get(index)
+            emitter_id = 0
+            if index in gpu:
+                emitter_id, runtime = gpu[index]
+            item = {
+                "index": index,
+                "stable_id": emitter.stable_id,
+                "name": str(getattr(emitter, "name", emitter.stable_id)),
+                "target": target.value if target is not None else "",
+                "playing": bool(getattr(runtime, "is_playing", False)),
+                "simulation_step": int(getattr(runtime, "simulation_step", 0)),
+                "reload_compatibility": (
+                    compatibility[index].value
+                    if index < len(compatibility)
+                    and compatibility[index] is not None
+                    else ""
+                ),
+            }
+            if emitter_id:
+                item["gpu_emitter_id"] = int(emitter_id)
+                if native is not None:
+                    item["artifact_revision"] = int(
+                        native._gpu_particle_artifact_revision(emitter_id)
+                    )
+                    item["state_preserved"] = bool(
+                        native._gpu_particle_state_was_preserved(emitter_id)
+                    )
+            emitters.append(item)
+
+        event_abi_hash = 0
+        event_domain_serial = 0
+        if native is not None:
+            if hasattr(native, "_gpu_particle_event_abi_hash"):
+                event_abi_hash = int(
+                    native._gpu_particle_event_abi_hash(self._batch_id)
+                )
+            if hasattr(native, "_gpu_particle_event_domain_serial"):
+                event_domain_serial = int(
+                    native._gpu_particle_event_domain_serial(self._batch_id)
+                )
+        return {
+            "batch_id": int(self._batch_id),
+            "playing": bool(self._playing),
+            "artifact_revision": int(self._artifact_revision),
+            "runtime_target": (
+                self._runtime_target.value if self._runtime_target is not None else ""
+            ),
+            "event_abi_hash": event_abi_hash,
+            "event_domain_serial": event_domain_serial,
+            "last_compile_error": str(self._last_compile_error),
+            "emitters": emitters,
+        }
+
     def restart(self, emitter_index: int | None = None) -> bool:
         if emitter_index is None:
             self._playing = True

@@ -6,6 +6,7 @@ import os
 
 from Infernux.engine.path_utils import relative_path, same_path
 from Infernux.mcp.tools.common import (
+    find_game_object,
     main_thread,
     register_tool_metadata,
     resolve_asset_path,
@@ -354,6 +355,31 @@ def register_particle_tools(mcp, project_path: str) -> None:
 
         return main_thread("particle_graph_reload_editor", _reload)
 
+    @mcp.tool(name="particle_system_inspect_runtime")
+    def particle_system_inspect_runtime(
+        object_id: int, ordinal: int = 0
+    ) -> dict:
+        """Inspect one live ParticleSystem control plane without reading particles back."""
+
+        def _inspect():
+            obj = find_game_object(object_id)
+            component = _find_particle_system(obj, int(ordinal))
+            if component is None:
+                raise FileNotFoundError(
+                    f"ParticleSystem {ordinal} was not found on GameObject {object_id}."
+                )
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "runtime": component.runtime_diagnostics(),
+            }
+
+        return main_thread(
+            "particle_system_inspect_runtime",
+            _inspect,
+            arguments={"object_id": object_id, "ordinal": ordinal},
+        )
+
 
 def _require_particle_graph_panel():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
@@ -370,6 +396,21 @@ def _require_particle_graph_panel():
             "Particle Graph Editor is not open. Open a .particlegraph asset first."
         )
     return panel
+
+
+def _find_particle_system(obj, ordinal: int):
+    from Infernux.components.particle_system import ParticleSystem
+
+    matches = []
+    try:
+        matches = [
+            component
+            for component in (obj.get_py_components() or ())
+            if isinstance(component, ParticleSystem)
+        ]
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+    return matches[ordinal] if 0 <= ordinal < len(matches) else None
 
 
 def _open_particle_graph_panel(file_path: str):
@@ -600,4 +641,14 @@ def _register_metadata() -> None:
         preconditions=["The open ParticleGraph document must be clean and have a source path."],
         recovery=["Save the document with editor_save_document, then retry."],
         next_suggested_tools=["particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_system_inspect_runtime",
+        summary="Inspect ParticleSystem scheduling, hot-reload, and event-domain state on demand.",
+        category="runtime/particles",
+        tags=["particle", "runtime", "event", "hot reload", "diagnostics"],
+        aliases=["particle runtime state", "粒子运行状态"],
+        preconditions=["object_id must own a live ParticleSystem component."],
+        recovery=["Find the object and verify its component list before retrying."],
+        next_suggested_tools=["runtime_read_errors", "capture_request"],
     )
