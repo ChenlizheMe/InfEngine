@@ -69,6 +69,14 @@ class _Panel:
         self.calls.append(("select-emitter", emitter_id))
         return {"stable_id": emitter_id, "index": 1}
 
+    def add_authoring_emitter(self, name):
+        self.calls.append(("add-emitter", name))
+        return {"stable_id": "target", "name": name, "settings": {"spawn_rate": 10.0}}
+
+    def set_authoring_emitter_settings(self, emitter_id, settings):
+        self.calls.append(("emitter-settings", emitter_id, settings))
+        return {"stable_id": emitter_id, "settings": settings, "changed": True}
+
     def add_event_type(self, name, capacity_per_step, fields):
         self.calls.append(("event-type", name, capacity_per_step, fields))
         return {"stable_id": "event-id", "name": name}
@@ -139,6 +147,10 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         "init::payload", "value", "init::size", "value"
     )
     selected = mcp.tools["particle_graph_select_emitter"]("target")
+    emitter = mcp.tools["particle_graph_add_emitter"]("Target")
+    emitter_settings = mcp.tools["particle_graph_set_emitter_settings"](
+        "target", {"spawn_rate": 0.0}
+    )
     event_type = mcp.tools["particle_graph_add_event_type"](
         "Impact",
         64,
@@ -167,6 +179,8 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert connected["link_uid"] == "update::new-link"
     assert value_connected["link_uid"] == "init::value-link"
     assert selected["stable_id"] == "target"
+    assert emitter["emitter"]["stable_id"] == "target"
+    assert emitter_settings["changed"] is True
     assert event_type["event_type"]["stable_id"] == "event-id"
     assert event_route["event_route"]["stable_id"] == "route-id"
     assert routed["changed"] is True
@@ -183,6 +197,8 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         ("connect", "update::root.update", "update::new-node"),
         ("value", "init::payload", "value", "init::size", "value"),
         ("select-emitter", "target"),
+        ("add-emitter", "Target"),
+        ("emitter-settings", "target", {"spawn_rate": 0.0}),
         (
             "event-type",
             "Impact",

@@ -493,8 +493,12 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
     source_id = panel._asset.emitters[0].stable_id
-    panel._add_emitter()
-    target_id = panel._asset.emitters[1].stable_id
+    target = panel.add_authoring_emitter("Event Target")
+    target_id = target["stable_id"]
+    target_settings = target["settings"]
+    target_settings["spawn_rate"] = 0.0
+    changed = panel.set_authoring_emitter_settings(target_id, target_settings)
+    assert changed["changed"] is True
     event_type = panel.add_event_type(
         "Impact",
         64,

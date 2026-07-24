@@ -163,7 +163,11 @@ class ParticleGraphEditorPanel(EditorPanel):
             "emitter_index": int(self._emitter_index),
             "selected_node_uid": str(self._selected_node_uid),
             "emitters": [
-                {"stable_id": emitter.stable_id, "name": emitter.name}
+                {
+                    "stable_id": emitter.stable_id,
+                    "name": emitter.name,
+                    "settings": emitter.settings.to_dict(),
+                }
                 for emitter in self._asset.emitters
             ],
             "event_types": [value.to_dict() for value in self._asset.event_types],
@@ -449,6 +453,67 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise KeyError(f"Particle emitter not found: {emitter_id!r}")
         self._select_emitter(index)
         return {"stable_id": emitter_id, "index": index}
+
+    def add_authoring_emitter(self, name: str) -> dict:
+        """Add an emitter through one undoable live-document transaction."""
+        name = str(name).strip()
+        if not name:
+            raise ValueError("Particle emitter name cannot be empty")
+        if any(emitter.name == name for emitter in self._asset.emitters):
+            raise ValueError(f"Particle emitter name already exists: {name!r}")
+        emitter = ParticleEmitterAsset(name=name)
+        before = self._snapshot()
+        self._asset = replace(
+            self._asset,
+            emitters=(*self._asset.emitters, emitter),
+        )
+        self._emitter_index = len(self._asset.emitters) - 1
+        self._stage = "init"
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Add particle emitter", before)
+        return {
+            "stable_id": emitter.stable_id,
+            "name": emitter.name,
+            "settings": emitter.settings.to_dict(),
+        }
+
+    def set_authoring_emitter_settings(
+        self, emitter_id: str, settings: dict
+    ) -> dict:
+        """Replace the complete current EmitterSettings schema atomically."""
+        emitter_id = str(emitter_id)
+        index = next(
+            (
+                index
+                for index, emitter in enumerate(self._asset.emitters)
+                if emitter.stable_id == emitter_id
+            ),
+            -1,
+        )
+        if index < 0:
+            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
+        decoded = EmitterSettings.from_dict(settings, "$.settings")
+        emitter = self._asset.emitters[index]
+        if decoded == emitter.settings:
+            return {
+                "stable_id": emitter_id,
+                "settings": emitter.settings.to_dict(),
+                "changed": False,
+            }
+        before = self._snapshot()
+        emitters = list(self._asset.emitters)
+        emitters[index] = replace(emitter, settings=decoded)
+        self._asset = replace(self._asset, emitters=tuple(emitters))
+        self._emitter_index = index
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Edit emitter settings", before)
+        return {
+            "stable_id": emitter_id,
+            "settings": decoded.to_dict(),
+            "changed": True,
+        }
 
     def add_event_type(
         self,

@@ -214,6 +214,48 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={"emitter_id": emitter_id},
         )
 
+    @mcp.tool(name="particle_graph_add_emitter")
+    def particle_graph_add_emitter(name: str) -> dict:
+        """Add one emitter through the live ParticleGraph document."""
+
+        def _add():
+            panel = _require_particle_graph_panel()
+            emitter = panel.add_authoring_emitter(name)
+            return {
+                "emitter": emitter,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_add_emitter",
+            _add,
+            arguments={"name": name},
+        )
+
+    @mcp.tool(name="particle_graph_set_emitter_settings")
+    def particle_graph_set_emitter_settings(
+        emitter_id: str, settings: dict
+    ) -> dict:
+        """Replace one emitter's complete current settings schema."""
+
+        def _set():
+            panel = _require_particle_graph_panel()
+            result = panel.set_authoring_emitter_settings(emitter_id, settings)
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_set_emitter_settings",
+            _set,
+            arguments={"emitter_id": emitter_id, "settings": settings},
+        )
+
     @mcp.tool(name="particle_graph_add_event_type")
     def particle_graph_add_event_type(
         name: str,
@@ -464,6 +506,28 @@ def _register_metadata() -> None:
         side_effects=["Changes the visible authoring emitter without modifying the asset."],
         recovery=["Inspect the editor and retry with an existing emitter stable ID."],
         next_suggested_tools=["particle_graph_add_node", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_add_emitter",
+        summary="Add an emitter through the live ParticleGraph editor document.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "emitter", "authoring"],
+        aliases=["add particle emitter", "添加粒子发射器"],
+        preconditions=["A .particlegraph asset must be open."],
+        side_effects=["Records Undo, selects the new emitter, and republishes the live draft."],
+        recovery=["Use a non-empty emitter display name that is unique in the graph."],
+        next_suggested_tools=["particle_graph_set_emitter_settings"],
+    )
+    register_tool_metadata(
+        "particle_graph_set_emitter_settings",
+        summary="Replace one emitter's complete current settings through the editor.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "emitter", "settings"],
+        aliases=["set particle emitter", "设置粒子发射器"],
+        preconditions=["Use the complete settings object returned by particle_graph_inspect_editor."],
+        side_effects=["Records Undo, marks the document dirty, and republishes the live draft."],
+        recovery=["Inspect the emitter and retry with the exact current settings field set."],
+        next_suggested_tools=["particle_graph_add_event_route", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_add_event_type",
