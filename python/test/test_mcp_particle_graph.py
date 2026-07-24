@@ -78,6 +78,10 @@ class _Panel:
         self.calls.append(("emitter-settings", emitter_id, settings))
         return {"stable_id": emitter_id, "settings": settings, "changed": True}
 
+    def patch_authoring_emitter_settings(self, emitter_id, values):
+        self.calls.append(("patch-emitter-settings", emitter_id, values))
+        return {"stable_id": emitter_id, "settings": values, "changed": True}
+
     def add_event_type(self, name, capacity_per_step, fields):
         self.calls.append(("event-type", name, capacity_per_step, fields))
         return {"stable_id": "event-id", "name": name}
@@ -101,6 +105,22 @@ class _Panel:
             )
         )
         return {"stable_id": "route-id", "event_type_id": event_type_id}
+
+    def add_event_output_node(self, route_id, x, y):
+        self.calls.append(("event-output", route_id, x, y))
+        return {
+            "uid": "update::event-output",
+            "type_id": "event-output-type",
+            "stage": "update",
+        }
+
+    def add_event_payload_node(self, route_id, x, y):
+        self.calls.append(("event-payload", route_id, x, y))
+        return {
+            "uid": "init::event-payload",
+            "type_id": "event-payload-type",
+            "stage": "init",
+        }
 
     def update_event_type(self, event_type_id, name, capacity_per_step, fields):
         self.calls.append(
@@ -203,6 +223,9 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     emitter_settings = mcp.tools["particle_graph_set_emitter_settings"](
         "target", {"spawn_rate": 0.0}
     )
+    patched_settings = mcp.tools["particle_graph_patch_emitter_settings"](
+        "target", {"capacity": 8}
+    )
     event_type = mcp.tools["particle_graph_add_event_type"](
         "Impact",
         64,
@@ -216,6 +239,12 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     )
     event_route = mcp.tools["particle_graph_add_event_route"](
         "event-id", "source", "update", "target", 2
+    )
+    event_output = mcp.tools["particle_graph_add_event_output"](
+        "route-id", 280.0, 220.0
+    )
+    event_payload = mcp.tools["particle_graph_add_event_payload"](
+        "route-id", 160.0, 40.0
     )
     updated_type = mcp.tools["particle_graph_update_event_type"](
         "event-id",
@@ -252,8 +281,11 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert selected["stable_id"] == "target"
     assert emitter["emitter"]["stable_id"] == "target"
     assert emitter_settings["changed"] is True
+    assert patched_settings["settings"] == {"capacity": 8}
     assert event_type["event_type"]["stable_id"] == "event-id"
     assert event_route["event_route"]["stable_id"] == "route-id"
+    assert event_output["node"]["uid"] == "update::event-output"
+    assert event_payload["node"]["uid"] == "init::event-payload"
     assert updated_type["event_type"]["stable_id"] == "event-id"
     assert updated_route["event_route"]["spawn_count"] == 7
     assert removed_route["event_route"]["stable_id"] == "route-id"
@@ -275,6 +307,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         ("select-emitter", "target"),
         ("add-emitter", "Target"),
         ("emitter-settings", "target", {"spawn_rate": 0.0}),
+        ("patch-emitter-settings", "target", {"capacity": 8}),
         (
             "event-type",
             "Impact",
@@ -288,6 +321,8 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             ],
         ),
         ("event-route", "event-id", "source", "update", "target", 2),
+        ("event-output", "route-id", 280.0, 220.0),
+        ("event-payload", "route-id", 160.0, 40.0),
         (
             "update-event-type",
             "event-id",

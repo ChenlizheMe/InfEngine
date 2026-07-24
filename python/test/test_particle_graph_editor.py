@@ -642,6 +642,54 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     )
 
 
+def test_particle_graph_editor_semantic_event_helpers_patch_and_route_nodes():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    source = panel.asset.emitters[0]
+    original_settings = source.settings.to_dict()
+
+    patched = panel.patch_authoring_emitter_settings(
+        source.stable_id,
+        {"capacity": 64, "spawn_rate": 120.0},
+    )
+
+    assert patched["settings"]["capacity"] == 64
+    assert patched["settings"]["spawn_rate"] == 120.0
+    assert patched["settings"]["lifetime"] == original_settings["lifetime"]
+    with pytest.raises(ValueError, match="unknown emitter settings"):
+        panel.patch_authoring_emitter_settings(source.stable_id, {"legacy": True})
+
+    target_id = panel.add_authoring_emitter("Event Target")["stable_id"]
+    event_type = panel.add_event_type(
+        "Impact",
+        4,
+        [
+            {
+                "name": "Weight",
+                "type": TypeRef(ValueType.F32).to_dict(),
+                "default": 1.0,
+            }
+        ],
+    )
+    route = panel.add_event_route(
+        event_type["stable_id"], source.stable_id, "update", target_id, 3
+    )
+
+    output = panel.add_event_output_node(route["stable_id"], 280.0, 220.0)
+    assert panel.asset.emitters[panel._emitter_index].stable_id == source.stable_id
+    assert output["stage"] == "update"
+    assert output["type_id"] == particle_event_output_type_id(
+        route["stable_id"], "update"
+    )
+
+    payload = panel.add_event_payload_node(route["stable_id"], 160.0, 40.0)
+    assert panel.asset.emitters[panel._emitter_index].stable_id == target_id
+    assert payload["stage"] == "init"
+    assert payload["type_id"] == particle_event_payload_type_id(route["stable_id"])
+
+
 def test_particle_graph_editor_updates_event_identity_in_place():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 

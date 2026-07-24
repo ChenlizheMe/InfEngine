@@ -257,6 +257,28 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={"emitter_id": emitter_id, "settings": settings},
         )
 
+    @mcp.tool(name="particle_graph_patch_emitter_settings")
+    def particle_graph_patch_emitter_settings(
+        emitter_id: str, values: dict
+    ) -> dict:
+        """Patch selected fields on one emitter through the strict editor schema."""
+
+        def _patch():
+            panel = _require_particle_graph_panel()
+            result = panel.patch_authoring_emitter_settings(emitter_id, values)
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_patch_emitter_settings",
+            _patch,
+            arguments={"emitter_id": emitter_id, "values": values},
+        )
+
     @mcp.tool(name="particle_graph_add_event_type")
     def particle_graph_add_event_type(
         name: str,
@@ -321,6 +343,50 @@ def register_particle_tools(mcp, project_path: str) -> None:
                 "target_emitter_id": target_emitter_id,
                 "spawn_count": spawn_count,
             },
+        )
+
+    @mcp.tool(name="particle_graph_add_event_output")
+    def particle_graph_add_event_output(
+        route_id: str, x: float = 0.0, y: float = 0.0
+    ) -> dict:
+        """Add an Event Output in the route's source emitter and stage."""
+
+        def _add():
+            panel = _require_particle_graph_panel()
+            node = panel.add_event_output_node(route_id, x, y)
+            return {
+                "node": node,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_add_event_output",
+            _add,
+            arguments={"route_id": route_id, "x": x, "y": y},
+        )
+
+    @mcp.tool(name="particle_graph_add_event_payload")
+    def particle_graph_add_event_payload(
+        route_id: str, x: float = 0.0, y: float = 0.0
+    ) -> dict:
+        """Add an Event Payload in the route's target Init graph."""
+
+        def _add():
+            panel = _require_particle_graph_panel()
+            node = panel.add_event_payload_node(route_id, x, y)
+            return {
+                "node": node,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_add_event_payload",
+            _add,
+            arguments={"route_id": route_id, "x": x, "y": y},
         )
 
     @mcp.tool(name="particle_graph_update_event_type")
@@ -755,6 +821,17 @@ def _register_metadata() -> None:
         next_suggested_tools=["particle_graph_add_event_route", "editor_save_document"],
     )
     register_tool_metadata(
+        "particle_graph_patch_emitter_settings",
+        summary="Patch selected emitter settings through the strict live editor document.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "emitter", "settings", "patch"],
+        aliases=["patch particle emitter", "修改粒子发射器参数"],
+        preconditions=["A .particlegraph asset must be open."],
+        side_effects=["Records one Undo transaction, marks the document dirty, and republishes the draft."],
+        recovery=["Use only field names returned in the emitter settings snapshot."],
+        next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
         "particle_graph_add_event_type",
         summary="Add a typed event schema through the live ParticleGraph editor.",
         category="assets/particle_graph",
@@ -775,6 +852,28 @@ def _register_metadata() -> None:
         side_effects=["Records Undo and exposes route-specific Event Output/Payload nodes."],
         recovery=["Inspect event_types, event_routes, and emitters before retrying."],
         next_suggested_tools=["particle_graph_add_node", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_add_event_output",
+        summary="Add a route-specific Event Output to the correct source emitter and stage.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "output", "authoring"],
+        aliases=["add event output", "添加粒子事件输出"],
+        preconditions=["The route stable ID must appear in particle_graph_inspect_editor."],
+        side_effects=["Selects the source emitter and records one node-add Undo transaction."],
+        recovery=["Create or inspect the event route, then retry with its stable ID."],
+        next_suggested_tools=["particle_graph_connect_stream", "editor_save_document"],
+    )
+    register_tool_metadata(
+        "particle_graph_add_event_payload",
+        summary="Add a route-specific Event Payload to the correct target Init graph.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "payload", "authoring"],
+        aliases=["add event payload", "添加粒子事件载荷"],
+        preconditions=["The route stable ID must appear in particle_graph_inspect_editor."],
+        side_effects=["Selects the target emitter and records one node-add Undo transaction."],
+        recovery=["Create or inspect the event route, then retry with its stable ID."],
+        next_suggested_tools=["particle_graph_connect_value", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_update_event_type",

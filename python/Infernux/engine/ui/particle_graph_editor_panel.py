@@ -672,6 +672,31 @@ class ParticleGraphEditorPanel(EditorPanel):
             "changed": True,
         }
 
+    def patch_authoring_emitter_settings(
+        self, emitter_id: str, values: dict
+    ) -> dict:
+        """Patch current emitter settings through the same strict decoder."""
+        if type(values) is not dict or not values:
+            raise ValueError("emitter settings patch must be a non-empty object")
+        emitter_id = str(emitter_id)
+        emitter = next(
+            (
+                value
+                for value in self._asset.emitters
+                if value.stable_id == emitter_id
+            ),
+            None,
+        )
+        if emitter is None:
+            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
+        settings = emitter.settings.to_dict()
+        unknown = sorted(set(values) - set(settings))
+        if unknown:
+            raise ValueError(f"unknown emitter settings: {unknown}")
+        for key, value in values.items():
+            settings[key] = copy.deepcopy(value)
+        return self.set_authoring_emitter_settings(emitter_id, settings)
+
     def add_event_type(
         self,
         name: str,
@@ -830,6 +855,50 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._mark_changed()
         self._record("Add Particle Graph event route", before)
         return route.to_dict()
+
+    def add_event_output_node(
+        self, route_id: str, x: float = 0.0, y: float = 0.0
+    ) -> dict:
+        """Add a route-specific Event Output in its source emitter/stage."""
+        route = next(
+            (
+                value
+                for value in self._asset.event_routes
+                if value.stable_id == str(route_id)
+            ),
+            None,
+        )
+        if route is None:
+            raise KeyError(f"Particle event route not found: {route_id!r}")
+        self.select_authoring_emitter(route.source_emitter_id)
+        return self.add_authoring_node(
+            route.source_stage,
+            particle_event_output_type_id(route.stable_id, route.source_stage),
+            float(x),
+            float(y),
+        )
+
+    def add_event_payload_node(
+        self, route_id: str, x: float = 0.0, y: float = 0.0
+    ) -> dict:
+        """Add a route-specific Event Payload in its target Init graph."""
+        route = next(
+            (
+                value
+                for value in self._asset.event_routes
+                if value.stable_id == str(route_id)
+            ),
+            None,
+        )
+        if route is None:
+            raise KeyError(f"Particle event route not found: {route_id!r}")
+        self.select_authoring_emitter(route.target_emitter_id)
+        return self.add_authoring_node(
+            "init",
+            particle_event_payload_type_id(route.stable_id),
+            float(x),
+            float(y),
+        )
 
     def update_event_route(
         self,
