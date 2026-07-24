@@ -67,17 +67,19 @@ py::array PointCacheChannelArray(const std::shared_ptr<InxPointCache> &pointCach
     return result;
 }
 
-py::array VectorFieldVolumeArray(const std::shared_ptr<InxTexture> &texture)
+py::array VolumeArray(const std::shared_ptr<InxTexture> &texture)
 {
     if (!texture)
         throw std::invalid_argument("texture is null");
     const auto cpuData = texture->GetCpuData();
     if (!cpuData || !cpuData->IsValid())
         throw std::runtime_error("texture has no valid CPU data");
-    if (cpuData->dimension != TextureDimension::Texture3D || cpuData->semantic != TextureSemantic::VectorField)
-        throw std::runtime_error("texture is not a VectorField Texture3D");
+    if (cpuData->dimension != TextureDimension::Texture3D ||
+        (cpuData->semantic != TextureSemantic::VectorField &&
+         cpuData->semantic != TextureSemantic::SignedDistanceField))
+        throw std::runtime_error("texture is not a supported volume Texture3D");
     if (cpuData->format != TextureFormat::Rgba16Float && cpuData->format != TextureFormat::Rgba32Float)
-        throw std::runtime_error("vector field volume requires rgba16_float or rgba32_float storage");
+        throw std::runtime_error("volume texture requires rgba16_float or rgba32_float storage");
 
     const TextureMipLevel &mip = cpuData->mipLevels.front();
     const uint64_t texelBytes = TextureFormatBytesPerTexel(cpuData->format);
@@ -88,7 +90,7 @@ py::array VectorFieldVolumeArray(const std::shared_ptr<InxTexture> &texture)
     if (mip.width == 0 || mip.height == 0 || mip.depth == 0 || mip.rowPitch < minimumRowPitch ||
         mip.slicePitch < minimumSlicePitch || mip.byteOffset > cpuData->bytes.size() ||
         requiredBytes > cpuData->bytes.size() - mip.byteOffset || requiredBytes > mip.byteSize)
-        throw std::runtime_error("vector field base mip has invalid dimensions or pitches");
+        throw std::runtime_error("volume texture base mip has invalid dimensions or pitches");
 
     std::vector<py::ssize_t> shape{
         static_cast<py::ssize_t>(mip.depth),
@@ -326,8 +328,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                                    const auto &cpu = self.GetCpuData();
                                    return cpu ? cpu->valueMax : TextureCpuData{}.valueMax;
                                })
-        .def("volume_array", &VectorFieldVolumeArray,
-             "Return a zero-copy, read-only (depth, height, width, 4) NumPy view of one VectorField generation");
+        .def("volume_array", &VolumeArray,
+             "Return a zero-copy, read-only (depth, height, width, 4) NumPy view of one volume generation");
 
     py::class_<InxPointCache, std::shared_ptr<InxPointCache>>(m, "InxPointCache")
         .def_property_readonly("name", &InxPointCache::GetName)

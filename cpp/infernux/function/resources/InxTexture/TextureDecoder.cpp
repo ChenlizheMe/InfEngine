@@ -1,4 +1,5 @@
 #include "TextureDecoder.h"
+#include "SignedDistanceFieldSource.h"
 #include "TextureProcessor.h"
 #include "VectorFieldSource.h"
 
@@ -180,6 +181,16 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
             std::move(volume), TextureProcessOptions{ReadGenerateMipmaps(metadata), ReadCompression(metadata),
                                                      ReadCompressionQuality(metadata), ReadTargetFormat(metadata)});
     }
+    if (extension == ".inxsdf") {
+        TextureCpuData volume = SignedDistanceFieldSource::Decode(
+            std::string_view(reinterpret_cast<const char *>(source.data()), source.size()));
+        const auto &base = volume.mipLevels.front();
+        if (base.width > maxSize || base.height > maxSize || base.depth > maxSize)
+            throw std::invalid_argument("signed distance field dimensions exceed texture max_size");
+        return TextureProcessor::Process(std::move(volume), TextureProcessOptions{false, ReadCompression(metadata),
+                                                                                  ReadCompressionQuality(metadata),
+                                                                                  ReadTargetFormat(metadata)});
+    }
 
     int sourceWidth = 0;
     int sourceHeight = 0;
@@ -190,6 +201,8 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &
     texture->semantic = ReadSemantic(metadata);
     if (texture->semantic == TextureSemantic::VectorField)
         throw std::invalid_argument("VectorField textures must use the .inxvfield source format");
+    if (texture->semantic == TextureSemantic::SignedDistanceField)
+        throw std::invalid_argument("SignedDistanceField textures must use the .inxsdf source format");
     if (stbi_is_hdr_from_memory(source.data(), static_cast<int>(source.size())) != 0) {
         texture->format = TextureFormat::Rgba32Float;
         float *decoded = stbi_loadf_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,

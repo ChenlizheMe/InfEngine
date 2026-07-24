@@ -888,6 +888,19 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.vector_field_source COMMAND infernux_vector_field_source_tests)
 
+    add_executable(infernux_signed_distance_field_source_tests
+        cpp/tests/SignedDistanceFieldSourceTests.cpp
+        cpp/infernux/function/resources/InxTexture/SignedDistanceFieldSource.cpp
+    )
+    target_include_directories(infernux_signed_distance_field_source_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    if(MSVC)
+        target_compile_options(infernux_signed_distance_field_source_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.signed_distance_field_source COMMAND infernux_signed_distance_field_source_tests)
+
     add_executable(infernux_vector_field_importer_tests
         cpp/tests/VectorFieldImporterTests.cpp
     )

@@ -90,8 +90,21 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
             artifact.metadata.AddMetadata("texture_format", std::string("rgba16_float"));
         else if (format != "rgba16_float" && format != "rgba32_float")
             throw std::invalid_argument("VectorField textures require rgba16_float or rgba32_float storage");
+    } else if (extension == ".inxsdf") {
+        artifact.metadata.AddMetadata("texture_type", std::string("sdf"));
+        artifact.metadata.AddMetadata("srgb", false);
+        artifact.metadata.AddMetadata("generate_mipmaps", false);
+        artifact.metadata.AddMetadata("wrap_mode", std::string("clamp"));
+        artifact.metadata.AddMetadata("texture_compression", std::string("none"));
+        const std::string format = artifact.metadata.GetDataAs<std::string>("texture_format");
+        if (format == "auto")
+            artifact.metadata.AddMetadata("texture_format", std::string("rgba16_float"));
+        else if (format != "rgba16_float" && format != "rgba32_float")
+            throw std::invalid_argument("SignedDistanceField textures require rgba16_float or rgba32_float storage");
     } else if (artifact.metadata.GetDataAs<std::string>("texture_type") == "vector_field") {
         throw std::invalid_argument("VectorField textures must use the .inxvfield source format");
+    } else if (artifact.metadata.GetDataAs<std::string>("texture_type") == "sdf") {
+        throw std::invalid_argument("SignedDistanceField textures must use the .inxsdf source format");
     }
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");

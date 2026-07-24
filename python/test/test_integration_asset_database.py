@@ -453,6 +453,78 @@ def test_vector_field_import_exposes_immutable_volume_generations(engine, tmp_pa
             asset_db.delete_asset(str(source))
 
 
+def test_signed_distance_field_import_exposes_immutable_volume_generations(engine, tmp_path: Path):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "Collider.inxsdf"
+
+    def document(distances):
+        return {
+            "$schema": "infernux.sdf",
+            "dimensions": [2, 1, 1],
+            "storage_order": "x_fastest",
+            "distance_unit": "field",
+            "bake_basis": [
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            "distances": distances,
+        }
+
+    source.write_text(json.dumps(document([-0.25, 0.75])), encoding="utf-8")
+    registry = AssetRegistry.instance()
+
+    try:
+        result = AssetManager.import_asset(str(source), database=asset_db)
+        assert result, result.error
+        assert result.resource_type == ResourceType.Texture
+
+        texture = registry.load_texture_by_guid(result.guid)
+        assert texture is not None
+        assert texture.dimension == "3d"
+        assert texture.semantic == "signed_distance_field"
+        assert texture.pixel_format == "rgba16_float"
+        assert texture.pixel_depth == 1
+        initial_generation = texture.generation
+        assert initial_generation > 0
+        assert tuple(texture.bake_basis) == tuple(document([])["bake_basis"])
+        assert texture.value_min[0] == pytest.approx(-0.25)
+        assert texture.value_max[0] == pytest.approx(0.75)
+
+        original = texture.volume_array()
+        assert original.shape == (1, 1, 2, 4)
+        assert original.dtype == np.dtype(np.float16)
+        assert not original.flags.writeable
+        np.testing.assert_allclose(original[0, 0], [[-0.25, 0, 0, 0], [0.75, 0, 0, 0]])
+
+        source.write_text(json.dumps(document([-0.5, 1.25])), encoding="utf-8")
+        reimported = AssetManager.reimport_asset(str(source), database=asset_db)
+        assert reimported, reimported.error
+
+        current = texture.volume_array()
+        assert texture.generation == initial_generation + 1
+        np.testing.assert_allclose(current[0, 0], [[-0.5, 0, 0, 0], [1.25, 0, 0, 0]])
+        np.testing.assert_allclose(original[0, 0], [[-0.25, 0, 0, 0], [0.75, 0, 0, 0]])
+    finally:
+        if "result" in locals() and result.guid:
+            registry.remove_asset(result.guid)
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+
+
 def test_asset_database_never_indexes_python_bytecode_or_cache_paths(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "python-bytecode-ignore-fixture"

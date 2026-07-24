@@ -46,6 +46,7 @@ class TestTextureType:
         assert int(TextureType.SPRITE) == 3
         assert int(TextureType.DATA) == 4
         assert int(TextureType.VECTOR_FIELD) == 5
+        assert int(TextureType.SDF) == 6
 
 
 class TestTextureCompression:
@@ -169,6 +170,17 @@ class TestTextureImportSettings:
         assert settings.srgb is False
         assert settings.format == TextureFormat.RGBA16_FLOAT
         assert settings.compression == TextureCompression.NONE
+
+    def test_sdf_extension_uses_canonical_volume_import_settings(self, tmp_path):
+        path = str(tmp_path / "collider.inxsdf")
+        settings = read_texture_import_settings(path)
+        assert settings.texture_type == TextureType.SDF
+        assert settings.srgb is False
+        assert settings.generate_mipmaps is False
+        assert settings.wrap_mode == WrapMode.CLAMP
+        assert settings.format == TextureFormat.RGBA16_FLOAT
+        assert settings.compression == TextureCompression.NONE
+        assert TextureImportSettings.from_dict(settings.to_dict()) == settings
 
     def test_meta_rejects_string_encoded_sprite_frames(self, tmp_path):
         meta_path = tmp_path / "sprite.png.meta"

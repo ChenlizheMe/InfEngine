@@ -32,6 +32,7 @@ class TextureType(IntEnum):
     SPRITE = 3
     DATA = 4
     VECTOR_FIELD = 5
+    SDF = 6
 
 
 class TextureCompression(IntEnum):
@@ -199,7 +200,7 @@ class TextureImportSettings:
         UI and SPRITE default to clamp wrapping with no mipmaps; sprites also use point filtering.
         Other modes leave the current values unchanged.
         """
-        if self.texture_type in {TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD}:
+        if self.texture_type in {TextureType.NORMAL_MAP, TextureType.DATA, TextureType.VECTOR_FIELD, TextureType.SDF}:
             self.srgb = False
         elif self.texture_type in {TextureType.UI, TextureType.SPRITE}:
             if self.texture_type == TextureType.SPRITE:
@@ -261,6 +262,7 @@ class TextureImportSettings:
             "sprite": TextureType.SPRITE,
             "data": TextureType.DATA,
             "vector_field": TextureType.VECTOR_FIELD,
+            "sdf": TextureType.SDF,
         }
         if tt_str not in tt_map:
             raise ValueError(f"unsupported texture_type: {tt_str}")
@@ -567,6 +569,14 @@ def read_texture_import_settings(asset_path: str) -> TextureImportSettings:
         settings.compression = TextureCompression.NONE
         if settings.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
             settings.format = TextureFormat.RGBA16_FLOAT
+    elif os.path.splitext(asset_path)[1].lower() == ".inxsdf":
+        settings.texture_type = TextureType.SDF
+        settings.srgb = False
+        settings.generate_mipmaps = False
+        settings.wrap_mode = WrapMode.CLAMP
+        settings.compression = TextureCompression.NONE
+        if settings.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            settings.format = TextureFormat.RGBA16_FLOAT
     return settings
 
 
@@ -576,6 +586,14 @@ def write_texture_import_settings(asset_path: str, settings: TextureImportSettin
     if os.path.splitext(asset_path)[1].lower() == ".inxvfield":
         canonical.texture_type = TextureType.VECTOR_FIELD
         canonical.srgb = False
+        canonical.compression = TextureCompression.NONE
+        if canonical.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
+            canonical.format = TextureFormat.RGBA16_FLOAT
+    elif os.path.splitext(asset_path)[1].lower() == ".inxsdf":
+        canonical.texture_type = TextureType.SDF
+        canonical.srgb = False
+        canonical.generate_mipmaps = False
+        canonical.wrap_mode = WrapMode.CLAMP
         canonical.compression = TextureCompression.NONE
         if canonical.format not in {TextureFormat.RGBA16_FLOAT, TextureFormat.RGBA32_FLOAT}:
             canonical.format = TextureFormat.RGBA16_FLOAT
@@ -687,7 +705,7 @@ def write_mesh_import_settings(asset_path: str, settings: MeshImportSettings) ->
 # Image extensions supported by InxTextureLoader / stb_image
 IMAGE_EXTENSIONS = frozenset({
     ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
-    ".inxvfield",
+    ".inxvfield", ".inxsdf",
 })
 
 # Shader extensions supported by ShaderImporter

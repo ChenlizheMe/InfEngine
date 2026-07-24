@@ -2143,8 +2143,9 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     if (ext == ".py") {
         return ResourceType::Script;
     }
-    static const std::unordered_set<std::string> textureExtensions = {
-        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm", ".inxvfield"};
+    static const std::unordered_set<std::string> textureExtensions = {".png", ".jpg", ".jpeg",      ".bmp",   ".tga",
+                                                                      ".gif", ".psd", ".hdr",       ".pic",   ".pnm",
+                                                                      ".pgm", ".ppm", ".inxvfield", ".inxsdf"};
     if (textureExtensions.find(ext) != textureExtensions.end()) {
         return ResourceType::Texture;
     }
