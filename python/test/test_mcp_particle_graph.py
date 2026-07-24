@@ -102,6 +102,40 @@ class _Panel:
         )
         return {"stable_id": "route-id", "event_type_id": event_type_id}
 
+    def update_event_type(self, event_type_id, name, capacity_per_step, fields):
+        self.calls.append(
+            ("update-event-type", event_type_id, name, capacity_per_step, fields)
+        )
+        return {
+            "stable_id": event_type_id,
+            "name": name,
+            "capacity_per_step": capacity_per_step,
+            "fields": fields,
+            "changed": True,
+        }
+
+    def update_event_route(
+        self,
+        route_id,
+        event_type_id,
+        source_emitter_id,
+        source_stage,
+        target_emitter_id,
+        spawn_count,
+    ):
+        self.calls.append(
+            (
+                "update-event-route",
+                route_id,
+                event_type_id,
+                source_emitter_id,
+                source_stage,
+                target_emitter_id,
+                spawn_count,
+            )
+        )
+        return {"stable_id": route_id, "spawn_count": spawn_count, "changed": True}
+
     def remove_event_route(self, route_id):
         self.calls.append(("remove-event-route", route_id))
         return {"stable_id": route_id, "event_type_id": "event-id"}
@@ -183,6 +217,22 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     event_route = mcp.tools["particle_graph_add_event_route"](
         "event-id", "source", "update", "target", 2
     )
+    updated_type = mcp.tools["particle_graph_update_event_type"](
+        "event-id",
+        "Impact Renamed",
+        8,
+        [
+            {
+                "stable_id": "field-id",
+                "name": "Weight",
+                "type": {"value_type": "f32", "space": "none"},
+                "default": 2.0,
+            }
+        ],
+    )
+    updated_route = mcp.tools["particle_graph_update_event_route"](
+        "route-id", "event-id", "source", "update", "target", 7
+    )
     removed_route = mcp.tools["particle_graph_remove_event_route"]("route-id")
     removed_type = mcp.tools["particle_graph_remove_event_type"]("event-id")
     routed = mcp.tools["particle_graph_set_rendering_output"](
@@ -204,6 +254,8 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert emitter_settings["changed"] is True
     assert event_type["event_type"]["stable_id"] == "event-id"
     assert event_route["event_route"]["stable_id"] == "route-id"
+    assert updated_type["event_type"]["stable_id"] == "event-id"
+    assert updated_route["event_route"]["spawn_count"] == 7
     assert removed_route["event_route"]["stable_id"] == "route-id"
     assert removed_type["event_type"]["stable_id"] == "event-id"
     assert routed["changed"] is True
@@ -236,6 +288,29 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             ],
         ),
         ("event-route", "event-id", "source", "update", "target", 2),
+        (
+            "update-event-type",
+            "event-id",
+            "Impact Renamed",
+            8,
+            [
+                {
+                    "stable_id": "field-id",
+                    "name": "Weight",
+                    "type": {"value_type": "f32", "space": "none"},
+                    "default": 2.0,
+                }
+            ],
+        ),
+        (
+            "update-event-route",
+            "route-id",
+            "event-id",
+            "source",
+            "update",
+            "target",
+            7,
+        ),
         ("remove-event-route", "route-id"),
         ("remove-event-type", "event-id"),
         ("output", "rendering::mesh-output"),

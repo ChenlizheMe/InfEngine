@@ -642,6 +642,149 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     )
 
 
+def test_particle_graph_editor_updates_event_identity_in_place():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    source_id = panel.asset.emitters[0].stable_id
+    target_id = panel.add_authoring_emitter("Target")["stable_id"]
+    event_type = panel.add_event_type(
+        "Impact",
+        32,
+        [{"name": "Weight", "type": TypeRef(ValueType.F32).to_dict(), "default": 1.0}],
+    )
+    route = panel.add_event_route(
+        event_type["stable_id"], source_id, "update", target_id, 2
+    )
+
+    panel.select_authoring_emitter(source_id)
+    output = panel.add_authoring_node(
+        "update",
+        particle_event_output_type_id(route["stable_id"], "update"),
+        240.0,
+        230.0,
+    )
+    panel.connect_stream("update::root.update", output["uid"])
+    panel.select_authoring_emitter(target_id)
+    payload = panel.add_authoring_node(
+        "init", particle_event_payload_type_id(route["stable_id"]), 160.0, 0.0
+    )
+    size = panel.add_authoring_node(
+        "init", "particle.attribute.set_size", 420.0, 0.0
+    )
+    panel.connect_stream("init::root.init", size["uid"])
+    payload_port = particle_event_payload_port_id(
+        event_type["fields"][0]["stable_id"]
+    )
+    panel.connect_value(payload["uid"], payload_port, size["uid"], "value")
+
+    updated_type = panel.update_event_type(
+        event_type["stable_id"],
+        "Impact Renamed",
+        8,
+        [
+            {
+                "stable_id": event_type["fields"][0]["stable_id"],
+                "name": "Impulse",
+                "type": TypeRef(ValueType.F32).to_dict(),
+                "default": 2.0,
+            }
+        ],
+    )
+    assert updated_type["stable_id"] == event_type["stable_id"]
+    assert updated_type["fields"][0]["stable_id"] == event_type["fields"][0]["stable_id"]
+    assert updated_type["capacity_per_step"] == 8
+    assert updated_type["changed"] is True
+    assert any(
+        link.source_port == payload_port for link in panel.asset.emitters[1].init.links
+    )
+
+    updated_route = panel.update_event_route(
+        route["stable_id"],
+        event_type["stable_id"],
+        source_id,
+        "update",
+        target_id,
+        7,
+    )
+    assert updated_route["stable_id"] == route["stable_id"]
+    assert updated_route["spawn_count"] == 7
+    assert updated_route["route_nodes_removed"] is False
+    assert any(
+        node.type_id == particle_event_output_type_id(route["stable_id"], "update")
+        for node in panel.asset.emitters[0].update.nodes
+    )
+
+
+def test_particle_graph_editor_prunes_only_invalid_event_edit_context():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    source_id = panel.asset.emitters[0].stable_id
+    target_id = panel.add_authoring_emitter("Target")["stable_id"]
+    event_type = panel.add_event_type(
+        "Impact",
+        32,
+        [{"name": "Weight", "type": TypeRef(ValueType.F32).to_dict(), "default": 1.0}],
+    )
+    route = panel.add_event_route(
+        event_type["stable_id"], source_id, "update", target_id, 2
+    )
+    field_id = event_type["fields"][0]["stable_id"]
+    payload_port = particle_event_payload_port_id(field_id)
+
+    panel.select_authoring_emitter(source_id)
+    output = panel.add_authoring_node(
+        "update",
+        particle_event_output_type_id(route["stable_id"], "update"),
+        240.0,
+        230.0,
+    )
+    panel.connect_stream("update::root.update", output["uid"])
+    constant = panel.add_authoring_node("update", "common.constant.f32", 80.0, 0.0)
+    panel.connect_value(constant["uid"], "value", output["uid"], payload_port)
+
+    panel.update_event_type(
+        event_type["stable_id"],
+        "Impact",
+        32,
+        [
+            {
+                "stable_id": field_id,
+                "name": "Weight",
+                "type": TypeRef(ValueType.VEC3).to_dict(),
+                "default": [1.0, 1.0, 1.0],
+            }
+        ],
+    )
+    source = panel.asset.emitters[0]
+    assert any(link.target_port == "in" for link in source.update.links)
+    assert not any(link.target_port == payload_port for link in source.update.links)
+
+    moved = panel.update_event_route(
+        route["stable_id"],
+        event_type["stable_id"],
+        source_id,
+        "init",
+        target_id,
+        2,
+    )
+    assert moved["route_nodes_removed"] is True
+    route_types = {
+        particle_event_output_type_id(route["stable_id"], stage)
+        for stage in ("init", "update", "rendering")
+    }
+    route_types.add(particle_event_payload_type_id(route["stable_id"]))
+    assert not any(
+        node.type_id in route_types
+        for emitter in panel.asset.emitters
+        for stage in (emitter.init, emitter.update, emitter.rendering)
+        for node in stage.nodes
+    )
+
+
 def test_particle_graph_editor_removes_event_route_nodes_transactionally():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 

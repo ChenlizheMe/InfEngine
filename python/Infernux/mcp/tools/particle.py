@@ -323,6 +323,79 @@ def register_particle_tools(mcp, project_path: str) -> None:
             },
         )
 
+    @mcp.tool(name="particle_graph_update_event_type")
+    def particle_graph_update_event_type(
+        event_type_id: str,
+        name: str,
+        capacity_per_step: int,
+        fields: list[dict],
+    ) -> dict:
+        """Update a typed event schema without changing its stable identity."""
+
+        def _update():
+            panel = _require_particle_graph_panel()
+            event_type = panel.update_event_type(
+                event_type_id, name, capacity_per_step, fields
+            )
+            return {
+                "event_type": event_type,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_update_event_type",
+            _update,
+            arguments={
+                "event_type_id": event_type_id,
+                "name": name,
+                "capacity_per_step": capacity_per_step,
+                "fields": fields,
+            },
+        )
+
+    @mcp.tool(name="particle_graph_update_event_route")
+    def particle_graph_update_event_route(
+        route_id: str,
+        event_type_id: str,
+        source_emitter_id: str,
+        source_stage: str,
+        target_emitter_id: str,
+        spawn_count: int = 1,
+    ) -> dict:
+        """Update an event route without changing its stable identity."""
+
+        def _update():
+            panel = _require_particle_graph_panel()
+            route = panel.update_event_route(
+                route_id,
+                event_type_id,
+                source_emitter_id,
+                source_stage,
+                target_emitter_id,
+                spawn_count,
+            )
+            return {
+                "event_route": route,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_update_event_route",
+            _update,
+            arguments={
+                "route_id": route_id,
+                "event_type_id": event_type_id,
+                "source_emitter_id": source_emitter_id,
+                "source_stage": source_stage,
+                "target_emitter_id": target_emitter_id,
+                "spawn_count": spawn_count,
+            },
+        )
+
     @mcp.tool(name="particle_graph_remove_event_route")
     def particle_graph_remove_event_route(route_id: str) -> dict:
         """Remove one event route and its route-private graph nodes."""
@@ -702,6 +775,37 @@ def _register_metadata() -> None:
         side_effects=["Records Undo and exposes route-specific Event Output/Payload nodes."],
         recovery=["Inspect event_types, event_routes, and emitters before retrying."],
         next_suggested_tools=["particle_graph_add_node", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_update_event_type",
+        summary="Edit an event schema in place while preserving stable event/field identities.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "schema", "edit", "hot reload"],
+        aliases=["edit particle event", "修改粒子事件类型"],
+        preconditions=[
+            "Use the complete current field list returned by particle_graph_inspect_editor.",
+            "Every field object must include stable_id, name, type, and default.",
+        ],
+        side_effects=[
+            "Records Undo and preserves unaffected route nodes and links.",
+            "Removed fields or type changes disconnect only links using those payload ports.",
+        ],
+        recovery=["Inspect the current event schema and retry with its stable IDs."],
+        next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_update_event_route",
+        summary="Edit an event route in place while preserving its stable route identity.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "route", "edit", "hot reload"],
+        aliases=["edit particle event route", "修改粒子事件路由"],
+        preconditions=["Route, event, and emitter stable IDs must be current."],
+        side_effects=[
+            "A spawn-count-only edit preserves route-private nodes and links.",
+            "Changing type/source/stage/target removes route-private nodes whose context is no longer valid.",
+        ],
+        recovery=["Inspect the route and re-add its context-specific nodes after endpoint changes."],
+        next_suggested_tools=["particle_graph_add_node", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_remove_event_route",
