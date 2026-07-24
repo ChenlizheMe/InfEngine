@@ -414,7 +414,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         }
 
     def set_node_property(self, node_uid: str, property_name: str, value) -> dict:
-        """Set a typed non-asset node property through the canvas edit path."""
+        """Set a typed field currently editable in the node Inspector."""
         if self._model is None:
             raise RuntimeError("Particle Graph editor has no active authoring model")
         node = self._model.find_node(str(node_uid))
@@ -428,9 +428,30 @@ class ParticleGraphEditorPanel(EditorPanel):
         key = str(property_name)
         field = next((item for item in definition.properties if item.id == key), None)
         if field is None:
-            raise KeyError(
-                f"Particle Graph node {node_uid!r} has no editable property {key!r}"
+            port = next(
+                (
+                    item
+                    for item in definition.ports
+                    if item.id == key
+                    and item.direction is PortDirection.INPUT
+                    and item.kind is PortKind.VALUE
+                    and not item.required
+                    and item.value_type is not None
+                ),
+                None,
             )
+            if port is None:
+                raise KeyError(
+                    f"Particle Graph node {node_uid!r} has no editable property {key!r}"
+                )
+            if any(
+                link.target_node == node.uid and link.target_pin == key
+                for link in self._model.links
+            ):
+                raise ValueError(
+                    f"Particle Graph node {node_uid!r}.{key} is driven by a value link"
+                )
+            field = port
         if field.value_type.value_type is ValueType.ASSET_REF:
             raise ValueError(
                 "AssetRef properties must use particle_graph_set_node_asset"

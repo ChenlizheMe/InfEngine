@@ -132,7 +132,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
         property_name: str,
         value,
     ) -> dict:
-        """Set one typed non-asset property on a live ParticleGraph node."""
+        """Set one typed Inspector field on a live ParticleGraph node."""
 
         def _set():
             panel = _require_particle_graph_panel()

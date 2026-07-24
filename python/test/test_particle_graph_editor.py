@@ -636,6 +636,48 @@ def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
     assert "ribbon" in catalog["types"][0]["type_id"]
 
 
+def test_particle_graph_editor_edits_unlinked_value_input_defaults():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    noise = panel.add_authoring_node(
+        "update", "common.noise.vector3d", 220.0, 360.0
+    )
+
+    changed = panel.set_node_property(noise["uid"], "frequency", 2.5)
+
+    assert changed == {
+        "node_uid": noise["uid"],
+        "property_name": "frequency",
+        "value": 2.5,
+        "changed": True,
+    }
+    saved = next(
+        node
+        for node in panel.authoring_snapshot()["nodes"]
+        if node["uid"] == noise["uid"]
+    )
+    assert saved["properties"]["frequency"] == 2.5
+
+
+def test_particle_graph_editor_rejects_default_edit_for_linked_value_input():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    frequency = panel.add_authoring_node(
+        "update", "common.constant.f32", 120.0, 360.0
+    )
+    noise = panel.add_authoring_node(
+        "update", "common.noise.vector3d", 320.0, 360.0
+    )
+    panel.connect_value(frequency["uid"], "value", noise["uid"], "frequency")
+
+    with pytest.raises(ValueError, match="is driven by a value link"):
+        panel.set_node_property(noise["uid"], "frequency", 2.5)
+
+
 def test_particle_graph_editor_rejects_camera_sort_for_ribbon_output():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
