@@ -380,6 +380,61 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={"object_id": object_id, "ordinal": ordinal},
         )
 
+    @mcp.tool(name="particle_system_request_gpu_diagnostics")
+    def particle_system_request_gpu_diagnostics(
+        object_id: int, ordinal: int = 0
+    ) -> dict:
+        """Request one asynchronous GPU particle counter snapshot."""
+
+        def _request():
+            obj = find_game_object(object_id)
+            component = _find_particle_system(obj, int(ordinal))
+            if component is None:
+                raise FileNotFoundError(
+                    f"ParticleSystem {ordinal} was not found on GameObject {object_id}."
+                )
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "request_id": component.request_gpu_diagnostics(),
+                "status": "pending",
+            }
+
+        return main_thread(
+            "particle_system_request_gpu_diagnostics",
+            _request,
+            arguments={"object_id": object_id, "ordinal": ordinal},
+        )
+
+    @mcp.tool(name="particle_system_poll_gpu_diagnostics")
+    def particle_system_poll_gpu_diagnostics(
+        object_id: int, request_id: int, ordinal: int = 0
+    ) -> dict:
+        """Poll a previously requested GPU particle counter snapshot."""
+
+        def _poll():
+            obj = find_game_object(object_id)
+            component = _find_particle_system(obj, int(ordinal))
+            if component is None:
+                raise FileNotFoundError(
+                    f"ParticleSystem {ordinal} was not found on GameObject {object_id}."
+                )
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "diagnostics": component.poll_gpu_diagnostics(int(request_id)),
+            }
+
+        return main_thread(
+            "particle_system_poll_gpu_diagnostics",
+            _poll,
+            arguments={
+                "object_id": object_id,
+                "request_id": request_id,
+                "ordinal": ordinal,
+            },
+        )
+
 
 def _require_particle_graph_panel():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
@@ -650,5 +705,26 @@ def _register_metadata() -> None:
         aliases=["particle runtime state", "粒子运行状态"],
         preconditions=["object_id must own a live ParticleSystem component."],
         recovery=["Find the object and verify its component list before retrying."],
+        next_suggested_tools=["runtime_read_errors", "capture_request"],
+    )
+    register_tool_metadata(
+        "particle_system_request_gpu_diagnostics",
+        summary="Request one asynchronous GPU particle/event counter snapshot.",
+        category="runtime/particles",
+        tags=["particle", "gpu", "event", "diagnostics", "readback"],
+        aliases=["read particle counts", "读取粒子计数"],
+        preconditions=["object_id must own a live GPU ParticleSystem component."],
+        side_effects=["Records one counter-buffer copy after the next submitted frame."],
+        recovery=["Keep the editor running and poll the returned request_id."],
+        next_suggested_tools=["particle_system_poll_gpu_diagnostics"],
+    )
+    register_tool_metadata(
+        "particle_system_poll_gpu_diagnostics",
+        summary="Poll a requested GPU particle/event counter snapshot without stalling.",
+        category="runtime/particles",
+        tags=["particle", "gpu", "event", "diagnostics", "poll"],
+        aliases=["poll particle counts", "轮询粒子计数"],
+        preconditions=["request_id must come from the same ParticleSystem component."],
+        recovery=["If status is pending, advance frames and poll again."],
         next_suggested_tools=["runtime_read_errors", "capture_request"],
     )

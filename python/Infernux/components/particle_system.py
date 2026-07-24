@@ -73,6 +73,7 @@ class ParticleSystem(InxComponent):
     _gpu_transform_buffers: dict[bool, np.ndarray]
     _batch_id: int = 0
     _submitted_batch_ids: set[int]
+    _gpu_diagnostic_requests: set[int]
     _data_interface_overrides: dict[str, AssetReference]
     _playing: bool = False
     _editor_preview_active: bool = False
@@ -103,6 +104,7 @@ class ParticleSystem(InxComponent):
         self._emitter_to_world_cache = None
         self._gpu_transform_buffers = {}
         self._submitted_batch_ids = set()
+        self._gpu_diagnostic_requests = set()
         self._data_interface_overrides = {}
         self._batch_id = (int(self.game_object.id) << 16) ^ int(self.component_id)
         if self._batch_id == 0:
@@ -262,6 +264,69 @@ class ParticleSystem(InxComponent):
             "last_compile_error": str(self._last_compile_error),
             "emitters": emitters,
         }
+
+    def request_gpu_diagnostics(self) -> int:
+        """Request one asynchronous GPU counter snapshot for this graph."""
+        self._ensure_runtime_state()
+        native = self._native_engine()
+        if native is None or not hasattr(native, "_request_gpu_particle_diagnostics"):
+            raise RuntimeError("GPU particle diagnostics are unavailable")
+        request_id = int(native._request_gpu_particle_diagnostics(self._batch_id))
+        if request_id <= 0:
+            raise RuntimeError("GPU particle diagnostic request was rejected")
+        self._gpu_diagnostic_requests.add(request_id)
+        return request_id
+
+    def poll_gpu_diagnostics(self, request_id: int) -> dict:
+        """Poll a snapshot requested by :meth:`request_gpu_diagnostics`."""
+        self._ensure_runtime_state()
+        if type(request_id) is not int or request_id not in self._gpu_diagnostic_requests:
+            raise ValueError("GPU particle diagnostic request does not belong to this component")
+        native = self._native_engine()
+        if native is None or not hasattr(native, "_poll_gpu_particle_diagnostics"):
+            raise RuntimeError("GPU particle diagnostics are unavailable")
+        result = dict(native._poll_gpu_particle_diagnostics(request_id))
+        if int(result.get("graph_instance_id", 0)) not in {0, self._batch_id}:
+            raise RuntimeError("GPU particle diagnostic response belongs to another graph")
+
+        metadata = getattr(self, "_particle_metadata", None)
+        emitter_names = tuple(
+            emitter.stable_id for emitter in getattr(metadata, "emitters", ())
+        )
+        for emitter in result.get("emitters", ()):
+            index = int(emitter.get("emitter_index", -1))
+            emitter["stable_id"] = (
+                emitter_names[index] if 0 <= index < len(emitter_names) else ""
+            )
+
+        kernel = getattr(self, "_particle_kernel", None)
+        event_abi = getattr(kernel, "events", None)
+        routes = tuple(getattr(event_abi, "routes", ()))
+        event_types = {
+            event_type.type_index: event_type
+            for event_type in getattr(event_abi, "event_types", ())
+        }
+        for event in result.get("events", ()):
+            channel = int(event.get("channel_index", -1))
+            if not 0 <= channel < len(routes):
+                continue
+            route = routes[channel]
+            event_type = event_types.get(route.event_type_index)
+            event["route_stable_id"] = route.stable_id
+            event["event_type_stable_id"] = (
+                event_type.stable_id if event_type is not None else ""
+            )
+            event["source_emitter_stable_id"] = (
+                emitter_names[route.source_emitter_index]
+                if 0 <= route.source_emitter_index < len(emitter_names)
+                else ""
+            )
+            event["target_emitter_stable_id"] = (
+                emitter_names[route.target_emitter_index]
+                if 0 <= route.target_emitter_index < len(emitter_names)
+                else ""
+            )
+        return result
 
     def restart(self, emitter_index: int | None = None) -> bool:
         if emitter_index is None:

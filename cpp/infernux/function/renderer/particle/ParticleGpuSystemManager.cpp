@@ -5,18 +5,22 @@
 
 #include <core/log/InxLog.h>
 #include <function/renderer/FrameDeletionQueue.h>
+#include <function/renderer/rhi/RhiBuffer.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
+#include <function/renderer/vk/VulkanRhiDevice.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -71,6 +75,18 @@ uint64_t HashBytes(uint64_t hash, const void *data, size_t byteSize) noexcept
 
 struct ParticleGpuSystemManager::Impl
 {
+    struct DiagnosticState
+    {
+        mutable std::mutex mutex;
+        std::unordered_map<uint64_t, GpuParticleDiagnosticSnapshot> snapshots;
+    };
+
+    struct PendingDiagnostic
+    {
+        uint64_t requestId = 0;
+        uint64_t graphInstanceId = 0;
+    };
+
     struct PointCacheResources
     {
         std::shared_ptr<rhi::BufferResource> data;
@@ -195,6 +211,172 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<GraphState> graphState;
     mutable std::unordered_map<const InxPointCache *, PointCacheUpload> pointCacheUploads;
     mutable std::unordered_map<const InxMesh *, MeshUpload> meshUploads;
+    std::shared_ptr<DiagnosticState> diagnosticState = std::make_shared<DiagnosticState>();
+    std::vector<PendingDiagnostic> pendingDiagnostics;
+    uint64_t nextDiagnosticRequestId = 1;
+
+    void RecordDiagnostics(VkCommandBuffer commandBuffer)
+    {
+        if (pendingDiagnostics.empty() || !context || !deletionQueue || commandBuffer == VK_NULL_HANDLE)
+            return;
+
+        auto requests = std::move(pendingDiagnostics);
+        pendingDiagnostics.clear();
+        auto &device = context->GetRhiDevice();
+        vk::VulkanTransferCommandContext transferContext;
+        const auto transfer = device.MakeTransferCommandEncoder(transferContext, commandBuffer);
+
+        VkMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+                             &barrier, 0, nullptr, 0, nullptr);
+
+        for (const auto &request : requests) {
+            struct EmitterCapture
+            {
+                GpuParticleEmitterDiagnostic diagnostic;
+                uint64_t offset = 0;
+            };
+            struct EventCapture
+            {
+                GpuParticleEventDiagnostic diagnostic;
+                uint64_t readOffset = 0;
+                uint64_t writeOffset = 0;
+                bool hasInput = false;
+            };
+
+            std::vector<EmitterCapture> emitterCaptures;
+            for (const auto &[id, emitter] : emitters) {
+                if (!emitter || emitter->graphInstanceId != request.graphInstanceId || !emitter->runtime)
+                    continue;
+                EmitterCapture capture;
+                capture.diagnostic.emitterId = id;
+                capture.diagnostic.emitterIndex = emitter->sourceProgram.graphEmitterIndex;
+                capture.diagnostic.capacity = emitter->runtime->Capacity();
+                emitterCaptures.push_back(capture);
+            }
+            std::sort(emitterCaptures.begin(), emitterCaptures.end(), [](const auto &lhs, const auto &rhs) {
+                return lhs.diagnostic.emitterIndex < rhs.diagnostic.emitterIndex;
+            });
+
+            const auto domainFound = eventDomains.find(request.graphInstanceId);
+            const std::shared_ptr<ParticleGpuEventDomain> domain =
+                domainFound != eventDomains.end() ? domainFound->second : nullptr;
+            std::vector<EventCapture> eventCaptures;
+            if (domain && domain->IsValid()) {
+                eventCaptures.reserve(domain->ChannelCount());
+                for (uint32_t channelIndex = 0; channelIndex < domain->ChannelCount(); ++channelIndex) {
+                    const auto *channel = domain->Channel(channelIndex);
+                    if (!channel)
+                        continue;
+                    EventCapture capture;
+                    capture.diagnostic.channelIndex = channelIndex;
+                    capture.diagnostic.stableEventTypeHash = channel->stableEventTypeHash;
+                    capture.diagnostic.sourceEmitterIndex = channel->sourceEmitterIndex;
+                    capture.diagnostic.targetEmitterIndex = channel->targetEmitterIndex;
+                    capture.diagnostic.eventTypeIndex = channel->eventTypeIndex;
+                    capture.diagnostic.spawnCount = channel->spawnCount;
+                    capture.diagnostic.preparedEpoch = domain->PreparedEpoch();
+                    capture.diagnostic.readPageIndex = domain->CurrentReadPageIndex();
+                    capture.diagnostic.writePageIndex = domain->CurrentWritePageIndex();
+                    capture.hasInput = domain->HasPreparedInput();
+                    eventCaptures.push_back(capture);
+                }
+            }
+
+            const uint64_t emitterBytes = emitterCaptures.size() * 16u;
+            const uint64_t eventBytes = eventCaptures.size() * sizeof(GpuParticleEventCounter) * 2u;
+            const uint64_t totalBytes = emitterBytes + eventBytes;
+            if (emitterCaptures.empty() || totalBytes == 0) {
+                std::scoped_lock lock(diagnosticState->mutex);
+                auto &snapshot = diagnosticState->snapshots[request.requestId];
+                snapshot.status = GpuParticleDiagnosticStatus::Failed;
+                snapshot.error = "GPU particle graph has no resident emitters";
+                continue;
+            }
+
+            const auto readbackHandle = device.CreateBuffer(
+                {totalBytes, rhi::BufferUsageFlags::TransferDestination, rhi::BufferMemory::Readback});
+            if (!readbackHandle.IsValid()) {
+                std::scoped_lock lock(diagnosticState->mutex);
+                auto &snapshot = diagnosticState->snapshots[request.requestId];
+                snapshot.status = GpuParticleDiagnosticStatus::Failed;
+                snapshot.error = "Failed to allocate GPU particle diagnostic readback buffer";
+                continue;
+            }
+            auto readback = std::make_shared<rhi::BufferResource>(device, readbackHandle, totalBytes);
+
+            uint64_t offset = 0;
+            for (auto &capture : emitterCaptures) {
+                capture.offset = offset;
+                const auto emitter = emitters.find(capture.diagnostic.emitterId);
+                transfer.CopyBuffer(emitter->second->runtime->CounterBuffer(), readbackHandle, {0, offset, 16});
+                offset += 16;
+            }
+            if (domain && !eventCaptures.empty()) {
+                const auto *readPage = domain->Page(domain->CurrentReadPageIndex());
+                const auto *writePage = domain->Page(domain->CurrentWritePageIndex());
+                for (auto &capture : eventCaptures) {
+                    const uint64_t sourceOffset =
+                        static_cast<uint64_t>(capture.diagnostic.channelIndex) * sizeof(GpuParticleEventCounter);
+                    capture.readOffset = offset;
+                    transfer.CopyBuffer(readPage->counters, readbackHandle,
+                                        {sourceOffset, offset, sizeof(GpuParticleEventCounter)});
+                    offset += sizeof(GpuParticleEventCounter);
+                    capture.writeOffset = offset;
+                    transfer.CopyBuffer(writePage->counters, readbackHandle,
+                                        {sourceOffset, offset, sizeof(GpuParticleEventCounter)});
+                    offset += sizeof(GpuParticleEventCounter);
+                }
+            }
+
+            const auto state = diagnosticState;
+            auto *readbackDevice = static_cast<rhi::Device *>(&device);
+            deletionQueue->Push([state, readback, emitterCaptures = std::move(emitterCaptures),
+                                 eventCaptures = std::move(eventCaptures), request, readbackDevice]() mutable {
+                std::vector<uint8_t> bytes(static_cast<size_t>(readback->GetByteSize()));
+                GpuParticleDiagnosticSnapshot result;
+                result.requestId = request.requestId;
+                result.graphInstanceId = request.graphInstanceId;
+                if (!readbackDevice->ReadBuffer(readback->GetBuffer(), 0, bytes.data(), bytes.size())) {
+                    result.status = GpuParticleDiagnosticStatus::Failed;
+                    result.error = "Failed to read completed GPU particle diagnostic buffer";
+                } else {
+                    result.status = GpuParticleDiagnosticStatus::Completed;
+                    for (auto &capture : emitterCaptures) {
+                        std::array<uint32_t, 4> counters{};
+                        std::memcpy(counters.data(), bytes.data() + capture.offset, sizeof(counters));
+                        capture.diagnostic.freeCount = std::min(counters[0], capture.diagnostic.capacity);
+                        capture.diagnostic.aliveCount = capture.diagnostic.capacity - capture.diagnostic.freeCount;
+                        capture.diagnostic.visibleCount = counters[1];
+                        capture.diagnostic.droppedCount = counters[2];
+                        result.emitters.push_back(capture.diagnostic);
+                    }
+                    for (auto &capture : eventCaptures) {
+                        GpuParticleEventCounter read{};
+                        GpuParticleEventCounter write{};
+                        std::memcpy(&read, bytes.data() + capture.readOffset, sizeof(read));
+                        std::memcpy(&write, bytes.data() + capture.writeOffset, sizeof(write));
+                        capture.diagnostic.producedCount = write.writeCount;
+                        capture.diagnostic.producerDroppedCount = write.droppedCount;
+                        capture.diagnostic.consumedCount = capture.hasInput ? read.consumeCount : 0u;
+                        capture.diagnostic.targetDroppedCount = capture.hasInput ? read.reserved : 0u;
+                        const uint64_t requested =
+                            static_cast<uint64_t>(capture.diagnostic.consumedCount) * capture.diagnostic.spawnCount;
+                        capture.diagnostic.spawnedCount =
+                            requested - std::min<uint64_t>(requested, capture.diagnostic.targetDroppedCount);
+                        result.events.push_back(capture.diagnostic);
+                    }
+                }
+                std::scoped_lock lock(state->mutex);
+                const auto found = state->snapshots.find(request.requestId);
+                if (found != state->snapshots.end() && found->second.status == GpuParticleDiagnosticStatus::Pending)
+                    found->second = std::move(result);
+            });
+        }
+    }
 
     [[nodiscard]] std::shared_ptr<MeshResources> ResolveMeshResources(const std::shared_ptr<InxMesh> &mesh,
                                                                       std::string *error) const
@@ -1213,6 +1395,15 @@ void ParticleGpuSystemManager::Shutdown() noexcept
         return;
     if (m_impl->drawRegistry)
         m_impl->drawRegistry->Clear();
+    {
+        std::scoped_lock lock(m_impl->diagnosticState->mutex);
+        for (const auto &request : m_impl->pendingDiagnostics) {
+            auto &snapshot = m_impl->diagnosticState->snapshots[request.requestId];
+            snapshot.status = GpuParticleDiagnosticStatus::Failed;
+            snapshot.error = "GPU particle manager shut down before diagnostic recording";
+        }
+    }
+    m_impl->pendingDiagnostics.clear();
     m_impl->graphState.reset();
     m_impl->emitters.clear();
     m_impl->eventDomains.clear();
@@ -1628,6 +1819,7 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
         m_impl->graphState->graph->Execute(commandBuffer);
         m_impl->RetireCompletedMigrations();
     }
+    m_impl->RecordDiagnostics(commandBuffer);
 }
 
 bool ParticleGpuSystemManager::Contains(uint64_t id) const
@@ -1757,6 +1949,56 @@ uint32_t ParticleGpuSystemManager::ActiveEventPageCount(uint64_t graphInstanceId
         return 0;
     const auto found = m_impl->eventDomains.find(graphInstanceId);
     return found != m_impl->eventDomains.end() ? found->second->PageCount() : 0;
+}
+
+uint64_t ParticleGpuSystemManager::RequestDiagnostics(uint64_t graphInstanceId)
+{
+    if (!m_impl)
+        return 0;
+    const uint64_t requestId = m_impl->nextDiagnosticRequestId++;
+    GpuParticleDiagnosticSnapshot snapshot;
+    snapshot.requestId = requestId;
+    snapshot.graphInstanceId = graphInstanceId;
+    const bool hasEmitter =
+        graphInstanceId != 0 &&
+        std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(), [graphInstanceId](const auto &entry) {
+            return entry.second && entry.second->graphInstanceId == graphInstanceId;
+        });
+    if (m_impl->pendingDiagnostics.size() >= 8) {
+        snapshot.status = GpuParticleDiagnosticStatus::Failed;
+        snapshot.error = "Too many GPU particle diagnostic requests are pending";
+    } else if (!m_impl->context || !m_impl->deletionQueue || !hasEmitter) {
+        snapshot.status = GpuParticleDiagnosticStatus::Failed;
+        snapshot.error =
+            hasEmitter ? "GPU particle diagnostics are unavailable" : "GPU particle graph has no resident emitters";
+    } else {
+        snapshot.status = GpuParticleDiagnosticStatus::Pending;
+        m_impl->pendingDiagnostics.push_back({requestId, graphInstanceId});
+    }
+    std::scoped_lock lock(m_impl->diagnosticState->mutex);
+    if (m_impl->diagnosticState->snapshots.size() >= 128) {
+        auto oldest = m_impl->diagnosticState->snapshots.end();
+        for (auto it = m_impl->diagnosticState->snapshots.begin(); it != m_impl->diagnosticState->snapshots.end();
+             ++it) {
+            if (it->second.status == GpuParticleDiagnosticStatus::Pending)
+                continue;
+            if (oldest == m_impl->diagnosticState->snapshots.end() || it->first < oldest->first)
+                oldest = it;
+        }
+        if (oldest != m_impl->diagnosticState->snapshots.end())
+            m_impl->diagnosticState->snapshots.erase(oldest);
+    }
+    m_impl->diagnosticState->snapshots[requestId] = std::move(snapshot);
+    return requestId;
+}
+
+GpuParticleDiagnosticSnapshot ParticleGpuSystemManager::QueryDiagnostics(uint64_t requestId) const
+{
+    if (!m_impl || requestId == 0)
+        return {};
+    std::scoped_lock lock(m_impl->diagnosticState->mutex);
+    const auto found = m_impl->diagnosticState->snapshots.find(requestId);
+    return found != m_impl->diagnosticState->snapshots.end() ? found->second : GpuParticleDiagnosticSnapshot{};
 }
 
 } // namespace infernux::particle

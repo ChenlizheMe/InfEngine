@@ -174,6 +174,53 @@ struct GpuParticleTelemetrySnapshot
     uint64_t requestedSpawnCount = 0;
 };
 
+enum class GpuParticleDiagnosticStatus : uint8_t
+{
+    Pending,
+    Completed,
+    Failed,
+    Unknown,
+};
+
+struct GpuParticleEmitterDiagnostic
+{
+    uint64_t emitterId = 0;
+    uint32_t emitterIndex = 0;
+    uint32_t capacity = 0;
+    uint32_t freeCount = 0;
+    uint32_t aliveCount = 0;
+    uint32_t visibleCount = 0;
+    uint32_t droppedCount = 0;
+};
+
+struct GpuParticleEventDiagnostic
+{
+    uint32_t channelIndex = 0;
+    uint64_t stableEventTypeHash = 0;
+    uint32_t sourceEmitterIndex = 0;
+    uint32_t targetEmitterIndex = 0;
+    uint32_t eventTypeIndex = 0;
+    uint32_t spawnCount = 0;
+    uint64_t preparedEpoch = 0;
+    uint32_t readPageIndex = 0;
+    uint32_t writePageIndex = 0;
+    uint32_t producedCount = 0;
+    uint32_t producerDroppedCount = 0;
+    uint32_t consumedCount = 0;
+    uint32_t targetDroppedCount = 0;
+    uint64_t spawnedCount = 0;
+};
+
+struct GpuParticleDiagnosticSnapshot
+{
+    uint64_t requestId = 0;
+    uint64_t graphInstanceId = 0;
+    GpuParticleDiagnosticStatus status = GpuParticleDiagnosticStatus::Unknown;
+    std::vector<GpuParticleEmitterDiagnostic> emitters;
+    std::vector<GpuParticleEventDiagnostic> events;
+    std::string error;
+};
+
 /// Owns all GPU particle emitters and their once-per-engine-frame simulation
 /// graph. Camera graphs consume only the exported instance/indirect buffers.
 class ParticleGpuSystemManager
@@ -233,6 +280,10 @@ class ParticleGpuSystemManager
     [[nodiscard]] uint64_t ActiveEventAbiHash(uint64_t graphInstanceId) const;
     [[nodiscard]] uint64_t ActiveEventDomainSerial(uint64_t graphInstanceId) const;
     [[nodiscard]] uint32_t ActiveEventPageCount(uint64_t graphInstanceId) const;
+    /// Arm one counter snapshot. No transfer or readback resource exists
+    /// until this method is called, and completion never stalls the renderer.
+    [[nodiscard]] uint64_t RequestDiagnostics(uint64_t graphInstanceId);
+    [[nodiscard]] GpuParticleDiagnosticSnapshot QueryDiagnostics(uint64_t requestId) const;
 
   private:
     struct Impl;

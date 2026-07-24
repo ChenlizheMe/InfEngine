@@ -259,6 +259,7 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
     std::sort(m_targets.begin(), m_targets.end(),
               [](const auto &lhs, const auto &rhs) { return lhs.emitterIndex < rhs.emitterIndex; });
     m_channels = records;
+    m_channelDescs = desc.channels;
 
     rhi::BufferDesc tableDesc;
     tableDesc.byteSize = records.size() * sizeof(GpuParticleEventChannelRecord);
@@ -276,7 +277,8 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
     m_pages.resize(pageCount);
     for (auto &page : m_pages) {
         page.records = device.CreateBuffer({recordBytes, rhi::BufferUsageFlags::Storage});
-        page.counters = device.CreateBuffer({counterBytes, rhi::BufferUsageFlags::Storage});
+        page.counters =
+            device.CreateBuffer({counterBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource});
         page.indirectArguments =
             device.CreateBuffer({dispatchBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect});
         page.spawnIndices = device.CreateBuffer({spawnIndexBytes, rhi::BufferUsageFlags::Storage});
@@ -474,6 +476,7 @@ void ParticleGpuEventDomain::Destroy() noexcept
     m_channelTable = {};
     m_targets.clear();
     m_channels.clear();
+    m_channelDescs.clear();
     m_channelCount = 0;
     m_recordBufferBytes = 0;
     m_spawnIndexBufferBytes = 0;
@@ -588,6 +591,11 @@ uint32_t ParticleGpuEventDomain::ChannelTargetEmitterIndex(uint32_t channelIndex
     if (channelIndex >= m_channels.size())
         return std::numeric_limits<uint32_t>::max();
     return m_channels[channelIndex].targetEmitterIndex;
+}
+
+const GpuParticleEventChannelDesc *ParticleGpuEventDomain::Channel(uint32_t channelIndex) const noexcept
+{
+    return channelIndex < m_channelDescs.size() ? &m_channelDescs[channelIndex] : nullptr;
 }
 
 } // namespace infernux::particle

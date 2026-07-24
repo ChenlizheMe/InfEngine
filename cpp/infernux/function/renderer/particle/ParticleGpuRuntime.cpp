@@ -238,7 +238,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState->states = device.CreateBuffer({stateBytes, storage});
         m_residentState->freeList =
             device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
-        m_residentState->counters = device.CreateBuffer({16, storage});
+        m_residentState->counters = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::TransferSource});
         m_residentState->instances = device.CreateBuffer({instanceBytes, storage});
         m_residentState->indirect = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect});
         m_residentState->renderIndices =

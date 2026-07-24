@@ -79,6 +79,7 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] rhi::GraphicsPipelineHandle CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override;
     [[nodiscard]] rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
     bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override;
+    [[nodiscard]] bool ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize) override;
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
     void Release(rhi::BufferHandle handle) noexcept override;
@@ -116,6 +117,7 @@ class VulkanRhiDevice final : public rhi::Device
         void *mappedData = nullptr;
         uint64_t byteSize = 0;
         bool owned = false;
+        rhi::BufferMemory memory = rhi::BufferMemory::DeviceLocal;
     };
 
     struct TexturePayload

@@ -1032,8 +1032,13 @@ class ParticleGraphEditorPanel(EditorPanel):
                 self._asset = ParticleGraphAsset.from_dict(draft)
                 self._file_path = resolved_path(path) if path else ""
                 self._dirty = True
-            except ParticleGraphSchemaError as exc:
-                Debug.log_warning(f"Failed to restore Particle Graph draft: {exc}")
+            except ParticleGraphSchemaError:
+                # Drafts are transient editor state, not versioned assets. A
+                # schema-breaking engine update discards them and restores the
+                # authoritative saved graph instead of retaining legacy data.
+                self._dirty = False
+                if path and os.path.isfile(path):
+                    self._open_particlegraph(path)
         elif path and os.path.isfile(path):
             self._open_particlegraph(path)
         self._emitter_index = min(

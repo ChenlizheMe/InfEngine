@@ -532,6 +532,7 @@ int main()
             const size_t base = 3 + page * 4;
             assert(eventDevice.buffers[base].byteSize == events.RecordBufferBytes());
             assert(eventDevice.buffers[base + 1].byteSize == 2 * sizeof(particle::GpuParticleEventCounter));
+            assert(rhi::HasBufferUsage(eventDevice.buffers[base + 1].usage, rhi::BufferUsageFlags::TransferSource));
             assert(eventDevice.buffers[base + 2].byteSize == 2 * sizeof(particle::GpuParticleEventDispatchArguments) &&
                    rhi::HasBufferUsage(eventDevice.buffers[base + 2].usage, rhi::BufferUsageFlags::Indirect));
             assert(eventDevice.buffers[base + 3].byteSize == events.SpawnIndexBufferBytes());
@@ -837,6 +838,7 @@ int main()
     assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64);
     assert(device.buffers.size() == 7);
     assert(device.buffers[0].byteSize == 64000);
+    assert(rhi::HasBufferUsage(device.buffers[2].usage, rhi::BufferUsageFlags::TransferSource));
     assert(device.buffers[3].byteSize ==
            static_cast<uint64_t>(desc.capacity) * particle::ParticleGpuRuntime::RenderInstanceStride);
     assert(rhi::HasBufferUsage(device.buffers[4].usage, rhi::BufferUsageFlags::Indirect));

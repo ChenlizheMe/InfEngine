@@ -200,6 +200,19 @@ class ParticleGpuEventDomain
     [[nodiscard]] rhi::BufferHandle CurrentIndirectArguments() const noexcept;
     [[nodiscard]] bool MatchesTargets(const std::vector<GpuParticleEventTargetDesc> &targets) const noexcept;
     [[nodiscard]] uint32_t ChannelTargetEmitterIndex(uint32_t channelIndex) const noexcept;
+    [[nodiscard]] const GpuParticleEventChannelDesc *Channel(uint32_t channelIndex) const noexcept;
+    [[nodiscard]] uint32_t CurrentReadPageIndex() const noexcept
+    {
+        return m_currentReadPageIndex;
+    }
+    [[nodiscard]] uint32_t CurrentWritePageIndex() const noexcept
+    {
+        return m_currentWritePageIndex;
+    }
+    [[nodiscard]] uint64_t PreparedEpoch() const noexcept
+    {
+        return m_nextPrepareEpoch;
+    }
 
   private:
     rhi::Device *m_device = nullptr;
@@ -212,6 +225,7 @@ class ParticleGpuEventDomain
     rhi::BufferHandle m_channelTable;
     std::vector<GpuParticleEventTargetDesc> m_targets;
     std::vector<GpuParticleEventChannelRecord> m_channels;
+    std::vector<GpuParticleEventChannelDesc> m_channelDescs;
     std::vector<GpuParticleEventPage> m_pages;
     rhi::BindingLayoutHandle m_prepareLayout;
     std::vector<rhi::BindGroupHandle> m_prepareGroups;

@@ -2272,6 +2272,75 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("graph_instance_id"), "Return the active graph-owned GPU particle event domain serial")
         .def(
+            "_request_gpu_particle_diagnostics",
+            [](Infernux &self, uint64_t graphInstanceId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->RequestDiagnostics(graphInstanceId) : uint64_t{0};
+            },
+            py::arg("graph_instance_id"), "Request one asynchronous GPU particle counter snapshot")
+        .def(
+            "_poll_gpu_particle_diagnostics",
+            [](Infernux &self, uint64_t requestId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                const auto snapshot = manager ? manager->QueryDiagnostics(requestId)
+                                              : particle::GpuParticleDiagnosticSnapshot{};
+                py::dict result;
+                result["request_id"] = snapshot.requestId;
+                result["graph_instance_id"] = snapshot.graphInstanceId;
+                switch (snapshot.status) {
+                case particle::GpuParticleDiagnosticStatus::Pending:
+                    result["status"] = "pending";
+                    break;
+                case particle::GpuParticleDiagnosticStatus::Completed:
+                    result["status"] = "completed";
+                    break;
+                case particle::GpuParticleDiagnosticStatus::Failed:
+                    result["status"] = "failed";
+                    break;
+                default:
+                    result["status"] = "unknown";
+                    break;
+                }
+                result["error"] = snapshot.error;
+                py::list emitters;
+                for (const auto &emitter : snapshot.emitters) {
+                    py::dict item;
+                    item["emitter_id"] = emitter.emitterId;
+                    item["emitter_index"] = emitter.emitterIndex;
+                    item["capacity"] = emitter.capacity;
+                    item["free_count"] = emitter.freeCount;
+                    item["alive_count"] = emitter.aliveCount;
+                    item["visible_count"] = emitter.visibleCount;
+                    item["dropped_count"] = emitter.droppedCount;
+                    emitters.append(std::move(item));
+                }
+                result["emitters"] = std::move(emitters);
+                py::list events;
+                for (const auto &event : snapshot.events) {
+                    py::dict item;
+                    item["channel_index"] = event.channelIndex;
+                    item["stable_event_type_hash"] = event.stableEventTypeHash;
+                    item["source_emitter_index"] = event.sourceEmitterIndex;
+                    item["target_emitter_index"] = event.targetEmitterIndex;
+                    item["event_type_index"] = event.eventTypeIndex;
+                    item["spawn_count"] = event.spawnCount;
+                    item["prepared_epoch"] = event.preparedEpoch;
+                    item["read_page_index"] = event.readPageIndex;
+                    item["write_page_index"] = event.writePageIndex;
+                    item["produced_count"] = event.producedCount;
+                    item["producer_dropped_count"] = event.producerDroppedCount;
+                    item["consumed_count"] = event.consumedCount;
+                    item["target_dropped_count"] = event.targetDroppedCount;
+                    item["spawned_count"] = event.spawnedCount;
+                    events.append(std::move(item));
+                }
+                result["events"] = std::move(events);
+                return result;
+            },
+            py::arg("request_id"), "Poll one asynchronous GPU particle counter snapshot")
+        .def(
             "_gpu_particle_point_cache_generation",
             [](Infernux &self, uint64_t emitterId, uint32_t interfaceIndex) {
                 auto *renderer = self.GetRenderer();

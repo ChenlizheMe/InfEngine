@@ -25,6 +25,17 @@ class Device
     [[nodiscard]] virtual ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc &desc) = 0;
 
     virtual bool WriteBuffer(BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) = 0;
+    /// Copy bytes from a host-visible readback buffer after the submission
+    /// that populated it has completed. Device-local and upload buffers are
+    /// intentionally rejected by concrete backends.
+    [[nodiscard]] virtual bool ReadBuffer(BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize)
+    {
+        (void)handle;
+        (void)offset;
+        (void)data;
+        (void)byteSize;
+        return false;
+    }
 
     virtual void Release(BufferHandle handle) noexcept = 0;
     virtual void Release(TextureHandle handle) noexcept = 0;

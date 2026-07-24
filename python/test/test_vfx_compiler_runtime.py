@@ -254,6 +254,30 @@ class _MixedParticleNative:
     def _gpu_particle_event_domain_serial(self, graph_instance_id):
         return 7
 
+    def _request_gpu_particle_diagnostics(self, graph_instance_id):
+        self.diagnostic_graph_instance_id = graph_instance_id
+        return 91
+
+    def _poll_gpu_particle_diagnostics(self, request_id):
+        return {
+            "request_id": request_id,
+            "graph_instance_id": self.diagnostic_graph_instance_id,
+            "status": "completed",
+            "error": "",
+            "emitters": [
+                {
+                    "emitter_id": 17,
+                    "emitter_index": 1,
+                    "capacity": 8,
+                    "free_count": 5,
+                    "alive_count": 3,
+                    "visible_count": 3,
+                    "dropped_count": 0,
+                }
+            ],
+            "events": [],
+        }
+
     def submit_particle_instances(self, batch_id, *args, **kwargs):
         return None
 
@@ -325,6 +349,12 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert diagnostics["emitters"][1]["target"] == "gpu"
     assert diagnostics["emitters"][1]["artifact_revision"] == 17
     assert diagnostics["emitters"][1]["state_preserved"] is True
+    diagnostic_request = component.request_gpu_diagnostics()
+    gpu_diagnostics = component.poll_gpu_diagnostics(diagnostic_request)
+    assert diagnostic_request == 91
+    assert gpu_diagnostics["status"] == "completed"
+    assert gpu_diagnostics["emitters"][0]["stable_id"] == "gpu-sparks"
+    assert gpu_diagnostics["emitters"][0]["alive_count"] == 3
 
     cpu_step = component._runtimes[0].simulation_step
     gpu_step = component._gpu_controllers[0].simulation_step

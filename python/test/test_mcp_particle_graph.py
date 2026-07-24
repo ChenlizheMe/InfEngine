@@ -329,3 +329,49 @@ def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
             "emitters": [{"index": 1, "target": "gpu", "simulation_step": 9}],
         },
     }
+
+
+def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
+    class _Component:
+        def request_gpu_diagnostics(self):
+            return 77
+
+        def poll_gpu_diagnostics(self, request_id):
+            assert request_id == 77
+            return {
+                "request_id": 77,
+                "status": "completed",
+                "emitters": [{"stable_id": "target", "alive_count": 12}],
+                "events": [{"route_stable_id": "impact", "spawned_count": 12}],
+            }
+
+    class _Object:
+        id = 456
+        name = "GPU Event VFX"
+
+    component = _Component()
+    monkeypatch.setattr(module, "find_game_object", lambda object_id: _Object())
+    monkeypatch.setattr(
+        module,
+        "_find_particle_system",
+        lambda _obj, ordinal: component if ordinal == 0 else None,
+    )
+    monkeypatch.setattr(
+        module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    mcp = _FakeMcp()
+    module.register_particle_tools(mcp, "C:/Project")
+
+    requested = mcp.tools["particle_system_request_gpu_diagnostics"](456)
+    polled = mcp.tools["particle_system_poll_gpu_diagnostics"](456, 77)
+
+    assert requested == {
+        "object_id": 456,
+        "object_name": "GPU Event VFX",
+        "request_id": 77,
+        "status": "pending",
+    }
+    assert polled["diagnostics"]["emitters"][0]["alive_count"] == 12
+    assert polled["diagnostics"]["events"][0]["spawned_count"] == 12

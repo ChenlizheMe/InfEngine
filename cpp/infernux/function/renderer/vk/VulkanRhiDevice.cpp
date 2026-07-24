@@ -279,7 +279,9 @@ rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byte
 {
     return buffer == VK_NULL_HANDLE
                ? rhi::BufferHandle{}
-               : Register<rhi::BufferHandle>(m_buffers, m_freeBuffer, BufferPayload{buffer, {}, nullptr, byteSize});
+               : Register<rhi::BufferHandle>(
+                     m_buffers, m_freeBuffer,
+                     BufferPayload{buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal});
 }
 
 rhi::TextureHandle VulkanRhiDevice::RegisterTexture(VkImage image)
@@ -428,8 +430,22 @@ rhi::BufferHandle VulkanRhiDevice::CreateBuffer(const rhi::BufferDesc &desc)
         vmaFlushAllocation(m_allocator, allocation, 0, desc.initialDataBytes);
     }
 
-    return Register<rhi::BufferHandle>(m_buffers, m_freeBuffer,
-                                       BufferPayload{buffer, allocation, resultInfo.pMappedData, desc.byteSize, true});
+    return Register<rhi::BufferHandle>(
+        m_buffers, m_freeBuffer,
+        BufferPayload{buffer, allocation, resultInfo.pMappedData, desc.byteSize, true, desc.memory});
+}
+
+bool VulkanRhiDevice::ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize)
+{
+    const auto *payload = Resolve(m_buffers, handle);
+    if (!payload || !payload->owned || payload->memory != rhi::BufferMemory::Readback ||
+        payload->allocation == VK_NULL_HANDLE || !payload->mappedData || !data || byteSize == 0 ||
+        offset > payload->byteSize || byteSize > payload->byteSize - offset)
+        return false;
+    if (vmaInvalidateAllocation(m_allocator, payload->allocation, offset, byteSize) != VK_SUCCESS)
+        return false;
+    std::memcpy(data, static_cast<const uint8_t *>(payload->mappedData) + offset, static_cast<size_t>(byteSize));
+    return true;
 }
 
 rhi::TextureHandle VulkanRhiDevice::CreateTexture(const rhi::TextureDesc &desc)

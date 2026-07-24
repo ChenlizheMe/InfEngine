@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -298,6 +299,29 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
         "particle.root.rendering",
         "particle.output.sprite",
     ]
+
+
+def test_particle_graph_editor_discards_incompatible_transient_draft(tmp_path):
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.particle import ParticleGraphAsset
+
+    target = tmp_path / "Current.particlegraph"
+    ParticleGraphAsset(stable_id="current-graph", name="Current").save(str(target))
+    panel = ParticleGraphEditorPanel()
+    state = panel.save_state()
+    state["file_path"] = str(target)
+    state["dirty"] = True
+    stale_draft = dict(state["draft"])
+    stale_draft.pop("event_types")
+    stale_draft.pop("event_routes")
+    state["draft"] = stale_draft
+
+    restored = ParticleGraphEditorPanel()
+    restored.load_state(state)
+
+    assert restored._dirty is False
+    assert os.path.normcase(restored._file_path) == os.path.normcase(str(target.resolve()))
+    assert restored.asset.stable_id == "current-graph"
 
 
 def test_particle_graph_save_replaces_persisted_dirty_draft(tmp_path, monkeypatch):
