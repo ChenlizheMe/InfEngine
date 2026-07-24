@@ -141,6 +141,7 @@ void ValidateSceneDocument(const json &document)
         "isPlaying",
         "objects",
         "mainCameraComponentId",
+        "environment",
     };
     RequireExactFields(document, allowed, "Scene");
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
