@@ -208,13 +208,6 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
             channel.payloadStrideWords > std::numeric_limits<uint32_t>::max() - EventHeaderWords) {
             return false;
         }
-        const bool duplicate = std::any_of(records.begin(), records.end(), [&](const auto &existing) {
-            return existing.sourceEmitterIndex == channel.sourceEmitterIndex &&
-                   existing.targetEmitterIndex == channel.targetEmitterIndex &&
-                   existing.eventTypeIndex == channel.eventTypeIndex;
-        });
-        if (duplicate)
-            return false;
         const auto target = targetsByIndex.find(channel.targetEmitterIndex);
         if (target == targetsByIndex.end())
             return false;

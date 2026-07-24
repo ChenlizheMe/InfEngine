@@ -168,6 +168,41 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         "Directional Light",
         "RenderStack",
     ]
+    camera_data = scene["objects"][0]["components"][0]["data"]
+    assert set(camera_data) == {
+        "aspectRatio",
+        "backgroundColor",
+        "clearFlags",
+        "cullingMask",
+        "depth",
+        "farClip",
+        "fov",
+        "nearClip",
+        "orthoSize",
+        "projectionMode",
+    }
+    light_data = scene["objects"][1]["components"][0]["data"]
+    assert set(light_data) == {
+        "areaSize",
+        "areaTwoSided",
+        "baked",
+        "color",
+        "cullingMask",
+        "influenceDomains",
+        "intensity",
+        "lightType",
+        "outerSpotAngle",
+        "range",
+        "renderMode",
+        "shadowBias",
+        "shadowNormalBias",
+        "shadowSoftness",
+        "shadowStrength",
+        "shadows",
+        "spotAngle",
+    }
+    assert light_data["shadowBias"] == 1.0
+    assert light_data["shadowNormalBias"] == 1.0
     assert (Path(result) / ".vscode").is_dir()
     assert not list(tmp_path.glob(".infernux-create-*"))
 

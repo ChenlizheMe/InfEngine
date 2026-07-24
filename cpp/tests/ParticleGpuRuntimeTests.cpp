@@ -569,9 +569,12 @@ int main()
         eventDesc.channels[1].eventTypeIndex = eventDesc.channels[0].eventTypeIndex;
         eventDesc.channels[1].sourceEmitterIndex = eventDesc.channels[0].sourceEmitterIndex;
         eventDesc.channels[1].targetEmitterIndex = eventDesc.channels[0].targetEmitterIndex;
-        const size_t bufferCount = eventDevice.buffers.size();
-        assert(!events.Create(eventDevice, eventDesc, eventProgram, eventTargets) &&
-               eventDevice.buffers.size() == bufferCount);
+        assert(events.Create(eventDevice, eventDesc, eventProgram, eventTargets));
+        assert(events.IsValid() && events.ChannelCount() == 2 && events.PageCount() == 2);
+        assert(events.Channel(0)->sourceEmitterIndex == events.Channel(1)->sourceEmitterIndex &&
+               events.Channel(0)->targetEmitterIndex == events.Channel(1)->targetEmitterIndex &&
+               events.Channel(0)->eventTypeIndex == events.Channel(1)->eventTypeIndex);
+        events.Destroy();
         eventDevice.Release(targetCounters);
         eventDevice.Release(targetFreeList);
         eventDevice.Release(targetLayout);

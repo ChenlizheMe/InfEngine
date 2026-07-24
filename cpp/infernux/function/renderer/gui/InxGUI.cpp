@@ -405,6 +405,11 @@ void InxGUI::BuildFrameInternal()
     static auto ctx = std::make_unique<InxGUIContext>();
     ++m_guiFrameCounter;
 
+    // ImGui invalidates the previous ImDrawData as soon as NewFrame() starts.
+    // Do not let a render-graph submission reuse the stale publication while
+    // this frame is being rebuilt (notably after a throttled editor refresh).
+    m_hasDrawData = false;
+
     PumpTextureUploads();
 
     // Queue removals first, then release after a grace window.
@@ -611,7 +616,8 @@ void InxGUI::BuildFrameInternal()
     ImGui::Render();
     if (activeModal != nullptr)
         activeModal->Flags = activeModalFlags;
-    m_hasDrawData = true;
+    const ImDrawData *drawData = ImGui::GetDrawData();
+    m_hasDrawData = drawData != nullptr && drawData->Valid;
 }
 
 void InxGUI::QueueDockTabSelection(const std::string &windowId)
@@ -685,8 +691,9 @@ void InxGUI::PromoteActiveModal()
 
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 {
-    if (m_hasDrawData)
-        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdBuf);
+    ImDrawData *drawData = ImGui::GetDrawData();
+    if (m_hasDrawData && drawData != nullptr && drawData->Valid)
+        ImGui_ImplVulkan_RenderDrawData(drawData, cmdBuf);
 }
 
 void InxGUI::Shutdown()

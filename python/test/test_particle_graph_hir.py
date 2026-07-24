@@ -123,6 +123,39 @@ def test_particle_event_routes_compile_to_stable_typed_dense_abi():
     )
 
 
+def test_particle_event_routes_keep_distinct_channels_for_the_same_endpoints():
+    source = ParticleEmitterAsset(stable_id="source", name="Source")
+    target = ParticleEmitterAsset(stable_id="target", name="Target")
+    event_type = ParticleEventType("impact", "Impact", 32)
+    routes = (
+        ParticleEventRoute(
+            "impact-after-init", "impact", "source", "init", "target", 1
+        ),
+        ParticleEventRoute(
+            "impact-after-update", "impact", "source", "update", "target", 4
+        ),
+    )
+
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            emitters=(source, target),
+            event_types=(event_type,),
+            event_routes=routes,
+        )
+    )
+    kernel = ParticleKernelLowerer().lower(hir)
+
+    assert [route.stable_id for route in hir.events.routes] == [
+        "impact-after-init",
+        "impact-after-update",
+    ]
+    assert [route.source_stage for route in kernel.events.routes] == [
+        ParticleStage.INIT,
+        ParticleStage.UPDATE,
+    ]
+    assert [route.spawn_count for route in kernel.events.routes] == [1, 4]
+
+
 def test_particle_event_routes_reject_implicit_feedback_cycles():
     first = ParticleEmitterAsset(stable_id="first", name="First")
     second = ParticleEmitterAsset(stable_id="second", name="Second")

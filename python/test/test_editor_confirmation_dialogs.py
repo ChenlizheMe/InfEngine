@@ -374,7 +374,7 @@ def test_imgui_renders_modals_in_the_overlay_layer():
     )
 
     begin = source.index("    ApplyPendingDockTabSelections();")
-    end = source.index("    m_hasDrawData = true;", begin)
+    end = source.index("    const ImDrawData *drawData", begin)
     implementation = source[begin:end]
 
     promote_index = implementation.index("    PromoteActiveModal();")
@@ -384,6 +384,9 @@ def test_imgui_renders_modals_in_the_overlay_layer():
     render_index = implementation.index("    ImGui::Render();")
     restore_index = implementation.index("activeModal->Flags = activeModalFlags;")
     assert promote_index < overlay_index < render_index < restore_index
+
+    publication = source[end : source.index("void InxGUI::QueueDockTabSelection", end)]
+    assert "drawData != nullptr && drawData->Valid" in publication
 
 
 import Infernux.lib as native
