@@ -11,7 +11,7 @@ from Infernux.mcp import client as client_module
 from Infernux.mcp.client import create_loopback_client
 from Infernux.mcp.threading import MainThreadCommandQueue
 from Infernux.mcp.tools import register_all_tools
-from Infernux.mcp.tools import api, material, project, runtime
+from Infernux.mcp.tools import api, common, material, project, runtime
 
 
 class _FakeMcp:
@@ -54,6 +54,25 @@ class _MaterialPropertyRecorder:
 
     def set_float(self, name: str, value: float) -> None:
         self.values[name] = value
+
+
+class _Vector4:
+    x = 0.25
+    y = 0.5
+    z = 0.75
+    w = 0.125
+
+
+def test_mcp_value_serialization_preserves_vector4_w_component():
+    assert common.serialize_value(_Vector4()) == [0.25, 0.5, 0.75, 0.125]
+
+
+def test_runtime_error_window_ignores_preexisting_errors():
+    old = {"time": "00:00:01", "level": "ERROR", "message": "old"}
+    new = {"time": "00:00:02", "level": "ERROR", "message": "new"}
+
+    assert runtime._new_runtime_errors([old, new], [old]) == [new]
+    assert runtime._new_runtime_errors([old], [old]) == []
 
 
 def test_material_property_writer_rejects_render_state_names():

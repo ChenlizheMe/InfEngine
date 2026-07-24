@@ -222,11 +222,17 @@ def register_runtime_tools(mcp) -> None:
         deadline = time.time() + duration
         samples = []
         errors: list[dict[str, Any]] = []
+        baseline_errors = _all_runtime_errors(
+            _run_on_main("runtime.run_for.baseline_errors", _read_errors)
+        )
         while time.time() < deadline:
             time.sleep(max(float(poll_interval), 0.01))
             state = _run_on_main("runtime.run_for.state", _editor_state)
             samples.append(state)
-            errors = _all_runtime_errors(_run_on_main("runtime.run_for.errors", _read_errors))
+            current_errors = _all_runtime_errors(
+                _run_on_main("runtime.run_for.errors", _read_errors)
+            )
+            errors = _new_runtime_errors(current_errors, baseline_errors)
             if stop_on_error and errors:
                 break
         return ok({
@@ -1854,6 +1860,19 @@ def _all_runtime_errors(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     for item in snapshot.get("script_errors") or []:
         errors.append({"level": "SCRIPT", **dict(item)})
     return errors
+
+
+def _new_runtime_errors(
+    current: list[dict[str, Any]], baseline: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    unmatched_baseline = list(baseline)
+    added = []
+    for item in current:
+        try:
+            unmatched_baseline.remove(item)
+        except ValueError:
+            added.append(item)
+    return added
 
 
 def _components(obj) -> list[dict[str, Any]]:

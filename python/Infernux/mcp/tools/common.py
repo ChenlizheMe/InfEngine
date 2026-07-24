@@ -742,6 +742,8 @@ def track_project_path_before_change(project_path: str, path: str, operation: st
 def serialize_vector(value) -> Any:
     if value is None:
         return None
+    if all(hasattr(value, attr) for attr in ("x", "y", "z", "w")):
+        return [float(value.x), float(value.y), float(value.z), float(value.w)]
     if all(hasattr(value, attr) for attr in ("x", "y", "z")):
         return [float(value.x), float(value.y), float(value.z)]
     if all(hasattr(value, attr) for attr in ("x", "y")):
