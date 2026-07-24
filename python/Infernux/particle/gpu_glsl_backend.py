@@ -38,6 +38,7 @@ struct ParticleInstance {
     vec4 rotation_custom;
     vec4 scale_custom;
     uvec4 ribbon_data;
+    vec4 custom_data;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer Instances {
@@ -87,7 +88,13 @@ void main() {
          view.camera_up.xyz * corner.y * instance.scale_custom.y) * instance.position_size.w;
     gl_Position = view.view_projection * vec4(world_position, 1.0);
     out_color = instance.color;
-    out_uv = uvs[gl_VertexIndex % 6];
+    vec2 flipbook_grid = max(view.rendering_control.zw, vec2(1.0));
+    float flipbook_count = flipbook_grid.x * flipbook_grid.y;
+    float flipbook_frame = mod(floor(max(instance.custom_data.x, 0.0)), flipbook_count);
+    vec2 flipbook_cell = vec2(
+        mod(flipbook_frame, flipbook_grid.x),
+        floor(flipbook_frame / flipbook_grid.x));
+    out_uv = (uvs[gl_VertexIndex % 6] + flipbook_cell) / flipbook_grid;
     out_world_position = world_position;
     out_world_normal = normalize(cross(view.camera_right.xyz, view.camera_up.xyz));
     out_view_depth = gl_Position.w;
@@ -562,6 +569,7 @@ struct ParticleInstance {
     vec4 rotation_custom;
     vec4 scale_custom;
     uvec4 ribbon_data;
+    vec4 custom_data;
 };
 
 struct ParticleMeshVertex {
@@ -2170,6 +2178,7 @@ struct ParticleRenderInstance {{
     vec4 rotation_custom;
     vec4 scale_custom;
     uvec4 ribbon_data;
+    vec4 custom_data;
 }};
 
 layout(std430, set = 0, binding = 0) buffer ParticleStates {{ ParticleState states[]; }};
@@ -2578,6 +2587,7 @@ def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
     ribbon_strip_id = exports.get("builtin.ribbon_strip_id", "0u")
     ribbon_order = exports.get("builtin.ribbon_order", particle_id)
     ribbon_break = exports.get("builtin.ribbon_break", "false")
+    flipbook_frame = exports.get("builtin.flipbook_frame", "0.0")
     world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
     world_scale = (
         "vec3(length(transforms.simulation_to_world[0].xyz), "
@@ -2592,7 +2602,8 @@ def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
          _finite_expression(age, TypeRef(ValueType.F32)),
          _finite_expression(lifetime, TypeRef(ValueType.F32)),
          _finite_expression(orientation, TypeRef(ValueType.VEC3)),
-         _finite_expression(scale, TypeRef(ValueType.VEC3)))
+         _finite_expression(scale, TypeRef(ValueType.VEC3)),
+         _finite_expression(flipbook_frame, TypeRef(ValueType.F32)))
     )
     return f"""
 void main() {{
@@ -2617,6 +2628,7 @@ void main() {{
     instances[output_index].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
     instances[output_index].ribbon_data = uvec4(
         {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
+    instances[output_index].custom_data = vec4({flipbook_frame}, 0.0, 0.0, 0.0);
     render_indices[output_index] = output_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}

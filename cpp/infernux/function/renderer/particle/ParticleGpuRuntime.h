@@ -126,7 +126,7 @@ class ParticleGpuRuntime
 {
   public:
     static constexpr uint32_t WorkgroupSize = 256;
-    static constexpr uint32_t RenderInstanceStride = 80;
+    static constexpr uint32_t RenderInstanceStride = 96;
 
     ParticleGpuRuntime();
     ~ParticleGpuRuntime();

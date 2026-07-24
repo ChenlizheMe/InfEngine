@@ -136,6 +136,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         "sort_mode",
         "ribbon_uv_mode",
         "ribbon_uv_scale",
+        "flipbook_columns",
+        "flipbook_rows",
     }:
         raise ParticleRuntimeMetadataError(f"{location} is invalid")
     if (
@@ -155,6 +157,11 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         or type(value["ribbon_uv_scale"]) not in {int, float}
         or not math.isfinite(float(value["ribbon_uv_scale"]))
         or float(value["ribbon_uv_scale"]) <= 0.0
+        or type(value["flipbook_columns"]) is not int
+        or type(value["flipbook_rows"]) is not int
+        or not 1 <= value["flipbook_columns"] <= 4096
+        or not 1 <= value["flipbook_rows"] <= 4096
+        or value["flipbook_columns"] * value["flipbook_rows"] > 65536
     ):
         raise ParticleRuntimeMetadataError(f"{location} fields are invalid")
     return ParticleOutputDescriptor(
@@ -170,6 +177,8 @@ def _decode_output(value: Any, location: str) -> ParticleOutputDescriptor:
         value["sort_mode"],
         value["ribbon_uv_mode"],
         float(value["ribbon_uv_scale"]),
+        value["flipbook_columns"],
+        value["flipbook_rows"],
     )
 
 

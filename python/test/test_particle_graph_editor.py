@@ -58,13 +58,14 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
 
     velocity = model.add_node("particle.attribute.set_velocity", 240.0, 20.0)
     velocity.data["value"] = [1.0, 2.0, 3.0]
-    assert model.add_link("root.init", "out", velocity.uid, "in") is not None
+    assert model.add_link("init.velocity", "out", velocity.uid, "in") is not None
 
     restored = model.to_document()
     assert restored.domain == "particle.init"
-    assert restored.nodes[1].position == (240.0, 20.0)
-    assert restored.nodes[1].properties["value"] == [1.0, 2.0, 3.0]
-    assert restored.links[0].kind.value == "stream"
+    authored = next(node for node in restored.nodes if node.uid == velocity.uid)
+    assert authored.position == (240.0, 20.0)
+    assert authored.properties["value"] == [1.0, 2.0, 3.0]
+    assert all(link.kind.value == "stream" for link in restored.links)
 
 
 def test_particle_data_expression_nodes_are_creatable_in_simulation_stages():
@@ -158,7 +159,10 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
 
     assert [node.type_id for node in model.nodes] == [
         "particle.root.init",
+        "particle.attribute.set_lifetime",
+        "particle.attribute.set_velocity",
         "particle.root.update",
+        "particle.update.acceleration",
         "particle.root.rendering",
         "particle.output.sprite",
     ]
@@ -166,17 +170,20 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
 
     velocity = model.add_node("particle.attribute.set_velocity", 220.0, 0.0)
     acceleration = model.add_node("particle.update.acceleration", 220.0, 230.0)
-    assert model.add_link("init::root.init", "out", velocity.uid, "in") is not None
-    assert model.add_link("update::root.update", "out", acceleration.uid, "in") is not None
+    assert model.add_link("init::init.velocity", "out", velocity.uid, "in") is not None
+    assert model.add_link("update::update.acceleration", "out", acceleration.uid, "in") is not None
     assert not model.validate_link(velocity.uid, "out", acceleration.uid, "in")
 
     documents = model.to_documents()
     assert [node.type_id for node in documents["init"].nodes] == [
         "particle.root.init",
+        "particle.attribute.set_lifetime",
+        "particle.attribute.set_velocity",
         "particle.attribute.set_velocity",
     ]
     assert [node.type_id for node in documents["update"].nodes] == [
         "particle.root.update",
+        "particle.update.acceleration",
         "particle.update.acceleration",
     ]
 
@@ -276,12 +283,8 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
-    panel._on_node_add("particle.attribute.set_velocity", 220.0, 0.0)
-    velocity = next(
-        node for node in panel._model.nodes
-        if node.type_id == "particle.attribute.set_velocity"
-    )
-    panel._on_link_created("init::root.init", "out", velocity.uid, "in")
+    velocity = panel._on_node_add("particle.attribute.set_velocity", 220.0, 0.0)
+    panel._on_link_created("init::init.velocity", "out", velocity.uid, "in")
     panel._select_stage("rendering")
 
     restored = ParticleGraphEditorPanel()
@@ -291,12 +294,17 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     assert restored._stage == "rendering"
     assert [node.type_id for node in restored.asset.emitters[0].init.nodes] == [
         "particle.root.init",
+        "particle.attribute.set_lifetime",
+        "particle.attribute.set_velocity",
         "particle.attribute.set_velocity",
     ]
     assert [node.type_id for node in restored._model.nodes] == [
         "particle.root.init",
+        "particle.attribute.set_lifetime",
+        "particle.attribute.set_velocity",
         "particle.attribute.set_velocity",
         "particle.root.update",
+        "particle.update.acceleration",
         "particle.root.rendering",
         "particle.output.sprite",
     ]
@@ -349,15 +357,12 @@ def test_particle_graph_editor_ignores_float32_widget_round_trip_noise():
     from Infernux.engine.ui.inspector_utils import preserve_ui_float_precision
     from Infernux.particle.asset import EmitterSettings
 
-    original = EmitterSettings(gravity=(0.0, -9.81, 0.0), spawn_rate=3.7)
+    original = EmitterSettings(spawn_rate=3.7)
     float32 = lambda value: struct.unpack("f", struct.pack("f", value))[0]
-    widget_value = EmitterSettings(
-        gravity=tuple(float32(value) for value in original.gravity),
-        spawn_rate=float32(original.spawn_rate),
-    )
+    widget_value = EmitterSettings(spawn_rate=float32(original.spawn_rate))
 
     assert preserve_ui_float_precision(widget_value, original) == original
-    changed = EmitterSettings(gravity=(0.0, -8.5, 0.0), spawn_rate=4.0)
+    changed = EmitterSettings(spawn_rate=4.0)
     assert preserve_ui_float_precision(changed, original) == changed
 
 
@@ -805,7 +810,7 @@ def test_particle_graph_editor_semantic_event_helpers_patch_and_route_nodes():
 
     assert patched["settings"]["capacity"] == 64
     assert patched["settings"]["spawn_rate"] == 120.0
-    assert patched["settings"]["lifetime"] == original_settings["lifetime"]
+    assert patched["settings"]["shape"] == original_settings["shape"]
     with pytest.raises(ValueError, match="unknown emitter settings"):
         panel.patch_authoring_emitter_settings(source.stable_id, {"legacy": True})
 

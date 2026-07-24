@@ -4,6 +4,7 @@ struct ParticleInstance {
     vec4 rotation_custom;
     vec4 scale_custom;
     uvec4 ribbon_data;
+    vec4 custom_data;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer ParticleInstances {

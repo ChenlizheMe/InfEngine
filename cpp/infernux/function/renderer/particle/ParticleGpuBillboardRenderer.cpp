@@ -133,7 +133,8 @@ ParticleGpuBillboardRenderer::~ParticleGpuBillboardRenderer()
 bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboardRendererDesc &desc)
 {
     Destroy();
-    if (!desc.instances.IsValid() || !desc.renderIndices.IsValid())
+    if (!desc.instances.IsValid() || !desc.renderIndices.IsValid() || desc.flipbookColumns == 0 ||
+        desc.flipbookRows == 0 || static_cast<uint64_t>(desc.flipbookColumns) * desc.flipbookRows > 65536u)
         return false;
 
     const ShaderProgramArtifact::PassVariant *linkedVariant = nullptr;
@@ -174,6 +175,8 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_shaderProgram = desc.shaderProgram;
     m_fallbackMaterial = desc.fallbackMaterial;
     m_semantics = desc.semantics;
+    m_flipbookColumns = desc.flipbookColumns;
+    m_flipbookRows = desc.flipbookRows;
     m_supportsSceneDepth = !desc.shaderProgram || desc.shaderProgram->usesParticleSceneDepthBinding;
     if (!m_semantics.IsValid() || (m_semantics.softParticles && !m_supportsSceneDepth)) {
         Destroy();
@@ -324,6 +327,8 @@ void ParticleGpuBillboardRenderer::Destroy() noexcept
     m_shaderProgram.reset();
     m_fallbackMaterial = {};
     m_semantics = {};
+    m_flipbookColumns = 1;
+    m_flipbookRows = 1;
     m_textureResolver = {};
     m_textureVersionResolver = {};
     m_deletionQueue = nullptr;
@@ -688,6 +693,8 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
     constants.lightingControl[2] = ResolveMaterialFloat("softness", 0.18f);
     constants.renderingControl[0] = m_semantics.receiveShadows ? 1.0f : 0.0f;
     constants.renderingControl[1] = ResolveMaterialState().premultipliedAlpha ? 1.0f : 0.0f;
+    constants.renderingControl[2] = static_cast<float>(m_flipbookColumns);
+    constants.renderingControl[3] = static_cast<float>(m_flipbookRows);
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     if (usesForwardPlusLighting)
@@ -722,6 +729,8 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandE
     std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
     constants.lightingControl[1] = m_semantics.sortMode != ParticleSortMode::None ? 1.0f : 0.0f;
     constants.renderingControl[0] = 0.0f;
+    constants.renderingControl[2] = static_cast<float>(m_flipbookColumns);
+    constants.renderingControl[3] = static_cast<float>(m_flipbookRows);
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),

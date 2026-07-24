@@ -417,6 +417,8 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "sort_mode": output.sort_mode,
                         "ribbon_uv_mode": output.ribbon_uv_mode,
                         "ribbon_uv_scale": output.ribbon_uv_scale,
+                        "flipbook_columns": output.flipbook_columns,
+                        "flipbook_rows": output.flipbook_rows,
                     }
                     for output in emitter.render_plan.outputs
                 ],

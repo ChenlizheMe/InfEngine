@@ -117,6 +117,7 @@ class ParticleStream:
 
     def set_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
+    def set_flipbook_frame(self, value) -> None: ...
     def set_rotation(self, value) -> None: ...
     def set_orientation(self, degrees) -> None: ...
     def set_color(self, value) -> None: ...
@@ -172,6 +173,8 @@ class ParticleStream:
         soft_particles: bool = False,
         soft_distance: float = 1.0,
         sort: str = "back_to_front",
+        flipbook_columns: int = 1,
+        flipbook_rows: int = 1,
     ) -> None: ...
     def mesh(
         self,
@@ -209,6 +212,7 @@ class ParticleScriptCompiler:
         "init": {
             "set_velocity": ("particle.attribute.set_velocity", "value"),
             "set_lifetime": ("particle.attribute.set_lifetime", "value"),
+            "set_flipbook_frame": ("particle.attribute.set_flipbook_frame", "value"),
             "set_rotation": ("particle.attribute.set_rotation", "value"),
             "set_orientation": ("particle.attribute.set_orientation", "degrees"),
             "set_color": ("particle.attribute.set_color", "value"),
@@ -219,6 +223,9 @@ class ParticleScriptCompiler:
             "break_ribbon": ("particle.attribute.set_ribbon_break", "value"),
         },
         "update": {
+            "set_velocity": ("particle.attribute.set_velocity", "value"),
+            "set_lifetime": ("particle.attribute.set_lifetime", "value"),
+            "set_flipbook_frame": ("particle.attribute.set_flipbook_frame", "value"),
             "acceleration": ("particle.update.acceleration", "value"),
             "collide_plane": ("particle.update.collide_plane", ""),
             "collide_sphere": ("particle.update.collide_sphere", ""),

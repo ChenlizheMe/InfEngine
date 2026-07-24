@@ -382,6 +382,53 @@ def test_gpu_ribbon_render_instance_exports_full_width_topology_key():
     assert validate_gpu_particle_spirv(payload, source) is payload
 
 
+def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "flipbook",
+                "particle.attribute.set_flipbook_frame",
+                properties={"value": 5.0},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "init-stream", "root.init", "out", "flipbook", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "sprite",
+                "particle.output.sprite",
+                properties={"flipbook_columns": 4, "flipbook_rows": 2},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "render-stream", "root.rendering", "out", "sprite", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(init=init, rendering=rendering),))
+    )
+    source = GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    emitter = source.emitters[0]
+
+    assert "a_builtin_flipbook_frame" in emitter.init
+    assert "instances[output_index].custom_data = vec4(" in emitter.rendering
+    assert "instance.custom_data.x" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "view.rendering_control.zw" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    payload = compile_gpu_particle_spirv(source)
+    assert validate_gpu_particle_spirv(payload, source) is payload
+
+
 def test_gpu_plane_collision_uses_portable_post_integration_helpers_and_compiles():
     update = GraphDocument(
         "particle.update",

@@ -61,6 +61,8 @@ struct GpuParticleOutputProgram
     ParticleOutputSemantics semantics;
     ParticleRibbonUvMode ribbonUvMode = ParticleRibbonUvMode::Stretch;
     float ribbonUvScale = 1.0f;
+    uint32_t flipbookColumns = 1;
+    uint32_t flipbookRows = 1;
 };
 
 struct GpuParticlePointCacheProgram

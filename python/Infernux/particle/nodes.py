@@ -273,6 +273,12 @@ PARTICLE_NODE_DEFINITIONS = (
         (PropertyDef("value", TypeRef(ValueType.F32), 5.0),),
     ),
     _operation(
+        "particle.attribute.set_flipbook_frame",
+        "Set Flipbook Frame",
+        "attribute.set_flipbook_frame",
+        (PropertyDef("value", TypeRef(ValueType.F32), 0.0),),
+    ),
+    _operation(
         "particle.attribute.set_color",
         "Set Color",
         "attribute.set_color",
@@ -409,6 +415,8 @@ PARTICLE_NODE_DEFINITIONS = (
             PropertyDef("soft_particles", TypeRef(ValueType.BOOL), False),
             PropertyDef("soft_distance", TypeRef(ValueType.F32), 1.0),
             PropertyDef("sort", TypeRef(ValueType.STRING), "back_to_front"),
+            PropertyDef("flipbook_columns", TypeRef(ValueType.U32), 1),
+            PropertyDef("flipbook_rows", TypeRef(ValueType.U32), 1),
         ),
         {"particle_hir": "render.sprite"},
     ),

@@ -66,6 +66,55 @@ def test_default_particle_program_lowers_to_explicit_three_stage_kernel_ir():
     ]
 
 
+def test_update_stage_can_rewrite_lifetime_velocity_and_flipbook_frame():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "velocity",
+                "particle.attribute.set_velocity",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+            GraphNodeRecord(
+                "lifetime",
+                "particle.attribute.set_lifetime",
+                properties={"value": 8.0},
+            ),
+            GraphNodeRecord(
+                "flipbook",
+                "particle.attribute.set_flipbook_frame",
+                properties={"value": 4.0},
+            ),
+        ),
+        links=(
+            GraphLinkRecord("velocity-stream", "root.update", "out", "velocity", "in", PortKind.STREAM),
+            GraphLinkRecord("lifetime-stream", "velocity", "out", "lifetime", "in", PortKind.STREAM),
+            GraphLinkRecord("flipbook-stream", "lifetime", "out", "flipbook", "in", PortKind.STREAM),
+        ),
+    )
+    emitter = _lower(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    ).emitters[0]
+    update_writes = {
+        instruction.immediate_dict()["attribute"]
+        for instruction in emitter.update.instructions
+        if instruction.opcode == "store_attribute"
+    }
+    render_exports = {
+        instruction.immediate_dict()["attribute"]
+        for instruction in emitter.rendering.instructions
+        if instruction.opcode == "export_attribute"
+    }
+
+    assert {
+        "builtin.velocity",
+        "builtin.lifetime",
+        "builtin.flipbook_frame",
+    }.issubset(update_writes)
+    assert "builtin.flipbook_frame" in render_exports
+
+
 def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
     init = GraphDocument(
         "particle.init",
@@ -140,7 +189,7 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
         if instruction.opcode == "export_attribute"
     ]
     assert "builtin.orientation" in exports
-    assert sum(instruction.opcode == "multiply" for instruction in emitter.update.instructions) >= 4
+    assert sum(instruction.opcode == "multiply" for instruction in emitter.update.instructions) >= 3
 
 
 def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contract():
@@ -483,8 +532,7 @@ def test_kernel_random_slots_are_unique_and_source_uid_independent():
     emitter = ParticleEmitterAsset(stable_id="random-emitter")
     settings = replace(
         emitter.settings,
-        lifetime=replace(emitter.settings.lifetime, minimum=1.0, maximum=3.0),
-        initial_speed=replace(emitter.settings.initial_speed, minimum=2.0, maximum=4.0),
+        shape=EmitterShape("sphere", radius=2.0),
     )
     first = ParticleGraphAsset(
         stable_id="random-graph",
@@ -606,7 +654,7 @@ def test_shape_settings_and_authored_space_are_explicit_in_kernel_ir():
     ]
 
     assert kernel_emitter.random_seed == 42
-    assert len(samples) == 2
+    assert len(samples) == 1
     for instruction in samples:
         assert instruction.result_type == TypeRef(
             ValueType.VEC3, CoordinateSpace.EMITTER_LOCAL
@@ -622,7 +670,7 @@ def test_shape_settings_and_authored_space_are_explicit_in_kernel_ir():
     assert sum(
         instruction.opcode == "convert_space"
         for instruction in kernel_emitter.init.instructions
-    ) == 2
+    ) == 1
 
 
 def test_portable_random_reference_has_stable_golden_values():

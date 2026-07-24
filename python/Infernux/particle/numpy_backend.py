@@ -519,6 +519,20 @@ class NumpyParticleCompiler:
                 raise NumpyParticleBackendError(
                     f"emitter {emitter.stable_id!r} explicitly requires the GPU backend"
                 )
+            flipbook_output = next(
+                (
+                    output
+                    for output in outputs
+                    if output.output_type == "sprite"
+                    and (output.flipbook_columns != 1 or output.flipbook_rows != 1)
+                ),
+                None,
+            )
+            if flipbook_output is not None:
+                raise NumpyParticleBackendError(
+                    f"sprite output {flipbook_output.output_id!r} uses a flipbook grid; "
+                    "Sprite flipbooks currently require the GPU backend"
+                )
             referenced_point_caches = {
                 instruction.immediate_dict()["interface"]
                 for function in (emitter.init, emitter.update, emitter.rendering)

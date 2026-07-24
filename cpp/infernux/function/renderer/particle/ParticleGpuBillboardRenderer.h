@@ -64,6 +64,8 @@ struct GpuBillboardRendererDesc
     std::shared_ptr<InxMaterial> material;
     GpuBillboardMaterialState fallbackMaterial;
     ParticleOutputSemantics semantics;
+    uint32_t flipbookColumns = 1;
+    uint32_t flipbookRows = 1;
     GpuBillboardTextureResolver textureResolver;
     GpuBillboardTextureVersionResolver textureVersionResolver;
     FrameDeletionQueue *deletionQueue = nullptr;
@@ -170,6 +172,8 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
     std::shared_ptr<const ShaderProgramArtifact> m_shaderProgram;
     GpuBillboardMaterialState m_fallbackMaterial{};
     ParticleOutputSemantics m_semantics{};
+    uint32_t m_flipbookColumns = 1;
+    uint32_t m_flipbookRows = 1;
     GpuBillboardTextureResolver m_textureResolver;
     GpuBillboardTextureVersionResolver m_textureVersionResolver;
     FrameDeletionQueue *m_deletionQueue = nullptr;

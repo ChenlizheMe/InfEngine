@@ -18,6 +18,7 @@ struct ParticleRenderInstance {
     vec4 rotation_custom;
     vec4 scale_custom;
     uvec4 ribbon_data;
+    vec4 custom_data;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndices { uint source_indices[]; };

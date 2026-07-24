@@ -330,7 +330,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         const py::dict output = py::reinterpret_borrow<py::dict>(item);
         for (const char *field :
              {"id", "stable_id", "output_type", "mesh", "material", "receive_scene_lighting", "receive_shadows",
-              "cast_shadows", "soft_particles", "soft_distance", "sort_mode", "ribbon_uv_mode", "ribbon_uv_scale"}) {
+              "cast_shadows", "soft_particles", "soft_distance", "sort_mode", "ribbon_uv_mode", "ribbon_uv_scale",
+              "flipbook_columns", "flipbook_rows"}) {
             if (!output.contains(field))
                 throw std::invalid_argument(std::string("GPU particle output is missing ") + field);
         }
@@ -356,6 +357,11 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         decoded.semantics.softParticles = py::cast<bool>(output["soft_particles"]);
         decoded.semantics.softDistance = py::cast<float>(output["soft_distance"]);
         decoded.semantics.sortMode = DecodeParticleSortMode(py::cast<std::string>(output["sort_mode"]));
+        decoded.flipbookColumns = py::cast<uint32_t>(output["flipbook_columns"]);
+        decoded.flipbookRows = py::cast<uint32_t>(output["flipbook_rows"]);
+        if (decoded.flipbookColumns == 0 || decoded.flipbookRows == 0 ||
+            static_cast<uint64_t>(decoded.flipbookColumns) * decoded.flipbookRows > 65536u)
+            throw std::invalid_argument("GPU particle flipbook grid is invalid");
         if (decoded.type == particle::GpuParticleOutputType::Ribbon) {
             const std::string uvMode = py::cast<std::string>(output["ribbon_uv_mode"]);
             if (uvMode == "stretch")

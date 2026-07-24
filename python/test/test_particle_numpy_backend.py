@@ -24,7 +24,6 @@ from Infernux.particle import (
     ParticleKernelProgram,
     PointCache,
     ParticleRuntimeCompatibility,
-    ScalarRange,
     SdfVolume,
     VectorField,
     VectorFieldBoundary,
@@ -101,10 +100,21 @@ class _FakeSdf(_FakeVectorField):
     pass
 
 
-def _compile_runtime(settings: EmitterSettings, *, system_seed: int = 0):
+def _compile_runtime(
+    settings: EmitterSettings,
+    *,
+    system_seed: int = 0,
+    init: GraphDocument | None = None,
+    update: GraphDocument | None = None,
+):
+    emitter_kwargs = {"stable_id": "emitter", "settings": settings}
+    if init is not None:
+        emitter_kwargs["init"] = init
+    if update is not None:
+        emitter_kwargs["update"] = update
     asset = ParticleGraphAsset(
         stable_id="numpy-test",
-        emitters=(ParticleEmitterAsset(stable_id="emitter", settings=settings),),
+        emitters=(ParticleEmitterAsset(**emitter_kwargs),),
     )
     hir = ParticleGraphCompiler().compile(asset)
     kernel = ParticleKernelLowerer().lower(hir)
@@ -112,10 +122,18 @@ def _compile_runtime(settings: EmitterSettings, *, system_seed: int = 0):
     return program, program.create_runtime(system_seed=system_seed)
 
 
-def _compile_emitter_program(settings: EmitterSettings, *, stable_id: str = "emitter"):
+def _compile_emitter_program(
+    settings: EmitterSettings,
+    *,
+    stable_id: str = "emitter",
+    update: GraphDocument | None = None,
+):
+    emitter_kwargs = {"stable_id": stable_id, "settings": settings}
+    if update is not None:
+        emitter_kwargs["update"] = update
     asset = ParticleGraphAsset(
         stable_id="numpy-migration-test",
-        emitters=(ParticleEmitterAsset(stable_id=stable_id, settings=settings),),
+        emitters=(ParticleEmitterAsset(**emitter_kwargs),),
     )
     hir = ParticleGraphCompiler().compile(asset)
     return NumpyParticleCompiler().compile(
@@ -135,10 +153,23 @@ def test_numpy_aot_runtime_uses_dense_contiguous_storage_and_stable_output_buffe
     assert first.flags.c_contiguous
     assert second.flags.c_contiguous
     assert np.shares_memory(first, second)
-    assert second[:, 2] == pytest.approx([0.2, 0.1])
-    assert second[:, 1] == pytest.approx([-0.2943, -0.0981], abs=1e-6)
+    assert second[:, 2] == pytest.approx([0.0, 0.0])
+    assert second[:, 1] == pytest.approx([-0.0943, 0.0019], abs=1e-6)
     assert "for instruction" not in program.emitters[0].update.source
     assert "opcode" not in program.emitters[0].update.source
+
+
+def test_spawn_rate_changes_particle_count_without_changing_authored_size():
+    _low_program, low = _compile_runtime(EmitterSettings(capacity=64, spawn_rate=2.0))
+    _high_program, high = _compile_runtime(EmitterSettings(capacity=64, spawn_rate=20.0))
+
+    low.tick(1.0)
+    high.tick(1.0)
+
+    assert low.particle_count == 2
+    assert high.particle_count == 20
+    np.testing.assert_array_equal(low.attributes["builtin.size"][:2], 1.0)
+    np.testing.assert_array_equal(high.attributes["builtin.size"][:20], 1.0)
 
 
 def test_numpy_plane_collision_resolves_penetration_bounce_and_tangent_friction():
@@ -178,9 +209,6 @@ def test_numpy_plane_collision_resolves_penetration_bounce_and_tangent_friction(
         capacity=1,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(10.0, 10.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(ParticleEmitterAsset(settings=settings, init=init, update=update),)
@@ -244,9 +272,6 @@ def test_numpy_sphere_collision_resolves_penetration_bounce_and_tangent_friction
         capacity=1,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(10.0, 10.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(ParticleEmitterAsset(settings=settings, init=init, update=update),)
@@ -298,9 +323,6 @@ def test_numpy_sdf_collision_resolves_surface_contact_and_velocity():
         capacity=1,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(10.0, 10.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(
@@ -336,38 +358,48 @@ def test_numpy_sdf_collision_resolves_surface_contact_and_velocity():
     )
 
 
-def test_numpy_random_matches_portable_scalar_golden_for_every_particle():
+def test_numpy_init_nodes_own_lifetime_and_three_dimensional_velocity():
     settings = EmitterSettings(
         capacity=8,
         seed=42,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 4),),
-        lifetime=ScalarRange(2.0, 6.0),
-        initial_speed=ScalarRange(0.0, 0.0),
     )
-    _program, runtime = _compile_runtime(settings, system_seed=7)
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "lifetime", "particle.attribute.set_lifetime", properties={"value": 3.5}
+            ),
+            GraphNodeRecord(
+                "velocity",
+                "particle.attribute.set_velocity",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord("life", "root.init", "out", "lifetime", "in", PortKind.STREAM),
+            GraphLinkRecord("velocity", "lifetime", "out", "velocity", "in", PortKind.STREAM),
+        ),
+    )
+    _program, runtime = _compile_runtime(settings, system_seed=7, init=init)
 
     runtime.tick(0.0)
 
-    expected = np.asarray(
-        [
-            2.0 + 4.0 * particle_random_f32(7, 42, 0, particle_id, 0, 0, 0)
-            for particle_id in range(4)
-        ],
-        dtype=np.float32,
+    np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:4], 3.5)
+    np.testing.assert_array_equal(
+        runtime.attributes["builtin.velocity"][:4],
+        np.tile(np.asarray([1.0, 2.0, 3.0], dtype=np.float32), (4, 1)),
     )
-    np.testing.assert_array_equal(runtime.attributes["builtin.lifetime"][:4], expected)
 
 
-def test_numpy_cone_initial_velocity_broadcasts_per_particle_speed():
+def test_numpy_emitter_shape_changes_spawn_position_but_not_init_velocity():
     settings = EmitterSettings(
         capacity=8,
         seed=42,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 4),),
-        lifetime=ScalarRange(2.0, 2.0),
-        initial_speed=ScalarRange(1.0, 3.0),
-        gravity=(0.0, 0.0, 0.0),
         shape=EmitterShape(kind="cone", radius=0.2, angle_degrees=40.0),
     )
     _program, runtime = _compile_runtime(settings, system_seed=7)
@@ -378,9 +410,9 @@ def test_numpy_cone_initial_velocity_broadcasts_per_particle_speed():
     speed = np.linalg.norm(velocity, axis=1)
     assert runtime.particle_count == 4
     assert np.isfinite(velocity).all()
-    assert np.all(speed >= 1.0)
-    assert np.all(speed <= 3.0)
-    assert np.unique(speed).size > 1
+    np.testing.assert_array_equal(velocity, np.tile([0.0, 1.0, 0.0], (4, 1)))
+    np.testing.assert_array_equal(speed, np.ones(4, dtype=np.float32))
+    assert np.unique(runtime.attributes["builtin.position"][:4], axis=0).shape[0] > 1
 
 
 def test_numpy_aot_executes_authored_random_expression_with_node_seed():
@@ -452,9 +484,6 @@ def test_numpy_kill_if_is_composable_and_cannot_resurrect_a_dead_particle():
         capacity=4,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(10.0, 10.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(ParticleEmitterAsset(stable_id="kill", settings=settings, update=update),)
@@ -498,9 +527,6 @@ def test_numpy_vector_noise_is_deterministic_finite_and_has_no_particle_loop():
         capacity=4,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 2),),
-        lifetime=ScalarRange(10.0, 10.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(ParticleEmitterAsset(stable_id="noise", settings=settings, update=update),)
@@ -526,6 +552,18 @@ def test_numpy_vector_noise_is_deterministic_finite_and_has_no_particle_loop():
 
 
 def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "lifetime", "particle.attribute.set_lifetime", properties={"value": 2.0}
+            ),
+        ),
+        links=(
+            GraphLinkRecord("stream", "root.init", "out", "lifetime", "in", PortKind.STREAM),
+        ),
+    )
     update = GraphDocument(
         "particle.update",
         nodes=(
@@ -588,12 +626,9 @@ def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
         capacity=4,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 4),),
-        lifetime=ScalarRange(2.0, 2.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
-        emitters=(ParticleEmitterAsset(settings=settings, update=update),),
+        emitters=(ParticleEmitterAsset(settings=settings, init=init, update=update),),
     )
     hir = ParticleGraphCompiler().compile(asset)
     program = NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
@@ -632,9 +667,6 @@ def test_numpy_rotate_operation_integrates_degrees_per_second():
         capacity=1,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(2.0, 2.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(ParticleEmitterAsset(settings=settings, update=update),),
@@ -687,9 +719,6 @@ def test_numpy_mesh_orientation_matches_gpu_degree_semantics():
         capacity=1,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(2.0, 2.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(ParticleEmitterAsset(settings=settings, init=init, update=update),)
@@ -745,8 +774,6 @@ def test_numpy_aot_samples_curve_and_gradient_without_runtime_graph_dispatch():
     )
     settings = EmitterSettings(
         capacity=1, spawn_rate=0.0, bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(2.0, 2.0), initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(emitters=(ParticleEmitterAsset(settings=settings, update=update),))
     hir = ParticleGraphCompiler().compile(asset)
@@ -864,8 +891,6 @@ def test_numpy_point_cache_sampling_uses_typed_interface_and_refreshes_generatio
         capacity=3,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 3),),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(
@@ -981,9 +1006,6 @@ def _vector_field_runtime(
         capacity=1,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        lifetime=ScalarRange(10.0, 10.0),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
     )
     asset = ParticleGraphAsset(
         emitters=(
@@ -1091,8 +1113,6 @@ def test_numpy_sphere_sampling_is_bounded_and_repeatable_after_reset():
         seed=81,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 32),),
-        initial_speed=ScalarRange(0.0, 0.0),
-        gravity=(0.0, 0.0, 0.0),
         shape=EmitterShape(
             "sphere",
             CoordinateSpace.WORLD,
@@ -1117,7 +1137,6 @@ def test_numpy_space_conversion_applies_translation_only_to_positions():
         capacity=4,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        gravity=(0.0, 0.0, 0.0),
         shape=EmitterShape("point", CoordinateSpace.EMITTER_LOCAL),
     )
     _program, runtime = _compile_runtime(settings)
@@ -1133,7 +1152,7 @@ def test_numpy_space_conversion_applies_translation_only_to_positions():
     )
     np.testing.assert_array_equal(
         runtime.attributes["builtin.velocity"][0],
-        np.asarray([0.0, 0.0, 1.0], dtype=np.float32),
+        np.asarray([0.0, 1.0, 0.0], dtype=np.float32),
     )
 
 
@@ -1218,22 +1237,40 @@ def test_numpy_runtime_kernel_reload_preserves_live_attribute_state():
         capacity=4,
         spawn_rate=0.0,
         bursts=(ParticleBurst(0.0, 1),),
-        gravity=(0.0, 0.0, 0.0),
-        initial_speed=ScalarRange(0.0, 0.0),
     )
-    _program, runtime = _compile_runtime(settings)
+    def acceleration_graph(value):
+        return GraphDocument(
+            "particle.update",
+            nodes=(
+                GraphNodeRecord("root.update", "particle.root.update"),
+                GraphNodeRecord(
+                    "acceleration", "particle.update.acceleration", properties={"value": value}
+                ),
+            ),
+            links=(
+                GraphLinkRecord(
+                    "stream", "root.update", "out", "acceleration", "in", PortKind.STREAM
+                ),
+            ),
+        )
+
+    _program, runtime = _compile_runtime(
+        settings, update=acceleration_graph([0.0, 0.0, 0.0])
+    )
     runtime.tick(0.0)
     position = runtime.attributes["builtin.position"][0].copy()
 
     migrated, compatibility = runtime.migrate_to(
-        _compile_emitter_program(replace(settings, gravity=(0.0, -2.0, 0.0)))
+        _compile_emitter_program(
+            settings, update=acceleration_graph([0.0, -2.0, 0.0])
+        )
     )
 
     assert compatibility is ParticleRuntimeCompatibility.KERNEL_COMPATIBLE
     assert migrated is not None
     np.testing.assert_array_equal(migrated.attributes["builtin.position"][0], position)
     migrated.tick(0.5)
-    assert migrated.attributes["builtin.velocity"][0, 1] == pytest.approx(-1.0)
+    assert migrated.attributes["builtin.velocity"][0, 1] == pytest.approx(0.0)
 
 
 def test_numpy_runtime_layout_reload_migrates_capacity_and_rejects_burst_change():
@@ -1353,6 +1390,32 @@ def test_numpy_compiler_does_not_silently_run_an_explicit_gpu_emitter():
     hir = ParticleGraphCompiler().compile(asset)
 
     with pytest.raises(NumpyParticleBackendError, match="requires the GPU backend"):
+        NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
+
+
+def test_numpy_compiler_rejects_sprite_flipbook_instead_of_silently_diverging():
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord(
+                "sprite",
+                "particle.output.sprite",
+                properties={"flipbook_columns": 4, "flipbook_rows": 4},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "render-stream", "root.rendering", "out", "sprite", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    asset = ParticleGraphAsset(
+        emitters=(ParticleEmitterAsset(stable_id="flipbook", rendering=rendering),)
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+
+    with pytest.raises(NumpyParticleBackendError, match="flipbooks currently require the GPU backend"):
         NumpyParticleCompiler().compile(hir, ParticleKernelLowerer().lower(hir))
 
 

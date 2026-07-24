@@ -915,6 +915,7 @@ class ParticleKernelLowerer:
                 )
                 builder.store("builtin.lifetime", value, source)
             elif operation.opcode in {
+                "attribute.set_flipbook_frame",
                 "attribute.set_color",
                 "attribute.set_size",
                 "attribute.set_scale",
@@ -925,6 +926,7 @@ class ParticleKernelLowerer:
                 "attribute.set_ribbon_break",
             }:
                 stable_id = {
+                    "attribute.set_flipbook_frame": "builtin.flipbook_frame",
                     "attribute.set_color": "builtin.color",
                     "attribute.set_size": "builtin.size",
                     "attribute.set_scale": "builtin.scale",
@@ -996,10 +998,15 @@ class ParticleKernelLowerer:
             source = KernelSourceRef(operation.source_node_uid, operation=f"update.{operation.opcode}")
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
-            if operation.opcode in {"attribute.set_velocity", "attribute.set_lifetime"}:
+            if operation.opcode in {
+                "attribute.set_velocity",
+                "attribute.set_lifetime",
+                "attribute.set_flipbook_frame",
+            }:
                 stable_id = {
                     "attribute.set_velocity": "builtin.velocity",
                     "attribute.set_lifetime": "builtin.lifetime",
+                    "attribute.set_flipbook_frame": "builtin.flipbook_frame",
                 }[operation.opcode]
                 value = builder.operation_value(
                     "value",
@@ -1344,6 +1351,7 @@ class ParticleKernelLowerer:
             "builtin.orientation",
             "builtin.age",
             "builtin.lifetime",
+            "builtin.flipbook_frame",
             "builtin.id",
             "builtin.ribbon_strip_id",
             "builtin.ribbon_order",

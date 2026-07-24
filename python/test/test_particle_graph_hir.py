@@ -29,7 +29,6 @@ from Infernux.particle import (
     ParticleArtifactRegistry,
     ParticleRuntimeMetadataError,
     PointCache,
-    ScalarRange,
     SdfVolume,
     SimulationSpace,
     VectorField,
@@ -418,7 +417,6 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
             target=ExecutionTarget.GPU,
             simulation_space=SimulationSpace.WORLD,
             spawn_rate=20_000.0,
-            lifetime=ScalarRange(4.0, 8.0),
         ),
     )
     rendering = first.rendering
@@ -458,8 +456,8 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
     assert program.schedule.emitter_ids == ("smoke", "sparks")
     smoke = program.emitters[0]
     assert smoke.init.stage is ParticleStage.INIT
-    assert smoke.init.operations[0].opcode == "settings.initialize"
-    assert smoke.update.operations[0].opcode == "settings.gravity"
+    assert smoke.init.operations[0].opcode == "emitter.sample_shape"
+    assert smoke.update.operations[0].opcode == "integrate.acceleration"
     assert smoke.render_plan.outputs[0].material == AssetReference(guid="six-way-smoke-guid")
     assert smoke.render_plan.outputs[0].receive_scene_lighting is True
     assert smoke.render_plan.outputs[0].receive_shadows is True
@@ -508,6 +506,43 @@ def test_particle_sprite_output_rejects_static_mesh_shadow_property():
         ParticleGraphCompiler().compile(
             ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
         )
+
+
+def test_particle_sprite_output_compiles_valid_flipbook_grid_and_rejects_invalid_grid():
+    def compile_grid(columns, rows):
+        rendering = GraphDocument(
+            "particle.rendering",
+            nodes=(
+                GraphNodeRecord("root.rendering", "particle.root.rendering"),
+                GraphNodeRecord(
+                    "output.sprite",
+                    "particle.output.sprite",
+                    properties={"flipbook_columns": columns, "flipbook_rows": rows},
+                ),
+            ),
+            links=(
+                GraphLinkRecord(
+                    "root-to-sprite",
+                    "root.rendering",
+                    "out",
+                    "output.sprite",
+                    "in",
+                    PortKind.STREAM,
+                ),
+            ),
+        )
+        return ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(rendering=rendering),))
+        )
+
+    output = compile_grid(8, 4).emitters[0].render_plan.outputs[0]
+    assert output.flipbook_columns == 8
+    assert output.flipbook_rows == 4
+
+    with pytest.raises(ParticleCompileError, match="flipbook grid"):
+        compile_grid(0, 4)
+    with pytest.raises(ParticleCompileError, match="flipbook grid"):
+        compile_grid(4096, 4096)
 
 
 def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
@@ -687,7 +722,7 @@ def test_particle_graph_stream_order_lowers_to_stage_operations():
     hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,))).emitters[0]
 
     assert [operation.opcode for operation in hir.init.operations] == [
-        "settings.initialize",
+        "emitter.sample_shape",
         "attribute.set_velocity",
         "attribute.set_lifetime",
     ]
@@ -871,7 +906,7 @@ def test_particle_material_reference_uses_strict_guid_and_path_hint_shape():
 
 
 PARTICLE_SCRIPT_SOURCE = '''\
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, ScalarRange, VectorField, PointCache
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, PointCache
 
 class SmokeGraph(ParticleScript):
     stable_id = "smoke-graph"
@@ -883,9 +918,6 @@ class SmokeGraph(ParticleScript):
             target="gpu",
             simulation_space="world",
             spawn_rate=20000.0,
-            lifetime=ScalarRange(4.0, 8.0),
-            initial_speed=ScalarRange(0.4, 1.2),
-            gravity=(0.0, -0.2, 0.0),
         )
         data_interfaces = (
             VectorField(
@@ -932,7 +964,7 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert asset.stable_id == "smoke-graph"
     assert program.schedule.emitter_ids == ("smoke",)
     assert [operation.opcode for operation in emitter.init.operations] == [
-        "settings.initialize",
+        "emitter.sample_shape",
         "attribute.set_velocity",
         "attribute.set_lifetime",
         "attribute.set_rotation",
@@ -1443,8 +1475,8 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
 
 def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, ScalarRange, VectorField, PointCache",
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, ScalarRange, VectorField, PointCache, Curve, CurveKey, Gradient, GradientKey",
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, PointCache",
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, PointCache, Curve, CurveKey, Gradient, GradientKey",
     ).replace(
         "particles.acceleration((0.0, -0.2, 0.0))",
         """particles.set_size(ctx.sample_curve(
@@ -1701,15 +1733,15 @@ def test_particle_graph_save_does_not_replace_valid_source_with_invalid_draft(tm
         update.nodes
         + (
             GraphNodeRecord("noise", "common.noise.vector3d", properties={}),
-            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+                GraphNodeRecord("invalid.acceleration", "particle.update.acceleration"),
         ),
         update.links
         + (
             GraphLinkRecord(
-                "root-to-acceleration",
-                "root.update",
-                "out",
-                "acceleration",
+                    "root-to-invalid-acceleration",
+                    "root.update",
+                    "out",
+                    "invalid.acceleration",
                 "in",
                 PortKind.STREAM,
             ),
@@ -1717,7 +1749,7 @@ def test_particle_graph_save_does_not_replace_valid_source_with_invalid_draft(tm
                 "noise-to-acceleration",
                 "noise",
                 "value",
-                "acceleration",
+                    "invalid.acceleration",
                 "value",
                 PortKind.VALUE,
             ),

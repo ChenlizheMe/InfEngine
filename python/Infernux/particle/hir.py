@@ -66,6 +66,8 @@ class ParticleOutputDescriptor:
     sort_mode: str
     ribbon_uv_mode: str = "stretch"
     ribbon_uv_scale: float = 1.0
+    flipbook_columns: int = 1
+    flipbook_rows: int = 1
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,8 @@ class ParticleGraphCompiler:
                             "sort": output.sort_mode,
                             "ribbon_uv_mode": output.ribbon_uv_mode,
                             "ribbon_uv_scale": output.ribbon_uv_scale,
+                            "flipbook_columns": output.flipbook_columns,
+                            "flipbook_rows": output.flipbook_rows,
                         }
                         for output in emitter.render_plan.outputs
                     ],
@@ -494,6 +498,26 @@ class ParticleGraphCompiler:
             raise ParticleCompileError(
                 f"particle output {invalid_soft_distance.output_id!r} soft distance must be finite and positive"
             )
+        invalid_flipbook = next(
+            (
+                output
+                for output in outputs
+                if output.output_type == "sprite"
+                and (
+                    type(output.flipbook_columns) is not int
+                    or type(output.flipbook_rows) is not int
+                    or not 1 <= output.flipbook_columns <= 4096
+                    or not 1 <= output.flipbook_rows <= 4096
+                    or output.flipbook_columns * output.flipbook_rows > 65536
+                )
+            ),
+            None,
+        )
+        if invalid_flipbook is not None:
+            raise ParticleCompileError(
+                f"particle sprite output {invalid_flipbook.output_id!r} flipbook grid must use "
+                "1..4096 columns/rows and contain at most 65536 frames"
+            )
         missing_mesh = next(
             (
                 output
@@ -629,6 +653,11 @@ class ParticleGraphCompiler:
             for stage in (init, update)
             for operation in stage.operations
         )
+        needs_flipbook_frame = any(
+            operation.opcode == "attribute.set_flipbook_frame"
+            for stage in (init, update)
+            for operation in stage.operations
+        )
         attributes = emitter.attributes
         if needs_orientation:
             attributes = (
@@ -648,6 +677,16 @@ class ParticleGraphCompiler:
                     "scale",
                     TypeRef(ValueType.VEC3),
                     [1.0, 1.0, 1.0],
+                ),
+            )
+        if needs_flipbook_frame:
+            attributes = (
+                *attributes,
+                ParticleAttribute(
+                    "builtin.flipbook_frame",
+                    "flipbook_frame",
+                    TypeRef(ValueType.F32),
+                    0.0,
                 ),
             )
         if any(output.output_type == "ribbon" for output in outputs):
@@ -707,6 +746,8 @@ class ParticleGraphCompiler:
             str(parameters["sort"]),
             str(parameters.get("uv_mode", "stretch")),
             float(parameters.get("uv_scale", 1.0)),
+            int(parameters.get("flipbook_columns", 1)),
+            int(parameters.get("flipbook_rows", 1)),
         )
 
     def _compile_stage(

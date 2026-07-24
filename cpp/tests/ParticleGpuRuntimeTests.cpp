@@ -1199,6 +1199,8 @@ int main()
     billboardDesc.fragmentShader = {billboardFragment.data(), billboardFragment.size()};
     billboardDesc.instances = instanceBuffer;
     billboardDesc.renderIndices = renderIndexBuffer;
+    billboardDesc.flipbookColumns = 4;
+    billboardDesc.flipbookRows = 2;
     billboardDesc.fallbackMaterial.renderQueue = 3100;
     billboardDesc.material = std::make_shared<InxMaterial>("live-particle-material");
     auto liveMaterialState = billboardDesc.material->GetRenderState();
@@ -1262,6 +1264,8 @@ int main()
            !graphicsDesc.colorTargets[0].premultipliedAlpha);
     assert(graphicsTrace.pipelines.size() == 2 && graphicsTrace.groups.size() == 2 &&
            graphicsTrace.constants.size() == 2 && graphicsTrace.indirectBuffers.size() == 2);
+    assert(graphicsTrace.constants.back().renderingControl[2] == 4.0f &&
+           graphicsTrace.constants.back().renderingControl[3] == 2.0f);
 
     billboardDesc.material->SetRenderQueue(3150);
     billboardDesc.material->SetColor("baseColor", glm::vec4(0.25f, 0.5f, 0.75f, 0.8f));
@@ -1301,6 +1305,7 @@ int main()
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(device.graphicsPipelineCreates == 3 && device.graphicsPipelineReleases == 0);
     assert(device.graphicsPipelineDescs.back().colorTargets[0].premultipliedAlpha);
+    assert(graphicsTrace.constants.back().renderingControl[1] == 1.0f);
 
     MaterialPassPipelineDescriptor unsupportedPass = forwardPass;
     unsupportedPass.target = ShaderCompileTarget::GBuffer;

@@ -22,7 +22,13 @@ void main() {
     v.normal = normalize(cross(particleView.camera_right.xyz, particleView.camera_up.xyz));
     v.tangent = vec4(normalize(particleView.camera_right.xyz), 1.0);
     v.color = instance.color.rgb * particleView.material_tint.rgb;
-    v.texCoord = _inxParticleUvs[gl_VertexIndex % 6];
+    vec2 flipbookGrid = max(particleView.rendering_control.zw, vec2(1.0));
+    float flipbookCount = flipbookGrid.x * flipbookGrid.y;
+    float flipbookFrame = mod(floor(max(instance.custom_data.x, 0.0)), flipbookCount);
+    vec2 flipbookCell = vec2(
+        mod(flipbookFrame, flipbookGrid.x),
+        floor(flipbookFrame / flipbookGrid.x));
+    v.texCoord = (_inxParticleUvs[gl_VertexIndex % 6] + flipbookCell) / flipbookGrid;
 ${VERTEX_CALL}
 
     vec4 clipPosition = particleView.view_projection * vec4(v.position, 1.0);

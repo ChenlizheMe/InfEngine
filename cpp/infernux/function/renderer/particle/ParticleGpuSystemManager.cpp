@@ -135,6 +135,8 @@ struct ParticleGpuSystemManager::Impl
             ParticleOutputSemantics semantics;
             ParticleRibbonUvMode ribbonUvMode = ParticleRibbonUvMode::Stretch;
             float ribbonUvScale = 1.0f;
+            uint32_t flipbookColumns = 1;
+            uint32_t flipbookRows = 1;
             std::shared_ptr<ParticleGpuOutputRenderer> renderer;
         };
 
@@ -681,6 +683,8 @@ struct ParticleGpuSystemManager::Impl
         rendererDesc.material = output.material;
         rendererDesc.fallbackMaterial = output.fallbackMaterial;
         rendererDesc.semantics = output.semantics;
+        rendererDesc.flipbookColumns = output.flipbookColumns;
+        rendererDesc.flipbookRows = output.flipbookRows;
         rendererDesc.textureResolver = textureResolver;
         rendererDesc.textureVersionResolver = textureVersionResolver;
         rendererDesc.deletionQueue = deletionQueue;
@@ -912,6 +916,8 @@ struct ParticleGpuSystemManager::Impl
                 emitterOutput.semantics.sortMode = ParticleSortMode::None;
             emitterOutput.ribbonUvMode = output.ribbonUvMode;
             emitterOutput.ribbonUvScale = output.ribbonUvScale;
+            emitterOutput.flipbookColumns = output.flipbookColumns;
+            emitterOutput.flipbookRows = output.flipbookRows;
             emitterOutput.renderer = std::move(renderer);
             emitter->outputs.push_back(std::move(emitterOutput));
         }
@@ -1643,6 +1649,8 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
             candidate.shaderProgram = shaderProgram;
             candidate.fallbackMaterial = output.fallbackMaterial;
             candidate.semantics = output.semantics;
+            candidate.flipbookColumns = output.flipbookColumns;
+            candidate.flipbookRows = output.flipbookRows;
             auto renderer = m_impl->CreateOutputRenderer(*emitter, candidate, error);
             if (!renderer) {
                 SetError(error, "failed to refresh GPU particle material for output '" + output.stableId + "'");
