@@ -64,7 +64,7 @@ def _default_scene_document() -> dict:
                             "fov": 60.0,
                             "nearClip": 0.01,
                             "orthoSize": 5.0,
-                            "projectionMode": 1,
+                            "projectionMode": 0,
                         },
                         "enabled": True,
                         "execution_order": 0,
@@ -216,7 +216,7 @@ def _create_default_project_content(
         "$schema": "infernux.render_effect",
         "dependencies": [],
         "feature_type": "infernux.post.tonemapping",
-        "parameters": {"exposure": 1.0, "gamma": 2.2, "mode": 2},
+        "parameters": {"exposure": 1.0, "mode": 2},
     }
     effect_group = {
         "$schema": "infernux.render_effect_group",

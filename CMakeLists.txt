@@ -773,6 +773,21 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.asset_index COMMAND infernux_asset_index_tests)
 
+    add_executable(infernux_asset_database_refresh_tests
+        cpp/tests/AssetDatabaseRefreshTests.cpp
+    )
+    target_include_directories(infernux_asset_database_refresh_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_asset_database_refresh_tests PRIVATE InfernuxRuntime)
+    if(MSVC)
+        target_compile_options(infernux_asset_database_refresh_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_asset_database_refresh_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.asset_database_refresh COMMAND infernux_asset_database_refresh_tests)
+
     add_executable(infernux_asset_dependency_graph_tests
         cpp/tests/AssetDependencyGraphTests.cpp
         cpp/infernux/core/log/InxLog.cpp
