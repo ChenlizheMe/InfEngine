@@ -279,6 +279,26 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={"emitter_id": emitter_id, "values": values},
         )
 
+    @mcp.tool(name="particle_graph_remove_emitter")
+    def particle_graph_remove_emitter(emitter_id: str) -> dict:
+        """Remove an emitter and event routes that reference it."""
+
+        def _remove():
+            panel = _require_particle_graph_panel()
+            result = panel.remove_authoring_emitter(emitter_id)
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_remove_emitter",
+            _remove,
+            arguments={"emitter_id": emitter_id},
+        )
+
     @mcp.tool(name="particle_graph_add_event_type")
     def particle_graph_add_event_type(
         name: str,
@@ -575,6 +595,76 @@ def register_particle_tools(mcp, project_path: str) -> None:
             arguments={"object_id": object_id, "ordinal": ordinal},
         )
 
+    def _control_emitter(
+        operation: str,
+        method_name: str,
+        object_id: int,
+        emitter_index: int,
+        ordinal: int,
+    ) -> dict:
+        def _control():
+            obj = find_game_object(object_id)
+            component = _find_particle_system(obj, int(ordinal))
+            if component is None:
+                raise FileNotFoundError(
+                    f"ParticleSystem {ordinal} was not found on GameObject {object_id}."
+                )
+            accepted = bool(getattr(component, method_name)(int(emitter_index)))
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "emitter_index": int(emitter_index),
+                "operation": operation,
+                "accepted": accepted,
+                "runtime": component.runtime_diagnostics(),
+            }
+
+        return main_thread(
+            f"particle_system_{operation}_emitter",
+            _control,
+            arguments={
+                "object_id": object_id,
+                "emitter_index": emitter_index,
+                "ordinal": ordinal,
+            },
+        )
+
+    @mcp.tool(name="particle_system_start_emitter")
+    def particle_system_start_emitter(
+        object_id: int, emitter_index: int, ordinal: int = 0
+    ) -> dict:
+        """Start one emitter; invalid indices are harmless no-ops."""
+        return _control_emitter(
+            "start", "start_emitter", object_id, emitter_index, ordinal
+        )
+
+    @mcp.tool(name="particle_system_pause_emitter")
+    def particle_system_pause_emitter(
+        object_id: int, emitter_index: int, ordinal: int = 0
+    ) -> dict:
+        """Pause one emitter; invalid indices are harmless no-ops."""
+        return _control_emitter(
+            "pause", "pause_emitter", object_id, emitter_index, ordinal
+        )
+
+    @mcp.tool(name="particle_system_terminate_emitter")
+    def particle_system_terminate_emitter(
+        object_id: int, emitter_index: int, ordinal: int = 0
+    ) -> dict:
+        """Terminate and reset one emitter; invalid indices are harmless no-ops."""
+        return _control_emitter(
+            "terminate", "terminate_emitter", object_id, emitter_index, ordinal
+        )
+
+    @mcp.tool(name="particle_system_restart_emitter")
+    def particle_system_restart_emitter(
+        object_id: int, emitter_index: int, ordinal: int = 0
+    ) -> dict:
+        """Restart one emitter; invalid indices are harmless no-ops."""
+        return _control_emitter(
+            "restart", "restart", object_id, emitter_index, ordinal
+        )
+
     @mcp.tool(name="particle_system_request_gpu_diagnostics")
     def particle_system_request_gpu_diagnostics(
         object_id: int, ordinal: int = 0
@@ -832,6 +922,17 @@ def _register_metadata() -> None:
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
+        "particle_graph_remove_emitter",
+        summary="Remove one emitter and cascade every event route that references it.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "emitter", "remove"],
+        aliases=["remove particle emitter", "移除粒子发射器"],
+        preconditions=["The graph must keep at least one emitter."],
+        side_effects=["Records Undo and removes dependent route-private nodes."],
+        recovery=["Inspect emitters and retry with a current stable ID."],
+        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
+    )
+    register_tool_metadata(
         "particle_graph_add_event_type",
         summary="Add a typed event schema through the live ParticleGraph editor.",
         category="assets/particle_graph",
@@ -999,6 +1100,23 @@ def _register_metadata() -> None:
         recovery=["Find the object and verify its component list before retrying."],
         next_suggested_tools=["runtime_read_errors", "capture_request"],
     )
+    for tool_name, verb in (
+        ("particle_system_start_emitter", "start"),
+        ("particle_system_pause_emitter", "pause"),
+        ("particle_system_terminate_emitter", "terminate and reset"),
+        ("particle_system_restart_emitter", "restart"),
+    ):
+        register_tool_metadata(
+            tool_name,
+            summary=f"{verb.capitalize()} one ParticleSystem emitter by index.",
+            category="runtime/particles",
+            tags=["particle", "runtime", "emitter", "control"],
+            aliases=[f"{verb} particle emitter"],
+            preconditions=["object_id must own a live ParticleSystem component."],
+            side_effects=[f"Attempts to {verb} only the requested emitter."],
+            recovery=["An invalid emitter index is a harmless no-op with accepted=false."],
+            next_suggested_tools=["particle_system_inspect_runtime"],
+        )
     register_tool_metadata(
         "particle_system_request_gpu_diagnostics",
         summary="Request one asynchronous GPU particle/event counter snapshot.",

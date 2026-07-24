@@ -900,14 +900,17 @@ def test_particle_graph_editor_removing_emitter_cascades_event_routes():
         event_type["stable_id"], source_id, "rendering", target_id, 1
     )
 
-    panel.select_authoring_emitter(target_id)
-    panel._remove_selected_emitter()
+    removed = panel.remove_authoring_emitter(target_id)
 
+    assert removed["emitter"]["stable_id"] == target_id
+    assert len(removed["removed_route_ids"]) == 1
     assert [emitter.stable_id for emitter in panel.asset.emitters] == [source_id]
     assert panel.asset.event_routes == ()
     assert [value.stable_id for value in panel.asset.event_types] == [
         event_type["stable_id"]
     ]
+    with pytest.raises(ValueError, match="at least one emitter"):
+        panel.remove_authoring_emitter(source_id)
     ParticleGraphAsset.from_dict(panel.asset.to_dict())
 
 

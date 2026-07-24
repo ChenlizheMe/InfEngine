@@ -82,6 +82,14 @@ class _Panel:
         self.calls.append(("patch-emitter-settings", emitter_id, values))
         return {"stable_id": emitter_id, "settings": values, "changed": True}
 
+    def remove_authoring_emitter(self, emitter_id):
+        self.calls.append(("remove-emitter", emitter_id))
+        return {
+            "emitter": {"stable_id": emitter_id},
+            "removed_route_ids": ["route-id"],
+            "changed": True,
+        }
+
     def add_event_type(self, name, capacity_per_step, fields):
         self.calls.append(("event-type", name, capacity_per_step, fields))
         return {"stable_id": "event-id", "name": name}
@@ -264,6 +272,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     )
     removed_route = mcp.tools["particle_graph_remove_event_route"]("route-id")
     removed_type = mcp.tools["particle_graph_remove_event_type"]("event-id")
+    removed_emitter = mcp.tools["particle_graph_remove_emitter"]("target")
     routed = mcp.tools["particle_graph_set_rendering_output"](
         "rendering::mesh-output"
     )
@@ -290,6 +299,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert updated_route["event_route"]["spawn_count"] == 7
     assert removed_route["event_route"]["stable_id"] == "route-id"
     assert removed_type["event_type"]["stable_id"] == "event-id"
+    assert removed_emitter["emitter"]["stable_id"] == "target"
     assert routed["changed"] is True
     assert reloaded["file_path"] == "Assets/Sparks.particlegraph"
     assert discarded["discarded"] is True
@@ -348,6 +358,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         ),
         ("remove-event-route", "route-id"),
         ("remove-event-type", "event-id"),
+        ("remove-emitter", "target"),
         ("output", "rendering::mesh-output"),
         ("reload",),
         ("discard",),
@@ -511,3 +522,62 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
     }
     assert polled["diagnostics"]["emitters"][0]["alive_count"] == 12
     assert polled["diagnostics"]["events"][0]["spawned_count"] == 12
+
+
+def test_particle_system_emitter_control_tools_are_indexed_no_ops(monkeypatch):
+    class _Component:
+        def __init__(self):
+            self.calls = []
+
+        def start_emitter(self, index):
+            self.calls.append(("start", index))
+            return index == 0
+
+        def pause_emitter(self, index):
+            self.calls.append(("pause", index))
+            return index == 0
+
+        def terminate_emitter(self, index):
+            self.calls.append(("terminate", index))
+            return index == 0
+
+        def restart(self, index):
+            self.calls.append(("restart", index))
+            return index == 0
+
+        def runtime_diagnostics(self):
+            return {"emitters": [{"index": 0, "playing": True}]}
+
+    class _Object:
+        id = 789
+        name = "Controlled VFX"
+
+    component = _Component()
+    monkeypatch.setattr(module, "find_game_object", lambda object_id: _Object())
+    monkeypatch.setattr(module, "_find_particle_system", lambda _obj, _ordinal: component)
+    monkeypatch.setattr(
+        module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    mcp = _FakeMcp()
+    module.register_particle_tools(mcp, "C:/Project")
+
+    started = mcp.tools["particle_system_start_emitter"](789, 0)
+    paused = mcp.tools["particle_system_pause_emitter"](789, 0)
+    terminated = mcp.tools["particle_system_terminate_emitter"](789, 0)
+    restarted = mcp.tools["particle_system_restart_emitter"](789, 0)
+    invalid = mcp.tools["particle_system_start_emitter"](789, 99)
+
+    assert started["accepted"] is True
+    assert paused["operation"] == "pause"
+    assert terminated["operation"] == "terminate"
+    assert restarted["operation"] == "restart"
+    assert invalid["accepted"] is False
+    assert component.calls == [
+        ("start", 0),
+        ("pause", 0),
+        ("terminate", 0),
+        ("restart", 0),
+        ("start", 99),
+    ]

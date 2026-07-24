@@ -552,6 +552,59 @@ class ParticleGraphEditorPanel(EditorPanel):
             "settings": emitter.settings.to_dict(),
         }
 
+    def remove_authoring_emitter(self, emitter_id: str) -> dict:
+        """Remove one emitter and every event route that references it."""
+        if len(self._asset.emitters) <= 1:
+            raise ValueError("Particle Graph must keep at least one emitter")
+        emitter_id = str(emitter_id)
+        emitter_index = next(
+            (
+                index
+                for index, emitter in enumerate(self._asset.emitters)
+                if emitter.stable_id == emitter_id
+            ),
+            -1,
+        )
+        if emitter_index < 0:
+            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
+
+        self.select_authoring_emitter(emitter_id)
+        self._sync_model_to_asset()
+        before = self._snapshot()
+        removed_emitter = self._asset.emitters[emitter_index]
+        removed_routes = tuple(
+            route
+            for route in self._asset.event_routes
+            if emitter_id in {route.source_emitter_id, route.target_emitter_id}
+        )
+        emitters = tuple(self._asset.emitters)
+        for route in removed_routes:
+            emitters = tuple(
+                self._remove_route_nodes_from_emitter(emitter, route)
+                for emitter in emitters
+            )
+        remaining_emitters = list(emitters)
+        del remaining_emitters[emitter_index]
+        removed_route_ids = {route.stable_id for route in removed_routes}
+        self._asset = replace(
+            self._asset,
+            emitters=tuple(remaining_emitters),
+            event_routes=tuple(
+                route
+                for route in self._asset.event_routes
+                if route.stable_id not in removed_route_ids
+            ),
+        )
+        self._emitter_index = min(emitter_index, len(remaining_emitters) - 1)
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Remove particle emitter", before)
+        return {
+            "emitter": removed_emitter.to_dict(),
+            "removed_route_ids": sorted(removed_route_ids),
+            "changed": True,
+        }
+
     @staticmethod
     def _new_event_type_draft() -> dict:
         return {"name": "Event", "capacity": 1024, "fields": []}
@@ -1438,37 +1491,7 @@ class ParticleGraphEditorPanel(EditorPanel):
     def _remove_selected_emitter(self) -> None:
         if len(self._asset.emitters) <= 1:
             return
-        self._sync_model_to_asset()
-        before = self._snapshot()
-        removed_emitter_id = self._selected_emitter().stable_id
-        removed_routes = tuple(
-            route
-            for route in self._asset.event_routes
-            if removed_emitter_id
-            in {route.source_emitter_id, route.target_emitter_id}
-        )
-        emitters = tuple(self._asset.emitters)
-        for route in removed_routes:
-            emitters = tuple(
-                self._remove_route_nodes_from_emitter(emitter, route)
-                for emitter in emitters
-            )
-        emitters = list(emitters)
-        del emitters[self._emitter_index]
-        removed_route_ids = {route.stable_id for route in removed_routes}
-        self._asset = replace(
-            self._asset,
-            emitters=tuple(emitters),
-            event_routes=tuple(
-                route
-                for route in self._asset.event_routes
-                if route.stable_id not in removed_route_ids
-            ),
-        )
-        self._emitter_index = min(self._emitter_index, len(emitters) - 1)
-        self._bind_stage()
-        self._mark_changed()
-        self._record("Remove particle emitter", before)
+        self.remove_authoring_emitter(self._selected_emitter().stable_id)
 
     def _update_emitter(self, emitter: ParticleEmitterAsset, description: str) -> None:
         if emitter == self._selected_emitter():
