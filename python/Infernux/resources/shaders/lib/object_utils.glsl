@@ -2,6 +2,15 @@
 
 @import: Lib Surface Utils
 
+// Particle-only surface shaders are also compiled once without a linked
+// particle vertex stage for asset validation and material previews. In that
+// context the primary UV is the local card UV; the linked ParticleSprite
+// program imports Lib Particle Surface Utils instead and provides the real
+// flipbook-independent local coordinate.
+vec2 getParticleLocalUV() {
+    return getUV();
+}
+
 // ============================================================================
 // lib/object_utils.glsl — Per-object fragment data toolkit
 //
