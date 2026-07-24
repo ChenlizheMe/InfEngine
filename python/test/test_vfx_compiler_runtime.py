@@ -75,6 +75,30 @@ def test_gpu_particle_default_material_state_matches_output_geometry(monkeypatch
     }
 
 
+def test_gpu_soft_particle_material_state_is_transparent(monkeypatch):
+    opaque_material = SimpleNamespace(
+        render_queue=2000,
+        blend_enable=False,
+        depth_test_enable=True,
+        depth_write_enable=True,
+        native=object(),
+    )
+    monkeypatch.setattr(Material, "load", staticmethod(lambda _path: opaque_material))
+    output = SimpleNamespace(
+        output_type="sprite",
+        material=AssetReference(path_hint="Assets/VFX/Opaque.mat"),
+        soft_particles=True,
+    )
+
+    assert ParticleSystem._gpu_material_binding(output) == {
+        "render_queue": 2501,
+        "blend_enabled": True,
+        "depth_test_enabled": True,
+        "depth_write_enabled": False,
+        "native": opaque_material.native,
+    }
+
+
 def _two_output_rendering_graph(
     material: AssetReference | None = None,
 ) -> GraphDocument:

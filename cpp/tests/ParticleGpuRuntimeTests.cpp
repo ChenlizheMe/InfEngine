@@ -1,3 +1,4 @@
+#include <core/config/EngineConfig.h>
 #include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/SceneDepthResolver.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
@@ -1321,6 +1322,12 @@ int main()
     softDesc.deletionQueue = nullptr;
     particle::ParticleGpuBillboardRenderer softBillboard;
     assert(softBillboard.Create(softDevice, softDesc) && softBillboard.RequiresSceneDepth());
+    liveMaterialState = billboardDesc.material->GetRenderState();
+    liveMaterialState.renderQueue = 2000;
+    liveMaterialState.blendEnable = false;
+    liveMaterialState.depthWriteEnable = true;
+    billboardDesc.material->SetRenderState(liveMaterialState);
+    assert(softBillboard.RenderQueue() == EngineConfig::Get().transparentQueueMin);
     const rhi::TextureViewHandle sceneDepthView{990, 1};
     assert(softBillboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view, {}, sceneDepthView,
                                     false));
@@ -1333,6 +1340,8 @@ int main()
     assert(
         softBillboard.RecordDraw(softEncoder, firstTarget, singleSamplePass, indirectBuffer, view, {}, sceneDepthView));
     assert(softDevice.bindGroups.size() == 3 && softDevice.bindGroups.back().textureCount == 2);
+    assert(softDevice.graphicsPipelineDescs.back().colorTargets[0].blendEnabled);
+    assert(!softDevice.graphicsPipelineDescs.back().depth.writeEnabled);
     assert(softDevice.bindGroups.back().textures[1].binding == 15 &&
            softDevice.bindGroups.back().textures[1].texture == sceneDepthView &&
            softDevice.bindGroups.back().textures[1].depthRead);

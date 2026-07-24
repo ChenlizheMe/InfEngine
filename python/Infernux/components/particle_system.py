@@ -1129,6 +1129,17 @@ class ParticleSystem(InxComponent):
                 )
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             pass
+        if not is_mesh and bool(getattr(output, "soft_particles", False)):
+            from Infernux.lib import EngineConfig
+
+            state.update(
+                render_queue=max(
+                    int(state["render_queue"]),
+                    int(EngineConfig.get().transparent_queue_min),
+                ),
+                blend_enabled=True,
+                depth_write_enabled=False,
+            )
         return state
 
     @classmethod

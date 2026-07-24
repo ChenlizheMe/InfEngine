@@ -1,5 +1,6 @@
 #include "ParticleGpuBillboardRenderer.h"
 
+#include <core/config/EngineConfig.h>
 #include <function/renderer/FrameDeletionQueue.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <nlohmann/json.hpp>
@@ -356,11 +357,21 @@ bool ParticleGpuBillboardRenderer::UsesLinkedProgram() const noexcept
 
 GpuBillboardMaterialState ParticleGpuBillboardRenderer::ResolveMaterialState() const noexcept
 {
-    if (!m_material || m_material->IsDeleted())
-        return m_fallbackMaterial;
-    const auto &renderState = m_material->GetRenderState();
-    return {renderState.renderQueue, renderState.blendEnable, renderState.depthTestEnable,
-            renderState.depthWriteEnable};
+    GpuBillboardMaterialState state = m_fallbackMaterial;
+    if (m_material && !m_material->IsDeleted()) {
+        const auto &renderState = m_material->GetRenderState();
+        state = {renderState.renderQueue, renderState.blendEnable, renderState.depthTestEnable,
+                 renderState.depthWriteEnable};
+    }
+
+    // Soft particles sample the completed opaque depth buffer. Keep that
+    // contract valid even when their live material was authored as opaque.
+    if (m_semantics.softParticles) {
+        state.renderQueue = std::max(state.renderQueue, EngineConfig::Get().transparentQueueMin);
+        state.blendEnabled = true;
+        state.depthWriteEnabled = false;
+    }
+    return state;
 }
 
 std::array<float, 4> ParticleGpuBillboardRenderer::ResolveMaterialTint() const noexcept
