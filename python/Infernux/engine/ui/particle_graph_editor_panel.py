@@ -172,7 +172,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._sync_model_to_asset()
         return self._asset
 
-    def authoring_snapshot(self) -> dict:
+    def authoring_snapshot(self, *, include_registered_types: bool = False) -> dict:
         """Return the currently open editor document, not a disk reparse."""
         self._sync_model_to_asset()
         nodes = []
@@ -213,14 +213,54 @@ class ParticleGraphEditorPanel(EditorPanel):
             ],
             "event_types": [value.to_dict() for value in self._asset.event_types],
             "event_routes": [value.to_dict() for value in self._asset.event_routes],
-            "registered_types": [
-                self._authoring_definition_snapshot(definition.type_id)
-                for definition in (
-                    self._model.registered_types() if self._model is not None else ()
-                )
-            ],
+            "registered_types": (
+                [
+                    self._authoring_definition_snapshot(definition.type_id)
+                    for definition in (
+                        self._model.registered_types()
+                        if self._model is not None
+                        else ()
+                    )
+                ]
+                if include_registered_types
+                else []
+            ),
             "nodes": nodes,
             "links": links,
+        }
+
+    def authoring_type_catalog(
+        self,
+        *,
+        query: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict:
+        """Return a searchable page of node definitions for the selected emitter."""
+        needle = str(query).strip().casefold()
+        definitions = (
+            self._model.registered_types() if self._model is not None else ()
+        )
+        matches = [
+            definition
+            for definition in definitions
+            if not needle
+            or needle in str(definition.type_id).casefold()
+            or needle in str(definition.label).casefold()
+        ]
+        start = max(0, int(offset))
+        page_size = min(200, max(1, int(limit)))
+        end = min(len(matches), start + page_size)
+        return {
+            "query": str(query),
+            "offset": start,
+            "limit": page_size,
+            "total": len(matches),
+            "has_more": end < len(matches),
+            "types": [
+                self._authoring_definition_snapshot(definition.type_id)
+                for definition in matches[start:end]
+            ],
         }
 
     def _authoring_definition_snapshot(self, type_id: str) -> dict:

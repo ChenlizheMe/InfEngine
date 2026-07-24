@@ -34,6 +34,39 @@ class _Panel:
             "nodes": [],
         }
 
+    def authoring_type_catalog(self, *, query="", offset=0, limit=100):
+        values = [
+            {
+                "type_id": "particle.output.sprite",
+                "display_name": "Sprite Output",
+                "ports": [],
+                "properties": [],
+            },
+            {
+                "type_id": "particle.output.ribbon",
+                "display_name": "Ribbon Output",
+                "ports": [],
+                "properties": [],
+            },
+        ]
+        needle = str(query).casefold()
+        matches = [
+            value
+            for value in values
+            if not needle
+            or needle in value["type_id"].casefold()
+            or needle in value["display_name"].casefold()
+        ]
+        page = matches[int(offset) : int(offset) + int(limit)]
+        return {
+            "query": query,
+            "offset": int(offset),
+            "limit": int(limit),
+            "total": len(matches),
+            "has_more": int(offset) + int(limit) < len(matches),
+            "types": page,
+        }
+
     def set_node_asset_reference(self, node_uid, property_name, file_path):
         self.calls.append((node_uid, property_name, file_path))
         return {"guid": "mesh-guid", "path_hint": "Assets/Models/Shard.obj"}
@@ -211,6 +244,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
 
     opened = mcp.tools["particle_graph_open_asset"]("Assets/Sparks.particlegraph")
     inspected = mcp.tools["particle_graph_inspect_editor"]()
+    node_types = mcp.tools["particle_graph_list_node_types"]("ribbon", 0, 10)
     changed = mcp.tools["particle_graph_set_node_asset"](
         "rendering::mesh-output", "mesh", "Assets/Models/Shard.obj"
     )
@@ -281,6 +315,9 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
 
     assert opened["file_path"] == "Assets/Sparks.particlegraph"
     assert inspected["file_path"] == "Assets/Sparks.particlegraph"
+    assert "registered_types" not in inspected
+    assert node_types["total"] == 1
+    assert node_types["types"][0]["type_id"] == "particle.output.ribbon"
     assert changed["asset"]["guid"] == "mesh-guid"
     assert changed["editor"]["dirty"] is True
     assert added["node"]["uid"] == "update::new-node"

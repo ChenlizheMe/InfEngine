@@ -547,6 +547,19 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
         panel.connect_stream(initial["uid"], angular["uid"])
 
 
+def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    catalog = panel.authoring_type_catalog(query="ribbon", offset=0, limit=1)
+
+    assert catalog["offset"] == 0
+    assert catalog["limit"] == 1
+    assert catalog["total"] >= 1
+    assert len(catalog["types"]) == 1
+    assert "ribbon" in catalog["types"][0]["type_id"]
+
+
 def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
     from Infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
@@ -576,7 +589,7 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     )
 
     panel.select_authoring_emitter(source_id)
-    snapshot = panel.authoring_snapshot()
+    snapshot = panel.authoring_snapshot(include_registered_types=True)
     event_output_definition = next(
         value
         for value in snapshot["registered_types"]

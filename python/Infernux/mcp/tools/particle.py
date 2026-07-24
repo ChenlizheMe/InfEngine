@@ -47,6 +47,28 @@ def register_particle_tools(mcp, project_path: str) -> None:
 
         return main_thread("particle_graph_inspect_editor", _inspect)
 
+    @mcp.tool(name="particle_graph_list_node_types")
+    def particle_graph_list_node_types(
+        query: str = "",
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict:
+        """Search the node types available to the selected ParticleGraph emitter."""
+
+        def _list():
+            panel = _require_particle_graph_panel()
+            return panel.authoring_type_catalog(
+                query=str(query),
+                offset=int(offset),
+                limit=int(limit),
+            )
+
+        return main_thread(
+            "particle_graph_list_node_types",
+            _list,
+            arguments={"query": query, "offset": offset, "limit": limit},
+        )
+
     @mcp.tool(name="particle_graph_set_node_asset")
     def particle_graph_set_node_asset(
         node_uid: str,
@@ -794,8 +816,15 @@ def _focus_particle_graph_panel(manager) -> None:
         pass
 
 
-def _portable_snapshot(snapshot: dict, project_path: str) -> dict:
+def _portable_snapshot(
+    snapshot: dict,
+    project_path: str,
+    *,
+    include_registered_types: bool = False,
+) -> dict:
     result = dict(snapshot)
+    if not include_registered_types:
+        result.pop("registered_types", None)
     file_path = str(result.get("file_path") or "")
     if file_path:
         result["file_path"] = relative_path(file_path, project_path)
@@ -825,6 +854,21 @@ def _register_metadata() -> None:
         preconditions=["A .particlegraph asset must be open in Particle Graph Editor."],
         recovery=["Open the ParticleGraph asset in the editor, then retry."],
         next_suggested_tools=["particle_graph_set_node_asset", "editor_save_focused"],
+    )
+    register_tool_metadata(
+        "particle_graph_list_node_types",
+        summary="Search a compact, paged catalog of node types for the selected emitter.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "nodes", "search"],
+        aliases=["list particle nodes", "search particle nodes", "查找粒子节点"],
+        preconditions=[
+            "A ParticleGraph must be open and the intended emitter must be selected."
+        ],
+        side_effects=[],
+        recovery=[
+            "Use particle_graph_select_emitter before searching emitter-specific event nodes."
+        ],
+        next_suggested_tools=["particle_graph_add_node"],
     )
     register_tool_metadata(
         "particle_graph_add_node",
