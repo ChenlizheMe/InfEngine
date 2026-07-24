@@ -52,6 +52,16 @@ class GPUMeshPreview
                                         int size, const glm::mat4 &view, const glm::mat4 &proj,
                                         const glm::vec3 &cameraPos, bool cloneMaterials = false);
 
+    /// @brief Currently-published ImGui display descriptor, 0 when absent.
+    ///
+    /// The display target is destroyed and recreated on size/format changes,
+    /// so any texture id previously returned by RenderToImGuiTextureCamera
+    /// must be validated against this before being drawn again.
+    [[nodiscard]] uint64_t GetDisplayTextureId() const
+    {
+        return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(m_displayDescriptorSet));
+    }
+
   private:
     bool EnsureResources(int size);
     bool EnsureViewResources();

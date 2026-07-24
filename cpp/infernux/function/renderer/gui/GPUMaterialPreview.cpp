@@ -315,13 +315,13 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
 
     // ------------------------------------------------------------------
     // Prepare preview lighting UBO.
-    // Use a soft two-light rig plus ambient probe so aggressive normal-map
-    // values still read as a sphere instead of collapsing into a tiny bright
-    // patch under a single hard key light.
+    // Single key light from above plus the ambient probe — the probe already
+    // keeps unlit regions readable, and a lower fill light made previews
+    // look lit from below.
     // ------------------------------------------------------------------
     ShaderLightingUBO lightingUBO{};
     memset(&lightingUBO, 0, sizeof(lightingUBO));
-    lightingUBO.lightCounts = glm::ivec4(2, 0, 0, 0);
+    lightingUBO.lightCounts = glm::ivec4(1, 0, 0, 0);
     lightingUBO.ambientColor = glm::vec4(0.06f, 0.06f, 0.07f, 1.0f);
     lightingUBO.ambientSkyColor = glm::vec4(0.18f, 0.19f, 0.22f, 0.55f);
     lightingUBO.ambientEquatorColor = glm::vec4(0.09f, 0.10f, 0.12f, 1.0f);
@@ -333,12 +333,6 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
     // color.rgb = color * intensity, color.a = intensity
     lightingUBO.directionalLights[0].color = glm::vec4(2.0f * 1.0f, 2.0f * 0.95f, 2.0f * 0.9f, 2.0f);
     lightingUBO.directionalLights[0].metadata =
-        glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
-
-    // Fill light — back-left to keep the sphere readable under harsh normals.
-    lightingUBO.directionalLights[1].direction = glm::vec4(glm::normalize(glm::vec3(0.6f, 0.3f, -0.8f)), 0.0f);
-    lightingUBO.directionalLights[1].color = glm::vec4(0.6f * 0.6f, 0.6f * 0.7f, 0.6f * 0.85f, 0.6f);
-    lightingUBO.directionalLights[1].metadata =
         glm::uvec4(~0u, static_cast<uint32_t>(LightInfluenceDomain::Geometry), 0u, 0u);
 
     // ------------------------------------------------------------------

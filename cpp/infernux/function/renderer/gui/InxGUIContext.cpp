@@ -1166,9 +1166,16 @@ float InxGUIContext::GetCursorPosY()
 
 bool InxGUIContext::IsVirtualizedRegionVisible(float height)
 {
-    if (height <= 0.0f || ImGui::IsAnyItemActive() ||
-        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+    if (height <= 0.0f)
         return true;
+
+    // Visibility must be local to this region. Expanding every virtualized
+    // Inspector body while any item is held or any popup is open changes the
+    // child window's content height between mouse-down and mouse-up. At the
+    // bottom of the Inspector that moves both the scroll position and the
+    // item under the cursor. The active body and its popup are already inside
+    // the visible clip rect when interaction begins, so they remain rendered
+    // without a global interaction bypass.
     const float width = (std::max)(ImGui::GetContentRegionAvail().x, 1.0f);
     return ImGui::IsRectVisible(ImVec2(width, height));
 }

@@ -1524,4 +1524,9 @@ uint64_t InxVkCoreModular::RenderMeshPreviewGPUImGuiCamera(const InxMesh &mesh,
     return m_gpuMeshPreview->RenderToImGuiTextureCamera(mesh, materials, size, view, proj, cameraPos, cloneMaterials);
 }
 
+uint64_t InxVkCoreModular::GetMeshPreviewDisplayTextureId() const
+{
+    return m_gpuMeshPreview ? m_gpuMeshPreview->GetDisplayTextureId() : 0;
+}
+
 } // namespace infernux

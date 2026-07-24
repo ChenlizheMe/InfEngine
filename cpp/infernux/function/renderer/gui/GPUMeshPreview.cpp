@@ -805,13 +805,22 @@ void GPUMeshPreview::DestroyImGuiDisplayDescriptor()
     if (!m_vkCore)
         return;
     VkDevice device = m_vkCore->GetDevice();
-    if (m_displayDescriptorSet != VK_NULL_HANDLE) {
-        if (ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().BackendRendererUserData != nullptr)
-            ImGui_ImplVulkan_RemoveTexture(m_displayDescriptorSet);
+    // In-flight GPU frames (and UI code holding the previously returned
+    // ImTextureID) may still reference this descriptor for a few frames.
+    // Freeing it immediately makes the ImGui backend bind a destroyed
+    // VkDescriptorSet — validation errors and intermittent crashes — so both
+    // the descriptor and its sampler retire through the frame deletion queue.
+    if (m_displayDescriptorSet != VK_NULL_HANDLE || m_displaySampler != VK_NULL_HANDLE) {
+        VkDescriptorSet retiredSet = m_displayDescriptorSet;
+        VkSampler retiredSampler = m_displaySampler;
+        m_vkCore->DeferDeletion([device, retiredSet, retiredSampler]() {
+            if (retiredSet != VK_NULL_HANDLE && ImGui::GetCurrentContext() != nullptr &&
+                ImGui::GetIO().BackendRendererUserData != nullptr)
+                ImGui_ImplVulkan_RemoveTexture(retiredSet);
+            if (retiredSampler != VK_NULL_HANDLE)
+                vkDestroySampler(device, retiredSampler, nullptr);
+        });
         m_displayDescriptorSet = VK_NULL_HANDLE;
-    }
-    if (m_displaySampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, m_displaySampler, nullptr);
         m_displaySampler = VK_NULL_HANDLE;
     }
     m_displayImageShaderReady = false;

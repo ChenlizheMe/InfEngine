@@ -2,6 +2,7 @@
 
 @shader_id: Gizmo
 @hidden
+@capability: NoMotionVectors
 
 // UBO: model, view, projection matrices
 layout(std140, binding = 0) uniform UniformBufferObject {

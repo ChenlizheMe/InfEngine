@@ -355,7 +355,10 @@ void SceneManager::EnsurePhysicsQueriesCurrent()
     if (!m_activeScene)
         return;
     FlushPendingBroadphase();
-    SyncCollidersToPhysics(m_fixedTimeStep);
+    // Outside play mode nothing steps the simulation, so moved bodies must be
+    // teleported (dt = 0): the kinematic-velocity paths would otherwise leave
+    // bodies with a velocity that is never integrated nor settled.
+    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
 }
 
 void SceneManager::FixedUpdate()

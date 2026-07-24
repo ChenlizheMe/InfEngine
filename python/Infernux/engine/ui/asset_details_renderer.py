@@ -1122,7 +1122,17 @@ def _ensure_animclip_preview_texture(state: _State, tex_file: str) -> bool:
             and int(pv.get("stamp", 0)) == int(stamp)
             and int(pv.get("tex_id", 0)) != 0
         ):
-            return True
+            # Re-resolve the descriptor every frame: C++ replaces/evicts the
+            # underlying ImGui texture, so a handle cached across frames may
+            # point at a freed VkDescriptorSet (validation errors + crashes).
+            live_id = 0
+            if hasattr(native, "get_texture_preview_texture_id"):
+                live_id = int(native.get_texture_preview_texture_id(resource_key) or 0)
+            if live_id:
+                pv["tex_id"] = live_id
+                return True
+            # Texture gone (replaced mid-flight or evicted) — fall through to
+            # a full re-query so a fresh render gets scheduled.
 
         native.pump_preview_tasks()
         tex_id, tex_w, tex_h = native.query_or_schedule_texture_preview(
@@ -1892,6 +1902,24 @@ class _SpriteEditorState:
 _sprite_state = _SpriteEditorState()
 
 
+def _live_sprite_texture_id(ss: "_SpriteEditorState", cur_srgb, cur_filter) -> int:
+    """Cheap per-frame lookup of the currently-published sprite preview descriptor."""
+    try:
+        from Infernux.engine.ui.editor_services import EditorServices
+        svc = EditorServices.instance()
+        native = svc.native_engine if svc else None
+        if not native or not hasattr(native, "get_texture_preview_texture_id"):
+            return 0
+        filter_tag = cur_filter.name if cur_filter else "default"
+        srgb_tag = "srgb" if cur_srgb else "linear"
+        norm_path = resolved_path(ss.file_path)
+        resource_key = f"spriteedit|sprite_preview|{srgb_tag}_{filter_tag}|{norm_path}"
+        return int(native.get_texture_preview_texture_id(resource_key) or 0)
+    except Exception as exc:
+        Debug.log_warning(f"[SpriteEditor] live texture lookup failed: {exc}")
+        return 0
+
+
 def _ensure_sprite_texture(state: _State) -> bool:
     """Load the texture dimensions + ImGui texture ID for the sprite editor."""
     ss = _sprite_state
@@ -1907,7 +1935,14 @@ def _ensure_sprite_texture(state: _State) -> bool:
             and getattr(ss, '_srgb', None) == cur_srgb
             and getattr(ss, '_filter', None) == cur_filter
             and dims_match):
-        return True
+        # Re-resolve the descriptor every frame — the C++ side may replace or
+        # evict the ImGui texture, and binding a cached freed VkDescriptorSet
+        # triggers validation errors and intermittent crashes.
+        live_id = _live_sprite_texture_id(ss, cur_srgb, cur_filter)
+        if live_id:
+            ss.texture_id = live_id
+            return True
+        # Texture gone — fall through to a full re-query/reschedule.
     # Preserve slice grid when only sRGB/filter changed for the same file
     same_file = (ss.file_path == state.file_path)
     saved_rows = ss.slice_rows if same_file else 1

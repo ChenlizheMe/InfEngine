@@ -623,18 +623,30 @@ void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsB
         ++actor.transformRevision;
 
         PhysicsWorld &physicsWorld = PhysicsWorld::Instance();
+        const bool hasRigidbodies = PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0;
         bool isKinematicBody = (rb != nullptr && rb->IsEnabled() && rb->IsKinematic());
+        bool movedWithVelocity = false;
         if (isKinematicBody && fixedDeltaTime > 0.0f) {
             physicsWorld.MoveBodyKinematic(actor.bodyId, pos, rot, fixedDeltaTime);
+        } else if (!rb && fixedDeltaTime > 0.0f && hasRigidbodies) {
+            // Collider-only body moved while the simulation is stepping
+            // (gizmo drag / scripted move). A static teleport only produces
+            // positional depenetration — overlapped dynamic bodies would be
+            // squeezed out with zero exit velocity and stop dead. Drive it
+            // kinematically instead so contacts carry real momentum.
+            physicsWorld.MoveStaticBodyWithVelocity(actor.bodyId, pos, rot, fixedDeltaTime);
+            movedWithVelocity = true;
         } else if (staticPoseBatch && !rb) {
             staticPoseBatch->push_back({actor.bodyId, pos, rot});
         } else {
             physicsWorld.SetBodyPosition(actor.bodyId, pos, rot);
         }
 
-        // After moving a static/kinematic body, wake nearby dynamic bodies.
+        // After teleporting a static body, wake nearby dynamic bodies. The
+        // velocity path is exempt: the body is temporarily kinematic and Jolt
+        // wakes everything it touches during the step.
         bool isStaticBody = (rb == nullptr || !rb->IsEnabled());
-        if (isStaticBody && PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+        if (isStaticBody && !movedWithVelocity && hasRigidbodies) {
             physicsWorld.WakeBodiesTouchingStatic(actor.bodyId);
         }
     }

@@ -39,6 +39,22 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, const
         if (reference.guid.empty())
             reference.guid = database->GetGuidFromPath(resolvedPath);
         reference.pathHint = resolvedPath;
+
+        // Canonicalize legacy shader ids (pre "Title Case" migration spellings
+        // like "unlit" or "Infernux/Skybox-Procedural"). Runtime shader
+        // registries index programs by the authored id from the shader meta,
+        // so a stale id in the material would fail every pipeline lookup even
+        // though the file itself resolved.
+        if (const auto meta = database->GetMetaByPath(resolvedPath)) {
+            if (meta->HasKey("shader_id")) {
+                std::string canonicalId = meta->GetDataAs<std::string>("shader_id");
+                if (!canonicalId.empty() && canonicalId != reference.shaderId) {
+                    INXLOG_INFO("MaterialLoader: migrated legacy shader id '", reference.shaderId, "' -> '",
+                                canonicalId, "' (", resolvedPath, ")");
+                    reference.shaderId = canonicalId;
+                }
+            }
+        }
     }
     return reference;
 }

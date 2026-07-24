@@ -92,7 +92,14 @@
     {
       "name": "debug",
       "configurePreset": "debug",
-      "configuration": "RelWithDebInfo"
+      "configuration": "RelWithDebInfo",
+      "environment": {
+        "CMAKE_BUILD_PARALLEL_LEVEL": "$penv{NUMBER_OF_PROCESSORS}"
+      },
+      "targets": [
+        "ALL_BUILD",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "debug-profile",
@@ -117,7 +124,11 @@
     },
     {
       "name": "debug-macos",
-      "configurePreset": "debug-macos"
+      "configurePreset": "debug-macos",
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "release-linux",
@@ -129,7 +140,11 @@
     },
     {
       "name": "debug-linux",
-      "configurePreset": "debug-linux"
+      "configurePreset": "debug-linux",
+      "targets": [
+        "all",
+        "package_and_install_python"
+      ]
     },
     {
       "name": "format",

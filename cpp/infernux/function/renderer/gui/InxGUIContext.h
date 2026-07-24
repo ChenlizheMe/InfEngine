@@ -244,6 +244,8 @@ class InxGUIContext
     float GetContentRegionAvailHeight();
     float GetCursorPosX();
     float GetCursorPosY();
+    /// Return whether the vertical region at the current cursor intersects
+    /// the current window clip rectangle.
     bool IsVirtualizedRegionVisible(float height);
     void SetCursorPosX(float x);
     void SetCursorPosY(float y);

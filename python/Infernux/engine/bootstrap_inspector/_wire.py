@@ -397,18 +397,49 @@ def _wire_icons_and_body(ctx):
                 nearest=True,
                 srgb=False,
             )
-            if tid != 0:
-                _icon_cache[key] = tid
-            else:
+            # Overwrite even with 0 so a stale handle never survives eviction
+            # or replacement of the underlying texture.
+            _icon_cache[key] = tid
+            if tid == 0:
                 all_ready = False
         _icons_loaded[0] = all_ready
 
+    def _live_component_icon_id(key):
+        """Re-resolve the currently-published descriptor for an icon.
+
+        Texture ids are raw Vulkan descriptor handles owned by the native
+        preview system, which may replace or evict textures at any time.
+        Binding a handle cached across frames can hit a freed VkDescriptorSet
+        (validation errors, icons rendering as other textures, crashes), so
+        the id is looked up fresh every call. Returns -1 when the native
+        getter is unavailable (older builds) so callers can fall back.
+        """
+        native_engine = engine.get_native_engine()
+        getter = getattr(native_engine, "get_texture_preview_texture_id", None) if native_engine else None
+        if getter is None:
+            return -1
+        try:
+            return int(getter(f"compicon|{key}") or 0)
+        except Exception:
+            return 0
+
     def _get_component_icon_id(type_name, is_script):
         _ensure_icons()
-        tid = _icon_cache.get(type_name.lower(), 0)
-        if tid == 0 and is_script:
-            tid = _icon_cache.get("script", 0)
-        return tid
+        key = type_name.lower()
+        if _icon_cache.get(key, 0) == 0 and is_script:
+            key = "script"
+        if _icon_cache.get(key, 0) == 0:
+            return 0
+        live = _live_component_icon_id(key)
+        if live == -1:
+            return _icon_cache.get(key, 0)
+        if live == 0:
+            # Evicted or replaced mid-flight: schedule a re-upload on the next
+            # lookup and draw nothing this frame rather than a dead handle.
+            _icons_loaded[0] = False
+            _icon_cache[key] = 0
+            return 0
+        return live
 
     ctx.get_component_icon_id = _get_component_icon_id
     ip.get_component_icon_id = _get_component_icon_id

@@ -747,6 +747,13 @@ class InxVkCoreModular
                                              const glm::mat4 &view, const glm::mat4 &proj, const glm::vec3 &cameraPos,
                                              bool cloneMaterials = false);
 
+    /// @brief Currently-published live mesh preview descriptor id (0 when absent).
+    ///
+    /// Ids returned by RenderMeshPreviewGPUImGuiCamera become invalid whenever
+    /// the preview target is recreated; callers caching an id must validate it
+    /// against this before reuse.
+    [[nodiscard]] uint64_t GetMeshPreviewDisplayTextureId() const;
+
     /// @brief Release GPU preview resources while the ImGui Vulkan backend is still alive.
     void ReleaseGpuPreviews();
 

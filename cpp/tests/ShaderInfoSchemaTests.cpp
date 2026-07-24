@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cassert>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -14,6 +15,13 @@ namespace
 infernux::InxShaderLoader MakeCompiler()
 {
     return infernux::InxShaderLoader(true, false, false, false, false, true, false, false, false, false);
+}
+
+std::string ReadText(const std::string &path)
+{
+    std::ifstream stream(path, std::ios::binary);
+    assert(stream && "shader test resource must exist");
+    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
 void RequireCompiles(infernux::InxShaderLoader &compiler, const std::string &source, const std::string &path)
@@ -110,6 +118,36 @@ void surface(out SurfaceData s)
     assert(!legacyEntries.main);
     assert(!legacyEntries.vertex);
 
+    auto compiler = MakeCompiler();
+    infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
+
+    const std::string legacyCapabilitySource = R"(
+#version 450
+@shader_id: Editor Raw
+@cast_shadows: off
+@capability: ForwardOnly
+@capabilities: NoDepthPass, NoPicking, NoMotionVectors
+void main() { }
+)";
+    const infernux::ShaderDescriptor legacyCapabilityDescriptor =
+        compiler.ParseShaderSource(legacyCapabilitySource, "EditorRaw.frag");
+    assert(!legacyCapabilityDescriptor.surfaceOptions.castShadows);
+    assert(legacyCapabilityDescriptor.capabilities ==
+           std::vector<std::string>({"ForwardOnly", "NoDepthPass", "NoPicking", "NoMotionVectors"}));
+
+    const infernux::ShaderDescriptor gridDescriptor =
+        compiler.ParseShaderSource(ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/grid.frag"), "grid.frag");
+    assert(gridDescriptor.surfaceOptions.surfaceType == "transparent");
+    assert(gridDescriptor.surfaceOptions.blendMode == "alpha");
+    assert(gridDescriptor.depthWrite == "off");
+
+    const infernux::ShaderDescriptor gizmoIconDescriptor = compiler.ParseShaderSource(
+        ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/gizmo_icon.frag"), "gizmo_icon.frag");
+    assert(gizmoIconDescriptor.surfaceOptions.surfaceType == "transparent");
+    assert(gizmoIconDescriptor.surfaceOptions.blendMode == "alpha");
+    assert(gizmoIconDescriptor.surfaceOptions.alphaClip == "0.01");
+    assert(gizmoIconDescriptor.depthWrite == "off");
+
     const std::string vertexEntrySource = R"(
 // VertexOutput vertex(inout VertexInput ignored)
 VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
@@ -119,8 +157,6 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     assert(rewrittenVertex.find("// VertexOutput vertex(inout VertexInput ignored)") != std::string::npos);
     assert(rewrittenVertex.find("VertexOutput inxVertexEntry(inout VertexInput value)") != std::string::npos);
 
-    auto compiler = MakeCompiler();
-    infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
     const infernux::ShaderDescriptor descriptor = compiler.ParseShaderSource(richSource, "WaveSurface.frag");
     assert(descriptor.usesStructuredInfo);
     assert(descriptor.shaderId == "Tests/WaveSurface");

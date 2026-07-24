@@ -132,8 +132,8 @@ class TestProjectPanelCreation:
         assert database.paths == [str(path)]
         document = json.loads(path.read_text(encoding="utf-8"))
         assert "material_version" not in document
-        assert document["shaders"]["vertex"]["shader_id"] == "standard"
-        assert document["shaders"]["fragment"]["shader_id"] == "unlit"
+        assert document["shaders"]["vertex"]["shader_id"] == "Standard"
+        assert document["shaders"]["fragment"]["shader_id"] == "Unlit"
         assert document["name"] == "NewMaterial"
         assert document["builtin"] is False
         material = InxMaterial()

@@ -3,6 +3,11 @@
 @shader_id: Grid
 @cull: none
 @hidden
+@surface_type: transparent
+@depth_write: off
+@blend: alpha
+@cast_shadows: off
+@capabilities: ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors
 @property: fadeStart, Float, 15.0
 @property: fadeEnd, Float, 80.0
 

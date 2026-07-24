@@ -2287,6 +2287,15 @@ uint64_t Infernux::RenderTimelineCubePreview(float px, float py, float pz, float
     mix(qi(camDistance));
     mix(size);
 
+    // The shared GPUMeshPreview recreates its display target on size/format
+    // changes (e.g. another preview consumer requested a different size), which
+    // invalidates every previously returned descriptor id. Never hand a stale
+    // id back to the UI — it would be bound as a freed VkDescriptorSet.
+    if (m_cubePreviewTexId != 0 && m_cubePreviewTexId != m_renderer->GetMeshPreviewDisplayTextureId()) {
+        m_cubePreviewTexId = 0;
+        m_lastCubePreviewHash = 0;
+    }
+
     if (m_cubePreviewTexId != 0 && hash == m_lastCubePreviewHash)
         return m_cubePreviewTexId;
 

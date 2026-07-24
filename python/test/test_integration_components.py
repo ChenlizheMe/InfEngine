@@ -1405,8 +1405,8 @@ class TestMaterial:
         document = json.loads(mat.serialize())
 
         assert "material_version" not in document
-        assert document["shaders"]["vertex"]["shader_id"] == "standard"
-        assert document["shaders"]["fragment"]["shader_id"] == "lit"
+        assert document["shaders"]["vertex"]["shader_id"] == "Standard"
+        assert document["shaders"]["fragment"]["shader_id"] == "Lit"
 
         shader_metadata = json.loads(json.dumps(document))
         shader_metadata["_shader_property_order"] = ["baseColor", "testValue"]

@@ -19,6 +19,13 @@
 
 @import: PBR
 
+// Everything below reads the LightingUBO (`lighting.`), shadow atlas sampler
+// and light buffers. The shadow pass pipeline layout does not bind any of
+// these (depth-only, set 0 = ShadowUBO), yet alpha-clipped surface shaders
+// still paste this import into their generated Shadow variant so surface()
+// helpers stay available. Compile the UBO-dependent half out of that variant.
+#ifndef INX_SHADOW_PASS
+
 // ============================================================================
 // Light struct — similar to Unity's Light struct in URP
 // ============================================================================
@@ -540,3 +547,5 @@ vec3 calculateAllLighting(vec3 worldPos, vec3 N, vec3 V,
 
     return Lo;
 }
+
+#endif // INX_SHADOW_PASS

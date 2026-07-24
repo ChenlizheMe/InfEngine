@@ -3,6 +3,7 @@
 @shader_id: Grid
 @cull: none
 @hidden
+@capability: NoMotionVectors
 
 layout(std140, binding = 0) uniform UniformBufferObject {
     mat4 model;

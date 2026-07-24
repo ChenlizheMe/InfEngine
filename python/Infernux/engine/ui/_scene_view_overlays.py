@@ -402,9 +402,11 @@ class SceneViewOverlaysMixin:
                 nearest=False,
                 srgb=False,
             )
-            if tid != 0:
-                self._tool_icon_ids[mode] = tid
-            else:
+            # Always overwrite, including with 0: the native side may replace
+            # or evict the texture, so a handle kept from an earlier frame can
+            # point at a freed VkDescriptorSet (validation errors / crashes).
+            self._tool_icon_ids[mode] = tid
+            if tid == 0:
                 all_ready = False
         self._tool_icons_loaded = all_ready
 

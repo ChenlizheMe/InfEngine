@@ -1069,8 +1069,10 @@ class AnimClip2DEditorPanel(EditorPanel):
         tex_w = int(tex_w)
         tex_h = int(tex_h)
 
-        if texture_id != 0:
-            tex.texture_id = texture_id
+        # Never keep a stale handle: a zero result means the native texture is
+        # not currently published (evicted or re-rendering), and the previous
+        # descriptor may already be freed — binding it crashes the driver.
+        tex.texture_id = texture_id
 
         if tex_w > 0 and tex_h > 0:
             tex.tex_w = tex_w

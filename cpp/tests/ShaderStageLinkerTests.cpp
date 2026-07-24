@@ -589,6 +589,23 @@ void surface(out SurfaceData surface)
     assert(builtinForwardPlus->generatedFragmentSource.find("light.metadata.y & _inx_ObjectLayerMask") !=
            std::string::npos);
 
+    const auto spriteLitCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
+        ReadText(shaderRoot + "/sprite_lit.frag"), shaderRoot + "/sprite_lit.frag");
+    if (!spriteLitCompilation.IsValid()) {
+        for (const auto &error : spriteLitCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(spriteLitCompilation.IsValid());
+    assert(spriteLitCompilation.CreateRuntimeArtifact().FindVariant(infernux::ShaderCompileTarget::Shadow) !=
+           nullptr);
+    const auto spriteShadow =
+        std::find_if(spriteLitCompilation.compiledVariants.begin(), spriteLitCompilation.compiledVariants.end(),
+                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
+    assert(spriteShadow != spriteLitCompilation.compiledVariants.end());
+    assert(spriteShadow->generatedFragmentSource.find("uniform ShaderLighting") == std::string::npos);
+    assert(spriteShadow->generatedFragmentSource.find("vec3 sampleAmbientProbe") == std::string::npos);
+
     const auto errorCompilation =
         compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/error.vert"), shaderRoot + "/error.vert",
                                               ReadText(shaderRoot + "/error.frag"), shaderRoot + "/error.frag");

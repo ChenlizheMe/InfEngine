@@ -359,6 +359,9 @@ class InxRenderer
                                              const glm::mat4 &view, const glm::mat4 &proj, const glm::vec3 &cameraPos,
                                              bool cloneMaterials = false);
 
+    /// Currently-published live mesh preview descriptor id (0 when absent).
+    [[nodiscard]] uint64_t GetMeshPreviewDisplayTextureId() const;
+
     // Refresh all materials using a specific shader
     bool RefreshMaterialsUsingShader(const std::string &shaderId);
 

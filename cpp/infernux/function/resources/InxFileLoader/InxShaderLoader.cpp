@@ -716,6 +716,20 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     std::string currentTargetName;
     std::unordered_map<std::string, std::vector<std::string>> targetCodeSections;
 
+    const auto parseCapabilities = [&](const std::string &value) {
+        std::istringstream values(value);
+        std::string capability;
+        while (std::getline(values, capability, ',')) {
+            const size_t begin = capability.find_first_not_of(" \t\r\n");
+            const size_t end = capability.find_last_not_of(" \t\r\n");
+            capability = begin == std::string::npos ? std::string{} : capability.substr(begin, end - begin + 1);
+            if (capability.empty())
+                continue;
+            if (std::find(desc.capabilities.begin(), desc.capabilities.end(), capability) == desc.capabilities.end())
+                desc.capabilities.push_back(std::move(capability));
+        }
+    };
+
     // Annotation dispatch table
     using Handler = std::function<void(const std::string &)>;
     std::unordered_map<std::string, Handler> handlers = {
@@ -748,6 +762,8 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
         {"blend_mode", [&](const std::string &v) { desc.surfaceOptions.blendMode = toLower(v); }},
         {"receive_shadows", [&](const std::string &v) { desc.surfaceOptions.receiveShadows = (toLower(v) != "off"); }},
         {"cast_shadows", [&](const std::string &v) { desc.surfaceOptions.castShadows = (toLower(v) != "off"); }},
+        {"capability", parseCapabilities},
+        {"capabilities", parseCapabilities},
         {"import", [&](const std::string &v) { desc.imports.push_back(v); }},
         {"target", [&](const std::string &v) { currentTargetName = toLower(v); }},
     };
@@ -1217,11 +1233,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         bool skipBlock = false;
         for (const auto &codeLine : codeLines) {
             if (shadowAlphaFragment) {
-                if (codeLine.find("// --- begin @import: lighting ---") != std::string::npos) {
+                if (codeLine.find("// --- begin @import: Lighting ---") != std::string::npos) {
                     skipBlock = true;
                     continue;
                 }
-                if (skipBlock && codeLine.find("// --- end @import: lighting ---") != std::string::npos) {
+                if (skipBlock && codeLine.find("// --- end @import: Lighting ---") != std::string::npos) {
                     skipBlock = false;
                     continue;
                 }

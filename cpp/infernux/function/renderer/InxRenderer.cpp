@@ -2888,6 +2888,11 @@ uint64_t InxRenderer::RenderMeshPreviewGPUImGuiCamera(const InxMesh &mesh,
     return m_vkCore->RenderMeshPreviewGPUImGuiCamera(mesh, materials, size, view, proj, cameraPos, cloneMaterials);
 }
 
+uint64_t InxRenderer::GetMeshPreviewDisplayTextureId() const
+{
+    return m_vkCore ? m_vkCore->GetMeshPreviewDisplayTextureId() : 0;
+}
+
 void InxRenderer::InvalidateShaderCache(const std::string &shaderId)
 {
     INXLOG_DEBUG("InvalidateShaderCache called: ", shaderId);

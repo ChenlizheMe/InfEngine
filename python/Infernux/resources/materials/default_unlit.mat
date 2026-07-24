@@ -3,13 +3,13 @@
   "builtin": false,
   "shaders": {
     "vertex": {
-      "guid": "dc051849cf977cb35cc5ca3d59393894",
-      "shader_id": "standard",
+      "guid": "",
+      "shader_id": "Standard",
       "path_hint": ""
     },
     "fragment": {
-      "guid": "0ab8249d4dd3cb96438d65b4090a1209",
-      "shader_id": "unlit",
+      "guid": "",
+      "shader_id": "Unlit",
       "path_hint": ""
     }
   },

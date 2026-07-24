@@ -213,7 +213,25 @@ class PhysicsWorld
     // ---- Kinematic move ----
 
     /// Move a kinematic body towards target position/rotation over deltaTime.
+    ///
+    /// Jolt implements this by giving the body the velocity needed to reach
+    /// the target during the next step — and that velocity persists after
+    /// arrival. Bodies moved through here are therefore tracked, and any body
+    /// that does not receive a new target before the next Step() has its
+    /// velocity zeroed so it stops exactly at the target instead of gliding
+    /// away from its Transform forever.
     void MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot, float deltaTime);
+
+    /// Move a collider-only (static) body to a new pose with real velocity so
+    /// overlapping dynamic bodies receive momentum (Unity-like drag push).
+    ///
+    /// Teleporting a static body only produces positional depenetration in
+    /// Jolt: dynamic bodies are squeezed out with zero exit velocity and stop
+    /// dead. This call temporarily switches the body to Kinematic and drives
+    /// it with MoveKinematic; once move commands stop arriving the body is
+    /// stopped and restored to Static (see SettleKinematicMoves).
+    void MoveStaticBodyWithVelocity(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
+                                    float deltaTime);
 
     // ---- Sleep ----
 
@@ -340,6 +358,11 @@ class PhysicsWorld
 
     [[nodiscard]] float FindEarliestDynamicCCDFraction(float deltaTime) const;
 
+    /// Stop tracked kinematic-move bodies that did not receive a new target
+    /// since the previous Step(), and restore temporarily-kinematic statics.
+    /// Called at the start of every Step().
+    void SettleKinematicMoves();
+
     bool m_initialized = false;
 
     std::unique_ptr<JPH::TempAllocatorImpl> m_tempAllocator;
@@ -359,6 +382,16 @@ class PhysicsWorld
     // Full Jolt IDs of bodies configured for dynamic continuous collision.
     std::unordered_set<uint32_t> m_continuousBodyIds;
     size_t m_lastDynamicCCDSplitCount = 0;
+
+    /// Bodies whose velocity was authored by a MoveKinematic-style target
+    /// move. See MoveBodyKinematic / MoveStaticBodyWithVelocity.
+    struct KinematicMoveState
+    {
+        bool movedThisStep = true;  ///< Received a target since the last Step().
+        bool restoreStatic = false; ///< Body is a collider-only static, temporarily kinematic.
+        int idleSteps = 0;          ///< Steps elapsed without a new target.
+    };
+    std::unordered_map<uint32_t, KinematicMoveState> m_kinematicMoveStates;
 
     // Contact listener for collision/trigger callbacks
     std::unique_ptr<InxContactListener> m_contactListener;

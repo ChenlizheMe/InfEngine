@@ -3,6 +3,11 @@
 @shader_id: Gizmo Icon
 @shading_model: Unlit
 @hidden
+@surface_type: transparent
+@depth_write: off
+@blend: alpha
+@alpha_clip: 0.01
+@cast_shadows: off
 @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
 @property: texSampler, Texture2D, white
 

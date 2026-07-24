@@ -624,7 +624,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_cursor_pos_x", &InxGUIContext::GetCursorPosX)
         .def("get_cursor_pos_y", &InxGUIContext::GetCursorPosY)
         .def("is_virtualized_region_visible", &InxGUIContext::IsVirtualizedRegionVisible, py::arg("height"),
-             "Return whether a measured vertical region intersects the current clip rect or must stay interactive.")
+             "Return whether a measured vertical region intersects the current window clip rectangle.")
         .def("set_cursor_pos_x", &InxGUIContext::SetCursorPosX)
         .def("set_cursor_pos_y", &InxGUIContext::SetCursorPosY)
         .def("get_window_pos_x", &InxGUIContext::GetWindowPosX)

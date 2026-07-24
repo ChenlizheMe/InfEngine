@@ -2,6 +2,8 @@
 
 @shader_id: Gizmo
 @hidden
+@cast_shadows: off
+@capabilities: ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors
 
 @import: Lib Color
 

@@ -96,8 +96,13 @@ def _draw_centered_texture(ctx: InxGUIContext, tex_id: int, width: float, height
     return True
 
 
-def _query_material_preview_tex(panel, native_mat, mat_data, state, cache_tag, preview_path) -> int:
-    """Resolve a material preview texture for asset and inline (prefab/scene) editors."""
+def _query_material_preview_tex(panel, native_mat, mat_data, state, cache_tag, preview_path) -> tuple[int, str]:
+    """Resolve a material preview texture for asset and inline (prefab/scene) editors.
+
+    Returns (texture_id, native_cache_key). The key is what the C++ preview
+    task system indexes this preview under; callers use it to cheaply
+    re-resolve the currently-published descriptor on later frames.
+    """
     from .asset_resource_preview import (
         _resolve_native_engine,
         _try_get_cpp_material_preview_texture,
@@ -114,26 +119,29 @@ def _query_material_preview_tex(panel, native_mat, mat_data, state, cache_tag, p
             json_blob = ""
 
     if embedded and preview_path:
-        return int(get_resource_preview_texture_id(
+        tex = int(get_resource_preview_texture_id(
             panel, preview_path, material_json="") or 0)
+        return tex, f"mat|{resolved_path(preview_path)}"
 
     native = _resolve_native_engine(panel)
     if native is None:
-        return 0
+        return 0, ""
 
     # The Inspector document is authoritative while it is open. This path also
     # covers brand-new resources before their first asynchronous disk save.
     if json_blob:
         guid = (getattr(native_mat, "guid", "") or "").strip()
         path_hint = preview_path or f"inline:{guid or id(native_mat)}"
-        return int(_try_get_cpp_material_preview_texture(
+        tex = int(_try_get_cpp_material_preview_texture(
             native, path_hint, material_json=json_blob, file_mtime_hint=0) or 0)
+        return tex, f"mat|{path_hint}"
 
     if not preview_path:
-        return 0
+        return 0, ""
 
-    return int(get_resource_preview_texture_id(
+    tex = int(get_resource_preview_texture_id(
         panel, preview_path, material_json="") or 0)
+    return tex, f"mat|{resolved_path(preview_path)}"
 
 
 def _is_material_preview_ready(panel, preview_path, cache_tag) -> bool:
@@ -156,20 +164,38 @@ def _is_material_preview_ready(panel, preview_path, cache_tag) -> bool:
 
 
 def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_tag, preview_path) -> int:
-    """Avoid repeating filesystem and native preview lookups for a stable material."""
+    """Avoid repeating filesystem and native preview lookups for a stable material.
+
+    Only the *readiness* decision is cached. The descriptor handle itself is
+    re-resolved by native cache key on every frame: the C++ side replaces the
+    underlying ImGui texture (new VkDescriptorSet) whenever the preview
+    re-renders, and may evict textures under memory pressure. Reusing a raw
+    handle across frames binds a freed descriptor — Vulkan validation errors,
+    previews rendering as the font atlas, and intermittent crashes.
+    """
     preview_key = (preview_path or "", cache_tag or "")
     cached_key = state.extra.get("_material_preview_query_key")
-    cached_tex = int(state.extra.get("_material_preview_tex_id", 0) or 0)
     cached_ready = bool(state.extra.get("_material_preview_tex_ready", False))
-    if cached_key == preview_key and cached_tex and cached_ready:
-        return cached_tex
+    native_key = state.extra.get("_material_preview_native_key") or ""
+    if cached_key == preview_key and cached_ready and native_key:
+        try:
+            from .asset_resource_preview import _resolve_native_engine
+            native = _resolve_native_engine(panel)
+            if native is not None and hasattr(native, "get_material_preview_texture_id"):
+                live_tex = int(native.get_material_preview_texture_id(native_key) or 0)
+                if live_tex:
+                    return live_tex
+                # Preview texture was replaced or evicted; fall through and
+                # re-query so a fresh render gets scheduled.
+        except Exception as exc:
+            Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
 
-    tex = _query_material_preview_tex(
+    tex, native_key = _query_material_preview_tex(
         panel, native_mat, mat_data, state, cache_tag, preview_path,
     )
     ready = bool(tex) and _is_material_preview_ready(panel, preview_path, cache_tag)
     state.extra["_material_preview_query_key"] = preview_key
-    state.extra["_material_preview_tex_id"] = int(tex or 0)
+    state.extra["_material_preview_native_key"] = native_key
     state.extra["_material_preview_tex_ready"] = ready
     if not ready:
         try:

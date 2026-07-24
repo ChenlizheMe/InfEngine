@@ -19,6 +19,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -2378,6 +2379,30 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
     }
 }
 
+namespace
+{
+
+// Shader ids were migrated from snake_case / hyphenated / "Infernux/"-prefixed
+// forms to "Title Case With Spaces". Materials saved before the migration
+// still reference the old spellings, so lookups fall back to a normalized
+// comparison: lowercase, separators stripped, legacy namespace prefix dropped.
+std::string NormalizeShaderIdForLookup(const std::string &shaderId)
+{
+    std::string normalized;
+    normalized.reserve(shaderId.size());
+    for (const char character : shaderId) {
+        if (character == ' ' || character == '_' || character == '-')
+            continue;
+        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+    }
+    constexpr std::string_view legacyPrefix = "infernux/";
+    if (normalized.rfind(legacyPrefix, 0) == 0)
+        normalized.erase(0, legacyPrefix.size());
+    return normalized;
+}
+
+} // namespace
+
 std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const std::string &shaderType) const
 {
     std::string expectedExt;
@@ -2388,6 +2413,9 @@ std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const
     } else {
         return "";
     }
+
+    const std::string normalizedQuery = NormalizeShaderIdForLookup(shaderId);
+    std::string normalizedMatch;
 
     const auto snapshot = LoadQuerySnapshot();
     for (const auto &[guid, meta] : snapshot->metas) {
@@ -2402,17 +2430,18 @@ std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const
         if (!matchesType)
             continue;
 
-        if (meta->HasKey("shader_id")) {
+        if (meta->HasKey("shader_id") && meta->HasKey("file_path")) {
             std::string metaShaderId = meta->GetDataAs<std::string>("shader_id");
             if (metaShaderId == shaderId) {
-                if (meta->HasKey("file_path")) {
-                    return meta->GetDataAs<std::string>("file_path");
-                }
+                return meta->GetDataAs<std::string>("file_path");
+            }
+            if (normalizedMatch.empty() && NormalizeShaderIdForLookup(metaShaderId) == normalizedQuery) {
+                normalizedMatch = meta->GetDataAs<std::string>("file_path");
             }
         }
     }
 
-    return "";
+    return normalizedMatch;
 }
 
 } // namespace infernux

@@ -1132,10 +1132,10 @@ endif()
 # ------------------------------------------------------------------------------
 # Wheel-distributed Player Runtime Pack
 # ------------------------------------------------------------------------------
-# This target belongs to the default build so `cmake --build --preset release`
-# produces the compressed Player payload and optional parallel module consumed
-# by wheel packaging. The CMake script exits immediately for non-Release
-# configurations; no separate parallel option is required.
+# Included in the default build so release packaging can consume the
+# compressed Player payload. The script exits immediately for non-Release
+# configurations (e.g. RelWithDebInfo / debug presets), so debug installs
+# still get wheel packaging without building a Player Runtime Pack.
 set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/_runtime_packs")
 add_custom_target(prebuild_player_runtime ALL
     COMMAND ${CMAKE_COMMAND}

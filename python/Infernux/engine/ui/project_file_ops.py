@@ -7,6 +7,7 @@ depend on ``ProjectPanel`` internals.
 
 import json
 import os
+import re
 import shutil
 
 from Infernux.debug import Debug
@@ -43,7 +44,7 @@ FRAGMENT_SHADER_TEMPLATE = '''#version 450
 
 ShaderInfo {{
     Name "{shader_id}"
-    ShadingModel "unlit"
+    ShadingModel "Unlit"
     Surface Opaque
     Queue 2000
     Properties {{
@@ -71,13 +72,13 @@ MATERIAL_TEMPLATE = '''{{
   "builtin": false,
   "shaders": {{
     "vertex": {{
-      "guid": "dc051849cf977cb35cc5ca3d59393894",
-      "shader_id": "standard",
+      "guid": "",
+      "shader_id": "Standard",
       "path_hint": ""
     }},
     "fragment": {{
-      "guid": "0ab8249d4dd3cb96438d65b4090a1209",
-      "shader_id": "unlit",
+      "guid": "",
+      "shader_id": "Unlit",
       "path_hint": ""
     }}
   }},
@@ -390,7 +391,10 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
             shader_name = shader_name[:-len(ext)]
             break
 
-    shader_id = shader_name.lower().replace(' ', '_')
+    # Shader ids follow the "Title Case With Spaces" convention (e.g. "My
+    # Shader"), regardless of how the file name was typed.
+    words = re.split(r'[\s_\-]+', shader_name)
+    shader_id = ' '.join(w[:1].upper() + w[1:] for w in words if w)
     extension = f'.{shader_type}'
     file_name = shader_name + extension
     file_path = os.path.join(current_path, file_name)
