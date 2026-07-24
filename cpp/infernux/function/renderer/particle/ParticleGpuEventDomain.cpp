@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,8 @@ namespace infernux::particle
 
 namespace
 {
+
+std::atomic<uint64_t> g_nextEventDomainSerial{1};
 
 bool CheckedAdd(uint64_t lhs, uint64_t rhs, uint64_t &result) noexcept
 {
@@ -425,6 +428,7 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
         Destroy();
         return false;
     }
+    m_instanceSerial = g_nextEventDomainSerial.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -474,6 +478,7 @@ void ParticleGpuEventDomain::Destroy() noexcept
     m_recordBufferBytes = 0;
     m_spawnIndexBufferBytes = 0;
     m_eventAbiHash = 0;
+    m_instanceSerial = 0;
     m_graphInstanceId = 0;
     m_device = nullptr;
 }

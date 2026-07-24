@@ -2015,6 +2015,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleSystems.ActiveEventPageCount(managedProgram.graphInstanceId) == 2,
                  "GPU particle graph event domain was not published atomically"))
         return false;
+    const uint64_t initialEventDomainSerial =
+        particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId);
+    managedGraphProgram.emitters[1].preserveState = true;
+    if (!Require(initialEventDomainSerial != 0 &&
+                     particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
+                     particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId) ==
+                         initialEventDomainSerial,
+                 "Compatible GPU particle hot reload replaced its event domain"))
+        return false;
     auto eventFrame = postMigrationFrame;
     eventFrame.frameIndex = 46;
     auto pausedCompanionFrame = eventFrame;
@@ -2051,7 +2060,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedEvents.eventAbiHash += 1;
     managedGraphProgram.eventDomain = managedEvents;
     if (!Require(particleSystems.ApplyGraph(managedGraphProgram, &managedError) &&
-                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash,
+                     particleSystems.ActiveEventAbiHash(managedProgram.graphInstanceId) == managedEvents.eventAbiHash &&
+                     particleSystems.ActiveEventDomainSerial(managedProgram.graphInstanceId) !=
+                         initialEventDomainSerial,
                  "GPU particle event ABI replacement did not publish the new domain"))
         return false;
     particleDeletionQueue.FlushAll();

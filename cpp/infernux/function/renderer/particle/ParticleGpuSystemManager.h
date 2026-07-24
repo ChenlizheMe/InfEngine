@@ -231,6 +231,7 @@ class ParticleGpuSystemManager
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
                                                                                uint64_t outputId) const;
     [[nodiscard]] uint64_t ActiveEventAbiHash(uint64_t graphInstanceId) const;
+    [[nodiscard]] uint64_t ActiveEventDomainSerial(uint64_t graphInstanceId) const;
     [[nodiscard]] uint32_t ActiveEventPageCount(uint64_t graphInstanceId) const;
 
   private:

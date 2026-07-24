@@ -164,6 +164,10 @@ class ParticleGpuEventDomain
     {
         return m_eventAbiHash;
     }
+    [[nodiscard]] uint64_t InstanceSerial() const noexcept
+    {
+        return m_instanceSerial;
+    }
     [[nodiscard]] uint32_t PageCount() const noexcept
     {
         return static_cast<uint32_t>(m_pages.size());
@@ -201,6 +205,7 @@ class ParticleGpuEventDomain
     rhi::Device *m_device = nullptr;
     uint64_t m_graphInstanceId = 0;
     uint64_t m_eventAbiHash = 0;
+    uint64_t m_instanceSerial = 0;
     uint64_t m_recordBufferBytes = 0;
     uint64_t m_spawnIndexBufferBytes = 0;
     uint32_t m_channelCount = 0;

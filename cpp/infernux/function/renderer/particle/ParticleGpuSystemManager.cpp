@@ -1322,9 +1322,15 @@ bool ParticleGpuSystemManager::ApplyGraph(const GpuParticleGraphProgram &program
     std::shared_ptr<ParticleGpuEventDomain> candidateEventDomain;
     const auto currentEventDomain = m_impl->eventDomains.find(program.graphInstanceId);
     if (program.eventDomain) {
+        std::unordered_set<uint32_t> targetEmitterIndices;
+        targetEmitterIndices.reserve(program.eventDomain->channels.size());
+        for (const auto &channel : program.eventDomain->channels)
+            targetEmitterIndices.insert(channel.targetEmitterIndex);
         std::vector<GpuParticleEventTargetDesc> eventTargets;
-        eventTargets.reserve(program.emitters.size());
+        eventTargets.reserve(targetEmitterIndices.size());
         for (const auto &emitterProgram : program.emitters) {
+            if (targetEmitterIndices.find(emitterProgram.graphEmitterIndex) == targetEmitterIndices.end())
+                continue;
             const auto candidate = candidates.find(emitterProgram.id);
             if (candidate == candidates.end() || !candidate->second || !candidate->second->runtime) {
                 SetError(error, "GPU particle event target runtime is missing");
@@ -1735,6 +1741,14 @@ uint64_t ParticleGpuSystemManager::ActiveEventAbiHash(uint64_t graphInstanceId) 
         return 0;
     const auto found = m_impl->eventDomains.find(graphInstanceId);
     return found != m_impl->eventDomains.end() ? found->second->EventAbiHash() : 0;
+}
+
+uint64_t ParticleGpuSystemManager::ActiveEventDomainSerial(uint64_t graphInstanceId) const
+{
+    if (!m_impl)
+        return 0;
+    const auto found = m_impl->eventDomains.find(graphInstanceId);
+    return found != m_impl->eventDomains.end() && found->second ? found->second->InstanceSerial() : 0;
 }
 
 uint32_t ParticleGpuSystemManager::ActiveEventPageCount(uint64_t graphInstanceId) const

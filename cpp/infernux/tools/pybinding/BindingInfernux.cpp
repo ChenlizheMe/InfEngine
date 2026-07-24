@@ -2256,6 +2256,22 @@ PYBIND11_MODULE(_Infernux, m)
             },
             py::arg("emitter_id"), "Return the active GPU particle rendering output count")
         .def(
+            "_gpu_particle_event_abi_hash",
+            [](Infernux &self, uint64_t graphInstanceId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->ActiveEventAbiHash(graphInstanceId) : uint64_t{0};
+            },
+            py::arg("graph_instance_id"), "Return the active graph-owned GPU particle event ABI hash")
+        .def(
+            "_gpu_particle_event_domain_serial",
+            [](Infernux &self, uint64_t graphInstanceId) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                return manager ? manager->ActiveEventDomainSerial(graphInstanceId) : uint64_t{0};
+            },
+            py::arg("graph_instance_id"), "Return the active graph-owned GPU particle event domain serial")
+        .def(
             "_gpu_particle_point_cache_generation",
             [](Infernux &self, uint64_t emitterId, uint32_t interfaceIndex) {
                 auto *renderer = self.GetRenderer();
