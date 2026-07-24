@@ -86,6 +86,7 @@ def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage
         "particle.point_cache.sample_position",
         "particle.vector_field.sample",
         "particle.attribute.set_lifetime",
+        "particle.attribute.normalized_age",
     ):
         assert type_id in init_types
         assert type_id in update_types

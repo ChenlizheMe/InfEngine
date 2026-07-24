@@ -571,13 +571,7 @@ def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
             GraphNodeRecord("set-color", "particle.attribute.set_color"),
             GraphNodeRecord("set-size", "particle.attribute.set_size"),
             GraphNodeRecord("set-rotation", "particle.attribute.set_rotation"),
-            GraphNodeRecord("age", "particle.attribute.read_f32"),
-            GraphNodeRecord(
-                "lifetime",
-                "particle.attribute.read_f32",
-                properties={"attribute": "builtin.lifetime"},
-            ),
-            GraphNodeRecord("normalized-age", "common.math.divide"),
+            GraphNodeRecord("normalized-age", "particle.attribute.normalized_age"),
             GraphNodeRecord(
                 "start-color",
                 "common.constant.color",
@@ -602,14 +596,12 @@ def test_numpy_aot_executes_color_size_and_rotation_over_lifetime():
             GraphLinkRecord(
                 "stream-rotation", "set-size", "out", "set-rotation", "in", PortKind.STREAM
             ),
-            GraphLinkRecord("age-divide", "age", "value", "normalized-age", "a"),
-            GraphLinkRecord("life-divide", "lifetime", "value", "normalized-age", "b"),
             GraphLinkRecord("color-a", "start-color", "value", "color-over-life", "a"),
             GraphLinkRecord("color-b", "end-color", "value", "color-over-life", "b"),
-            GraphLinkRecord("color-t", "normalized-age", "result", "color-over-life", "t"),
-            GraphLinkRecord("size-t", "normalized-age", "result", "size-over-life", "t"),
+            GraphLinkRecord("color-t", "normalized-age", "value", "color-over-life", "t"),
+            GraphLinkRecord("size-t", "normalized-age", "value", "size-over-life", "t"),
             GraphLinkRecord(
-                "rotation-t", "normalized-age", "result", "rotation-over-life", "t"
+                "rotation-t", "normalized-age", "value", "rotation-over-life", "t"
             ),
             GraphLinkRecord("set-color-value", "color-over-life", "result", "set-color", "value"),
             GraphLinkRecord("set-size-value", "size-over-life", "result", "set-size", "value"),

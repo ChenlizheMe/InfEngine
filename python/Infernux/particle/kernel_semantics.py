@@ -65,6 +65,7 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "subtract": KernelOpcodeSpec(True, 2),
     "multiply": KernelOpcodeSpec(True, 2),
     "divide": KernelOpcodeSpec(True, 2),
+    "normalized_age": KernelOpcodeSpec(True, 2),
     "lerp": KernelOpcodeSpec(True, 3),
     "normalize": KernelOpcodeSpec(True, 1),
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),

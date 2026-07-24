@@ -879,6 +879,10 @@ class ParticleScriptCompiler:
             and isinstance(node.value, ast.Name)
             and node.value.id == stream_name
         ):
+            if node.attr == "normalized_age":
+                uid = f"{stage}.expr.{expression_index}.normalized_age"
+                nodes.append(GraphNodeRecord(uid, "particle.attribute.normalized_age"))
+                return (uid, "value"), expression_index + 1
             attributes = {
                 "position": ("particle.attribute.read_vec3", "builtin.position"),
                 "age": ("particle.attribute.read_f32", "builtin.age"),

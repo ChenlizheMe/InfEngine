@@ -1581,6 +1581,20 @@ class _KernelBuilder:
                         f"expression attribute type mismatch for "
                         f"{instruction.immediate_dict()['attribute']!r}"
                     )
+            elif instruction.opcode == "normalized_age":
+                if instruction.operands or instruction.immediate_dict():
+                    raise KernelCompileError(
+                        "normalized age expression cannot define authored inputs"
+                    )
+                age = self.load("builtin.age", source)
+                lifetime = self.load("builtin.lifetime", source)
+                value = self.emit(
+                    "normalized_age",
+                    TypeRef(ValueType.F32),
+                    (age, lifetime),
+                    {},
+                    source,
+                )
             else:
                 values = []
                 for operand in instruction.operands:

@@ -515,6 +515,12 @@ PARTICLE_NODE_DEFINITIONS = (
         semantic="vector",
     ),
     _vector_field_sample(),
+    NodeDef(
+        "particle.attribute.normalized_age",
+        "Normalized Age",
+        (PortDef("value", PortDirection.OUTPUT, value_type=TypeRef(ValueType.F32)),),
+        target_opcodes={"expression": "normalized_age"},
+    ),
     _attribute_read(
         "particle.attribute.read_f32",
         "Read Float Attribute",

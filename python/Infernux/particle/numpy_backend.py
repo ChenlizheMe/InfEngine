@@ -1071,6 +1071,16 @@ def _compile_stage(
             lines.append(
                 f"    np.add({first}, ({second} - {first}) * {factor}, out={output})"
             )
+        elif opcode == "normalized_age":
+            age, lifetime = operand_names(instruction)
+            output = result_buffer(instruction)
+            lines.extend(
+                (
+                    f"    np.maximum({lifetime}, np.float32(0.000001), out={output})",
+                    f"    np.divide({age}, {output}, out={output})",
+                    f"    np.clip({output}, np.float32(0.0), np.float32(1.0), out={output})",
+                )
+            )
         elif opcode == "logical_not":
             source = operand_names(instruction)[0]
             output = result_buffer(instruction)

@@ -1324,6 +1324,10 @@ class _StageCompiler:
             expression = f"({operands[0]} * {operands[1]})"
         elif opcode == "divide":
             expression = f"({operands[0]} / {operands[1]})"
+        elif opcode == "normalized_age":
+            expression = (
+                f"clamp({operands[0]} / max({operands[1]}, 0.000001), 0.0, 1.0)"
+            )
         elif opcode == "lerp":
             expression = f"mix({operands[0]}, {operands[1]}, {operands[2]})"
         elif opcode == "less_than":
