@@ -173,16 +173,49 @@ class ParticleGraphEditorPanel(EditorPanel):
             "event_types": [value.to_dict() for value in self._asset.event_types],
             "event_routes": [value.to_dict() for value in self._asset.event_routes],
             "registered_types": [
-                {
-                    "type_id": definition.type_id,
-                    "display_name": definition.label,
-                }
+                self._authoring_definition_snapshot(definition.type_id)
                 for definition in (
                     self._model.registered_types() if self._model is not None else ()
                 )
             ],
             "nodes": nodes,
             "links": links,
+        }
+
+    def _authoring_definition_snapshot(self, type_id: str) -> dict:
+        definition = self._definition_for_type(type_id)
+        if definition is None:
+            raise RuntimeError(
+                f"Particle Graph node type is not registered: {type_id!r}"
+            )
+        return {
+            "type_id": definition.type_id,
+            "display_name": definition.display_name,
+            "ports": [
+                {
+                    "id": port.id,
+                    "display_name": port.display_name,
+                    "direction": port.direction.value,
+                    "kind": port.kind.value,
+                    "type": (
+                        port.value_type.to_dict()
+                        if port.value_type is not None
+                        else None
+                    ),
+                    "type_variable": port.type_variable,
+                    "required": bool(port.required),
+                    "default": copy.deepcopy(port.default),
+                }
+                for port in definition.ports
+            ],
+            "properties": [
+                {
+                    "id": field.id,
+                    "type": field.value_type.to_dict(),
+                    "default": copy.deepcopy(field.default),
+                }
+                for field in definition.properties
+            ],
         }
 
     def set_node_asset_reference(

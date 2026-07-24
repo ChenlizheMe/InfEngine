@@ -515,6 +515,18 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     )
 
     panel.select_authoring_emitter(source_id)
+    snapshot = panel.authoring_snapshot()
+    event_output_definition = next(
+        value
+        for value in snapshot["registered_types"]
+        if value["type_id"]
+        == particle_event_output_type_id(route["stable_id"], "update")
+    )
+    assert any(
+        port["display_name"] == "Weight"
+        and port["type"] == TypeRef(ValueType.F32).to_dict()
+        for port in event_output_definition["ports"]
+    )
     output = panel.add_authoring_node(
         "update",
         particle_event_output_type_id(route["stable_id"], "update"),
