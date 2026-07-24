@@ -600,6 +600,16 @@ void surface(out SurfaceData surface)
     const auto errorArtifact = errorCompilation.CreateRuntimeArtifact();
     assert(errorArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(errorArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
+    for (const auto &variant : errorCompilation.compiledVariants) {
+        if (variant.target != infernux::ShaderCompileTarget::Forward &&
+            variant.target != infernux::ShaderCompileTarget::ForwardPlus &&
+            variant.target != infernux::ShaderCompileTarget::GBuffer)
+            continue;
+        assert(variant.generatedVertexSource.find(
+                   "layout(location = 15) flat out uint _inx_ObjectLayerMask;") != std::string::npos);
+        assert(variant.generatedFragmentSource.find(
+                   "layout(location = 15) flat in uint _inx_ObjectLayerMask;") != std::string::npos);
+    }
 
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo

@@ -1056,13 +1056,16 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << LoadTemplate(particleSpriteDomain ? "particle_sprite_fragment_varyings.glsl"
                                                             : "fragment_varyings.glsl")
                        << "\n";
-                if (needsLightingUBO && !particleSpriteDomain) {
-                    if (target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
-                        target == ShaderCompileTarget::GBuffer) {
-                        result << "\n" << LoadTemplate("object_layer_fragment_interface.glsl") << "\n";
-                    } else {
-                        result << "\nconst uint _inx_ObjectLayerMask = 0xffffffffu;\n";
-                    }
+                if (!particleSpriteDomain &&
+                    (target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
+                     target == ShaderCompileTarget::GBuffer)) {
+                    // The matching geometry vertex stage always exports the
+                    // object layer mask for these passes. Declare the input
+                    // for unlit fragments too so the SPIR-V stage interface
+                    // remains complete even when lighting does not read it.
+                    result << "\n" << LoadTemplate("object_layer_fragment_interface.glsl") << "\n";
+                } else if (needsLightingUBO && !particleSpriteDomain) {
+                    result << "\nconst uint _inx_ObjectLayerMask = 0xffffffffu;\n";
                 }
                 if (linkedInterface && !desc.inputs.empty())
                     result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
