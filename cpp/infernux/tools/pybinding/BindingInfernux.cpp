@@ -2117,7 +2117,12 @@ PYBIND11_MODULE(_Infernux, m)
                 }
                 for (auto &program : programs) {
                     for (auto &output : program.outputs) {
-                        if (!output.material)
+                        // Mesh and Ribbon outputs use their dedicated GPU
+                        // geometry shaders. Their material contributes render
+                        // state and surface properties only; the linked
+                        // ParticleSprite program is meaningful exclusively for
+                        // Sprite outputs.
+                        if (output.type != particle::GpuParticleOutputType::Sprite || !output.material)
                             continue;
                         output.shaderProgram = renderer->ResolveShaderProgramArtifact(output.material);
                         if (output.shaderProgram &&
