@@ -7,6 +7,7 @@ import json
 import math
 import os
 import time
+import uuid
 from dataclasses import replace
 from typing import Optional
 
@@ -20,7 +21,7 @@ from Infernux.graph.registry import (
 )
 from Infernux.graph.expression_ir import ExpressionCompiler
 from Infernux.graph.ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, Gradient
-from Infernux.graph.types import CoordinateSpace, ValueType
+from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 from Infernux.lib import InxGUIContext
 from Infernux.particle.asset import (
     EmitterSettings,
@@ -29,6 +30,9 @@ from Infernux.particle.asset import (
     ExecutionTarget,
     ParticleBurst,
     ParticleEmitterAsset,
+    ParticleEventField,
+    ParticleEventRoute,
+    ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphSchemaError,
     ScalarRange,
@@ -158,6 +162,21 @@ class ParticleGraphEditorPanel(EditorPanel):
             "dirty": bool(self._dirty),
             "emitter_index": int(self._emitter_index),
             "selected_node_uid": str(self._selected_node_uid),
+            "emitters": [
+                {"stable_id": emitter.stable_id, "name": emitter.name}
+                for emitter in self._asset.emitters
+            ],
+            "event_types": [value.to_dict() for value in self._asset.event_types],
+            "event_routes": [value.to_dict() for value in self._asset.event_routes],
+            "registered_types": [
+                {
+                    "type_id": definition.type_id,
+                    "display_name": definition.label,
+                }
+                for definition in (
+                    self._model.registered_types() if self._model is not None else ()
+                )
+            ],
             "nodes": nodes,
             "links": links,
         }
@@ -347,6 +366,157 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._mark_changed()
         self._record("Connect Particle Graph stream", before)
         return {"link_uid": str(created.uid), "changed": True}
+
+    def connect_value(
+        self,
+        source_node_uid: str,
+        source_port: str,
+        target_node_uid: str,
+        target_port: str,
+    ) -> dict:
+        """Connect one typed value through the same replacement path as the canvas."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        endpoints = (str(source_node_uid), str(target_node_uid))
+        if any(self._model.find_node(uid) is None for uid in endpoints):
+            raise KeyError(f"Particle Graph value endpoint not found: {endpoints!r}")
+        source_port = str(source_port)
+        target_port = str(target_port)
+        existing = next(
+            (
+                link
+                for link in self._model.links
+                if link.target_node == endpoints[1]
+                and link.target_pin == target_port
+            ),
+            None,
+        )
+        if (
+            existing is not None
+            and existing.source_node == endpoints[0]
+            and existing.source_pin == source_port
+        ):
+            return {"link_uid": str(existing.uid), "changed": False}
+        validation = self._model.validate_link(
+            endpoints[0],
+            source_port,
+            endpoints[1],
+            target_port,
+            ignore_link_uid=existing.uid if existing is not None else "",
+        )
+        if not validation:
+            raise ValueError(
+                f"Particle Graph value connection is invalid ({validation.code}): "
+                f"{validation.message}"
+            )
+        before = self._snapshot()
+        if existing is not None:
+            created = self._model.replace_link(
+                existing.uid,
+                endpoints[0],
+                source_port,
+                endpoints[1],
+                target_port,
+            )
+        else:
+            created = self._model.add_link(
+                endpoints[0], source_port, endpoints[1], target_port
+            )
+        if created is None:
+            self._apply_snapshot(before)
+            raise RuntimeError("Particle Graph could not connect the value ports")
+        self._selected_node_uid = endpoints[1]
+        self._view.selected_nodes = [endpoints[1]]
+        stage = self._model.stage_for_uid(endpoints[1])
+        if stage:
+            self._select_stage(stage)
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record("Connect Particle Graph value", before)
+        return {"link_uid": str(created.uid), "changed": True}
+
+    def select_authoring_emitter(self, emitter_id: str) -> dict:
+        emitter_id = str(emitter_id)
+        index = next(
+            (
+                index
+                for index, emitter in enumerate(self._asset.emitters)
+                if emitter.stable_id == emitter_id
+            ),
+            -1,
+        )
+        if index < 0:
+            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
+        self._select_emitter(index)
+        return {"stable_id": emitter_id, "index": index}
+
+    def add_event_type(
+        self,
+        name: str,
+        capacity_per_step: int,
+        fields: list[dict],
+    ) -> dict:
+        """Add one typed event schema through the live document and Undo stack."""
+        decoded_fields = []
+        for index, field in enumerate(fields):
+            if type(field) is not dict or set(field) != {"name", "type", "default"}:
+                raise ValueError(
+                    f"event field {index} requires name, type and default"
+                )
+            field_name = str(field["name"]).strip()
+            if not field_name:
+                raise ValueError(f"event field {index} name cannot be empty")
+            value_type = TypeRef.from_dict(field["type"])
+            decoded_fields.append(
+                ParticleEventField(
+                    uuid.uuid4().hex,
+                    field_name,
+                    value_type,
+                    copy.deepcopy(field["default"]),
+                )
+            )
+        event_type = ParticleEventType(
+            uuid.uuid4().hex,
+            str(name).strip(),
+            int(capacity_per_step),
+            tuple(decoded_fields),
+        )
+        before = self._snapshot()
+        self._asset = replace(
+            self._asset,
+            event_types=(*self._asset.event_types, event_type),
+        )
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Add Particle Graph event type", before)
+        return event_type.to_dict()
+
+    def add_event_route(
+        self,
+        event_type_id: str,
+        source_emitter_id: str,
+        source_stage: str,
+        target_emitter_id: str,
+        spawn_count: int,
+    ) -> dict:
+        """Add one directed event route and rebuild derived node definitions."""
+        route = ParticleEventRoute(
+            uuid.uuid4().hex,
+            str(event_type_id),
+            str(source_emitter_id),
+            str(source_stage),
+            str(target_emitter_id),
+            int(spawn_count),
+        )
+        before = self._snapshot()
+        self._asset = replace(
+            self._asset,
+            event_routes=(*self._asset.event_routes, route),
+        )
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Add Particle Graph event route", before)
+        return route.to_dict()
 
     def set_rendering_output(self, node_uid: str) -> dict:
         """Route the Rendering root stream to one output through the authoring model."""

@@ -159,6 +159,127 @@ def register_particle_tools(mcp, project_path: str) -> None:
             },
         )
 
+    @mcp.tool(name="particle_graph_connect_value")
+    def particle_graph_connect_value(
+        source_node_uid: str,
+        source_port: str,
+        target_node_uid: str,
+        target_port: str,
+    ) -> dict:
+        """Connect or replace one typed value input in the live ParticleGraph."""
+
+        def _connect():
+            panel = _require_particle_graph_panel()
+            result = panel.connect_value(
+                source_node_uid,
+                source_port,
+                target_node_uid,
+                target_port,
+            )
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_connect_value",
+            _connect,
+            arguments={
+                "source_node_uid": source_node_uid,
+                "source_port": source_port,
+                "target_node_uid": target_node_uid,
+                "target_port": target_port,
+            },
+        )
+
+    @mcp.tool(name="particle_graph_select_emitter")
+    def particle_graph_select_emitter(emitter_id: str) -> dict:
+        """Select one emitter in the visible ParticleGraph editor."""
+
+        def _select():
+            panel = _require_particle_graph_panel()
+            result = panel.select_authoring_emitter(emitter_id)
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_select_emitter",
+            _select,
+            arguments={"emitter_id": emitter_id},
+        )
+
+    @mcp.tool(name="particle_graph_add_event_type")
+    def particle_graph_add_event_type(
+        name: str,
+        capacity_per_step: int,
+        fields: list[dict],
+    ) -> dict:
+        """Add a typed event schema through the live ParticleGraph document."""
+
+        def _add():
+            panel = _require_particle_graph_panel()
+            event_type = panel.add_event_type(name, capacity_per_step, fields)
+            return {
+                "event_type": event_type,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_add_event_type",
+            _add,
+            arguments={
+                "name": name,
+                "capacity_per_step": capacity_per_step,
+                "fields": fields,
+            },
+        )
+
+    @mcp.tool(name="particle_graph_add_event_route")
+    def particle_graph_add_event_route(
+        event_type_id: str,
+        source_emitter_id: str,
+        source_stage: str,
+        target_emitter_id: str,
+        spawn_count: int = 1,
+    ) -> dict:
+        """Add a directed typed route through the live ParticleGraph document."""
+
+        def _add():
+            panel = _require_particle_graph_panel()
+            route = panel.add_event_route(
+                event_type_id,
+                source_emitter_id,
+                source_stage,
+                target_emitter_id,
+                spawn_count,
+            )
+            return {
+                "event_route": route,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_add_event_route",
+            _add,
+            arguments={
+                "event_type_id": event_type_id,
+                "source_emitter_id": source_emitter_id,
+                "source_stage": source_stage,
+                "target_emitter_id": target_emitter_id,
+                "spawn_count": spawn_count,
+            },
+        )
+
     @mcp.tool(name="particle_graph_set_rendering_output")
     def particle_graph_set_rendering_output(node_uid: str) -> dict:
         """Connect the Rendering root stream to exactly one output node."""
@@ -321,6 +442,50 @@ def _register_metadata() -> None:
         side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
         recovery=["Inspect existing links and endpoint stages before retrying."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_connect_value",
+        summary="Connect or replace one typed ParticleGraph value input.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "value"],
+        aliases=["connect particle value", "连接粒子数值端口"],
+        preconditions=["Both nodes and named ports must exist in the selected emitter."],
+        side_effects=["Records Undo, marks the document dirty, and republishes the live draft."],
+        recovery=["Inspect registered node types, nodes, ports, and existing links before retrying."],
+        next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_select_emitter",
+        summary="Select an emitter by stable ID in the visible ParticleGraph editor.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "emitter"],
+        aliases=["select particle emitter", "选择粒子发射器"],
+        preconditions=["The emitter stable ID must appear in particle_graph_inspect_editor."],
+        side_effects=["Changes the visible authoring emitter without modifying the asset."],
+        recovery=["Inspect the editor and retry with an existing emitter stable ID."],
+        next_suggested_tools=["particle_graph_add_node", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_add_event_type",
+        summary="Add a typed event schema through the live ParticleGraph editor.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "schema"],
+        aliases=["add particle event", "添加粒子事件类型"],
+        preconditions=["Field types use the current TypeRef object shape."],
+        side_effects=["Records Undo, rebuilds derived node definitions, and republishes the draft."],
+        recovery=["Fix invalid field types/defaults and retry; no partial schema is retained."],
+        next_suggested_tools=["particle_graph_add_event_route"],
+    )
+    register_tool_metadata(
+        "particle_graph_add_event_route",
+        summary="Route one typed event between two ParticleGraph emitters.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "event", "route"],
+        aliases=["route particle event", "连接粒子事件"],
+        preconditions=["Event and emitter stable IDs must exist; routes must remain acyclic."],
+        side_effects=["Records Undo and exposes route-specific Event Output/Payload nodes."],
+        recovery=["Inspect event_types, event_routes, and emitters before retrying."],
+        next_suggested_tools=["particle_graph_add_node", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
         "particle_graph_set_node_asset",

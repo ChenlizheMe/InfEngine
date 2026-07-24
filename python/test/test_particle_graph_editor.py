@@ -20,6 +20,7 @@ from Infernux.particle.asset import (
 )
 from Infernux.particle.nodes import (
     particle_event_output_type_id,
+    particle_event_payload_port_id,
     particle_event_payload_type_id,
     particle_graph_node_definitions,
 )
@@ -483,6 +484,85 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
 
     with pytest.raises(ValueError, match="cross_stage"):
         panel.connect_stream(initial["uid"], angular["uid"])
+
+
+def test_particle_graph_editor_public_api_authors_a_typed_event_route():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from Infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    source_id = panel._asset.emitters[0].stable_id
+    panel._add_emitter()
+    target_id = panel._asset.emitters[1].stable_id
+    event_type = panel.add_event_type(
+        "Impact",
+        64,
+        [
+            {
+                "name": "Weight",
+                "type": TypeRef(ValueType.F32).to_dict(),
+                "default": 1.25,
+            }
+        ],
+    )
+    route = panel.add_event_route(
+        event_type["stable_id"], source_id, "update", target_id, 2
+    )
+
+    panel.select_authoring_emitter(source_id)
+    output = panel.add_authoring_node(
+        "update",
+        particle_event_output_type_id(route["stable_id"], "update"),
+        260.0,
+        230.0,
+    )
+    panel.connect_stream("update::root.update", output["uid"])
+
+    panel.select_authoring_emitter(target_id)
+    payload = panel.add_authoring_node(
+        "init",
+        particle_event_payload_type_id(route["stable_id"]),
+        160.0,
+        0.0,
+    )
+    size = panel.add_authoring_node(
+        "init", "particle.attribute.set_size", 420.0, 0.0
+    )
+    panel.connect_stream("init::root.init", size["uid"])
+    panel.connect_value(
+        payload["uid"],
+        particle_event_payload_port_id(event_type["fields"][0]["stable_id"]),
+        size["uid"],
+        "value",
+    )
+    replacement_payload = panel.add_authoring_node(
+        "init",
+        particle_event_payload_type_id(route["stable_id"]),
+        160.0,
+        120.0,
+    )
+    replaced = panel.connect_value(
+        replacement_payload["uid"],
+        particle_event_payload_port_id(event_type["fields"][0]["stable_id"]),
+        size["uid"],
+        "value",
+    )
+    assert replaced["changed"] is True
+    assert [
+        link.source_node
+        for link in panel._model.links
+        if link.target_node == size["uid"] and link.target_pin == "value"
+    ] == [replacement_payload["uid"]]
+
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(panel._asset)
+    )
+    assert kernel.events.routes[0].spawn_count == 2
+    assert any(
+        instruction.opcode == "event_payload"
+        for instruction in kernel.emitters[1].init.instructions
+    )
 
 
 def test_particle_node_inspector_edits_unconnected_value_input_defaults():

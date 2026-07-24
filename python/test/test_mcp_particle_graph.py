@@ -59,6 +59,40 @@ class _Panel:
         self.calls.append(("connect", source_node_uid, target_node_uid))
         return {"link_uid": "update::new-link", "changed": True}
 
+    def connect_value(self, source_node_uid, source_port, target_node_uid, target_port):
+        self.calls.append(
+            ("value", source_node_uid, source_port, target_node_uid, target_port)
+        )
+        return {"link_uid": "init::value-link", "changed": True}
+
+    def select_authoring_emitter(self, emitter_id):
+        self.calls.append(("select-emitter", emitter_id))
+        return {"stable_id": emitter_id, "index": 1}
+
+    def add_event_type(self, name, capacity_per_step, fields):
+        self.calls.append(("event-type", name, capacity_per_step, fields))
+        return {"stable_id": "event-id", "name": name}
+
+    def add_event_route(
+        self,
+        event_type_id,
+        source_emitter_id,
+        source_stage,
+        target_emitter_id,
+        spawn_count,
+    ):
+        self.calls.append(
+            (
+                "event-route",
+                event_type_id,
+                source_emitter_id,
+                source_stage,
+                target_emitter_id,
+                spawn_count,
+            )
+        )
+        return {"stable_id": "route-id", "event_type_id": event_type_id}
+
     def set_rendering_output(self, node_uid):
         self.calls.append(("output", node_uid))
         return {"node_uid": node_uid, "link_uid": "rendering::mesh-link", "changed": True}
@@ -101,6 +135,24 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     connected = mcp.tools["particle_graph_connect_stream"](
         "update::root.update", "update::new-node"
     )
+    value_connected = mcp.tools["particle_graph_connect_value"](
+        "init::payload", "value", "init::size", "value"
+    )
+    selected = mcp.tools["particle_graph_select_emitter"]("target")
+    event_type = mcp.tools["particle_graph_add_event_type"](
+        "Impact",
+        64,
+        [
+            {
+                "name": "Weight",
+                "type": {"value_type": "f32", "space": "none"},
+                "default": 1.0,
+            }
+        ],
+    )
+    event_route = mcp.tools["particle_graph_add_event_route"](
+        "event-id", "source", "update", "target", 2
+    )
     routed = mcp.tools["particle_graph_set_rendering_output"](
         "rendering::mesh-output"
     )
@@ -113,6 +165,10 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert added["node"]["uid"] == "update::new-node"
     assert property_changed["value"] == [1.0, 2.0, 3.0]
     assert connected["link_uid"] == "update::new-link"
+    assert value_connected["link_uid"] == "init::value-link"
+    assert selected["stable_id"] == "target"
+    assert event_type["event_type"]["stable_id"] == "event-id"
+    assert event_route["event_route"]["stable_id"] == "route-id"
     assert routed["changed"] is True
     assert reloaded["file_path"] == "Assets/Sparks.particlegraph"
     assert panel.calls == [
@@ -125,6 +181,21 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             [1.0, 2.0, 3.0],
         ),
         ("connect", "update::root.update", "update::new-node"),
+        ("value", "init::payload", "value", "init::size", "value"),
+        ("select-emitter", "target"),
+        (
+            "event-type",
+            "Impact",
+            64,
+            [
+                {
+                    "name": "Weight",
+                    "type": {"value_type": "f32", "space": "none"},
+                    "default": 1.0,
+                }
+            ],
+        ),
+        ("event-route", "event-id", "source", "update", "target", 2),
         ("output", "rendering::mesh-output"),
         ("reload",),
     ]
