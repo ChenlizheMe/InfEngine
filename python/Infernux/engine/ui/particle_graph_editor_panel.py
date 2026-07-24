@@ -757,6 +757,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         fields: list[dict],
     ) -> dict:
         """Add one typed event schema through the live document and Undo stack."""
+        self._sync_model_to_asset()
         decoded_fields = self._decode_event_fields(
             fields, require_stable_ids=False
         )
@@ -891,12 +892,55 @@ class ParticleGraphEditorPanel(EditorPanel):
         spawn_count: int,
     ) -> dict:
         """Add one directed event route and rebuild derived node definitions."""
+        self._sync_model_to_asset()
+        event_type_id = str(event_type_id)
+        source_emitter_id = str(source_emitter_id)
+        source_stage = str(source_stage)
+        target_emitter_id = str(target_emitter_id)
+        event_types = {
+            value.stable_id: value for value in self._asset.event_types
+        }
+        emitters = {
+            value.stable_id: value for value in self._asset.emitters
+        }
+        if event_type_id not in event_types:
+            available = [
+                {"stable_id": value.stable_id, "name": value.name}
+                for value in self._asset.event_types
+            ]
+            raise KeyError(
+                f"Particle event type not found: {event_type_id!r}; "
+                f"available event types: {available}"
+            )
+        if source_emitter_id not in emitters:
+            available = [
+                {"stable_id": value.stable_id, "name": value.name}
+                for value in self._asset.emitters
+            ]
+            raise KeyError(
+                f"Particle source emitter not found: {source_emitter_id!r}; "
+                f"available emitters: {available}"
+            )
+        if target_emitter_id not in emitters:
+            available = [
+                {"stable_id": value.stable_id, "name": value.name}
+                for value in self._asset.emitters
+            ]
+            raise KeyError(
+                f"Particle target emitter not found: {target_emitter_id!r}; "
+                f"available emitters: {available}"
+            )
+        if source_stage not in _STAGES:
+            raise ValueError(
+                f"Unknown Particle Graph event source stage: {source_stage!r}; "
+                f"expected one of {_STAGES}"
+            )
         route = ParticleEventRoute(
             uuid.uuid4().hex,
-            str(event_type_id),
-            str(source_emitter_id),
-            str(source_stage),
-            str(target_emitter_id),
+            event_type_id,
+            source_emitter_id,
+            source_stage,
+            target_emitter_id,
             int(spawn_count),
         )
         before = self._snapshot()

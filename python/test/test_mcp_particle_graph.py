@@ -291,7 +291,9 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert emitter["emitter"]["stable_id"] == "target"
     assert emitter_settings["changed"] is True
     assert patched_settings["settings"] == {"capacity": 8}
+    assert event_type["event_type_id"] == "event-id"
     assert event_type["event_type"]["stable_id"] == "event-id"
+    assert event_route["event_route_id"] == "route-id"
     assert event_route["event_route"]["stable_id"] == "route-id"
     assert event_output["node"]["uid"] == "update::event-output"
     assert event_payload["node"]["uid"] == "init::event-payload"

@@ -888,6 +888,27 @@ def test_particle_graph_editor_removes_event_route_nodes_transactionally():
     ParticleGraphAsset.from_dict(panel.asset.to_dict())
 
 
+def test_particle_graph_editor_rejects_unknown_event_route_before_mutation():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    source_id = panel.asset.emitters[0].stable_id
+    target_id = panel.add_authoring_emitter("Target")["stable_id"]
+    event_type = panel.add_event_type("Impact", 4, [])
+    before = panel.asset.to_dict()
+
+    with pytest.raises(KeyError) as exc_info:
+        panel.add_event_route(
+            "field-id-used-by-mistake", source_id, "update", target_id, 1
+        )
+
+    message = str(exc_info.value)
+    assert "available event types" in message
+    assert event_type["stable_id"] in message
+    assert panel.asset.to_dict() == before
+
+
 def test_particle_graph_editor_removing_emitter_cascades_event_routes():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 

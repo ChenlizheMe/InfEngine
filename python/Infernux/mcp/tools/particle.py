@@ -311,6 +311,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
             panel = _require_particle_graph_panel()
             event_type = panel.add_event_type(name, capacity_per_step, fields)
             return {
+                "event_type_id": event_type["stable_id"],
                 "event_type": event_type,
                 "editor": _portable_snapshot(
                     panel.authoring_snapshot(), project_path
@@ -347,6 +348,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
                 spawn_count,
             )
             return {
+                "event_route_id": route["stable_id"],
                 "event_route": route,
                 "editor": _portable_snapshot(
                     panel.authoring_snapshot(), project_path
