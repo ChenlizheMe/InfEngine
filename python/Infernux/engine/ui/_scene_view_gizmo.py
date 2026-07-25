@@ -21,7 +21,7 @@ import Infernux.resources as _resources
 from .scene_view_panel import (
     TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE,
     TRANSLATE_SNAP_STEP, ROTATE_SNAP_DEGREES, SCALE_SNAP_FACTOR,
-    _GIZMO_IDS, _AXIS_DIRS, _PLANE_AXIS_PAIRS,
+    _GIZMO_IDS, _AXIS_DIRS, _PLANE_AXIS_PAIRS, GIZMO_CENTER_HANDLE,
 )
 
 # Gizmo handle IDs — must match C++ EditorTools constants
@@ -288,7 +288,11 @@ class SceneViewGizmoMixin:
         self._gizmo_drag_start_rotation = obj_rot
         self._gizmo_drag_start_scale = obj_scale
 
-        if mode in (TOOL_TRANSLATE, TOOL_SCALE) and handle not in _PLANE_AXIS_PAIRS:
+        if handle == GIZMO_CENTER_HANDLE:
+            # Uniform scale: radial distance on the camera-facing plane.
+            self._gizmo_drag_start_t = self._view_plane_radial_dist(
+                engine, local_mx, local_my, scene_w, scene_h, obj_pos)
+        elif mode in (TOOL_TRANSLATE, TOOL_SCALE) and handle not in _PLANE_AXIS_PAIRS:
             ray = engine.screen_to_world_ray(local_mx, local_my, scene_w, scene_h)
             self._gizmo_drag_start_t = self._closest_param_on_axis(
                 ray[:3], ray[3:], self._gizmo_drag_start_pos, self._gizmo_drag_axis_dir)
@@ -388,6 +392,35 @@ class SceneViewGizmoMixin:
         hit = self._add3(ray_o, self._scale3(ray_d, t))
         rel = self._sub3(hit, plane_origin)
         return (self._dot3(rel, axis_u), self._dot3(rel, axis_v))
+
+    def _view_plane_radial_dist(self, engine, local_mx, local_my, scene_w, scene_h, plane_origin) -> float:
+        """Distance from *plane_origin* to the mouse ray's hit on the camera-facing plane."""
+        ray = engine.screen_to_world_ray(local_mx, local_my, scene_w, scene_h)
+        ray_o = ray[:3]
+        ray_d = ray[3:]
+        to_cam = self._sub3(ray_o, plane_origin)
+        length = math.sqrt(self._dot3(to_cam, to_cam))
+        if length < 1e-8:
+            return 0.0
+        normal = self._scale3(to_cam, 1.0 / length)
+        denom = self._dot3(ray_d, normal)
+        if abs(denom) < 1e-8:
+            return 0.0
+        t = self._dot3(self._sub3(plane_origin, ray_o), normal) / denom
+        if t < 0.0:
+            return 0.0
+        hit = self._add3(ray_o, self._scale3(ray_d, t))
+        rel = self._sub3(hit, plane_origin)
+        return math.sqrt(max(0.0, self._dot3(rel, rel)))
+
+    def _gizmo_world_scale(self, engine, obj_pos) -> float:
+        """Match C++ EditorTools visual scale: camDist * 0.15 * handleSize(1.75)."""
+        cam = engine.editor_camera.position
+        dx = float(cam.x) - float(obj_pos[0])
+        dy = float(cam.y) - float(obj_pos[1])
+        dz = float(cam.z) - float(obj_pos[2])
+        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        return max(dist * 0.15 * 1.75, 0.01)
 
     def _is_ctrl_down(self, ctx: InxGUIContext) -> bool:
         return ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)
@@ -653,10 +686,43 @@ class SceneViewGizmoMixin:
             obj.transform.local_scale = Vector3(new_scale[0], new_scale[1], new_scale[2])
         self._sync_gizmo_rigidbody_transforms()
 
+    def _drag_scale_uniform(self, engine, local_mx, local_my, scene_w, scene_h):
+        """Uniform XYZ scale driven by the grey center cube.
+
+        Clicking near the origin makes a pure radial ratio (cur/start) extremely
+        sensitive. Use a reference length matching the scale-axis shaft tip so
+        center-cube dragging feels like grabbing an axis tip.
+        """
+        cur = self._view_plane_radial_dist(
+            engine, local_mx, local_my, scene_w, scene_h, self._gizmo_drag_start_pos)
+        start = self._gizmo_drag_start_t
+        # Scale shaft length in BuildScaleHandleMeshes is 0.75 (local gizmo units).
+        ref = self._gizmo_world_scale(engine, self._gizmo_drag_start_pos) * 0.75
+        factor = 1.0 + (cur - start) / max(ref, 1e-6)
+        if self._gizmo_snap_active:
+            factor = 1.0 + self._snap_delta(factor - 1.0, SCALE_SNAP_FACTOR)
+        factor = max(factor, 0.01)
+
+        from Infernux.lib._Infernux import SceneManager as _SM, Vector3
+        scene = _SM.instance().get_active_scene()
+        if not scene:
+            return
+        for _oid, obj, snapshot in self._for_each_gizmo_drag_object(scene):
+            ss = snapshot["scale"]
+            obj.transform.local_scale = Vector3(
+                max(ss[0] * factor, 0.001),
+                max(ss[1] * factor, 0.001),
+                max(ss[2] * factor, 0.001),
+            )
+        self._sync_gizmo_rigidbody_transforms()
+
     def _drag_scale(self, engine, local_mx, local_my, scene_w, scene_h):
         """Scale along the drag axis. In Local mode, scale applies directly to
         the corresponding local_scale component. In Global mode, the world-axis
         scale factor is decomposed onto local axes."""
+        if self._gizmo_drag_axis == GIZMO_CENTER_HANDLE:
+            self._drag_scale_uniform(engine, local_mx, local_my, scene_w, scene_h)
+            return
         if self._gizmo_drag_axis in _PLANE_AXIS_PAIRS:
             self._drag_scale_plane(engine, local_mx, local_my, scene_w, scene_h)
             return

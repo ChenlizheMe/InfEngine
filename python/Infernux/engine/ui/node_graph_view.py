@@ -98,9 +98,8 @@ _CANVAS_WINDOW_FLAGS = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollW
 # Base font size ImGui widgets are authored against, used to derive the
 # per-zoom font scale for inline node fields.
 _INLINE_BASE_FONT = 18.0
-_INLINE_MIN_FONT = 9.0
 
-# Absolute floor for draw-list node text so glyphs never collapse to nothing.
+# Absolute floor for draw-list / widget text so glyphs never collapse to nothing.
 # Kept small on purpose: node text must stay proportional to the node box.
 _TEXT_MIN_FONT = 5.0
 
@@ -847,15 +846,16 @@ class NodeGraphView:
             node.data[field_id] = copy.deepcopy(value)
 
     def _draw_inline_fields(self, ctx) -> None:
-        if self.graph is None or self.zoom < 0.68:
+        if self.graph is None:
             return
         saved_x = ctx.get_cursor_pos_x()
         saved_y = ctx.get_cursor_pos_y()
         # Widgets are authored at zoom 1.0; scale the font (and the frame
-        # metrics derived from it) so they shrink and grow with the node chrome
-        # instead of spilling out of it.
+        # metrics derived from it) with the node chrome at every zoom level —
+        # never hide them past a threshold, or zooming out looks like the
+        # node contents vanished.
         z = self.zoom
-        ctx.set_window_font_scale(max(_INLINE_MIN_FONT / _INLINE_BASE_FONT, z))
+        ctx.set_window_font_scale(max(_TEXT_MIN_FONT / _INLINE_BASE_FONT, z))
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, 4.0 * z, 2.0 * z)
         ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, 4.0 * z, 3.0 * z)
         ctx.push_style_var_vec2(ImGuiStyleVar.ItemInnerSpacing, 3.0 * z, 3.0 * z)

@@ -25,6 +25,7 @@ from Infernux.lib._Infernux import (
     GIZMO_XY_PLANE_ID,
     GIZMO_XZ_PLANE_ID,
     GIZMO_YZ_PLANE_ID,
+    GIZMO_CENTER_ID,
 )
 
 _GIZMO_IDS = {
@@ -34,9 +35,11 @@ _GIZMO_IDS = {
     GIZMO_XY_PLANE_ID: 4,
     GIZMO_XZ_PLANE_ID: 5,
     GIZMO_YZ_PLANE_ID: 6,
+    GIZMO_CENTER_ID: 7,
 }
 _AXIS_DIRS = {1: (1.0, 0.0, 0.0), 2: (0.0, 1.0, 0.0), 3: (0.0, 0.0, 1.0)}
 _PLANE_AXIS_PAIRS = {4: (1, 2), 5: (1, 3), 6: (2, 3)}
+GIZMO_CENTER_HANDLE = 7
 
 # Tool mode constants — must match C++ EditorTools::ToolMode
 TOOL_NONE = 0

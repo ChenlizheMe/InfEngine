@@ -36,6 +36,16 @@ def test_forward_pipeline_labels_single_sample_msaa_explicitly():
     assert metadata.enum_labels == ["X1 (Off)", "X2", "X4", "X8"]
 
 
+def test_shadow_resolution_range_is_enforced_outside_the_inspector():
+    pipeline = DefaultForwardPipeline()
+
+    pipeline.shadow_resolution = 0
+    assert pipeline.shadow_resolution == 256
+
+    pipeline.shadow_resolution = 99999
+    assert pipeline.shadow_resolution == 8192
+
+
 def test_default_forward_pipeline_uses_forward_plus_for_opaque_and_transparent():
     from Infernux.rendergraph.graph import RenderGraph
 
@@ -123,6 +133,57 @@ def test_switching_pipeline_rebuilds_stage_model_without_stale_stage_access():
     assert "stage_after_gbuffer" not in {
         control.key for control in forward_controls if isinstance(control, InspectorList)
     }
+
+
+def test_broken_topology_probe_keeps_the_last_valid_inspector_model(monkeypatch):
+    stack = RenderStack()
+    valid_probe = stack._build_full_topology_probe()
+    stack.invalidate_graph()
+    monkeypatch.setattr(
+        stack.pipeline,
+        "define_topology",
+        lambda _graph: (_ for _ in ()).throw(ValueError("bad topology")),
+    )
+
+    assert stack._build_full_topology_probe() is valid_probe
+    assert "bad topology" in stack.effect_compile_errors[-1]
+
+
+def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch):
+    stack = RenderStack()
+    previous_graph = object()
+    stack._last_valid_graph_desc = previous_graph
+    stack._graph_desc = None
+    monkeypatch.setattr(
+        stack,
+        "build_graph",
+        lambda: (_ for _ in ()).throw(ValueError("invalid graph edit")),
+    )
+
+    class Context:
+        def __init__(self):
+            self.applied = []
+            self.submitted = []
+
+        def setup_camera_properties(self, _camera):
+            pass
+
+        def cull(self, _camera):
+            return "culling"
+
+        def apply_graph(self, graph):
+            self.applied.append(graph)
+
+        def submit_culling(self, culling):
+            self.submitted.append(culling)
+
+    context = Context()
+    stack.render(context, object())
+
+    assert stack._graph_desc is previous_graph
+    assert stack._build_failed is True
+    assert context.applied == [previous_graph]
+    assert context.submitted == ["culling"]
 
 
 def test_declarative_lists_scope_nested_widget_ids_by_control_key(monkeypatch):

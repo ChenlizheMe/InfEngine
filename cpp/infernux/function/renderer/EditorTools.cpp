@@ -365,13 +365,12 @@ void EditorTools::BuildScaleHandleMeshes()
     constexpr float shaftLength = 0.75f;
     constexpr float cubeHalf = 0.04f;
     constexpr int segments = 12;
+    static constexpr glm::vec3 COLOR_CENTER_DEFAULT{0.72f, 0.72f, 0.74f};
 
     glm::vec3 xColor = (m_highlightedAxis == HandleAxis::X) ? COLOR_HIGHLIGHT : COLOR_X_DEFAULT;
     glm::vec3 yColor = (m_highlightedAxis == HandleAxis::Y) ? COLOR_HIGHLIGHT : COLOR_Y_DEFAULT;
     glm::vec3 zColor = (m_highlightedAxis == HandleAxis::Z) ? COLOR_HIGHLIGHT : COLOR_Z_DEFAULT;
-    glm::vec3 xyColor = (m_highlightedAxis == HandleAxis::XY) ? COLOR_HIGHLIGHT : glm::vec3(1.0f, 0.8f, 0.2f);
-    glm::vec3 xzColor = (m_highlightedAxis == HandleAxis::XZ) ? COLOR_HIGHLIGHT : glm::vec3(1.0f, 0.35f, 0.35f);
-    glm::vec3 yzColor = (m_highlightedAxis == HandleAxis::YZ) ? COLOR_HIGHLIGHT : glm::vec3(0.35f, 1.0f, 0.8f);
+    glm::vec3 centerColor = (m_highlightedAxis == HandleAxis::Center) ? COLOR_HIGHLIGHT : COLOR_CENTER_DEFAULT;
 
     m_arrowXVerts.clear();
     m_arrowXInds.clear();
@@ -388,20 +387,17 @@ void EditorTools::BuildScaleHandleMeshes()
     BuildCylinder(m_arrowZVerts, m_arrowZInds, shaftRadius, shaftLength, segments, zColor);
     BuildCube(m_arrowZVerts, m_arrowZInds, cubeHalf, shaftLength + cubeHalf, zColor);
 
+    // Scale tool keeps only the three axis handles + center cube (no planes).
     m_planeXYVerts.clear();
     m_planeXYInds.clear();
-    BuildPlaneQuad(m_planeXYVerts, m_planeXYInds, glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f),
-                   glm::vec3(0.0f, 1.0f, 0.0f), PLANE_OFFSET, PLANE_SIZE, xyColor);
-
     m_planeXZVerts.clear();
     m_planeXZInds.clear();
-    BuildPlaneQuad(m_planeXZVerts, m_planeXZInds, glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f),
-                   glm::vec3(0.0f, 0.0f, 1.0f), PLANE_OFFSET, PLANE_SIZE, xzColor);
-
     m_planeYZVerts.clear();
     m_planeYZInds.clear();
-    BuildPlaneQuad(m_planeYZVerts, m_planeYZInds, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
-                   glm::vec3(0.0f, 0.0f, 1.0f), PLANE_OFFSET, PLANE_SIZE, yzColor);
+
+    m_centerCubeVerts.clear();
+    m_centerCubeInds.clear();
+    BuildCube(m_centerCubeVerts, m_centerCubeInds, CENTER_CUBE_HALF, 0.0f, centerColor);
 
     m_meshesBuilt = true;
 }
@@ -561,7 +557,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         result.drawCalls.push_back(dc);
     }
 
-    if (m_mode == ToolMode::Translate || m_mode == ToolMode::Scale) {
+    if (m_mode == ToolMode::Translate) {
         DrawCall xyDc;
         xyDc.indexStart = 0;
         xyDc.indexCount = static_cast<uint32_t>(m_planeXYInds.size());
@@ -597,6 +593,20 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         yzDc.meshIndices = &m_planeYZInds;
         yzDc.forceBufferUpdate = dirty;
         result.drawCalls.push_back(yzDc);
+    }
+
+    if (m_mode == ToolMode::Scale && !m_centerCubeInds.empty()) {
+        DrawCall centerDc;
+        centerDc.indexStart = 0;
+        centerDc.indexCount = static_cast<uint32_t>(m_centerCubeInds.size());
+        centerDc.worldMatrix = baseTransform;
+        centerDc.material = material;
+        centerDc.objectId = CENTER_ID;
+        centerDc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, centerDc.objectId).MakeDrawIdentity();
+        centerDc.meshVertices = &m_centerCubeVerts;
+        centerDc.meshIndices = &m_centerCubeInds;
+        centerDc.forceBufferUpdate = dirty;
+        result.drawCalls.push_back(centerDc);
     }
 
     auto depthKey = [&cameraPos](const DrawCall &dc) {

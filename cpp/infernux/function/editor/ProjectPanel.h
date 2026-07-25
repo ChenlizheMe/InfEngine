@@ -191,6 +191,13 @@ class ProjectPanel : public EditorPanel
         ResourceType resourceType = ResourceType::DefaultText;
     };
 
+    struct SearchIndexEntry
+    {
+        FileItem item;
+        std::string searchKey;
+        std::string sortKey;
+    };
+
     // ── Directory snapshot cache ─────────────────────────────────────
     struct DirSnapshot
     {
@@ -339,6 +346,9 @@ class ProjectPanel : public EditorPanel
     char m_searchBuf[256] = {};
     std::string m_lastSearchQuery;
     uint64_t m_lastSearchGeneration = UINT64_MAX;
+    uint64_t m_searchIndexGeneration = UINT64_MAX;
+    std::string m_searchIndexRoot;
+    std::vector<SearchIndexEntry> m_searchIndex;
     std::vector<FileItem> m_searchResults;
     static constexpr size_t kMaxSearchResults = 200;
 
@@ -395,9 +405,9 @@ class ProjectPanel : public EditorPanel
 
     // ── Rendering helpers ────────────────────────────────────────────
     void RenderBreadcrumb(InxGUIContext *ctx);
+    void RebuildSearchIndex(uint64_t generation);
     void UpdateSearchResults();
     void RenderSearchResults(InxGUIContext *ctx);
-    void CollectMatchingFolders(const std::string &path, const std::string &queryLower, size_t &budget);
     void RenderFolderTree(InxGUIContext *ctx);
     void RenderFolderTreeRecursive(InxGUIContext *ctx, const std::string &path, DirSnapshot *snapshot = nullptr);
     void RenderFileGrid(InxGUIContext *ctx);

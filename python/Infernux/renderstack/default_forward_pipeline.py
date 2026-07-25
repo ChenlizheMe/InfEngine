@@ -112,7 +112,10 @@ class DefaultForwardPipeline(RenderPipeline):
         graph.set_msaa_samples(int(self.msaa_samples))
 
         # ---- Shadow map configuration (from exposed parameters) ----
-        shadow_res = self.shadow_resolution
+        # The serialized range is enforced by the descriptor. Keep this
+        # boundary normalization as a final guard for pipeline values restored
+        # from external/custom state before descriptor assignment.
+        shadow_res = max(256, min(8192, int(self.shadow_resolution)))
 
         # ---- Create resources ----
         create_main_scene_targets(graph, shadow_resolution=shadow_res)

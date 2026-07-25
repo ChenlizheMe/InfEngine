@@ -739,10 +739,26 @@ def normalize_runtime_field_value(value: Any, field_meta_or_type) -> Any:
         field_type = field_meta_or_type.field_type
         element_type = getattr(field_meta_or_type, 'element_type', None)
         asset_type = getattr(field_meta_or_type, 'asset_type', None)
+        numeric_range = getattr(field_meta_or_type, 'range', None)
     else:
         field_type = field_meta_or_type
         element_type = None
         asset_type = None
+        numeric_range = None
+
+    # ``range`` is a data contract, not merely an Inspector presentation hint.
+    # Text entry, deserialization and scripting all pass through this function,
+    # so enforcing it here prevents transient invalid values from reaching
+    # native systems between two editor frames.
+    if numeric_range is not None and field_type in (FieldType.INT, FieldType.FLOAT):
+        lower, upper = numeric_range
+        if lower > upper:
+            raise ValueError(
+                f"serialized field range must be ordered, got ({lower}, {upper})"
+            )
+        if field_type == FieldType.INT:
+            return max(int(lower), min(int(upper), int(value)))
+        return max(float(lower), min(float(upper), float(value)))
 
     if field_type == FieldType.COMPONENT:
         return _ensure_component_ref(value)

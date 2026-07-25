@@ -560,6 +560,10 @@ void ProjectPanel::SetRootPath(const std::string &path)
     m_rootPath = path;
     m_preferredNavPath = path;
     m_navHasSubfolders = false;
+    m_searchIndexGeneration = UINT64_MAX;
+    m_searchIndexRoot.clear();
+    m_searchIndex.clear();
+    m_lastSearchGeneration = UINT64_MAX;
     InvalidateDirCache();
 
     std::error_code ec;
@@ -613,6 +617,9 @@ void ProjectPanel::SetAssetDatabase(AssetDatabase *adb)
     if (m_assetDatabase == adb)
         return;
     m_assetDatabase = adb;
+    m_searchIndexGeneration = UINT64_MAX;
+    m_searchIndex.clear();
+    m_lastSearchGeneration = UINT64_MAX;
     InvalidateDirCache();
 }
 void ProjectPanel::SetIconsDirectory(const std::string &dir)
@@ -2308,84 +2315,124 @@ std::string ToLowerAsciiCopy(std::string value)
 }
 } // namespace
 
-void ProjectPanel::CollectMatchingFolders(const std::string &path, const std::string &queryLower, size_t &budget)
+void ProjectPanel::RebuildSearchIndex(uint64_t generation)
 {
-    if (budget == 0 || path.empty())
+    const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
+    if (generation == m_searchIndexGeneration && folderRoot == m_searchIndexRoot)
         return;
-    auto *snap = GetDirSnapshot(path);
-    if (!snap)
+
+    m_searchIndexGeneration = generation;
+    m_searchIndexRoot = folderRoot;
+    m_searchIndex.clear();
+    if (!m_assetDatabase)
         return;
-    for (const auto &dir : snap->dirs) {
-        if (budget == 0)
-            return;
-        const std::string nameLower = ToLowerAsciiCopy(dir.name);
-        if (nameLower.find(queryLower) != std::string::npos) {
-            m_searchResults.push_back(dir);
-            --budget;
+
+    std::unordered_set<std::string> folderPaths;
+    const fs::path rootPath = fs::u8path(folderRoot);
+    const auto guids = m_assetDatabase->GetAllGuids();
+    m_searchIndex.reserve(guids.size());
+
+    for (const auto &guid : guids) {
+        const std::string path = m_assetDatabase->GetPathFromGuid(guid);
+        if (path.empty())
+            continue;
+        const std::string name = infernux::FromFsPath(fs::u8path(path).filename());
+        if (!ShouldShow(name))
+            continue;
+
+        std::string rel = path;
+        std::string relativePath;
+        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
+            rel = std::move(relativePath);
+
+        FileItem item;
+        item.type = FileItem::File;
+        item.name = name;
+        item.path = path;
+        item.ext = infernux::FromFsPath(fs::u8path(path).extension());
+        if (!item.ext.empty() && item.ext.front() == '.')
+            item.ext.erase(item.ext.begin());
+
+        SearchIndexEntry indexed;
+        indexed.item = std::move(item);
+        indexed.sortKey = ToLowerAsciiCopy(name);
+        indexed.searchKey = indexed.sortKey + "\n" + ToLowerAsciiCopy(rel);
+        m_searchIndex.push_back(std::move(indexed));
+
+        // Folder hits are derived from catalogued asset paths. This avoids the
+        // previous recursive directory walk on every search edit while still
+        // indexing every non-empty project folder and all of its ancestors.
+        fs::path parent = fs::u8path(path).parent_path();
+        while (!folderRoot.empty() && !parent.empty()) {
+            const std::string parentString = infernux::FromFsPath(parent);
+            std::string ignored;
+            if (!infernux::TryMakeRelativeFilesystemPath(parentString, folderRoot, ignored, true))
+                break;
+            if (parent == rootPath)
+                break;
+            folderPaths.insert(parentString);
+            const fs::path next = parent.parent_path();
+            if (next == parent)
+                break;
+            parent = next;
         }
-        CollectMatchingFolders(dir.path, queryLower, budget);
     }
+
+    for (const std::string &path : folderPaths) {
+        FileItem item;
+        item.type = FileItem::Dir;
+        item.path = path;
+        item.name = infernux::FromFsPath(fs::u8path(path).filename());
+        if (!ShouldShow(item.name))
+            continue;
+
+        std::string rel = path;
+        std::string relativePath;
+        if (!m_rootPath.empty() && infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, relativePath, true))
+            rel = std::move(relativePath);
+
+        SearchIndexEntry indexed;
+        indexed.item = std::move(item);
+        indexed.sortKey = ToLowerAsciiCopy(indexed.item.name);
+        indexed.searchKey = indexed.sortKey + "\n" + ToLowerAsciiCopy(rel);
+        m_searchIndex.push_back(std::move(indexed));
+    }
+
+    std::sort(m_searchIndex.begin(), m_searchIndex.end(), [](const SearchIndexEntry &a, const SearchIndexEntry &b) {
+        if (a.item.type != b.item.type)
+            return a.item.type < b.item.type;
+        if (a.sortKey != b.sortKey)
+            return a.sortKey < b.sortKey;
+        return a.item.path < b.item.path;
+    });
 }
 
 void ProjectPanel::UpdateSearchResults()
 {
     const std::string query(m_searchBuf);
     const uint64_t generation = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
-    if (query == m_lastSearchQuery && generation == m_lastSearchGeneration)
+    const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
+    if (query == m_lastSearchQuery && generation == m_lastSearchGeneration && folderRoot == m_searchIndexRoot)
         return;
 
     m_lastSearchQuery = query;
     m_lastSearchGeneration = generation;
     m_searchResults.clear();
-    if (query.empty())
+    if (query.empty()) {
+        m_searchIndexRoot = folderRoot;
         return;
-
-    const std::string queryLower = ToLowerAsciiCopy(query);
-    size_t budget = kMaxSearchResults;
-
-    const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
-    CollectMatchingFolders(folderRoot, queryLower, budget);
-
-    if (m_assetDatabase && budget > 0) {
-        for (const auto &guid : m_assetDatabase->GetAllGuids()) {
-            if (budget == 0)
-                break;
-            const std::string path = m_assetDatabase->GetPathFromGuid(guid);
-            if (path.empty())
-                continue;
-            const std::string name = infernux::FromFsPath(fs::u8path(path).filename());
-            if (!ShouldShow(name))
-                continue;
-
-            std::string rel = path;
-            if (!m_rootPath.empty()) {
-                std::string tmp;
-                if (infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, tmp, true))
-                    rel = std::move(tmp);
-            }
-
-            const std::string nameLower = ToLowerAsciiCopy(name);
-            const std::string relLower = ToLowerAsciiCopy(rel);
-            if (nameLower.find(queryLower) == std::string::npos && relLower.find(queryLower) == std::string::npos)
-                continue;
-
-            FileItem item;
-            item.type = FileItem::File;
-            item.name = name;
-            item.path = path;
-            item.ext = infernux::FromFsPath(fs::u8path(path).extension());
-            if (!item.ext.empty() && item.ext.front() == '.')
-                item.ext.erase(item.ext.begin());
-            m_searchResults.push_back(std::move(item));
-            --budget;
-        }
     }
 
-    std::sort(m_searchResults.begin(), m_searchResults.end(), [](const FileItem &a, const FileItem &b) {
-        if (a.type != b.type)
-            return a.type < b.type; // folders first
-        return ToLowerAsciiCopy(a.name) < ToLowerAsciiCopy(b.name);
-    });
+    RebuildSearchIndex(generation);
+    const std::string queryLower = ToLowerAsciiCopy(query);
+    m_searchResults.reserve((std::min)(kMaxSearchResults, m_searchIndex.size()));
+    for (const auto &indexed : m_searchIndex) {
+        if (indexed.searchKey.find(queryLower) == std::string::npos)
+            continue;
+        m_searchResults.push_back(indexed.item);
+        if (m_searchResults.size() == kMaxSearchResults)
+            break;
+    }
 }
 
 void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
@@ -2395,6 +2442,8 @@ void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
         return;
     }
 
+    FileItem activatedItem;
+    bool hasActivatedItem = false;
     for (const auto &item : m_searchResults) {
         std::string rel = item.path;
         if (!m_rootPath.empty()) {
@@ -2410,16 +2459,25 @@ void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
         if (!ctx->Selectable(label, false))
             continue;
 
-        // Selecting a hit ends search mode and jumps File Manager to that location.
-        m_searchBuf[0] = '\0';
-        m_lastSearchQuery.clear();
-        m_searchResults.clear();
-        if (item.type == FileItem::Dir)
-            SetCurrentPath(item.path);
-        else
-            SetSelectedFile(item.path);
+        // Keep a stable copy. Clearing m_searchResults while item still refers to
+        // one of its elements leaves a dangling reference and made activation
+        // intermittently navigate to an invalid path.
+        activatedItem = item;
+        hasActivatedItem = true;
         break;
     }
+
+    if (!hasActivatedItem)
+        return;
+
+    // Selecting a hit ends search mode and jumps File Manager to that location.
+    m_searchBuf[0] = '\0';
+    m_lastSearchQuery.clear();
+    m_searchResults.clear();
+    if (activatedItem.type == FileItem::Dir)
+        SetCurrentPath(activatedItem.path);
+    else
+        SetSelectedFile(activatedItem.path);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -2530,6 +2588,13 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             const std::string parent =
                 infernux::FromFsPath(infernux::ToFsPath(infernux::ResolveFilesystemPath(m_currentPath)).parent_path());
             AssignCurrentPath(parent);
+            // The snapshot and item pointers above belong to the previous
+            // directory. Do not continue rendering this frame with a new path
+            // and stale grid data; the next frame will acquire one coherent
+            // snapshot for the parent directory.
+            m_subGridData +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dataStart).count();
+            return;
         }
     }
 

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from Infernux.engine.ui import inspector_material, inspector_renderstack
 
 
@@ -39,3 +41,13 @@ def test_material_virtual_block_remeasures_when_visible():
 
     assert result == (True, "property.value", False)
     assert state.extra["_material_virtual_block_heights"]["properties"] == 75.0
+
+
+def test_constrained_numeric_inputs_clamp_typed_values_in_native_paths():
+    source = Path(
+        "cpp/infernux/function/renderer/gui/InxGUIContext.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert source.count("ImGuiSliderFlags_AlwaysClamp") >= 4
+    assert "ImGui::DragFloat(label.c_str(), value, speed, min, max, fmt, flags)" in source
+    assert "ImGui::DragInt(label.c_str(), value, speed, min, max, fmt, flags)" in source

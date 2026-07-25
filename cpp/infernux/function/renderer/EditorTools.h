@@ -27,7 +27,8 @@ class InxMaterial;
  * Supported modes:
  *  - **Translate** (W): three arrows plus XY/XZ/YZ plane squares.
  *  - **Rotate**    (E): three torus rings, one per axis.
- *  - **Scale**     (R): three lines with cube endpoints plus XY/XZ/YZ plane squares.
+ *  - **Scale**     (R): three lines with cube endpoints, XY/XZ/YZ plane squares,
+ *                       and a grey center cube for uniform XYZ scale.
  *
  * Hover / drag interaction is handled on the Python side via the existing
  * pick_scene_object_id() system.  Python calls SetHighlightedAxis() to
@@ -54,7 +55,8 @@ class EditorTools
         Z,
         XY,
         XZ,
-        YZ
+        YZ,
+        Center ///< Uniform scale cube at the gizmo origin (Scale tool only)
     };
 
     EditorTools();
@@ -80,7 +82,7 @@ class EditorTools
     }
 
     /// Set the highlighted (hovered) handle and rebuild mesh vertex colours.
-    /// @param axis None / X / Y / Z / XY / XZ / YZ
+    /// @param axis None / X / Y / Z / XY / XZ / YZ / Center
     void SetHighlightedAxis(HandleAxis axis);
 
     [[nodiscard]] HandleAxis GetHighlightedAxis() const
@@ -125,10 +127,14 @@ class EditorTools
     static constexpr uint64_t XY_PLANE_ID = EDITOR_TOOL_BASE_ID | 4;
     static constexpr uint64_t XZ_PLANE_ID = EDITOR_TOOL_BASE_ID | 5;
     static constexpr uint64_t YZ_PLANE_ID = EDITOR_TOOL_BASE_ID | 6;
+    static constexpr uint64_t CENTER_ID = EDITOR_TOOL_BASE_ID | 7;
 
     static constexpr float AXIS_LENGTH = 1.0f;
-    static constexpr float PLANE_OFFSET = 0.18f;
-    static constexpr float PLANE_SIZE = 0.22f;
+    /// Plane handles sit in the positive quadrant with one corner at the origin.
+    static constexpr float PLANE_OFFSET = 0.0f;
+    static constexpr float PLANE_SIZE = 0.28f;
+    /// Half-extent of the uniform-scale cube at the gizmo origin.
+    static constexpr float CENTER_CUBE_HALF = 0.07f;
 
     // ====================================================================
     // Reserved queue range
@@ -167,7 +173,7 @@ class EditorTools
 
     ToolMode m_mode = ToolMode::Translate;
     HandleAxis m_highlightedAxis = HandleAxis::None;
-    float m_handleSize = 1.0f; // Base size in world units
+    float m_handleSize = 1.75f; // Base size multiplier (visual scale vs legacy 1.0)
     bool m_localMode = false;  // true = align gizmo to object's local rotation
 
     // ---- Cached per-axis geometry (in local space) ----
@@ -193,6 +199,9 @@ class EditorTools
     // YZ plane handle
     std::vector<Vertex> m_planeYZVerts;
     std::vector<uint32_t> m_planeYZInds;
+    // Uniform scale cube at the origin (Scale tool)
+    std::vector<Vertex> m_centerCubeVerts;
+    std::vector<uint32_t> m_centerCubeInds;
 };
 
 } // namespace infernux

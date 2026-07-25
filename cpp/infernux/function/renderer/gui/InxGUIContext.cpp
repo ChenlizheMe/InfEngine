@@ -354,6 +354,58 @@ void InxGUIContext::Checkbox(const std::string &label, bool *value)
         RecordSemanticItem("checkbox", label, true, "", *value);
 }
 
+namespace
+{
+
+bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::string *outVisible)
+{
+    // Split "Visible##id" so only the square is scaled — label text stays at
+    // the ambient inspector font size.
+    std::string visible;
+    std::string id;
+    const size_t hashPos = label.find("##");
+    if (hashPos != std::string::npos) {
+        visible = label.substr(0, hashPos);
+        id = label.substr(hashPos);
+    } else {
+        visible = label;
+        id = "##inx_cb_" + label;
+    }
+    if (id.empty() || id == "##")
+        id = "##inx_cb";
+
+    const float rowY = ImGui::GetCursorPosY();
+    const float textH = ImGui::GetTextLineHeight();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
+    ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_BOX_SCALE);
+    const float boxH = ImGui::GetFrameHeight();
+    if (boxH < textH)
+        ImGui::SetCursorPosY(rowY + (textH - boxH) * 0.5f);
+
+    const bool changed = ImGui::Checkbox(id.c_str(), value);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopStyleVar();
+
+    if (!visible.empty()) {
+        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+        ImGui::SetCursorPosY(rowY);
+        ImGui::TextUnformatted(visible.c_str());
+    }
+
+    if (outVisible)
+        *outVisible = std::move(visible);
+    return changed;
+}
+
+} // namespace
+
+bool InxGUIContext::CheckboxInspector(const std::string &label, bool *value)
+{
+    // Semantics are recorded by callers (they own the semantic id).
+    return DrawInspectorCheckboxSquare(label, value, nullptr);
+}
+
 void InxGUIContext::IntSlider(const std::string &label, int *value, int min, int max)
 {
     GrabOnlySliderScalar(label.c_str(), ImGuiDataType_S32, value, &min, &max, "%d");
@@ -372,7 +424,9 @@ bool InxGUIContext::DragFloat(const std::string &label, float *value, float spee
                               const char *fmt, float power)
 {
     CompensateWarp();
-    bool changed = ImGui::DragFloat(label.c_str(), value, speed, min, max, fmt, power);
+    (void)power;
+    const ImGuiSliderFlags flags = min < max ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
+    bool changed = ImGui::DragFloat(label.c_str(), value, speed, min, max, fmt, flags);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("drag_float", label, true, "", std::nullopt, static_cast<double>(*value));
     HandleDragCapture();
@@ -382,7 +436,8 @@ bool InxGUIContext::DragFloat(const std::string &label, float *value, float spee
 bool InxGUIContext::DragInt(const std::string &label, int *value, float speed, int min, int max, const char *fmt)
 {
     CompensateWarp();
-    bool changed = ImGui::DragInt(label.c_str(), value, speed, min, max, fmt);
+    const ImGuiSliderFlags flags = min < max ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
+    bool changed = ImGui::DragInt(label.c_str(), value, speed, min, max, fmt, flags);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("drag_int", label, true, "", std::nullopt, static_cast<double>(*value));
     HandleDragCapture();
@@ -882,11 +937,12 @@ void InxGUIContext::EndMainMenuBar()
 
 bool InxGUIContext::BeginMenu(const std::string &label, bool enabled, const std::string &semanticId)
 {
-    // Submenus are separate popup windows: give them the same chrome as
-    // their parent context menu.
-    const int chromeVars = PushPopupWindowChrome();
+    // Nested BeginMenu windows must NOT inherit the root context-menu
+    // WindowPadding push. ImGui places submenus with a 1px overlap against
+    // the parent, so an inflated WindowPadding makes 1st/2nd/3rd-level menu
+    // edges visually collide. Content style (row spacing / hover colours)
+    // is still applied once the submenu is open.
     const bool open = ImGui::BeginMenu(label.c_str(), enabled);
-    ImGui::PopStyleVar(chromeVars);
     if (open)
         PushPopupContentStyle();
     if (InxGUISemantics::IsCaptureEnabled())
@@ -2170,9 +2226,6 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
 {
     std::vector<PropertyChange> changes;
 
-    // Checkbox styling constants (match EditorTheme)
-    constexpr ImVec2 kCheckboxPad{4.0f, 2.0f};
-    constexpr float kCheckboxFontScale = 1.0f;
     constexpr float kMinLabelWidth = 156.0f;
 
     auto doLabel = [&](const std::string &label) {
@@ -2226,8 +2279,11 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             CompensateWarp();
             if (d.slider && d.rangeMin > -1e5f)
                 GrabOnlySliderScalar(d.widgetId.c_str(), ImGuiDataType_Float, &val, &d.rangeMin, &d.rangeMax, "%.3f");
-            else
-                ImGui::DragFloat(d.widgetId.c_str(), &val, d.speed, d.rangeMin, d.rangeMax);
+            else {
+                const ImGuiSliderFlags flags =
+                    d.rangeMin < d.rangeMax ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
+                ImGui::DragFloat(d.widgetId.c_str(), &val, d.speed, d.rangeMin, d.rangeMax, "%.3f", flags);
+            }
             if (captureSemantics)
                 RecordSemanticItem(d.slider ? "float_slider" : "drag_float", d.label, true, semanticId, std::nullopt,
                                    static_cast<double>(val));
@@ -2251,9 +2307,12 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
                 const int rangeMin = static_cast<int>(d.rangeMin);
                 const int rangeMax = static_cast<int>(d.rangeMax);
                 GrabOnlySliderScalar(d.widgetId.c_str(), ImGuiDataType_S32, &val, &rangeMin, &rangeMax, "%d");
-            } else
+            } else {
+                const ImGuiSliderFlags flags =
+                    d.rangeMin < d.rangeMax ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
                 ImGui::DragInt(d.widgetId.c_str(), &val, d.speed, static_cast<int>(d.rangeMin),
-                               static_cast<int>(d.rangeMax));
+                               static_cast<int>(d.rangeMax), "%d", flags);
+            }
             if (captureSemantics)
                 RecordSemanticItem(d.slider ? "int_slider" : "drag_int", d.label, true, semanticId, std::nullopt,
                                    static_cast<double>(val));
@@ -2273,22 +2332,23 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             bool orig = val;
             if (d.fieldLabel)
                 doLabel(d.label);
-            else {
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, kCheckboxPad);
-                ImGui::SetWindowFontScale(kCheckboxFontScale);
+            // When the label is drawn separately, only pass an id so the
+            // square can scale without shrinking any text.
+            std::string cbLabel;
+            if (d.fieldLabel) {
+                cbLabel = d.widgetId.find("##") != std::string::npos ? d.widgetId : ("##" + d.widgetId);
+            } else if (!d.label.empty()) {
+                cbLabel = d.label + "##" + d.widgetId;
+            } else {
+                cbLabel = d.widgetId;
             }
-            std::string cbLabel = d.fieldLabel ? d.widgetId : (!d.label.empty() ? d.label : d.widgetId);
             if (d.mixed)
                 ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
-            ImGui::Checkbox(cbLabel.c_str(), &val);
+            CheckboxInspector(cbLabel, &val);
             if (captureSemantics)
                 RecordSemanticItem("checkbox", d.label.empty() ? cbLabel : d.label, true, semanticId, val);
             if (d.mixed)
                 ImGui::PopItemFlag();
-            if (!d.fieldLabel) {
-                ImGui::SetWindowFontScale(1.0f);
-                ImGui::PopStyleVar(1);
-            }
             if (val != orig) {
                 PropertyChange c;
                 c.index = i;
@@ -2424,11 +2484,17 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
                                                 bool hasPicker, uint64_t pickerTextureId, const std::string &semanticId)
 {
     constexpr float buttonSide = 20.0f;
+    // Match Inspector list-body / header interaction tones so asset slots
+    // visibly respond to hover and press (previously all three were identical).
     constexpr ImVec4 bodyColor{0.10f, 0.10f, 0.10f, 0.82f};
+    constexpr ImVec4 bodyHover{0.20f, 0.18f, 0.18f, 0.95f};
+    constexpr ImVec4 bodyActive{0.28f, 0.22f, 0.22f, 1.0f};
     constexpr ImVec4 borderColor{0.22f, 0.22f, 0.22f, 1.0f};
-    constexpr ImVec4 buttonIdle{0.20f, 0.20f, 0.20f, 1.0f};
-    constexpr ImVec4 buttonHover{0.28f, 0.24f, 0.24f, 1.0f};
-    constexpr ImVec4 buttonActive{0.922f, 0.341f, 0.341f, 1.0f};
+    constexpr ImVec4 borderHover{0.42f, 0.36f, 0.36f, 1.0f};
+    constexpr ImVec4 borderActive{0.55f, 0.38f, 0.38f, 1.0f};
+    const ImVec4 buttonIdle = EditorTheme::INSPECTOR_INLINE_BTN_IDLE;
+    const ImVec4 buttonHover = EditorTheme::INSPECTOR_INLINE_BTN_HOVER;
+    const ImVec4 buttonActive = EditorTheme::INSPECTOR_INLINE_BTN_ACTIVE;
 
     ImGui::PushID(fieldId.c_str());
     std::string fullText = "   " + displayText + " (" + typeHint + ")";
@@ -2442,8 +2508,8 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0f, 2.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::PushStyleColor(ImGuiCol_Header, bodyColor);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, bodyColor);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, bodyColor);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, bodyHover);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, bodyActive);
     ImGui::BeginGroup();
 
     uint32_t result = 0;
@@ -2500,7 +2566,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
 
     const ImVec2 min = ImGui::GetItemRectMin();
     const ImVec2 max = ImGui::GetItemRectMax();
-    ImGui::GetWindowDrawList()->AddRect(min, max, ImGui::ColorConvertFloat4ToU32(borderColor), 0.0f, 0, 1.0f);
+    const bool groupHovered = ImGui::IsItemHovered();
+    const bool groupActive = groupHovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    const ImVec4 &drawBorder = groupActive ? borderActive : (groupHovered ? borderHover : borderColor);
+    ImGui::GetWindowDrawList()->AddRect(min, max, ImGui::ColorConvertFloat4ToU32(drawBorder), 0.0f, 0, 1.0f);
     ImGui::PopID();
     return result;
 }

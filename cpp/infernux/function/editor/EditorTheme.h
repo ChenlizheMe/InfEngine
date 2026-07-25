@@ -161,9 +161,10 @@ constexpr ImVec4 INSPECTOR_HEADER_SECONDARY{0.20f, 0.20f, 0.20f, 1.0f};
 constexpr ImVec4 INSPECTOR_HEADER_SECONDARY_HOVERED{0.25f, 0.22f, 0.22f, 1.0f};
 constexpr ImVec4 INSPECTOR_HEADER_SECONDARY_ACTIVE{0.28f, 0.24f, 0.24f, 1.0f};
 
-constexpr ImVec2 INSPECTOR_CHECKBOX_FRAME_PAD{4.0f, 2.0f};
-constexpr float INSPECTOR_CHECKBOX_FONT_SCALE = 1.0f;
-constexpr float INSPECTOR_CHECKBOX_SLOT_W = 22.0f;
+constexpr ImVec2 INSPECTOR_CHECKBOX_FRAME_PAD{3.0f, 1.5f};
+/// Scales only the checkbox square (label text stays at ambient font size).
+constexpr float INSPECTOR_CHECKBOX_BOX_SCALE = 0.75f;
+constexpr float INSPECTOR_CHECKBOX_SLOT_W = 16.5f;
 
 constexpr ImVec4 INSPECTOR_INLINE_BTN_IDLE{0.20f, 0.20f, 0.20f, 1.0f};
 constexpr ImVec4 INSPECTOR_INLINE_BTN_HOVER{0.28f, 0.24f, 0.24f, 1.0f};

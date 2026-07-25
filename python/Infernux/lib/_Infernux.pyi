@@ -74,6 +74,7 @@ class NativeDocumentStore:
 GIZMO_XY_PLANE_ID: int
 GIZMO_XZ_PLANE_ID: int
 GIZMO_YZ_PLANE_ID: int
+GIZMO_CENTER_ID: int
 
 CAMERA_TARGET: RenderTargetHandle
 

@@ -46,6 +46,7 @@ from ._inspector_references import render_object_field, _picker_assets
 from .inspector_utils import field_label, max_label_w
 from .panel_registry import editor_panel
 from .theme import ImGuiCol, Theme
+from .igui import IGUI
 
 
 # Legacy single-compare fallback when ast parse fails
@@ -1038,7 +1039,7 @@ class AnimFSMEditorPanel(EditorPanel):
 
         ctx.dummy(0, 4)
         ctx.begin_group()
-        add_clicked = ctx.button("+##addrow", None, 28, 20)
+        add_clicked = IGUI._mini_icon_button(ctx, "##addrow", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS)
         if semantic_prefix:
             ctx.record_semantic_item(
                 "button", "Add Condition", True, f"{semantic_prefix}.condition.add",
@@ -1049,7 +1050,9 @@ class AnimFSMEditorPanel(EditorPanel):
             self._apply_condition_model(lk, nt)
         ctx.same_line(0, 6)
         can_remove = len(terms) > 1
-        remove_clicked = can_remove and ctx.button("−##rmrow", None, 28, 20)
+        remove_clicked = can_remove and IGUI._mini_icon_button(
+            ctx, "##rmrow", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS
+        )
         if semantic_prefix:
             ctx.record_semantic_item(
                 "button",
@@ -1676,7 +1679,7 @@ class AnimFSMEditorPanel(EditorPanel):
             ctx.begin_group()
             ctx.label(f"→ {target_name}")
             ctx.same_line()
-            if ctx.button("×##del", None, 24, 20):
+            if IGUI._mini_icon_button(ctx, "##del", Theme.ICON_IMG_REMOVE, Theme.ICON_REMOVE):
                 remove_link_uid = lk.uid
 
             self._render_transition_condition_block(ctx, lk)

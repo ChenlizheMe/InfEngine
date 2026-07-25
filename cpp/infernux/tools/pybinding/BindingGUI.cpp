@@ -356,6 +356,14 @@ void RegisterGUIBindings(py::module_ &m)
                  ctx.Checkbox(label, &value);
                  return value;
              })
+        .def(
+            "checkbox_inspector",
+            [](InxGUIContext &ctx, const std::string &label, bool value) {
+                ctx.CheckboxInspector(label, &value);
+                return value;
+            },
+            py::arg("label"), py::arg("value"),
+            "Inspector checkbox: square scaled to 75%, label at ambient font size")
         .def("int_slider",
              [](InxGUIContext &ctx, const std::string &label, int value, int min, int max) {
                  ctx.IntSlider(label, &value, min, max);
@@ -1210,6 +1218,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("create_primitive", &HierarchyPanel::createPrimitive)
         .def_readwrite("create_light", &HierarchyPanel::createLight)
         .def_readwrite("create_empty", &HierarchyPanel::createEmpty)
+        .def_readwrite("create_empty_parent", &HierarchyPanel::createEmptyParent)
         .def("add_create_entry", &HierarchyPanel::AddCreateEntry, py::arg("category"), py::arg("locale_key"),
              py::arg("callback"), "Register a data-driven entry for the Hierarchy context menu")
         .def("clear_create_entries", &HierarchyPanel::ClearCreateEntries, "Remove all data-driven create-menu entries")

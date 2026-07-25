@@ -115,6 +115,8 @@ class HierarchyPanel : public EditorPanel
     std::function<void(int, uint64_t)> createPrimitive; // (typeIdx, parentId)
     std::function<void(int, uint64_t)> createLight;     // (typeIdx, parentId)
     std::function<void(uint64_t)> createEmpty;
+    /// Create an empty parent around the current selection (multi-select aware).
+    std::function<void()> createEmptyParent;
 
     /// Data-driven create-menu entries (populated from Python).
     std::vector<HierarchyCreateEntry> createEntries;
@@ -336,8 +338,10 @@ class HierarchyPanel : public EditorPanel
     void HandleClipboardShortcuts(InxGUIContext *ctx);
 
     // Context menus
+    void ShowStandardCreateMenus(InxGUIContext *ctx, uint64_t parentId, const char *semanticRoot);
     void ShowCreatePrimitiveMenu(InxGUIContext *ctx, uint64_t parentId);
     void ShowCreateLightMenu(InxGUIContext *ctx, uint64_t parentId);
+    void ShowCreateEffectMenu(InxGUIContext *ctx, uint64_t parentId);
     void ShowCreate2DMenu(InxGUIContext *ctx, uint64_t parentId);
     void ShowPostProcessingMenu(InxGUIContext *ctx, uint64_t parentId);
     void ShowUiMenu(InxGUIContext *ctx, uint64_t parentId);

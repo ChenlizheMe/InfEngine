@@ -131,6 +131,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     _pipeline_param_store: Dict[str, Dict[str, object]] = None
     _pipeline_catalog_signature: tuple = ()
     _topology_probe_cache = None
+    _last_valid_topology_probe = None
+    _topology_probe_error: str = ""
+    _last_valid_graph_desc = None
     _compiled_effect_bindings = None
     _effect_upload_revisions = None
     _effect_compile_errors: tuple[str, ...] = ()
@@ -184,6 +187,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             self._pipeline.dispose()
         self._pipeline = None
         self._graph_desc = None
+        self._last_valid_graph_desc = None
+        self._last_valid_topology_probe = None
+        self._topology_probe_error = ""
         self._resource_bus = None
         self._compiled_effect_bindings = []
         self._effect_upload_revisions = {}
@@ -280,6 +286,8 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     @property
     def effect_compile_errors(self) -> tuple[str, ...]:
         """Current non-destructive diagnostics for mounted Effect assets."""
+        if self._topology_probe_error:
+            return (*self._effect_compile_errors, self._topology_probe_error)
         return self._effect_compile_errors
 
     @property
@@ -434,12 +442,48 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             return self._topology_probe_cache
 
         from Infernux.rendergraph.graph import RenderGraph
-        g = RenderGraph("_FullTopologyProbe")
-        self.pipeline.define_topology(g)
-        # Keep the inspector probe consistent with build(): post-process
-        # injection points are guaranteed to exist even when Screen UI is off.
-        ensure_standard_post_process_points(g)
+
+        try:
+            g = RenderGraph("_FullTopologyProbe")
+            self.pipeline.define_topology(g)
+            # Keep the inspector probe consistent with build(): post-process
+            # injection points are guaranteed to exist even when Screen UI is off.
+            ensure_standard_post_process_points(g)
+        except Exception as exc:
+            diagnostic = (
+                f"Pipeline topology is invalid: {type(exc).__name__}: {exc}. "
+                "The last valid Inspector topology remains active."
+            )
+            if diagnostic != self._topology_probe_error:
+                from Infernux.debug import Debug
+
+                Debug.log_error(f"[RenderStack] {diagnostic}")
+            self._topology_probe_error = diagnostic
+            if self._last_valid_topology_probe is not None:
+                return self._last_valid_topology_probe
+
+            # A newly-created broken custom pipeline has no previous topology.
+            # Show the standard mount points so the Inspector remains usable;
+            # never let a pipeline authoring error escape into ImGui's stack.
+            from Infernux.renderstack.default_forward_pipeline import (
+                DefaultForwardPipeline,
+            )
+
+            try:
+                g = RenderGraph("_SafeTopologyProbe")
+                DefaultForwardPipeline().define_topology(g)
+                ensure_standard_post_process_points(g)
+                return g
+            except Exception as fallback_exc:
+                Debug.log_error(
+                    "[RenderStack] Safe Inspector topology also failed: "
+                    f"{type(fallback_exc).__name__}: {fallback_exc}"
+                )
+                return RenderGraph("_EmptyTopologyProbe")
+
+        self._topology_probe_error = ""
         self._topology_probe_cache = g
+        self._last_valid_topology_probe = g
         return g
 
     def invalidate_graph(self) -> None:
@@ -450,8 +494,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         self._graph_desc = None
         self._build_failed = False  # allow retry after explicit invalidation
         self._topology_probe_cache = None
-        self._compiled_effect_bindings = []
-        self._effect_upload_revisions = {}
+        # Keep the bindings and upload revisions paired with the last valid
+        # graph until a replacement graph has built successfully. A rejected
+        # edit must not disable live parameters on the graph still on screen.
 
     def build_graph(self):  # -> RenderGraphDescription
         """Build the complete RenderGraph.
@@ -596,10 +641,21 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if self._graph_desc is None and not self._build_failed:
             context.setup_camera_properties(camera)
             culling = context.cull(camera)
+            previous_graph = self._last_valid_graph_desc
             try:
                 self._graph_desc = self.build_graph()
             except Exception as exc:
-                self._graph_desc = self._fallback_on_build_failure(exc)
+                from Infernux.debug import Debug
+
+                if previous_graph is not None:
+                    Debug.log_error(
+                        f"[RenderStack] Pipeline graph rebuild rejected: {exc}. "
+                        "Keeping the last valid graph until parameters change."
+                    )
+                    self._graph_desc = previous_graph
+                    self._build_failed = True
+                else:
+                    self._graph_desc = self._fallback_on_build_failure(exc)
 
             if self._graph_desc is None:
                 # Build failed and fallback also failed; skip rendering
@@ -610,6 +666,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
             try:
                 context.apply_graph(self._graph_desc)
+                self._last_valid_graph_desc = self._graph_desc
             except Exception as exc:
                 from Infernux.debug import Debug
                 Debug.log_error(
@@ -623,6 +680,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                     return
                 try:
                     context.apply_graph(self._graph_desc)
+                    self._last_valid_graph_desc = self._graph_desc
                 except Exception as exc2:
                     from Infernux.debug import Debug
                     Debug.log_error(
@@ -820,4 +878,3 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                     continue
         finally:
             pipeline._inf_deserializing = False
-

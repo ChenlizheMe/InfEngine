@@ -65,6 +65,12 @@ def shadow_caster_queue_range() -> tuple[int, int]:
 def create_main_scene_targets(graph: "RenderGraph", *, shadow_resolution: int) -> None:
     from Infernux.rendergraph.graph import Format
 
+    shadow_resolution = int(shadow_resolution)
+    if shadow_resolution <= 0:
+        raise ValueError(
+            f"shadow resolution must be positive, got {shadow_resolution}"
+        )
+
     graph.create_texture(COLOR_TEXTURE, camera_target=True)
     graph.create_texture(DEPTH_TEXTURE, format=Format.D32_SFLOAT)
     graph.create_texture(

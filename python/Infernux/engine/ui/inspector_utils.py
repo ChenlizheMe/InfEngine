@@ -589,6 +589,8 @@ def _render_color_bar(
     min_y = ctx.get_item_rect_min_y()
     max_x = ctx.get_item_rect_max_x()
     max_y = ctx.get_item_rect_max_y()
+    hovered = bool(ctx.is_item_hovered())
+    active = hovered and bool(ctx.is_mouse_button_down(0))
 
     split_y = min_y + (max_y - min_y) * 0.75
 
@@ -596,8 +598,16 @@ def _render_color_bar(
     ctx.draw_filled_rect(min_x, min_y, max_x, split_y, r, g, b, 1.0)
     # Bottom 1/4: alpha as grey
     ctx.draw_filled_rect(min_x, split_y, max_x, max_y, a, a, a, 1.0)
-    # Thin border
-    ctx.draw_rect(min_x, min_y, max_x, max_y, *Theme.COLOR_SWATCH_BORDER, 1.0)
+    # Hover / press feedback over the swatch (Unity-like lighten).
+    if active:
+        ctx.draw_filled_rect(min_x, min_y, max_x, max_y, 1.0, 1.0, 1.0, 0.14)
+        border = Theme.INSPECTOR_INLINE_BTN_ACTIVE
+    elif hovered:
+        ctx.draw_filled_rect(min_x, min_y, max_x, max_y, 1.0, 1.0, 1.0, 0.08)
+        border = Theme.INSPECTOR_INLINE_BTN_HOVER
+    else:
+        border = Theme.COLOR_SWATCH_BORDER
+    ctx.draw_rect(min_x, min_y, max_x, max_y, *border, 1.0)
 
     popup_id = f"{wid}_cpop"
     if clicked:
@@ -715,12 +725,28 @@ def render_component_header(
 
 
 def render_inspector_checkbox(ctx: InxGUIContext, label: str, value: bool) -> bool:
-    """Render a compact checkbox with the shared inspector sizing."""
+    """Render a compact checkbox: square at 75%, label at normal font size."""
+    checkbox_inspector = getattr(ctx, "checkbox_inspector", None)
+    if callable(checkbox_inspector):
+        return bool(checkbox_inspector(label, value))
+
+    # Fallback before the native binding is rebuilt: scale only a ##id square.
+    text = str(label or "")
+    hash_pos = text.find("##")
+    if hash_pos >= 0:
+        visible, ident = text[:hash_pos], text[hash_pos:] or "##cb"
+    else:
+        visible, ident = text, f"##inx_cb_{text or 'cb'}"
+    row_y = ctx.get_cursor_pos_y()
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_CHECKBOX_FRAME_PAD)
-    ctx.set_window_font_scale(Theme.INSPECTOR_CHECKBOX_FONT_SCALE)
-    new_value = ctx.checkbox(label, value)
+    ctx.set_window_font_scale(Theme.INSPECTOR_CHECKBOX_BOX_SCALE)
+    new_value = ctx.checkbox(ident, value)
     ctx.set_window_font_scale(1.0)
     ctx.pop_style_var(1)
+    if visible:
+        ctx.same_line(0.0, 4.0)
+        ctx.set_cursor_pos_y(row_y)
+        ctx.label(visible)
     return new_value
 
 

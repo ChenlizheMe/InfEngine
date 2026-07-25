@@ -30,6 +30,15 @@ def wire_creation_callbacks(ctx):
     )
     hp.create_empty = lambda parent_id: _create("empty", parent_id)
 
+    def _create_empty_parent() -> None:
+        try:
+            ids = list(ctx.sel.get_ids()) if ctx.sel is not None else []
+            svc.create_empty_parent(ids)
+        except Exception as exc:
+            Debug.log_error(f"Hierarchy create empty parent failed: {exc}")
+
+    hp.create_empty_parent = _create_empty_parent
+
     # Data-driven entries for Hierarchy context menus.
     hp.clear_create_entries()
     hp.add_create_entry(
@@ -48,22 +57,14 @@ def wire_creation_callbacks(ctx):
         lambda parent_id: _create("rendering.sprite_renderer", parent_id),
     )
     hp.add_create_entry(
+        "Effect",
+        "hierarchy.particle_system",
+        lambda parent_id: _create("effect.particle_system", parent_id),
+    )
+    # Hierarchy UI create menu only offers Canvas; Image/Text/Button are
+    # authored under a Canvas via the UI editor / Add Component.
+    hp.add_create_entry(
         "UI",
         "hierarchy.ui_canvas",
         lambda parent_id: _create("ui.canvas", parent_id),
-    )
-    hp.add_create_entry(
-        "UI",
-        "hierarchy.ui_image",
-        lambda parent_id: _create("ui.image", parent_id),
-    )
-    hp.add_create_entry(
-        "UI",
-        "hierarchy.ui_text",
-        lambda parent_id: _create("ui.text", parent_id),
-    )
-    hp.add_create_entry(
-        "UI",
-        "hierarchy.ui_button",
-        lambda parent_id: _create("ui.button", parent_id),
     )

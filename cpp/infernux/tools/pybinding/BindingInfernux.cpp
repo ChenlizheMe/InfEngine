@@ -478,6 +478,7 @@ PYBIND11_MODULE(_Infernux, m)
     m.attr("GIZMO_XY_PLANE_ID") = EditorTools::XY_PLANE_ID;
     m.attr("GIZMO_XZ_PLANE_ID") = EditorTools::XZ_PLANE_ID;
     m.attr("GIZMO_YZ_PLANE_ID") = EditorTools::YZ_PLANE_ID;
+    m.attr("GIZMO_CENTER_ID") = EditorTools::CENTER_ID;
 
     py::enum_<LogLevel>(m, "LogLevel")
         .value("Debug", LogLevel::LOG_DEBUG)

@@ -46,7 +46,7 @@ def _ensure_loaded(native_engine) -> None:
     _ICONS = [
         "plus", "minus", "remove", "picker",
         "warning", "error",
-        "ui_text", "ui_image", "ui_button",
+        "ui_canvas", "ui_text", "ui_image", "ui_button",
         "tool_none", "tool_move", "tool_rotate", "tool_scale",
     ]
     for name in _ICONS:

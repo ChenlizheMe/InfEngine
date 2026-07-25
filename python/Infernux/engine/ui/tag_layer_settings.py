@@ -13,6 +13,7 @@ from Infernux.physics import settings as _phys_settings
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiWindowFlags
+from .igui import IGUI
 
 
 def _save_mgr_to_project(mgr, project_path: str):
@@ -83,7 +84,8 @@ class TagLayerSettingsPanel(EditorPanel):
                 else:
                     ctx.label(f"  {tag}")
                     ctx.same_line(ctx.get_window_width() - 30)
-                    ctx.button(f" {Theme.ICON_REMOVE} ##rm", lambda t=tag: self._do_remove_tag(t))
+                    if IGUI._mini_icon_button(ctx, "##rm", Theme.ICON_IMG_REMOVE, Theme.ICON_REMOVE):
+                        self._do_remove_tag(tag)
 
                 ctx.pop_id()
 
@@ -93,7 +95,8 @@ class TagLayerSettingsPanel(EditorPanel):
             ctx.set_next_item_width(ctx.get_content_region_avail_width() - 60)
             self._new_tag_name = ctx.text_input("##new_tag", self._new_tag_name, 128)
             ctx.same_line()
-            ctx.button(f" {Theme.ICON_PLUS} ##add_tag", lambda: self._do_add_tag())
+            if IGUI._mini_icon_button(ctx, "##add_tag", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS):
+                self._do_add_tag()
             ctx.spacing()
 
     def _render_layers_section(self, ctx: InxGUIContext, mgr):

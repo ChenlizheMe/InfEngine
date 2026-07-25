@@ -27,7 +27,7 @@ def test_unique_scene_object_name_uses_first_available_unity_style_suffix():
     assert _unique_scene_object_name(scene, "Cube", exclude_id=1) == "Cube"
 
 
-def test_hierarchy_creation_wiring_exposes_all_user_facing_ui_elements(monkeypatch):
+def test_hierarchy_creation_wiring_exposes_canvas_only_ui_and_particle_effect(monkeypatch):
     from Infernux.engine.bootstrap_hierarchy import _creation
 
     class _Service:
@@ -55,12 +55,13 @@ def test_hierarchy_creation_wiring_exposes_all_user_facing_ui_elements(monkeypat
     )
 
     ui_entries = [(category, locale_key) for category, locale_key, _callback in hierarchy.entries if category == "UI"]
-    assert ui_entries == [
-        ("UI", "hierarchy.ui_canvas"),
-        ("UI", "hierarchy.ui_image"),
-        ("UI", "hierarchy.ui_text"),
-        ("UI", "hierarchy.ui_button"),
+    effect_entries = [
+        (category, locale_key)
+        for category, locale_key, _callback in hierarchy.entries
+        if category == "Effect"
     ]
+    assert ui_entries == [("UI", "hierarchy.ui_canvas")]
+    assert effect_entries == [("Effect", "hierarchy.particle_system")]
 
 
 def test_hierarchy_creation_catalog_includes_image():

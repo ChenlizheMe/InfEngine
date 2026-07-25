@@ -116,6 +116,8 @@ class InxGUIContext
 
     /* value editors */
     void Checkbox(const std::string &label, bool *value);
+    /// Inspector checkbox: square at ``INSPECTOR_CHECKBOX_BOX_SCALE``, label at normal font size.
+    bool CheckboxInspector(const std::string &label, bool *value);
     void IntSlider(const std::string &label, int *value, int min, int max);
     void FloatSlider(const std::string &label, float *value, float min, float max);
     bool DragFloat(const std::string &label, float *value, float speed = 1.0f, float min = 0.0f, float max = 0.0f,

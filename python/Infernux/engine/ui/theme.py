@@ -387,12 +387,12 @@ class Theme:
     INSPECTOR_HEADER_CONTENT_INDENT = 28.0  # Header content indent (px)
     ADD_COMP_SEARCH_W          = 240  # "Search components" input width
     COMPONENT_ICON_SIZE        = 16  # Component icon size (px)
-    COMP_ENABLED_CB_OFFSET     = 40  # Enabled checkbox right offset
+    COMP_ENABLED_CB_OFFSET     = 34  # Enabled checkbox right offset (matches 75% checkbox)
 
-    # -- Checkbox Style
-    INSPECTOR_CHECKBOX_FONT_SCALE= 1.0  # Checkbox font scale
-    INSPECTOR_CHECKBOX_FRAME_PAD = (4.0, 2.0)  # Checkbox frame padding
-    INSPECTOR_CHECKBOX_SLOT_W    = 22.0  # Checkbox slot width
+    # -- Checkbox Style (square at 75%; label text stays ambient size)
+    INSPECTOR_CHECKBOX_BOX_SCALE = 0.75  # Scales only the checkbox square
+    INSPECTOR_CHECKBOX_FRAME_PAD = (3.0, 1.5)  # Checkbox frame padding
+    INSPECTOR_CHECKBOX_SLOT_W    = 16.5  # Checkbox slot width
 
     # -- Inspector Header Colors
     INSPECTOR_HEADER_PRIMARY    : RGBA = (0.235, 0.235, 0.235, 1.0)  # Primary (Unity gray)

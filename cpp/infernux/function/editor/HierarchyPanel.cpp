@@ -999,40 +999,15 @@ void HierarchyPanel::RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj)
     const std::string &createChildLabel = Tr("hierarchy.create_child");
     const bool createChildOpen = ctx->BeginMenu(createChildLabel, true, "hierarchy.context.create_child");
     if (createChildOpen) {
-        ShowCreateEntriesForCategory(ctx, objId, "Camera");
-        const std::string &create3dLabel = Tr("hierarchy.create_3d_object");
-        const bool create3dOpen = ctx->BeginMenu(create3dLabel, true, "hierarchy.context.create_child.create_3d");
-        if (create3dOpen) {
-            ShowCreatePrimitiveMenu(ctx, objId);
-            ctx->EndMenu();
-        }
-        const std::string &create2dLabel = Tr("hierarchy.create_2d_object");
-        const bool create2dOpen = ctx->BeginMenu(create2dLabel, true, "hierarchy.context.create_child.create_2d");
-        if (create2dOpen) {
-            ShowCreate2DMenu(ctx, objId);
-            ctx->EndMenu();
-        }
-        const std::string &postProcessingLabel = Tr("hierarchy.post_processing_menu");
-        const bool postProcessingOpen =
-            ctx->BeginMenu(postProcessingLabel, true, "hierarchy.context.create_child.post_processing");
-        if (postProcessingOpen) {
-            ShowPostProcessingMenu(ctx, objId);
-            ctx->EndMenu();
-        }
-        const std::string &uiLabel = Tr("hierarchy.ui_menu");
-        const bool uiOpen = ctx->BeginMenu(uiLabel, true, "hierarchy.context.create_child.ui");
-        if (uiOpen) {
-            ShowUiMenu(ctx, objId);
-            ctx->EndMenu();
-        }
-        const std::string &emptyLabel = Tr("hierarchy.empty_object");
-        const bool createEmptySelected = ctx->Selectable(emptyLabel, false, 0, 0, 0);
-        ctx->RecordSemanticItem("menu_item", emptyLabel, true, "hierarchy.context.create_child.empty");
-        if (createEmptySelected) {
-            if (createEmpty)
-                createEmpty(objId);
-        }
+        ShowStandardCreateMenus(ctx, objId, "hierarchy.context.create_child");
         ctx->EndMenu();
+    }
+    if (m_selCount > 0) {
+        const std::string &createParentLabel = Tr("hierarchy.create_empty_parent");
+        const bool createParentSelected = ctx->Selectable(createParentLabel, false, 0, 0, 0);
+        ctx->RecordSemanticItem("menu_item", createParentLabel, true, "hierarchy.context.create_empty_parent");
+        if (createParentSelected && createEmptyParent)
+            createEmptyParent();
     }
     ctx->Separator();
     if (ctx->Selectable(Tr("project.copy"), false, 0, 0, 0)) {
@@ -1111,6 +1086,49 @@ void HierarchyPanel::RenderItemContextMenu(InxGUIContext *ctx, GameObject *obj)
     }
 }
 
+void HierarchyPanel::ShowStandardCreateMenus(InxGUIContext *ctx, uint64_t parentId, const char *semanticRoot)
+{
+    // Empty sits at the top of the create list (Unity-style).
+    const std::string &emptyLabel = Tr("hierarchy.empty_object");
+    const bool createEmptySelected = ctx->Selectable(emptyLabel, false, 0, 0, 0);
+    ctx->RecordSemanticItem("menu_item", emptyLabel, true, std::string(semanticRoot) + ".empty");
+    if (createEmptySelected && createEmpty)
+        createEmpty(parentId);
+
+    ShowCreateEntriesForCategory(ctx, parentId, "Camera");
+
+    const std::string &create3dLabel = Tr("hierarchy.create_3d_object");
+    if (ctx->BeginMenu(create3dLabel, true, std::string(semanticRoot) + ".create_3d")) {
+        ShowCreatePrimitiveMenu(ctx, parentId);
+        ctx->EndMenu();
+    }
+    const std::string &create2dLabel = Tr("hierarchy.create_2d_object");
+    if (ctx->BeginMenu(create2dLabel, true, std::string(semanticRoot) + ".create_2d")) {
+        ShowCreate2DMenu(ctx, parentId);
+        ctx->EndMenu();
+    }
+    const std::string &lightLabel = Tr("hierarchy.light_menu");
+    if (ctx->BeginMenu(lightLabel, true, std::string(semanticRoot) + ".light")) {
+        ShowCreateLightMenu(ctx, parentId);
+        ctx->EndMenu();
+    }
+    const std::string &effectLabel = Tr("hierarchy.effect_menu");
+    if (ctx->BeginMenu(effectLabel, true, std::string(semanticRoot) + ".effect")) {
+        ShowCreateEffectMenu(ctx, parentId);
+        ctx->EndMenu();
+    }
+    const std::string &postProcessingLabel = Tr("hierarchy.post_processing_menu");
+    if (ctx->BeginMenu(postProcessingLabel, true, std::string(semanticRoot) + ".post_processing")) {
+        ShowPostProcessingMenu(ctx, parentId);
+        ctx->EndMenu();
+    }
+    const std::string &uiLabel = Tr("hierarchy.ui_menu");
+    if (ctx->BeginMenu(uiLabel, true, std::string(semanticRoot) + ".ui")) {
+        ShowUiMenu(ctx, parentId);
+        ctx->EndMenu();
+    }
+}
+
 void HierarchyPanel::ShowCreatePrimitiveMenu(InxGUIContext *ctx, uint64_t parentId)
 {
     struct PrimEntry
@@ -1160,6 +1178,11 @@ void HierarchyPanel::ShowCreateLightMenu(InxGUIContext *ctx, uint64_t parentId)
                 createLight(e.typeIdx, parentId);
         }
     }
+}
+
+void HierarchyPanel::ShowCreateEffectMenu(InxGUIContext *ctx, uint64_t parentId)
+{
+    ShowCreateEntriesForCategory(ctx, parentId, "Effect");
 }
 
 void HierarchyPanel::ShowCreateEntriesForCategory(InxGUIContext *ctx, uint64_t parentId, const std::string &category)
@@ -2106,34 +2129,14 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         if (m_uiMode) {
             ShowUiModeContextMenu(ctx, parentIdForNew);
         } else {
-            ShowCreateEntriesForCategory(ctx, parentIdForNew, "Camera");
-            const std::string &create3dLabel = Tr("hierarchy.create_3d_object");
-            if (ctx->BeginMenu(create3dLabel, true, "hierarchy.context.create_3d")) {
-                ShowCreatePrimitiveMenu(ctx, parentIdForNew);
-                ctx->EndMenu();
-            }
-            const std::string &create2dLabel = Tr("hierarchy.create_2d_object");
-            if (ctx->BeginMenu(create2dLabel, true, "hierarchy.context.create_2d")) {
-                ShowCreate2DMenu(ctx, parentIdForNew);
-                ctx->EndMenu();
-            }
-            const std::string &postProcessingLabel = Tr("hierarchy.post_processing_menu");
-            if (ctx->BeginMenu(postProcessingLabel, true, "hierarchy.context.post_processing")) {
-                ShowPostProcessingMenu(ctx, parentIdForNew);
-                ctx->EndMenu();
-            }
-            const std::string &uiLabel = Tr("hierarchy.ui_menu");
-            if (ctx->BeginMenu(uiLabel, true, "hierarchy.context.ui")) {
-                ShowUiMenu(ctx, parentIdForNew);
-                ctx->EndMenu();
-            }
-            const std::string &createEmptyLabel = Tr("hierarchy.create_empty");
-            const bool createEmptySelected = ctx->Selectable(createEmptyLabel, false, 0, 0, 0);
-            ctx->RecordSemanticItem("menu_item", createEmptyLabel, true, "hierarchy.context.create_empty");
-            if (createEmptySelected) {
-                if (createEmpty)
-                    createEmpty(parentIdForNew);
-            }
+            ShowStandardCreateMenus(ctx, parentIdForNew, "hierarchy.context");
+        }
+        if (m_selCount > 0) {
+            const std::string &createParentLabel = Tr("hierarchy.create_empty_parent");
+            const bool createParentSelected = ctx->Selectable(createParentLabel, false, 0, 0, 0);
+            ctx->RecordSemanticItem("menu_item", createParentLabel, true, "hierarchy.context.create_empty_parent");
+            if (createParentSelected && createEmptyParent)
+                createEmptyParent();
         }
 
         bool hasClip = hasClipboardData && hasClipboardData();

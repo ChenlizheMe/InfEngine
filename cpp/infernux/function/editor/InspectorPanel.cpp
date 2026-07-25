@@ -1215,7 +1215,7 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
     }
 
     if (showEnabled) {
-        newEnabled = RenderInspectorCheckbox(nullptr, "##hdr_en", isEnabled);
+        newEnabled = RenderInspectorCheckbox(ctx, "##hdr_en", isEnabled);
         if (ctx && captureSemantics)
             ctx->RecordSemanticItem("component_enabled", displayName, true, semanticBase + ".enabled");
         ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);
@@ -1252,14 +1252,11 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
 // Inspector checkbox
 // ============================================================================
 
-bool InspectorPanel::RenderInspectorCheckbox(InxGUIContext * /*ctx*/, const char *label, bool value)
+bool InspectorPanel::RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value)
 {
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
-    ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_FONT_SCALE);
     bool newValue = value;
-    ImGui::Checkbox(label, &newValue);
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::PopStyleVar();
+    if (ctx)
+        ctx->CheckboxInspector(label ? label : "##cb", &newValue);
     return newValue;
 }
 

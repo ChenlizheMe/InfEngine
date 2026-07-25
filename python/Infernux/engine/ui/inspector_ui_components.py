@@ -1384,11 +1384,8 @@ def _render_on_click_events(ctx, btn_comp):
         avail_w = ctx.get_content_region_avail_width()
         if avail_w >= _BTN_W:
             ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + avail_w - _BTN_W)
-        color_count = Theme.push_inline_button_style(ctx)
-        if ctx.button(f"{Theme.ICON_MINUS}##click_rm_{i}", None,
-                      width=_BTN_W, height=Theme.INSPECTOR_INLINE_BTN_H):
+        if _igui().list_item_remove_button(ctx, f"click_{i}"):
             remove_index = i
-        ctx.pop_style_color(color_count)
 
         if entry_open:
             entries, _changed = _render_onclick_entry(ctx, btn_comp, entries, i, entry, lw)

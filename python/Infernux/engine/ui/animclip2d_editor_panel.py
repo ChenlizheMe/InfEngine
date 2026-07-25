@@ -441,7 +441,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                 ctx.pop_style_color(1)
 
         ctx.same_line(0, 8)
-        add_clicked = ctx.button(f"+##add_clip")
+        add_clicked = IGUI._mini_icon_button(ctx, "##add_clip", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS)
         ctx.record_semantic_item("button", "Add Clip", True, "animclip2d.clip.add")
         if add_clicked:
             self._clips.append(_ClipState(name=f"Clip_{len(self._clips)}"))

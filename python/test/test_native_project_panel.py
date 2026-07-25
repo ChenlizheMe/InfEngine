@@ -346,6 +346,38 @@ class TestProjectPanelCallbacks:
         assert "IsUiPrefabFile(item.path, item.mtimeNs)" in grid_preview
         assert grid_preview.count("IsUiPrefabFile(") == 1
 
+    def test_project_search_filters_a_generation_cached_memory_index(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        search = source[source.index("void ProjectPanel::RebuildSearchIndex"):
+                        source.index("void ProjectPanel::RenderSearchResults")]
+
+        assert "m_searchIndexGeneration" in search
+        assert "m_searchIndex.push_back" in search
+        assert "indexed.searchKey.find(queryLower)" in search
+        assert "CollectMatchingFolders" not in source
+        assert "directory_iterator" not in search
+
+    def test_search_activation_does_not_clear_the_container_being_iterated(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        search = source[source.index("void ProjectPanel::RenderSearchResults"):
+                        source.index("// Folder tree")]
+        iteration = search[search.index("for (const auto &item : m_searchResults)"):
+                           search.index("if (!hasActivatedItem)")]
+
+        assert "activatedItem = item" in iteration
+        assert "m_searchResults.clear()" not in iteration
+        assert search.index("m_searchResults.clear()") < search.index("SetCurrentPath(activatedItem.path)")
+
+    def test_parent_navigation_stops_using_the_previous_grid_snapshot(self):
+        source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        grid = source[source.index("void ProjectPanel::RenderFileGrid"):
+                      source.index("// Context menu")]
+        parent_navigation = grid[grid.index('ctx->Selectable("[..]", false)'):
+                                 grid.index("// Grid config")]
+
+        assert "AssignCurrentPath(parent);" in parent_navigation
+        assert "return;" in parent_navigation
+
     def test_get_unique_name_callback(self):
         pp = ProjectPanel()
         pp.get_unique_name = lambda cur, base, ext: f"{base}_1{ext}"
