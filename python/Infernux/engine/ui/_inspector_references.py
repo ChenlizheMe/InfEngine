@@ -438,6 +438,12 @@ def _render_asset_reference_field(
     if label == label_key:
         label = pretty_field_name(field_name)
     field_label(ctx, label, lw)
+
+    def _on_ping(_value=current_value):
+        path = _resolve_asset_disk_path(_value)
+        if path:
+            ping_asset_in_project(path)
+
     render_object_field(
         ctx, f"{prefix}_ref_{field_name}", display, type_hint,
         accept_drag_type=drag_type,
@@ -445,6 +451,7 @@ def _render_asset_reference_field(
         picker_asset_items=_picker,
         on_pick=_on_pick,
         on_clear=_on_clear,
+        on_ping=_on_ping if current_value is not None and display != "None" else None,
         semantic_id=(inspector_component_semantic_id(comp, field_name)
                      if semantic_capture_enabled(ctx) else ""),
     )
@@ -649,11 +656,105 @@ def _picker_assets(filter_text: str, pattern: str, *, assets_only: bool = False)
 # ── Object field wrapper ──
 
 
+def _resolve_asset_disk_path(value) -> str:
+    """Best-effort absolute (or AssetDatabase) path for an asset reference value."""
+    import os
+
+    if value is None:
+        return ""
+
+    guid = str(getattr(value, "guid", "") or "")
+    path_hint = str(getattr(value, "path_hint", "") or "")
+
+    adb = None
+    try:
+        from Infernux.core.asset_ref import _get_asset_database
+        adb = _get_asset_database()
+    except Exception:
+        adb = None
+
+    if guid and adb is not None:
+        try:
+            resolved = adb.get_path_from_guid(guid) or ""
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+
+    resolved_obj = None
+    if hasattr(value, "resolve"):
+        try:
+            resolved_obj = value.resolve()
+        except Exception:
+            resolved_obj = None
+    elif not isinstance(value, str):
+        resolved_obj = value
+
+    if resolved_obj is not None:
+        for attr in ("file_path", "source_path", "path"):
+            candidate = getattr(resolved_obj, attr, None)
+            if candidate:
+                text = str(candidate)
+                # Embedded sub-assets use virtual paths; ping the host file.
+                for token in ("::submat:", "::subanim:", "::subbone:"):
+                    if token in text:
+                        text = text.split(token, 1)[0]
+                        break
+                if text:
+                    return text
+
+    if path_hint:
+        if os.path.isfile(path_hint):
+            return path_hint
+        if adb is not None:
+            try:
+                # path_hint may be project-relative / portable.
+                guid_from_hint = adb.get_guid_from_path(path_hint) or ""
+                if guid_from_hint:
+                    return adb.get_path_from_guid(guid_from_hint) or path_hint
+            except Exception:
+                pass
+        return path_hint
+
+    if isinstance(value, str) and value:
+        return value
+    return ""
+
+
+def ping_asset_in_project(path: str) -> None:
+    """Focus Project panel and select *path* (navigates to its folder)."""
+    disk_path = str(path or "").strip()
+    if not disk_path:
+        return
+    for token in ("::submat:", "::subanim:", "::subbone:"):
+        if token in disk_path:
+            disk_path = disk_path.split(token, 1)[0]
+            break
+    try:
+        from Infernux.engine.bootstrap import EditorBootstrap
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        bs = EditorBootstrap.instance()
+        pp = getattr(bs, "project_panel", None) if bs else None
+        if pp is None:
+            return
+        ClosablePanel.focus_panel_by_id("project")
+        engine = getattr(bs, "engine", None)
+        native = engine.get_native_engine() if engine is not None else None
+        if native is not None and hasattr(native, "select_docked_window"):
+            native.select_docked_window("project")
+        pp.set_selected_file(disk_path)
+    except Exception as exc:
+        from Infernux.debug import Debug
+        Debug.log_suppressed("ping_asset_in_project", exc)
+
+
 def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
                         type_hint: str, selected: bool = False, clickable: bool = True,
                         accept_drag_type: str = None, on_drop_callback=None,
                         picker_scene_items=None, picker_asset_items=None,
-                        on_pick=None, on_clear=None, semantic_id: str = "") -> bool:
+                        on_pick=None, on_clear=None, on_ping=None,
+                        semantic_id: str = "") -> bool:
     """Render a Unity-style object field (selectable box showing an object reference)."""
     from .igui import IGUI
     return IGUI.object_field(
@@ -662,6 +763,6 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
         accept=accept_drag_type, on_drop=on_drop_callback,
         picker_scene_items=picker_scene_items,
         picker_asset_items=picker_asset_items,
-        on_pick=on_pick, on_clear=on_clear,
+        on_pick=on_pick, on_clear=on_clear, on_ping=on_ping,
         semantic_id=semantic_id,
     )

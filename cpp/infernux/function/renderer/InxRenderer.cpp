@@ -997,6 +997,7 @@ void InxRenderer::DrawFrame()
             gizmoCtx.componentGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoIconMaterial");
             gizmoCtx.cameraGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoCameraIconMaterial");
             gizmoCtx.lightGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoLightIconMaterial");
+            gizmoCtx.particleGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoParticleIconMaterial");
             gizmoCtx.particleMaterial = registry.GetBuiltinMaterial("ParticleBillboardMaterial");
             gizmoCtx.selectedObjectId = m_selectedObjectId;
             gizmoCtx.activeScene = SceneManager::Instance().GetActiveScene();

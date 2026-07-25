@@ -582,6 +582,9 @@ class InxMaterial
     /// @brief Create the built-in textured light icon billboard material.
     static std::shared_ptr<InxMaterial> CreateComponentGizmoLightIconMaterial();
 
+    /// @brief Create the built-in textured particle-system icon billboard material.
+    static std::shared_ptr<InxMaterial> CreateComponentGizmoParticleIconMaterial();
+
     /// @brief Create a procedural skybox material (gradient sky + sun)
     static std::shared_ptr<InxMaterial> CreateSkyboxProceduralMaterial();
 

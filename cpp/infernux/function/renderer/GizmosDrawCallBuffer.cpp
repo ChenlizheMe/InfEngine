@@ -171,11 +171,8 @@ bool GizmosDrawCallBuffer::HasIconData() const
     return !m_iconEntries.empty();
 }
 
-DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMaterial> defaultIconMaterial,
-                                                      std::shared_ptr<InxMaterial> cameraIconMaterial,
-                                                      std::shared_ptr<InxMaterial> lightIconMaterial,
-                                                      const glm::vec3 &cameraPos, const glm::vec3 &cameraRight,
-                                                      const glm::vec3 &cameraUp) const
+DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &materials, const glm::vec3 &cameraPos,
+                                                      const glm::vec3 &cameraRight, const glm::vec3 &cameraUp) const
 {
     DrawCallResult result;
     if (m_iconEntries.empty())
@@ -253,12 +250,7 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMateria
         auto &indices = m_iconSlicedIndices[i];
         indices = {0, 1, 2, 0, 2, 3};
 
-        std::shared_ptr<InxMaterial> iconMaterial = defaultIconMaterial;
-        if (icon.iconKind == ICON_KIND_CAMERA && cameraIconMaterial) {
-            iconMaterial = cameraIconMaterial;
-        } else if (icon.iconKind == ICON_KIND_LIGHT && lightIconMaterial) {
-            iconMaterial = lightIconMaterial;
-        }
+        const std::shared_ptr<InxMaterial> &iconMaterial = materials.Resolve(icon.iconKind);
         iconMaterialNames.push_back(iconMaterial ? iconMaterial->GetName() : std::string("<null>"));
         if (!iconMaterial) {
             continue;
@@ -291,6 +283,8 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(std::shared_ptr<InxMateria
                 kindName = "camera";
             } else if (icon.iconKind == ICON_KIND_LIGHT) {
                 kindName = "light";
+            } else if (icon.iconKind == ICON_KIND_PARTICLE) {
+                kindName = "particle";
             }
             // INXLOG_INFO("GizmoIcons: entry[", i, "] kind=", kindName, " objectId=", icon.objectId,
             //             " pos=", icon.position.x, ",", icon.position.y, ",", icon.position.z,

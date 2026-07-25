@@ -896,6 +896,16 @@ class ParticleKernelLowerer:
                         source,
                     )
                 builder.store("builtin.position", position, source)
+            elif operation.opcode == "attribute.set_position":
+                value = builder.operation_value(
+                    "value",
+                    bindings,
+                    expression_values,
+                    parameters,
+                    attribute_types["builtin.position"],
+                    source,
+                )
+                builder.store("builtin.position", value, source)
             elif operation.opcode == "attribute.set_velocity":
                 value = builder.operation_value(
                     "value",
@@ -1001,11 +1011,13 @@ class ParticleKernelLowerer:
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             if operation.opcode in {
+                "attribute.set_position",
                 "attribute.set_velocity",
                 "attribute.set_lifetime",
                 "attribute.set_flipbook_frame",
             }:
                 stable_id = {
+                    "attribute.set_position": "builtin.position",
                     "attribute.set_velocity": "builtin.velocity",
                     "attribute.set_lifetime": "builtin.lifetime",
                     "attribute.set_flipbook_frame": "builtin.flipbook_frame",
@@ -1338,6 +1350,7 @@ class ParticleKernelLowerer:
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             attribute_targets = {
+                "attribute.set_position": ("builtin.position", "value"),
                 "attribute.set_velocity": ("builtin.velocity", "value"),
                 "attribute.set_lifetime": ("builtin.lifetime", "value"),
                 "attribute.set_flipbook_frame": ("builtin.flipbook_frame", "value"),

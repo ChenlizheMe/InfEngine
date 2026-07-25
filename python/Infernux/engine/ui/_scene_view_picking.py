@@ -32,12 +32,30 @@ from Infernux.lib._Infernux import (
 )
 
 
+def _owns_particle_system(object_id: int) -> bool:
+    """True when the GameObject *object_id* carries a ParticleSystem."""
+    try:
+        from Infernux.lib import SceneManager
+        from Infernux.components.particle_system import ParticleSystem
+
+        scene = SceneManager.instance().get_active_scene()
+        obj = scene.find_by_id(int(object_id)) if scene else None
+        if obj is None:
+            return False
+        return any(isinstance(comp, ParticleSystem) for comp in obj.get_py_components())
+    except Exception as exc:
+        Debug.log_internal(f"Particle pick check failed: {exc}")
+        return False
+
+
 class SceneViewPickingMixin:
     """SceneViewPickingMixin method group for SceneViewPanel."""
 
     def _handle_picking_and_selection(self, ctx, vp, gizmo_consumed, overlay_hovered,
                                       is_scene_hovered, play_border_clr):
         """Handle object picking, box-select, and play-mode border drawing."""
+        self._poll_scene_object_pick()
+
         if (is_scene_hovered and not gizmo_consumed
                 and not overlay_hovered
                 and ctx.is_mouse_button_clicked(0)
@@ -46,6 +64,7 @@ class SceneViewPickingMixin:
             picked_id = self._pick_scene_object(ctx, vp)
             if self._on_object_picked:
                 self._on_object_picked(picked_id, ctrl)
+            self._request_particle_pick_refinement(ctx, vp, picked_id, ctrl)
 
         # Box-select
         if self._box_select_active:
@@ -76,6 +95,40 @@ class SceneViewPickingMixin:
                 thickness=Theme.BORDER_THICKNESS,
             )
 
+    def _request_particle_pick_refinement(self, ctx, vp, cpu_picked_id: int, ctrl: bool) -> None:
+        """Queue a GPU object-ID readback so live particles become clickable.
+
+        Ray picking only knows physics colliders, mesh bounds and gizmo icons.
+        Particle output (billboards, mesh and ribbon particles) lives entirely in
+        GPU buffers, so a click on a particle resolves to whatever happens to sit
+        behind it. The GPU picking pass draws that output with its owning
+        GameObject id, and the result — available a frame later — corrects the
+        selection when it names a ParticleSystem the ray pass could not see.
+        """
+        self._pending_scene_pick = None
+        # Additive picking builds a multi-selection; a deferred correction would
+        # have to guess what to replace, so leave Ctrl-clicks to the ray path.
+        if not self._engine or ctrl:
+            return
+
+        local_x, local_y = vp.mouse_local(ctx)
+        if local_x < 0 or local_y < 0 or local_x > vp.width or local_y > vp.height:
+            return
+
+        request_id = self._engine.request_scene_object_pick(
+            local_x, local_y, vp.width, vp.height)
+        if request_id <= 0:
+            return
+        self._pending_scene_pick = {
+            "request_id": request_id,
+            "x": local_x,
+            "y": local_y,
+            "width": vp.width,
+            "height": vp.height,
+            "cpu_id": int(cpu_picked_id),
+            "known_ids": set(self._pick_cycle_candidates),
+        }
+
     def _poll_scene_object_pick(self):
         pending = self._pending_scene_pick
         if not pending or not self._engine:
@@ -86,33 +139,31 @@ class SceneViewPickingMixin:
             return
         self._pending_scene_pick = None
         if status != "completed":
-            Debug.log_warning(f"Scene GPU picking failed: {result.get('error', status)}")
-            candidates = self._engine.pick_scene_object_ids(
-                pending["x"], pending["y"], pending["width"], pending["height"]
-            )
-            ids = [int(value) for value in candidates
-                   if int(value) > 0 and int(value) not in _GIZMO_IDS]
-            picked_id = self._cycle_pick_candidates(
-                ids, pending["x"], pending["y"], pending["width"], pending["height"]
-            )
-            if self._on_object_picked:
-                self._on_object_picked(picked_id, pending["ctrl"])
+            # The ray pick already selected something; a failed readback simply
+            # means no refinement is available.
+            Debug.log_internal(f"Scene GPU picking failed: {result.get('error', status)}")
             return
 
         gpu_id = int(result.get("object_id", 0) or 0)
-        candidates = self._engine.pick_scene_object_ids(
-            pending["x"], pending["y"], pending["width"], pending["height"]
-        )
-        ids = [int(value) for value in candidates
-               if int(value) > 0 and int(value) not in _GIZMO_IDS]
-        if gpu_id > 0 and gpu_id not in _GIZMO_IDS:
-            ids = [gpu_id] + [value for value in ids if value != gpu_id]
+        if gpu_id <= 0 or gpu_id in _GIZMO_IDS:
+            return
+        if gpu_id == pending["cpu_id"] or gpu_id in pending["known_ids"]:
+            return  # Ray picking already knew about this object.
+        if not _owns_particle_system(gpu_id):
+            # Anything else the ray pass missed (a sprite behind a gizmo icon,
+            # say) is not worth overriding an already-made selection for.
+            return
 
-        picked_id = self._cycle_pick_candidates(
-            ids, pending["x"], pending["y"], pending["width"], pending["height"]
-        )
+        from .selection_manager import SelectionManager
+        if SelectionManager.instance().get_primary() != pending["cpu_id"]:
+            return  # Selection moved on since the click; don't fight the user.
+
+        self._pick_cycle_candidates = [gpu_id]
+        self._pick_cycle_index = 0
+        self._pick_cycle_last_mouse = (pending["x"], pending["y"])
+        self._pick_cycle_last_viewport = (int(pending["width"]), int(pending["height"]))
         if self._on_object_picked:
-            self._on_object_picked(picked_id, pending["ctrl"])
+            self._on_object_picked(gpu_id, False)
 
     def _cycle_pick_candidates(self, ids, local_x, local_y, width, height) -> int:
         if not ids:

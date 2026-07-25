@@ -335,6 +335,13 @@ class ProjectPanel : public EditorPanel
     std::string m_breadcrumbPath;
     std::string m_breadcrumbText;
 
+    // Project-wide search (Unity-style box on the Path bar)
+    char m_searchBuf[256] = {};
+    std::string m_lastSearchQuery;
+    uint64_t m_lastSearchGeneration = UINT64_MAX;
+    std::vector<FileItem> m_searchResults;
+    static constexpr size_t kMaxSearchResults = 200;
+
     // Selection
     std::string m_selectedFile;
     std::vector<std::string> m_selectedFiles;
@@ -388,6 +395,9 @@ class ProjectPanel : public EditorPanel
 
     // ── Rendering helpers ────────────────────────────────────────────
     void RenderBreadcrumb(InxGUIContext *ctx);
+    void UpdateSearchResults();
+    void RenderSearchResults(InxGUIContext *ctx);
+    void CollectMatchingFolders(const std::string &path, const std::string &queryLower, size_t &budget);
     void RenderFolderTree(InxGUIContext *ctx);
     void RenderFolderTreeRecursive(InxGUIContext *ctx, const std::string &path, DirSnapshot *snapshot = nullptr);
     void RenderFileGrid(InxGUIContext *ctx);

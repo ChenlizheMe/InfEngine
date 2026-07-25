@@ -1328,6 +1328,11 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoLightIconMaterial(
     return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png");
 }
 
+std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoParticleIconMaterial()
+{
+    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoParticleIconMaterial", "icons/gizmo_particle.png");
+}
+
 std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
 {
     auto material = std::make_shared<InxMaterial>("SkyboxProcedural");

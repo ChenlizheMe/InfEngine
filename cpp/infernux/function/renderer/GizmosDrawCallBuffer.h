@@ -43,6 +43,38 @@ class GizmosDrawCallBuffer
     static constexpr uint32_t ICON_KIND_DEFAULT = 0;
     static constexpr uint32_t ICON_KIND_CAMERA = 1;
     static constexpr uint32_t ICON_KIND_LIGHT = 2;
+    static constexpr uint32_t ICON_KIND_PARTICLE = 3;
+
+    /// Billboard materials for the built-in icon kinds. Any missing entry falls
+    /// back to @c fallback.
+    struct IconMaterials
+    {
+        std::shared_ptr<InxMaterial> fallback;
+        std::shared_ptr<InxMaterial> camera;
+        std::shared_ptr<InxMaterial> light;
+        std::shared_ptr<InxMaterial> particle;
+
+        [[nodiscard]] const std::shared_ptr<InxMaterial> &Resolve(uint32_t iconKind) const
+        {
+            switch (iconKind) {
+            case ICON_KIND_CAMERA:
+                if (camera)
+                    return camera;
+                break;
+            case ICON_KIND_LIGHT:
+                if (light)
+                    return light;
+                break;
+            case ICON_KIND_PARTICLE:
+                if (particle)
+                    return particle;
+                break;
+            default:
+                break;
+            }
+            return fallback;
+        }
+    };
 
     GizmosDrawCallBuffer() = default;
     ~GizmosDrawCallBuffer() = default;
@@ -145,17 +177,14 @@ class GizmosDrawCallBuffer
      *   - objectId = IconEntry::objectId (the actual GameObject ID)
      *   - Constant angular size relative to distance from camera
      *
-     * @param iconMaterial  Material for icon rendering (TRIANGLE_LIST gizmo shader)
+     * @param materials     Per-kind icon billboard materials
      * @param cameraPos     Editor camera world position (for constant-size scaling)
      * @param cameraRight   Editor camera world-space right axis
      * @param cameraUp      Editor camera world-space up axis
      * @return DrawCallResult containing all icon draw calls
      */
-    [[nodiscard]] DrawCallResult GetIconDrawCalls(std::shared_ptr<InxMaterial> defaultIconMaterial,
-                                                  std::shared_ptr<InxMaterial> cameraIconMaterial,
-                                                  std::shared_ptr<InxMaterial> lightIconMaterial,
-                                                  const glm::vec3 &cameraPos, const glm::vec3 &cameraRight,
-                                                  const glm::vec3 &cameraUp) const;
+    [[nodiscard]] DrawCallResult GetIconDrawCalls(const IconMaterials &materials, const glm::vec3 &cameraPos,
+                                                  const glm::vec3 &cameraRight, const glm::vec3 &cameraUp) const;
 
     /**
      * @brief Get icon entries for picking tests.

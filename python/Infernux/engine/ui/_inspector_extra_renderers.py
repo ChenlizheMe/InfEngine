@@ -180,6 +180,21 @@ _PRIMITIVE_MESH_ITEMS = (
 _MODEL_ASSET_GLOBS = ("*.fbx", "*.obj", "*.gltf", "*.glb", "*.dae", "*.3ds", "*.ply", "*.stl")
 
 
+def _mesh_asset_path(comp) -> str:
+    """Disk path of the mesh/model asset assigned to *comp*, or empty."""
+    try:
+        if comp.has_inline_mesh():
+            return ""
+    except Exception as exc:
+        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
+
+    guid = getattr(comp, 'mesh_asset_guid', '') or getattr(comp, 'source_model_guid', '') or ''
+    path = _path_from_guid(guid)
+    if path:
+        return path
+    return str(getattr(comp, 'source_model_path', '') or "")
+
+
 def _mesh_display_name(comp) -> str:
     try:
         if comp.has_inline_mesh():
@@ -396,6 +411,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
     slot_names = comp.get_material_slot_names() if hasattr(comp, 'get_material_slot_names') else []
 
     slot_rows = []
+    slot_paths = []
     for slot_idx in range(mat_count):
         # Determine slot label
         if slot_idx < len(slot_names) and slot_names[slot_idx]:
@@ -416,11 +432,16 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         mat_name = getattr(mat, 'name', 'None') if mat else 'None'
         display_name = mat_name + (" (Default)" if is_default else "")
         slot_rows.append((slot_label, display_name))
+        if is_default or not mat_path:
+            slot_paths.append("")
+        else:
+            slot_paths.append(str(mat_path))
 
     native_batch = getattr(ctx, "render_mesh_renderer_inspector_fields", None)
     if callable(native_batch):
         from .editor_icons import EditorIcons
         from .igui import IGUI
+        from ._inspector_references import ping_asset_in_project
 
         picker_texture = EditorIcons.get_cached(Theme.ICON_IMG_PICKER)
         interactions = native_batch(
@@ -434,12 +455,20 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         )
         for interaction in interactions:
             slot_idx = int(interaction.get("index", -1))
+            flags = int(interaction.get("flags", 0) or 0)
             payload = interaction.get("payload", "")
             if payload:
                 if slot_idx < 0:
                     _assign_model_mesh(comp, payload)
                 else:
                     _set_material_slot_from_path(comp, slot_idx, payload)
+            if flags & 4:
+                if slot_idx < 0:
+                    mesh_path = _mesh_asset_path(comp)
+                    if mesh_path:
+                        ping_asset_in_project(mesh_path)
+                elif 0 <= slot_idx < len(slot_paths) and slot_paths[slot_idx]:
+                    ping_asset_in_project(slot_paths[slot_idx])
             if not interaction.get("popup_open", False):
                 continue
             field_id = mesh_field_id if slot_idx < 0 else f"mat_{slot_idx}"
@@ -464,7 +493,10 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
                 ctx.pop_id()
         return
 
+    from ._inspector_references import ping_asset_in_project
+
     field_label(ctx, t("inspector.mesh"), lw)
+    mesh_path = _mesh_asset_path(comp)
     render_object_field(
         ctx, mesh_field_id, mesh_display, "Mesh",
         clickable=False,
@@ -473,6 +505,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         picker_asset_items=_mesh_picker_items,
         on_pick=lambda picked, _comp=comp: _apply_mesh_pick(_comp, picked),
         on_clear=lambda _comp=comp: _clear_mesh(_comp),
+        on_ping=(lambda p=mesh_path: ping_asset_in_project(p)) if mesh_path else None,
     )
 
     field_label(ctx, "Materials", lw)
@@ -496,6 +529,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             return _on_clear
 
         field_label(ctx, slot_label, lw)
+        mat_path = slot_paths[slot_idx] if slot_idx < len(slot_paths) else ""
         render_object_field(
             ctx, f"mat_{slot_idx}", display_name, "Material",
             clickable=False,
@@ -504,4 +538,5 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             picker_asset_items=lambda filt: _picker_assets(filt, "*.mat"),
             on_pick=_make_on_pick(slot_idx),
             on_clear=_make_on_clear(slot_idx),
+            on_ping=(lambda p=mat_path: ping_asset_in_project(p)) if mat_path else None,
         )

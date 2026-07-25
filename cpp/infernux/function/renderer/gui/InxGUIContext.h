@@ -161,6 +161,8 @@ class InxGUIContext
     void SetScrollHereY(float centerYRatio = 0.5f);
     float GetScrollY();
     float GetScrollMaxY();
+    void SetScrollX(float scrollX);
+    void SetScrollY(float scrollY);
     void Separator();
     void Spacing();
     void Dummy(float width, float height);
@@ -196,7 +198,8 @@ class InxGUIContext
                   bool enabled = true);
 
     /* child regions & windows */
-    bool BeginChild(const std::string &id, float width = 0.0f, float height = 0.0f, bool border = false);
+    bool BeginChild(const std::string &id, float width = 0.0f, float height = 0.0f, bool border = false,
+                    int flags = 0);
     void EndChild();
 
     /* pop-ups & tooltips */

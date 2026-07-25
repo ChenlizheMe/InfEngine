@@ -224,10 +224,26 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
         items[_index] = _make_list_default_element(metadata, _et)
         changed = True
 
+    display = _get_reference_display_name(element_type, item)
+    asset_types = {
+        FieldType.MATERIAL,
+        FieldType.TEXTURE,
+        FieldType.SHADER,
+        FieldType.ASSET,
+    }
+
+    def _li_on_ping(_item=item, _et=element_type):
+        if _et not in asset_types:
+            return
+        from ._inspector_references import _resolve_asset_disk_path, ping_asset_in_project
+        path = _resolve_asset_disk_path(_item)
+        if path:
+            ping_asset_in_project(path)
+
     IGUI.object_field(
         ctx,
         f"list_{field_name}_{index}",
-        _get_reference_display_name(element_type, item),
+        display,
         _list_type_hint(element_type, metadata),
         accept=_list_drag_drop_type(element_type, metadata),
         on_drop=_replace_item,
@@ -235,6 +251,7 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
         picker_asset_items=_li_assets,
         on_pick=_li_on_pick,
         on_clear=_li_on_clear,
+        on_ping=_li_on_ping if element_type in asset_types and item is not None and display != "None" else None,
     )
     return changed
 
@@ -362,16 +379,25 @@ def _render_serializable_asset_reference(
         return values
 
     field_label(ctx, pretty_field_name(field_name), label_width)
+    display = _get_reference_display_name(field_type, current_value)
+
+    def _on_ping(_value=current_value):
+        from ._inspector_references import _resolve_asset_disk_path, ping_asset_in_project
+        path = _resolve_asset_disk_path(_value)
+        if path:
+            ping_asset_in_project(path)
+
     render_object_field(
         ctx,
         f"{prefix}_nested_ref_{widget_id}",
-        _get_reference_display_name(field_type, current_value),
+        display,
         type_hint,
         accept_drag_type=drag_type,
         on_drop_callback=_on_pick,
         picker_asset_items=_picker,
         on_pick=_on_pick,
         on_clear=_on_clear,
+        on_ping=_on_ping if current_value is not None and display != "None" else None,
     )
     return selected
 

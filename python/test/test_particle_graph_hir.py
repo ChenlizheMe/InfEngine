@@ -1625,6 +1625,96 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
     assert sample.immediate_dict() == {"interface": "wind-field"}
 
 
+def test_particle_script_point_cache_expression_matches_graph_kernel_contract():
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        '''particles.set_position(ctx.sample_point_cache(
+                "morph-points", particles.id, lookup="stable_id"
+            ))
+            particles.set_color(ctx.sample_point_cache(
+                "morph-points", particles.id,
+                channel="$color", value_type="color", lookup="stable_id",
+            ))
+            particles.acceleration(ctx.sample_point_cache(
+                "morph-points", particles.id,
+                channel="FlowVector", value_type="vector3",
+                lookup="stable_id", semantic="vector",
+            ))''',
+    )
+    asset = ParticleScriptCompiler().parse(
+        source, source_name="PointCache.particle.py"
+    )
+    update = asset.emitters[0].update
+
+    assert [
+        node.type_id
+        for node in update.nodes
+        if node.type_id.startswith("particle.point_cache.sample_")
+    ] == [
+        "particle.point_cache.sample_position",
+        "particle.point_cache.sample_color",
+        "particle.point_cache.sample_vector",
+    ]
+    id_reads = [
+        node
+        for node in update.nodes
+        if node.type_id == "particle.attribute.read_u32"
+    ]
+    assert len(id_reads) == 3
+    assert all(node.properties == {"attribute": "builtin.id"} for node in id_reads)
+
+    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    samples = [
+        instruction.immediate_dict()
+        for instruction in kernel.emitters[0].update.instructions
+        if instruction.opcode == "sample_point_cache"
+    ]
+    assert samples == [
+        {
+            "interface": "morph-points",
+            "channel": "$position",
+            "lookup": "stable_id",
+            "semantic": "position",
+        },
+        {
+            "interface": "morph-points",
+            "channel": "$color",
+            "lookup": "stable_id",
+            "semantic": "raw",
+        },
+        {
+            "interface": "morph-points",
+            "channel": "FlowVector",
+            "lookup": "stable_id",
+            "semantic": "vector",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ('"morph-points", particles.id, lookup="random"', "lookup must be"),
+        ('"morph-points", particles.id, value_type="matrix"', "value_type must be"),
+        (
+            '"morph-points", particles.id, value_type="color", semantic="normal"',
+            "transformed point cache samples require",
+        ),
+        ('"morph-points"', "requires an interface name and one index"),
+    ],
+)
+def test_particle_script_point_cache_rejects_ambiguous_authoring(arguments, message):
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        f"particles.set_velocity(ctx.sample_point_cache({arguments}))",
+    )
+
+    with pytest.raises(ParticleScriptError, match=message):
+        ParticleScriptCompiler().parse(
+            source, source_name="InvalidPointCache.particle.py"
+        )
+
+
 def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
     source = PARTICLE_SCRIPT_SOURCE.replace(
         "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, PointCache",

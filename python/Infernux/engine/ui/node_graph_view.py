@@ -35,7 +35,7 @@ from Infernux.core.node_graph import (
 )
 from Infernux.engine.i18n import t
 from Infernux.engine.ui.inspector_utils import preserve_ui_float_precision
-from Infernux.engine.ui.theme import Theme
+from Infernux.engine.ui.theme import ImGuiStyleVar, ImGuiWindowFlags, Theme
 
 if TYPE_CHECKING:
     from Infernux.lib import InxGUIContext
@@ -55,6 +55,7 @@ _NODE_HEADER_H = 30.0
 _NODE_PIN_ROW_H = 22.0
 _NODE_PAD_X = 10.0
 _NODE_BODY_MIN_H = 10.0
+_DETACHED_FIELD_ROW_H = 24.0
 _PIN_RADIUS = 5.0
 _PIN_HIT_RADIUS = 11.0
 _HEADER_COLOR_SWATCH_SIZE = 14.0
@@ -87,6 +88,21 @@ _TEXT_BODY_COLOR = (0.62, 0.63, 0.65, 1.0)
 _ZOOM_MIN = 0.3
 _ZOOM_MAX = 2.5
 _ZOOM_SPEED = 0.08
+
+# Inline ImGui widgets inside nodes are laid out in child-window coordinates
+# while node chrome is drawn straight to the draw list in screen space. The
+# canvas child must therefore never scroll: any scroll offset would slide the
+# widgets off their nodes. The wheel belongs to zoom.
+_CANVAS_WINDOW_FLAGS = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
+
+# Base font size ImGui widgets are authored against, used to derive the
+# per-zoom font scale for inline node fields.
+_INLINE_BASE_FONT = 18.0
+_INLINE_MIN_FONT = 9.0
+
+# Absolute floor for draw-list node text so glyphs never collapse to nothing.
+# Kept small on purpose: node text must stay proportional to the node box.
+_TEXT_MIN_FONT = 5.0
 
 _MINIMAP_SIZE = 120.0
 _MINIMAP_PAD = 8.0
@@ -262,6 +278,8 @@ class NodeGraphView:
         self._node_create_focus: bool = False
         self._open_node_create_popup_next_frame: bool = False
         self._inline_control_hovered: bool = False
+        self._inline_control_active: bool = False
+        self._canvas_window_hovered: bool = False
 
         self._body_renderers: Dict[str, Callable] = {}
 
@@ -293,6 +311,8 @@ class NodeGraphView:
         self._node_create_focus = False
         self._open_node_create_popup_next_frame = False
         self._inline_control_hovered = False
+        self._inline_control_active = False
+        self._canvas_window_hovered = False
 
     def register_body_renderer(self, type_id: str, renderer: Callable) -> None:
         self._body_renderers[type_id] = renderer
@@ -385,9 +405,22 @@ class NodeGraphView:
         self._canvas_w = canvas_w
         self._canvas_h = canvas_h
 
-        if not ctx.begin_child("##node_graph_canvas", canvas_w, canvas_h, False):
+        if not ctx.begin_child(
+            "##node_graph_canvas", canvas_w, canvas_h, False, _CANVAS_WINDOW_FLAGS
+        ):
             ctx.end_child()
             return
+
+        # Inline node widgets are placed by absolute cursor position, which
+        # inflates the child's content extent. Pin the scroll offset so their
+        # child-space coordinates stay aligned with the draw-list node chrome.
+        ctx.set_scroll_x(0.0)
+        ctx.set_scroll_y(0.0)
+
+        # Window-level hover, unlike the background item's hover, still reports
+        # true while the cursor sits over an inline node widget — the wheel has
+        # to keep zooming there. It goes false while a widget is being edited.
+        self._canvas_window_hovered = bool(ctx.is_window_hovered())
 
         self._origin_x = ctx.get_window_pos_x()
         self._origin_y = ctx.get_window_pos_y()
@@ -440,6 +473,7 @@ class NodeGraphView:
         # They remain part of the shared canvas, so every graph editor gets
         # the same inline-value behavior.
         self._inline_control_hovered = False
+        self._inline_control_active = False
         self._draw_inline_fields(ctx)
 
         # Pending connection line
@@ -518,6 +552,25 @@ class NodeGraphView:
 
     # ── Layout ────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _inline_field_is_hidden(node: GraphNode, field_def) -> bool:
+        """Mirror the skip rules of :meth:`_draw_inline_fields`."""
+        if str(field_def.data_type) == "asset_ref":
+            return True
+        return bool(field_def.visible_when_field) and (
+            node.data.get(field_def.visible_when_field) != field_def.visible_when_value
+        )
+
+    def _detached_field_rows(self, node: GraphNode, typedef: NodeTypeDef) -> int:
+        """Number of inline value rows drawn below the pin rows of *node*."""
+        pin_ids = {pin.id for pin in typedef.input_pins()}
+        return sum(
+            1
+            for field_def in typedef.inline_fields
+            if field_def.id not in pin_ids
+            and not self._inline_field_is_hidden(node, field_def)
+        )
+
     def _compute_layouts(self) -> None:
         self._layouts.clear()
         graph = self.graph
@@ -535,7 +588,15 @@ class NodeGraphView:
             max_pins = max(len(in_pins), len(out_pins), 1)
 
             w = typedef.min_width * z
-            extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
+            if getattr(typedef, "inline_fields", ()):
+                # Reserve exactly the rows the inline pass will draw. The
+                # typedef's static pad also counts fields that visibility rules
+                # hide, which left nodes with dead space below their content.
+                extra_pad = (
+                    self._detached_field_rows(node, typedef) * _DETACHED_FIELD_ROW_H
+                )
+            else:
+                extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
             h = (_NODE_HEADER_H + max_pins * _NODE_PIN_ROW_H + _NODE_BODY_MIN_H + extra_pad) * z
 
             sx = self._origin_x + node.pos_x * z + self.pan_x
@@ -655,7 +716,7 @@ class NodeGraphView:
 
         # Header label
         label = layout.node.data.get("label", layout.typedef.label)
-        font_sz = max(12.5, 15.0 * z)
+        font_sz = self._zoom_font(15.0)
         sw_x1, sw_y1, sw_x2, sw_y2 = self._node_header_swatch_rect(layout)
         label_right = (
             sw_x1 - 6.0 * z
@@ -668,7 +729,7 @@ class NodeGraphView:
         )
         ctx.draw_text_aligned(
             sx + pad_x, sy, max(sx + pad_x + 1.0, label_right), sy + hdr_h,
-            label, *_TEXT_COLOR, 0.0, 0.5, font_sz,
+            label, *_TEXT_COLOR, 0.0, 0.5, font_sz, True,
         )
 
         if layout.typedef.show_header_color_swatch:
@@ -683,7 +744,6 @@ class NodeGraphView:
                 2.0 * z,
             )
         elif layout.typedef.category_label:
-            category_font = max(8.0, 9.0 * z)
             ctx.draw_text_aligned(
                 sx + w * 0.56,
                 sy,
@@ -693,17 +753,17 @@ class NodeGraphView:
                 *_TEXT_DIM_COLOR,
                 1.0,
                 0.5,
-                category_font,
+                self._zoom_font(9.0),
+                True,
             )
 
         # Subtitle (e.g. clip path)
         subtitle = layout.node.data.get("subtitle", "")
         if subtitle:
             body_top = sy + hdr_h + 2 * z
-            sub_font = max(9.0, 10.0 * z)
             ctx.draw_text_aligned(
                 sx + pad_x, body_top, sx + w - pad_x, body_top + 16 * z,
-                subtitle, *_TEXT_BODY_COLOR, 0.0, 0.0, sub_font,
+                subtitle, *_TEXT_BODY_COLOR, 0.0, 0.0, self._zoom_font(10.0), True,
             )
 
         # Border — instant hover/selection feedback (no per-frame easing; cheap).
@@ -736,19 +796,19 @@ class NodeGraphView:
         self._record_pin_semantics(ctx, layout, str(label))
 
         # Pin labels
-        dim_font = max(10.5, 12.5 * z)
+        dim_font = self._zoom_font(12.5)
         row_h = _NODE_PIN_ROW_H * z
         for pl in layout.input_pins:
             ctx.draw_text_aligned(
                 pl.cx + pin_r + 4 * z, pl.cy - row_h * 0.5,
                 pl.cx + w * 0.45, pl.cy + row_h * 0.5,
-                pl.pin_def.label, *_TEXT_DIM_COLOR, 0.0, 0.5, dim_font,
+                pl.pin_def.label, *_TEXT_DIM_COLOR, 0.0, 0.5, dim_font, True,
             )
         for pl in layout.output_pins:
             ctx.draw_text_aligned(
                 sx + w * 0.55, pl.cy - row_h * 0.5,
                 pl.cx - pin_r - 4 * z, pl.cy + row_h * 0.5,
-                pl.pin_def.label, *_TEXT_DIM_COLOR, 1.0, 0.5, dim_font,
+                pl.pin_def.label, *_TEXT_DIM_COLOR, 1.0, 0.5, dim_font, True,
             )
 
         # Custom body renderer
@@ -757,6 +817,14 @@ class NodeGraphView:
             body_y = (sy + hdr_h
                       + max(len(layout.input_pins), len(layout.output_pins)) * row_h)
             renderer(ctx, layout.node, sx + pad_x, body_y, w - pad_x * 2)
+
+    def _zoom_font(self, base: float) -> float:
+        """Font size for node text authored at *base* px for zoom 1.0.
+
+        Strictly proportional to zoom: a floor would keep glyphs at full size
+        while the node shrinks, which is what made labels spill out of nodes.
+        """
+        return max(_TEXT_MIN_FONT, base * self.zoom)
 
     def _input_has_link(self, node_uid: str, pin_id: str) -> bool:
         graph = self.graph
@@ -783,21 +851,35 @@ class NodeGraphView:
             return
         saved_x = ctx.get_cursor_pos_x()
         saved_y = ctx.get_cursor_pos_y()
+        # Widgets are authored at zoom 1.0; scale the font (and the frame
+        # metrics derived from it) so they shrink and grow with the node chrome
+        # instead of spilling out of it.
+        z = self.zoom
+        ctx.set_window_font_scale(max(_INLINE_MIN_FONT / _INLINE_BASE_FONT, z))
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, 4.0 * z, 2.0 * z)
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, 4.0 * z, 3.0 * z)
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemInnerSpacing, 3.0 * z, 3.0 * z)
+        ctx.push_style_var_float(ImGuiStyleVar.FrameRounding, 3.0 * z)
         try:
             for layout in self._layouts.values():
                 fields = getattr(layout.typedef, "inline_fields", ())
                 if not fields:
+                    continue
+                # Skip nodes outside the visible canvas: their inline widgets
+                # would otherwise be submitted at far-off cursor positions.
+                if (
+                    layout.sx + layout.w < self._origin_x
+                    or layout.sx > self._origin_x + self._canvas_w
+                    or layout.sy + layout.h < self._origin_y
+                    or layout.sy > self._origin_y + self._canvas_h
+                ):
                     continue
                 input_rows = {
                     pin.pin_def.id: pin.cy for pin in layout.input_pins
                 }
                 detached_index = 0
                 for field_def in fields:
-                    if field_def.visible_when_field and layout.node.data.get(
-                        field_def.visible_when_field
-                    ) != field_def.visible_when_value:
-                        continue
-                    if field_def.data_type == "asset_ref":
+                    if self._inline_field_is_hidden(layout.node, field_def):
                         continue
                     row_y = input_rows.get(field_def.id)
                     detached = row_y is None
@@ -816,11 +898,13 @@ class NodeGraphView:
                             )
                             * _NODE_PIN_ROW_H
                             * self.zoom
-                            + (detached_index + 0.5) * 24.0 * self.zoom
+                            + (detached_index + 0.5) * _DETACHED_FIELD_ROW_H * self.zoom
                         )
                         detached_index += 1
                     self._draw_inline_field(ctx, layout, field_def, row_y, detached=detached)
         finally:
+            ctx.pop_style_var(4)
+            ctx.set_window_font_scale(1.0)
             ctx.set_cursor_pos_x(saved_x)
             ctx.set_cursor_pos_y(saved_y)
             # SetCursorPos is used here only to restore the canvas layout after
@@ -829,6 +913,19 @@ class NodeGraphView:
             # boundary; otherwise EndChild reports a recoverable layout error.
             ctx.dummy(0.0, 0.0)
 
+    def _note_inline_control_state(self, ctx) -> None:
+        """Record hover/active state of the widget just submitted.
+
+        Hover suppresses canvas clicks and node drags; only an *active* widget
+        (a drag in progress, a focused text field) suppresses wheel zoom, so
+        the wheel keeps zooming while merely pointing at a node value.
+        """
+        if ctx.is_item_active():
+            self._inline_control_active = True
+            self._inline_control_hovered = True
+        elif ctx.is_item_hovered():
+            self._inline_control_hovered = True
+
     def _draw_inline_field(
         self, ctx, layout: _NodeLayout, field_def, row_y: float, *, detached: bool = False
     ) -> None:
@@ -836,7 +933,9 @@ class NodeGraphView:
         local_x = layout.sx - self._origin_x
         local_y = row_y - self._origin_y - 9.0 * self.zoom
         field_x = local_x + layout.w * 0.42
-        field_w = max(44.0, layout.w * 0.52 - _NODE_PAD_X * self.zoom)
+        # Widths scale with the node so the control never crosses its right
+        # edge; the minimum also scales, otherwise zoomed-out nodes overflow.
+        field_w = max(24.0 * self.zoom, layout.w * 0.52 - _NODE_PAD_X * self.zoom)
         if detached:
             ctx.draw_text_aligned(
                 layout.sx + _NODE_PAD_X * self.zoom,
@@ -847,7 +946,8 @@ class NodeGraphView:
                 *_TEXT_DIM_COLOR,
                 0.0,
                 0.5,
-                max(9.5, 11.0 * self.zoom),
+                self._zoom_font(11.0),
+                True,
             )
         ctx.set_cursor_pos_x(field_x)
         ctx.set_cursor_pos_y(local_y)
@@ -871,11 +971,12 @@ class NodeGraphView:
                 size = {"vec2": 2, "vec3": 3, "vec4": 4, "color": 4}[data_type]
                 components = list(value or [0.0] * size)[:size]
                 components += [0.0] * (size - len(components))
-                component_w = max(24.0, (field_w - (size - 1) * 3.0) / size)
+                gap = 3.0 * self.zoom
+                component_w = max(14.0 * self.zoom, (field_w - (size - 1) * gap) / size)
                 edited = []
                 for index, component in enumerate(components):
-                    slot_x = field_x + index * (component_w + 3.0)
-                    axis_w = min(10.0, component_w * 0.24)
+                    slot_x = field_x + index * (component_w + gap)
+                    axis_w = min(10.0 * self.zoom, component_w * 0.24)
                     ctx.draw_text_aligned(
                         self._origin_x + slot_x,
                         row_y - 9.0 * self.zoom,
@@ -885,11 +986,12 @@ class NodeGraphView:
                         *_TEXT_DIM_COLOR,
                         0.0,
                         0.5,
-                        max(8.0, 9.0 * self.zoom),
+                        self._zoom_font(9.0),
+                        True,
                     )
                     ctx.set_cursor_pos_x(slot_x + axis_w)
                     ctx.set_cursor_pos_y(local_y)
-                    ctx.set_next_item_width(max(16.0, component_w - axis_w))
+                    ctx.set_next_item_width(max(10.0 * self.zoom, component_w - axis_w))
                     edited.append(
                         float(
                             ctx.drag_float(
@@ -901,11 +1003,7 @@ class NodeGraphView:
                             )
                         )
                     )
-                    self._inline_control_hovered = (
-                        self._inline_control_hovered
-                        or bool(ctx.is_item_hovered())
-                        or bool(ctx.is_item_active())
-                    )
+                    self._note_inline_control_state(ctx)
                 new_value = edited
             elif field_def.enum_values:
                 options = list(field_def.enum_values)
@@ -918,18 +1016,14 @@ class NodeGraphView:
                 new_value = ctx.text_input("##value", str(value or ""), 256)
             else:
                 return
-            self._inline_control_hovered = (
-                self._inline_control_hovered
-                or bool(ctx.is_item_hovered())
-                or bool(ctx.is_item_active())
-            )
+            self._note_inline_control_state(ctx)
             semantic_values = {}
             semantic_kind = "control"
             if data_type == "bool":
                 semantic_kind = "checkbox"
                 semantic_values["bool_value"] = bool(new_value)
             elif data_type in {"i32", "u32", "f32"}:
-                semantic_kind = "drag_float" if data_type == "f32" else "int_input"
+                semantic_kind =     "drag_float" if data_type == "f32" else "int_input"
                 semantic_values["numeric_value"] = float(new_value)
             elif field_def.enum_values:
                 semantic_kind = "combo"
@@ -1359,6 +1453,18 @@ class NodeGraphView:
                 self._panning = False
             return
 
+        # Zoom (scroll wheel, centred on cursor). Handled before the inline
+        # widget guard so pointing at a node value still zooms, matching every
+        # other node editor; only an in-progress edit keeps the wheel.
+        if self._canvas_window_hovered and not self._inline_control_active:
+            wheel = ctx.get_mouse_wheel_delta()
+            if abs(wheel) > 0.01:
+                old_zoom = self.zoom
+                self.zoom = max(_ZOOM_MIN, min(_ZOOM_MAX, self.zoom + wheel * _ZOOM_SPEED))
+                ratio = self.zoom / old_zoom
+                self.pan_x = mx - self._origin_x - (mx - self._origin_x - self.pan_x) * ratio
+                self.pan_y = my - self._origin_y - (my - self._origin_y - self.pan_y) * ratio
+
         if self._inline_control_hovered:
             return
 
@@ -1390,15 +1496,6 @@ class NodeGraphView:
 
         if not canvas_hovered:
             return
-
-        # Zoom (scroll wheel, centred on cursor)
-        wheel = ctx.get_mouse_wheel_delta()
-        if abs(wheel) > 0.01:
-            old_zoom = self.zoom
-            self.zoom = max(_ZOOM_MIN, min(_ZOOM_MAX, self.zoom + wheel * _ZOOM_SPEED))
-            ratio = self.zoom / old_zoom
-            self.pan_x = mx - self._origin_x - (mx - self._origin_x - self.pan_x) * ratio
-            self.pan_y = my - self._origin_y - (my - self._origin_y - self.pan_y) * ratio
 
         # Middle-mouse → panning
         if ctx.is_mouse_button_clicked(2):

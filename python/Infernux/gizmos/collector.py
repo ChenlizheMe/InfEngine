@@ -181,6 +181,12 @@ class GizmosCollector:
                     if not getattr(comp, 'enabled', True):
                         continue
 
+                    # Scene icon — Python components opt in the same way the
+                    # C++ wrappers do, by declaring _gizmo_icon_color.
+                    icon_color = getattr(comp, '_gizmo_icon_color', None)
+                    if icon_color is not None:
+                        self._register_python_component_icon(comp, go_id, icon_color)
+
                     always_show = getattr(comp, '_always_show', True)
                     should_draw = always_show or is_selected
                     if should_draw:
@@ -318,6 +324,22 @@ class GizmosCollector:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _register_python_component_icon(comp, go_id: int, icon_color) -> None:
+        """Queue the scene billboard icon for a Python component instance."""
+        try:
+            transform = comp.game_object.get_transform()
+        except Exception as exc:
+            _log_gizmo_warning(f"Gizmo: failed to read transform for icon: {exc}")
+            return
+        if transform is None:
+            return
+        pos = transform.position
+        Gizmos.draw_icon(
+            (pos.x, pos.y, pos.z), go_id, icon_color,
+            icon_kind=getattr(comp, '_gizmo_icon_kind', ICON_KIND_DEFAULT),
+        )
 
     def _get_icon_instances(self, scene, type_name: str) -> list:
         """Return the cached list of GOs that carry *type_name*.

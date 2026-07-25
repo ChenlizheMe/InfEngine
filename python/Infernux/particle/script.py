@@ -82,6 +82,16 @@ class _EventParseContext:
 
 
 class _ParticleStageContext:
+    def sample_point_cache(
+        self,
+        interface: str,
+        index_or_id: int,
+        *,
+        channel: str = "$position",
+        value_type: str = "vec3",
+        lookup: str = "index",
+        semantic: str = "auto",
+    ): ...
     def sample_vector_field(self, interface: str, position): ...
     def sample_curve(self, curve: Curve, t: float) -> float: ...
     def sample_gradient(self, gradient: Gradient, t: float): ...
@@ -103,6 +113,7 @@ class RenderingContext(_ParticleStageContext):
 
 
 class ParticleStream:
+    id: int
     position: tuple[float, float, float]
     age: float
     lifetime: float
@@ -115,6 +126,7 @@ class ParticleStream:
     ribbon_order: int
     ribbon_break: bool
 
+    def set_position(self, value) -> None: ...
     def set_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
     def set_flipbook_frame(self, value) -> None: ...
@@ -211,6 +223,7 @@ class ParticleScriptCompiler:
 
     _STAGE_METHODS = frozenset({"init", "update", "rendering"})
     _ATTRIBUTE_OPERATIONS = {
+        "set_position": ("particle.attribute.set_position", "value"),
         "set_velocity": ("particle.attribute.set_velocity", "value"),
         "set_lifetime": ("particle.attribute.set_lifetime", "value"),
         "set_flipbook_frame": ("particle.attribute.set_flipbook_frame", "value"),
@@ -900,6 +913,7 @@ class ParticleScriptCompiler:
                 nodes.append(GraphNodeRecord(uid, "particle.attribute.normalized_age"))
                 return (uid, "value"), expression_index + 1
             attributes = {
+                "id": ("particle.attribute.read_u32", "builtin.id"),
                 "position": ("particle.attribute.read_vec3", "builtin.position"),
                 "age": ("particle.attribute.read_f32", "builtin.age"),
                 "lifetime": ("particle.attribute.read_f32", "builtin.lifetime"),
@@ -1073,6 +1087,158 @@ class ParticleScriptCompiler:
                     position_source[1],
                     uid,
                     "position",
+                    PortKind.VALUE,
+                )
+            )
+            return (uid, "value"), expression_index + 1
+
+        if node.func.attr == "sample_point_cache":
+            if len(node.args) != 2:
+                raise self._error(
+                    source_name,
+                    node,
+                    "sample_point_cache requires an interface name and one index or stable ID",
+                )
+            keyword_nodes = {}
+            allowed_keywords = {"channel", "value_type", "lookup", "semantic"}
+            for keyword in node.keywords:
+                if (
+                    keyword.arg not in allowed_keywords
+                    or keyword.arg in keyword_nodes
+                ):
+                    raise self._error(
+                        source_name,
+                        keyword,
+                        "invalid or duplicate sample_point_cache argument",
+                    )
+                keyword_nodes[keyword.arg] = keyword.value
+
+            interface = self._literal(node.args[0])
+            if type(interface) is not str or not interface.strip():
+                raise self._error(
+                    source_name,
+                    node.args[0],
+                    "point cache interface must be a non-empty string",
+                )
+
+            properties = {
+                "channel": "$position",
+                "value_type": "vec3",
+                "lookup": "index",
+                "semantic": "auto",
+            }
+            for name, value_node in keyword_nodes.items():
+                value = self._literal(value_node)
+                if type(value) is not str or not value.strip():
+                    raise self._error(
+                        source_name,
+                        value_node,
+                        f"point cache {name} must be a non-empty string",
+                    )
+                properties[name] = (
+                    value.strip() if name == "channel" else value.strip().lower()
+                )
+
+            channel = properties["channel"]
+            lookup = properties["lookup"]
+            if lookup not in {"index", "stable_id"}:
+                raise self._error(
+                    source_name,
+                    keyword_nodes.get("lookup", node),
+                    "point cache lookup must be 'index' or 'stable_id'",
+                )
+
+            value_type_aliases = {
+                "float": "f32",
+                "f32": "f32",
+                "uint": "u32",
+                "u32": "u32",
+                "vector2": "vec2",
+                "vec2": "vec2",
+                "vector3": "vec3",
+                "vec3": "vec3",
+                "vector4": "vec4",
+                "vec4": "vec4",
+                "color": "color",
+            }
+            value_type = value_type_aliases.get(properties["value_type"])
+            if value_type is None:
+                raise self._error(
+                    source_name,
+                    keyword_nodes.get("value_type", node),
+                    "point cache value_type must be f32, u32, vec2, vec3, vec4, or color",
+                )
+
+            semantic = properties["semantic"]
+            if semantic == "auto":
+                semantic = {
+                    "$position": "position",
+                    "$normal": "normal",
+                }.get(channel, "raw")
+            if semantic not in {"raw", "position", "direction", "normal", "vector"}:
+                raise self._error(
+                    source_name,
+                    keyword_nodes.get("semantic", node),
+                    "point cache semantic must be raw, position, direction, normal, vector, or auto",
+                )
+
+            raw_node_types = {
+                "f32": "particle.point_cache.sample_f32",
+                "u32": "particle.point_cache.sample_u32",
+                "vec2": "particle.point_cache.sample_vec2",
+                "vec3": "particle.point_cache.sample_vec3_raw",
+                "vec4": "particle.point_cache.sample_vec4",
+                "color": "particle.point_cache.sample_color",
+            }
+            semantic_node_types = {
+                "position": "particle.point_cache.sample_position",
+                "direction": "particle.point_cache.sample_direction",
+                "normal": "particle.point_cache.sample_normal",
+                "vector": "particle.point_cache.sample_vector",
+            }
+            if semantic != "raw" and value_type != "vec3":
+                raise self._error(
+                    source_name,
+                    keyword_nodes.get("value_type", node),
+                    "transformed point cache samples require value_type='vec3'",
+                )
+            type_id = (
+                raw_node_types[value_type]
+                if semantic == "raw"
+                else semantic_node_types[semantic]
+            )
+
+            index_source, expression_index = self._parse_expression(
+                node.args[1],
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+                event_context=event_context,
+            )
+            uid = f"{stage}.expr.{expression_index}.sample_point_cache"
+            nodes.append(
+                GraphNodeRecord(
+                    uid,
+                    type_id,
+                    properties={
+                        "interface": interface.strip(),
+                        "channel": channel,
+                        "lookup": lookup,
+                        "semantic": semantic,
+                    },
+                )
+            )
+            links.append(
+                GraphLinkRecord(
+                    f"{stage}.expr.link.{expression_index}",
+                    index_source[0],
+                    index_source[1],
+                    uid,
+                    "index",
                     PortKind.VALUE,
                 )
             )

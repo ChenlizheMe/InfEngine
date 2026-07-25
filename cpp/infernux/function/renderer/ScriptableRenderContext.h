@@ -80,6 +80,7 @@ struct EditorGizmosContext
     std::shared_ptr<InxMaterial> componentGizmoIconMaterial; ///< Fallback material for icon billboards
     std::shared_ptr<InxMaterial> cameraGizmoIconMaterial;    ///< Textured camera icon material
     std::shared_ptr<InxMaterial> lightGizmoIconMaterial;     ///< Textured light icon material
+    std::shared_ptr<InxMaterial> particleGizmoIconMaterial;  ///< Textured particle-system icon material
     std::shared_ptr<InxMaterial> particleMaterial;           ///< Default particle billboard material
     uint64_t selectedObjectId = 0;
     Scene *activeScene = nullptr;

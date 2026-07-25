@@ -193,6 +193,7 @@ class IGUI:
         picker_asset_items: Optional[Callable[[str], Sequence[tuple]]] = None,
         on_pick: Optional[Callable[[Any], None]] = None,
         on_clear: Optional[Callable[[], None]] = None,
+        on_ping: Optional[Callable[[], None]] = None,
         semantic_id: str = "",
     ) -> bool:
         """Render a Unity-style object-reference field with optional drop target
@@ -201,6 +202,7 @@ class IGUI:
         *picker_scene_items* / *picker_asset_items*: ``filter_text -> [(label, value), ...]``
         *on_pick*: called with the selected value when user picks an item.
         *on_clear*: called when user picks "None" to clear the field.
+        *on_ping*: called on body double-click (e.g. reveal asset in Project).
 
         Returns True if the field selectable was clicked.
         """
@@ -218,9 +220,14 @@ class IGUI:
             semantic_id,
         ))
         clicked = bool(interaction & 1)
-        if interaction and has_picker:
+        doubled = bool(interaction & 4)
+        # Only the picker button (bit 2) opens the selector — body double-click
+        # (bit 4) pings the asset in Project instead.
+        if (interaction & 2) and has_picker:
             _popup_needs_focus.add(field_id)
             _picker_filters.pop(f"_igui_filter_{field_id}", None)
+        if doubled and on_ping is not None:
+            on_ping()
 
         if accept and on_drop:
             if isinstance(accept, str):

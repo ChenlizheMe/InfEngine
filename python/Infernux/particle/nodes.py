@@ -261,6 +261,18 @@ PARTICLE_NODE_DEFINITIONS = (
         target_opcodes={"particle_hir": "stage.rendering"},
     ),
     _operation(
+        "particle.attribute.set_position",
+        "Set Position",
+        "attribute.set_position",
+        (
+            PropertyDef(
+                "value",
+                TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                [0.0, 0.0, 0.0],
+            ),
+        ),
+    ),
+    _operation(
         "particle.attribute.set_velocity",
         "Set Velocity",
         "attribute.set_velocity",

@@ -1055,7 +1055,8 @@ configure_file(
 
 foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
     add_custom_command(TARGET ${_infernux_dll} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        COMMAND ${CMAKE_COMMAND} -E remove "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:${_infernux_dll}>"
+        COMMAND ${CMAKE_COMMAND} -E copy
             "$<TARGET_FILE:${_infernux_dll}>"
             "${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:${_infernux_dll}>"
         COMMENT "Copy ${_infernux_dll} shared library to python/Infernux/lib"

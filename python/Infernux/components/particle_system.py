@@ -31,6 +31,7 @@ from Infernux.particle import (
     decode_gpu_particle_spirv,
     decode_particle_runtime_metadata,
 )
+from Infernux.gizmos.gizmos import ICON_KIND_PARTICLE
 from .component import InxComponent
 from .decorators import add_component_menu, disallow_multiple
 from .serialized_field import get_raw_field_value, serialized_field
@@ -40,6 +41,11 @@ from .serialized_field import get_raw_field_value, serialized_field
 @add_component_menu("VFX/Particle System")
 class ParticleSystem(InxComponent):
     _display_name_key = "component.particle_system"
+
+    # Scene icon: particle burst billboard at the system origin, so an emitter
+    # stays selectable even when it is not currently emitting anything.
+    _gizmo_icon_color = (0.62, 0.82, 1.0)
+    _gizmo_icon_kind = ICON_KIND_PARTICLE
     graph: ParticleGraphRef = serialized_field(
         default=None,
         asset_type="ParticleGraph",

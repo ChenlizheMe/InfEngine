@@ -646,6 +646,16 @@ float InxGUIContext::GetScrollMaxY()
     return ImGui::GetScrollMaxY();
 }
 
+void InxGUIContext::SetScrollX(float scrollX)
+{
+    ImGui::SetScrollX(scrollX);
+}
+
+void InxGUIContext::SetScrollY(float scrollY)
+{
+    ImGui::SetScrollY(scrollY);
+}
+
 void InxGUIContext::CloseCurrentPopup()
 {
     ImGui::CloseCurrentPopup();
@@ -900,9 +910,10 @@ bool InxGUIContext::MenuItem(const std::string &label, const std::string &shortc
 }
 
 /* child & windows */
-bool InxGUIContext::BeginChild(const std::string &id, float width, float height, bool border)
+bool InxGUIContext::BeginChild(const std::string &id, float width, float height, bool border, int flags)
 {
-    return ImGui::BeginChild(id.c_str(), ImVec2(width, height), border);
+    return ImGui::BeginChild(id.c_str(), ImVec2(width, height), border ? ImGuiChildFlags_Borders : 0,
+                             static_cast<ImGuiWindowFlags>(flags));
 }
 
 void InxGUIContext::EndChild()
@@ -2440,6 +2451,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
         ImGui::SetNextItemAllowOverlap();
     if (ImGui::Selectable(fullText.c_str(), selected, 0, ImVec2(fieldWidth, 0.0f)) && clickable)
         result |= 1u;
+    // Bit 4: body double-click — used by Inspector to ping the asset in Project.
+    // Detected on the selectable even when clickable is false (MeshRenderer slots).
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+        result |= 4u;
 
     if (hasPicker) {
         ImGui::SameLine(0.0f, 0.0f);
@@ -2472,7 +2487,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
         ImGui::PopStyleColor(3);
     }
 
-    if (result != 0 && hasPicker)
+    // Only the picker button opens the object selector. Body single-click is
+    // reserved / inert; body double-click (bit 4) is handled by callers as a
+    // "ping in Project" action — matching Unity ObjectField behaviour.
+    if ((result & 2u) != 0 && hasPicker)
         ImGui::OpenPopup("##obj_picker");
 
     ImGui::EndGroup();

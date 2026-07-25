@@ -461,6 +461,7 @@ void AssetRegistry::InitializeBuiltinMaterials()
     registerBuiltin("ComponentGizmoIconMaterial", InxMaterial::CreateComponentGizmoIconMaterial());
     registerBuiltin("ComponentGizmoCameraIconMaterial", InxMaterial::CreateComponentGizmoCameraIconMaterial());
     registerBuiltin("ComponentGizmoLightIconMaterial", InxMaterial::CreateComponentGizmoLightIconMaterial());
+    registerBuiltin("ComponentGizmoParticleIconMaterial", InxMaterial::CreateComponentGizmoParticleIconMaterial());
     registerBuiltin("EditorToolsMaterial", InxMaterial::CreateEditorToolsMaterial());
     registerBuiltin("SkyboxProcedural", InxMaterial::CreateSkyboxProceduralMaterial());
     registerBuiltin("ErrorMaterial", InxMaterial::CreateErrorMaterial());

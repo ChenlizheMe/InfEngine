@@ -2200,6 +2200,8 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     ctx->Separator();
     const auto folderStart = std::chrono::steady_clock::now();
 
+    const bool searchActive = m_searchBuf[0] != '\0';
+
     // Left panel: folder tree (200px)
     if (ctx->BeginChild("FolderTree", 200, 0, false)) {
         RenderFolderTree(ctx);
@@ -2209,11 +2211,15 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
 
     ctx->SameLine();
 
-    // Right panel: file grid
+    // Right panel: file grid, or project-wide search hits while the Path
+    // search box has text.
     ctx->PushStyleVarVec2(ImGuiStyleVar_WindowPadding, 12.0f, 8.0f);
     ctx->PushStyleColor(ImGuiCol_Border, 0.0f, 0.0f, 0.0f, 0.0f); // transparent border
     if (ctx->BeginChild("FileGrid", 0, 0, true)) {
-        RenderFileGrid(ctx);
+        if (searchActive)
+            RenderSearchResults(ctx);
+        else
+            RenderFileGrid(ctx);
     }
     ctx->EndChild();
     ctx->PopStyleColor(1); // Border
@@ -2264,7 +2270,156 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
             m_breadcrumbText = "Path: " + m_currentPath;
         }
     }
-    ctx->Label(m_breadcrumbText);
+
+    constexpr float kSearchWidth = 220.0f;
+    constexpr float kSearchGap = 8.0f;
+    const float avail = ctx->GetContentRegionAvailWidth();
+    const float searchW = (std::min)(kSearchWidth, (std::max)(140.0f, avail * 0.32f));
+    const float pathBudget = (std::max)(48.0f, avail - searchW - kSearchGap);
+
+    std::string pathLabel = m_breadcrumbText;
+    if (ctx->CalcTextSizeA(pathLabel).first > pathBudget && pathLabel.size() > 4) {
+        // Keep the trailing folders readable when the Path row is tight.
+        while (pathLabel.size() > 1 &&
+               ctx->CalcTextSizeA(std::string("...") + pathLabel).first > pathBudget) {
+            pathLabel.erase(pathLabel.begin());
+        }
+        pathLabel = "..." + pathLabel;
+    }
+
+    ctx->Label(pathLabel);
+    ctx->SameLine(0.0f, kSearchGap);
+    const float remain = ctx->GetContentRegionAvailWidth();
+    if (remain > searchW)
+        ctx->SetCursorPosX(ctx->GetCursorPosX() + (remain - searchW));
+    ctx->SetNextItemWidth(searchW);
+    ctx->InputTextWithHint("##project_search", Tr("project.search_hint"), m_searchBuf, sizeof(m_searchBuf));
+    UpdateSearchResults();
+}
+
+namespace
+{
+std::string ToLowerAsciiCopy(std::string value)
+{
+    for (char &ch : value) {
+        if (ch >= 'A' && ch <= 'Z')
+            ch = static_cast<char>(ch + ('a' - 'A'));
+    }
+    return value;
+}
+} // namespace
+
+void ProjectPanel::CollectMatchingFolders(const std::string &path, const std::string &queryLower, size_t &budget)
+{
+    if (budget == 0 || path.empty())
+        return;
+    auto *snap = GetDirSnapshot(path);
+    if (!snap)
+        return;
+    for (const auto &dir : snap->dirs) {
+        if (budget == 0)
+            return;
+        const std::string nameLower = ToLowerAsciiCopy(dir.name);
+        if (nameLower.find(queryLower) != std::string::npos) {
+            m_searchResults.push_back(dir);
+            --budget;
+        }
+        CollectMatchingFolders(dir.path, queryLower, budget);
+    }
+}
+
+void ProjectPanel::UpdateSearchResults()
+{
+    const std::string query(m_searchBuf);
+    const uint64_t generation = m_assetDatabase ? m_assetDatabase->GetQueryGeneration() : 0;
+    if (query == m_lastSearchQuery && generation == m_lastSearchGeneration)
+        return;
+
+    m_lastSearchQuery = query;
+    m_lastSearchGeneration = generation;
+    m_searchResults.clear();
+    if (query.empty())
+        return;
+
+    const std::string queryLower = ToLowerAsciiCopy(query);
+    size_t budget = kMaxSearchResults;
+
+    const std::string folderRoot = !m_preferredNavPath.empty() ? m_preferredNavPath : m_rootPath;
+    CollectMatchingFolders(folderRoot, queryLower, budget);
+
+    if (m_assetDatabase && budget > 0) {
+        for (const auto &guid : m_assetDatabase->GetAllGuids()) {
+            if (budget == 0)
+                break;
+            const std::string path = m_assetDatabase->GetPathFromGuid(guid);
+            if (path.empty())
+                continue;
+            const std::string name = infernux::FromFsPath(fs::u8path(path).filename());
+            if (!ShouldShow(name))
+                continue;
+
+            std::string rel = path;
+            if (!m_rootPath.empty()) {
+                std::string tmp;
+                if (infernux::TryMakeRelativeFilesystemPath(path, m_rootPath, tmp, true))
+                    rel = std::move(tmp);
+            }
+
+            const std::string nameLower = ToLowerAsciiCopy(name);
+            const std::string relLower = ToLowerAsciiCopy(rel);
+            if (nameLower.find(queryLower) == std::string::npos && relLower.find(queryLower) == std::string::npos)
+                continue;
+
+            FileItem item;
+            item.type = FileItem::File;
+            item.name = name;
+            item.path = path;
+            item.ext = infernux::FromFsPath(fs::u8path(path).extension());
+            if (!item.ext.empty() && item.ext.front() == '.')
+                item.ext.erase(item.ext.begin());
+            m_searchResults.push_back(std::move(item));
+            --budget;
+        }
+    }
+
+    std::sort(m_searchResults.begin(), m_searchResults.end(), [](const FileItem &a, const FileItem &b) {
+        if (a.type != b.type)
+            return a.type < b.type; // folders first
+        return ToLowerAsciiCopy(a.name) < ToLowerAsciiCopy(b.name);
+    });
+}
+
+void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
+{
+    if (m_searchResults.empty()) {
+        ctx->Label(Tr("project.search_no_results"));
+        return;
+    }
+
+    for (const auto &item : m_searchResults) {
+        std::string rel = item.path;
+        if (!m_rootPath.empty()) {
+            std::string tmp;
+            if (infernux::TryMakeRelativeFilesystemPath(item.path, m_rootPath, tmp, true))
+                rel = std::move(tmp);
+        }
+
+        const std::string kind = (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
+        // Show "Name — relative/path" so users can tell duplicates apart.
+        const std::string label = item.name + "  —  " + rel + "  (" + kind + ")##search_" + item.path;
+        if (!ctx->Selectable(label, false))
+            continue;
+
+        // Selecting a hit ends search mode and jumps File Manager to that location.
+        m_searchBuf[0] = '\0';
+        m_lastSearchQuery.clear();
+        m_searchResults.clear();
+        if (item.type == FileItem::Dir)
+            SetCurrentPath(item.path);
+        else
+            SetSelectedFile(item.path);
+        break;
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
