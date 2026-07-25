@@ -348,7 +348,13 @@ PARTICLE_NODE_DEFINITIONS = (
         "particle.update.acceleration",
         "Acceleration",
         "integrate.acceleration",
-        (PropertyDef("value", TypeRef(ValueType.VEC3), [0.0, -9.81, 0.0]),),
+        (
+            PropertyDef(
+                "value",
+                TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                [0.0, -9.81, 0.0],
+            ),
+        ),
     ),
     _operation(
         "particle.update.collide_plane",

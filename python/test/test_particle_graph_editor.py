@@ -102,6 +102,19 @@ def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage
     assert position.uid.startswith("update::")
 
 
+def test_vector_field_sample_connects_to_simulation_space_acceleration():
+    emitter = ParticleGraphAsset().emitters[0]
+    model = ParticleEmitterGraphAuthoringModel(emitter)
+    model.prepare_node_creation("update")
+
+    position = model.add_node("particle.attribute.read_vec3", 200.0, 180.0)
+    vector_field = model.add_node("particle.vector_field.sample", 440.0, 180.0)
+    acceleration = model.add_node("particle.update.acceleration", 680.0, 180.0)
+
+    assert model.add_link(position.uid, "value", vector_field.uid, "position") is not None
+    assert model.add_link(vector_field.uid, "value", acceleration.uid, "value") is not None
+
+
 def test_particle_event_output_is_available_in_every_emitter_stage():
     source = ParticleEmitterAsset(stable_id="source", name="Source")
     target = ParticleEmitterAsset(stable_id="target", name="Target")
