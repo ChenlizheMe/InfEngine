@@ -221,6 +221,8 @@ class ParticleGraphEditorPanel(EditorPanel):
                 {
                     "stable_id": emitter.stable_id,
                     "name": emitter.name,
+                    "enabled": emitter.enabled,
+                    "play_on_start": emitter.play_on_start,
                     "settings": emitter.settings.to_dict(),
                     "data_interfaces": [
                         interface.to_dict() for interface in emitter.data_interfaces
@@ -1057,6 +1059,54 @@ class ParticleGraphEditorPanel(EditorPanel):
         return {
             "stable_id": emitter_id,
             "settings": decoded.to_dict(),
+            "changed": True,
+        }
+
+    def set_authoring_emitter_lifecycle(
+        self,
+        emitter_id: str,
+        *,
+        enabled: bool,
+        play_on_start: bool,
+    ) -> dict:
+        """Set emitter lifecycle flags without mixing them into emission settings."""
+        if type(enabled) is not bool or type(play_on_start) is not bool:
+            raise TypeError("emitter lifecycle flags must be booleans")
+        emitter_id = str(emitter_id)
+        index = next(
+            (
+                index
+                for index, emitter in enumerate(self._asset.emitters)
+                if emitter.stable_id == emitter_id
+            ),
+            -1,
+        )
+        if index < 0:
+            raise KeyError(f"Particle emitter not found: {emitter_id!r}")
+        emitter = self._asset.emitters[index]
+        if (enabled, play_on_start) == (emitter.enabled, emitter.play_on_start):
+            return {
+                "stable_id": emitter_id,
+                "enabled": emitter.enabled,
+                "play_on_start": emitter.play_on_start,
+                "changed": False,
+            }
+        before = self._snapshot()
+        emitters = list(self._asset.emitters)
+        emitters[index] = replace(
+            emitter,
+            enabled=enabled,
+            play_on_start=play_on_start,
+        )
+        self._asset = replace(self._asset, emitters=tuple(emitters))
+        self._emitter_index = index
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Edit emitter lifecycle", before)
+        return {
+            "stable_id": emitter_id,
+            "enabled": enabled,
+            "play_on_start": play_on_start,
             "changed": True,
         }
 
@@ -2431,6 +2481,29 @@ class ParticleGraphEditorPanel(EditorPanel):
         ).strip()
         if name and name != emitter.name:
             self._update_emitter(replace(emitter, name=name), "Rename particle emitter")
+            emitter = self._selected_emitter()
+
+        enabled = bool(
+            ctx.checkbox(
+                f"{t('particle_graph_editor.enabled')}##particle_emitter_enabled",
+                emitter.enabled,
+            )
+        )
+        play_on_start = bool(
+            ctx.checkbox(
+                f"{t('particle_graph_editor.play_on_start')}##particle_emitter_play_on_start",
+                emitter.play_on_start,
+            )
+        )
+        if (enabled, play_on_start) != (emitter.enabled, emitter.play_on_start):
+            self._update_emitter(
+                replace(
+                    emitter,
+                    enabled=enabled,
+                    play_on_start=play_on_start,
+                ),
+                "Edit emitter lifecycle",
+            )
             emitter = self._selected_emitter()
 
         settings = emitter.settings

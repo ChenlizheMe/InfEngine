@@ -187,6 +187,26 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         ParticleArtifactRegistry.clear()
 
 
+def test_particle_graph_native_importer_rejects_obsolete_emitter_lifecycle_schema(
+    engine, tmp_path: Path
+):
+    asset_db = engine.get_asset_database()
+    source = tmp_path / "ObsoleteLifecycle.particlegraph"
+    document = ParticleGraphAsset(stable_id="obsolete-lifecycle").to_dict()
+    del document["emitters"][0]["play_on_start"]
+    source.write_text(json.dumps(document), encoding="utf-8")
+
+    try:
+        result = AssetManager.import_asset(str(source), database=asset_db)
+
+        assert not result
+        assert result.error_code == AssetMutationErrorCode.IMPORT_FAILED
+        assert "missing or unknown fields" in result.error
+    finally:
+        if asset_db.contains_path(str(source)):
+            asset_db.delete_asset(str(source))
+
+
 def test_particle_script_import_uses_script_resource_and_particle_aot(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "Sparks.particle.py"

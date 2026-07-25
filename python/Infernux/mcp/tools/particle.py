@@ -14,7 +14,7 @@ from Infernux.mcp.tools.common import (
 
 
 def register_particle_tools(mcp, project_path: str) -> None:
-    _register_metadata()
+    _register_authoring_metadata()
 
     @mcp.tool(name="particle_graph_open_asset")
     def particle_graph_open_asset(asset_path: str) -> dict:
@@ -299,6 +299,38 @@ def register_particle_tools(mcp, project_path: str) -> None:
             "particle_graph_patch_emitter_settings",
             _patch,
             arguments={"emitter_id": emitter_id, "values": values},
+        )
+
+    @mcp.tool(name="particle_graph_set_emitter_lifecycle")
+    def particle_graph_set_emitter_lifecycle(
+        emitter_id: str,
+        enabled: bool,
+        play_on_start: bool,
+    ) -> dict:
+        """Set Enabled and Play On Start independently from emission settings."""
+
+        def _set():
+            panel = _require_particle_graph_panel()
+            result = panel.set_authoring_emitter_lifecycle(
+                emitter_id,
+                enabled=enabled,
+                play_on_start=play_on_start,
+            )
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_set_emitter_lifecycle",
+            _set,
+            arguments={
+                "emitter_id": emitter_id,
+                "enabled": enabled,
+                "play_on_start": play_on_start,
+            },
         )
 
     @mcp.tool(name="particle_graph_add_data_interface")
@@ -697,11 +729,16 @@ def register_particle_tools(mcp, project_path: str) -> None:
 
         return main_thread("particle_graph_discard_editor", _discard)
 
+
+def register_particle_runtime_tools(mcp) -> None:
+    """Register live ParticleSystem controls independently from asset authoring."""
+    _register_runtime_metadata()
+
     @mcp.tool(name="particle_system_inspect_runtime")
     def particle_system_inspect_runtime(
         object_id: int, ordinal: int = 0
     ) -> dict:
-        """Inspect one live ParticleSystem control plane without reading particles back."""
+        """Inspect one live ParticleSystem control plane without particle readback."""
 
         def _inspect():
             obj = find_game_object(object_id)
@@ -934,7 +971,7 @@ def _portable_snapshot(
     return result
 
 
-def _register_metadata() -> None:
+def _register_authoring_metadata() -> None:
     register_tool_metadata(
         "particle_graph_open_asset",
         summary="Open a ParticleGraph asset in the visible Particle Graph Editor.",
@@ -1068,6 +1105,17 @@ def _register_metadata() -> None:
         preconditions=["A .particlegraph asset must be open."],
         side_effects=["Records one Undo transaction, marks the document dirty, and republishes the draft."],
         recovery=["Use only field names returned in the emitter settings snapshot."],
+        next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_set_emitter_lifecycle",
+        summary="Set Enabled and Play On Start for one ParticleGraph emitter.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "emitter", "lifecycle"],
+        aliases=["set particle emitter lifecycle", "设置粒子发射器生命周期"],
+        preconditions=["The emitter stable ID must exist in the open .particlegraph."],
+        side_effects=["Records one Undo transaction, marks the document dirty, and republishes the draft."],
+        recovery=["Use booleans for enabled and play_on_start."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
@@ -1289,6 +1337,9 @@ def _register_metadata() -> None:
         recovery=["Inspect the editor after discard before opening another asset."],
         next_suggested_tools=["particle_graph_open_asset", "particle_graph_inspect_editor"],
     )
+
+
+def _register_runtime_metadata() -> None:
     register_tool_metadata(
         "particle_system_inspect_runtime",
         summary="Inspect ParticleSystem scheduling, hot-reload, and event-domain state on demand.",

@@ -252,8 +252,15 @@ class SceneViewOverlaysMixin:
         if component is None or not self._is_particle_preview_edit_mode():
             return False
 
-        width = min(260.0, max(210.0, scene_width - 24.0))
-        height = 76.0
+        try:
+            emitter_states = component.editor_preview_emitter_states()
+        except (AttributeError, ReferenceError, RuntimeError):
+            emitter_states = []
+        width = min(380.0, max(280.0, scene_width - 24.0))
+        height = min(
+            max(76.0, scene_height - 24.0),
+            76.0 + 30.0 * len(emitter_states),
+        )
         ctx.set_cursor_pos_x(cursor_start_x + scene_width - width - 12.0)
         ctx.set_cursor_pos_y(cursor_start_y + scene_height - height - 12.0)
         ctx.push_style_color(ImGuiCol.ChildBg, 0.06, 0.06, 0.065, 0.94)
@@ -333,6 +340,59 @@ class SceneViewOverlaysMixin:
                 finally:
                     self._particle_preview_playing = False
                     self._particle_preview_prepared = False
+            for emitter in emitter_states:
+                index = int(emitter["index"])
+                ctx.separator()
+                ctx.label(str(emitter["name"]))
+                ctx.same_line(0, 8.0)
+                if not bool(emitter["enabled"]):
+                    ctx.begin_disabled(True)
+                muted = bool(
+                    ctx.checkbox(
+                        f"{t('particle_preview.mute')}##particle_preview_mute_{index}",
+                        bool(emitter["muted"]),
+                    )
+                )
+                if muted != bool(emitter["muted"]):
+                    component.editor_preview_set_emitter_muted(index, muted)
+                ctx.same_line(0, 8.0)
+                solo = bool(
+                    ctx.checkbox(
+                        f"{t('particle_preview.solo')}##particle_preview_solo_{index}",
+                        bool(emitter["solo"]),
+                    )
+                )
+                if solo != bool(emitter["solo"]):
+                    component.editor_preview_set_emitter_solo(index, solo)
+                ctx.same_line(0, 8.0)
+                restarted = ctx.button(
+                    f"{t('particle_preview.restart')}##particle_preview_restart_{index}"
+                )
+                if restarted:
+                    component.editor_preview_restart_emitter(index)
+                if not bool(emitter["enabled"]):
+                    ctx.end_disabled()
+                if semantic_capture and callable(record_item):
+                    record_item(
+                        "checkbox",
+                        t("particle_preview.mute"),
+                        bool(emitter["enabled"]),
+                        f"scene_view.particle_preview.emitter.{index}.mute",
+                        bool_value=muted,
+                    )
+                    record_item(
+                        "checkbox",
+                        t("particle_preview.solo"),
+                        bool(emitter["enabled"]),
+                        f"scene_view.particle_preview.emitter.{index}.solo",
+                        bool_value=solo,
+                    )
+                    record_item(
+                        "button",
+                        t("particle_preview.restart"),
+                        bool(emitter["enabled"]),
+                        f"scene_view.particle_preview.emitter.{index}.restart",
+                    )
             return hovered or bool(ctx.is_item_hovered())
         finally:
             ctx.end_child()

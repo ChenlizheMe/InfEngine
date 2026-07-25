@@ -415,6 +415,8 @@ def standard_particle_attributes() -> tuple[ParticleAttribute, ...]:
 class ParticleEmitterAsset:
     stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "Emitter"
+    enabled: bool = True
+    play_on_start: bool = True
     settings: EmitterSettings = EmitterSettings()
     attributes: tuple[ParticleAttribute, ...] = field(default_factory=standard_particle_attributes)
     data_interfaces: tuple[ParticleDataInterface, ...] = ()
@@ -430,6 +432,10 @@ class ParticleEmitterAsset:
             or not self.name
         ):
             raise ParticleGraphSchemaError("particle emitter requires stable_id and name")
+        if type(self.enabled) is not bool or type(self.play_on_start) is not bool:
+            raise ParticleGraphSchemaError(
+                "particle emitter enabled and play_on_start must be booleans"
+            )
         if not isinstance(self.settings, EmitterSettings):
             raise ParticleGraphSchemaError("particle emitter settings are invalid")
         if not all(isinstance(value, GraphDocument) for value in (self.init, self.update, self.rendering)):
@@ -474,6 +480,8 @@ class ParticleEmitterAsset:
         return {
             "stable_id": self.stable_id,
             "name": self.name,
+            "enabled": self.enabled,
+            "play_on_start": self.play_on_start,
             "settings": self.settings.to_dict(),
             "attribute_defaults": {
                 attribute.stable_id: attribute.default
@@ -501,6 +509,8 @@ class ParticleEmitterAsset:
             {
                 "stable_id",
                 "name",
+                "enabled",
+                "play_on_start",
                 "settings",
                 "attribute_defaults",
                 "custom_attributes",
@@ -537,6 +547,8 @@ class ParticleEmitterAsset:
         return cls(
             stable_id=value["stable_id"],
             name=value["name"],
+            enabled=value["enabled"],
+            play_on_start=value["play_on_start"],
             settings=EmitterSettings.from_dict(value["settings"], f"{location}.settings"),
             attributes=(
                 *builtin_attributes,

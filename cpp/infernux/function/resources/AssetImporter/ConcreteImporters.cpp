@@ -367,10 +367,12 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
     for (size_t emitterIndex = 0; emitterIndex < root["emitters"].size(); ++emitterIndex) {
         const auto &emitter = root["emitters"][emitterIndex];
         const std::string emitterLocation = "emitters[" + std::to_string(emitterIndex) + "]";
-        requireExactKeys(
-            emitter,
-            {"stable_id", "name", "settings", "attribute_defaults", "custom_attributes", "data_interfaces", "stages"},
-            emitterLocation);
+        requireExactKeys(emitter,
+                         {"stable_id", "name", "enabled", "play_on_start", "settings", "attribute_defaults",
+                          "custom_attributes", "data_interfaces", "stages"},
+                         emitterLocation);
+        if (!emitter["enabled"].is_boolean() || !emitter["play_on_start"].is_boolean())
+            throw std::runtime_error(emitterLocation + ".enabled and .play_on_start must be booleans");
         if (!emitter["attribute_defaults"].is_object() || !emitter["custom_attributes"].is_array() ||
             !emitter["data_interfaces"].is_array())
             throw std::runtime_error(emitterLocation +

@@ -81,6 +81,8 @@ class ParticleRenderPlan:
 class ParticleEmitterHIR:
     stable_id: str
     name: str
+    enabled: bool
+    play_on_start: bool
     settings: EmitterSettings
     attributes: tuple[ParticleAttribute, ...]
     init: ParticleStageHIR
@@ -217,6 +219,8 @@ class ParticleGraphCompiler:
             payload.append(
                 {
                     "stable_id": emitter.stable_id,
+                    "enabled": emitter.enabled,
+                    "play_on_start": emitter.play_on_start,
                     "settings": emitter.settings.to_dict(),
                     "attributes": [attribute.to_dict() for attribute in emitter.attributes],
                     "data_interfaces": [
@@ -754,6 +758,8 @@ class ParticleGraphCompiler:
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,
+            emitter.enabled,
+            emitter.play_on_start,
             emitter.settings,
             attributes,
             init,

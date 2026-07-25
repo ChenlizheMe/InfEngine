@@ -928,6 +928,37 @@ def test_particle_graph_schema_is_strict_and_semantic_hash_ignores_positions():
     with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
         ParticleGraphAsset.from_dict(obsolete)
 
+    obsolete_lifecycle = copy.deepcopy(asset.to_dict())
+    del obsolete_lifecycle["emitters"][0]["enabled"]
+    with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
+        ParticleGraphAsset.from_dict(obsolete_lifecycle)
+
+
+def test_particle_emitter_lifecycle_is_top_level_behavior_metadata():
+    source = ParticleGraphAsset(
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="manual",
+                enabled=True,
+                play_on_start=False,
+            ),
+        )
+    )
+    restored = ParticleGraphAsset.from_json(source.canonical_json())
+    hir = ParticleGraphCompiler().compile(restored)
+    metadata = decode_particle_runtime_metadata(hir)
+
+    assert restored.emitters[0].settings.to_dict().keys() == EmitterSettings().to_dict().keys()
+    assert hir.emitters[0].enabled is True
+    assert hir.emitters[0].play_on_start is False
+    assert metadata.emitters[0].enabled is True
+    assert metadata.emitters[0].play_on_start is False
+    assert metadata.emitters[0].name == "Emitter"
+    assert source.semantic_hash() != replace(
+        source,
+        emitters=(replace(source.emitters[0], enabled=False),),
+    ).semantic_hash()
+
 
 def test_particle_python_construction_cannot_bypass_schema_invariants():
     with pytest.raises(ParticleGraphSchemaError, match="exactly 3"):
@@ -961,6 +992,8 @@ class SmokeGraph(ParticleScript):
 
     class Smoke(ParticleEmitter):
         stable_id = "smoke"
+        enabled = True
+        play_on_start = False
         settings = EmitterSettings(
             capacity=100000,
             target="gpu",
@@ -1022,6 +1055,8 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert emitter.settings.duration == 4.0
     assert emitter.settings.loop is False
     assert emitter.settings.start_delay == 0.25
+    assert emitter.enabled is True
+    assert emitter.play_on_start is False
     assert [operation.opcode for operation in emitter.init.operations] == [
         "emitter.sample_shape",
         "attribute.set_velocity",

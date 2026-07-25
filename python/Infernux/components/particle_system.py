@@ -78,6 +78,8 @@ class ParticleSystem(InxComponent):
     _data_interface_overrides: dict[str, AssetReference]
     _playing: bool = False
     _editor_preview_active: bool = False
+    _editor_preview_muted_emitters: set[str]
+    _editor_preview_solo_emitters: set[str]
     _compile_retry_at: float = 0.0
     _last_compile_error: str = ""
     _last_compile_error_log_at: float = 0.0
@@ -112,6 +114,8 @@ class ParticleSystem(InxComponent):
             self._batch_id = int(self.component_id) or 1
         self._playing = bool(playing)
         self._editor_preview_active = False
+        self._editor_preview_muted_emitters = set()
+        self._editor_preview_solo_emitters = set()
         self._compile_retry_at = 0.0
         self._last_compile_error = ""
         self._last_compile_error_log_at = 0.0
@@ -131,12 +135,24 @@ class ParticleSystem(InxComponent):
     def play(self, emitter_index: int | None = None) -> bool:
         if emitter_index is None:
             self._playing = True
-            runtimes = tuple(getattr(self, "_runtimes", ())) + tuple(
-                getattr(self, "_gpu_controllers", ())
-            )
-            for runtime in runtimes:
-                runtime.play()
-            return bool(runtimes)
+            played = False
+            for index, runtime in zip(
+                getattr(self, "_cpu_emitter_indices", ()),
+                getattr(self, "_runtimes", ()),
+            ):
+                if self._emitter_is_enabled(index):
+                    runtime.play()
+                    played = True
+            for index, runtime in zip(
+                getattr(self, "_gpu_emitter_indices", ()),
+                getattr(self, "_gpu_controllers", ()),
+            ):
+                if self._emitter_is_enabled(index):
+                    runtime.play()
+                    played = True
+            return played
+        if not self._emitter_is_enabled(emitter_index):
+            return False
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
@@ -221,6 +237,8 @@ class ParticleSystem(InxComponent):
                 "index": index,
                 "stable_id": emitter.stable_id,
                 "name": str(getattr(emitter, "name", emitter.stable_id)),
+                "enabled": bool(emitter.enabled),
+                "play_on_start": bool(emitter.play_on_start),
                 "target": target.value if target is not None else "",
                 "playing": bool(getattr(runtime, "is_playing", False)),
                 "simulation_step": int(getattr(runtime, "simulation_step", 0)),
@@ -329,16 +347,42 @@ class ParticleSystem(InxComponent):
             )
         return result
 
-    def restart(self, emitter_index: int | None = None) -> bool:
+    def restart(
+        self,
+        emitter_index: int | None = None,
+        *,
+        honor_play_on_start: bool = False,
+    ) -> bool:
         if emitter_index is None:
             self._playing = True
-            for runtime in getattr(self, "_runtimes", ()):
+            restarted = False
+            for index, runtime in zip(
+                getattr(self, "_cpu_emitter_indices", ()),
+                getattr(self, "_runtimes", ()),
+            ):
                 runtime.reset()
-                runtime.play()
-            for runtime in getattr(self, "_gpu_controllers", ()):
-                runtime.reset(playing=True)
+                should_play = self._emitter_should_play(
+                    index, honor_play_on_start=honor_play_on_start
+                )
+                if should_play:
+                    runtime.play()
+                    restarted = True
+                else:
+                    runtime.pause()
+                self._remove_emitter_batches(index)
+            for index, runtime in zip(
+                getattr(self, "_gpu_emitter_indices", ()),
+                getattr(self, "_gpu_controllers", ()),
+            ):
+                should_play = self._emitter_should_play(
+                    index, honor_play_on_start=honor_play_on_start
+                )
+                runtime.reset(playing=should_play)
+                restarted = restarted or should_play
             self._reset_gpu_emitters()
-            return bool(self._runtimes or self._gpu_controllers)
+            return restarted
+        if not self._emitter_is_enabled(emitter_index):
+            return False
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
@@ -457,7 +501,7 @@ class ParticleSystem(InxComponent):
         self._editor_preview_active = True
         if not self._has_runtime() and not self._compile_asset():
             return False
-        self.restart()
+        self.restart(honor_play_on_start=True)
         return True
 
     def editor_preview_update(self, delta_time: float, speed: float = 1.0) -> bool:
@@ -488,10 +532,67 @@ class ParticleSystem(InxComponent):
         self._editor_preview_active = True
         return had_runtime
 
+    def editor_preview_set_emitter_muted(
+        self, emitter_index: int, muted: bool
+    ) -> bool:
+        if not self._valid_emitter_index(emitter_index) or type(muted) is not bool:
+            return False
+        stable_id = self._emitter_stable_id(emitter_index)
+        if muted:
+            self._editor_preview_muted_emitters.add(stable_id)
+            self._editor_preview_solo_emitters.discard(stable_id)
+        else:
+            self._editor_preview_muted_emitters.discard(stable_id)
+        self._apply_editor_preview_visibility(emitter_index)
+        return True
+
+    def editor_preview_set_emitter_solo(
+        self, emitter_index: int, solo: bool
+    ) -> bool:
+        if not self._valid_emitter_index(emitter_index) or type(solo) is not bool:
+            return False
+        stable_id = self._emitter_stable_id(emitter_index)
+        if solo:
+            self._editor_preview_solo_emitters.add(stable_id)
+            self._editor_preview_muted_emitters.discard(stable_id)
+        else:
+            self._editor_preview_solo_emitters.discard(stable_id)
+        self._apply_editor_preview_visibility()
+        return True
+
+    def editor_preview_restart_emitter(self, emitter_index: int) -> bool:
+        if not getattr(self, "_editor_preview_active", False):
+            return False
+        return self.restart(emitter_index)
+
+    def editor_preview_emitter_states(self) -> list[dict]:
+        metadata = getattr(self, "_particle_metadata", None)
+        result = []
+        for index, emitter in enumerate(getattr(metadata, "emitters", ())):
+            runtime = self._runtime_at(index)
+            stable_id = emitter.stable_id
+            result.append(
+                {
+                    "index": index,
+                    "stable_id": stable_id,
+                    "name": emitter.name,
+                    "enabled": emitter.enabled,
+                    "play_on_start": emitter.play_on_start,
+                    "muted": stable_id in self._editor_preview_muted_emitters,
+                    "solo": stable_id in self._editor_preview_solo_emitters,
+                    "visible": self._editor_preview_emitter_visible(index),
+                    "playing": bool(getattr(runtime, "is_playing", False)),
+                }
+            )
+        return result
+
     def editor_preview_end(self) -> None:
         if getattr(self, "_editor_preview_active", False):
             self.pause()
             self._editor_preview_active = False
+            self._editor_preview_muted_emitters.clear()
+            self._editor_preview_solo_emitters.clear()
+            self._apply_editor_preview_visibility()
 
     def on_disable(self):
         self._remove_native_batch()
@@ -568,18 +669,23 @@ class ParticleSystem(InxComponent):
             metadata = decode_particle_runtime_metadata(hir)
             targets = self._select_runtime_targets(metadata, artifact)
             previous_metadata = getattr(self, "_particle_metadata", None)
+            previous_metadata_by_id = {
+                emitter.stable_id: emitter
+                for emitter in getattr(previous_metadata, "emitters", ())
+            }
             previous_program = getattr(self, "_particle_program", None)
             previous_kernel = getattr(self, "_particle_kernel", None)
             previous_targets = getattr(self, "_emitter_runtime_targets", ())
             previous_cpu = (
                 {
-                    emitter.stable_id: runtime
-                    for emitter, runtime in zip(
-                        previous_program.emitters,
+                    previous_metadata.emitters[index].stable_id: runtime
+                    for index, runtime in zip(
+                        getattr(self, "_cpu_emitter_indices", ()),
                         getattr(self, "_runtimes", ()),
                     )
+                    if 0 <= index < len(previous_metadata.emitters)
                 }
-                if previous_program is not None
+                if previous_program is not None and previous_metadata is not None
                 else {}
             )
             reload_compatibility = [None] * len(metadata.emitters)
@@ -609,6 +715,11 @@ class ParticleSystem(InxComponent):
                         previous_emitter.settings,
                         emitter.settings,
                     )
+                    if (
+                        previous_emitter.enabled != emitter.enabled
+                        or previous_emitter.play_on_start != emitter.play_on_start
+                    ):
+                        compatibility = ParticleRuntimeCompatibility.EMITTER_RESTART
                     if previous_target is not targets[emitter_index]:
                         compatibility = ParticleRuntimeCompatibility.EMITTER_RESTART
                     reload_compatibility[emitter_index] = compatibility
@@ -632,13 +743,36 @@ class ParticleSystem(InxComponent):
                 for emitter_index, emitter in zip(cpu_indices, program.emitters):
                     previous = previous_cpu.get(emitter.stable_id)
                     runtime = None
-                    if previous is not None:
+                    if (
+                        previous is not None
+                        and reload_compatibility[emitter_index]
+                        is not ParticleRuntimeCompatibility.EMITTER_RESTART
+                    ):
                         runtime, compatibility = previous.migrate_to(emitter)
                         reload_compatibility[emitter_index] = compatibility
                     if runtime is None:
                         runtime = emitter.create_runtime()
+                        previous_emitter = previous_metadata_by_id.get(
+                            emitter.stable_id
+                        )
+                        preserve_play_state = bool(
+                            previous is not None
+                            and previous_emitter is not None
+                            and previous_emitter.enabled == metadata.emitters[
+                                emitter_index
+                            ].enabled
+                            and previous_emitter.play_on_start == metadata.emitters[
+                                emitter_index
+                            ].play_on_start
+                        )
                         should_play = (
-                            previous.is_playing if previous is not None else self._playing
+                            previous.is_playing
+                            if preserve_play_state
+                            else self._emitter_should_play(
+                                emitter_index,
+                                honor_play_on_start=True,
+                                metadata=metadata,
+                            )
                         )
                         if not should_play:
                             runtime.pause()
@@ -724,8 +858,12 @@ class ParticleSystem(InxComponent):
         emitter_indices = []
         previous_controllers = {}
         previous_layouts = {}
+        previous_runtime_metadata = {}
         previous_metadata = getattr(self, "_particle_metadata", None)
         if previous_metadata is not None:
+            previous_runtime_metadata = {
+                emitter.stable_id: emitter for emitter in previous_metadata.emitters
+            }
             previous_controllers = {
                 previous_metadata.emitters[emitter_index].stable_id: controller
                 for emitter_index, controller in zip(
@@ -830,12 +968,23 @@ class ParticleSystem(InxComponent):
             if preserve_state:
                 controller = previous_controller.migrate_to(emitter.settings)
             else:
+                previous_emitter = previous_runtime_metadata.get(emitter.stable_id)
+                preserve_play_state = bool(
+                    previous_controller is not None
+                    and previous_emitter is not None
+                    and previous_emitter.enabled == emitter.enabled
+                    and previous_emitter.play_on_start == emitter.play_on_start
+                )
                 controller = GpuParticleEmitterController(
                     emitter.settings,
                     playing=(
                         previous_controller.is_playing
-                        if previous_controller is not None
-                        else self._playing
+                        if preserve_play_state
+                        else self._emitter_should_play(
+                            index,
+                            honor_play_on_start=True,
+                            metadata=metadata,
+                        )
                     ),
                 )
             controllers.append(controller)
@@ -926,7 +1075,8 @@ class ParticleSystem(InxComponent):
                     "delta_time": schedule.delta_time,
                     "transforms": transforms,
                     "simulate": schedule.simulate,
-                    "render": schedule.render,
+                    "render": schedule.render
+                    and self._editor_preview_emitter_visible(emitter_index),
                 }
             )
         if frame_items:
@@ -957,6 +1107,9 @@ class ParticleSystem(InxComponent):
                 tuple(float(value) for value in emitter_to_world[0:3, 3]),
             )
             if native is None:
+                continue
+            if not self._editor_preview_emitter_visible(emitter_index):
+                self._remove_emitter_batches(emitter_index)
                 continue
             if emitter.settings.simulation_space.value == "local" and len(instances):
                 instances = self._local_instances_to_world(instances, emitter_to_world)
@@ -1000,6 +1153,69 @@ class ParticleSystem(InxComponent):
         except ValueError:
             return None
         return runtimes[runtime_index]
+
+    def _valid_emitter_index(self, emitter_index: int) -> bool:
+        metadata = getattr(self, "_particle_metadata", None)
+        return bool(
+            type(emitter_index) is int
+            and 0 <= emitter_index < len(getattr(metadata, "emitters", ()))
+        )
+
+    def _emitter_stable_id(self, emitter_index: int) -> str:
+        metadata = getattr(self, "_particle_metadata", None)
+        return str(metadata.emitters[emitter_index].stable_id)
+
+    def _editor_preview_emitter_visible(self, emitter_index: int) -> bool:
+        if not getattr(self, "_editor_preview_active", False):
+            return True
+        if not self._valid_emitter_index(emitter_index):
+            return False
+        stable_id = self._emitter_stable_id(emitter_index)
+        if self._editor_preview_solo_emitters:
+            return stable_id in self._editor_preview_solo_emitters
+        return stable_id not in self._editor_preview_muted_emitters
+
+    def _apply_editor_preview_visibility(
+        self, emitter_index: int | None = None
+    ) -> None:
+        metadata = getattr(self, "_particle_metadata", None)
+        if metadata is None:
+            return
+        indices = (
+            range(len(metadata.emitters))
+            if emitter_index is None
+            else (emitter_index,)
+        )
+        for index in indices:
+            if not self._editor_preview_emitter_visible(index):
+                self._remove_emitter_batches(index)
+
+    def _emitter_is_enabled(self, emitter_index: int, *, metadata=None) -> bool:
+        if type(emitter_index) is not int:
+            return False
+        metadata = metadata or getattr(self, "_particle_metadata", None)
+        emitters = getattr(metadata, "emitters", ())
+        return bool(
+            0 <= emitter_index < len(emitters) and emitters[emitter_index].enabled
+        )
+
+    def _emitter_should_play(
+        self,
+        emitter_index: int,
+        *,
+        honor_play_on_start: bool,
+        metadata=None,
+    ) -> bool:
+        metadata = metadata or getattr(self, "_particle_metadata", None)
+        emitters = getattr(metadata, "emitters", ())
+        if not 0 <= emitter_index < len(emitters):
+            return False
+        emitter = emitters[emitter_index]
+        return bool(
+            self._playing
+            and emitter.enabled
+            and (emitter.play_on_start or not honor_play_on_start)
+        )
 
     def _has_runtime(self) -> bool:
         return bool(

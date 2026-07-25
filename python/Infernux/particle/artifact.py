@@ -395,6 +395,8 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
             {
                 "stable_id": emitter.stable_id,
                 "name": emitter.name,
+                "enabled": emitter.enabled,
+                "play_on_start": emitter.play_on_start,
                 "settings": emitter.settings.to_dict(),
                 "attributes": [attribute.to_dict() for attribute in emitter.attributes],
                 "data_interfaces": [

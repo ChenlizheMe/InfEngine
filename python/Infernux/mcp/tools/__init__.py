@@ -74,6 +74,8 @@ def register_all_tools(mcp, project_path: str, config: dict[str, Any] | None = N
     if _group(config, "runtime") and _feature(config, "runtime_observation"):
         from Infernux.mcp.tools.runtime import register_runtime_tools
         register_runtime_tools(gated_mcp)
+        from Infernux.mcp.tools.particle import register_particle_runtime_tools
+        register_particle_runtime_tools(gated_mcp)
     if _group(config, "ui"):
         from Infernux.mcp.tools.ui import register_ui_tools
         register_ui_tools(gated_mcp)

@@ -422,6 +422,18 @@ class ParticleScriptCompiler:
     ) -> ParticleEmitterAsset:
         self._validate_emitter_class(node, source_name)
         stable_id = self._string_assignment(node, "stable_id", required=True)
+        enabled_node = self._assignment(node, "enabled")
+        play_on_start_node = self._assignment(node, "play_on_start")
+        enabled = True if enabled_node is None else self._value(enabled_node)
+        play_on_start = (
+            True if play_on_start_node is None else self._value(play_on_start_node)
+        )
+        if type(enabled) is not bool or type(play_on_start) is not bool:
+            raise self._error(
+                source_name,
+                enabled_node or play_on_start_node or node,
+                "emitter enabled and play_on_start must be boolean literals",
+            )
         settings_node = self._assignment(node, "settings")
         if settings_node is None:
             raise self._error(source_name, node, f"emitter {node.name} requires settings")
@@ -470,6 +482,8 @@ class ParticleScriptCompiler:
         return ParticleEmitterAsset(
             stable_id=stable_id,
             name=node.name,
+            enabled=enabled,
+            play_on_start=play_on_start,
             settings=settings,
             data_interfaces=data_interfaces,
             init=stages["init"],
@@ -1274,9 +1288,16 @@ class ParticleScriptCompiler:
                 continue
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if self._is_named_assignment(statement, "stable_id") or self._is_named_assignment(
-                statement, "settings"
-            ) or self._is_named_assignment(statement, "data_interfaces"):
+            if any(
+                self._is_named_assignment(statement, name)
+                for name in (
+                    "stable_id",
+                    "enabled",
+                    "play_on_start",
+                    "settings",
+                    "data_interfaces",
+                )
+            ):
                 continue
             raise self._error(source_name, statement, "unsupported ParticleEmitter class statement")
 

@@ -116,6 +116,19 @@ class _Panel:
         self.calls.append(("patch-emitter-settings", emitter_id, values))
         return {"stable_id": emitter_id, "settings": values, "changed": True}
 
+    def set_authoring_emitter_lifecycle(
+        self, emitter_id, *, enabled, play_on_start
+    ):
+        self.calls.append(
+            ("emitter-lifecycle", emitter_id, enabled, play_on_start)
+        )
+        return {
+            "stable_id": emitter_id,
+            "enabled": enabled,
+            "play_on_start": play_on_start,
+            "changed": True,
+        }
+
     def add_authoring_data_interface(self, emitter_id, kind, name):
         self.calls.append(("add-data-interface", emitter_id, kind, name))
         return {"stable_id": "interface-id", "kind": kind, "name": name}
@@ -292,6 +305,9 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     patched_settings = mcp.tools["particle_graph_patch_emitter_settings"](
         "target", {"capacity": 8}
     )
+    lifecycle = mcp.tools["particle_graph_set_emitter_lifecycle"](
+        "target", False, False
+    )
     data_interface = mcp.tools["particle_graph_add_data_interface"](
         "target", "sdf_volume", "Collision"
     )
@@ -364,6 +380,8 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert emitter["emitter"]["stable_id"] == "target"
     assert emitter_settings["changed"] is True
     assert patched_settings["settings"] == {"capacity": 8}
+    assert lifecycle["enabled"] is False
+    assert lifecycle["play_on_start"] is False
     assert data_interface["interface"]["kind"] == "sdf_volume"
     assert data_asset["interface"]["texture"]["guid"] == "sdf-guid"
     assert data_patch["interface"]["distance_scale"] == 2.0
@@ -397,6 +415,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         ("add-emitter", "Target"),
         ("emitter-settings", "target", {"spawn_rate": 0.0}),
         ("patch-emitter-settings", "target", {"capacity": 8}),
+        ("emitter-lifecycle", "target", False, False),
         ("add-data-interface", "target", "sdf_volume", "Collision"),
         (
             "set-data-interface-asset",
@@ -600,7 +619,7 @@ def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
         lambda _operation, callback, **_kwargs: callback(),
     )
     mcp = _FakeMcp()
-    module.register_particle_tools(mcp, "C:/Project")
+    module.register_particle_runtime_tools(mcp)
 
     state = mcp.tools["particle_system_inspect_runtime"](123)
 
@@ -646,7 +665,7 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
         lambda _operation, callback, **_kwargs: callback(),
     )
     mcp = _FakeMcp()
-    module.register_particle_tools(mcp, "C:/Project")
+    module.register_particle_runtime_tools(mcp)
 
     requested = mcp.tools["particle_system_request_gpu_diagnostics"](456)
     polled = mcp.tools["particle_system_poll_gpu_diagnostics"](456, 77)
@@ -698,7 +717,7 @@ def test_particle_system_emitter_control_tools_are_indexed_no_ops(monkeypatch):
         lambda _operation, callback, **_kwargs: callback(),
     )
     mcp = _FakeMcp()
-    module.register_particle_tools(mcp, "C:/Project")
+    module.register_particle_runtime_tools(mcp)
 
     started = mcp.tools["particle_system_start_emitter"](789, 0)
     paused = mcp.tools["particle_system_pause_emitter"](789, 0)

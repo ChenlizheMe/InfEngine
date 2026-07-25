@@ -209,6 +209,80 @@ def test_particle_system_editor_preview_reuses_runtime_without_play_mode(
     component._remove_native_batch()
 
 
+def test_particle_system_honors_independent_emitter_lifecycle(
+    scene, engine, monkeypatch
+):
+    cpu = EmitterSettings(
+        target=ExecutionTarget.CPU,
+        capacity=8,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 1),),
+    )
+    component = ParticleSystem()
+    component.graph = ParticleGraphAsset(
+        stable_id="emitter-lifecycle",
+        emitters=(
+            ParticleEmitterAsset(stable_id="automatic", settings=cpu),
+            ParticleEmitterAsset(
+                stable_id="manual",
+                play_on_start=False,
+                settings=cpu,
+            ),
+            ParticleEmitterAsset(
+                stable_id="disabled",
+                enabled=False,
+                settings=cpu,
+            ),
+        ),
+    )
+    game_object = scene.create_game_object("ParticleLifecycleProbe")
+    game_object.add_py_component(component)
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+
+    component.awake()
+    component.start()
+    component.update(0.0)
+
+    assert [runtime.particle_count for runtime in component._runtimes] == [1, 0, 0]
+    diagnostics = component.runtime_diagnostics()["emitters"]
+    assert [item["enabled"] for item in diagnostics] == [True, True, False]
+    assert [item["play_on_start"] for item in diagnostics] == [True, False, True]
+    assert [item["playing"] for item in diagnostics] == [True, False, False]
+
+    assert component.start_emitter(1) is True
+    assert component.start_emitter(2) is False
+    component.update(0.0)
+    assert [runtime.particle_count for runtime in component._runtimes] == [1, 1, 0]
+
+    component._editor_preview_active = True
+    assert component.editor_preview_set_emitter_muted(1, True) is True
+    assert [
+        item["visible"] for item in component.editor_preview_emitter_states()
+    ] == [True, False, True]
+    assert component.editor_preview_set_emitter_solo(0, True) is True
+    assert [
+        item["visible"] for item in component.editor_preview_emitter_states()
+    ] == [True, False, False]
+    assert component.editor_preview_set_emitter_muted(0, True) is True
+    assert [
+        item["visible"] for item in component.editor_preview_emitter_states()
+    ] == [False, False, True]
+    metadata = component._particle_metadata
+    component._particle_metadata = type(metadata)(
+        metadata.behavior_hash,
+        tuple(reversed(metadata.emitters)),
+    )
+    reordered = component.editor_preview_emitter_states()
+    assert [item["stable_id"] for item in reordered] == [
+        "disabled",
+        "manual",
+        "automatic",
+    ]
+    assert [item["visible"] for item in reordered] == [True, False, False]
+    assert component.editor_preview_set_emitter_solo(99, True) is False
+    component._remove_native_batch()
+
+
 def test_particle_system_throttles_repeated_compile_failures(scene, monkeypatch):
     component = ParticleSystem()
     component.graph = ParticleGraphAsset(stable_id="compile-failure-throttle")
@@ -367,6 +441,12 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert len(native.frames) == 1
     assert native.frames[0][0] == component._batch_id
     assert [item["emitter_id"] for item in native.frames[0][1]] == component._gpu_emitter_ids
+    component._editor_preview_active = True
+    assert component.editor_preview_set_emitter_muted(1, True) is True
+    component.update(0.0)
+    assert native.frames[-1][1][0]["render"] is False
+    assert component.editor_preview_set_emitter_muted(1, False) is True
+    component._editor_preview_active = False
     diagnostics = component.runtime_diagnostics()
     assert diagnostics["event_abi_hash"] == 41
     assert diagnostics["event_domain_serial"] == 7

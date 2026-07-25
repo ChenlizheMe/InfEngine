@@ -871,6 +871,25 @@ def test_particle_graph_editor_semantic_event_helpers_patch_and_route_nodes():
     with pytest.raises(ValueError, match="unknown emitter settings"):
         panel.patch_authoring_emitter_settings(source.stable_id, {"legacy": True})
 
+    lifecycle = panel.set_authoring_emitter_lifecycle(
+        source.stable_id,
+        enabled=False,
+        play_on_start=False,
+    )
+    assert lifecycle == {
+        "stable_id": source.stable_id,
+        "enabled": False,
+        "play_on_start": False,
+        "changed": True,
+    }
+    assert "enabled" not in lifecycle.get("settings", {})
+    with pytest.raises(TypeError, match="must be booleans"):
+        panel.set_authoring_emitter_lifecycle(
+            source.stable_id,
+            enabled=1,
+            play_on_start=False,
+        )
+
     target_id = panel.add_authoring_emitter("Event Target")["stable_id"]
     event_type = panel.add_event_type(
         "Impact",
