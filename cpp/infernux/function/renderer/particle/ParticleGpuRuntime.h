@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,18 @@ struct GpuPointCacheLayoutDesc
     std::vector<GpuPointCacheDesc> pointCaches;
 };
 
+struct GpuMeshShapeDesc
+{
+    uint32_t metadataOffsetWords = 0;
+    uint32_t vertexBinding = 14;
+    uint32_t triangleBinding = 15;
+    uint32_t vertexCount = 0;
+    uint32_t triangleCount = 0;
+    rhi::BufferHandle vertices;
+    rhi::BufferHandle triangles;
+    std::shared_ptr<void> keepAlive;
+};
+
 struct GpuVectorFieldDesc
 {
     enum class Kind : uint8_t
@@ -99,6 +112,7 @@ struct GpuEmitterDesc
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
     ShaderBytecode eventInitKernel;
     GpuPointCacheLayoutDesc pointCaches;
+    std::optional<GpuMeshShapeDesc> meshShape;
     GpuVectorFieldLayoutDesc vectorFields;
 };
 

@@ -160,7 +160,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     if (value.contains("data_interface_layout") && !value["data_interface_layout"].is_none()) {
         const py::dict layout = py::cast<py::dict>(value["data_interface_layout"]);
         for (const char *field : {"version", "metadata_binding", "interface_stride_words", "sample_stride_words",
-                                  "sample_count", "point_caches"}) {
+                                  "sample_count", "point_caches", "mesh_shape"}) {
             if (!layout.contains(field))
                 throw std::invalid_argument(std::string("GPU data interface layout is missing ") + field);
         }
@@ -217,6 +217,30 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
                 decoded.samples.push_back(std::move(sampleDesc));
             }
             program.pointCaches.pointCaches.push_back(std::move(decoded));
+        }
+
+        if (!layout["mesh_shape"].is_none()) {
+            if (!py::isinstance<py::dict>(layout["mesh_shape"]))
+                throw std::invalid_argument("GPU Mesh shape layout must be a dictionary or None");
+            const py::dict meshShape = py::cast<py::dict>(layout["mesh_shape"]);
+            for (const char *field : {"mesh", "mode", "metadata_offset", "vertex_binding",
+                                      "triangle_binding", "native"}) {
+                if (!meshShape.contains(field))
+                    throw std::invalid_argument(std::string("GPU Mesh shape binding is missing ") + field);
+            }
+            const std::string mode = py::cast<std::string>(meshShape["mode"]);
+            if (mode != "vertex" && mode != "triangle" && mode != "surface")
+                throw std::invalid_argument("GPU Mesh shape mode is invalid");
+            if (meshShape["native"].is_none())
+                throw std::invalid_argument("GPU Mesh shape native asset is missing");
+            particle::GpuParticleMeshShapeProgram decoded;
+            decoded.metadataOffsetWords = py::cast<uint32_t>(meshShape["metadata_offset"]);
+            decoded.vertexBinding = py::cast<uint32_t>(meshShape["vertex_binding"]);
+            decoded.triangleBinding = py::cast<uint32_t>(meshShape["triangle_binding"]);
+            decoded.mesh = py::cast<std::shared_ptr<InxMesh>>(meshShape["native"]);
+            if (!decoded.mesh)
+                throw std::invalid_argument("GPU Mesh shape native asset is invalid");
+            program.meshShape = std::move(decoded);
         }
 
         for (const char *field : {"volume_metadata_binding", "volume_stride_words", "volume_interfaces"}) {

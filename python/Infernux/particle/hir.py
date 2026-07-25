@@ -1050,6 +1050,8 @@ class ParticleGraphCompiler:
                                 "shape_radius": settings.shape.radius,
                                 "shape_angle_degrees": settings.shape.angle_degrees,
                                 "shape_dimensions": list(settings.shape.dimensions),
+                                "shape_mesh": settings.shape.mesh.to_dict(),
+                                "shape_mesh_mode": settings.shape.mesh_mode.value,
                             }.items()
                         )
                     ),

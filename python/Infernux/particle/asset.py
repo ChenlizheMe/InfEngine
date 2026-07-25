@@ -18,7 +18,7 @@ from Infernux.graph.document import (
     GraphNodeRecord,
 )
 from Infernux.graph.registry import PortKind
-from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 
 from . import nodes as _particle_nodes  # noqa: F401
 from .data_interface import (
@@ -67,6 +67,13 @@ class EmitterShapeKind(str, Enum):
     SPHERE = "sphere"
     BOX = "box"
     CONE = "cone"
+    MESH = "mesh"
+
+
+class MeshEmissionMode(str, Enum):
+    VERTEX = "vertex"
+    TRIANGLE = "triangle"
+    SURFACE = "surface"
 
 
 @dataclass(frozen=True)
@@ -146,10 +153,13 @@ class EmitterShape:
     radius: float = 0.0
     angle_degrees: float = 25.0
     dimensions: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    mesh: AssetReference = AssetReference()
+    mesh_mode: MeshEmissionMode = MeshEmissionMode.SURFACE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", EmitterShapeKind(self.kind))
         object.__setattr__(self, "space", CoordinateSpace(self.space))
+        object.__setattr__(self, "mesh_mode", MeshEmissionMode(self.mesh_mode))
         if self.space not in {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.WORLD}:
             raise ParticleGraphSchemaError("emitter shape space must be emitter_local or world")
         if not math.isfinite(float(self.radius)) or float(self.radius) < 0.0:
@@ -161,6 +171,8 @@ class EmitterShape:
         ):
             raise ParticleGraphSchemaError("emitter shape dimensions require three non-negative values")
         object.__setattr__(self, "dimensions", tuple(float(value) for value in self.dimensions))
+        if not isinstance(self.mesh, AssetReference):
+            raise ParticleGraphSchemaError("emitter shape mesh must be an AssetReference")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -169,11 +181,25 @@ class EmitterShape:
             "radius": float(self.radius),
             "angle_degrees": float(self.angle_degrees),
             "dimensions": list(self.dimensions),
+            "mesh": self.mesh.to_dict(),
+            "mesh_mode": self.mesh_mode.value,
         }
 
     @classmethod
     def from_dict(cls, value, location: str) -> "EmitterShape":
-        _exact_object(value, {"kind", "space", "radius", "angle_degrees", "dimensions"}, location)
+        _exact_object(
+            value,
+            {
+                "kind",
+                "space",
+                "radius",
+                "angle_degrees",
+                "dimensions",
+                "mesh",
+                "mesh_mode",
+            },
+            location,
+        )
         if type(value["dimensions"]) is not list:
             raise ParticleGraphSchemaError(f"{location}.dimensions must be an array")
         return cls(
@@ -182,6 +208,8 @@ class EmitterShape:
             value["radius"],
             value["angle_degrees"],
             tuple(value["dimensions"]),
+            AssetReference.from_dict(value["mesh"]),
+            value["mesh_mode"],
         )
 
 
@@ -905,6 +933,7 @@ __all__ = [
     "EmitterSettings",
     "EmitterShape",
     "EmitterShapeKind",
+    "MeshEmissionMode",
     "ExecutionTarget",
     "PARTICLE_GRAPH_SCHEMA",
     "ParticleAttribute",

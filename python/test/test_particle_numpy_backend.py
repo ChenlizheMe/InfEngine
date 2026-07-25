@@ -24,6 +24,7 @@ from Infernux.particle import (
     ParticleKernelProgram,
     PointCache,
     ParticleRuntimeCompatibility,
+    MeshEmissionMode,
     SdfVolume,
     VectorField,
     VectorFieldBoundary,
@@ -106,6 +107,7 @@ def _compile_runtime(
     system_seed: int = 0,
     init: GraphDocument | None = None,
     update: GraphDocument | None = None,
+    mesh_shape_resolver=None,
 ):
     emitter_kwargs = {"stable_id": "emitter", "settings": settings}
     if init is not None:
@@ -118,7 +120,9 @@ def _compile_runtime(
     )
     hir = ParticleGraphCompiler().compile(asset)
     kernel = ParticleKernelLowerer().lower(hir)
-    program = NumpyParticleCompiler().compile(hir, kernel)
+    program = NumpyParticleCompiler().compile(
+        hir, kernel, mesh_shape_resolver=mesh_shape_resolver
+    )
     return program, program.create_runtime(system_seed=system_seed)
 
 
@@ -413,6 +417,85 @@ def test_numpy_emitter_shape_changes_spawn_position_but_not_init_velocity():
     np.testing.assert_array_equal(velocity, np.tile([0.0, 1.0, 0.0], (4, 1)))
     np.testing.assert_array_equal(speed, np.ones(4, dtype=np.float32))
     assert np.unique(runtime.attributes["builtin.position"][:4], axis=0).shape[0] > 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_large_fraction"),
+    ((MeshEmissionMode.TRIANGLE, 0.5), (MeshEmissionMode.SURFACE, 100.0 / 101.0)),
+)
+def test_numpy_mesh_shape_samples_uniform_triangles_or_area_weighted_surface(
+    mode, expected_large_fraction
+):
+    geometry = {
+        "positions": np.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [20.0, 0.0, 0.0],
+                [10.0, 10.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+        "indices": np.asarray([0, 1, 2, 3, 4, 5], dtype=np.uint32),
+    }
+    settings = EmitterSettings(
+        capacity=4096,
+        seed=42,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 4096),),
+        shape=EmitterShape(
+            kind="mesh",
+            mesh=AssetReference(guid="mesh-guid"),
+            mesh_mode=mode,
+        ),
+    )
+    _program, runtime = _compile_runtime(
+        settings,
+        system_seed=7,
+        mesh_shape_resolver=lambda _shape: geometry,
+    )
+
+    runtime.tick(0.0)
+
+    positions = runtime.attributes["builtin.position"][: runtime.particle_count]
+    large_fraction = np.count_nonzero(positions[:, 0] >= 10.0) / positions.shape[0]
+    assert large_fraction == pytest.approx(expected_large_fraction, abs=0.035)
+    np.testing.assert_array_equal(
+        runtime.attributes["builtin.velocity"][: runtime.particle_count],
+        np.tile([0.0, 1.0, 0.0], (runtime.particle_count, 1)),
+    )
+
+
+def test_numpy_mesh_vertex_shape_only_emits_existing_vertices():
+    positions = np.asarray(
+        [[-2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [4.0, 0.0, 0.0]],
+        dtype=np.float32,
+    )
+    settings = EmitterSettings(
+        capacity=64,
+        spawn_rate=0.0,
+        bursts=(ParticleBurst(0.0, 64),),
+        shape=EmitterShape(
+            kind="mesh",
+            mesh=AssetReference(path_hint="Assets/Models/source.fbx"),
+            mesh_mode=MeshEmissionMode.VERTEX,
+        ),
+    )
+    _program, runtime = _compile_runtime(
+        settings,
+        mesh_shape_resolver=lambda _shape: {
+            "positions": positions,
+            "indices": np.asarray([0, 1, 2], dtype=np.uint32),
+        },
+    )
+
+    runtime.tick(0.0)
+
+    emitted = runtime.attributes["builtin.position"][: runtime.particle_count]
+    assert {tuple(value) for value in emitted} <= {tuple(value) for value in positions}
+    assert len({tuple(value) for value in emitted}) == 3
 
 
 def test_numpy_aot_executes_authored_random_expression_with_node_seed():

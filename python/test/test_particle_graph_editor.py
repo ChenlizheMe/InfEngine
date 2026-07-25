@@ -685,6 +685,32 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
         panel.connect_stream(initial["uid"], angular["uid"])
 
 
+def test_particle_graph_editor_public_api_disconnects_stream_links():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    lifetime = panel.add_authoring_node(
+        "init", "particle.attribute.set_lifetime", 240.0, 40.0
+    )
+    connected = panel.connect_stream("init::root.init", lifetime["uid"])
+
+    disconnected = panel.disconnect_stream(connected["link_uid"])
+
+    assert disconnected == {
+        "link_uid": connected["link_uid"],
+        "source_node_uid": "init::root.init",
+        "target_node_uid": lifetime["uid"],
+        "changed": True,
+    }
+    assert all(
+        link["uid"] != connected["link_uid"]
+        for link in panel.authoring_snapshot()["links"]
+    )
+    with pytest.raises(KeyError, match="link not found"):
+        panel.disconnect_stream(connected["link_uid"])
+
+
 def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 

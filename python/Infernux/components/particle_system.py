@@ -738,6 +738,7 @@ class ParticleSystem(InxComponent):
                     emitter_ids=cpu_emitter_ids,
                     point_cache_resolver=self._resolve_point_cache,
                     vector_field_resolver=self._resolve_vector_field,
+                    mesh_shape_resolver=self._resolve_mesh_shape,
                 )
                 runtimes = []
                 for emitter_index, emitter in zip(cpu_indices, program.emitters):
@@ -1371,9 +1372,14 @@ class ParticleSystem(InxComponent):
     def _gpu_mesh_binding(cls, output) -> object:
         if output.output_type != "mesh":
             return None
+        return cls._resolve_mesh_reference(
+            output.mesh, "ParticleGraph Mesh Output"
+        )
+
+    @classmethod
+    def _resolve_mesh_reference(cls, reference, purpose: str):
         from Infernux.lib import AssetRegistry
 
-        reference = output.mesh
         registry = AssetRegistry.instance()
         native = registry.load_mesh_by_guid(reference.guid) if reference.guid else None
         path = cls._absolute_project_path(reference.path_hint)
@@ -1381,8 +1387,14 @@ class ParticleSystem(InxComponent):
             native = registry.load_mesh(path)
         if native is None:
             identity = reference.guid or reference.path_hint or "<empty reference>"
-            raise RuntimeError(f"ParticleGraph Mesh Output cannot load {identity!r}")
+            raise RuntimeError(f"{purpose} cannot load {identity!r}")
         return native
+
+    @classmethod
+    def _resolve_mesh_shape(cls, shape):
+        return cls._resolve_mesh_reference(
+            shape.mesh, "ParticleGraph Mesh emitter shape"
+        )
 
     def _gpu_data_interface_layout(self, emitter, glsl_emitter) -> dict[str, object]:
         layout = glsl_emitter.get("data_interface_layout")
@@ -1394,7 +1406,10 @@ class ParticleSystem(InxComponent):
         volume_layouts = layout.get("volume_interfaces")
         if type(volume_layouts) is not list:
             raise RuntimeError("ParticleGraph GPU volume-interface layout is invalid")
-        if not point_cache_layouts and not volume_layouts:
+        mesh_shape_layout = layout.get("mesh_shape")
+        if mesh_shape_layout is not None and type(mesh_shape_layout) is not dict:
+            raise RuntimeError("ParticleGraph GPU Mesh shape layout is invalid")
+        if not point_cache_layouts and not volume_layouts and mesh_shape_layout is None:
             return dict(layout)
 
         interfaces = {
@@ -1521,6 +1536,18 @@ class ParticleSystem(InxComponent):
                 decoded.update(distance_scale=interface.distance_scale)
             decoded_volumes.append(decoded)
         result["volume_interfaces"] = decoded_volumes
+        if mesh_shape_layout is not None:
+            try:
+                reference = AssetReference.from_dict(mesh_shape_layout["mesh"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "ParticleGraph GPU Mesh shape reference is invalid"
+                ) from exc
+            decoded_mesh_shape = dict(mesh_shape_layout)
+            decoded_mesh_shape["native"] = self._resolve_mesh_reference(
+                reference, "ParticleGraph GPU Mesh emitter shape"
+            )
+            result["mesh_shape"] = decoded_mesh_shape
         return result
 
     def _data_interface_reference(self, interface) -> AssetReference:

@@ -94,6 +94,15 @@ class _Panel:
         self.calls.append(("connect", source_node_uid, target_node_uid))
         return {"link_uid": "update::new-link", "changed": True}
 
+    def disconnect_stream(self, link_uid):
+        self.calls.append(("disconnect-stream", link_uid))
+        return {
+            "link_uid": link_uid,
+            "source_node_uid": "init::root.init",
+            "target_node_uid": "init::lifetime",
+            "changed": True,
+        }
+
     def connect_value(self, source_node_uid, source_port, target_node_uid, target_port):
         self.calls.append(
             ("value", source_node_uid, source_port, target_node_uid, target_port)
@@ -294,6 +303,9 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     connected = mcp.tools["particle_graph_connect_stream"](
         "update::root.update", "update::new-node"
     )
+    disconnected = mcp.tools["particle_graph_disconnect_stream"](
+        "init::root-to-lifetime"
+    )
     value_connected = mcp.tools["particle_graph_connect_value"](
         "init::payload", "value", "init::size", "value"
     )
@@ -375,6 +387,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert added["node"]["uid"] == "update::new-node"
     assert property_changed["value"] == [1.0, 2.0, 3.0]
     assert connected["link_uid"] == "update::new-link"
+    assert disconnected["link_uid"] == "init::root-to-lifetime"
     assert value_connected["link_uid"] == "init::value-link"
     assert selected["stable_id"] == "target"
     assert emitter["emitter"]["stable_id"] == "target"
@@ -410,6 +423,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             [1.0, 2.0, 3.0],
         ),
         ("connect", "update::root.update", "update::new-node"),
+        ("disconnect-stream", "init::root-to-lifetime"),
         ("value", "init::payload", "value", "init::size", "value"),
         ("select-emitter", "target"),
         ("add-emitter", "Target"),

@@ -60,6 +60,14 @@ struct alignas(16) PackedParticleMeshVertex
     std::array<float, 4> uv{};
 };
 
+struct alignas(16) PackedParticleMeshTriangle
+{
+    uint32_t first = 0;
+    uint32_t second = 0;
+    uint32_t third = 0;
+    float cumulativeArea = 0.0f;
+};
+
 uint64_t HashBytes(uint64_t hash, const void *data, size_t byteSize) noexcept
 {
     constexpr uint64_t prime = 1099511628211ull;
@@ -108,7 +116,10 @@ struct ParticleGpuSystemManager::Impl
     {
         std::shared_ptr<rhi::BufferResource> vertices;
         std::shared_ptr<rhi::BufferResource> indices;
+        std::shared_ptr<rhi::BufferResource> samplingTriangles;
+        uint32_t vertexCount = 0;
         uint32_t indexCount = 0;
+        uint32_t samplingTriangleCount = 0;
     };
 
     struct MeshUpload
@@ -117,6 +128,7 @@ struct ParticleGpuSystemManager::Impl
         uint64_t contentHash = 0;
         std::shared_ptr<vk::BufferUploadTicket> vertexTicket;
         std::shared_ptr<vk::BufferUploadTicket> indexTicket;
+        std::shared_ptr<vk::BufferUploadTicket> samplingTriangleTicket;
         std::shared_ptr<MeshResources> resources;
         bool failed = false;
     };
@@ -396,7 +408,7 @@ struct ParticleGpuSystemManager::Impl
 
         const auto &sourceVertices = mesh->GetVertices();
         const auto &sourceIndices = mesh->GetIndices();
-        if (sourceVertices.empty() || sourceIndices.empty() ||
+        if (sourceVertices.empty() || sourceIndices.empty() || sourceIndices.size() % 3 != 0 ||
             sourceIndices.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
             std::any_of(sourceIndices.begin(), sourceIndices.end(),
                         [&](uint32_t index) { return index >= sourceVertices.size(); })) {
@@ -415,9 +427,35 @@ struct ParticleGpuSystemManager::Impl
             vertex.uv = {source.texCoord.x, source.texCoord.y, 0.0f, 0.0f};
             vertices.push_back(vertex);
         }
+        std::vector<PackedParticleMeshTriangle> samplingTriangles;
+        samplingTriangles.reserve(sourceIndices.size() / 3);
+        double cumulativeArea = 0.0;
+        for (size_t index = 0; index < sourceIndices.size(); index += 3) {
+            const uint32_t first = sourceIndices[index];
+            const uint32_t second = sourceIndices[index + 1];
+            const uint32_t third = sourceIndices[index + 2];
+            const glm::vec3 edgeA = sourceVertices[second].pos - sourceVertices[first].pos;
+            const glm::vec3 edgeB = sourceVertices[third].pos - sourceVertices[first].pos;
+            const double area = static_cast<double>(glm::length(glm::cross(edgeA, edgeB))) * 0.5;
+            if (!std::isfinite(area) || area <= 1.0e-12)
+                continue;
+            cumulativeArea += area;
+            samplingTriangles.push_back(
+                {first, second, third, static_cast<float>(cumulativeArea)});
+        }
+        if (samplingTriangles.empty() || !std::isfinite(cumulativeArea) || cumulativeArea <= 0.0) {
+            SetError(error, "GPU particle Mesh sampling requires non-degenerate triangles");
+            return {};
+        }
+        const float inverseArea = static_cast<float>(1.0 / cumulativeArea);
+        for (auto &triangle : samplingTriangles)
+            triangle.cumulativeArea *= inverseArea;
+        samplingTriangles.back().cumulativeArea = 1.0f;
         uint64_t contentHash = 1469598103934665603ull;
         contentHash = HashBytes(contentHash, vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex));
         contentHash = HashBytes(contentHash, sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t));
+        contentHash = HashBytes(contentHash, samplingTriangles.data(),
+                                samplingTriangles.size() * sizeof(PackedParticleMeshTriangle));
 
         auto &upload = meshUploads[mesh.get()];
         const auto owner = upload.owner.lock();
@@ -430,6 +468,9 @@ struct ParticleGpuSystemManager::Impl
                     {vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex), rhi::BufferUsage::Storage});
                 upload.indexTicket = resources->BeginBufferUpload(
                     {sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t), rhi::BufferUsage::Storage});
+                upload.samplingTriangleTicket = resources->BeginBufferUpload(
+                    {samplingTriangles.data(), samplingTriangles.size() * sizeof(PackedParticleMeshTriangle),
+                     rhi::BufferUsage::Storage});
             } catch (const std::exception &exception) {
                 upload.failed = true;
                 SetError(error, std::string("GPU particle Mesh upload failed: ") + exception.what());
@@ -445,15 +486,20 @@ struct ParticleGpuSystemManager::Impl
         try {
             const bool verticesReady = resources->TryPublishBufferUpload(upload.vertexTicket);
             const bool indicesReady = resources->TryPublishBufferUpload(upload.indexTicket);
-            if (!verticesReady || !indicesReady) {
+            const bool samplingReady = resources->TryPublishBufferUpload(upload.samplingTriangleTicket);
+            if (!verticesReady || !indicesReady || !samplingReady) {
                 SetError(error, "GPU particle Mesh upload is pending");
                 return {};
             }
             auto result = std::make_shared<MeshResources>();
             result->vertices = resources->GetPublishedRhiBuffer(upload.vertexTicket);
             result->indices = resources->GetPublishedRhiBuffer(upload.indexTicket);
+            result->samplingTriangles = resources->GetPublishedRhiBuffer(upload.samplingTriangleTicket);
+            result->vertexCount = static_cast<uint32_t>(sourceVertices.size());
             result->indexCount = static_cast<uint32_t>(sourceIndices.size());
-            if (!result->vertices || !result->vertices->IsValid() || !result->indices || !result->indices->IsValid()) {
+            result->samplingTriangleCount = static_cast<uint32_t>(samplingTriangles.size());
+            if (!result->vertices || !result->vertices->IsValid() || !result->indices || !result->indices->IsValid() ||
+                !result->samplingTriangles || !result->samplingTriangles->IsValid()) {
                 upload.failed = true;
                 SetError(error, "GPU particle Mesh upload produced invalid RHI buffers");
                 return {};
@@ -581,6 +627,25 @@ struct ParticleGpuSystemManager::Impl
             runtimeDesc.pointCaches.pointCaches.push_back(std::move(runtimePointCache));
             pointCaches.push_back(pointCache.cache);
             pointCacheGenerations.push_back(pointCache.cache->GetGeneration());
+        }
+        if (program.meshShape) {
+            if (!program.meshShape->mesh) {
+                SetError(error, "GPU particle Mesh emitter shape requires a loaded Mesh asset");
+                return false;
+            }
+            const auto meshResources = ResolveMeshResources(program.meshShape->mesh, error);
+            if (!meshResources)
+                return false;
+            GpuMeshShapeDesc runtimeMeshShape;
+            runtimeMeshShape.metadataOffsetWords = program.meshShape->metadataOffsetWords;
+            runtimeMeshShape.vertexBinding = program.meshShape->vertexBinding;
+            runtimeMeshShape.triangleBinding = program.meshShape->triangleBinding;
+            runtimeMeshShape.vertexCount = meshResources->vertexCount;
+            runtimeMeshShape.triangleCount = meshResources->samplingTriangleCount;
+            runtimeMeshShape.vertices = meshResources->vertices->GetBuffer();
+            runtimeMeshShape.triangles = meshResources->samplingTriangles->GetBuffer();
+            runtimeMeshShape.keepAlive = meshResources;
+            runtimeDesc.meshShape = std::move(runtimeMeshShape);
         }
 
         runtimeDesc.vectorFields.metadataBinding = program.vectorFields.metadataBinding;

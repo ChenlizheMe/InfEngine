@@ -720,6 +720,8 @@ def test_shape_settings_and_authored_space_are_explicit_in_kernel_ir():
             "radius": 2.5,
             "angle_degrees": 35.0,
             "dimensions": [3.0, 4.0, 5.0],
+            "mesh": AssetReference().to_dict(),
+            "mesh_mode": "surface",
             "random_slots": [0, 1, 2],
         }
     assert sum(

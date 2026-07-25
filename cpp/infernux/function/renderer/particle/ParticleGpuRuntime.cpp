@@ -138,6 +138,7 @@ struct ParticleGpuRuntime::DataInterfaceState
     rhi::BindGroupHandle group;
     rhi::BufferHandle metadataBuffer;
     std::vector<GpuPointCacheDesc> pointCaches;
+    std::optional<GpuMeshShapeDesc> meshShape;
     std::vector<uint32_t> metadataWords;
     uint32_t interfaceStrideWords = 0;
     uint32_t sampleStrideWords = 0;
@@ -314,16 +315,19 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     m_eventOutputLayout = m_residentState->eventOutputLayout;
 
     const auto &pointCacheLayout = desc.pointCaches;
-    if (!pointCacheLayout.pointCaches.empty()) {
+    if (!pointCacheLayout.pointCaches.empty() || desc.meshShape) {
+        const size_t maxPointCaches = desc.meshShape ? 6 : 7;
         if (pointCacheLayout.metadataBinding != 0 || pointCacheLayout.interfaceStrideWords < 32 ||
-            pointCacheLayout.sampleStrideWords < 4 || pointCacheLayout.sampleCount == 0 ||
-            pointCacheLayout.pointCaches.size() > 7) {
+            pointCacheLayout.sampleStrideWords < 4 ||
+            (!pointCacheLayout.pointCaches.empty() && pointCacheLayout.sampleCount == 0) ||
+            pointCacheLayout.pointCaches.size() > maxPointCaches) {
             Destroy();
             return false;
         }
-        const uint64_t metadataWordCount =
+        const uint64_t pointCacheMetadataWordCount =
             static_cast<uint64_t>(pointCacheLayout.pointCaches.size()) * pointCacheLayout.interfaceStrideWords +
             static_cast<uint64_t>(pointCacheLayout.sampleCount) * pointCacheLayout.sampleStrideWords;
+        const uint64_t metadataWordCount = pointCacheMetadataWordCount + (desc.meshShape ? 4u : 0u);
         if (metadataWordCount == 0 || metadataWordCount > std::numeric_limits<uint32_t>::max()) {
             Destroy();
             return false;
@@ -427,6 +431,37 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                                                   pointCache.dataBuffer};
             dataGroupDesc.buffers[groupOffset + 1] = {pointCache.lookupBinding, rhi::BindingType::StorageBuffer,
                                                       pointCache.lookupBuffer};
+            dataGroupDesc.bufferCount += 2;
+        }
+        if (desc.meshShape) {
+            const auto &meshShape = *desc.meshShape;
+            if (meshShape.metadataOffsetWords != pointCacheMetadataWordCount ||
+                meshShape.vertexBinding >= usedBindings.size() ||
+                meshShape.triangleBinding >= usedBindings.size() ||
+                meshShape.vertexBinding == meshShape.triangleBinding ||
+                usedBindings[meshShape.vertexBinding] || usedBindings[meshShape.triangleBinding] ||
+                meshShape.vertexCount == 0 || meshShape.triangleCount == 0 ||
+                !meshShape.vertices.IsValid() || !meshShape.triangles.IsValid() ||
+                !meshShape.keepAlive) {
+                Destroy();
+                return false;
+            }
+            usedBindings[meshShape.vertexBinding] = true;
+            usedBindings[meshShape.triangleBinding] = true;
+            dataInterfaces->metadataWords[meshShape.metadataOffsetWords] = meshShape.vertexCount;
+            dataInterfaces->metadataWords[meshShape.metadataOffsetWords + 1] = meshShape.triangleCount;
+            dataInterfaces->meshShape = meshShape;
+            const uint32_t layoutOffset = dataLayoutDesc.entryCount;
+            dataLayoutDesc.entries[layoutOffset] = {meshShape.vertexBinding, rhi::BindingType::StorageBuffer,
+                                                    rhi::ShaderStage::Compute, 1};
+            dataLayoutDesc.entries[layoutOffset + 1] = {meshShape.triangleBinding, rhi::BindingType::StorageBuffer,
+                                                        rhi::ShaderStage::Compute, 1};
+            dataLayoutDesc.entryCount += 2;
+            const uint32_t groupOffset = dataGroupDesc.bufferCount;
+            dataGroupDesc.buffers[groupOffset] = {meshShape.vertexBinding, rhi::BindingType::StorageBuffer,
+                                                  meshShape.vertices};
+            dataGroupDesc.buffers[groupOffset + 1] = {meshShape.triangleBinding, rhi::BindingType::StorageBuffer,
+                                                      meshShape.triangles};
             dataGroupDesc.bufferCount += 2;
         }
         if (std::find(usedSamples.begin(), usedSamples.end(), false) != usedSamples.end()) {

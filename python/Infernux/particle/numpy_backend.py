@@ -12,7 +12,7 @@ import numpy as np
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 from Infernux.graph.ramp import Curve, Gradient
 
-from .asset import EmitterSettings, ExecutionTarget
+from .asset import EmitterSettings, EmitterShape, EmitterShapeKind, ExecutionTarget
 from .data_interface import (
     PointCache,
     SdfFilter,
@@ -44,6 +44,75 @@ PARTICLE_INSTANCE_FLOATS = 12
 
 class NumpyParticleBackendError(RuntimeError):
     pass
+
+
+class _NumpyMeshShapeBinding:
+    def __init__(self, shape: EmitterShape, asset: Any) -> None:
+        source = (
+            asset
+            if isinstance(asset, Mapping)
+            else asset._particle_sampling_data()
+            if asset is not None and hasattr(asset, "_particle_sampling_data")
+            else None
+        )
+        if not isinstance(source, Mapping):
+            raise NumpyParticleBackendError(
+                "mesh emitter shape did not resolve to sampling geometry"
+            )
+        try:
+            positions = np.asarray(source["positions"], dtype=np.float32)
+            indices = np.asarray(source["indices"], dtype=np.int64)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise NumpyParticleBackendError(
+                "mesh emitter shape sampling geometry is incomplete"
+            ) from exc
+        if (
+            positions.ndim != 2
+            or positions.shape[1:] != (3,)
+            or positions.shape[0] == 0
+            or indices.ndim != 1
+            or indices.size == 0
+            or indices.size % 3 != 0
+            or not np.isfinite(positions).all()
+            or np.any(indices < 0)
+            or np.any(indices >= positions.shape[0])
+        ):
+            raise NumpyParticleBackendError(
+                "mesh emitter shape requires finite indexed triangle geometry"
+            )
+        triangles = np.ascontiguousarray(indices.reshape(-1, 3))
+        p0 = positions[triangles[:, 0]]
+        p1 = positions[triangles[:, 1]]
+        p2 = positions[triangles[:, 2]]
+        areas = np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+        valid = np.isfinite(areas) & (areas > np.float32(1.0e-12))
+        if not np.any(valid):
+            raise NumpyParticleBackendError(
+                "mesh emitter shape has no non-degenerate triangles"
+            )
+        self.positions = np.ascontiguousarray(positions)
+        self.triangles = np.ascontiguousarray(triangles[valid])
+        valid_areas = np.asarray(areas[valid], dtype=np.float64)
+        self.surface_cdf = np.ascontiguousarray(
+            np.cumsum(valid_areas) / np.sum(valid_areas), dtype=np.float64
+        )
+        self.mode = shape.mesh_mode.value
+
+
+def _default_mesh_shape_resolver(shape: EmitterShape):
+    from Infernux.lib import AssetRegistry
+
+    reference = shape.mesh
+    registry = AssetRegistry.instance()
+    asset = registry.load_mesh_by_guid(reference.guid) if reference.guid else None
+    if asset is None and reference.path_hint:
+        asset = registry.load_mesh(reference.path_hint)
+    if asset is None:
+        identity = reference.guid or reference.path_hint or "<empty reference>"
+        raise NumpyParticleBackendError(
+            f"mesh emitter shape cannot load {identity!r}"
+        )
+    return asset
 
 
 def _point_cache_channel_name(interface: PointCache, authored_name: str) -> str:
@@ -453,6 +522,7 @@ class NumpyParticleEmitterProgram:
     point_caches: tuple[tuple[str, _NumpyPointCacheBinding], ...] = ()
     vector_fields: tuple[tuple[str, _NumpyVectorFieldBinding], ...] = ()
     sdf_volumes: tuple[tuple[str, _NumpySdfBinding], ...] = ()
+    mesh_shape: _NumpyMeshShapeBinding | None = None
 
     def create_runtime(self, *, system_seed: int = 0) -> "NumpyParticleEmitterRuntime":
         return NumpyParticleEmitterRuntime(self, system_seed=system_seed)
@@ -486,6 +556,7 @@ class NumpyParticleCompiler:
         point_cache_resolver: Callable[[PointCache], Any] | None = None,
         vector_field_resolver: Callable[[VectorField], Any] | None = None,
         sdf_resolver: Callable[[SdfVolume], Any] | None = None,
+        mesh_shape_resolver: Callable[[EmitterShape], Any] | None = None,
     ) -> NumpyParticleProgram:
         try:
             metadata = decode_particle_runtime_metadata(hir)
@@ -589,18 +660,27 @@ class NumpyParticleCompiler:
                 )
                 for stable_id in sorted(referenced_sdfs)
             }
+            mesh_shape = None
+            if settings.shape.kind is EmitterShapeKind.MESH:
+                resolve_mesh_shape = (
+                    mesh_shape_resolver or _default_mesh_shape_resolver
+                )
+                mesh_shape = _NumpyMeshShapeBinding(
+                    settings.shape, resolve_mesh_shape(settings.shape)
+                )
             programs.append(
                 NumpyParticleEmitterProgram(
                     emitter.stable_id,
                     settings,
                     emitter,
-                    _compile_stage(emitter.init, emitter.random_seed, point_caches, vector_fields, sdf_volumes),
-                    _compile_stage(emitter.update, emitter.random_seed, point_caches, vector_fields, sdf_volumes),
-                    _compile_stage(emitter.rendering, emitter.random_seed, point_caches, vector_fields, sdf_volumes),
+                    _compile_stage(emitter.init, emitter.random_seed, point_caches, vector_fields, sdf_volumes, mesh_shape),
+                    _compile_stage(emitter.update, emitter.random_seed, point_caches, vector_fields, sdf_volumes, mesh_shape),
+                    _compile_stage(emitter.rendering, emitter.random_seed, point_caches, vector_fields, sdf_volumes, mesh_shape),
                     outputs,
                     tuple(point_caches.items()),
                     tuple(vector_fields.items()),
                     tuple(sdf_volumes.items()),
+                    mesh_shape,
                 )
             )
         return NumpyParticleProgram(kernel.kernel_hash, tuple(programs))
@@ -942,10 +1022,13 @@ def _compile_stage(
     point_caches: Mapping[str, _NumpyPointCacheBinding],
     vector_fields: Mapping[str, _NumpyVectorFieldBinding],
     sdf_volumes: Mapping[str, _NumpySdfBinding],
+    mesh_shape: _NumpyMeshShapeBinding | None,
 ) -> NumpyStageExecutable:
     constants: list[Any] = []
     attributes: list[str] = []
-    shape_parameters: list[dict[str, Any]] = []
+    shape_parameters: list[
+        tuple[dict[str, Any], _NumpyMeshShapeBinding | None]
+    ] = []
     conversions: list[dict[str, Any]] = []
     point_cache_samples: list[
         tuple[_NumpyPointCacheBinding, str, TypeRef, str, str]
@@ -1092,7 +1175,12 @@ def _compile_stage(
             )
         elif opcode.startswith("sample_shape_"):
             output = result_buffer(instruction)
-            shape_parameters.append(immediates)
+            shape_parameters.append(
+                (
+                    immediates,
+                    mesh_shape if immediates["shape"] == "mesh" else None,
+                )
+            )
             mode = "position" if opcode.endswith("position") else "direction"
             lines.append(
                 f"    _sample_shape({output}, _shape_parameters[{len(shape_parameters) - 1}], "
@@ -1501,7 +1589,7 @@ def _random01(
 
 def _sample_shape(
     output,
-    parameters,
+    encoded,
     mode,
     emitter_seed,
     state,
@@ -1509,6 +1597,7 @@ def _sample_shape(
     context,
     workspace,
 ) -> None:
+    parameters, mesh_shape = encoded
     count = output.shape[0]
     random_values = workspace.random_float
     slots = parameters["random_slots"]
@@ -1526,7 +1615,48 @@ def _sample_shape(
     u, v, w = (random_values[index][:count] for index in range(3))
     shape = parameters["shape"]
     radius = np.float32(parameters["radius"])
-    if shape == "point":
+    if shape == "mesh":
+        if mesh_shape is None:
+            raise NumpyParticleBackendError(
+                "mesh emitter shape has no resolved sampling geometry"
+            )
+        if mode != "position":
+            raise NumpyParticleBackendError(
+                "mesh emitter direction sampling is not part of the automatic shape contract"
+            )
+        if mesh_shape.mode == "vertex":
+            indices = np.minimum(
+                np.asarray(u * mesh_shape.positions.shape[0], dtype=np.int64),
+                mesh_shape.positions.shape[0] - 1,
+            )
+            np.copyto(output, mesh_shape.positions[indices], casting="unsafe")
+            return
+        if mesh_shape.mode == "surface":
+            triangle_indices = np.searchsorted(
+                mesh_shape.surface_cdf, u, side="right"
+            )
+            np.minimum(
+                triangle_indices,
+                mesh_shape.triangles.shape[0] - 1,
+                out=triangle_indices,
+            )
+        else:
+            triangle_indices = np.minimum(
+                np.asarray(u * mesh_shape.triangles.shape[0], dtype=np.int64),
+                mesh_shape.triangles.shape[0] - 1,
+            )
+        triangles = mesh_shape.triangles[triangle_indices]
+        root_v = np.sqrt(v)
+        barycentric = workspace.field_fraction[:count]
+        np.subtract(np.float32(1.0), root_v, out=barycentric[:, 0])
+        np.multiply(root_v, np.float32(1.0) - w, out=barycentric[:, 1])
+        np.multiply(root_v, w, out=barycentric[:, 2])
+        output[:] = (
+            mesh_shape.positions[triangles[:, 0]] * barycentric[:, 0, None]
+            + mesh_shape.positions[triangles[:, 1]] * barycentric[:, 1, None]
+            + mesh_shape.positions[triangles[:, 2]] * barycentric[:, 2, None]
+        )
+    elif shape == "point":
         output.fill(0.0)
         if mode == "direction":
             output[:, 2].fill(1.0)

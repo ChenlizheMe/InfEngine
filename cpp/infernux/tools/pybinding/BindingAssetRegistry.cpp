@@ -233,6 +233,32 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return d;
             },
             py::arg("index"), "Get submesh info as dict (name, index_start, index_count, ...)")
+        .def(
+            "_particle_sampling_data",
+            [](const InxMesh &self) -> py::dict {
+                const auto &vertices = self.GetVertices();
+                const auto &indices = self.GetIndices();
+                py::array_t<float> positions(
+                    {static_cast<py::ssize_t>(vertices.size()), py::ssize_t{3}});
+                auto positionView = positions.mutable_unchecked<2>();
+                for (py::ssize_t index = 0;
+                     index < static_cast<py::ssize_t>(vertices.size()); ++index) {
+                    const auto &position = vertices[static_cast<size_t>(index)].pos;
+                    positionView(index, 0) = position.x;
+                    positionView(index, 1) = position.y;
+                    positionView(index, 2) = position.z;
+                }
+                py::array_t<uint32_t> encodedIndices(indices.size());
+                auto indexView = encodedIndices.mutable_unchecked<1>();
+                for (py::ssize_t index = 0;
+                     index < static_cast<py::ssize_t>(indices.size()); ++index)
+                    indexView(index) = indices[static_cast<size_t>(index)];
+                py::dict result;
+                result["positions"] = std::move(positions);
+                result["indices"] = std::move(encodedIndices);
+                return result;
+            },
+            "Internal immutable geometry snapshot for particle CPU sampling")
         .def("__repr__", [](const InxMesh &self) {
             return "<InxMesh '" + self.GetName() + "' " + std::to_string(self.GetVertexCount()) + " verts, " +
                    std::to_string(self.GetSubMeshCount()) + " submesh(es)>";

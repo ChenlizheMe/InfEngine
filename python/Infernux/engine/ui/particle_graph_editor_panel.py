@@ -28,6 +28,7 @@ from Infernux.particle.asset import (
     EmitterShape,
     EmitterShapeKind,
     ExecutionTarget,
+    MeshEmissionMode,
     ParticleBurst,
     ParticleEmitterAsset,
     ParticleEventField,
@@ -781,6 +782,36 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._mark_changed()
         self._record("Connect Particle Graph stream", before)
         return {"link_uid": str(created.uid), "changed": True}
+
+    def disconnect_stream(self, link_uid: str) -> dict:
+        """Disconnect one stream link through the strict graph model."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        link_uid = str(link_uid)
+        link = next(
+            (item for item in self._model.links if str(item.uid) == link_uid),
+            None,
+        )
+        if link is None:
+            raise KeyError(f"Particle Graph link not found: {link_uid!r}")
+        if link.source_pin != "out" or link.target_pin != "in":
+            raise ValueError(
+                f"Particle Graph link {link_uid!r} is not a stream connection"
+            )
+        before = self._snapshot()
+        if not self._model.remove_link(link_uid):
+            raise RuntimeError(
+                f"Particle Graph could not disconnect stream link {link_uid!r}"
+            )
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record("Disconnect Particle Graph stream", before)
+        return {
+            "link_uid": link_uid,
+            "source_node_uid": str(link.source_node),
+            "target_node_uid": str(link.target_node),
+            "changed": True,
+        }
 
     def connect_value(
         self,
@@ -2618,18 +2649,76 @@ class ParticleGraphEditorPanel(EditorPanel):
             -1,
         )
         shape_space = shape_spaces[max(0, min(shape_space_index, len(shape_spaces) - 1))]
-        radius = max(
-            0.0,
-            float(ctx.drag_float(f"{t('particle_graph_editor.radius')}##particle_shape_radius", shape.radius, 0.05, 0.0, 1.0e7)),
-        )
-        angle = min(
-            180.0,
-            max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.angle')}##particle_shape_angle", shape.angle_degrees, 0.2, 0.0, 180.0))),
-        )
-        dimensions = tuple(
-            max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.size')} {axis}##particle_shape_{axis}", value, 0.05, 0.0, 1.0e7)))
-            for axis, value in zip("XYZ", shape.dimensions)
-        )
+        radius = shape.radius
+        angle = shape.angle_degrees
+        dimensions = shape.dimensions
+        mesh = shape.mesh
+        mesh_mode = shape.mesh_mode
+        if kind in {EmitterShapeKind.SPHERE, EmitterShapeKind.CONE}:
+            radius = max(
+                0.0,
+                float(ctx.drag_float(f"{t('particle_graph_editor.radius')}##particle_shape_radius", shape.radius, 0.05, 0.0, 1.0e7)),
+            )
+        if kind is EmitterShapeKind.CONE:
+            angle = min(
+                180.0,
+                max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.angle')}##particle_shape_angle", shape.angle_degrees, 0.2, 0.0, 180.0))),
+            )
+        if kind is EmitterShapeKind.BOX:
+            dimensions = tuple(
+                max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.size')} {axis}##particle_shape_{axis}", value, 0.05, 0.0, 1.0e7)))
+                for axis, value in zip("XYZ", shape.dimensions)
+            )
+        if kind is EmitterShapeKind.MESH:
+            selected_meshes: list[AssetReference] = []
+
+            def _select_mesh(path):
+                from Infernux.core.asset_types import MESH_EXTENSIONS
+
+                target = resolved_path(str(path))
+                if os.path.splitext(target)[1].lower() not in MESH_EXTENSIONS:
+                    Debug.log_warning(f"Particle emitter shape requires a model asset: {path}")
+                    return
+                guid = _asset_guid_from_path(target)
+                if not guid:
+                    Debug.log_warning(f"Particle emitter shape asset is not imported: {path}")
+                    return
+                selected_meshes.append(
+                    AssetReference(guid, _portable_asset_path_hint(target))
+                )
+
+            def _mesh_picker(query):
+                from Infernux.core.asset_types import MESH_EXTENSIONS
+
+                items = []
+                for extension in sorted(MESH_EXTENSIONS):
+                    items.extend(_picker_assets(query, f"*{extension}"))
+                return items
+
+            render_object_field(
+                ctx,
+                "particle_emitter_shape_mesh",
+                os.path.basename(mesh.path_hint) if mesh.path_hint else t("igui.none"),
+                "Mesh",
+                accept_drag_type=("MODEL_GUID", "MODEL_FILE", "ASSET_FILE"),
+                on_drop_callback=_select_mesh,
+                picker_asset_items=_mesh_picker,
+                on_pick=_select_mesh,
+                on_clear=lambda: selected_meshes.append(AssetReference()),
+                semantic_id="particle_graph.emitter.shape.mesh",
+            )
+            if selected_meshes:
+                mesh = selected_meshes[-1]
+            mesh_modes = list(MeshEmissionMode)
+            mesh_mode_index = ctx.combo(
+                f"{t('particle_graph_editor.mesh_sampling')}##particle_shape_mesh_mode",
+                mesh_modes.index(mesh_mode),
+                [t(f"particle_graph_editor.mesh_sampling_{item.value}") for item in mesh_modes],
+                -1,
+            )
+            mesh_mode = mesh_modes[
+                max(0, min(mesh_mode_index, len(mesh_modes) - 1))
+            ]
         values["shape"] = replace(
             shape,
             kind=kind,
@@ -2637,6 +2726,8 @@ class ParticleGraphEditorPanel(EditorPanel):
             radius=radius,
             angle_degrees=angle,
             dimensions=dimensions,
+            mesh=mesh,
+            mesh_mode=mesh_mode,
         )
 
         new_settings = preserve_ui_float_precision(

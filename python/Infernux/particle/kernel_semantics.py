@@ -7,7 +7,7 @@ from enum import Enum
 import math
 from typing import Any, Mapping, Sequence
 
-from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.graph.ramp import Curve, Gradient
 
 
@@ -47,7 +47,16 @@ _INIT_ONLY = frozenset({KernelStage.INIT})
 _UPDATE_ONLY = frozenset({KernelStage.UPDATE})
 _RENDER_ONLY = frozenset({KernelStage.RENDERING})
 _SHAPE_IMMEDIATES = frozenset(
-    {"shape", "shape_space", "radius", "angle_degrees", "dimensions", "random_slots"}
+    {
+        "shape",
+        "shape_space",
+        "radius",
+        "angle_degrees",
+        "dimensions",
+        "mesh",
+        "mesh_mode",
+        "random_slots",
+    }
 )
 
 KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
@@ -403,7 +412,7 @@ def _validate_opcode_types(
             raise KernelSemanticError("kernel shape space must be emitter_local or world")
         if result_type.space is not shape_space:
             raise KernelSemanticError("kernel shape result must retain its authored space")
-        if immediates["shape"] not in {"point", "sphere", "box", "cone"}:
+        if immediates["shape"] not in {"point", "sphere", "box", "cone", "mesh"}:
             raise KernelSemanticError("kernel shape kind is invalid")
         _validate_non_negative(immediates["radius"], "shape radius")
         angle = _finite_number(immediates["angle_degrees"], "shape angle")
@@ -414,6 +423,14 @@ def _validate_opcode_types(
             raise KernelSemanticError("kernel shape dimensions require three values")
         for value in dimensions:
             _validate_non_negative(value, "shape dimension")
+        try:
+            mesh = AssetReference.from_dict(immediates["mesh"])
+        except (TypeError, ValueError) as exc:
+            raise KernelSemanticError("kernel shape mesh reference is invalid") from exc
+        if immediates["mesh_mode"] not in {"vertex", "triangle", "surface"}:
+            raise KernelSemanticError("kernel mesh shape mode is invalid")
+        if immediates["shape"] == "mesh" and not (mesh.guid or mesh.path_hint):
+            raise KernelSemanticError("kernel mesh shape requires a mesh asset")
         random_slots = immediates["random_slots"]
         if not isinstance(random_slots, (list, tuple)) or len(random_slots) != 3:
             raise KernelSemanticError("kernel shape sampling requires three random slots")

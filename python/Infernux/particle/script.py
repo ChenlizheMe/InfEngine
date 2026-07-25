@@ -1133,7 +1133,15 @@ class ParticleScriptCompiler:
                 "interval",
                 "probability",
             ),
-            "EmitterShape": ("kind", "space", "radius", "angle_degrees", "dimensions"),
+            "EmitterShape": (
+                "kind",
+                "space",
+                "radius",
+                "angle_degrees",
+                "dimensions",
+                "mesh",
+                "mesh_mode",
+            ),
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),
             "SdfVolume": (),
@@ -1187,6 +1195,8 @@ class ParticleScriptCompiler:
                 values["texture"] = AssetReference.from_dict(values["texture"])
             if expected_name == "PointCache" and type(values.get("cache")) is dict:
                 values["cache"] = AssetReference.from_dict(values["cache"])
+            if expected_name == "EmitterShape" and type(values.get("mesh")) is dict:
+                values["mesh"] = AssetReference.from_dict(values["mesh"])
             result = constructor(**values)
             return result.to_dict() if isinstance(result, AssetReference) else result
         except (TypeError, ValueError) as exc:

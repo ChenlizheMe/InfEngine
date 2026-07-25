@@ -7,7 +7,7 @@ import base64
 import hashlib
 import re
 import struct
-from typing import Any
+from typing import Any, Mapping
 import zlib
 
 from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
@@ -1412,14 +1412,25 @@ class _StageCompiler:
         elif opcode.startswith("sample_shape_"):
             mode = "position" if opcode.endswith("position") else "direction"
             slots = immediate["random_slots"]
-            expression = (
-                f"inx_sample_shape_{mode}({_shape_kind(immediate['shape'])}u, "
-                f"{_float_literal(immediate['radius'])}, "
-                f"{_float_literal(immediate['angle_degrees'])}, "
-                f"{_vector_literal(immediate['dimensions'], 3)}, "
-                f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
-                f"state.{self._field('builtin.id')[1]}, state.spawn_generation)"
-            )
+            if immediate["shape"] == "mesh":
+                if mode != "position":
+                    raise GpuParticleCompileError(
+                        "automatic Mesh emitter shape only samples particle position"
+                    )
+                expression = (
+                    "inx_sample_mesh_shape_position(inx_shape_random("
+                    f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
+                    f"state.{self._field('builtin.id')[1]}, state.spawn_generation))"
+                )
+            else:
+                expression = (
+                    f"inx_sample_shape_{mode}({_shape_kind(immediate['shape'])}u, "
+                    f"{_float_literal(immediate['radius'])}, "
+                    f"{_float_literal(immediate['angle_degrees'])}, "
+                    f"{_vector_literal(immediate['dimensions'], 3)}, "
+                    f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
+                    f"state.{self._field('builtin.id')[1]}, state.spawn_generation)"
+                )
         elif opcode == "sample_point_cache":
             key = (
                 immediate["interface"],
@@ -1630,7 +1641,40 @@ def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
 def _data_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
     layout = _point_cache_layout(emitter)
     layout.update(_volume_interface_layout(emitter))
+    layout["mesh_shape"] = _mesh_shape_layout(emitter, layout)
     return layout
+
+
+def _mesh_shape_instruction(emitter: ParticleEmitterKernelIR):
+    return next(
+        (
+            instruction
+            for instruction in emitter.init.instructions
+            if instruction.opcode == "sample_shape_position"
+            and instruction.immediate_dict()["shape"] == "mesh"
+        ),
+        None,
+    )
+
+
+def _mesh_shape_layout(
+    emitter: ParticleEmitterKernelIR, layout: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    instruction = _mesh_shape_instruction(emitter)
+    if instruction is None:
+        return None
+    immediate = instruction.immediate_dict()
+    metadata_offset = (
+        len(layout["point_caches"]) * int(layout["interface_stride_words"])
+        + int(layout["sample_count"]) * int(layout["sample_stride_words"])
+    )
+    return {
+        "mesh": dict(immediate["mesh"]),
+        "mode": immediate["mesh_mode"],
+        "metadata_offset": metadata_offset,
+        "vertex_binding": 14,
+        "triangle_binding": 15,
+    }
 
 
 def _point_cache_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
@@ -1659,9 +1703,10 @@ def _point_cache_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
                 )
             )
 
-    if len(samples) > 7:
+    max_point_caches = 6 if _mesh_shape_instruction(emitter) is not None else 7
+    if len(samples) > max_point_caches:
         raise GpuParticleCompileError(
-            "GPU particle emitters currently support at most seven sampled PointCache interfaces"
+            f"GPU particle emitter supports at most {max_point_caches} sampled PointCache interfaces with its current data bindings"
         )
     point_caches = []
     sample_index = 0
@@ -1968,13 +2013,14 @@ def _pack_std430_default(
 
 def _point_cache_glsl(layout: dict[str, Any]) -> str:
     point_caches = layout.get("point_caches", ())
-    if not point_caches:
+    mesh_shape = layout.get("mesh_shape")
+    if not point_caches and mesh_shape is None:
         return ""
     interface_stride = int(layout["interface_stride_words"])
     sample_stride = int(layout["sample_stride_words"])
     sample_base = len(point_caches) * interface_stride
     lines = [
-        "layout(std430, set = 1, binding = 0) readonly buffer InxPointCacheMetadata { uint inx_pc_meta[]; };"
+        "layout(std430, set = 1, binding = 0) readonly buffer InxParticleDataMetadata { uint inx_pc_meta[]; };"
     ]
     for interface in point_caches:
         interface_index = int(interface["interface_index"])
@@ -2083,6 +2129,58 @@ def _point_cache_glsl(layout: dict[str, Any]) -> str:
                     "}",
                 )
             )
+    if mesh_shape is not None:
+        metadata = int(mesh_shape["metadata_offset"])
+        vertex_binding = int(mesh_shape["vertex_binding"])
+        triangle_binding = int(mesh_shape["triangle_binding"])
+        lines.extend(
+            (
+                "struct InxMeshShapeVertex {",
+                "    vec4 position; vec4 normal; vec4 tangent; vec4 color; vec4 uv;",
+                "};",
+                f"layout(std430, set = 1, binding = {vertex_binding}) readonly buffer InxMeshShapeVertices {{ InxMeshShapeVertex inx_mesh_shape_vertices[]; }};",
+                f"layout(std430, set = 1, binding = {triangle_binding}) readonly buffer InxMeshShapeTriangles {{ uvec4 inx_mesh_shape_triangles[]; }};",
+                "vec3 inx_sample_mesh_shape_position(vec3 random_value) {",
+                f"    uint vertex_count = inx_pc_meta[{metadata}u];",
+                f"    uint triangle_count = inx_pc_meta[{metadata + 1}u];",
+            )
+        )
+        if mesh_shape["mode"] == "vertex":
+            lines.extend(
+                (
+                    "    uint vertex_index = min(uint(random_value.x * float(vertex_count)), vertex_count - 1u);",
+                    "    return inx_mesh_shape_vertices[vertex_index].position.xyz;",
+                )
+            )
+        else:
+            if mesh_shape["mode"] == "surface":
+                lines.extend(
+                    (
+                        "    uint low = 0u;",
+                        "    uint high = triangle_count;",
+                        "    while (low < high) {",
+                        "        uint middle = low + (high - low) / 2u;",
+                        "        float cdf = uintBitsToFloat(inx_mesh_shape_triangles[middle].w);",
+                        "        if (cdf < random_value.x) low = middle + 1u; else high = middle;",
+                        "    }",
+                        "    uint triangle_index = min(low, triangle_count - 1u);",
+                    )
+                )
+            else:
+                lines.append(
+                    "    uint triangle_index = min(uint(random_value.x * float(triangle_count)), triangle_count - 1u);"
+                )
+            lines.extend(
+                (
+                    "    uvec3 triangle = inx_mesh_shape_triangles[triangle_index].xyz;",
+                    "    float root = sqrt(random_value.y);",
+                    "    vec3 barycentric = vec3(1.0 - root, root * (1.0 - random_value.z), root * random_value.z);",
+                    "    return inx_mesh_shape_vertices[triangle.x].position.xyz * barycentric.x",
+                    "         + inx_mesh_shape_vertices[triangle.y].position.xyz * barycentric.y",
+                    "         + inx_mesh_shape_vertices[triangle.z].position.xyz * barycentric.z;",
+                )
+            )
+        lines.append("}")
     return "\n".join(lines)
 
 
@@ -2881,7 +2979,7 @@ def _vector_literal(values: Any, count: int) -> str:
 
 def _shape_kind(value: str) -> int:
     try:
-        return {"point": 0, "sphere": 1, "box": 2, "cone": 3}[value]
+        return {"point": 0, "sphere": 1, "box": 2, "cone": 3, "mesh": 4}[value]
     except KeyError as exc:
         raise GpuParticleCompileError(f"unsupported particle shape {value!r}") from exc
 

@@ -86,6 +86,14 @@ struct GpuParticlePointCacheLayoutProgram
     std::vector<GpuParticlePointCacheProgram> pointCaches;
 };
 
+struct GpuParticleMeshShapeProgram
+{
+    uint32_t metadataOffsetWords = 0;
+    uint32_t vertexBinding = 14;
+    uint32_t triangleBinding = 15;
+    std::shared_ptr<InxMesh> mesh;
+};
+
 struct GpuParticleVectorFieldProgram
 {
     GpuVectorFieldDesc::Kind kind = GpuVectorFieldDesc::Kind::VectorField;
@@ -134,6 +142,7 @@ struct GpuParticleEmitterProgram
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
     std::vector<uint32_t> eventInitKernel;
     GpuParticlePointCacheLayoutProgram pointCaches;
+    std::optional<GpuParticleMeshShapeProgram> meshShape;
     GpuParticleVectorFieldLayoutProgram vectorFields;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;

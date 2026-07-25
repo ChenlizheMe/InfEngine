@@ -12,6 +12,8 @@ import Infernux.particle.gpu_glsl_backend as gpu_backend
 
 from Infernux.lib import _Infernux as native
 from Infernux.particle import (
+    EmitterSettings,
+    EmitterShape,
     GpuParticleGlslLowerer,
     GpuParticleCompileError,
     KernelCompileError,
@@ -23,6 +25,7 @@ from Infernux.particle import (
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleKernelLowerer,
+    MeshEmissionMode,
     PointCache,
     SdfVolume,
     VectorField,
@@ -946,6 +949,44 @@ def test_gpu_point_cache_lowering_emits_stable_set_one_layout_and_valid_spirv():
 
     compiled = native._compile_compute_glsl_batch(
         emitter.stages(), "particle-point-cache-test"
+    )
+    assert set(compiled) == set(emitter.stages())
+
+
+@pytest.mark.parametrize("mode", tuple(MeshEmissionMode))
+def test_gpu_mesh_shape_uses_shared_mesh_buffers_and_compiles(mode):
+    mesh = AssetReference(
+        guid="mesh-guid", path_hint="Assets/Models/emission-source.fbx"
+    )
+    asset = ParticleGraphAsset(
+        emitters=(
+            ParticleEmitterAsset(
+                stable_id="mesh-shape",
+                settings=EmitterSettings(
+                    shape=EmitterShape(kind="mesh", mesh=mesh, mesh_mode=mode)
+                ),
+            ),
+        )
+    )
+    hir = ParticleGraphCompiler().compile(asset)
+    emitter = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(hir)
+    ).emitters[0]
+
+    assert emitter.data_interface_layout["mesh_shape"] == {
+        "mesh": mesh.to_dict(),
+        "mode": mode.value,
+        "metadata_offset": 0,
+        "vertex_binding": 14,
+        "triangle_binding": 15,
+    }
+    assert "set = 1, binding = 14" in emitter.init
+    assert "set = 1, binding = 15" in emitter.init
+    assert "inx_sample_mesh_shape_position" in emitter.init
+    if mode is MeshEmissionMode.SURFACE:
+        assert "uintBitsToFloat" in emitter.init
+    compiled = native._compile_compute_glsl_batch(
+        emitter.stages(), f"particle-mesh-shape-{mode.value}"
     )
     assert set(compiled) == set(emitter.stages())
 

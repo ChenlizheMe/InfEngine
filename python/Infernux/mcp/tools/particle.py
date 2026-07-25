@@ -182,6 +182,26 @@ def register_particle_tools(mcp, project_path: str) -> None:
             },
         )
 
+    @mcp.tool(name="particle_graph_disconnect_stream")
+    def particle_graph_disconnect_stream(link_uid: str) -> dict:
+        """Disconnect one stream link in the live ParticleGraph document."""
+
+        def _disconnect():
+            panel = _require_particle_graph_panel()
+            result = panel.disconnect_stream(link_uid)
+            return {
+                **result,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_disconnect_stream",
+            _disconnect,
+            arguments={"link_uid": link_uid},
+        )
+
     @mcp.tool(name="particle_graph_connect_value")
     def particle_graph_connect_value(
         source_node_uid: str,
@@ -1051,6 +1071,26 @@ def _register_authoring_metadata() -> None:
         side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
         recovery=["Inspect existing links and endpoint stages before retrying."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
+    )
+    register_tool_metadata(
+        "particle_graph_disconnect_stream",
+        summary="Disconnect one stream link through the live ParticleGraph authoring model.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "editor", "stream", "disconnect"],
+        aliases=["disconnect particle nodes", "断开粒子节点"],
+        preconditions=[
+            "The link UID must identify an existing stream link in the open ParticleGraph."
+        ],
+        side_effects=[
+            "Records Undo, marks the panel dirty, and republishes the live draft."
+        ],
+        recovery=[
+            "Inspect the current links and retry with an existing stream link UID."
+        ],
+        next_suggested_tools=[
+            "particle_graph_connect_stream",
+            "editor_save_document",
+        ],
     )
     register_tool_metadata(
         "particle_graph_connect_value",

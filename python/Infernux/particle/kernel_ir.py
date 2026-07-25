@@ -870,6 +870,8 @@ class ParticleKernelLowerer:
                     "radius": parameters["shape_radius"],
                     "angle_degrees": parameters["shape_angle_degrees"],
                     "dimensions": parameters["shape_dimensions"],
+                    "mesh": parameters["shape_mesh"],
+                    "mesh_mode": parameters["shape_mesh_mode"],
                     "random_slots": list(builder.next_random_slots(3)),
                 }
                 shape_space = CoordinateSpace(parameters["shape_space"])

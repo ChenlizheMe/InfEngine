@@ -10,8 +10,10 @@ import pytest
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.particle import (
     EmitterSettings,
+    EmitterShape,
     ExecutionTarget,
     KernelCompileError,
+    MeshEmissionMode,
     ParticleCompileError,
     ParticleEmitterAsset,
     ParticleAttribute,
@@ -982,6 +984,52 @@ def test_particle_material_reference_uses_strict_guid_and_path_hint_shape():
     restored = ParticleGraphAsset.from_dict(value)
     with pytest.raises(ParticleCompileError, match="guid and path_hint"):
         ParticleGraphCompiler().compile(restored)
+
+
+def test_mesh_emitter_shape_requires_an_asset_at_aot_compile_time():
+    emitter = ParticleEmitterAsset(
+        settings=EmitterSettings(shape=EmitterShape(kind="mesh"))
+    )
+
+    hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
+    with pytest.raises(KernelCompileError, match="mesh shape requires a mesh asset"):
+        ParticleKernelLowerer().lower(hir)
+
+
+def test_particle_script_mesh_shape_matches_graph_asset_contract():
+    source = '''\
+from Infernux.particle import AssetReference, EmitterShape, ParticleScript, ParticleEmitter, EmitterSettings
+
+class MeshShapeGraph(ParticleScript):
+    class SurfaceEmitter(ParticleEmitter):
+        stable_id = "surface-emitter"
+        settings = EmitterSettings(
+            target="gpu",
+            shape=EmitterShape(
+                kind="mesh",
+                mesh=AssetReference(path_hint="Assets/Models/source.fbx"),
+                mesh_mode="surface",
+            ),
+        )
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+
+    asset = ParticleScriptCompiler().parse(
+        source, source_name="MeshShape.particle.py"
+    )
+
+    shape = asset.emitters[0].settings.shape
+    assert shape.kind.value == "mesh"
+    assert shape.mesh == AssetReference(path_hint="Assets/Models/source.fbx")
+    assert shape.mesh_mode is MeshEmissionMode.SURFACE
 
 
 PARTICLE_SCRIPT_SOURCE = '''\
