@@ -36,6 +36,7 @@ from .runtime_compatibility import (
     ParticleRuntimeCompatibility,
     classify_emitter_update,
 )
+from .spawn_schedule import ParticleSpawnScheduleState
 
 
 PARTICLE_INSTANCE_FLOATS = 12
@@ -640,9 +641,7 @@ class NumpyParticleEmitterRuntime:
         self._render_aliases = dict(program.rendering.layout.export_aliases)
         self._context = _RuntimeContext(system_seed)
         self._active_count = 0
-        self._spawn_accumulator = 0.0
-        self._elapsed = 0.0
-        self._burst_states: list[list[float | int]] = []
+        self._spawn_schedule = ParticleSpawnScheduleState(self.settings)
         self._next_particle_id = 0
         self._spawn_epoch = 0
         self._playing = True
@@ -684,15 +683,10 @@ class NumpyParticleEmitterRuntime:
         self._claim_thread()
         self.alive.fill(False)
         self._active_count = 0
-        self._spawn_accumulator = 0.0
-        self._elapsed = 0.0
+        self._spawn_schedule.reset()
         self._context.simulation_step = 0
         self._next_particle_id = 0
         self._spawn_epoch = 0
-        self._burst_states = [
-            [float(burst.time), int(burst.cycles), int(burst.count), float(burst.interval)]
-            for burst in self.settings.bursts
-        ]
 
     def migrate_to(
         self, program: NumpyParticleEmitterProgram
@@ -744,8 +738,7 @@ class NumpyParticleEmitterRuntime:
             self.spawn_generation[:count],
         )
         migrated._active_count = count
-        migrated._spawn_accumulator = self._spawn_accumulator
-        migrated._elapsed = self._elapsed
+        migrated._spawn_schedule = self._spawn_schedule.migrate_to(program.settings)
         migrated._context.delta_time = self._context.delta_time
         migrated._context.simulation_step = self._context.simulation_step
         migrated._context._conversions = {
@@ -753,24 +746,22 @@ class NumpyParticleEmitterRuntime:
         }
         migrated._next_particle_id = self._next_particle_id
         migrated._spawn_epoch = self._spawn_epoch
-        migrated._burst_states = [list(state) for state in self._burst_states]
         migrated._playing = self._playing
         migrated._owner_thread = self._owner_thread
         return migrated, compatibility
 
-    def tick(self, delta_time: float) -> np.ndarray:
+    def tick(self, delta_time: float, emitter_position=None) -> np.ndarray:
         self._claim_thread()
         delta_time = float(delta_time)
         if not math.isfinite(delta_time) or delta_time < 0.0:
             raise ValueError("particle delta_time must be finite and non-negative")
         self._refresh_data_interfaces()
         if not self._playing:
+            self._spawn_schedule.observe_position(emitter_position)
             return self.instance_buffer()
 
         self._context.delta_time = delta_time
-        previous_elapsed = self._elapsed
-        self._elapsed += delta_time
-        spawn_count = self._scheduled_spawn_count(previous_elapsed, self._elapsed, delta_time)
+        spawn_count = self._spawn_schedule.advance(delta_time, emitter_position)
         spawn_count = min(spawn_count, self.capacity - self._active_count)
         if spawn_count > 0:
             start = self._active_count
@@ -848,24 +839,6 @@ class NumpyParticleEmitterRuntime:
             binding.refresh()
         for _stable_id, binding in self.program.vector_fields:
             binding.refresh()
-
-    def _scheduled_spawn_count(self, previous: float, current: float, delta_time: float) -> int:
-        self._spawn_accumulator += self.settings.spawn_rate * delta_time
-        spawn_count = int(self._spawn_accumulator)
-        self._spawn_accumulator -= spawn_count
-        for state in self._burst_states:
-            next_time, remaining, count, interval = state
-            while remaining > 0 and next_time <= current:
-                if next_time > previous or (previous == 0.0 and next_time == 0.0):
-                    spawn_count += int(count)
-                remaining -= 1
-                next_time += float(interval)
-                if interval == 0.0 and remaining > 0:
-                    spawn_count += int(count) * int(remaining)
-                    remaining = 0
-            state[0] = next_time
-            state[1] = remaining
-        return spawn_count
 
     def _initialize_range(self, start: int, count: int) -> None:
         particle_slice = slice(start, start + count)

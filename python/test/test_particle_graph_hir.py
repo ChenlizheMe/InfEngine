@@ -27,6 +27,7 @@ from Infernux.particle import (
     ParticleScriptError,
     ParticleArtifactError,
     ParticleArtifactRegistry,
+    ParticleBurst,
     ParticleRuntimeMetadataError,
     PointCache,
     SdfVolume,
@@ -922,12 +923,22 @@ def test_particle_graph_schema_is_strict_and_semantic_hash_ignores_positions():
     restored = ParticleGraphAsset.from_dict(moved)
     assert restored.semantic_hash() == asset.semantic_hash()
 
+    obsolete = copy.deepcopy(asset.to_dict())
+    del obsolete["emitters"][0]["settings"]["duration"]
+    with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
+        ParticleGraphAsset.from_dict(obsolete)
+
 
 def test_particle_python_construction_cannot_bypass_schema_invariants():
     with pytest.raises(ParticleGraphSchemaError, match="exactly 3"):
         ParticleAttribute("custom.wind", "wind", TypeRef(ValueType.VEC3), [1.0, 2.0])
     with pytest.raises(ParticleGraphSchemaError, match="bursts"):
         EmitterSettings(bursts=(object(),))
+    with pytest.raises(ParticleGraphSchemaError, match="within the emitter duration"):
+        EmitterSettings(
+            duration=1.0,
+            bursts=(ParticleBurst(0.75, 1, cycles=2, interval=0.5),),
+        )
     with pytest.raises(ParticleGraphSchemaError, match="emitters are invalid"):
         ParticleGraphAsset(emitters=(object(),))
 
@@ -955,6 +966,10 @@ class SmokeGraph(ParticleScript):
             target="gpu",
             simulation_space="world",
             spawn_rate=20000.0,
+            spawn_rate_over_distance=3.0,
+            duration=4.0,
+            loop=False,
+            start_delay=0.25,
         )
         data_interfaces = (
             VectorField(
@@ -1003,6 +1018,10 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
 
     assert asset.stable_id == "smoke-graph"
     assert program.schedule.emitter_ids == ("smoke",)
+    assert emitter.settings.spawn_rate_over_distance == 3.0
+    assert emitter.settings.duration == 4.0
+    assert emitter.settings.loop is False
+    assert emitter.settings.start_delay == 0.25
     assert [operation.opcode for operation in emitter.init.operations] == [
         "emitter.sample_shape",
         "attribute.set_velocity",

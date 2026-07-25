@@ -1477,6 +1477,64 @@ def test_gpu_controller_caps_dispatch_work_and_resets_deterministically():
     assert (restarted.spawn_count, restarted.spawn_base_id, restarted.simulation_step) == (4, 0, 0)
 
 
+def test_spawn_schedule_respects_delay_duration_loop_and_burst_probability():
+    controller = GpuParticleEmitterController(
+        EmitterSettings(
+            capacity=64,
+            spawn_rate=0.0,
+            duration=1.0,
+            loop=True,
+            start_delay=0.5,
+            bursts=(
+                ParticleBurst(0.0, 2),
+                ParticleBurst(0.25, 3, cycles=2, interval=0.25),
+                ParticleBurst(0.0, 50, probability=0.0),
+            ),
+        )
+    )
+
+    assert controller.tick(0.5).spawn_count == 2
+    assert controller.tick(0.5).spawn_count == 6
+    assert controller.tick(0.5).spawn_count == 2
+
+    one_shot = GpuParticleEmitterController(
+        EmitterSettings(
+            capacity=64,
+            spawn_rate=10.0,
+            duration=1.0,
+            loop=False,
+            start_delay=0.5,
+        )
+    )
+    assert one_shot.tick(0.25).spawn_count == 0
+    assert one_shot.tick(0.75).spawn_count == 5
+    assert one_shot.tick(1.0).spawn_count == 5
+    assert one_shot.tick(10.0).spawn_count == 0
+
+
+def test_rate_over_distance_changes_spawn_count_without_changing_particle_attributes():
+    settings = EmitterSettings(
+        capacity=32,
+        spawn_rate=0.0,
+        spawn_rate_over_distance=2.0,
+    )
+    _program, runtime = _compile_runtime(settings)
+    controller = GpuParticleEmitterController(settings)
+
+    assert len(runtime.tick(0.1, (0.0, 0.0, 0.0))) == 0
+    assert controller.tick(0.1, (0.0, 0.0, 0.0)).spawn_count == 0
+
+    cpu_instances = runtime.tick(0.1, (0.0, 0.0, 3.0))
+    gpu_schedule = controller.tick(0.1, (0.0, 0.0, 3.0))
+
+    assert len(cpu_instances) == gpu_schedule.spawn_count == 6
+    np.testing.assert_array_equal(cpu_instances[:, 3], np.ones(6, dtype=np.float32))
+    np.testing.assert_array_equal(
+        runtime.attributes["builtin.lifetime"][:6],
+        np.full(6, 5.0, dtype=np.float32),
+    )
+
+
 def test_gpu_controller_compatible_migration_preserves_schedule_and_pause():
     settings = EmitterSettings(
         capacity=16,

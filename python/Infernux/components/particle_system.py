@@ -904,13 +904,14 @@ class ParticleSystem(InxComponent):
             self._gpu_transform_buffers = {}
 
         frame_items = []
+        emitter_position = tuple(float(value) for value in emitter_to_world[0:3, 3])
         for emitter_id, emitter_index, controller in zip(
             self._gpu_emitter_ids,
             self._gpu_emitter_indices,
             self._gpu_controllers,
         ):
             emitter = metadata.emitters[emitter_index]
-            schedule = controller.tick(delta_time)
+            schedule = controller.tick(delta_time, emitter_position)
             transforms = self._gpu_transform_buffer(
                 emitter.settings.simulation_space.value == "local"
             )
@@ -951,7 +952,10 @@ class ParticleSystem(InxComponent):
                     emitter_to_world if emitter.settings.simulation_space.value == "local" else None
                 )
                 runtime.set_transforms(emitter_to_world, simulation_to_world)
-            instances = runtime.tick(delta_time)
+            instances = runtime.tick(
+                delta_time,
+                tuple(float(value) for value in emitter_to_world[0:3, 3]),
+            )
             if native is None:
                 continue
             if emitter.settings.simulation_space.value == "local" and len(instances):

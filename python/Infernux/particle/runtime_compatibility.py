@@ -28,6 +28,9 @@ def classify_emitter_update(
     if (
         previous_settings.simulation_space != next_settings.simulation_space
         or previous_settings.bursts != next_settings.bursts
+        or previous_settings.duration != next_settings.duration
+        or previous_settings.loop != next_settings.loop
+        or previous_settings.start_delay != next_settings.start_delay
     ):
         return ParticleRuntimeCompatibility.EMITTER_RESTART
 

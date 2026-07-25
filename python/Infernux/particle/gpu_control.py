@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import math
 
 from .asset import EmitterSettings
+from .spawn_schedule import ParticleSpawnScheduleState
 
 
 @dataclass(frozen=True)
@@ -28,12 +29,10 @@ class GpuParticleEmitterController:
             raise TypeError("GPU particle controller requires EmitterSettings")
         self.settings = settings
         self._playing = bool(playing)
-        self._spawn_accumulator = 0.0
-        self._elapsed = 0.0
+        self._spawn_schedule = ParticleSpawnScheduleState(settings)
         self._simulation_step = 0
         self._next_particle_id = 0
         self._spawn_generation = 0
-        self._burst_states: list[list[float | int]] = []
         self.reset(playing=playing)
 
     @property
@@ -53,15 +52,10 @@ class GpuParticleEmitterController:
     def reset(self, *, playing: bool | None = None) -> None:
         if playing is not None:
             self._playing = bool(playing)
-        self._spawn_accumulator = 0.0
-        self._elapsed = 0.0
+        self._spawn_schedule.reset()
         self._simulation_step = 0
         self._next_particle_id = 0
         self._spawn_generation = 0
-        self._burst_states = [
-            [float(burst.time), int(burst.cycles), int(burst.count), float(burst.interval)]
-            for burst in self.settings.bursts
-        ]
 
     def migrate_to(self, settings: EmitterSettings) -> "GpuParticleEmitterController":
         """Apply compatible settings without resetting emitter-level scheduling."""
@@ -70,18 +64,19 @@ class GpuParticleEmitterController:
         if (
             settings.simulation_space != self.settings.simulation_space
             or settings.bursts != self.settings.bursts
+            or settings.duration != self.settings.duration
+            or settings.loop != self.settings.loop
+            or settings.start_delay != self.settings.start_delay
         ):
             raise ValueError("GPU particle controller settings require an emitter restart")
         migrated = GpuParticleEmitterController(settings, playing=self._playing)
-        migrated._spawn_accumulator = self._spawn_accumulator
-        migrated._elapsed = self._elapsed
+        migrated._spawn_schedule = self._spawn_schedule.migrate_to(settings)
         migrated._simulation_step = self._simulation_step
         migrated._next_particle_id = self._next_particle_id
         migrated._spawn_generation = self._spawn_generation
-        migrated._burst_states = [list(state) for state in self._burst_states]
         return migrated
 
-    def tick(self, delta_time: float) -> GpuParticleFrameSchedule:
+    def tick(self, delta_time: float, emitter_position=None) -> GpuParticleFrameSchedule:
         delta_time = float(delta_time)
         if not math.isfinite(delta_time) or delta_time < 0.0:
             raise ValueError("particle delta_time must be finite and non-negative")
@@ -91,14 +86,14 @@ class GpuParticleEmitterController:
         generation = self._spawn_generation
         step = self._simulation_step
         if self._playing:
-            previous = self._elapsed
-            self._elapsed += delta_time
             spawn_count = min(
-                self._scheduled_spawn_count(previous, self._elapsed, delta_time),
+                self._spawn_schedule.advance(delta_time, emitter_position),
                 self.settings.capacity,
             )
             base_id, generation = self._advance_particle_ids(spawn_count)
             self._simulation_step = (self._simulation_step + 1) & 0xFFFFFFFF
+        else:
+            self._spawn_schedule.observe_position(emitter_position)
 
         return GpuParticleFrameSchedule(
             spawn_count,
@@ -109,24 +104,6 @@ class GpuParticleEmitterController:
             delta_time,
             self._playing,
         )
-
-    def _scheduled_spawn_count(self, previous: float, current: float, delta_time: float) -> int:
-        self._spawn_accumulator += self.settings.spawn_rate * delta_time
-        spawn_count = int(self._spawn_accumulator)
-        self._spawn_accumulator -= spawn_count
-        for state in self._burst_states:
-            next_time, remaining, count, interval = state
-            while remaining > 0 and next_time <= current:
-                if next_time > previous or (previous == 0.0 and next_time == 0.0):
-                    spawn_count += int(count)
-                remaining -= 1
-                next_time += float(interval)
-                if interval == 0.0 and remaining > 0:
-                    spawn_count += int(count) * int(remaining)
-                    remaining = 0
-            state[0] = next_time
-            state[1] = remaining
-        return spawn_count
 
     def _advance_particle_ids(self, count: int) -> tuple[int, int]:
         base_id = self._next_particle_id

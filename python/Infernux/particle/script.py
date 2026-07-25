@@ -1112,7 +1112,13 @@ class ParticleScriptCompiler:
         positional_names = {
             "EmitterSettings": (),
             "ScalarRange": ("minimum", "maximum"),
-            "ParticleBurst": ("time", "count", "cycles", "interval"),
+            "ParticleBurst": (
+                "time",
+                "count",
+                "cycles",
+                "interval",
+                "probability",
+            ),
             "EmitterShape": ("kind", "space", "radius", "angle_degrees", "dimensions"),
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),

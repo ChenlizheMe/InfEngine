@@ -97,6 +97,7 @@ class ParticleBurst:
     count: int
     cycles: int = 1
     interval: float = 0.0
+    probability: float = 1.0
 
     def __post_init__(self) -> None:
         if not math.isfinite(float(self.time)) or float(self.time) < 0.0:
@@ -107,6 +108,11 @@ class ParticleBurst:
             raise ParticleGraphSchemaError("burst cycles must be a positive integer")
         if not math.isfinite(float(self.interval)) or float(self.interval) < 0.0:
             raise ParticleGraphSchemaError("burst interval must be finite and non-negative")
+        if (
+            not math.isfinite(float(self.probability))
+            or not 0.0 <= float(self.probability) <= 1.0
+        ):
+            raise ParticleGraphSchemaError("burst probability must be between zero and one")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,12 +120,23 @@ class ParticleBurst:
             "count": self.count,
             "cycles": self.cycles,
             "interval": float(self.interval),
+            "probability": float(self.probability),
         }
 
     @classmethod
     def from_dict(cls, value, location: str) -> "ParticleBurst":
-        _exact_object(value, {"time", "count", "cycles", "interval"}, location)
-        return cls(value["time"], value["count"], value["cycles"], value["interval"])
+        _exact_object(
+            value,
+            {"time", "count", "cycles", "interval", "probability"},
+            location,
+        )
+        return cls(
+            value["time"],
+            value["count"],
+            value["cycles"],
+            value["interval"],
+            value["probability"],
+        )
 
 
 @dataclass(frozen=True)
@@ -175,6 +192,10 @@ class EmitterSettings:
     simulation_space: SimulationSpace = SimulationSpace.WORLD
     seed: int = 1
     spawn_rate: float = 10.0
+    spawn_rate_over_distance: float = 0.0
+    duration: float = 5.0
+    loop: bool = True
+    start_delay: float = 0.0
     bursts: tuple[ParticleBurst, ...] = ()
     shape: EmitterShape = EmitterShape()
 
@@ -187,9 +208,31 @@ class EmitterSettings:
             raise ParticleGraphSchemaError("emitter seed must be an unsigned 32-bit integer")
         if not math.isfinite(float(self.spawn_rate)) or float(self.spawn_rate) < 0.0:
             raise ParticleGraphSchemaError("spawn rate must be finite and non-negative")
+        if (
+            not math.isfinite(float(self.spawn_rate_over_distance))
+            or float(self.spawn_rate_over_distance) < 0.0
+        ):
+            raise ParticleGraphSchemaError(
+                "spawn rate over distance must be finite and non-negative"
+            )
+        if not math.isfinite(float(self.duration)) or float(self.duration) <= 0.0:
+            raise ParticleGraphSchemaError("emitter duration must be finite and positive")
+        if type(self.loop) is not bool:
+            raise ParticleGraphSchemaError("emitter loop must be a boolean")
+        if not math.isfinite(float(self.start_delay)) or float(self.start_delay) < 0.0:
+            raise ParticleGraphSchemaError(
+                "emitter start delay must be finite and non-negative"
+            )
         bursts = tuple(self.bursts)
         if not all(isinstance(value, ParticleBurst) for value in bursts):
             raise ParticleGraphSchemaError("emitter bursts must contain ParticleBurst values")
+        if any(
+            burst.time + (burst.cycles - 1) * burst.interval > float(self.duration)
+            for burst in bursts
+        ):
+            raise ParticleGraphSchemaError(
+                "emitter burst events must fit within the emitter duration"
+            )
         if not isinstance(self.shape, EmitterShape):
             raise ParticleGraphSchemaError("emitter shape must be an EmitterShape")
         object.__setattr__(self, "bursts", bursts)
@@ -201,6 +244,10 @@ class EmitterSettings:
             "simulation_space": self.simulation_space.value,
             "seed": self.seed,
             "spawn_rate": float(self.spawn_rate),
+            "spawn_rate_over_distance": float(self.spawn_rate_over_distance),
+            "duration": float(self.duration),
+            "loop": self.loop,
+            "start_delay": float(self.start_delay),
             "bursts": [burst.to_dict() for burst in self.bursts],
             "shape": self.shape.to_dict(),
         }
@@ -208,8 +255,9 @@ class EmitterSettings:
     @classmethod
     def from_dict(cls, value, location: str) -> "EmitterSettings":
         expected = {
-            "capacity", "target", "simulation_space", "seed", "spawn_rate", "bursts",
-            "shape",
+            "capacity", "target", "simulation_space", "seed", "spawn_rate",
+            "spawn_rate_over_distance", "duration", "loop", "start_delay",
+            "bursts", "shape",
         }
         _exact_object(value, expected, location)
         if type(value["bursts"]) is not list:
@@ -220,6 +268,10 @@ class EmitterSettings:
             simulation_space=value["simulation_space"],
             seed=value["seed"],
             spawn_rate=value["spawn_rate"],
+            spawn_rate_over_distance=value["spawn_rate_over_distance"],
+            duration=value["duration"],
+            loop=value["loop"],
+            start_delay=value["start_delay"],
             bursts=tuple(
                 ParticleBurst.from_dict(item, f"{location}.bursts[{index}]")
                 for index, item in enumerate(value["bursts"])

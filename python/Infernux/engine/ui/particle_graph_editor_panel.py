@@ -2483,6 +2483,48 @@ class ParticleGraphEditorPanel(EditorPanel):
                 )
             ),
         )
+        values["spawn_rate_over_distance"] = max(
+            0.0,
+            float(
+                ctx.drag_float(
+                    f"{t('particle_graph_editor.spawn_rate_over_distance')}##particle_spawn_rate_over_distance",
+                    settings.spawn_rate_over_distance,
+                    0.1,
+                    0.0,
+                    1.0e7,
+                )
+            ),
+        )
+        values["duration"] = max(
+            0.001,
+            float(
+                ctx.drag_float(
+                    f"{t('particle_graph_editor.duration')}##particle_duration",
+                    settings.duration,
+                    0.05,
+                    0.001,
+                    1.0e7,
+                )
+            ),
+        )
+        values["loop"] = bool(
+            ctx.checkbox(
+                f"{t('particle_graph_editor.loop')}##particle_loop",
+                settings.loop,
+            )
+        )
+        values["start_delay"] = max(
+            0.0,
+            float(
+                ctx.drag_float(
+                    f"{t('particle_graph_editor.start_delay')}##particle_start_delay",
+                    settings.start_delay,
+                    0.05,
+                    0.0,
+                    1.0e7,
+                )
+            ),
+        )
 
         ctx.separator()
         ctx.label(t("particle_graph_editor.emission_shape"))
@@ -2541,8 +2583,23 @@ class ParticleGraphEditorPanel(EditorPanel):
             count = max(0, int(ctx.input_int(f"{t('particle_graph_editor.burst_count')}##burst_count_{index}", burst.count)))
             cycles = max(1, int(ctx.input_int(f"{t('particle_graph_editor.burst_cycles')}##burst_cycles_{index}", burst.cycles)))
             interval = max(0.0, float(ctx.drag_float(f"{t('particle_graph_editor.burst_interval')}##burst_interval_{index}", burst.interval, 0.05, 0.0, 1.0e7)))
+            probability = min(
+                1.0,
+                max(
+                    0.0,
+                    float(
+                        ctx.drag_float(
+                            f"{t('particle_graph_editor.burst_probability')}##burst_probability_{index}",
+                            burst.probability,
+                            0.01,
+                            0.0,
+                            1.0,
+                        )
+                    ),
+                ),
+            )
             updated = preserve_ui_float_precision(
-                ParticleBurst(time_value, count, cycles, interval), burst
+                ParticleBurst(time_value, count, cycles, interval, probability), burst
             )
             if updated != burst:
                 bursts[index] = updated
