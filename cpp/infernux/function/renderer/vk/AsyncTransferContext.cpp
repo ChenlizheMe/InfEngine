@@ -284,7 +284,13 @@ AsyncSubmissionHandle AsyncTransferContext::EndAsync(VkCommandBuffer cmd)
     }
 
     if (vkQueueSubmit(m_queue, 1, &submit, fence) != VK_SUCCESS) {
-        INXLOG_ERROR("AsyncTransferContext::EndAsync: vkQueueSubmit failed");
+        static int s_asyncSubmitFailLogs = 0;
+        if (s_asyncSubmitFailLogs < 3) {
+            INXLOG_ERROR("AsyncTransferContext::EndAsync: vkQueueSubmit failed");
+        } else if (s_asyncSubmitFailLogs == 3) {
+            INXLOG_ERROR("Further async GPU upload submit failures suppressed (device likely lost)");
+        }
+        ++s_asyncSubmitFailLogs;
         std::lock_guard<std::mutex> guard(m_mutex);
         m_freeFences.push_back(fence);
         m_freeCmdBuffers.push_back(cmd);

@@ -88,6 +88,15 @@ bool inx_greater(uint left_key, uint left_index, uint right_key, uint right_inde
     return left_key > right_key || (left_key == right_key && left_index > right_index);
 }
 
+uint inx_particle_sort_key(float view_depth, uint particle_id) {
+    uint depth_key = inx_ordered_float(view_depth);
+    depth_key = pc.descending != 0u ? ~depth_key : depth_key;
+    // GPU compaction does not preserve invocation order. Reserve the low bits
+    // for the persistent particle ID so nearly coplanar transparent cards do
+    // not exchange order every frame as their temporary indices change.
+    return (depth_key & 0xfffff000u) | (particle_id & 0x00000fffu);
+}
+
 void main() {
     uint lane = gl_LocalInvocationID.x;
     uint live_count = min(indirect_args.instance_count, pc.capacity);
@@ -95,8 +104,7 @@ void main() {
     uint key = 0xffffffffu;
     if (lane < live_count) {
         vec4 view_position = pc.view * vec4(instances[particle_index].position_size.xyz, 1.0);
-        key = inx_ordered_float(view_position.z);
-        key = pc.descending != 0u ? ~key : key;
+        key = inx_particle_sort_key(view_position.z, instances[particle_index].ribbon_data.w);
     }
     shared_keys[lane] = key;
     shared_indices[lane] = particle_index;
@@ -136,14 +144,18 @@ uint inx_ordered_float(float value) {
     uint bits = floatBitsToUint(value);
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
+uint inx_particle_sort_key(float view_depth, uint particle_id) {
+    uint depth_key = inx_ordered_float(view_depth);
+    depth_key = pc.descending != 0u ? ~depth_key : depth_key;
+    return (depth_key & 0xfffff000u) | (particle_id & 0x00000fffu);
+}
 void main() {
     uint index = gl_GlobalInvocationID.x;
     uint live_count = min(indirect_args.instance_count, pc.capacity);
     if (index >= live_count) return;
     uint particle_index = source_indices[index];
     vec4 view_position = pc.view * vec4(instances[particle_index].position_size.xyz, 1.0);
-    uint key = inx_ordered_float(view_position.z);
-    input_keys[index] = pc.descending != 0u ? ~key : key;
+    input_keys[index] = inx_particle_sort_key(view_position.z, instances[particle_index].ribbon_data.w);
     input_indices[index] = particle_index;
 }
 )glsl");

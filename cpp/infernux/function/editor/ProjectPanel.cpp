@@ -251,7 +251,7 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
         {".txt", "text"},
         {".md", "readme"},
         {".mat", "file"},
-        {".physicmaterial", "file"},
+        {".physicmaterial", "physic_material"},
         {".scene", "scene"},
         // .prefab intentionally omitted — scene prefabs use the mesh-preview pipeline
         // (same as models); UI-only prefabs fall back to model_3d.png via explicit logic.

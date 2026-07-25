@@ -6,17 +6,15 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 """
 
 import math
-import os
 from Infernux.lib import InxGUIContext, InputManager
 from Infernux.engine.i18n import t
-from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from .viewport_utils import ViewportInfo, capture_viewport_info
 from . import imgui_keys as _keys
-import Infernux.resources as _resources
+from .editor_icons import EditorIcons
 
 # Tool mode constants — imported from scene_view_panel
 from .scene_view_panel import TOOL_NONE, TOOL_TRANSLATE, TOOL_ROTATE, TOOL_SCALE
@@ -432,39 +430,23 @@ class SceneViewOverlaysMixin:
         return hovered
 
     def _ensure_tool_icons(self):
-        """Lazily upload tool icon textures to GPU."""
+        """Lazily resolve pinned tool icon textures via EditorIcons."""
         if not self._engine:
             return
         native = self._engine.get_native_engine() if hasattr(self._engine, 'get_native_engine') else self._engine
         if native is None:
             return
         _ICON_MAP = {
-            TOOL_NONE:      "tool_none.png",
-            TOOL_TRANSLATE: "tool_move.png",
-            TOOL_ROTATE:    "tool_rotate.png",
-            TOOL_SCALE:     "tool_scale.png",
+            TOOL_NONE:      "tool_none",
+            TOOL_TRANSLATE: "tool_move",
+            TOOL_ROTATE:    "tool_rotate",
+            TOOL_SCALE:     "tool_scale",
         }
         all_ready = True
-        for mode, filename in _ICON_MAP.items():
-            icon_path = os.path.join(_resources.file_type_icons_dir, filename)
-            if not os.path.isfile(icon_path):
-                all_ready = False
-                continue
-            stamp = texture_stamp(icon_path, "scene_tool_icon")
-            if stamp == 0:
-                all_ready = False
-                continue
-            tid, _, _ = query_or_schedule_texture(
-                native,
-                f"toolicon|{filename}",
-                icon_path,
-                int(stamp),
-                nearest=False,
-                srgb=False,
-            )
-            # Always overwrite, including with 0: the native side may replace
-            # or evict the texture, so a handle kept from an earlier frame can
-            # point at a freed VkDescriptorSet (validation errors / crashes).
+        for mode, name in _ICON_MAP.items():
+            # Re-resolve every frame until upload completes; never keep a
+            # stale unpinned preview descriptor across frames.
+            tid = EditorIcons.get(native, name)
             self._tool_icon_ids[mode] = tid
             if tid == 0:
                 all_ready = False

@@ -1027,6 +1027,9 @@ int main()
     const rhi::ComputeCommandEncoder sortEncoder(&sortTrace, &sortDispatch);
     std::array<float, 16> sortView{};
     sortView[0] = sortView[5] = sortView[10] = sortView[15] = 1.0f;
+    // Infernux uses GLM's left-handed view convention: visible depth grows
+    // along +Z. Back-to-front therefore reverses the ordered float key so the
+    // radix/odd-even sort emits farther particles before nearer particles.
     sorter.RecordGenerate(sortEncoder, sortView, particle::ParticleSortMode::BackToFront);
     sorter.RecordHistogram(sortEncoder, 0);
     sorter.RecordScan(sortEncoder, 0);

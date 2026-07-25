@@ -149,7 +149,15 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     VkResult submitResult =
         vkQueueSubmit(m_deviceContext.GetGraphicsQueue(), 1, &submitInfo, m_swapchain.GetInFlightFence());
     if (submitResult != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to submit draw command buffer: ", vk::VkResultToString(submitResult));
+        // DEVICE_LOST cascades produce one failure per frame; throttle so the
+        // Console does not flood and hide the first useful diagnostic.
+        static int s_submitFailLogs = 0;
+        if (s_submitFailLogs < 3) {
+            INXLOG_ERROR("Failed to submit draw command buffer: ", vk::VkResultToString(submitResult));
+        } else if (s_submitFailLogs == 3) {
+            INXLOG_ERROR("Further draw-command submit failures suppressed (device likely lost)");
+        }
+        ++s_submitFailLogs;
     }
 #if INFERNUX_FRAME_PROFILE
     if (submitResult == VK_SUCCESS) {

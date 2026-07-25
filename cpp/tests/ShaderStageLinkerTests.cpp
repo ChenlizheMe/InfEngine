@@ -831,16 +831,18 @@ void main() { }
     assert(changedCompilation.CreateRuntimeArtifact().key.stages == runtimeArtifact.key.stages);
     assert(changedCompilation.CreateRuntimeArtifact().key.revision != runtimeArtifact.key.revision);
 
-    const std::array<std::pair<std::string_view, const char *>, 4> particleSortShaders = {{
+    const std::array<std::pair<std::string_view, const char *>, 5> particleSortShaders = {{
+        {infernux::particle::GpuParticleSortShaderSources::Small(), "ParticleSortSmall.comp"},
         {infernux::particle::GpuParticleSortShaderSources::Generate(), "ParticleSortGenerate.comp"},
         {infernux::particle::GpuParticleSortShaderSources::Histogram(), "ParticleSortHistogram.comp"},
         {infernux::particle::GpuParticleSortShaderSources::Scan(), "ParticleSortScan.comp"},
         {infernux::particle::GpuParticleSortShaderSources::Scatter(), "ParticleSortScatter.comp"},
     }};
-    assert(infernux::particle::GpuParticleSortShaderSources::Generate().find("inx_ordered_float(view_position.z)") !=
-           std::string_view::npos);
-    assert(infernux::particle::GpuParticleSortShaderSources::Generate().find("-view_position.z") ==
-           std::string_view::npos);
+    const auto particleSortGenerate = infernux::particle::GpuParticleSortShaderSources::Generate();
+    assert(particleSortGenerate.find("inx_particle_sort_key(view_position.z") != std::string_view::npos);
+    assert(particleSortGenerate.find("instances[particle_index].ribbon_data.w") != std::string_view::npos);
+    assert(particleSortGenerate.find("depth_key & 0xfffff000u") != std::string_view::npos);
+    assert(particleSortGenerate.find("-view_position.z") == std::string_view::npos);
     for (const auto &[source, name] : particleSortShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
         assert(spirv.size() >= 5 * sizeof(uint32_t));

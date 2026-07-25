@@ -31,7 +31,13 @@ void WaitForFencePumpingEvents(VkDevice device, VkFence fence)
             return;
         }
         if (result != VK_TIMEOUT) {
-            INXLOG_ERROR("vkWaitForFences failed while waiting for frame fence: ", VkResultToString(result));
+            static int s_fenceFailLogs = 0;
+            if (s_fenceFailLogs < 3) {
+                INXLOG_ERROR("vkWaitForFences failed while waiting for frame fence: ", VkResultToString(result));
+            } else if (s_fenceFailLogs == 3) {
+                INXLOG_ERROR("Further frame-fence wait failures suppressed (device likely lost)");
+            }
+            ++s_fenceFailLogs;
             return;
         }
         SDL_PumpEvents();
