@@ -300,6 +300,22 @@ def test_node_graph_inline_overlay_submits_layout_item_after_cursor_restore():
         def set_cursor_pos_y(self, value: float) -> None:
             self.cursor_y = value
 
+        @staticmethod
+        def set_window_font_scale(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_style_var_vec2(_style, _x: float, _y: float) -> None:
+            pass
+
+        @staticmethod
+        def push_style_var_float(_style, _value: float) -> None:
+            pass
+
+        @staticmethod
+        def pop_style_var(_count: int = 1) -> None:
+            pass
+
         def dummy(self, width: float, height: float) -> None:
             self.dummy_calls.append((width, height))
 

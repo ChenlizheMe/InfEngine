@@ -710,7 +710,23 @@ def render_component_header(
         ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
 
     if show_enabled:
-        new_enabled = render_inspector_checkbox(ctx, "##hdr_en", is_enabled)
+        # Compact enabled box: center against the header bar (taller than a
+        # normal text/frame row). Prefer a direct checkbox so we control Y
+        # without fighting CheckboxInspector's ambient-row metric.
+        row_y = ctx.get_cursor_pos_y()
+        ctx.push_style_var_vec2(
+            ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_CHECKBOX_FRAME_PAD
+        )
+        ctx.set_window_font_scale(Theme.INSPECTOR_CHECKBOX_BOX_SCALE)
+        box_h = (
+            float(Theme.COMPONENT_ICON_SIZE) * Theme.INSPECTOR_CHECKBOX_BOX_SCALE
+            + Theme.INSPECTOR_CHECKBOX_FRAME_PAD[1] * 2.0
+        )
+        if box_h < header_height:
+            ctx.set_cursor_pos_y(row_y + (header_height - box_h) * 0.5)
+        new_enabled = bool(ctx.checkbox("##hdr_en", is_enabled))
+        ctx.set_window_font_scale(Theme.INSPECTOR_HEADER_PRIMARY_FONT_SCALE)
+        ctx.pop_style_var(1)
         ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
 
     ctx.align_text_to_frame_padding()
@@ -737,15 +753,29 @@ def render_inspector_checkbox(ctx: InxGUIContext, label: str, value: bool) -> bo
         visible, ident = text[:hash_pos], text[hash_pos:] or "##cb"
     else:
         visible, ident = text, f"##inx_cb_{text or 'cb'}"
+    # Match native CheckboxInspector: center against the taller of ambient
+    # frame height and the previous item (header / icon dummy).
     row_y = ctx.get_cursor_pos_y()
+    prev_h = max(0.0, ctx.get_item_rect_max_y() - ctx.get_item_rect_min_y())
+    pad_y = float(Theme.INSPECTOR_FRAME_PAD[1])
+    try:
+        font_size = float(ctx.get_font_size())
+    except AttributeError:
+        font_size = 13.0
+    row_h = max(font_size + pad_y * 2.0, prev_h)
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_CHECKBOX_FRAME_PAD)
     ctx.set_window_font_scale(Theme.INSPECTOR_CHECKBOX_BOX_SCALE)
+    box_h = font_size * Theme.INSPECTOR_CHECKBOX_BOX_SCALE + (
+        Theme.INSPECTOR_CHECKBOX_FRAME_PAD[1] * 2.0
+    )
+    if box_h < row_h:
+        ctx.set_cursor_pos_y(row_y + (row_h - box_h) * 0.5)
     new_value = ctx.checkbox(ident, value)
     ctx.set_window_font_scale(1.0)
     ctx.pop_style_var(1)
     if visible:
         ctx.same_line(0.0, 4.0)
-        ctx.set_cursor_pos_y(row_y)
+        ctx.align_text_to_frame_padding()
         ctx.label(visible)
     return new_value
 

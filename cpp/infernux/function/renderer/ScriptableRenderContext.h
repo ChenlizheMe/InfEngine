@@ -24,7 +24,6 @@ class SceneRenderGraph;
 class EditorGizmos;
 class EditorTools;
 class GizmosDrawCallBuffer;
-class ParticleDrawCallBuffer;
 class InxMaterial;
 class CommandBuffer;
 class TransientResourcePool;
@@ -72,7 +71,6 @@ struct EditorGizmosContext
     EditorGizmos *gizmos = nullptr;
     EditorTools *editorTools = nullptr;
     GizmosDrawCallBuffer *componentGizmos = nullptr; ///< Component gizmos supplied by the scripting layer
-    ParticleDrawCallBuffer *particles = nullptr;     ///< Runtime particle billboard batches
     std::shared_ptr<InxMaterial> gizmoMaterial;
     std::shared_ptr<InxMaterial> gridMaterial;
     std::shared_ptr<InxMaterial> editorToolsMaterial;
@@ -81,7 +79,6 @@ struct EditorGizmosContext
     std::shared_ptr<InxMaterial> cameraGizmoIconMaterial;    ///< Textured camera icon material
     std::shared_ptr<InxMaterial> lightGizmoIconMaterial;     ///< Textured light icon material
     std::shared_ptr<InxMaterial> particleGizmoIconMaterial;  ///< Textured particle-system icon material
-    std::shared_ptr<InxMaterial> particleMaterial;           ///< Default particle billboard material
     uint64_t selectedObjectId = 0;
     Scene *activeScene = nullptr;
     glm::vec3 cameraPos{0.0f};

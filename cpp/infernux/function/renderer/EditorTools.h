@@ -173,7 +173,7 @@ class EditorTools
 
     ToolMode m_mode = ToolMode::Translate;
     HandleAxis m_highlightedAxis = HandleAxis::None;
-    float m_handleSize = 1.75f; // Base size multiplier (visual scale vs legacy 1.0)
+    float m_handleSize = 1.3125f; // Base size multiplier (1.75 * 0.75)
     bool m_localMode = false;  // true = align gizmo to object's local rotation
 
     // ---- Cached per-axis geometry (in local space) ----

@@ -51,11 +51,13 @@ _GRID_COLOR2 = (0.18, 0.18, 0.19, 1.0)
 
 _NODE_ROUNDING = 5.0
 _NODE_BORDER_THICKNESS = 1.0
-_NODE_HEADER_H = 30.0
-_NODE_PIN_ROW_H = 22.0
+_NODE_HEADER_H = 28.0
+_CONTEXT_HEADER_H = 36.0
+_NODE_PIN_ROW_H = 20.0
 _NODE_PAD_X = 10.0
 _NODE_BODY_MIN_H = 10.0
-_DETACHED_FIELD_ROW_H = 24.0
+_CONTEXT_BODY_MIN_H = 28.0
+_DETACHED_FIELD_ROW_H = 20.0
 _PIN_RADIUS = 5.0
 _PIN_HIT_RADIUS = 11.0
 _HEADER_COLOR_SWATCH_SIZE = 14.0
@@ -70,7 +72,9 @@ _BG_COLOR = (0.07, 0.07, 0.08, 1.0)
 _NODE_BODY_COLOR = (0.13, 0.13, 0.14, 1.0)
 _GRAPH_NODE_BODY_COLOR = (0.075, 0.075, 0.078, 0.98)
 _GRAPH_NODE_HEADER_COLOR = (0.105, 0.105, 0.11, 1.0)
-_GRAPH_NODE_CONTEXT_COLOR = (0.135, 0.135, 0.14, 1.0)
+# Unity VFX-style context: saturated header, recessed body slot.
+_GRAPH_NODE_CONTEXT_BODY = (0.055, 0.055, 0.058, 0.98)
+_GRAPH_NODE_CONTEXT_SLOT = (0.085, 0.085, 0.090, 0.95)
 _NODE_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.5)
 _NODE_SELECTED_BORDER = Theme.APPLY_BUTTON
 _NODE_BORDER_COLOR = (0.28, 0.28, 0.30, 1.0)
@@ -96,8 +100,10 @@ _ZOOM_SPEED = 0.08
 _CANVAS_WINDOW_FLAGS = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse
 
 # Base font size ImGui widgets are authored against, used to derive the
-# per-zoom font scale for inline node fields.
+# per-zoom font scale for inline node fields. Kept below the default ImGui
+# face so node value boxes stay compact (Unity VFX / Shader Graph density).
 _INLINE_BASE_FONT = 18.0
+_INLINE_FONT_SCALE = 0.72
 
 # Absolute floor for draw-list / widget text so glyphs never collapse to nothing.
 # Kept small on purpose: node text must stay proportional to the node box.
@@ -361,6 +367,18 @@ class NodeGraphView:
         sy = self._origin_y + gy * self.zoom + self.pan_y
         return sx, sy
 
+    @staticmethod
+    def _is_context_style(typedef: NodeTypeDef) -> bool:
+        return getattr(typedef, "visual_style", "graph") == "context"
+
+    @classmethod
+    def _header_height(cls, typedef: NodeTypeDef) -> float:
+        return _CONTEXT_HEADER_H if cls._is_context_style(typedef) else _NODE_HEADER_H
+
+    @classmethod
+    def _body_min_height(cls, typedef: NodeTypeDef) -> float:
+        return _CONTEXT_BODY_MIN_H if cls._is_context_style(typedef) else _NODE_BODY_MIN_H
+
     def center_on_nodes(self) -> None:
         if not self.graph or not self.graph.nodes:
             return
@@ -372,7 +390,12 @@ class NodeGraphView:
             max_pins = max(len(typedef.input_pins()), len(typedef.output_pins()), 1)
             extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
             width = float(typedef.min_width)
-            height = _NODE_HEADER_H + max_pins * _NODE_PIN_ROW_H + _NODE_BODY_MIN_H + extra_pad
+            height = (
+                self._header_height(typedef)
+                + max_pins * _NODE_PIN_ROW_H
+                + self._body_min_height(typedef)
+                + extra_pad
+            )
             bounds.append((node.pos_x, node.pos_y, node.pos_x + width, node.pos_y + height))
         if not bounds:
             return
@@ -596,14 +619,19 @@ class NodeGraphView:
                 )
             else:
                 extra_pad = getattr(typedef, "body_bottom_pad", 0.0) or 0.0
-            h = (_NODE_HEADER_H + max_pins * _NODE_PIN_ROW_H + _NODE_BODY_MIN_H + extra_pad) * z
+            h = (
+                self._header_height(typedef)
+                + max_pins * _NODE_PIN_ROW_H
+                + self._body_min_height(typedef)
+                + extra_pad
+            ) * z
 
             sx = self._origin_x + node.pos_x * z + self.pan_x
             sy = self._origin_y + node.pos_y * z + self.pan_y
 
             layout = _NodeLayout(node=node, typedef=typedef, sx=sx, sy=sy, w=w, h=h)
 
-            hdr_h = _NODE_HEADER_H * z
+            hdr_h = self._header_height(typedef) * z
             row_h = _NODE_PIN_ROW_H * z
 
             for i, pdef in enumerate(in_pins):
@@ -682,7 +710,8 @@ class NodeGraphView:
         z = self.zoom
         is_selected = layout.node.uid in self.selected_nodes
         rounding = _NODE_ROUNDING * z
-        hdr_h = _NODE_HEADER_H * z
+        is_context = self._is_context_style(layout.typedef)
+        hdr_h = self._header_height(layout.typedef) * z
         pad_x = _NODE_PAD_X * z
         modern_graph = layout.typedef.visual_style in {"graph", "context"}
 
@@ -694,28 +723,49 @@ class NodeGraphView:
         )
 
         # Body
-        body_color = _GRAPH_NODE_BODY_COLOR if modern_graph else _NODE_BODY_COLOR
+        if is_context:
+            body_color = _GRAPH_NODE_CONTEXT_BODY
+        elif modern_graph:
+            body_color = _GRAPH_NODE_BODY_COLOR
+        else:
+            body_color = _NODE_BODY_COLOR
         ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *body_color, rounding)
 
-        # Header
+        # Header — Unity VFX contexts use a solid coloured title bar.
         accent = self._resolve_node_header_color(layout)
-        hdr = (
-            _GRAPH_NODE_CONTEXT_COLOR
-            if layout.typedef.visual_style == "context"
-            else (_GRAPH_NODE_HEADER_COLOR if modern_graph else accent)
-        )
+        if is_context:
+            hdr = accent
+        elif modern_graph:
+            hdr = _GRAPH_NODE_HEADER_COLOR
+        else:
+            hdr = accent
         ctx.draw_filled_rect(sx, sy, sx + w, sy + hdr_h, *hdr, rounding)
         flat_h = min(rounding, hdr_h * 0.5)
         ctx.draw_filled_rect(sx, sy + hdr_h - flat_h, sx + w, sy + hdr_h, *hdr, 0)
-        if modern_graph:
+        if modern_graph and not is_context:
             accent_h = max(2.0, 3.0 * z)
             ctx.draw_filled_rect(
                 sx, sy, sx + w, sy + accent_h, *accent, min(rounding, 3.0 * z)
             )
 
+        # Recessed block-slot area for context nodes (Unity VFX Context look).
+        if is_context:
+            slot_pad = 6.0 * z
+            slot_top = sy + hdr_h + 4.0 * z
+            slot_bottom = sy + h - slot_pad
+            if slot_bottom > slot_top + 4.0 * z:
+                ctx.draw_filled_rect(
+                    sx + slot_pad,
+                    slot_top,
+                    sx + w - slot_pad,
+                    slot_bottom,
+                    *_GRAPH_NODE_CONTEXT_SLOT,
+                    max(2.0, 3.0 * z),
+                )
+
         # Header label
         label = layout.node.data.get("label", layout.typedef.label)
-        font_sz = self._zoom_font(15.0)
+        font_sz = self._zoom_font(14.0 if is_context else 13.0)
         sw_x1, sw_y1, sw_x2, sw_y2 = self._node_header_swatch_rect(layout)
         label_right = (
             sw_x1 - 6.0 * z
@@ -726,10 +776,23 @@ class NodeGraphView:
                 else sx + w - pad_x
             )
         )
-        ctx.draw_text_aligned(
-            sx + pad_x, sy, max(sx + pad_x + 1.0, label_right), sy + hdr_h,
-            label, *_TEXT_COLOR, 0.0, 0.5, font_sz, True,
-        )
+        if is_context:
+            # Title + "Particle" subtitle stacked like Unity VFX Context headers.
+            title_bottom = sy + hdr_h * 0.62
+            ctx.draw_text_aligned(
+                sx + pad_x, sy + 2.0 * z, max(sx + pad_x + 1.0, sx + w - pad_x),
+                title_bottom,
+                label, *_TEXT_COLOR, 0.0, 0.55, font_sz, True,
+            )
+            ctx.draw_text_aligned(
+                sx + pad_x, title_bottom - 1.0 * z, sx + w - pad_x, sy + hdr_h - 2.0 * z,
+                "Particle", *_TEXT_DIM_COLOR, 0.0, 0.35, self._zoom_font(10.0), True,
+            )
+        else:
+            ctx.draw_text_aligned(
+                sx + pad_x, sy, max(sx + pad_x + 1.0, label_right), sy + hdr_h,
+                label, *_TEXT_COLOR, 0.0, 0.5, font_sz, True,
+            )
 
         if layout.typedef.show_header_color_swatch:
             ctx.draw_filled_rect(sw_x1, sw_y1, sw_x2, sw_y2, *accent, 2.0 * z)
@@ -756,8 +819,8 @@ class NodeGraphView:
                 True,
             )
 
-        # Subtitle (e.g. clip path)
-        subtitle = layout.node.data.get("subtitle", "")
+        # Subtitle (e.g. clip path) — skip for contexts (title bar owns the label).
+        subtitle = "" if is_context else layout.node.data.get("subtitle", "")
         if subtitle:
             body_top = sy + hdr_h + 2 * z
             ctx.draw_text_aligned(
@@ -795,7 +858,7 @@ class NodeGraphView:
         self._record_pin_semantics(ctx, layout, str(label))
 
         # Pin labels
-        dim_font = self._zoom_font(12.5)
+        dim_font = self._zoom_font(11.0)
         row_h = _NODE_PIN_ROW_H * z
         for pl in layout.input_pins:
             ctx.draw_text_aligned(
@@ -855,11 +918,12 @@ class NodeGraphView:
         # never hide them past a threshold, or zooming out looks like the
         # node contents vanished.
         z = self.zoom
-        ctx.set_window_font_scale(max(_TEXT_MIN_FONT / _INLINE_BASE_FONT, z))
-        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, 4.0 * z, 2.0 * z)
-        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, 4.0 * z, 3.0 * z)
-        ctx.push_style_var_vec2(ImGuiStyleVar.ItemInnerSpacing, 3.0 * z, 3.0 * z)
-        ctx.push_style_var_float(ImGuiStyleVar.FrameRounding, 3.0 * z)
+        font_scale = max(_TEXT_MIN_FONT / _INLINE_BASE_FONT, z * _INLINE_FONT_SCALE)
+        ctx.set_window_font_scale(font_scale)
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, 3.0 * z, 1.0 * z)
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, 3.0 * z, 2.0 * z)
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemInnerSpacing, 2.0 * z, 1.0 * z)
+        ctx.push_style_var_float(ImGuiStyleVar.FrameRounding, 2.0 * z)
         try:
             for layout in self._layouts.values():
                 fields = getattr(layout.typedef, "inline_fields", ())
@@ -890,7 +954,7 @@ class NodeGraphView:
                     if row_y is None:
                         row_y = (
                             layout.sy
-                            + _NODE_HEADER_H * self.zoom
+                            + self._header_height(layout.typedef) * self.zoom
                             + max(
                                 len(layout.input_pins),
                                 len(layout.output_pins),
@@ -931,7 +995,8 @@ class NodeGraphView:
     ) -> None:
         value = copy.deepcopy(layout.node.data.get(field_def.id, field_def.default))
         local_x = layout.sx - self._origin_x
-        local_y = row_y - self._origin_y - 9.0 * self.zoom
+        # Half of the compact frame (~14px at zoom 1) so the widget sits on the pin row.
+        local_y = row_y - self._origin_y - 7.0 * self.zoom
         field_x = local_x + layout.w * 0.42
         # Widths scale with the node so the control never crosses its right
         # edge; the minimum also scales, otherwise zoomed-out nodes overflow.
@@ -939,14 +1004,14 @@ class NodeGraphView:
         if detached:
             ctx.draw_text_aligned(
                 layout.sx + _NODE_PAD_X * self.zoom,
-                row_y - 10.0 * self.zoom,
+                row_y - 8.0 * self.zoom,
                 layout.sx + layout.w * 0.40,
-                row_y + 10.0 * self.zoom,
+                row_y + 8.0 * self.zoom,
                 str(field_def.label),
                 *_TEXT_DIM_COLOR,
                 0.0,
                 0.5,
-                self._zoom_font(11.0),
+                self._zoom_font(10.0),
                 True,
             )
         ctx.set_cursor_pos_x(field_x)
@@ -979,14 +1044,14 @@ class NodeGraphView:
                     axis_w = min(10.0 * self.zoom, component_w * 0.24)
                     ctx.draw_text_aligned(
                         self._origin_x + slot_x,
-                        row_y - 9.0 * self.zoom,
+                        row_y - 7.0 * self.zoom,
                         self._origin_x + slot_x + axis_w,
-                        row_y + 9.0 * self.zoom,
+                        row_y + 7.0 * self.zoom,
                         "XYZW"[index],
                         *_TEXT_DIM_COLOR,
                         0.0,
                         0.5,
-                        self._zoom_font(9.0),
+                        self._zoom_font(8.0),
                         True,
                     )
                     ctx.set_cursor_pos_x(slot_x + axis_w)
@@ -1260,7 +1325,7 @@ class NodeGraphView:
     def _node_header_swatch_rect(self, layout: _NodeLayout) -> Tuple[float, float, float, float]:
         z = self.zoom
         sx, sy, w = layout.sx, layout.sy, layout.w
-        hdr_h = _NODE_HEADER_H * z
+        hdr_h = self._header_height(layout.typedef) * z
         sw = max(10.0 * z, _HEADER_COLOR_SWATCH_SIZE * z)
         pad = _HEADER_COLOR_SWATCH_PAD * z
         x2 = sx + w - pad

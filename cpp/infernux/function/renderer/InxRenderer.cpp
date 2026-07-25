@@ -9,7 +9,6 @@
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
-#include "ParticleDrawCallBuffer.h"
 #include "ScenePickingService.h"
 #include "SceneRenderGraph.h"
 #include "SceneRenderTarget.h"
@@ -340,7 +339,6 @@ InxRenderer::~InxRenderer()
     m_editorGizmos.reset();
     m_editorTools.reset();
     m_componentGizmos.reset();
-    m_particleDrawCalls.reset();
     m_particleGpuDrawRegistry.reset();
 
     if (m_vkCore)
@@ -988,7 +986,6 @@ void InxRenderer::DrawFrame()
             gizmoCtx.gizmos = m_editorGizmos.get();
             gizmoCtx.editorTools = m_editorTools.get();
             gizmoCtx.componentGizmos = m_componentGizmos.get();
-            gizmoCtx.particles = m_particleDrawCalls.get();
             auto &registry = AssetRegistry::Instance();
             gizmoCtx.gizmoMaterial = registry.GetBuiltinMaterial("GizmoMaterial");
             gizmoCtx.gridMaterial = registry.GetBuiltinMaterial("GridMaterial");
@@ -998,7 +995,6 @@ void InxRenderer::DrawFrame()
             gizmoCtx.cameraGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoCameraIconMaterial");
             gizmoCtx.lightGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoLightIconMaterial");
             gizmoCtx.particleGizmoIconMaterial = registry.GetBuiltinMaterial("ComponentGizmoParticleIconMaterial");
-            gizmoCtx.particleMaterial = registry.GetBuiltinMaterial("ParticleBillboardMaterial");
             gizmoCtx.selectedObjectId = m_selectedObjectId;
             gizmoCtx.activeScene = SceneManager::Instance().GetActiveScene();
             gizmoCtx.cameraPos = glm::vec3(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2]);
@@ -1040,12 +1036,8 @@ void InxRenderer::DrawFrame()
                     gameCam->SetScreenDimensions(m_gameRenderTarget->GetWidth(), m_gameRenderTarget->GetHeight());
                 }
 
-                // Game camera excludes editor-only gizmos/grid/outline, but
-                // particles are scene content and must be submitted for every
-                // camera that renders the scene.
+                // Game camera excludes editor-only gizmos/grid/outline.
                 EditorGizmosContext gameContentCtx;
-                gameContentCtx.particles = m_particleDrawCalls.get();
-                gameContentCtx.particleMaterial = gizmoCtx.particleMaterial;
                 ScriptableRenderContext gameCtx(m_vkCore.get(), m_gameRenderGraph.get(), gameContentCtx);
                 if (m_transientResourcePool) {
                     gameCtx.SetTransientResourcePool(m_transientResourcePool.get());
@@ -1861,7 +1853,6 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.deviceLocalBudgetBytes = statistics.deviceLocalBudgetBytes;
     snapshot.allocatorAllocationCount = statistics.allocationCount;
     snapshot.meshBytes = m_vkCore->GetMeshGpuResidentBytes();
-    snapshot.particleBytes = m_particleDrawCalls ? m_particleDrawCalls->GetResidentBytes() : 0;
     snapshot.textureBytes = m_vkCore->GetTextureGpuResidentBytes();
     snapshot.imguiTextureBytes = m_gui ? m_gui->GetImGuiTextureResidentBytes() : 0;
     snapshot.pendingImguiTextureBytes = m_gui ? m_gui->GetPendingImGuiTextureUploadBytes() : 0;
@@ -1902,7 +1893,7 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.scheduledReleaseBytes = m_vkCore->GetRetiredMeshGpuLeaseBytes() +
                                      m_vkCore->GetRetiredTextureGpuLeaseBytes() +
                                      (m_gui ? m_gui->GetScheduledTextureReleaseBytes() : 0);
-    snapshot.trackedBytes = snapshot.meshBytes + snapshot.particleBytes + snapshot.textureBytes +
+    snapshot.trackedBytes = snapshot.meshBytes + snapshot.textureBytes +
                             snapshot.imguiTextureBytes + snapshot.pendingImguiTextureBytes + snapshot.stagingPoolBytes +
                             snapshot.pendingReadbackBytes + snapshot.renderTargetBytes + snapshot.renderGraphBytes +
                             snapshot.transientPoolBytes + snapshot.materialUboBytes;
@@ -2327,7 +2318,6 @@ void InxRenderer::InitializeDefaultScene()
 
     // Initialize component gizmos buffer used by the scripting layer
     m_componentGizmos = std::make_unique<GizmosDrawCallBuffer>();
-    m_particleDrawCalls = std::make_unique<ParticleDrawCallBuffer>();
     m_particleGpuDrawRegistry = std::make_unique<particle::ParticleGpuDrawRegistry>();
     if (m_scenePickingService)
         m_scenePickingService->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
@@ -2525,8 +2515,6 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
             snapshot.canonicalLocalLightCount = lights->localCount;
         }
     }
-    if (m_particleDrawCalls)
-        snapshot.particleCount = m_particleDrawCalls->GetParticleCount();
     if (m_particleGpuSystemManager) {
         const auto gpuParticles = m_particleGpuSystemManager->TelemetrySnapshot();
         snapshot.gpuParticleSystemCount = gpuParticles.systemCount;
@@ -2773,11 +2761,6 @@ EditorTools *InxRenderer::GetEditorTools()
 GizmosDrawCallBuffer *InxRenderer::GetGizmosDrawCallBuffer()
 {
     return m_componentGizmos.get();
-}
-
-ParticleDrawCallBuffer *InxRenderer::GetParticleDrawCallBuffer()
-{
-    return m_particleDrawCalls.get();
 }
 
 particle::ParticleGpuDrawRegistry *InxRenderer::GetParticleGpuDrawRegistry()

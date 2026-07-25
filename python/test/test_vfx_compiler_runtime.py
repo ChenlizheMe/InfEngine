@@ -21,7 +21,6 @@ from Infernux.graph import (
 )
 from Infernux.particle import (
     EmitterSettings,
-    ExecutionTarget,
     ParticleBurst,
     ParticleEmitterAsset,
     ParticleEventRoute,
@@ -130,159 +129,6 @@ def _two_output_rendering_graph(
     )
 
 
-def test_particle_system_runs_multi_emitter_graph_and_controls_each_emitter(
-    scene, engine, monkeypatch
-):
-    graph = ParticleGraphAsset(
-        stable_id="multi-emitter-component",
-        emitters=(
-            ParticleEmitterAsset(
-                stable_id="smoke",
-                settings=EmitterSettings(
-                    capacity=8,
-                    spawn_rate=1.0,
-                    bursts=(ParticleBurst(0.0, 1),),
-                ),
-            ),
-            ParticleEmitterAsset(
-                stable_id="sparks",
-                settings=EmitterSettings(
-                    capacity=8,
-                    spawn_rate=2.0,
-                    bursts=(ParticleBurst(0.0, 2),),
-                ),
-            ),
-        ),
-    )
-    component = ParticleSystem()
-    component.graph = graph
-    game_object = scene.create_game_object("ParticleGraphProbe")
-    game_object.add_py_component(component)
-    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
-
-    component.awake()
-    component.start()
-    component.update(0.0)
-
-    assert [runtime.particle_count for runtime in component._runtimes] == [1, 2]
-    first_step = component._runtimes[0].simulation_step
-    second_step = component._runtimes[1].simulation_step
-
-    component.pause(0)
-    component.play(999)
-    component.update(0.5)
-
-    assert component._runtimes[0].simulation_step == first_step
-    assert component._runtimes[1].simulation_step == second_step + 1
-
-    component.stop(1)
-    component.stop(-1)
-
-    assert component._runtimes[1].particle_count == 0
-    component._remove_native_batch()
-
-
-def test_particle_system_editor_preview_reuses_runtime_without_play_mode(
-    scene, engine, monkeypatch
-):
-    component = ParticleSystem()
-    component.graph = ParticleGraphAsset(stable_id="editor-preview")
-    game_object = scene.create_game_object("ParticlePreviewProbe")
-    game_object.add_py_component(component)
-    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
-
-    assert component.editor_preview_begin() is True
-    assert component._editor_preview_active is True
-    assert component.editor_preview_update(0.25, 0.5) is True
-
-    step = component._runtimes[0].simulation_step
-    assert component.editor_preview_pause() is True
-    component.editor_preview_update(0.25)
-    assert component._runtimes[0].simulation_step == step
-
-    assert component.editor_preview_play() is True
-    assert component.editor_preview_stop() is True
-    assert component._runtimes == []
-    assert component._gpu_controllers == []
-    component.editor_preview_end()
-    assert component._editor_preview_active is False
-    component._remove_native_batch()
-
-
-def test_particle_system_honors_independent_emitter_lifecycle(
-    scene, engine, monkeypatch
-):
-    cpu = EmitterSettings(
-        target=ExecutionTarget.CPU,
-        capacity=8,
-        spawn_rate=0.0,
-        bursts=(ParticleBurst(0.0, 1),),
-    )
-    component = ParticleSystem()
-    component.graph = ParticleGraphAsset(
-        stable_id="emitter-lifecycle",
-        emitters=(
-            ParticleEmitterAsset(stable_id="automatic", settings=cpu),
-            ParticleEmitterAsset(
-                stable_id="manual",
-                play_on_start=False,
-                settings=cpu,
-            ),
-            ParticleEmitterAsset(
-                stable_id="disabled",
-                enabled=False,
-                settings=cpu,
-            ),
-        ),
-    )
-    game_object = scene.create_game_object("ParticleLifecycleProbe")
-    game_object.add_py_component(component)
-    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
-
-    component.awake()
-    component.start()
-    component.update(0.0)
-
-    assert [runtime.particle_count for runtime in component._runtimes] == [1, 0, 0]
-    diagnostics = component.runtime_diagnostics()["emitters"]
-    assert [item["enabled"] for item in diagnostics] == [True, True, False]
-    assert [item["play_on_start"] for item in diagnostics] == [True, False, True]
-    assert [item["playing"] for item in diagnostics] == [True, False, False]
-
-    assert component.start_emitter(1) is True
-    assert component.start_emitter(2) is False
-    component.update(0.0)
-    assert [runtime.particle_count for runtime in component._runtimes] == [1, 1, 0]
-
-    component._editor_preview_active = True
-    assert component.editor_preview_set_emitter_muted(1, True) is True
-    assert [
-        item["visible"] for item in component.editor_preview_emitter_states()
-    ] == [True, False, True]
-    assert component.editor_preview_set_emitter_solo(0, True) is True
-    assert [
-        item["visible"] for item in component.editor_preview_emitter_states()
-    ] == [True, False, False]
-    assert component.editor_preview_set_emitter_muted(0, True) is True
-    assert [
-        item["visible"] for item in component.editor_preview_emitter_states()
-    ] == [False, False, True]
-    metadata = component._particle_metadata
-    component._particle_metadata = type(metadata)(
-        metadata.behavior_hash,
-        tuple(reversed(metadata.emitters)),
-    )
-    reordered = component.editor_preview_emitter_states()
-    assert [item["stable_id"] for item in reordered] == [
-        "disabled",
-        "manual",
-        "automatic",
-    ]
-    assert [item["visible"] for item in reordered] == [True, False, False]
-    assert component.editor_preview_set_emitter_solo(99, True) is False
-    component._remove_native_batch()
-
-
 def test_particle_system_throttles_repeated_compile_failures(scene, monkeypatch):
     component = ParticleSystem()
     component.graph = ParticleGraphAsset(stable_id="compile-failure-throttle")
@@ -318,7 +164,7 @@ def test_particle_system_throttles_repeated_compile_failures(scene, monkeypatch)
     assert len(errors) == 2
 
 
-class _MixedParticleNative:
+class _GpuParticleNative:
     def __init__(self):
         self.program_batches = []
         self.frames = []
@@ -377,24 +223,16 @@ class _MixedParticleNative:
             "events": [],
         }
 
-    def submit_particle_instances(self, batch_id, *args, **kwargs):
-        return None
-
-    def remove_particle_batch(self, batch_id):
-        self.removed_batches.append(batch_id)
-
-
-def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
+def test_particle_system_runs_gpu_emitters_by_active_index(
     scene, monkeypatch, tmp_path
 ):
-    source = tmp_path / "MixedTargets.particlegraph"
+    source = tmp_path / "GpuTargets.particlegraph"
     graph = ParticleGraphAsset(
-        stable_id="mixed-target-component",
+        stable_id="gpu-target-component",
         emitters=(
             ParticleEmitterAsset(
-                stable_id="cpu-smoke",
+                stable_id="gpu-smoke",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.CPU,
                     capacity=8,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 1),),
@@ -403,7 +241,6 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
             ParticleEmitterAsset(
                 stable_id="gpu-sparks",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=8,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 2),),
@@ -412,11 +249,11 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
         ),
     )
     graph.save(str(source))
-    native = _MixedParticleNative()
+    native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
     component.graph = ParticleGraphRef(path_hint=str(source))
-    game_object = scene.create_game_object("MixedParticleGraphProbe")
+    game_object = scene.create_game_object("GpuParticleGraphProbe")
     game_object.layer = 3
     game_object.add_py_component(component)
 
@@ -424,18 +261,17 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     component.start()
     component.update(0.0)
 
-    assert component._runtime_target is ExecutionTarget.AUTO
-    assert component._cpu_emitter_indices == [0]
-    assert component._gpu_emitter_indices == [1]
-    assert component.emitter_runtime_target(0) is ExecutionTarget.CPU
-    assert component.emitter_runtime_target(1) is ExecutionTarget.GPU
-    assert component.emitter_runtime_target(-1) is None
-    assert component.emitter_runtime_target(True) is None
-    assert component._runtimes[0].particle_count == 1
-    assert component._gpu_controllers[0].simulation_step == 1
-    assert len(native.program_batches[-1][0]) == 1
-    assert native.program_batches[-1][0][0]["owner_object_id"] == int(game_object.id)
-    assert native.program_batches[-1][0][0]["owner_layer_mask"] == 1 << 3
+    assert component._gpu_emitter_indices == [0, 1]
+    assert [runtime.simulation_step for runtime in component._gpu_controllers] == [1, 1]
+    assert len(native.program_batches[-1][0]) == 2
+    assert all(
+        program["owner_object_id"] == int(game_object.id)
+        for program in native.program_batches[-1][0]
+    )
+    assert all(
+        program["owner_layer_mask"] == 1 << 3
+        for program in native.program_batches[-1][0]
+    )
     assert native.program_batches[-1][0][0]["graph_instance_id"] == component._batch_id
     assert native.program_batches[-1][2] == component._batch_id
     assert len(native.frames) == 1
@@ -444,14 +280,15 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     component._editor_preview_active = True
     assert component.editor_preview_set_emitter_muted(1, True) is True
     component.update(0.0)
-    assert native.frames[-1][1][0]["render"] is False
+    assert native.frames[-1][1][0]["render"] is True
+    assert native.frames[-1][1][1]["render"] is False
     assert component.editor_preview_set_emitter_muted(1, False) is True
     component._editor_preview_active = False
     diagnostics = component.runtime_diagnostics()
     assert diagnostics["event_abi_hash"] == 41
     assert diagnostics["event_domain_serial"] == 7
-    assert diagnostics["emitters"][0]["target"] == "cpu"
-    assert diagnostics["emitters"][1]["target"] == "gpu"
+    assert "runtime_target" not in diagnostics
+    assert all("target" not in emitter for emitter in diagnostics["emitters"])
     assert diagnostics["emitters"][1]["artifact_revision"] == 17
     assert diagnostics["emitters"][1]["state_preserved"] is True
     diagnostic_request = component.request_gpu_diagnostics()
@@ -461,21 +298,21 @@ def test_particle_system_runs_mixed_cpu_gpu_emitters_by_active_index(
     assert gpu_diagnostics["emitters"][0]["stable_id"] == "gpu-sparks"
     assert gpu_diagnostics["emitters"][0]["alive_count"] == 3
 
-    cpu_step = component._runtimes[0].simulation_step
-    gpu_step = component._gpu_controllers[0].simulation_step
+    first_step = component._gpu_controllers[0].simulation_step
+    second_step = component._gpu_controllers[1].simulation_step
     assert component.pause_emitter(1) is True
     assert component.pause_emitter(99) is False
     component.update(0.25)
-    assert component._runtimes[0].simulation_step == cpu_step + 1
-    assert component._gpu_controllers[0].simulation_step == gpu_step
+    assert component._gpu_controllers[0].simulation_step == first_step + 1
+    assert component._gpu_controllers[1].simulation_step == second_step
 
     assert component.terminate_emitter(0) is True
-    assert component._runtimes[0].particle_count == 0
     assert component.terminate_emitter(1) is True
-    assert native.reset_emitters == [component._gpu_emitter_ids[0]]
+    assert native.reset_emitters == component._gpu_emitter_ids
     assert component.start_emitter(1) is True
     component.update(0.0)
-    assert component._gpu_controllers[0].simulation_step == 1
+    assert component._gpu_controllers[0].simulation_step == 0
+    assert component._gpu_controllers[1].simulation_step == 1
     published_gpu_ids = list(component._gpu_emitter_ids)
     component._remove_native_batch()
     assert native.program_batches[-1] == ([], published_gpu_ids, component._batch_id)
@@ -490,11 +327,11 @@ def test_particle_system_publishes_saved_event_domain_with_complete_gpu_graph(
         emitters=(
             ParticleEmitterAsset(
                 stable_id="source",
-                settings=EmitterSettings(target=ExecutionTarget.GPU, capacity=32),
+                settings=EmitterSettings(capacity=32),
             ),
             ParticleEmitterAsset(
                 stable_id="target",
-                settings=EmitterSettings(target=ExecutionTarget.GPU, capacity=64),
+                settings=EmitterSettings(capacity=64),
             ),
         ),
         event_types=(ParticleEventType("impact", "Impact", 128),),
@@ -510,7 +347,7 @@ def test_particle_system_publishes_saved_event_domain_with_complete_gpu_graph(
         ),
     )
     graph.save(str(source))
-    native = _MixedParticleNative()
+    native = _GpuParticleNative()
     monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
     component = ParticleSystem()
     component.graph = ParticleGraphRef(path_hint=str(source))
@@ -540,195 +377,6 @@ def test_particle_system_publishes_saved_event_domain_with_complete_gpu_graph(
     assert native.event_domains[-1] is None
 
 
-def test_local_particle_instances_follow_emitter_transform_and_scale():
-    instances = np.array(
-        [[1.0, 2.0, 3.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]],
-        dtype=np.float32,
-    )
-    emitter_to_world = np.array(
-        [
-            [2.0, 0.0, 0.0, 10.0],
-            [0.0, 3.0, 0.0, 20.0],
-            [0.0, 0.0, 4.0, 30.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-        dtype=np.float32,
-    )
-
-    transformed = ParticleSystem._local_instances_to_world(instances, emitter_to_world)
-
-    assert transformed[0, :3].tolist() == pytest.approx([12.0, 26.0, 42.0])
-    assert transformed[0, 3] == pytest.approx(0.5)
-    assert transformed[0, 9:12].tolist() == pytest.approx([2.0, 3.0, 4.0])
-    assert instances[0, :4].tolist() == pytest.approx([1.0, 2.0, 3.0, 0.5])
-
-
-def test_particle_system_hot_switches_to_new_published_artifact_revision(
-    scene, engine, monkeypatch, tmp_path
-):
-    source = tmp_path / "HotSmoke.particlegraph"
-    first = ParticleGraphAsset(
-        stable_id="hot-smoke",
-        emitters=(
-            ParticleEmitterAsset(
-                stable_id="smoke",
-                settings=EmitterSettings(
-                    capacity=8,
-                    target=ExecutionTarget.CPU,
-                    spawn_rate=0.0,
-                    bursts=(ParticleBurst(0.0, 1),),
-                ),
-            ),
-        ),
-    )
-    first.save(str(source))
-    component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
-    game_object = scene.create_game_object("HotParticleGraphProbe")
-    game_object.add_py_component(component)
-    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
-
-    component.awake()
-    component.start()
-    component.update(0.0)
-    first_revision = component._artifact_revision
-    assert component._runtimes[0].particle_count == 1
-
-    second = ParticleGraphAsset(
-        stable_id="hot-smoke",
-        emitters=(
-            ParticleEmitterAsset(
-                stable_id="smoke",
-                settings=EmitterSettings(
-                    capacity=8,
-                    target=ExecutionTarget.CPU,
-                    spawn_rate=0.0,
-                    bursts=(ParticleBurst(0.0, 4),),
-                ),
-            ),
-        ),
-    )
-    second.save(str(source))
-    component.update(0.0)
-
-    assert component._artifact_revision > first_revision
-    assert component._runtimes[0].particle_count == 4
-    component._remove_native_batch()
-
-
-def test_particle_system_hot_reload_reorders_emitters_by_stable_id(
-    scene, engine, monkeypatch, tmp_path
-):
-    source = tmp_path / "Reordered.particlegraph"
-
-    def emitter(stable_id: str, count: int) -> ParticleEmitterAsset:
-        return ParticleEmitterAsset(
-            stable_id=stable_id,
-            settings=EmitterSettings(
-                capacity=8,
-                target=ExecutionTarget.CPU,
-                spawn_rate=0.0,
-                bursts=(ParticleBurst(0.0, count),),
-            ),
-        )
-
-    smoke = emitter("smoke", 1)
-    sparks = emitter("sparks", 2)
-    ParticleGraphAsset(
-        stable_id="reordered-system",
-        emitters=(smoke, sparks),
-    ).save(str(source))
-    component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
-    game_object = scene.create_game_object("ReorderedParticleGraphProbe")
-    game_object.add_py_component(component)
-    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
-
-    component.awake()
-    component.start()
-    component.update(0.0)
-    assert component.pause_emitter(0) is True
-    assert [runtime.particle_count for runtime in component._runtimes] == [1, 2]
-    assert [runtime.simulation_step for runtime in component._runtimes] == [1, 1]
-
-    ParticleGraphAsset(
-        stable_id="reordered-system",
-        emitters=(sparks, smoke),
-    ).save(str(source))
-    component.update(0.0)
-
-    assert component._particle_metadata.schedule == ("sparks", "smoke")
-    assert [runtime.particle_count for runtime in component._runtimes] == [2, 1]
-    assert [runtime.simulation_step for runtime in component._runtimes] == [2, 1]
-    assert [runtime.is_playing for runtime in component._runtimes] == [True, False]
-    assert component.emitter_reload_compatibility(0) is ParticleRuntimeCompatibility.PARAMETER_ONLY
-    assert component.emitter_reload_compatibility(1) is ParticleRuntimeCompatibility.PARAMETER_ONLY
-    assert component.start_emitter(1) is True
-    component.update(0.0)
-    assert [runtime.simulation_step for runtime in component._runtimes] == [3, 2]
-    component._remove_native_batch()
-
-
-def test_particle_system_hot_reload_adds_and_removes_emitters_by_stable_id(
-    scene, engine, monkeypatch, tmp_path
-):
-    source = tmp_path / "ChangedEmitterSet.particlegraph"
-
-    def emitter(stable_id: str, count: int) -> ParticleEmitterAsset:
-        return ParticleEmitterAsset(
-            stable_id=stable_id,
-            settings=EmitterSettings(
-                capacity=8,
-                target=ExecutionTarget.CPU,
-                spawn_rate=0.0,
-                bursts=(ParticleBurst(0.0, count),),
-            ),
-        )
-
-    smoke = emitter("smoke", 1)
-    sparks = emitter("sparks", 2)
-    mist = emitter("mist", 3)
-    ParticleGraphAsset(
-        stable_id="changed-emitter-set",
-        emitters=(smoke, sparks),
-    ).save(str(source))
-    component = ParticleSystem()
-    component.graph = ParticleGraphRef(path_hint=str(source))
-    game_object = scene.create_game_object("ChangedEmitterSetProbe")
-    game_object.add_py_component(component)
-    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
-
-    component.awake()
-    component.start()
-    component.update(0.0)
-    assert component.pause_emitter(1) is True
-    assert [runtime.particle_count for runtime in component._runtimes] == [1, 2]
-
-    ParticleGraphAsset(
-        stable_id="changed-emitter-set",
-        emitters=(sparks, mist),
-    ).save(str(source))
-    component.update(0.0)
-
-    assert component._particle_metadata.schedule == ("sparks", "mist")
-    assert [runtime.program.stable_id for runtime in component._runtimes] == [
-        "sparks",
-        "mist",
-    ]
-    assert [runtime.particle_count for runtime in component._runtimes] == [2, 3]
-    assert [runtime.simulation_step for runtime in component._runtimes] == [1, 1]
-    assert [runtime.is_playing for runtime in component._runtimes] == [False, True]
-    assert (
-        component.emitter_reload_compatibility(0)
-        is ParticleRuntimeCompatibility.PARAMETER_ONLY
-    )
-    assert component.emitter_reload_compatibility(1) is None
-    assert component.start_emitter(0) is True
-    component.update(0.0)
-    assert [runtime.simulation_step for runtime in component._runtimes] == [2, 2]
-    component._remove_native_batch()
-
-
 def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     scene, engine, monkeypatch, tmp_path
 ):
@@ -749,7 +397,6 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
             ParticleEmitterAsset(
                 stable_id="smoke",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=32,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 4),),
@@ -768,8 +415,6 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     component.awake()
     component.start()
 
-    assert component._runtime_target is ExecutionTarget.GPU
-    assert component._runtimes == []
     assert len(component._gpu_controllers) == 1
     emitter_id = component._gpu_emitter_ids[0]
     assert engine._gpu_particle_artifact_revision(emitter_id) == component._artifact_revision
@@ -808,7 +453,6 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
             ParticleEmitterAsset(
                 stable_id="smoke",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=32,
                     spawn_rate=4.0,
                     bursts=(ParticleBurst(0.0, 4),),
@@ -835,7 +479,6 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
             ParticleEmitterAsset(
                 stable_id="smoke",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=64,
                     spawn_rate=4.0,
                     bursts=(ParticleBurst(0.0, 4),),
@@ -863,7 +506,6 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
             ParticleEmitterAsset(
                 stable_id="smoke",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=64,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 8),),
@@ -992,7 +634,6 @@ def test_saved_gpu_particle_graph_binds_point_cache_through_rhi(
             ParticleEmitterAsset(
                 stable_id="gpu-point-cache-emitter",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=32,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 2),),
@@ -1170,7 +811,6 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
             ParticleEmitterAsset(
                 stable_id="gpu-vector-field-emitter",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=32,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 2),),
@@ -1282,7 +922,6 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
             ParticleEmitterAsset(
                 stable_id="gpu-sdf-emitter",
                 settings=EmitterSettings(
-                    target=ExecutionTarget.GPU,
                     capacity=32,
                     spawn_rate=0.0,
                     bursts=(ParticleBurst(0.0, 2),),
@@ -1316,7 +955,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 
 
-def test_particle_system_simulation_does_not_depend_on_a_graphical_renderer(
+def test_particle_system_requires_a_saved_gpu_artifact_and_graphical_renderer(
     scene, monkeypatch
 ):
     graph = ParticleGraphAsset(
@@ -1341,5 +980,5 @@ def test_particle_system_simulation_does_not_depend_on_a_graphical_renderer(
     component.start()
     component.update(0.0)
 
-    assert component._runtimes[0].particle_count == 2
-    assert component._runtimes[0].simulation_step == 1
+    assert component._has_runtime() is False
+    assert "AOT artifact" in component._last_compile_error

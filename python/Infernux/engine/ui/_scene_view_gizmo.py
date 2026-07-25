@@ -414,13 +414,13 @@ class SceneViewGizmoMixin:
         return math.sqrt(max(0.0, self._dot3(rel, rel)))
 
     def _gizmo_world_scale(self, engine, obj_pos) -> float:
-        """Match C++ EditorTools visual scale: camDist * 0.15 * handleSize(1.75)."""
+        """Match C++ EditorTools visual scale: camDist * 0.15 * handleSize(1.3125)."""
         cam = engine.editor_camera.position
         dx = float(cam.x) - float(obj_pos[0])
         dy = float(cam.y) - float(obj_pos[1])
         dz = float(cam.z) - float(obj_pos[2])
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-        return max(dist * 0.15 * 1.75, 0.01)
+        return max(dist * 0.15 * 1.3125, 0.01)
 
     def _is_ctrl_down(self, ctx: InxGUIContext) -> bool:
         return ctx.is_key_down(_keys.KEY_LEFT_CTRL) or ctx.is_key_down(_keys.KEY_RIGHT_CTRL)

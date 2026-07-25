@@ -27,7 +27,6 @@ from Infernux.particle.asset import (
     EmitterSettings,
     EmitterShape,
     EmitterShapeKind,
-    ExecutionTarget,
     MeshEmissionMode,
     ParticleBurst,
     ParticleEmitterAsset,
@@ -64,12 +63,23 @@ from .graph_document_authoring import (
 from .inspector_utils import preserve_ui_float_precision
 from .node_graph_view import NodeGraphView
 from .panel_registry import editor_panel
+from .theme import ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar
 from ._inspector_references import (
     _asset_guid_from_path,
     _picker_assets,
     _portable_asset_path_hint,
     render_object_field,
 )
+
+# Floating overlay chrome over the graph canvas. Global ChildBg is transparent
+# and sibling ChildBg alone is unreliable over the full-bleed graph, so overlays
+# paint an opaque backdrop into their own draw list.
+_OVERLAY_PANEL_BG = (0.14, 0.14, 0.145, 1.0)
+_OVERLAY_PANEL_ROUNDING = 6.0
+_OVERLAY_RESIZE_GRIP = 8.0
+_OVERLAY_MIN_HEIGHT = 120.0
+_OVERLAY_CONTENT_PAD = (8.0, 6.0)
+_OVERLAY_GRIP_LINE = (0.42, 0.42, 0.44, 0.85)
 
 
 _STAGES = ("init", "update", "rendering")
@@ -166,6 +176,14 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._save_as_dialog = AssetSaveAsDialog(
             "particle_graph.save_as", "particle graph"
         )
+        self._emitter_overlay_h = 0.0
+        self._details_overlay_h = 0.0
+        self._emitter_resize_drag = False
+        self._details_resize_drag = False
+        self._emitter_resize_start_y = 0.0
+        self._details_resize_start_y = 0.0
+        self._emitter_resize_start_h = 0.0
+        self._details_resize_start_h = 0.0
 
         self._view = NodeGraphView()
         self._view.semantic_namespace = "particle_graph.canvas"
@@ -2548,16 +2566,6 @@ class ParticleGraphEditorPanel(EditorPanel):
                 )
             ),
         )
-        targets = list(ExecutionTarget)
-        target_index = targets.index(settings.target)
-        target_index = ctx.combo(
-            f"{t('particle_graph_editor.target')}##particle_target",
-            target_index,
-            [t(f"particle_graph_editor.target_{item.value}") for item in targets],
-            -1,
-        )
-        values["target"] = targets[max(0, min(target_index, len(targets) - 1))]
-
         spaces = list(SimulationSpace)
         space_index = spaces.index(settings.simulation_space)
         space_index = ctx.combo(
@@ -3364,6 +3372,119 @@ class ParticleGraphEditorPanel(EditorPanel):
             {"keys": keys, "mode": GRADIENT_MODES[mode_index]}
         ).to_dict()
 
+    def _clamp_overlay_height(self, height: float, *, avail_h: float, margin: float) -> float:
+        max_h = max(_OVERLAY_MIN_HEIGHT, avail_h - margin * 2.0)
+        return max(_OVERLAY_MIN_HEIGHT, min(float(height), max_h))
+
+    def _update_overlay_resize_drag(
+        self,
+        ctx: InxGUIContext,
+        *,
+        drag_attr: str,
+        start_y_attr: str,
+        start_h_attr: str,
+        height_attr: str,
+        avail_h: float,
+        margin: float,
+    ) -> float:
+        height = float(getattr(self, height_attr))
+        if getattr(self, drag_attr):
+            if ctx.is_mouse_button_down(0):
+                dy = ctx.get_mouse_pos_y() - float(getattr(self, start_y_attr))
+                height = self._clamp_overlay_height(
+                    float(getattr(self, start_h_attr)) + dy,
+                    avail_h=avail_h,
+                    margin=margin,
+                )
+                setattr(self, height_attr, height)
+                ctx.set_mouse_cursor(ImGuiMouseCursor.ResizeNS)
+            else:
+                setattr(self, drag_attr, False)
+        return height
+
+    @staticmethod
+    def _paint_overlay_background(
+        ctx: InxGUIContext, *, width: float, height: float
+    ) -> None:
+        x0 = ctx.get_window_pos_x()
+        y0 = ctx.get_window_pos_y()
+        ctx.draw_filled_rect(
+            x0,
+            y0,
+            x0 + width,
+            y0 + height,
+            *_OVERLAY_PANEL_BG,
+            _OVERLAY_PANEL_ROUNDING,
+        )
+
+    def _render_floating_overlay(
+        self,
+        ctx: InxGUIContext,
+        *,
+        child_id: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        drag_attr: str,
+        start_y_attr: str,
+        start_h_attr: str,
+        render_fn,
+    ) -> None:
+        grip = _OVERLAY_RESIZE_GRIP
+        panel_h = max(_OVERLAY_MIN_HEIGHT, float(height))
+        pad_x, pad_y = _OVERLAY_CONTENT_PAD
+
+        ctx.set_cursor_pos_x(x)
+        ctx.set_cursor_pos_y(y)
+        ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
+        ctx.push_style_color(ImGuiCol.Border, 0.0, 0.0, 0.0, 0.0)
+        ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, _OVERLAY_PANEL_ROUNDING)
+        visible = ctx.begin_child(child_id, width, panel_h, False)
+        try:
+            if visible:
+                self._paint_overlay_background(ctx, width=width, height=panel_h)
+
+                inner_w = max(1.0, width - pad_x * 2.0)
+                content_area_h = max(1.0, panel_h - grip - pad_y)
+                ctx.set_cursor_pos_x(pad_x)
+                ctx.set_cursor_pos_y(pad_y)
+                ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
+                content_visible = ctx.begin_child(
+                    f"{child_id}_body", inner_w, content_area_h, False
+                )
+                try:
+                    if content_visible:
+                        render_fn()
+                finally:
+                    ctx.end_child()
+                ctx.pop_style_color(1)
+
+                ctx.set_cursor_pos_x(0.0)
+                ctx.set_cursor_pos_y(panel_h - grip)
+                ctx.invisible_button(f"{child_id}_resize_grip", width, grip)
+                if ctx.is_item_hovered() or ctx.is_item_active():
+                    ctx.set_mouse_cursor(ImGuiMouseCursor.ResizeNS)
+                if ctx.is_item_active() and not getattr(self, drag_attr):
+                    setattr(self, drag_attr, True)
+                    setattr(self, start_y_attr, ctx.get_mouse_pos_y())
+                    setattr(self, start_h_attr, panel_h)
+
+                x0 = ctx.get_window_pos_x()
+                grip_y = ctx.get_window_pos_y() + panel_h - grip * 0.5
+                ctx.draw_line(
+                    x0 + width * 0.38,
+                    grip_y,
+                    x0 + width * 0.62,
+                    grip_y,
+                    *_OVERLAY_GRIP_LINE,
+                    1.5,
+                )
+        finally:
+            ctx.end_child()
+        ctx.pop_style_var(1)
+        ctx.pop_style_color(2)
+
     def on_render_content(self, ctx: InxGUIContext):
         self._publish_live_draft_if_due()
         save_label = t("particle_graph_editor.save")
@@ -3378,31 +3499,72 @@ class ParticleGraphEditorPanel(EditorPanel):
 
         available_w = ctx.get_content_region_avail_width()
         available_h = ctx.get_content_region_avail_height()
-        sidebar_w = min(230.0, max(170.0, available_w * 0.20))
-        detail_w = min(280.0, max(210.0, available_w * 0.24))
-        graph_w = max(1.0, available_w - sidebar_w - detail_w - 16.0)
+        # Floating overlays: keep the graph full-bleed, dock compact panels to
+        # the top-left (emitters/events) and top-right (node/emitter params).
+        sidebar_w = min(240.0, max(180.0, available_w * 0.18))
+        detail_w = min(380.0, max(320.0, available_w * 0.30))
+        margin = 8.0
+        default_h = min(
+            max(160.0, available_h * 0.52),
+            max(160.0, available_h - margin * 2.0),
+        )
+        if self._emitter_overlay_h <= 0.0:
+            self._emitter_overlay_h = default_h
+        if self._details_overlay_h <= 0.0:
+            self._details_overlay_h = default_h
+        emitter_h = self._update_overlay_resize_drag(
+            ctx,
+            drag_attr="_emitter_resize_drag",
+            start_y_attr="_emitter_resize_start_y",
+            start_h_attr="_emitter_resize_start_h",
+            height_attr="_emitter_overlay_h",
+            avail_h=available_h,
+            margin=margin,
+        )
+        details_h = self._update_overlay_resize_drag(
+            ctx,
+            drag_attr="_details_resize_drag",
+            start_y_attr="_details_resize_start_y",
+            start_h_attr="_details_resize_start_h",
+            height_attr="_details_overlay_h",
+            avail_h=available_h,
+            margin=margin,
+        )
 
-        emitter_visible = ctx.begin_child("##particle_emitters", sidebar_w, available_h, True)
-        try:
-            if emitter_visible:
-                self._render_emitter_list(ctx)
-        finally:
-            ctx.end_child()
-        ctx.same_line()
-        graph_visible = ctx.begin_child("##particle_graph", graph_w, available_h, False)
+        graph_visible = ctx.begin_child("##particle_graph", available_w, available_h, False)
         try:
             if graph_visible:
                 self._view.render(ctx)
-        finally:
-            ctx.end_child()
-        ctx.same_line()
-        details_visible = ctx.begin_child("##particle_details", detail_w, available_h, True)
-        try:
-            if details_visible:
-                if self._selected_node_uid:
-                    self._render_node_properties(ctx)
-                else:
-                    self._render_emitter_settings(ctx)
+                # Draw overlays inside the graph host so they stack above the
+                # canvas child the same way Scene View floating panels do.
+                self._render_floating_overlay(
+                    ctx,
+                    child_id="##particle_emitters",
+                    x=margin,
+                    y=margin,
+                    width=sidebar_w,
+                    height=emitter_h,
+                    drag_attr="_emitter_resize_drag",
+                    start_y_attr="_emitter_resize_start_y",
+                    start_h_attr="_emitter_resize_start_h",
+                    render_fn=lambda: self._render_emitter_list(ctx),
+                )
+                self._render_floating_overlay(
+                    ctx,
+                    child_id="##particle_details",
+                    x=max(margin, available_w - detail_w - margin),
+                    y=margin,
+                    width=detail_w,
+                    height=details_h,
+                    drag_attr="_details_resize_drag",
+                    start_y_attr="_details_resize_start_y",
+                    start_h_attr="_details_resize_start_h",
+                    render_fn=lambda: (
+                        self._render_node_properties(ctx)
+                        if self._selected_node_uid
+                        else self._render_emitter_settings(ctx)
+                    ),
+                )
         finally:
             ctx.end_child()
 

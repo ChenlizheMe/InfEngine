@@ -452,7 +452,6 @@ void AssetRegistry::InitializeBuiltinMaterials()
 
     registerBuiltin("DefaultLit", InxMaterial::CreateDefaultLit());
     registerBuiltin("DefaultUnlit", InxMaterial::CreateDefaultUnlit());
-    registerBuiltin("ParticleBillboardMaterial", InxMaterial::CreateParticleBillboardMaterial());
     registerBuiltin("ParticleSpriteMaterial", InxMaterial::CreateParticleSpriteMaterial());
     registerBuiltin("ParticleSixWaySmokeMaterial", InxMaterial::CreateParticleSixWaySmokeMaterial());
     registerBuiltin("GizmoMaterial", InxMaterial::CreateGizmoMaterial());

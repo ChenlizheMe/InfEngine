@@ -19,7 +19,6 @@ struct GpuResidencySnapshot
     size_t allocatorAllocationCount = 0;
 
     uint64_t meshBytes = 0;
-    uint64_t particleBytes = 0;
     uint64_t textureBytes = 0;
     uint64_t imguiTextureBytes = 0;
     uint64_t pendingImguiTextureBytes = 0;

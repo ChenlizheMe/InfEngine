@@ -31,7 +31,6 @@ namespace infernux
 class EditorGizmos;
 class EditorTools;
 class GizmosDrawCallBuffer;
-class ParticleDrawCallBuffer;
 namespace particle
 {
 class ParticleGpuDrawRegistry;
@@ -86,7 +85,6 @@ struct RendererFrameTelemetrySnapshot
     uint64_t canonicalLightGeneration = 0;
     uint32_t canonicalDirectionalLightCount = 0;
     uint32_t canonicalLocalLightCount = 0;
-    size_t particleCount = 0;
     size_t gpuParticleSystemCount = 0;
     size_t gpuParticleOutputCount = 0;
     uint64_t gpuParticleCapacity = 0;
@@ -311,9 +309,6 @@ class InxRenderer
 
     /// @brief Access the component gizmos draw call buffer used by the scripting layer
     GizmosDrawCallBuffer *GetGizmosDrawCallBuffer();
-
-    /// @brief Access the persistent particle billboard batch buffer.
-    ParticleDrawCallBuffer *GetParticleDrawCallBuffer();
 
     particle::ParticleGpuDrawRegistry *GetParticleGpuDrawRegistry();
     particle::ParticleGpuSystemManager *GetParticleGpuSystemManager();
@@ -569,7 +564,6 @@ class InxRenderer
     std::unique_ptr<EditorGizmos> m_editorGizmos;
     std::unique_ptr<EditorTools> m_editorTools;
     std::unique_ptr<GizmosDrawCallBuffer> m_componentGizmos;
-    std::unique_ptr<ParticleDrawCallBuffer> m_particleDrawCalls;
     std::unique_ptr<particle::ParticleGpuDrawRegistry> m_particleGpuDrawRegistry;
     std::unique_ptr<particle::ParticleGpuSystemManager> m_particleGpuSystemManager;
     std::unique_ptr<OutlineRenderer> m_outlineRenderer;

@@ -1215,7 +1215,18 @@ std::pair<bool, bool> InspectorPanel::RenderComponentHeader(InxGUIContext *ctx, 
     }
 
     if (showEnabled) {
-        newEnabled = RenderInspectorCheckbox(ctx, "##hdr_en", isEnabled);
+        // Compact enabled box: center against the header bar height. The shared
+        // CheckboxInspector centers against ambient frame/text metrics, which
+        // sits high inside these taller collapsing-header rows.
+        const float rowY = ImGui::GetCursorPosY();
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
+        ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_BOX_SCALE);
+        const float boxH = ImGui::GetFrameHeight();
+        if (boxH < headerHeight)
+            ImGui::SetCursorPosY(rowY + (headerHeight - boxH) * 0.5f);
+        ImGui::Checkbox("##hdr_en", &newEnabled);
+        ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
+        ImGui::PopStyleVar();
         if (ctx && captureSemantics)
             ctx->RecordSemanticItem("component_enabled", displayName, true, semanticBase + ".enabled");
         ImGui::SameLine(0, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x);

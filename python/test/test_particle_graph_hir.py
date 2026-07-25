@@ -11,7 +11,6 @@ from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, Port
 from Infernux.particle import (
     EmitterSettings,
     EmitterShape,
-    ExecutionTarget,
     KernelCompileError,
     MeshEmissionMode,
     ParticleCompileError,
@@ -57,6 +56,16 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     assert "builtin.orientation" not in {
         attribute.stable_id for attribute in hir.emitters[0].attributes
     }
+
+
+def test_particle_graph_rejects_removed_cpu_execution_target():
+    document = ParticleGraphAsset().to_dict()
+    settings = document["emitters"][0]["settings"]
+    assert "target" not in settings
+
+    settings["target"] = "cpu"
+    with pytest.raises(ParticleGraphSchemaError, match=r"unknown=\['target'\]"):
+        ParticleGraphAsset.from_dict(document)
 
 
 def test_particle_event_routes_compile_to_stable_typed_dense_abi():
@@ -417,7 +426,6 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
         name="Smoke",
         settings=EmitterSettings(
             capacity=100_000,
-            target=ExecutionTarget.GPU,
             simulation_space=SimulationSpace.WORLD,
             spawn_rate=20_000.0,
         ),
@@ -1004,7 +1012,6 @@ class MeshShapeGraph(ParticleScript):
     class SurfaceEmitter(ParticleEmitter):
         stable_id = "surface-emitter"
         settings = EmitterSettings(
-            target="gpu",
             shape=EmitterShape(
                 kind="mesh",
                 mesh=AssetReference(path_hint="Assets/Models/source.fbx"),
@@ -1044,7 +1051,6 @@ class SmokeGraph(ParticleScript):
         play_on_start = False
         settings = EmitterSettings(
             capacity=100000,
-            target="gpu",
             simulation_space="world",
             spawn_rate=20000.0,
             spawn_rate_over_distance=3.0,

@@ -374,14 +374,17 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
     if (id.empty() || id == "##")
         id = "##inx_cb";
 
+    // Center the compact square in the current row. Prefer the previous item's
+    // height (component header / icon dummy) over text-line height so the box
+    // sits vertically centered in tall header bars.
     const float rowY = ImGui::GetCursorPosY();
-    const float textH = ImGui::GetTextLineHeight();
+    const float rowH = (std::max)(ImGui::GetFrameHeight(), ImGui::GetItemRectSize().y);
 
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_CHECKBOX_FRAME_PAD);
     ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_CHECKBOX_BOX_SCALE);
     const float boxH = ImGui::GetFrameHeight();
-    if (boxH < textH)
-        ImGui::SetCursorPosY(rowY + (textH - boxH) * 0.5f);
+    if (boxH < rowH)
+        ImGui::SetCursorPosY(rowY + (rowH - boxH) * 0.5f);
 
     const bool changed = ImGui::Checkbox(id.c_str(), value);
     ImGui::SetWindowFontScale(1.0f);
@@ -389,7 +392,7 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
 
     if (!visible.empty()) {
         ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-        ImGui::SetCursorPosY(rowY);
+        ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(visible.c_str());
     }
 
@@ -2483,72 +2486,61 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
                                                 const std::string &typeHint, bool selected, bool clickable,
                                                 bool hasPicker, uint64_t pickerTextureId, const std::string &semanticId)
 {
-    constexpr float buttonSide = 20.0f;
-    // Match Inspector list-body / header interaction tones so asset slots
-    // visibly respond to hover and press (previously all three were identical).
-    constexpr ImVec4 bodyColor{0.10f, 0.10f, 0.10f, 0.82f};
-    constexpr ImVec4 bodyHover{0.20f, 0.18f, 0.18f, 0.95f};
-    constexpr ImVec4 bodyActive{0.28f, 0.22f, 0.22f, 1.0f};
-    constexpr ImVec4 borderColor{0.22f, 0.22f, 0.22f, 1.0f};
-    constexpr ImVec4 borderHover{0.42f, 0.36f, 0.36f, 1.0f};
-    constexpr ImVec4 borderActive{0.55f, 0.38f, 0.38f, 1.0f};
-    const ImVec4 buttonIdle = EditorTheme::INSPECTOR_INLINE_BTN_IDLE;
-    const ImVec4 buttonHover = EditorTheme::INSPECTOR_INLINE_BTN_HOVER;
-    const ImVec4 buttonActive = EditorTheme::INSPECTOR_INLINE_BTN_ACTIVE;
+    // Unity ObjectField: one shared frame height, left text inset, picker flush
+    // to the right. Hover/active fill covers the whole control (body + picker).
+    constexpr ImVec4 bodyIdleColor{0.10f, 0.10f, 0.10f, 0.82f};
+    constexpr ImVec4 bodyHoverColor{0.20f, 0.18f, 0.18f, 0.95f};
+    constexpr ImVec4 bodyActiveColor{0.28f, 0.22f, 0.22f, 1.0f};
+    constexpr ImVec4 borderIdleColor{0.22f, 0.22f, 0.22f, 1.0f};
+    constexpr ImVec4 borderHoverColor{0.42f, 0.36f, 0.36f, 1.0f};
+    constexpr ImVec4 borderActiveColor{0.55f, 0.38f, 0.38f, 1.0f};
+    const ImVec4 buttonIdleColor = EditorTheme::INSPECTOR_INLINE_BTN_IDLE;
+    const ImVec4 buttonHoverColor = EditorTheme::INSPECTOR_INLINE_BTN_HOVER;
+    const ImVec4 buttonActiveColor = EditorTheme::INSPECTOR_INLINE_BTN_ACTIVE;
+    const float textInsetX = EditorThemeRegistry::Float("OBJECT_FIELD_TEXT_INSET_X", 12.0f);
 
     ImGui::PushID(fieldId.c_str());
-    std::string fullText = "   " + displayText + " (" + typeHint + ")";
+
+    std::string fullText = displayText + " (" + typeHint + ")";
     if (fullText.size() > 38)
         fullText = fullText.substr(0, 35) + "...";
 
     const float availableWidth = ImGui::GetContentRegionAvail().x;
-    const float buttonWidth = hasPicker ? buttonSide : 0.0f;
-    const float fieldWidth = (std::max)(availableWidth - buttonWidth, 10.0f);
+    const float fieldHeight = ImGui::GetFrameHeight();
+    const float buttonWidth = hasPicker ? fieldHeight : 0.0f;
+    const float totalWidth = (std::max)(availableWidth, buttonWidth + 10.0f);
+    const float bodyWidth = (std::max)(totalWidth - buttonWidth, 10.0f);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.0f, 2.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_Header, bodyColor);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, bodyHover);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, bodyActive);
+    const ImVec2 start = ImGui::GetCursorScreenPos();
     ImGui::BeginGroup();
-
+    ImGui::InvisibleButton("##object_field_body", ImVec2(bodyWidth, fieldHeight));
+    const bool bodyHovered = ImGui::IsItemHovered();
+    const bool bodyPressed = ImGui::IsItemActive();
     uint32_t result = 0;
-    if (clickable)
-        ImGui::SetNextItemAllowOverlap();
-    if (ImGui::Selectable(fullText.c_str(), selected, 0, ImVec2(fieldWidth, 0.0f)) && clickable)
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && clickable)
         result |= 1u;
     // Bit 4: body double-click — used by Inspector to ping the asset in Project.
-    // Detected on the selectable even when clickable is false (MeshRenderer slots).
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+    if (bodyHovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
         result |= 4u;
 
+    bool pickerHovered = false;
+    bool pickerPressed = false;
+    ImVec2 pickerMin{};
+    ImVec2 pickerMax{};
     if (hasPicker) {
         ImGui::SameLine(0.0f, 0.0f);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (availableWidth - buttonWidth - fieldWidth));
-        ImGui::PushStyleColor(ImGuiCol_Button, buttonIdle);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, buttonHover);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, buttonActive);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
-        if (ImGui::Button("##picker", ImVec2(buttonSide, 0.0f)))
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+        if (ImGui::Button("##picker", ImVec2(buttonWidth, fieldHeight)))
             result |= 2u;
+        pickerHovered = ImGui::IsItemHovered();
+        pickerPressed = ImGui::IsItemActive();
+        pickerMin = ImGui::GetItemRectMin();
+        pickerMax = ImGui::GetItemRectMax();
         if (InxGUISemantics::IsCaptureEnabled())
             RecordSemanticItem("button", "Select " + typeHint, true, fieldId + ".picker");
-
-        const ImVec2 min = ImGui::GetItemRectMin();
-        const ImVec2 max = ImGui::GetItemRectMax();
-        const float drawSize =
-            (std::max)(0.0f, (std::min)(10.0f, (std::min)(max.x - min.x - 6.0f, max.y - min.y - 4.0f)));
-        const ImVec2 drawMin{min.x + ((max.x - min.x) - drawSize) * 0.5f, min.y + ((max.y - min.y) - drawSize) * 0.5f};
-        if (pickerTextureId != 0 && drawSize > 0.0f) {
-            ImGui::GetWindowDrawList()->AddImage(ToImTextureID(pickerTextureId), drawMin,
-                                                 ImVec2(drawMin.x + drawSize, drawMin.y + drawSize));
-        } else {
-            constexpr const char *fallback = "o";
-            const ImVec2 textSize = ImGui::CalcTextSize(fallback);
-            ImGui::GetWindowDrawList()->AddText(
-                ImVec2(min.x + ((max.x - min.x) - textSize.x) * 0.5f, min.y + ((max.y - min.y) - textSize.y) * 0.5f),
-                ImGui::GetColorU32(ImGuiCol_Text), fallback);
-        }
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(3);
     }
@@ -2560,16 +2552,55 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
         ImGui::OpenPopup("##obj_picker");
 
     ImGui::EndGroup();
+    // Keep the whole ObjectField (body + picker) as the last item so drag-drop
+    // targets and semantic outlines cover the Unity-aligned control bounds.
     RecordSemanticItem("object_field", displayText, clickable, semanticId);
-    ImGui::PopStyleColor(3);
-    ImGui::PopStyleVar(2);
 
-    const ImVec2 min = ImGui::GetItemRectMin();
-    const ImVec2 max = ImGui::GetItemRectMax();
-    const bool groupHovered = ImGui::IsItemHovered();
-    const bool groupActive = groupHovered && ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    const ImVec4 &drawBorder = groupActive ? borderActive : (groupHovered ? borderHover : borderColor);
-    ImGui::GetWindowDrawList()->AddRect(min, max, ImGui::ColorConvertFloat4ToU32(drawBorder), 0.0f, 0, 1.0f);
+    const ImVec2 end{start.x + totalWidth, start.y + fieldHeight};
+    const bool groupHovered = bodyHovered || pickerHovered || ImGui::IsItemHovered();
+    const bool groupPressed =
+        bodyPressed || pickerPressed || (groupHovered && ImGui::IsMouseDown(ImGuiMouseButton_Left));
+    const ImVec4 &fill =
+        selected ? bodyActiveColor
+                 : (groupPressed ? bodyActiveColor : (groupHovered ? bodyHoverColor : bodyIdleColor));
+    const ImVec4 &drawBorder =
+        groupPressed ? borderActiveColor : (groupHovered ? borderHoverColor : borderIdleColor);
+
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(start, end, ImGui::ColorConvertFloat4ToU32(fill), 0.0f);
+    drawList->AddRect(start, end, ImGui::ColorConvertFloat4ToU32(drawBorder), 0.0f, 0, 1.0f);
+
+    const ImVec2 textSize = ImGui::CalcTextSize(fullText.c_str());
+    const float textMaxWidth = (std::max)(0.0f, bodyWidth - textInsetX - 4.0f);
+    std::string clipped = fullText;
+    if (textSize.x > textMaxWidth && textMaxWidth > 0.0f) {
+        while (!clipped.empty() && ImGui::CalcTextSize((clipped + "...").c_str()).x > textMaxWidth)
+            clipped.pop_back();
+        clipped += "...";
+    }
+    drawList->AddText(ImVec2(start.x + textInsetX, start.y + (fieldHeight - textSize.y) * 0.5f),
+                      ImGui::GetColorU32(ImGuiCol_Text), clipped.c_str());
+
+    if (hasPicker) {
+        const ImVec4 &pickerFill =
+            pickerPressed ? buttonActiveColor : (pickerHovered ? buttonHoverColor : buttonIdleColor);
+        drawList->AddRectFilled(pickerMin, pickerMax, ImGui::ColorConvertFloat4ToU32(pickerFill), 0.0f);
+        const float drawSize =
+            (std::max)(0.0f, (std::min)(10.0f, (std::min)(pickerMax.x - pickerMin.x - 6.0f, pickerMax.y - pickerMin.y - 4.0f)));
+        const ImVec2 drawMin{pickerMin.x + ((pickerMax.x - pickerMin.x) - drawSize) * 0.5f,
+                             pickerMin.y + ((pickerMax.y - pickerMin.y) - drawSize) * 0.5f};
+        if (pickerTextureId != 0 && drawSize > 0.0f) {
+            drawList->AddImage(ToImTextureID(pickerTextureId), drawMin,
+                               ImVec2(drawMin.x + drawSize, drawMin.y + drawSize));
+        } else {
+            constexpr const char *fallback = "o";
+            const ImVec2 fallbackSize = ImGui::CalcTextSize(fallback);
+            drawList->AddText(ImVec2(pickerMin.x + ((pickerMax.x - pickerMin.x) - fallbackSize.x) * 0.5f,
+                                     pickerMin.y + ((pickerMax.y - pickerMin.y) - fallbackSize.y) * 0.5f),
+                              ImGui::GetColorU32(ImGuiCol_Text), fallback);
+        }
+    }
+
     ImGui::PopID();
     return result;
 }

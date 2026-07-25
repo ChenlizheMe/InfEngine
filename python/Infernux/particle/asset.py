@@ -56,12 +56,6 @@ class SimulationSpace(str, Enum):
     WORLD = "world"
 
 
-class ExecutionTarget(str, Enum):
-    AUTO = "auto"
-    CPU = "cpu"
-    GPU = "gpu"
-
-
 class EmitterShapeKind(str, Enum):
     POINT = "point"
     SPHERE = "sphere"
@@ -216,7 +210,6 @@ class EmitterShape:
 @dataclass(frozen=True)
 class EmitterSettings:
     capacity: int = 1000
-    target: ExecutionTarget = ExecutionTarget.AUTO
     simulation_space: SimulationSpace = SimulationSpace.WORLD
     seed: int = 1
     spawn_rate: float = 10.0
@@ -230,7 +223,6 @@ class EmitterSettings:
     def __post_init__(self) -> None:
         if type(self.capacity) is not int or self.capacity <= 0:
             raise ParticleGraphSchemaError("emitter capacity must be a positive integer")
-        object.__setattr__(self, "target", ExecutionTarget(self.target))
         object.__setattr__(self, "simulation_space", SimulationSpace(self.simulation_space))
         if type(self.seed) is not int or not 0 <= self.seed <= 0xFFFFFFFF:
             raise ParticleGraphSchemaError("emitter seed must be an unsigned 32-bit integer")
@@ -268,7 +260,6 @@ class EmitterSettings:
     def to_dict(self) -> dict[str, Any]:
         return {
             "capacity": self.capacity,
-            "target": self.target.value,
             "simulation_space": self.simulation_space.value,
             "seed": self.seed,
             "spawn_rate": float(self.spawn_rate),
@@ -283,7 +274,7 @@ class EmitterSettings:
     @classmethod
     def from_dict(cls, value, location: str) -> "EmitterSettings":
         expected = {
-            "capacity", "target", "simulation_space", "seed", "spawn_rate",
+            "capacity", "simulation_space", "seed", "spawn_rate",
             "spawn_rate_over_distance", "duration", "loop", "start_delay",
             "bursts", "shape",
         }
@@ -292,7 +283,6 @@ class EmitterSettings:
             raise ParticleGraphSchemaError(f"{location}.bursts must be an array")
         return cls(
             capacity=value["capacity"],
-            target=value["target"],
             simulation_space=value["simulation_space"],
             seed=value["seed"],
             spawn_rate=value["spawn_rate"],
@@ -934,7 +924,6 @@ __all__ = [
     "EmitterShape",
     "EmitterShapeKind",
     "MeshEmissionMode",
-    "ExecutionTarget",
     "PARTICLE_GRAPH_SCHEMA",
     "ParticleAttribute",
     "ParticleBurst",

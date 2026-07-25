@@ -363,8 +363,8 @@ class Theme:
     INSPECTOR_LABEL_PAD        = 18.0  # Label padding
     INSPECTOR_MIN_LABEL_WIDTH  = 156.0  # Min label width
     INSPECTOR_FRAME_PAD        = (4.0, 2.0)  # Frame padding
-    # Extra left inset for object/reference fields (~3 monospace chars) so label text
-    # lines up with scalar fields; added to FramePadding.x inside ``IGUI.object_field``.
+    # Left text inset for object/reference fields so the label vertically and
+    # horizontally aligns with neighbouring scalar widgets (Unity ObjectField).
     OBJECT_FIELD_TEXT_INSET_X  : float = 12.0
     INSPECTOR_ITEM_SPC         = (4.0, 2.0)  # Item spacing
     INSPECTOR_SUBITEM_SPC      = (4.0, 2.0)  # Sub-item spacing

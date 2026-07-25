@@ -136,16 +136,25 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
         category = "CONSTANT"
     elif is_root:
         category = "CONTEXT"
+    # Unity VFX Graph–style stage colours: Initialize / Update / Output.
+    root_header = (0.22, 0.46, 0.38, 1.0)
+    if definition.type_id.endswith(".init"):
+        root_header = (0.18, 0.42, 0.55, 1.0)
+    elif definition.type_id.endswith(".update"):
+        root_header = (0.42, 0.34, 0.18, 1.0)
+    elif definition.type_id.endswith(".rendering"):
+        root_header = (0.46, 0.24, 0.28, 1.0)
     return NodeTypeDef(
         type_id=definition.type_id,
         label=definition.display_name,
-        header_color=(0.22, 0.46, 0.38, 1.0) if is_root else (0.28, 0.31, 0.36, 1.0),
+        header_color=root_header if is_root else (0.28, 0.31, 0.36, 1.0),
         pins=pins,
-        min_width=196.0 if is_root else 190.0,
+        min_width=236.0 if is_root else 190.0,
         deletable=not is_root,
-        body_bottom_pad=detached_fields * 24.0,
+        body_bottom_pad=detached_fields * 20.0,
         visual_style="context" if is_root else "graph",
-        category_label=category,
+        # Contexts use the Unity-style coloured title bar; hide the category chip.
+        category_label="" if is_root else category,
         show_header_color_swatch=False,
         inline_fields=inline_fields,
     )

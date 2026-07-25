@@ -613,7 +613,7 @@ def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
             return {
                 "event_abi_hash": 41,
                 "event_domain_serial": 7,
-                "emitters": [{"index": 1, "target": "gpu", "simulation_step": 9}],
+                "emitters": [{"index": 1, "simulation_step": 9}],
             }
 
     class _Object:
@@ -643,7 +643,7 @@ def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
         "runtime": {
             "event_abi_hash": 41,
             "event_domain_serial": 7,
-            "emitters": [{"index": 1, "target": "gpu", "simulation_step": 9}],
+            "emitters": [{"index": 1, "simulation_step": 9}],
         },
     }
 

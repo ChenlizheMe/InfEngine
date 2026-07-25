@@ -220,7 +220,7 @@ class SparksGraph(ParticleScript):
 
     class Sparks(ParticleEmitter):
         stable_id = "sparks"
-        settings = EmitterSettings(target="gpu")
+        settings = EmitterSettings()
 
         def init(self, ctx, particles):
             pass

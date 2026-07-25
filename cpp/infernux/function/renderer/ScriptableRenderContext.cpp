@@ -4,7 +4,6 @@
 #include "EditorTools.h"
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
-#include "ParticleDrawCallBuffer.h"
 #include "SceneRenderGraph.h"
 #include "TransientResourcePool.h"
 #include "vk/RhiVulkanTypes.h"
@@ -269,21 +268,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         g_srcProfileSnapshot.submitEditorAppendMs +=
             std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
-    }
-
-    if (m_gizmoCtx.particles && m_gizmoCtx.particles->GetParticleCount() > 0) {
-        glm::vec3 cameraRight(1.0f, 0.0f, 0.0f);
-        glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
-        if (m_activeCamera && m_activeCamera->GetGameObject() && m_activeCamera->GetGameObject()->GetTransform()) {
-            Transform *cameraTransform = m_activeCamera->GetGameObject()->GetTransform();
-            cameraRight = cameraTransform->GetWorldRight();
-            cameraUp = cameraTransform->GetWorldUp();
-        }
-        DrawCallResult particleResult = m_gizmoCtx.particles->GetDrawCalls(cameraRight, cameraUp);
-        if (!particleResult.drawCalls.empty())
-            submittedDomains |= RenderDomainBit(RenderDomain::Particle);
-        for (auto &drawCall : particleResult.drawCalls)
-            m_orderedDrawCalls.push_back(drawCall);
     }
 
     // Auto-append editor gizmos

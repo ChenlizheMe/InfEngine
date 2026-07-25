@@ -244,7 +244,7 @@ def _attribute_read(type_id: str, label: str, result_type: TypeRef, attribute: s
 PARTICLE_NODE_DEFINITIONS = (
     NodeDef(
         "particle.root.init",
-        "Init",
+        "Initialize",
         (_stream("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.init"},
     ),
@@ -256,7 +256,7 @@ PARTICLE_NODE_DEFINITIONS = (
     ),
     NodeDef(
         "particle.root.rendering",
-        "Rendering",
+        "Output",
         (_stream("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.rendering"},
     ),

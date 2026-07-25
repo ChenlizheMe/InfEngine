@@ -118,48 +118,6 @@ def main() -> int:
             material.set_texture_guid("texSampler", texture_guid)
             renderer.set_material(0, material)
 
-            try:
-                engine.submit_particle_instances(701, np.zeros((2, 8), dtype=np.float32))
-                raise AssertionError("invalid particle instance shape was accepted")
-            except ValueError:
-                pass
-            try:
-                non_contiguous_particles = np.zeros((3, 24), dtype=np.float32)[:, ::2]
-                engine.submit_particle_instances(701, non_contiguous_particles)
-                raise AssertionError("non-contiguous particle instances were accepted")
-            except ValueError:
-                pass
-
-            particle_instances = np.array(
-                [
-                    [-0.7, 0.2, 0.0, 0.5, 1.0, 0.1, 0.1, 0.9, 0.0, 1.0, 1.0, 1.0],
-                    [0.0, 0.4, 0.0, 0.6, 0.1, 1.0, 0.2, 0.8, 0.2, 1.5, 0.5, 1.0],
-                    [0.7, 0.2, 0.0, 0.5, 0.2, 0.4, 1.0, 0.9, -0.2, 0.5, 1.5, 1.0],
-                ],
-                dtype=np.float32,
-            )
-            non_finite_particles = particle_instances.copy()
-            non_finite_particles[0, 0] = np.nan
-            try:
-                engine.submit_particle_instances(701, non_finite_particles)
-                raise AssertionError("non-finite particle instances were accepted")
-            except ValueError:
-                pass
-            negative_size_particles = particle_instances.copy()
-            negative_size_particles[0, 3] = -1.0
-            try:
-                engine.submit_particle_instances(701, negative_size_particles)
-                raise AssertionError("negative particle size was accepted")
-            except ValueError:
-                pass
-            try:
-                engine.submit_particle_instances(701, particle_instances, "missing-particle-material")
-                raise AssertionError("missing particle material GUID was accepted")
-            except ValueError:
-                pass
-            engine.submit_particle_instances(701, particle_instances)
-            assert engine.gpu_residency_snapshot["particle_bytes"] == 3 * 64
-
             gui_pixels = bytes(
                 channel
                 for y in range(8)
@@ -504,7 +462,6 @@ def main() -> int:
                 f"thumbnail_readback_in_flight={observed_thumbnail_readback_in_flight}, "
                 f"pending_readbacks={engine.gpu_residency_snapshot['pending_readback_count']}, "
                 f"pending_graphics={engine.gpu_residency_snapshot['pending_async_graphics_submission_count']}, "
-                f"particle_bytes={engine.gpu_residency_snapshot['particle_bytes']}, "
                 f"texture_gpu_resident={engine.texture_gpu_resident_bytes}, "
                 f"texture_gpu_budget={engine.texture_gpu_budget_bytes}, "
                 f"texture_gpu_entries={engine.texture_gpu_cache_entry_count}, "
@@ -593,7 +550,6 @@ def main() -> int:
             assert residency["device_local_allocation_bytes"] > 0, residency
             assert residency["device_local_budget_bytes"] > 0, residency
             assert residency["render_target_bytes"] > 0, residency
-            assert residency["particle_bytes"] == 3 * 64, residency
             assert residency["tracked_bytes"] >= residency["render_target_bytes"], residency
             assert residency["effective_allocation_bytes"] <= residency["allocator_allocation_bytes"], residency
             assert residency["over_budget_bytes"] > 0, residency
@@ -613,8 +569,6 @@ def main() -> int:
             assert engine.schedule_texture_preview_from_memory(
                 "gpu-smoke-shutdown-drain", texture_bytes, 1
             )
-            engine.remove_particle_batch(701)
-            assert engine.gpu_residency_snapshot["particle_bytes"] == 0
         finally:
             engine.cleanup()
         assert shutdown_readback is not None

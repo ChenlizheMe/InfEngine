@@ -49,6 +49,7 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     document = ParticleGraphAsset().emitters[0].init
     model = _stage_model(document)
 
+
     assert model.remove_node("root.init") is False
     assert "particle.attribute.set_velocity" in {
         definition.type_id for definition in model.registered_types()

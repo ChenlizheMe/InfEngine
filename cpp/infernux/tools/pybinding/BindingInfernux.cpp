@@ -9,7 +9,6 @@
 #include <cstring>
 #include <function/renderer/EditorTools.h>
 #include <function/renderer/GizmosDrawCallBuffer.h>
-#include <function/renderer/ParticleDrawCallBuffer.h>
 #include <function/renderer/SceneRenderGraph.h>
 #include <function/renderer/ScriptableRenderContext.h>
 #include <function/renderer/gui/InxGUIContext.h>
@@ -1021,7 +1020,6 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["device_local_usage_bytes"] = snapshot.deviceLocalUsageBytes;
                                    result["device_local_budget_bytes"] = snapshot.deviceLocalBudgetBytes;
                                     result["mesh_bytes"] = snapshot.meshBytes;
-                                    result["particle_bytes"] = snapshot.particleBytes;
                                    result["texture_bytes"] = snapshot.textureBytes;
                                    result["imgui_texture_bytes"] = snapshot.imguiTextureBytes;
                                    result["pending_imgui_texture_bytes"] = snapshot.pendingImguiTextureBytes;
@@ -1106,8 +1104,6 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["canonical_directional_light_count"] =
                                        snapshot.canonicalDirectionalLightCount;
                                    result["canonical_local_light_count"] = snapshot.canonicalLocalLightCount;
-                                   result["particle_count"] = snapshot.particleCount;
-                                   result["cpu_particle_count"] = snapshot.particleCount;
                                    result["gpu_particle_system_count"] = snapshot.gpuParticleSystemCount;
                                    result["gpu_particle_output_count"] = snapshot.gpuParticleOutputCount;
                                    result["gpu_particle_capacity"] = snapshot.gpuParticleCapacity;
@@ -2133,39 +2129,6 @@ PYBIND11_MODULE(_Infernux, m)
                     buf->ClearIcons();
             },
             "Clear all component gizmo icon data")
-        .def(
-            "submit_particle_instances",
-            [](Infernux &self, uint64_t batchId, py::buffer instanceBuffer, const std::string &materialGuid,
-                float originX, float originY, float originZ, bool validate, uint64_t ownerObjectId) {
-                auto *renderer = self.GetRenderer();
-                if (!renderer || !renderer->GetParticleDrawCallBuffer())
-                    throw std::logic_error("particle submission requires graphical renderer initialization");
-                py::buffer_info info = instanceBuffer.request();
-                if (info.ndim != 2 || info.shape[1] != 12 || info.itemsize != sizeof(float) ||
-                    info.format != py::format_descriptor<float>::format()) {
-                    throw std::invalid_argument("particle instances must be a contiguous float32 array shaped (N, 12)");
-                }
-                if (info.strides[1] != static_cast<py::ssize_t>(sizeof(float)) ||
-                    info.strides[0] != static_cast<py::ssize_t>(12 * sizeof(float))) {
-                    throw std::invalid_argument("particle instances must be C-contiguous");
-                }
-
-                renderer->GetParticleDrawCallBuffer()->SetBatchInterleaved(
-                    batchId, static_cast<const float *>(info.ptr), static_cast<size_t>(info.shape[0]), materialGuid,
-                     glm::vec3(originX, originY, originZ), validate, ownerObjectId);
-            },
-            py::arg("batch_id"), py::arg("instances"), py::arg("material_guid") = "", py::arg("origin_x") = 0.0f,
-             py::arg("origin_y") = 0.0f, py::arg("origin_z") = 0.0f, py::arg("validate") = true,
-             py::arg("owner_object_id") = 0,
-            "Submit one contiguous particle instance batch (position3, size, color4, rotation, scale3)")
-        .def(
-            "remove_particle_batch",
-            [](Infernux &self, uint64_t batchId) {
-                auto *renderer = self.GetRenderer();
-                if (renderer && renderer->GetParticleDrawCallBuffer())
-                    renderer->GetParticleDrawCallBuffer()->RemoveBatch(batchId);
-            },
-            py::arg("batch_id"), "Remove a persistent particle instance batch")
         .def(
             "_replace_gpu_particle_graph",
             [](Infernux &self, uint64_t graphInstanceId, const py::sequence &encodedPrograms,

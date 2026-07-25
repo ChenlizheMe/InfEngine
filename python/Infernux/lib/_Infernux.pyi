@@ -3241,18 +3241,6 @@ class Infernux:
     ) -> None: ...
     def clear_component_gizmos(self) -> None: ...
     def upload_component_gizmo_icons(self, positions: Any, object_ids: Any, icon_kinds: Any, icon_count: int) -> None: ...
-    def submit_particle_instances(
-        self,
-        batch_id: int,
-        instances: Any,
-        material_guid: str = ...,
-        origin_x: float = ...,
-        origin_y: float = ...,
-        origin_z: float = ...,
-        validate: bool = ...,
-        owner_object_id: int = ...,
-    ) -> None: ...
-    def remove_particle_batch(self, batch_id: int) -> None: ...
     def _replace_gpu_particle_graph(
         self,
         graph_instance_id: int,
