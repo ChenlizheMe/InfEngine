@@ -465,8 +465,8 @@ void surface(out SurfaceData surface)
            std::string::npos);
     assert(particleForward.generatedFragmentSource.find("layout(location = 12) in float v_ParticleNormalizedAge;") !=
            std::string::npos);
-    assert(particleForward.generatedFragmentSource.find("layout(location = 10) in vec2 v_ParticleFlipbookNextTexCoord;") !=
-           std::string::npos);
+    assert(particleForward.generatedFragmentSource.find(
+               "layout(location = 10) in vec2 v_ParticleFlipbookNextTexCoord;") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("sampleParticleFlipbook") != std::string::npos);
     assert(particleForward.generatedFragmentSource.find("float postSurfaceCoverage = v_ParticleAlpha;") !=
            std::string::npos);
@@ -526,10 +526,9 @@ void surface(out SurfaceData surface)
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ParticleLightingUBO") != std::string::npos);
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("inxParticleReceivesShadows") !=
            std::string::npos);
-    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("postSurfaceCoverage") !=
-           std::string::npos);
-    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("_forwardResult.rgb *= postSurfaceCoverage") !=
-           std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("postSurfaceCoverage") != std::string::npos);
+    assert(litParticleForwardPlusCompilation.generatedFragmentSource.find(
+               "_forwardResult.rgb *= postSurfaceCoverage") != std::string::npos);
     assert(litParticleForwardPlusCompilation.generatedFragmentSource.find("ForwardPlusTileMaskBuffer") !=
            std::string::npos);
 
@@ -566,8 +565,25 @@ void surface(out SurfaceData surface)
            std::string::npos);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
                "vec4 texColor = sampleAlbedoAlpha(texSampler);") != std::string::npos);
-    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
-               "getParticleLocalUV()") != std::string::npos);
+    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("getParticleLocalUV()") !=
+           std::string::npos);
+
+    const auto sixWaySmokeCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
+        ReadText(shaderRoot + "/particle_six_way_smoke.frag"), shaderRoot + "/particle_six_way_smoke.frag");
+    if (!sixWaySmokeCompilation.IsValid()) {
+        for (const auto &error : sixWaySmokeCompilation.errors)
+            std::cerr << error << '\n';
+    }
+    assert(sixWaySmokeCompilation.IsValid());
+    assert(sixWaySmokeCompilation.interfaceArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
+    assert(RequireProperty(sixWaySmokeCompilation.interfaceArtifact, "positiveAxesMap").schema.isTexture);
+    assert(RequireProperty(sixWaySmokeCompilation.interfaceArtifact, "negativeAxesMap").schema.isTexture);
+    const auto sixWaySmokeArtifact = sixWaySmokeCompilation.CreateRuntimeArtifact();
+    assert(sixWaySmokeArtifact.IsValid());
+    assert(sixWaySmokeArtifact.key.stages.fragmentShaderId == "Particle Six-Way Smoke");
+    assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
+    assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
 
     const auto builtinLitParticleCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",

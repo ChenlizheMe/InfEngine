@@ -179,6 +179,30 @@ void VerifyMaterialOverridesSurviveShaderDefaults()
     assert(preserved.renderQueue == 3456);
 }
 
+void VerifyBuiltinSixWaySmokeMaterial()
+{
+    const auto material = InxMaterial::CreateParticleSixWaySmokeMaterial();
+    assert(material);
+    assert(material->IsBuiltin());
+    assert(material->GetVertShaderName() == "Particle Sprite");
+    assert(material->GetFragShaderName() == "Particle Six-Way Smoke");
+
+    const auto document = material->SerializeDocument();
+    assert(document.at("builtin").get<bool>());
+    assert(document.at("properties").at("positiveAxesMap").at("guid") == "white");
+    assert(document.at("properties").at("negativeAxesMap").at("guid") == "black");
+    assert(document.at("properties").at("ambientIntensity").at("value") == 0.0f);
+
+    const auto &state = material->GetRenderState();
+    assert(state.renderQueue == 3000);
+    assert(state.cullMode == VK_CULL_MODE_NONE);
+    assert(state.depthTestEnable);
+    assert(!state.depthWriteEnable);
+    assert(state.blendEnable);
+    assert(state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE);
+    assert(state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+}
+
 } // namespace
 
 int main()
@@ -191,6 +215,7 @@ int main()
     VerifyPropertyRemoval();
     VerifyShaderDefaultsReplacePreviousShaderState();
     VerifyMaterialOverridesSurviveShaderDefaults();
+    VerifyBuiltinSixWaySmokeMaterial();
     std::cout << "Material document tests passed\n";
     return 0;
 }

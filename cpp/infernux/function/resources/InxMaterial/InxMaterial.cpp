@@ -1165,6 +1165,48 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
     return material;
 }
 
+std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSixWaySmokeMaterial()
+{
+    auto material = std::make_shared<InxMaterial>("ParticleSixWaySmokeMaterial");
+    material->SetVertShader("Particle Sprite");
+    material->SetFragShader("Particle Six-Way Smoke");
+
+    RenderState state;
+    state.cullMode = VK_CULL_MODE_NONE;
+    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false;
+    state.blendEnable = true;
+    state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    state.colorBlendOp = VK_BLEND_OP_ADD;
+    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.renderQueue = 3000;
+    material->SetRenderState(state);
+
+    material->SetColor("baseColor", glm::vec4(0.66f, 0.66f, 0.66f, 1.0f));
+    material->SetColor("emissionColor", glm::vec4(1.0f, 0.28f, 0.04f, 1.0f));
+    material->SetFloat("lightingIntensity", 1.0f);
+    material->SetFloat("ambientIntensity", 0.0f);
+    material->SetFloat("ambientSaturation", 0.0f);
+    material->SetFloat("emissionIntensity", 0.0f);
+    material->SetFloat("absorption", 0.5f);
+    material->SetFloat("alphaScale", 1.0f);
+    material->SetFloat("flipbookColumns", 1.0f);
+    material->SetFloat("flipbookRows", 1.0f);
+    material->SetFloat("flipbookFrameJitter", 0.0f);
+    material->SetFloat("flipbookFrameOffset", 0.0f);
+    material->SetFloat("fadeInFraction", 0.08f);
+    material->SetFloat("fadeOutStart", 0.68f);
+    material->SetFloat("densityClipThreshold", 0.025f);
+    material->SetTextureGuid("positiveAxesMap", "white");
+    material->SetTextureGuid("negativeAxesMap", "black");
+    material->SetBuiltin(true);
+    return material;
+}
+
 std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
 {
     auto material = std::make_shared<InxMaterial>("GizmoMaterial");

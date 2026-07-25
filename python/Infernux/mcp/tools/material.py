@@ -36,6 +36,8 @@ _RESERVED_RENDER_STATE_PROPERTIES = frozenset(
     }
 )
 
+_BUILTIN_MATERIAL_URI_PREFIX = "builtin://"
+
 
 def register_material_tools(mcp, project_path: str) -> None:
     _register_metadata()
@@ -53,6 +55,7 @@ def register_material_tools(mcp, project_path: str) -> None:
         def _create():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
             from Infernux.core.material import Material
+            _require_writable_material_path(path)
             file_path = resolve_project_path(project_path, path)
             if os.path.exists(file_path) and not overwrite:
                 raise FileExistsError(f"Material already exists: {path}")
@@ -71,8 +74,14 @@ def register_material_tools(mcp, project_path: str) -> None:
         """Read material properties."""
 
         def _get():
-            mat = _load_material(project_path, path)
-            return {"path": relative_path(resolve_project_path(project_path, path), project_path), **_material_info(mat)}
+            builtin_key = _builtin_material_key(path)
+            mat = _load_material(project_path, path, allow_builtin=True)
+            material_path = (
+                f"{_BUILTIN_MATERIAL_URI_PREFIX}{builtin_key}"
+                if builtin_key
+                else relative_path(resolve_project_path(project_path, path), project_path)
+            )
+            return {"path": material_path, **_material_info(mat)}
 
         return main_thread("material_get_properties", _get)
 
@@ -82,6 +91,7 @@ def register_material_tools(mcp, project_path: str) -> None:
 
         def _set():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
+            _require_writable_material_path(path)
             file_path = resolve_project_path(project_path, path)
             mat = _load_material(project_path, path)
             _set_one(mat, name, value, value_type)
@@ -102,6 +112,7 @@ def register_material_tools(mcp, project_path: str) -> None:
 
         def _set():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
+            _require_writable_material_path(path)
             file_path = resolve_project_path(project_path, path)
             mat = _load_material(project_path, path)
             mat.render_queue = int(render_queue)
@@ -133,6 +144,7 @@ def register_material_tools(mcp, project_path: str) -> None:
 
         def _set():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
+            _require_writable_material_path(path)
             normalized = str(surface_type or "").strip().lower()
             if normalized not in {"opaque", "transparent"}:
                 raise ValueError("surface_type must be 'opaque' or 'transparent'.")
@@ -168,6 +180,7 @@ def register_material_tools(mcp, project_path: str) -> None:
 
         def _set():
             require_knowledge_token("shader", knowledge_token, required_tool="shader_guide")
+            _require_writable_material_path(path)
             file_path = resolve_project_path(project_path, path)
             mat = _load_material(project_path, path)
             if vertex:
@@ -195,8 +208,37 @@ def register_material_tools(mcp, project_path: str) -> None:
         )
 
 
-def _load_material(project_path: str, path: str):
+def _builtin_material_key(path: str) -> str:
+    identity = str(path or "").strip()
+    if not identity.lower().startswith(_BUILTIN_MATERIAL_URI_PREFIX):
+        return ""
+    key = identity[len(_BUILTIN_MATERIAL_URI_PREFIX) :].strip()
+    if not key or "/" in key or "\\" in key:
+        raise ValueError(
+            "Built-in material paths must use 'builtin://<material-key>' without nested paths."
+        )
+    return key
+
+
+def _require_writable_material_path(path: str) -> None:
+    if _builtin_material_key(path):
+        raise PermissionError(
+            "Built-in materials are read-only; clone one into Assets before editing it."
+        )
+
+
+def _load_material(project_path: str, path: str, *, allow_builtin: bool = False):
     from Infernux.core.material import Material
+
+    builtin_key = _builtin_material_key(path)
+    if builtin_key:
+        if not allow_builtin:
+            _require_writable_material_path(path)
+        mat = Material.get(builtin_key)
+        if mat is None:
+            raise FileNotFoundError(f"Built-in material not found: {builtin_key}")
+        return mat
+
     file_path = resolve_project_path(project_path, path)
     mat = Material.load(file_path)
     if mat is None:
@@ -261,6 +303,7 @@ def _properties(mat) -> dict[str, Any]:
 def _material_info(mat) -> dict[str, Any]:
     return {
         "name": str(getattr(mat, "name", "")),
+        "is_builtin": bool(getattr(mat, "is_builtin", False)),
         "shader": {
             "shader_name": str(getattr(mat, "shader_name", "") or ""),
             "vertex": str(getattr(mat, "vert_shader_name", "") or ""),
@@ -277,7 +320,7 @@ def _material_info(mat) -> dict[str, Any]:
 def _register_metadata() -> None:
     for name, summary in {
         "material_create": "Create a material asset.",
-        "material_get_properties": "Read material shader selection and properties.",
+        "material_get_properties": "Read project materials or read-only builtin://<material-key> properties.",
         "material_set_property": "Set a material shader property.",
         "material_set_render_queue": "Set the material render queue.",
         "material_set_surface_type": "Set opaque or transparent material render state.",

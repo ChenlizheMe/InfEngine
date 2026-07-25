@@ -558,6 +558,9 @@ class InxMaterial
     /// @brief Create the default GPU ParticleGraph sprite material.
     static std::shared_ptr<InxMaterial> CreateParticleSpriteMaterial();
 
+    /// @brief Create the read-only built-in six-way lit smoke particle material.
+    static std::shared_ptr<InxMaterial> CreateParticleSixWaySmokeMaterial();
+
     /// @brief Create a gizmo material (uses gizmo shader, unlit, no depth write)
     static std::shared_ptr<InxMaterial> CreateGizmoMaterial();
 
