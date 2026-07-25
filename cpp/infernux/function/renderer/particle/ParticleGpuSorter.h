@@ -68,7 +68,9 @@ class ParticleGpuSorter
   public:
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t Radix = 16;
-    static constexpr uint32_t PassCount = 8;
+    // Full 64-bit stable key sorting: depth primary (low 32b) + particle id (high 32b).
+    // 8-bitwise passes per u32 lane => 16 total passes.
+    static constexpr uint32_t PassCount = 16;
     static constexpr uint32_t SmallSortCapacity = WorkgroupSize;
 
     ParticleGpuSorter() = default;

@@ -2052,11 +2052,12 @@ void SceneRenderGraph::BuildRenderGraph()
             }
             m_renderGraph->AddComputePass(prefix + "/Generate", [&, sorter, entry, prefix](vk::PassBuilder &builder) {
                 const uint64_t elementBytes = static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t);
+                const uint64_t keyBytes = elementBytes * 2u;
                 const uint64_t blockBytes =
                     static_cast<uint64_t>(sorter->BlockCount()) * particle::ParticleGpuSorter::Radix * sizeof(uint32_t);
                 resources.keys = {
-                    builder.ImportBuffer(prefix + "/Keys0", sorter->KeyBuffer(0), elementBytes),
-                    builder.ImportBuffer(prefix + "/Keys1", sorter->KeyBuffer(1), elementBytes),
+                    builder.ImportBuffer(prefix + "/Keys0", sorter->KeyBuffer(0), keyBytes),
+                    builder.ImportBuffer(prefix + "/Keys1", sorter->KeyBuffer(1), keyBytes),
                 };
                 resources.indices = {
                     builder.ImportBuffer(prefix + "/Indices0", sorter->IndexBuffer(0), elementBytes),

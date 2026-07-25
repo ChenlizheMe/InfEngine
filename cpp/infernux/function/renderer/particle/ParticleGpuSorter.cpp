@@ -27,9 +27,9 @@ layout(std430, set = 0, binding = 1) readonly buffer IndirectArguments {
     uint first_vertex;
     uint first_instance;
 } indirect_args;
-layout(std430, set = 0, binding = 2) buffer InputKeys { uint input_keys[]; };
+layout(std430, set = 0, binding = 2) buffer InputKeys { uvec2 input_keys[]; };
 layout(std430, set = 0, binding = 3) buffer InputIndices { uint input_indices[]; };
-layout(std430, set = 0, binding = 4) buffer OutputKeys { uint output_keys[]; };
+layout(std430, set = 0, binding = 4) buffer OutputKeys { uvec2 output_keys[]; };
 layout(std430, set = 0, binding = 5) buffer OutputIndices { uint output_indices[]; };
 layout(std430, set = 0, binding = 6) buffer Histograms { uint histograms[]; };
 layout(std430, set = 0, binding = 7) buffer BlockOffsets { uint block_offsets[]; };
@@ -76,7 +76,7 @@ uint32_t DivideRoundUp(uint32_t value, uint32_t divisor) noexcept
 std::string_view GpuParticleSortShaderSources::Small() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
-shared uint shared_keys[256];
+shared uvec2 shared_keys[256];
 shared uint shared_indices[256];
 
 uint inx_ordered_float(float value) {
@@ -84,24 +84,24 @@ uint inx_ordered_float(float value) {
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
 
-bool inx_greater(uint left_key, uint left_index, uint right_key, uint right_index) {
-    return left_key > right_key || (left_key == right_key && left_index > right_index);
+bool inx_greater(uvec2 left_key, uint left_index, uvec2 right_key, uint right_index) {
+    return left_key.x > right_key.x ||
+           (left_key.x == right_key.x &&
+            (left_key.y > right_key.y || (left_key.y == right_key.y && left_index > right_index)));
 }
 
-uint inx_particle_sort_key(float view_depth, uint particle_id) {
+uvec2 inx_particle_sort_key(float view_depth, uint particle_id) {
     uint depth_key = inx_ordered_float(view_depth);
     depth_key = pc.descending != 0u ? ~depth_key : depth_key;
-    // GPU compaction does not preserve invocation order. Reserve the low bits
-    // for the persistent particle ID so nearly coplanar transparent cards do
-    // not exchange order every frame as their temporary indices change.
-    return (depth_key & 0xfffff000u) | (particle_id & 0x00000fffu);
+    // Use full-width depth+particle-id tuple for stable ordering.
+    return uvec2(depth_key, particle_id);
 }
 
 void main() {
     uint lane = gl_LocalInvocationID.x;
     uint live_count = min(indirect_args.instance_count, pc.capacity);
     uint particle_index = lane < live_count ? source_indices[lane] : 0xffffffffu;
-    uint key = 0xffffffffu;
+    uvec2 key = uvec2(0xffffffffu, 0xffffffffu);
     if (lane < live_count) {
         vec4 view_position = pc.view * vec4(instances[particle_index].position_size.xyz, 1.0);
         key = inx_particle_sort_key(view_position.z, instances[particle_index].ribbon_data.w);
@@ -117,10 +117,9 @@ void main() {
     for (uint phase = 0u; phase < live_count; ++phase) {
         uint left = lane * 2u + (phase & 1u);
         uint right = left + 1u;
-        if (right < live_count && inx_greater(
-                shared_keys[left], shared_indices[left],
-                shared_keys[right], shared_indices[right])) {
-            uint key = shared_keys[left];
+        if (right < live_count &&
+            inx_greater(shared_keys[left], shared_indices[left], shared_keys[right], shared_indices[right])) {
+            uvec2 key = shared_keys[left];
             uint index = shared_indices[left];
             shared_keys[left] = shared_keys[right];
             shared_indices[left] = shared_indices[right];
@@ -144,10 +143,15 @@ uint inx_ordered_float(float value) {
     uint bits = floatBitsToUint(value);
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
-uint inx_particle_sort_key(float view_depth, uint particle_id) {
+uvec2 inx_particle_sort_key(float view_depth, uint particle_id) {
     uint depth_key = inx_ordered_float(view_depth);
     depth_key = pc.descending != 0u ? ~depth_key : depth_key;
-    return (depth_key & 0xfffff000u) | (particle_id & 0x00000fffu);
+    return uvec2(depth_key, particle_id);
+}
+uint inx_key_digit(uvec2 key) {
+    if (pc.digit_shift < 32u)
+        return (key.x >> pc.digit_shift) & 15u;
+    return (key.y >> (pc.digit_shift - 32u)) & 15u;
 }
 void main() {
     uint index = gl_GlobalInvocationID.x;
@@ -166,6 +170,11 @@ std::string_view GpuParticleSortShaderSources::Histogram() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
 shared uint local_histogram[16];
+uint inx_key_digit(uvec2 key) {
+    if (pc.digit_shift < 32u)
+        return (key.x >> pc.digit_shift) & 15u;
+    return (key.y >> (pc.digit_shift - 32u)) & 15u;
+}
 void main() {
     uint local_index = gl_LocalInvocationID.x;
     if (local_index < 16u) local_histogram[local_index] = 0u;
@@ -173,7 +182,7 @@ void main() {
     uint index = gl_GlobalInvocationID.x;
     uint live_count = min(indirect_args.instance_count, pc.capacity);
     if (index < live_count) {
-        uint digit = (input_keys[index] >> pc.digit_shift) & 15u;
+        uint digit = inx_key_digit(input_keys[index]);
         atomicAdd(local_histogram[digit], 1u);
     }
     barrier();
@@ -215,6 +224,11 @@ std::string_view GpuParticleSortShaderSources::Scatter() noexcept
                                                   "layout(local_size_x = 256) in;\n", R"glsl(
 const uint INX_MAX_SUBGROUPS = 64u;
 shared uint subgroup_counts[16 * INX_MAX_SUBGROUPS];
+uint inx_key_digit(uvec2 key) {
+    if (pc.digit_shift < 32u)
+        return (key.x >> pc.digit_shift) & 15u;
+    return (key.y >> (pc.digit_shift - 32u)) & 15u;
+}
 void main() {
     uint local_index = gl_LocalInvocationID.x;
     uint subgroup_count = (256u + gl_SubgroupSize - 1u) / gl_SubgroupSize;
@@ -226,8 +240,8 @@ void main() {
     uint source_index = gl_GlobalInvocationID.x;
     uint live_count = min(indirect_args.instance_count, pc.capacity);
     bool lane_active = source_index < live_count && gl_SubgroupID < INX_MAX_SUBGROUPS;
-    uint key = lane_active ? input_keys[source_index] : 0u;
-    uint digit = (key >> pc.digit_shift) & 15u;
+    uvec2 key = lane_active ? input_keys[source_index] : uvec2(0xffffffffu, 0xffffffffu);
+    uint digit = inx_key_digit(key);
     uvec4 own_mask = uvec4(0u);
     for (uint bin = 0u; bin < 16u; ++bin) {
         uvec4 mask = subgroupBallot(lane_active && digit == bin);
@@ -296,6 +310,7 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
         return false;
 
     const uint64_t elementBytes = static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t);
+    const uint64_t keyBytes = elementBytes * 2u;
     const uint32_t blockCount = DivideRoundUp(desc.capacity, WorkgroupSize);
     if (blockCount == 0 || blockCount > std::numeric_limits<uint32_t>::max() / Radix)
         return false;
@@ -310,7 +325,7 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
     m_sourceIndices = desc.sourceIndices;
     m_dispatchArguments = desc.dispatchArguments;
     for (auto &buffer : m_keys)
-        buffer = device.CreateBuffer({elementBytes, storage});
+        buffer = device.CreateBuffer({keyBytes, storage});
     for (auto &buffer : m_indices)
         buffer = device.CreateBuffer({elementBytes, storage});
     m_histograms = device.CreateBuffer({blockBytes, storage});
