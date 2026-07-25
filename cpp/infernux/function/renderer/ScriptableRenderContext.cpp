@@ -337,8 +337,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         const GizmosDrawCallBuffer::IconMaterials iconMaterials{
             m_gizmoCtx.componentGizmoIconMaterial, m_gizmoCtx.cameraGizmoIconMaterial,
             m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.particleGizmoIconMaterial};
-        DrawCallResult iconResult = m_gizmoCtx.componentGizmos->GetIconDrawCalls(iconMaterials, m_gizmoCtx.cameraPos,
-                                                                                cameraRight, cameraUp);
+        DrawCallResult iconResult =
+            m_gizmoCtx.componentGizmos->GetIconDrawCalls(iconMaterials, m_gizmoCtx.cameraPos, cameraRight, cameraUp);
         if (!iconResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
         static size_t s_lastSubmittedIconDrawCalls = static_cast<size_t>(-1);

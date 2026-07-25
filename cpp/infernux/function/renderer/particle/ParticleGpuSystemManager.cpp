@@ -440,8 +440,7 @@ struct ParticleGpuSystemManager::Impl
             if (!std::isfinite(area) || area <= 1.0e-12)
                 continue;
             cumulativeArea += area;
-            samplingTriangles.push_back(
-                {first, second, third, static_cast<float>(cumulativeArea)});
+            samplingTriangles.push_back({first, second, third, static_cast<float>(cumulativeArea)});
         }
         if (samplingTriangles.empty() || !std::isfinite(cumulativeArea) || cumulativeArea <= 0.0) {
             SetError(error, "GPU particle Mesh sampling requires non-degenerate triangles");

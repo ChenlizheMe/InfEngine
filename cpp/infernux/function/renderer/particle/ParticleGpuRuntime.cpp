@@ -436,13 +436,10 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         if (desc.meshShape) {
             const auto &meshShape = *desc.meshShape;
             if (meshShape.metadataOffsetWords != pointCacheMetadataWordCount ||
-                meshShape.vertexBinding >= usedBindings.size() ||
-                meshShape.triangleBinding >= usedBindings.size() ||
-                meshShape.vertexBinding == meshShape.triangleBinding ||
-                usedBindings[meshShape.vertexBinding] || usedBindings[meshShape.triangleBinding] ||
-                meshShape.vertexCount == 0 || meshShape.triangleCount == 0 ||
-                !meshShape.vertices.IsValid() || !meshShape.triangles.IsValid() ||
-                !meshShape.keepAlive) {
+                meshShape.vertexBinding >= usedBindings.size() || meshShape.triangleBinding >= usedBindings.size() ||
+                meshShape.vertexBinding == meshShape.triangleBinding || usedBindings[meshShape.vertexBinding] ||
+                usedBindings[meshShape.triangleBinding] || meshShape.vertexCount == 0 || meshShape.triangleCount == 0 ||
+                !meshShape.vertices.IsValid() || !meshShape.triangles.IsValid() || !meshShape.keepAlive) {
                 Destroy();
                 return false;
             }

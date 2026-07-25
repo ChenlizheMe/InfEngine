@@ -2280,8 +2280,7 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     std::string pathLabel = m_breadcrumbText;
     if (ctx->CalcTextSizeA(pathLabel).first > pathBudget && pathLabel.size() > 4) {
         // Keep the trailing folders readable when the Path row is tight.
-        while (pathLabel.size() > 1 &&
-               ctx->CalcTextSizeA(std::string("...") + pathLabel).first > pathBudget) {
+        while (pathLabel.size() > 1 && ctx->CalcTextSizeA(std::string("...") + pathLabel).first > pathBudget) {
             pathLabel.erase(pathLabel.begin());
         }
         pathLabel = "..." + pathLabel;
@@ -2404,7 +2403,8 @@ void ProjectPanel::RenderSearchResults(InxGUIContext *ctx)
                 rel = std::move(tmp);
         }
 
-        const std::string kind = (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
+        const std::string kind =
+            (item.type == FileItem::Dir) ? Tr("project.search_folder") : Tr("project.search_asset");
         // Show "Name — relative/path" so users can tell duplicates apart.
         const std::string label = item.name + "  —  " + rel + "  (" + kind + ")##search_" + item.path;
         if (!ctx->Selectable(label, false))

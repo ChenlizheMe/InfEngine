@@ -223,8 +223,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             if (!py::isinstance<py::dict>(layout["mesh_shape"]))
                 throw std::invalid_argument("GPU Mesh shape layout must be a dictionary or None");
             const py::dict meshShape = py::cast<py::dict>(layout["mesh_shape"]);
-            for (const char *field : {"mesh", "mode", "metadata_offset", "vertex_binding",
-                                      "triangle_binding", "native"}) {
+            for (const char *field :
+                 {"mesh", "mode", "metadata_offset", "vertex_binding", "triangle_binding", "native"}) {
                 if (!meshShape.contains(field))
                     throw std::invalid_argument(std::string("GPU Mesh shape binding is missing ") + field);
             }

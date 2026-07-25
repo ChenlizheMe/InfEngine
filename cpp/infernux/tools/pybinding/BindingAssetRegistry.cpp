@@ -238,11 +238,9 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             [](const InxMesh &self) -> py::dict {
                 const auto &vertices = self.GetVertices();
                 const auto &indices = self.GetIndices();
-                py::array_t<float> positions(
-                    {static_cast<py::ssize_t>(vertices.size()), py::ssize_t{3}});
+                py::array_t<float> positions({static_cast<py::ssize_t>(vertices.size()), py::ssize_t{3}});
                 auto positionView = positions.mutable_unchecked<2>();
-                for (py::ssize_t index = 0;
-                     index < static_cast<py::ssize_t>(vertices.size()); ++index) {
+                for (py::ssize_t index = 0; index < static_cast<py::ssize_t>(vertices.size()); ++index) {
                     const auto &position = vertices[static_cast<size_t>(index)].pos;
                     positionView(index, 0) = position.x;
                     positionView(index, 1) = position.y;
@@ -250,8 +248,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 }
                 py::array_t<uint32_t> encodedIndices(indices.size());
                 auto indexView = encodedIndices.mutable_unchecked<1>();
-                for (py::ssize_t index = 0;
-                     index < static_cast<py::ssize_t>(indices.size()); ++index)
+                for (py::ssize_t index = 0; index < static_cast<py::ssize_t>(indices.size()); ++index)
                     indexView(index) = indices[static_cast<size_t>(index)];
                 py::dict result;
                 result["positions"] = std::move(positions);
