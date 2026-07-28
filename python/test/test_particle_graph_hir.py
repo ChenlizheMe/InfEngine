@@ -1511,7 +1511,7 @@ def test_particle_event_schema_fingerprint_invalidates_stage_expression_programs
     )
 
 
-def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attributes():
+def test_particle_graph_persists_only_builtin_defaults_and_attribute_cache():
     attributes = list(ParticleEmitterAsset().attributes)
     color_index = next(
         index
@@ -1526,7 +1526,7 @@ def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attri
         [1.0, 0.25, 0.1, 1.0],
     )
     attributes.append(
-        ParticleAttribute("custom.temperature", "temperature", TypeRef(ValueType.F32), 3.5)
+        ParticleAttribute("cache.temperature", "temperature", TypeRef(ValueType.F32), 3.5)
     )
     asset = ParticleGraphAsset(
         emitters=(ParticleEmitterAsset(attributes=tuple(attributes)),)
@@ -1538,17 +1538,163 @@ def test_particle_graph_persists_only_builtin_default_overrides_and_custom_attri
     assert emitter_document["attribute_defaults"] == {
         "builtin.color": [1.0, 0.25, 0.1, 1.0]
     }
-    assert [item["stable_id"] for item in emitter_document["custom_attributes"]] == [
-        "custom.temperature"
+    assert [item["stable_id"] for item in emitter_document["attribute_cache"]] == [
+        "cache.temperature"
     ]
     assert ParticleGraphAsset.from_dict(document) == asset
 
     stale = copy.deepcopy(document)
-    stale["emitters"][0]["attributes"] = stale["emitters"][0].pop(
-        "custom_attributes"
+    stale["emitters"][0]["custom_attributes"] = stale["emitters"][0].pop(
+        "attribute_cache"
     )
     with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
         ParticleGraphAsset.from_dict(stale)
+
+
+def test_attribute_cache_is_written_in_init_and_read_live_from_update():
+    cache = ParticleAttribute(
+        "cache.temperature",
+        "temperature",
+        TypeRef(ValueType.F32),
+        0.0,
+    )
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "cache.set",
+                "particle.attribute.cache",
+                properties={
+                    "attribute": cache.stable_id,
+                    "composition": "set",
+                    "value": 3.5,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "init-cache",
+                "root.init",
+                "out",
+                "cache.set",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "cache.get",
+                "particle.attribute.get",
+                properties={"attribute": cache.stable_id},
+            ),
+            GraphNodeRecord(
+                "size.set",
+                "particle.attribute.size",
+                properties={"composition": "set", "value": 1.0},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "update-size",
+                "root.update",
+                "out",
+                "size.set",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "cache-size",
+                "cache.get",
+                "value",
+                "size.set",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    emitter = ParticleEmitterAsset(
+        attributes=(*ParticleEmitterAsset().attributes, cache),
+        init=init,
+        update=update,
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(emitter,))
+    )
+    init_operation = next(
+        operation
+        for operation in program.emitters[0].init.flow.iter_operations()
+        if operation.source_node_uid == "cache.set"
+    )
+    assert init_operation.opcode == "attribute.modify_cache"
+    assert init_operation.parameter_dict()["attribute"] == cache.stable_id
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    assert cache.stable_id in kernel.init.written_attributes
+    assert cache.stable_id in kernel.update.read_attributes
+    assert any(
+        instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == cache.stable_id
+        for instruction in kernel.init.instructions
+    )
+    assert any(
+        instruction.opcode == "load_attribute"
+        and instruction.immediate_dict()["attribute"] == cache.stable_id
+        for instruction in kernel.update.instructions
+    )
+
+
+def test_particle_script_attribute_cache_uses_graph_nodes_and_shared_hir():
+    source = '''\
+from Infernux.particle import AttributeCache, ParticleScript, ParticleEmitter, EmitterSettings
+
+class CachedMotion(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+        attribute_cache = (
+            AttributeCache("cache.force", "Force", "vec3", (0.0, 0.0, 0.0)),
+        )
+
+        def init(self, ctx, particles):
+            particles.set_attribute("Force", (0.0, 1.0, 0.0))
+
+        def update(self, ctx, particles):
+            particles.add_attribute("cache.force", (1.0, 0.0, 0.0))
+            particles.add_velocity(particles.get_attribute("Force"))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="CachedMotion.particle.py")
+    emitter = asset.emitters[0]
+
+    assert emitter.attributes[-1].stable_id == "cache.force"
+    assert emitter.attributes[-1].value_type == TypeRef(ValueType.VEC3)
+    assert emitter.init.nodes[1].type_id == "particle.attribute.cache"
+    assert emitter.init.nodes[1].properties == {
+        "attribute": "cache.force",
+        "composition": "set",
+        "value": [0.0, 1.0, 0.0],
+    }
+    assert emitter.update.nodes[1].properties["composition"] == "add"
+    assert any(
+        node.type_id == "particle.attribute.get"
+        and node.properties["attribute"] == "cache.force"
+        for node in emitter.update.nodes
+    )
+
+    program = compiler.compile(source, source_name="CachedMotion.particle.py")
+    update_operations = tuple(program.emitters[0].update.flow.iter_operations())
+    assert [operation.opcode for operation in update_operations] == [
+        "attribute.modify_cache",
+        "attribute.modify_velocity",
+    ]
 
 
 @pytest.mark.parametrize(

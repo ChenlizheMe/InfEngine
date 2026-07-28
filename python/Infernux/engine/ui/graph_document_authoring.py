@@ -58,18 +58,8 @@ _PARTICLE_COLLISION_ROOT_TYPES = frozenset(
     }
 )
 
-# Wait is a first-class lifecycle operation now that the Vulkan continuation
-# runtime is available. Rendering remains non-resumable because it only exports
-# the current simulation state.
-_PARTICLE_WAIT_NODE_TYPES = frozenset(
-    {
-        "particle.control.wait_frames",
-        "particle.control.wait_seconds",
-        "particle.control.until_frames",
-        "particle.control.until_seconds",
-    }
-)
-
+# Wait and Until are first-class lifecycle operations backed by independent
+# Vulkan continuation lanes for Init, Update, Rendering, and Collision.
 _PROPERTY_ENUM_VALUES = {
     "alignment": ("camera_plane", "camera_position", "axis", "velocity"),
     "sort": ("none", "back_to_front", "front_to_back"),
@@ -426,6 +416,11 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             attribute.stable_id: attribute
             for attribute in particle_attribute_catalog(emitter)
         }
+        self._attribute_cache = {
+            attribute.stable_id: attribute
+            for attribute in emitter.attributes
+            if not attribute.stable_id.startswith("builtin.")
+        }
         self._parameter_catalog = (
             dict(definition_set.parameter_by_id)
             if definition_set is not None
@@ -536,6 +531,8 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         self._collision_enabled = bool(enabled)
 
     def node_creation_state(self, type_id: str) -> tuple[bool, str]:
+        if type_id == "particle.attribute.cache" and not self._attribute_cache:
+            return False, "Create an Attribute Cache field first"
         if type_id not in _PARTICLE_COLLISION_ROOT_TYPES:
             return True, ""
         if not self._collision_enabled:
@@ -563,6 +560,12 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             for item in self._attribute_catalog.values()
         )
 
+    def attribute_cache_entries(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (item.name.replace("_", " ").title(), item.stable_id)
+            for item in self._attribute_cache.values()
+        )
+
     def parameter_entries(self) -> tuple[tuple[str, str], ...]:
         return tuple(
             (item.name, item.stable_id)
@@ -578,7 +581,15 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         attribute_name = ATTRIBUTE_NODE_NAMES.get(node.type_id)
         if attribute_name is not None:
             composition = str(node.data.get("composition", "set"))
-            cache_key = f"attribute-write:{node.type_id}:{composition}"
+            selected_cache = (
+                self._attribute_cache.get(str(node.data.get("attribute", "")))
+                if node.type_id == "particle.attribute.cache"
+                else None
+            )
+            cache_key = (
+                f"attribute-write:{node.type_id}:{composition}:"
+                f"{selected_cache.stable_id if selected_cache else ''}"
+            )
             cached = self._dynamic_type_cache.get(cache_key)
             if cached is not None:
                 return cached
@@ -587,8 +598,19 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 return base
             resolved = _canvas_definition(
                 definition,
+                port_type_overrides=(
+                    {"value": selected_cache.value_type}
+                    if selected_cache is not None
+                    else {}
+                ),
+                property_enum_entries=(
+                    {"attribute": self.attribute_cache_entries()}
+                    if node.type_id == "particle.attribute.cache"
+                    else {}
+                ),
                 display_name_override=(
-                    f"{composition.replace('_', ' ').title()} {attribute_name}"
+                    f"{composition.replace('_', ' ').title()} "
+                    f"{selected_cache.name if selected_cache else attribute_name}"
                 ),
             )
             self._dynamic_type_cache[cache_key] = resolved
@@ -687,6 +709,10 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             )
         self._pending_creation_stage = ""
         properties = _authoring_defaults(definition)
+        if type_id == "particle.attribute.cache" and self._attribute_cache:
+            selected = next(iter(self._attribute_cache.values()))
+            properties["attribute"] = selected.stable_id
+            properties["value"] = copy.deepcopy(selected.default)
         if type_id == "particle.parameter.get" and self._parameter_catalog:
             properties["parameter"] = next(iter(self._parameter_catalog))
         properties.update(data)
@@ -837,8 +863,6 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
 
     def _accept(definition: NodeDef) -> bool:
         type_id = definition.type_id
-        if stage == "rendering" and type_id in _PARTICLE_WAIT_NODE_TYPES:
-            return False
         if type_id.startswith("common."):
             return True
         if type_id.startswith("particle.event.output."):

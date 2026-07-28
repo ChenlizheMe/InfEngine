@@ -30,6 +30,7 @@ from Infernux.particle.asset import (
     MeshEmissionMode,
     ParticleBurst,
     ParticleEmitterAsset,
+    ParticleAttribute,
     ParticleEventField,
     ParticleEventRoute,
     ParticleEventType,
@@ -122,8 +123,12 @@ _PARAMETER_TYPE_COLORS = {
     ValueType.VEC4: (0.72, 0.45, 0.88, 1.0),
     ValueType.COLOR: (0.88, 0.78, 0.28, 1.0),
     ValueType.TEXTURE2D: (0.62, 0.48, 0.86, 1.0),
+    ValueType.MAT3: (0.44, 0.62, 0.84, 1.0),
+    ValueType.MAT4: (0.36, 0.54, 0.78, 1.0),
 }
 _PARAMETER_DRAG_PAYLOAD = "PARTICLE_PARAMETER"
+_ATTRIBUTE_CACHE_DRAG_PAYLOAD = "PARTICLE_ATTRIBUTE_CACHE"
+_ATTRIBUTE_CACHE_CREATE_TYPES = (*_EVENT_VALUE_TYPES, ValueType.MAT3, ValueType.MAT4)
 
 # Shared workspace list row chrome (Emitters / Parameters / Events tabs).
 _WORKSPACE_EMITTER_ON = (0.34, 0.72, 0.42, 1.0)
@@ -146,6 +151,8 @@ def _event_field_default(value_type: ValueType):
         ValueType.VEC3: 3,
         ValueType.VEC4: 4,
         ValueType.COLOR: 4,
+        ValueType.MAT3: 9,
+        ValueType.MAT4: 16,
     }[value_type]
     return [0.0] * size
 
@@ -202,12 +209,16 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._dirty = True
         self._selected_node_uid = ""
         self._selected_parameter_id = ""
+        self._selected_attribute_cache_id = ""
         self._selected_event_type_id = ""
         self._selected_event_route_id = ""
         self._focus_detail_name = ""
         self._renaming_parameter_id = ""
         self._parameter_rename_buffer = ""
         self._focus_parameter_rename = False
+        self._renaming_attribute_cache_id = ""
+        self._attribute_cache_rename_buffer = ""
+        self._focus_attribute_cache_rename = False
         self._workspace_tab_index = 0
         self._drag_snapshot: Optional[dict] = None
         self._draft_compile_due_at = 0.0
@@ -287,11 +298,17 @@ class ParticleGraphEditorPanel(EditorPanel):
             "dirty": bool(self._dirty),
             "emitter_index": int(self._emitter_index),
             "selected_node_uid": str(self._selected_node_uid),
+            "selected_attribute_cache_id": str(self._selected_attribute_cache_id),
             "emitters": [
                 {
                     "stable_id": emitter.stable_id,
                     "name": emitter.name,
                     "settings": emitter.settings.to_dict(),
+                    "attribute_cache": [
+                        attribute.to_dict()
+                        for attribute in emitter.attributes
+                        if not attribute.stable_id.startswith("builtin.")
+                    ],
                     "data_interfaces": [
                         interface.to_dict() for interface in emitter.data_interfaces
                     ],
@@ -517,9 +534,10 @@ class ParticleGraphEditorPanel(EditorPanel):
         if definition is None:
             raise RuntimeError(
                 f"Particle Graph node type is not registered: {node.type_id!r}"
-            )
+        )
         key = str(property_name)
         field = next((item for item in definition.properties if item.id == key), None)
+        field_value_type = field.value_type if field is not None else None
         if field is None:
             port = next(
                 (
@@ -529,7 +547,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                     and item.direction is PortDirection.INPUT
                     and item.kind is PortKind.VALUE
                     and not item.required
-                    and item.value_type is not None
+                    and (item.value_type is not None or item.type_property)
                 ),
                 None,
             )
@@ -545,14 +563,22 @@ class ParticleGraphEditorPanel(EditorPanel):
                     f"Particle Graph node {node_uid!r}.{key} is driven by a value link"
                 )
             field = port
-        if field.value_type.value_type is ValueType.ASSET_REF:
+            field_value_type = self._model._effective_port_type(node, port)
+        if field_value_type is None:
+            raise ValueError(
+                f"Particle Graph node {node_uid!r}.{key} has no resolved value type"
+            )
+        if field_value_type.value_type is ValueType.ASSET_REF:
             raise ValueError(
                 "AssetRef properties must use particle_graph_set_node_asset"
             )
         if key == "attribute":
-            valid_attributes = {
-                attribute_id for _label, attribute_id in self._model.attribute_entries()
-            }
+            entries = (
+                self._model.attribute_cache_entries()
+                if node.type_id == "particle.attribute.cache"
+                else self._model.attribute_entries()
+            )
+            valid_attributes = {attribute_id for _label, attribute_id in entries}
             if str(value) not in valid_attributes:
                 raise ValueError(
                     f"Particle Graph node {node_uid!r} references unknown attribute "
@@ -581,7 +607,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                     raise ValueError(
                         f"Particle Graph node {node_uid!r} requires a {expected.__name__} Data Interface"
                     )
-        error = ExpressionCompiler._literal_error(field.value_type, value)
+        error = ExpressionCompiler._literal_error(field_value_type, value)
         if error:
             raise ValueError(
                 f"Particle Graph node {node_uid!r}.{key} {error}"
@@ -589,6 +615,18 @@ class ParticleGraphEditorPanel(EditorPanel):
         previous = copy.deepcopy(node.data.get(key, field.default))
         next_value = copy.deepcopy(value)
         self._on_node_data_changed(node.uid, key, previous, next_value)
+        if key == "attribute" and node.type_id == "particle.attribute.cache":
+            selected = next(
+                (
+                    attribute
+                    for attribute in self._selected_emitter().attributes
+                    if attribute.stable_id == str(value)
+                ),
+                None,
+            )
+            if selected is not None:
+                node.data["value"] = copy.deepcopy(selected.default)
+                self._model.remove_invalid_links_for_node(node.uid)
         self._selected_node_uid = node.uid
         self._view.selected_nodes = [node.uid]
         stage = self._model.stage_for_uid(node.uid)
@@ -1089,6 +1127,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             parameters=(*self._asset.parameters, parameter),
         )
         self._selected_parameter_id = parameter.stable_id
+        self._selected_attribute_cache_id = ""
         self._selected_node_uid = ""
         self._view.selected_nodes = []
         self._bind_stage()
@@ -1250,6 +1289,276 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._mark_changed()
         self._record("Remove Particle Graph parameter", before)
         return {**removed.to_dict(), "changed": True}
+
+    def add_authoring_attribute_cache(
+        self,
+        name: str,
+        value_type: str = "f32",
+        default=None,
+    ) -> dict:
+        """Add one persistent per-particle field to the selected emitter."""
+        self._sync_model_to_asset()
+        name = str(name).strip()
+        if not name:
+            raise ValueError("Particle attribute cache name cannot be empty")
+        emitter = self._asset.emitters[self._emitter_index]
+        cache = tuple(
+            item for item in emitter.attributes if not item.stable_id.startswith("builtin.")
+        )
+        if any(item.name == name for item in cache):
+            raise ValueError(f"Particle attribute cache name already exists: {name!r}")
+        kind = ValueType(str(value_type))
+        if kind not in _ATTRIBUTE_CACHE_CREATE_TYPES:
+            raise ValueError(f"Unsupported Particle attribute cache type: {kind.value!r}")
+        if default is None:
+            default = _event_field_default(kind)
+        attribute = ParticleAttribute(
+            f"cache.{uuid.uuid4().hex}",
+            name,
+            TypeRef(kind),
+            copy.deepcopy(default),
+        )
+        before = self._snapshot()
+        emitters = list(self._asset.emitters)
+        emitters[self._emitter_index] = replace(
+            emitter, attributes=(*emitter.attributes, attribute)
+        )
+        self._asset = replace(self._asset, emitters=tuple(emitters))
+        self._selected_attribute_cache_id = attribute.stable_id
+        self._selected_parameter_id = ""
+        self._selected_node_uid = ""
+        self._view.selected_nodes = []
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Add Particle attribute cache", before)
+        return attribute.to_dict()
+
+    def add_authoring_attribute_cache_node(
+        self,
+        attribute_id: str,
+        x: float,
+        y: float,
+        *,
+        stage: str = "",
+    ) -> dict:
+        """Create one typed Get Attribute node for an emitter-local cache field."""
+        if self._model is None:
+            raise RuntimeError("Particle Graph editor has no active authoring model")
+        attribute_id = str(attribute_id)
+        emitter = self._asset.emitters[self._emitter_index]
+        attribute = next(
+            (
+                item
+                for item in emitter.attributes
+                if item.stable_id == attribute_id
+                and not item.stable_id.startswith("builtin.")
+            ),
+            None,
+        )
+        if attribute is None:
+            raise KeyError(f"Particle attribute cache not found: {attribute_id!r}")
+        if not math.isfinite(float(x)) or not math.isfinite(float(y)):
+            raise ValueError("Particle Graph node position must be finite")
+        target_stage = str(stage) if stage else self._model.stage_nearest_y(float(y))
+        if target_stage not in _STAGES:
+            raise ValueError(f"Unknown Particle Graph stage: {target_stage!r}")
+
+        before = self._snapshot()
+        self._stage = target_stage
+        self._model.set_authoring_stage(target_stage)
+        self._model.prepare_node_creation(target_stage)
+        node = self._model.add_node(
+            "particle.attribute.get",
+            float(x),
+            float(y),
+            attribute=attribute_id,
+        )
+        if self._model.stage_for_uid(node.uid) != target_stage:
+            self._apply_snapshot(before)
+            raise RuntimeError("Particle Graph created the attribute node in the wrong stage")
+        self._selected_attribute_cache_id = ""
+        self._selected_node_uid = node.uid
+        self._view.selected_nodes = [node.uid]
+        self._sync_model_to_asset()
+        self._mark_changed()
+        self._record("Add Particle attribute cache node", before)
+        return {
+            "uid": str(node.uid),
+            "type_id": str(node.type_id),
+            "stage": target_stage,
+            "properties": copy.deepcopy(node.data),
+        }
+
+    def update_authoring_attribute_cache(self, attribute_id: str, values: dict) -> dict:
+        """Update one emitter-local field while preserving its stable identity."""
+        if type(values) is not dict or not values:
+            raise ValueError("Particle attribute cache update must be a non-empty object")
+        self._sync_model_to_asset()
+        attribute_id = str(attribute_id)
+        emitter = self._asset.emitters[self._emitter_index]
+        index = next(
+            (
+                index
+                for index, item in enumerate(emitter.attributes)
+                if item.stable_id == attribute_id
+                and not item.stable_id.startswith("builtin.")
+            ),
+            -1,
+        )
+        if index < 0:
+            raise KeyError(f"Particle attribute cache not found: {attribute_id!r}")
+        unknown = set(values) - {"name", "type", "default"}
+        if unknown:
+            raise ValueError(f"Unknown Particle attribute cache fields: {sorted(unknown)}")
+        current = emitter.attributes[index]
+        name = str(values.get("name", current.name)).strip()
+        if not name:
+            raise ValueError("Particle attribute cache name cannot be empty")
+        if any(
+            item.stable_id != attribute_id
+            and not item.stable_id.startswith("builtin.")
+            and item.name == name
+            for item in emitter.attributes
+        ):
+            raise ValueError(f"Particle attribute cache name already exists: {name!r}")
+        encoded_type = values.get("type", current.value_type.to_dict())
+        value_type = (
+            TypeRef.from_dict(encoded_type)
+            if type(encoded_type) is dict
+            else TypeRef(ValueType(str(encoded_type)))
+        )
+        if value_type.value_type not in _ATTRIBUTE_CACHE_CREATE_TYPES:
+            raise ValueError(
+                f"Unsupported Particle attribute cache type: {value_type.value_type.value!r}"
+            )
+        default = copy.deepcopy(values.get("default", current.default))
+        if value_type != current.value_type and "default" not in values:
+            default = _event_field_default(value_type.value_type)
+        updated = ParticleAttribute(current.stable_id, name, value_type, default)
+        if updated == current:
+            return {**current.to_dict(), "changed": False}
+
+        before = self._snapshot()
+        attributes = list(emitter.attributes)
+        attributes[index] = updated
+        emitter = replace(emitter, attributes=tuple(attributes))
+        if updated.value_type != current.value_type:
+            emitter = self._retarget_attribute_cache_type(
+                emitter, attribute_id, updated.default
+            )
+        emitters = list(self._asset.emitters)
+        emitters[self._emitter_index] = emitter
+        self._asset = replace(self._asset, emitters=tuple(emitters))
+        self._selected_attribute_cache_id = attribute_id
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Edit Particle attribute cache", before)
+        return {**updated.to_dict(), "changed": True}
+
+    def remove_authoring_attribute_cache(self, attribute_id: str) -> dict:
+        """Remove one field and every Get/write node that references it."""
+        self._sync_model_to_asset()
+        attribute_id = str(attribute_id)
+        emitter = self._asset.emitters[self._emitter_index]
+        removed = next(
+            (
+                item
+                for item in emitter.attributes
+                if item.stable_id == attribute_id
+                and not item.stable_id.startswith("builtin.")
+            ),
+            None,
+        )
+        if removed is None:
+            raise KeyError(f"Particle attribute cache not found: {attribute_id!r}")
+        before = self._snapshot()
+        emitter = self._remove_attribute_cache_nodes(emitter, attribute_id)
+        emitter = replace(
+            emitter,
+            attributes=tuple(
+                item for item in emitter.attributes if item.stable_id != attribute_id
+            ),
+        )
+        emitters = list(self._asset.emitters)
+        emitters[self._emitter_index] = emitter
+        self._asset = replace(self._asset, emitters=tuple(emitters))
+        self._selected_attribute_cache_id = ""
+        self._bind_stage()
+        self._mark_changed()
+        self._record("Remove Particle attribute cache", before)
+        return {**removed.to_dict(), "changed": True}
+
+    @staticmethod
+    def _attribute_cache_node_ids(document, attribute_id: str) -> set[str]:
+        return {
+            node.uid
+            for node in document.nodes
+            if node.properties.get("attribute") == attribute_id
+            and node.type_id in {"particle.attribute.get", "particle.attribute.cache"}
+        }
+
+    @classmethod
+    def _remove_attribute_cache_nodes(
+        cls, emitter: ParticleEmitterAsset, attribute_id: str
+    ) -> ParticleEmitterAsset:
+        updates = {}
+        for stage in _STAGES:
+            document = getattr(emitter, stage)
+            if document is None:
+                continue
+            node_ids = cls._attribute_cache_node_ids(document, attribute_id)
+            if node_ids:
+                updates[stage] = replace(
+                    document,
+                    nodes=tuple(node for node in document.nodes if node.uid not in node_ids),
+                    links=tuple(
+                        link
+                        for link in document.links
+                        if link.source_node not in node_ids and link.target_node not in node_ids
+                    ),
+                )
+        return replace(emitter, **updates) if updates else emitter
+
+    @staticmethod
+    def _retarget_attribute_cache_type(
+        emitter: ParticleEmitterAsset, attribute_id: str, default
+    ) -> ParticleEmitterAsset:
+        updates = {}
+        for stage in _STAGES:
+            document = getattr(emitter, stage)
+            if document is None:
+                continue
+            get_ids = {
+                node.uid
+                for node in document.nodes
+                if node.type_id == "particle.attribute.get"
+                and node.properties.get("attribute") == attribute_id
+            }
+            write_ids = {
+                node.uid
+                for node in document.nodes
+                if node.type_id == "particle.attribute.cache"
+                and node.properties.get("attribute") == attribute_id
+            }
+            if not get_ids and not write_ids:
+                continue
+            nodes = tuple(
+                replace(
+                    node,
+                    properties={**node.properties, "value": copy.deepcopy(default)},
+                )
+                if node.uid in write_ids
+                else node
+                for node in document.nodes
+            )
+            links = tuple(
+                link
+                for link in document.links
+                if link.source_node not in get_ids
+                and not (link.target_node in write_ids and link.target_port == "value")
+            )
+            updates[stage] = replace(document, nodes=nodes, links=links)
+        return replace(emitter, **updates) if updates else emitter
 
     @staticmethod
     def _disconnect_parameter_outputs(
@@ -1993,6 +2302,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         if not 0 <= index < len(self._asset.emitters):
             return
         self._selected_parameter_id = ""
+        self._selected_attribute_cache_id = ""
         self._selected_event_type_id = ""
         self._selected_event_route_id = ""
         if index == self._emitter_index:
@@ -2011,6 +2321,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._selected_event_type_id = str(event_type_id)
         self._selected_event_route_id = ""
         self._selected_parameter_id = ""
+        self._selected_attribute_cache_id = ""
         self._selected_node_uid = ""
         self._view.selected_nodes = []
         if focus_name:
@@ -2024,6 +2335,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._selected_event_route_id = str(route_id)
         self._selected_event_type_id = ""
         self._selected_parameter_id = ""
+        self._selected_attribute_cache_id = ""
         self._selected_node_uid = ""
         self._view.selected_nodes = []
 
@@ -2120,6 +2432,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             "emitter_index": self._emitter_index,
             "stage": self._stage,
             "selected_parameter_id": self._selected_parameter_id,
+            "selected_attribute_cache_id": self._selected_attribute_cache_id,
         }
 
     def _apply_snapshot(self, snapshot: dict) -> None:
@@ -2135,6 +2448,19 @@ class ParticleGraphEditorPanel(EditorPanel):
             if any(
                 parameter.stable_id == selected_parameter_id
                 for parameter in self._asset.parameters
+            )
+            else ""
+        )
+        selected_attribute_cache_id = str(
+            snapshot.get("selected_attribute_cache_id", "")
+        )
+        emitter = self._asset.emitters[self._emitter_index]
+        self._selected_attribute_cache_id = (
+            selected_attribute_cache_id
+            if any(
+                item.stable_id == selected_attribute_cache_id
+                and not item.stable_id.startswith("builtin.")
+                for item in emitter.attributes
             )
             else ""
         )
@@ -2175,6 +2501,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._selected_node_uid = node_uid
         if node_uid:
             self._selected_parameter_id = ""
+            self._selected_attribute_cache_id = ""
             self._selected_event_type_id = ""
             self._selected_event_route_id = ""
         if self._model is not None and node_uid:
@@ -2183,12 +2510,19 @@ class ParticleGraphEditorPanel(EditorPanel):
                 self._select_stage(stage)
 
     def _on_canvas_drop(self, payload_type, payload, x: float, y: float) -> None:
-        if str(payload_type) != _PARAMETER_DRAG_PAYLOAD or not isinstance(payload, str):
+        payload_type = str(payload_type)
+        if payload_type not in {
+            _PARAMETER_DRAG_PAYLOAD,
+            _ATTRIBUTE_CACHE_DRAG_PAYLOAD,
+        } or not isinstance(payload, str):
             return
         try:
-            self.add_authoring_parameter_node(payload, float(x), float(y))
+            if payload_type == _PARAMETER_DRAG_PAYLOAD:
+                self.add_authoring_parameter_node(payload, float(x), float(y))
+            else:
+                self.add_authoring_attribute_cache_node(payload, float(x), float(y))
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
-            Debug.log_warning(f"Particle parameter drop rejected: {exc}")
+            Debug.log_warning(f"Particle workspace drop rejected: {exc}")
 
     def _on_node_creation_requested(self, request: dict) -> None:
         if self._model is None:
@@ -3092,6 +3426,7 @@ class ParticleGraphEditorPanel(EditorPanel):
             )
         if clicked:
             self._selected_parameter_id = parameter.stable_id
+            self._selected_attribute_cache_id = ""
             self._selected_node_uid = ""
             self._selected_event_type_id = ""
             self._selected_event_route_id = ""
@@ -3149,6 +3484,185 @@ class ParticleGraphEditorPanel(EditorPanel):
             and self._workspace_shortcut_pressed(ctx, KEY_F2)
         ):
             self._request_parameter_rename(self._selected_parameter_id)
+
+    def _active_attribute_cache(self) -> tuple[ParticleAttribute, ...]:
+        return tuple(
+            item
+            for item in self._asset.emitters[self._emitter_index].attributes
+            if not item.stable_id.startswith("builtin.")
+        )
+
+    def _next_attribute_cache_name(self, value_type: ValueType) -> str:
+        base = t(f"particle_graph_editor.type_{value_type.value}")
+        existing = {item.name for item in self._active_attribute_cache()}
+        if base not in existing:
+            return base
+        index = 2
+        while f"{base} {index}" in existing:
+            index += 1
+        return f"{base} {index}"
+
+    def _request_attribute_cache_rename(self, attribute_id: str) -> None:
+        attribute = next(
+            (
+                item
+                for item in self._active_attribute_cache()
+                if item.stable_id == str(attribute_id)
+            ),
+            None,
+        )
+        if attribute is None:
+            return
+        self._selected_attribute_cache_id = attribute.stable_id
+        self._selected_parameter_id = ""
+        self._selected_node_uid = ""
+        self._renaming_attribute_cache_id = attribute.stable_id
+        self._attribute_cache_rename_buffer = attribute.name
+        self._focus_attribute_cache_rename = True
+
+    def _commit_attribute_cache_rename(self) -> bool:
+        attribute_id = self._renaming_attribute_cache_id
+        name = self._attribute_cache_rename_buffer.strip()
+        if not attribute_id or not name:
+            return False
+        try:
+            self.update_authoring_attribute_cache(attribute_id, {"name": name})
+        except (KeyError, TypeError, ValueError) as exc:
+            Debug.log_warning(f"Particle attribute cache rename rejected: {exc}")
+            return False
+        self._renaming_attribute_cache_id = ""
+        self._attribute_cache_rename_buffer = ""
+        self._focus_attribute_cache_rename = False
+        return True
+
+    def _cancel_attribute_cache_rename(self) -> None:
+        self._renaming_attribute_cache_id = ""
+        self._attribute_cache_rename_buffer = ""
+        self._focus_attribute_cache_rename = False
+
+    def _render_attribute_cache_create_menu(self, ctx: InxGUIContext) -> None:
+        popup_id = "##particle_attribute_cache_create"
+
+        def _build_popup(popup_ctx: InxGUIContext) -> None:
+            for value_type in _ATTRIBUTE_CACHE_CREATE_TYPES:
+                label = t(f"particle_graph_editor.type_{value_type.value}")
+                if popup_ctx.menu_item(label):
+                    self.add_authoring_attribute_cache(
+                        self._next_attribute_cache_name(value_type), value_type.value
+                    )
+                    popup_ctx.close_current_popup()
+
+        render_workspace_add_header(
+            ctx,
+            t("particle_graph_editor.attribute_cache"),
+            "##particle_attribute_cache_add",
+            popup_id=popup_id,
+            build_popup=_build_popup,
+        )
+
+    def _render_attribute_cache_entry(
+        self, ctx: InxGUIContext, attribute: ParticleAttribute
+    ) -> str:
+        selected = attribute.stable_id == self._selected_attribute_cache_id
+        clicked, rect = begin_workspace_entry(
+            ctx, f"particle_attribute_cache_{attribute.stable_id}", selected
+        )
+        kind = attribute.value_type.value_type
+        type_label = t(f"particle_graph_editor.type_{kind.value}")
+        renaming = attribute.stable_id == self._renaming_attribute_cache_id
+        if renaming:
+            paint_workspace_entry(
+                ctx,
+                rect,
+                primary="",
+                secondary="",
+                dot_color=_PARAMETER_TYPE_COLORS[kind],
+                selected=selected,
+            )
+            cursor_x = ctx.get_cursor_pos_x()
+            cursor_y = ctx.get_cursor_pos_y()
+            ctx.set_cursor_pos_x(rect[0] - ctx.get_window_pos_x() + 18.0)
+            ctx.set_cursor_pos_y(rect[1] - ctx.get_window_pos_y() + 2.0)
+            ctx.set_next_item_width(max(24.0, rect[2] - rect[0] - 26.0))
+            if self._focus_attribute_cache_rename:
+                ctx.set_keyboard_focus_here()
+                self._focus_attribute_cache_rename = False
+            self._attribute_cache_rename_buffer = ctx.input_text_with_hint(
+                f"##particle_attribute_cache_rename_{attribute.stable_id}",
+                "",
+                self._attribute_cache_rename_buffer,
+                256,
+                1 << 6,
+            )
+            cancelled = ctx.is_key_pressed(KEY_ESCAPE)
+            committed = ctx.is_item_deactivated_after_edit()
+            ctx.set_cursor_pos_x(cursor_x)
+            ctx.set_cursor_pos_y(cursor_y)
+            if cancelled:
+                self._cancel_attribute_cache_rename()
+            elif committed:
+                self._commit_attribute_cache_rename()
+        else:
+            paint_workspace_entry(
+                ctx,
+                rect,
+                primary=attribute.name,
+                secondary=type_label,
+                dot_color=_PARAMETER_TYPE_COLORS[kind],
+                selected=selected,
+            )
+        if clicked:
+            self._selected_attribute_cache_id = attribute.stable_id
+            self._selected_parameter_id = ""
+            self._selected_node_uid = ""
+            self._selected_event_type_id = ""
+            self._selected_event_route_id = ""
+            self._view.selected_nodes = []
+            self._workspace_tab_index = 2
+        if not renaming and ctx.is_item_hovered() and ctx.is_mouse_double_clicked(0):
+            self._request_attribute_cache_rename(attribute.stable_id)
+        if ctx.begin_drag_drop_source():
+            ctx.set_drag_drop_payload_str(
+                _ATTRIBUTE_CACHE_DRAG_PAYLOAD, attribute.stable_id
+            )
+            ctx.label(attribute.name)
+            ctx.end_drag_drop_source()
+        action = ""
+        if ctx.begin_popup_context_item(
+            f"##particle_attribute_cache_context_{attribute.stable_id}"
+        ):
+            if ctx.menu_item(t("particle_graph_editor.rename_parameter")):
+                action = "rename"
+            if ctx.menu_item(t("particle_graph_editor.remove_parameter")):
+                action = "remove"
+            ctx.end_popup()
+        finish_workspace_entry(ctx)
+        return action
+
+    def _render_attribute_cache_page(self, ctx: InxGUIContext) -> None:
+        self._render_attribute_cache_create_menu(ctx)
+        remove_id = ""
+        for attribute in self._active_attribute_cache():
+            action = self._render_attribute_cache_entry(ctx, attribute)
+            if action == "rename":
+                self._request_attribute_cache_rename(attribute.stable_id)
+                break
+            if action == "remove":
+                remove_id = attribute.stable_id
+                break
+        if remove_id:
+            self.remove_authoring_attribute_cache(remove_id)
+            return
+        if (
+            self._selected_attribute_cache_id
+            and self._workspace_shortcut_pressed(ctx, KEY_DELETE)
+        ):
+            self.remove_authoring_attribute_cache(self._selected_attribute_cache_id)
+        elif (
+            self._selected_attribute_cache_id
+            and self._workspace_shortcut_pressed(ctx, KEY_F2)
+        ):
+            self._request_attribute_cache_rename(self._selected_attribute_cache_id)
 
     def _render_emitter_page(self, ctx: InxGUIContext) -> None:
         render_workspace_add_header(
@@ -3223,6 +3737,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         tabs = (
             (t("particle_graph_editor.emitters"), "emitters"),
             (t("particle_graph_editor.parameters"), "parameters"),
+            (t("particle_graph_editor.attribute_cache"), "attribute_cache"),
             (t("particle_graph_editor.events"), "events"),
         )
         self._workspace_tab_index = render_compact_tab_bar(
@@ -3235,6 +3750,8 @@ class ParticleGraphEditorPanel(EditorPanel):
             self._render_emitter_page(ctx)
         elif self._workspace_tab_index == 1:
             self._render_parameter_page(ctx)
+        elif self._workspace_tab_index == 2:
+            self._render_attribute_cache_page(ctx)
         else:
             self._render_event_page(ctx)
 
@@ -3391,6 +3908,95 @@ class ParticleGraphEditorPanel(EditorPanel):
                 self.update_authoring_parameter(parameter.stable_id, changes)
             except (TypeError, ValueError) as exc:
                 Debug.log_warning(f"Particle parameter edit rejected: {exc}")
+
+    def _render_attribute_cache_properties(self, ctx: InxGUIContext) -> None:
+        attribute = next(
+            (
+                item
+                for item in self._active_attribute_cache()
+                if item.stable_id == self._selected_attribute_cache_id
+            ),
+            None,
+        )
+        if attribute is None:
+            self._selected_attribute_cache_id = ""
+            return
+        ctx.label(t("particle_graph_editor.attribute_cache_settings"))
+        ctx.separator()
+        changes = {}
+        ctx.label(t("particle_graph_editor.name"))
+        name = ctx.text_input(
+            "##particle_attribute_cache_name", attribute.name, 128
+        ).strip()
+        if name and name != attribute.name:
+            changes["name"] = name
+        type_index = _ATTRIBUTE_CACHE_CREATE_TYPES.index(
+            attribute.value_type.value_type
+        )
+        selected_type_index = ctx.combo(
+            f"{t('particle_graph_editor.parameter_type')}##particle_attribute_cache_type",
+            type_index,
+            [
+                t(f"particle_graph_editor.type_{kind.value}")
+                for kind in _ATTRIBUTE_CACHE_CREATE_TYPES
+            ],
+            -1,
+        )
+        kind = _ATTRIBUTE_CACHE_CREATE_TYPES[
+            max(0, min(selected_type_index, len(_ATTRIBUTE_CACHE_CREATE_TYPES) - 1))
+        ]
+        if kind is not attribute.value_type.value_type:
+            changes["type"] = TypeRef(kind).to_dict()
+            changes["default"] = _event_field_default(kind)
+
+        default = changes.get("default", copy.deepcopy(attribute.default))
+        label = t("particle_graph_editor.parameter_default")
+        ctx.label(label)
+        if kind is ValueType.BOOL:
+            edited_default = bool(
+                ctx.checkbox("##particle_attribute_cache_default_bool", bool(default))
+            )
+        elif kind in {ValueType.I32, ValueType.U32}:
+            method = ctx.input_uint if kind is ValueType.U32 else ctx.input_int
+            edited_default = int(
+                method("##particle_attribute_cache_default_int", int(default))
+            )
+        elif kind is ValueType.F32:
+            edited_default = float(
+                ctx.drag_float(
+                    "##particle_attribute_cache_default_float",
+                    float(default),
+                    0.05,
+                    -1.0e7,
+                    1.0e7,
+                )
+            )
+        else:
+            component_labels = (
+                tuple("XYZW"[: len(default)])
+                if len(default) <= 4
+                else tuple(str(index) for index in range(len(default)))
+            )
+            edited_default = [
+                float(
+                    ctx.drag_float(
+                        f"{label} {axis}##particle_attribute_cache_default_{axis}",
+                        float(component),
+                        0.05,
+                        -1.0e7,
+                        1.0e7,
+                    )
+                )
+                for axis, component in zip(component_labels, default)
+            ]
+        edited_default = preserve_ui_float_precision(edited_default, default)
+        if edited_default != default:
+            changes["default"] = edited_default
+        if changes:
+            try:
+                self.update_authoring_attribute_cache(attribute.stable_id, changes)
+            except (TypeError, ValueError) as exc:
+                Debug.log_warning(f"Particle attribute cache edit rejected: {exc}")
 
     def _render_event_type_properties(self, ctx: InxGUIContext) -> None:
         event_type = next(
@@ -4222,17 +4828,22 @@ class ParticleGraphEditorPanel(EditorPanel):
                 )
                 new_value = values[max(0, min(current, len(values) - 1))]
             elif value_type is ValueType.STRING and key == "attribute":
-                entries = self._model.attribute_entries()
+                entries = (
+                    self._model.attribute_cache_entries()
+                    if node.type_id == "particle.attribute.cache"
+                    else self._model.attribute_entries()
+                )
                 labels = [entry[0] for entry in entries]
                 values = [entry[1] for entry in entries]
-                current = values.index(str(value)) if str(value) in values else 0
-                current = ctx.combo(
-                    f"{label}##particle_node_{key}",
-                    current,
-                    labels,
-                    -1,
-                )
-                new_value = values[max(0, min(current, len(values) - 1))]
+                if values:
+                    current = values.index(str(value)) if str(value) in values else 0
+                    current = ctx.combo(
+                        f"{label}##particle_node_{key}",
+                        current,
+                        labels,
+                        -1,
+                    )
+                    new_value = values[max(0, min(current, len(values) - 1))]
             elif value_type is ValueType.STRING and key == "parameter":
                 entries = self._model.parameter_entries()
                 labels = [entry[0] for entry in entries]
@@ -4584,12 +5195,15 @@ class ParticleGraphEditorPanel(EditorPanel):
                         else self._render_parameter_properties(ctx)
                         if self._selected_parameter_id
                         and self._workspace_tab_index == 1
+                        else self._render_attribute_cache_properties(ctx)
+                        if self._selected_attribute_cache_id
+                        and self._workspace_tab_index == 2
                         else self._render_event_type_properties(ctx)
                         if self._selected_event_type_id
-                        and self._workspace_tab_index == 2
+                        and self._workspace_tab_index == 3
                         else self._render_event_route_properties(ctx)
                         if self._selected_event_route_id
-                        and self._workspace_tab_index == 2
+                        and self._workspace_tab_index == 3
                         else self._render_emitter_settings(ctx)
                     ),
                 )

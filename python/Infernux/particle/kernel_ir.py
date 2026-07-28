@@ -1766,10 +1766,15 @@ class ParticleKernelLowerer:
         attribute_types,
         source,
     ) -> None:
-        stable_id, property_name, degrees_input = ATTRIBUTE_OPERATION_SPECS[
-            operation.opcode
-        ]
         parameters = operation.parameter_dict()
+        if operation.opcode == "attribute.modify_cache":
+            stable_id = str(parameters["attribute"])
+            property_name = "value"
+            degrees_input = False
+        else:
+            stable_id, property_name, degrees_input = ATTRIBUTE_OPERATION_SPECS[
+                operation.opcode
+            ]
         value = builder.operation_value(
             property_name,
             dict(operation.value_bindings),
@@ -2192,7 +2197,7 @@ class ParticleKernelLowerer:
                         source,
                     )
                 builder.store("builtin.position", position, source)
-            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS:
+            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS or operation.opcode == "attribute.modify_cache":
                 self._lower_attribute_modification(
                     builder,
                     operation,
@@ -2330,7 +2335,7 @@ class ParticleKernelLowerer:
                     source,
                     continuation_program_counters,
                 )
-            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS:
+            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS or operation.opcode == "attribute.modify_cache":
                 self._lower_attribute_modification(
                     builder,
                     operation,
@@ -2449,7 +2454,7 @@ class ParticleKernelLowerer:
                     source,
                     continuation_program_counters,
                 )
-            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS:
+            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS or operation.opcode == "attribute.modify_cache":
                 self._lower_attribute_modification(
                     builder,
                     operation,

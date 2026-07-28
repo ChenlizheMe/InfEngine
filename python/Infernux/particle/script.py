@@ -27,9 +27,11 @@ from .asset import (
     ParticleEventRoute,
     ParticleEventType,
     ParticleGraphAsset,
+    ParticleAttribute,
     ParticleParameter,
     ScalarRange,
     default_stage_graph,
+    standard_particle_attributes,
 )
 from .data_interface import SdfVolume, VectorField
 from .hir import ParticleGraphCompiler
@@ -59,6 +61,16 @@ class Parameter:
     exposed: bool = True
     category: str = ""
     tooltip: str = ""
+
+
+@dataclass(frozen=True)
+class AttributeCache:
+    """One emitter-local, persistent per-particle value."""
+
+    stable_id: str
+    name: str
+    value_type: str
+    default: Any
 
 
 @dataclass(frozen=True)
@@ -101,6 +113,8 @@ class _EventParseContext:
     event_routes: dict[str, ParticleEventRoute]
     parameters_by_id: dict[str, ParticleParameter]
     parameter_id_by_name: dict[str, str]
+    attributes_by_id: dict[str, ParticleAttribute]
+    attribute_id_by_name: dict[str, str]
 
 
 class _ParticleStageContext:
@@ -131,7 +145,7 @@ class UpdateContext(_ResumableParticleStageContext):
     pass
 
 
-class RenderingContext(_ParticleStageContext):
+class RenderingContext(_ResumableParticleStageContext):
     pass
 
 
@@ -150,6 +164,11 @@ class ParticleStream:
     ribbon_break: bool
     collision_hit: bool
     collision_normal: tuple[float, float, float]
+
+    def get_attribute(self, name_or_stable_id: str): ...
+    def set_attribute(self, name_or_stable_id: str, value) -> None: ...
+    def add_attribute(self, name_or_stable_id: str, value) -> None: ...
+    def multiply_attribute(self, name_or_stable_id: str, value) -> None: ...
 
     def set_position(self, value) -> None: ...
     def add_position(self, value) -> None: ...
@@ -389,6 +408,8 @@ class ParticleScriptCompiler:
                     event_route_map,
                     parameter_map,
                     parameter_id_by_name,
+                    {},
+                    {},
                 ),
             )
             for node, emitter_id in zip(emitter_nodes, emitter_ids)
@@ -569,6 +590,16 @@ class ParticleScriptCompiler:
         if settings_node is None:
             raise self._error(source_name, node, f"emitter {node.name} requires settings")
         settings = self._constructor(settings_node, "EmitterSettings")
+        attribute_cache = self._parse_attribute_cache(node, source_name)
+        attribute_context = _EventParseContext(
+            event_context.emitter_id,
+            event_context.event_types,
+            event_context.event_routes,
+            event_context.parameters_by_id,
+            event_context.parameter_id_by_name,
+            {value.stable_id: value for value in attribute_cache},
+            {value.name: value.stable_id for value in attribute_cache},
+        )
         data_interfaces_node = self._assignment(node, "data_interfaces")
         data_interfaces = ()
         if data_interfaces_node is not None:
@@ -615,7 +646,7 @@ class ParticleScriptCompiler:
                 stage,
                 methods[stage],
                 source_name,
-                event_context,
+                attribute_context,
             )
             for stage in ("init", "update", "rendering")
         }
@@ -625,7 +656,7 @@ class ParticleScriptCompiler:
                     stage,
                     methods[stage],
                     source_name,
-                    event_context,
+                    attribute_context,
                 )
                 if stage in collision_methods
                 else None
@@ -642,6 +673,7 @@ class ParticleScriptCompiler:
             enabled=enabled,
             play_on_start=play_on_start,
             settings=settings,
+            attributes=(*standard_particle_attributes(), *attribute_cache),
             data_interfaces=data_interfaces,
             init=stages["init"],
             update=stages["update"],
@@ -650,6 +682,49 @@ class ParticleScriptCompiler:
             collision_exit=collision_stages["collision_exit"],
             rendering=stages["rendering"],
         )
+
+    def _parse_attribute_cache(
+        self, emitter: ast.ClassDef, source_name: str
+    ) -> tuple[ParticleAttribute, ...]:
+        assignment = self._assignment(emitter, "attribute_cache")
+        if assignment is None:
+            return ()
+        values = self._value(assignment)
+        if not isinstance(values, (list, tuple)) or not all(
+            isinstance(value, AttributeCache) for value in values
+        ):
+            raise self._error(
+                source_name,
+                assignment,
+                "attribute_cache must be a list or tuple of AttributeCache values",
+            )
+        try:
+            result = tuple(
+                ParticleAttribute(
+                    value.stable_id,
+                    value.name,
+                    TypeRef(ValueType(value.value_type)),
+                    list(value.default)
+                    if isinstance(value.default, tuple)
+                    else value.default,
+                )
+                for value in values
+            )
+        except (TypeError, ValueError) as exc:
+            raise self._error(
+                source_name,
+                assignment,
+                f"invalid ParticleScript attribute cache: {exc}",
+            ) from exc
+        if len({value.stable_id for value in result}) != len(result):
+            raise self._error(
+                source_name, assignment, "attribute cache stable IDs must be unique"
+            )
+        if len({value.name for value in result}) != len(result):
+            raise self._error(
+                source_name, assignment, "attribute cache names must be unique"
+            )
+        return result
 
     def _parse_stage(
         self,
@@ -736,6 +811,66 @@ class ParticleScriptCompiler:
                 return uid, index
             if target_name != particle_name:
                 raise self._error(source_name, call, "particle operations must target the stage particle context")
+            if call.func.attr in {
+                "set_attribute",
+                "add_attribute",
+                "multiply_attribute",
+            }:
+                if len(call.args) != 2 or call.keywords:
+                    raise self._error(
+                        source_name,
+                        call,
+                        f"{call.func.attr} requires an attribute name and one value",
+                    )
+                attribute_id = self._resolve_attribute_cache_reference(
+                    call.args[0], source_name, event_context
+                )
+                value = call.args[1]
+                value_source = None
+                properties = {
+                    "attribute": attribute_id,
+                    "composition": call.func.attr.removesuffix("_attribute"),
+                }
+                if self._is_particle_expression(value, context_name, particle_name):
+                    value_source, expression_index = self._parse_expression(
+                        value,
+                        stage=stage,
+                        context_name=context_name,
+                        particle_name=particle_name,
+                        source_name=source_name,
+                        expression_index=expression_index,
+                        nodes=nodes,
+                        links=links,
+                        event_context=event_context,
+                        source_locations=source_locations,
+                    )
+                else:
+                    properties["value"] = self._value(value)
+                uid = f"{stage}.{index}.{call.func.attr}"
+                self._append_source_node(
+                    nodes,
+                    source_locations,
+                    GraphNodeRecord(
+                        uid,
+                        "particle.attribute.cache",
+                        properties=properties,
+                    ),
+                    source_name,
+                    call,
+                )
+                if value_source is not None:
+                    links.append(
+                        GraphLinkRecord(
+                            f"{stage}.value.{index}",
+                            value_source[0],
+                            value_source[1],
+                            uid,
+                            "value",
+                            PortKind.VALUE,
+                        )
+                    )
+                operation_index += 1
+                return uid, index
             if call.func.attr == "emit_event":
                 event_node, event_links, expression_index = self._parse_event_output_call(
                     call,
@@ -1086,7 +1221,7 @@ class ParticleScriptCompiler:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == context_name
+            and node.func.value.id in {context_name, particle_name}
         )
 
     @staticmethod
@@ -1432,6 +1567,32 @@ class ParticleScriptCompiler:
             )
             return (uid, "value"), expression_index + 1
 
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == particle_name
+            and node.func.attr == "get_attribute"
+        ):
+            if len(node.args) != 1 or node.keywords:
+                raise self._error(
+                    source_name,
+                    node,
+                    "get_attribute requires exactly one attribute name or stable ID",
+                )
+            attribute_id = self._resolve_attribute_cache_reference(
+                node.args[0], source_name, event_context
+            )
+            uid = f"{stage}.expr.{expression_index}.attribute_cache"
+            append_source(
+                GraphNodeRecord(
+                    uid,
+                    "particle.attribute.get",
+                    properties={"attribute": attribute_id},
+                )
+            )
+            return (uid, "value"), expression_index + 1
+
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -1715,6 +1876,30 @@ class ParticleScriptCompiler:
         )
         return (uid, "value"), expression_index + 1
 
+    def _resolve_attribute_cache_reference(
+        self,
+        node: ast.AST,
+        source_name: str,
+        context: _EventParseContext,
+    ) -> str:
+        lookup = self._literal(node)
+        if type(lookup) is not str or not lookup:
+            raise self._error(
+                source_name,
+                node,
+                "attribute cache name or stable ID must be a non-empty string",
+            )
+        stable_id = lookup
+        if stable_id not in context.attributes_by_id:
+            stable_id = context.attribute_id_by_name.get(lookup, "")
+        if not stable_id:
+            raise self._error(
+                source_name,
+                node,
+                f"unknown particle attribute cache {lookup!r}",
+            )
+        return stable_id
+
     def _constructor(self, node: ast.AST, expected_name: str):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != expected_name:
             raise ParticleScriptError(f"expected {expected_name}(...) constructor")
@@ -1744,6 +1929,7 @@ class ParticleScriptCompiler:
             "Curve": ("keys", "pre_wrap", "post_wrap"),
             "GradientKey": ("time", "color"),
             "Gradient": ("keys", "mode"),
+            "AttributeCache": ("stable_id", "name", "value_type", "default"),
             "EventField": ("stable_id", "name", "value_type", "default", "space"),
             "Parameter": (
                 "stable_id",
@@ -1786,6 +1972,7 @@ class ParticleScriptCompiler:
             "Curve": Curve,
             "GradientKey": GradientKey,
             "Gradient": Gradient,
+            "AttributeCache": AttributeCache,
             "EventField": EventField,
             "Parameter": Parameter,
             "EventType": EventType,
@@ -1815,6 +2002,7 @@ class ParticleScriptCompiler:
             "Curve",
             "GradientKey",
             "Gradient",
+            "AttributeCache",
             "EventField",
             "Parameter",
             "EventType",
@@ -1908,6 +2096,7 @@ class ParticleScriptCompiler:
                     "enabled",
                     "play_on_start",
                     "settings",
+                    "attribute_cache",
                     "data_interfaces",
                 )
             ):
@@ -1939,6 +2128,7 @@ class ParticleScriptCompiler:
 
 __all__ = [
     "AssetReference",
+    "AttributeCache",
     "Curve",
     "CurveKey",
     "EventField",

@@ -714,7 +714,7 @@ class ParticleEmitterAsset:
                 if attribute.stable_id.startswith("builtin.")
                 and attribute.default != standard_defaults[attribute.stable_id]
             },
-            "custom_attributes": [
+            "attribute_cache": [
                 attribute.to_dict()
                 for attribute in self.attributes
                 if not attribute.stable_id.startswith("builtin.")
@@ -753,7 +753,7 @@ class ParticleEmitterAsset:
                 "play_on_start",
                 "settings",
                 "attribute_defaults",
-                "custom_attributes",
+                "attribute_cache",
                 "data_interfaces",
                 "stages",
             },
@@ -773,11 +773,11 @@ class ParticleEmitterAsset:
         )
         if (
             type(value["attribute_defaults"]) is not dict
-            or type(value["custom_attributes"]) is not list
+            or type(value["attribute_cache"]) is not list
             or type(value["data_interfaces"]) is not list
         ):
             raise ParticleGraphSchemaError(
-                f"{location}.attribute_defaults must be an object; custom_attributes and data_interfaces must be arrays"
+                f"{location}.attribute_defaults must be an object; attribute_cache and data_interfaces must be arrays"
             )
         standards = standard_particle_attributes()
         standard_by_id = {attribute.stable_id: attribute for attribute in standards}
@@ -805,9 +805,9 @@ class ParticleEmitterAsset:
                 *builtin_attributes,
                 *(
                     ParticleAttribute.from_dict(
-                        item, f"{location}.custom_attributes[{index}]"
+                        item, f"{location}.attribute_cache[{index}]"
                     )
-                    for index, item in enumerate(value["custom_attributes"])
+                    for index, item in enumerate(value["attribute_cache"])
                 ),
             ),
             data_interfaces=tuple(

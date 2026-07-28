@@ -65,11 +65,10 @@ class PortDef:
             raise ValueError("promoted ports require a shared type variable")
         if self.type_property and (
             self.kind is not PortKind.VALUE
-            or self.direction is not PortDirection.OUTPUT
             or self.value_type is not None
         ):
             raise ValueError(
-                "property-typed ports must be value outputs without a concrete type"
+                "property-typed ports must be value ports without a concrete type"
             )
 
 

@@ -43,6 +43,7 @@ ATTRIBUTE_NODE_NAMES = MappingProxyType(
         "particle.attribute.ribbon_break": "Ribbon Break",
         "particle.attribute.rotation": "Rotation",
         "particle.attribute.orientation": "Orientation",
+        "particle.attribute.cache": "Attribute Cache",
     }
 )
 
@@ -319,6 +320,35 @@ def _get_attribute() -> NodeDef:
     )
 
 
+def _attribute_cache_operation() -> NodeDef:
+    return NodeDef(
+        "particle.attribute.cache",
+        "Set Attribute Cache",
+        (
+            _exec("in", PortDirection.INPUT),
+            _exec("out", PortDirection.OUTPUT),
+            PortDef(
+                "value",
+                PortDirection.INPUT,
+                type_variable="AttributeType",
+                type_property="attribute",
+                required=False,
+                default=0.0,
+            ),
+        ),
+        (
+            PropertyDef("attribute", TypeRef(ValueType.STRING), ""),
+            PropertyDef(
+                "composition",
+                TypeRef(ValueType.STRING),
+                "set",
+                ATTRIBUTE_COMPOSITION_CHOICES,
+            ),
+        ),
+        {"particle_hir": "attribute.modify_cache"},
+    )
+
+
 def _get_parameter() -> NodeDef:
     return NodeDef(
         "particle.parameter.get",
@@ -484,6 +514,7 @@ PARTICLE_NODE_DEFINITIONS = (
         + (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "control.join_all"},
     ),
+    _attribute_cache_operation(),
     _attribute_operation(
         "particle.attribute.position",
         "Position",

@@ -1098,6 +1098,16 @@ class ParticleGraphCompiler:
             attribute.stable_id: attribute
             for attribute in particle_attribute_catalog(emitter)
         }
+        for stage in all_lifecycles:
+            for operation in stage.flow.iter_operations():
+                if operation.opcode != "attribute.modify_cache":
+                    continue
+                stable_id = str(operation.parameter_dict().get("attribute", ""))
+                if stable_id.startswith("builtin.") or stable_id not in catalog:
+                    raise ParticleCompileError(
+                        "Attribute Cache nodes must reference a declared non-builtin "
+                        f"cache field, got {stable_id!r}"
+                    )
         attributes = list(emitter.attributes)
         allocated = {attribute.stable_id for attribute in attributes}
 
@@ -1113,6 +1123,9 @@ class ParticleGraphCompiler:
             allocated.add(stable_id)
 
         for stage_hir in all_lifecycles:
+            for operation in stage_hir.flow.iter_operations():
+                if operation.opcode == "attribute.modify_cache":
+                    allocate(str(operation.parameter_dict()["attribute"]))
             for instruction in stage_hir.expressions.instructions:
                 if instruction.opcode == "load_attribute":
                     allocate(str(instruction.immediate_dict()["attribute"]))
@@ -1601,7 +1614,7 @@ class ParticleGraphCompiler:
         expression_reads = self._expression_attribute_reads(expressions)
         for index, left_uid in enumerate(operation_uids):
             left = operation_by_uid[left_uid]
-            left_writes = self._operation_writes(left.opcode)
+            left_writes = self._operation_writes(left)
             left_reads = self._operation_reads(left, expression_reads)
             if not left_writes and not left_reads:
                 continue
@@ -1623,7 +1636,7 @@ class ParticleGraphCompiler:
                     for source_uid, expected in left_conditions.items()
                 ):
                     continue
-                right_writes = self._operation_writes(right.opcode)
+                right_writes = self._operation_writes(right)
                 right_reads = self._operation_reads(right, expression_reads)
                 conflicts = (
                     (left_writes & right_writes)
@@ -1883,7 +1896,8 @@ class ParticleGraphCompiler:
         return tuple(lanes), tuple(joins), edge_lanes, block_lanes
 
     @staticmethod
-    def _operation_writes(opcode: str) -> frozenset[str]:
+    def _operation_writes(operation: ParticleOperation) -> frozenset[str]:
+        opcode = operation.opcode
         writes = {
             "emitter.sample_shape": {"builtin.position"},
             "collision.plane": {
@@ -1913,6 +1927,8 @@ class ParticleGraphCompiler:
         }
         if opcode in ATTRIBUTE_OPERATION_SPECS:
             return frozenset({ATTRIBUTE_OPERATION_SPECS[opcode][0]})
+        if opcode == "attribute.modify_cache":
+            return frozenset({str(operation.parameter_dict()["attribute"])})
         return frozenset(writes.get(opcode, ()))
 
     @staticmethod
@@ -1945,6 +1961,11 @@ class ParticleGraphCompiler:
             and operation.parameter_dict().get("composition", "set") != "set"
         ):
             result.add(ATTRIBUTE_OPERATION_SPECS[operation.opcode][0])
+        if (
+            operation.opcode == "attribute.modify_cache"
+            and operation.parameter_dict().get("composition", "set") != "set"
+        ):
+            result.add(str(operation.parameter_dict()["attribute"]))
         for _property_id, value_id in operation.value_bindings:
             result.update(expression_reads.get(value_id, ()))
         for predicate in operation.execution_predicates:

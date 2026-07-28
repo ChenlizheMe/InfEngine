@@ -22,6 +22,7 @@ from Infernux.particle.asset import (
     ParticleEventType,
     ParticleGraphAsset,
     ParticleParameter,
+    ParticleAttribute,
 )
 from Infernux.particle.nodes import (
     particle_event_output_type_id,
@@ -80,6 +81,17 @@ def test_particle_update_palette_exposes_explicit_delta_time_value():
     }
 
 
+def test_particle_rendering_palette_exposes_independent_wait_and_until_nodes():
+    document = ParticleGraphAsset().emitters[0].rendering
+    model = _stage_model(document)
+    type_ids = {definition.type_id for definition in model.registered_types()}
+
+    assert "particle.control.wait_frames" in type_ids
+    assert "particle.control.wait_seconds" in type_ids
+    assert "particle.control.until_frames" in type_ids
+    assert "particle.control.until_seconds" in type_ids
+
+
 def test_particle_wait_nodes_are_exposed_after_gpu_resume_is_available():
     model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
     registered = model.registered_types()
@@ -101,7 +113,7 @@ def test_particle_wait_nodes_are_exposed_after_gpu_resume_is_available():
     model.set_authoring_stage("rendering")
     model.prepare_node_creation("rendering")
     assert model.add_node("particle.control.wait_seconds", 240.0, 20.0) is not None
-    assert model.authoring_stage != "rendering"
+    assert model.authoring_stage == "rendering"
 
 
 def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage():
@@ -134,6 +146,35 @@ def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage
     model.prepare_node_creation("update")
     position = model.add_node("particle.attribute.get", 200.0, 230.0)
     assert position.uid.startswith("update::")
+
+
+def test_attribute_cache_node_uses_declared_field_type_and_default():
+    cache = ParticleAttribute(
+        "cache.wind",
+        "wind",
+        TypeRef(ValueType.VEC3),
+        [1.0, 2.0, 3.0],
+    )
+    emitter = ParticleEmitterAsset(
+        attributes=(*ParticleEmitterAsset().attributes, cache)
+    )
+    model = ParticleEmitterGraphAuthoringModel(emitter)
+    model.set_authoring_stage("update")
+    model.prepare_node_creation("update")
+
+    node = model.add_node("particle.attribute.cache", 240.0, 250.0)
+    definition = model.get_node_type(node)
+
+    assert node.data["attribute"] == cache.stable_id
+    assert node.data["value"] == cache.default
+    value_pin = next(pin for pin in definition.input_pins() if pin.id == "value")
+    assert value_pin.data_type == cache.value_type.value_type.value
+    assert model.stage_for_uid(node.uid) == "update"
+
+    empty = ParticleEmitterGraphAuthoringModel(ParticleEmitterAsset())
+    enabled, reason = empty.node_creation_state("particle.attribute.cache")
+    assert enabled is False
+    assert "Attribute Cache" in reason
 
 
 def test_particle_attribute_node_title_tracks_composition_mode():
@@ -463,6 +504,65 @@ def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
         and node.data["parameter"] == parameter["stable_id"]
     )
     assert panel._model.get_node_type(canvas_node).label == "Wind"
+
+
+def test_particle_attribute_cache_api_is_emitter_local_and_removes_references():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    attribute = panel.add_authoring_attribute_cache(
+        "Wind Memory", "vec3", [0.0, 1.0, 0.0]
+    )
+    get_node = panel.add_authoring_attribute_cache_node(
+        attribute["stable_id"], 320.0, 230.0, stage="update"
+    )
+    write_node = panel.add_authoring_node(
+        "update", "particle.attribute.cache", 560.0, 230.0
+    )
+    panel.set_node_property(
+        write_node["uid"], "attribute", attribute["stable_id"]
+    )
+    panel.set_node_property(write_node["uid"], "value", [2.0, 3.0, 4.0])
+
+    snapshot = panel.authoring_snapshot()
+    assert snapshot["emitters"][0]["attribute_cache"] == [attribute]
+    assert get_node["properties"]["attribute"] == attribute["stable_id"]
+    assert panel._model.find_node(write_node["uid"]).data["value"] == [
+        2.0,
+        3.0,
+        4.0,
+    ]
+
+    panel.remove_authoring_attribute_cache(attribute["stable_id"])
+    assert panel.authoring_snapshot()["emitters"][0]["attribute_cache"] == []
+    assert not any(
+        node.properties.get("attribute") == attribute["stable_id"]
+        for node in panel.asset.emitters[0].update.nodes
+    )
+
+
+def test_particle_attribute_cache_canvas_drop_creates_typed_get_node():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    attribute = panel.add_authoring_attribute_cache("Heat", "f32", 0.5)
+
+    panel._on_canvas_drop(
+        "PARTICLE_ATTRIBUTE_CACHE", attribute["stable_id"], 320.0, 230.0
+    )
+
+    node = next(
+        item
+        for item in panel._model.nodes
+        if item.type_id == "particle.attribute.get"
+        and item.data["attribute"] == attribute["stable_id"]
+    )
+    value_pin = next(
+        pin for pin in panel._model.get_node_type(node).output_pins() if pin.id == "value"
+    )
+    assert value_pin.data_type == "f32"
 
 
 def test_particle_graph_editor_authors_texture2d_parameter_node():
