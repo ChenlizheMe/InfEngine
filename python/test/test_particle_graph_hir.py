@@ -2465,6 +2465,95 @@ class Gravity(ParticleScript):
     )
 
 
+def test_particle_script_if_else_expands_continuations_into_mutually_exclusive_lanes():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class ConditionalMotion(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+
+        def update(self, ctx, particles):
+            if particles.age < 1.0:
+                particles.add_velocity((0.0, 1.0, 0.0))
+                ctx.wait_frames(2)
+            else:
+                particles.multiply_size(0.5)
+            particles.add_color((0.1, 0.2, 0.3, 0.0))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="ConditionalMotion.particle.py")
+    update = asset.emitters[0].update
+
+    assert [node.type_id for node in update.nodes[1:]] == [
+        "particle.attribute.get",
+        "common.constant.f32",
+        "common.compare.less_than",
+        "particle.control.if",
+        "particle.attribute.velocity",
+        "particle.control.wait_frames",
+        "particle.attribute.color",
+        "particle.attribute.size",
+        "particle.attribute.color",
+    ]
+    assert sum(node.type_id == "particle.attribute.color" for node in update.nodes) == 2
+
+    emitter = compiler.compile(
+        source, source_name="ConditionalMotion.particle.py"
+    ).emitters[0]
+    operations = tuple(emitter.update.flow.iter_operations())
+    colors = [
+        operation
+        for operation in operations
+        if operation.opcode == "attribute.modify_color"
+    ]
+    assert len(colors) == 2
+    assert {color.execution_predicates[-1].expected for color in colors} == {
+        False,
+        True,
+    }
+    assert {color.execution_predicates[-1].source_node_uid for color in colors} == {
+        "update.0.if"
+    }
+    assert emitter.update.flow.suspensions[0].resume_node_uid == "update.3.add_color"
+
+
+def test_particle_script_rejects_imperative_loops_in_stage_control_flow():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class InvalidLoop(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            while particles.age < 1.0:
+                particles.add_size(0.1)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    with pytest.raises(
+        ParticleScriptError,
+        match="stage bodies only allow particle operation calls and if/else",
+    ):
+        ParticleScriptCompiler().parse(
+            source,
+            source_name="InvalidLoop.particle.py",
+        )
+
+
 def test_particle_script_rejects_wait_and_until_in_rendering():
     source = '''\
 from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings

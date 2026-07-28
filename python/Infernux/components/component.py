@@ -342,8 +342,8 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                     # Non-CDS field: Python dict.
                     inst_id = id(self)
                     with descriptor._lock:
-                        descriptor._values[inst_id] = default_value
                         descriptor._weak_refs[inst_id] = weakref.ref(self, descriptor._make_ref_callback(inst_id))
+                        descriptor._values[inst_id] = default_value
             elif hasattr(descriptor, '_is_cpp_property'):
                 # Skip ALL CppProperty descriptors — their values come from C++.
                 continue

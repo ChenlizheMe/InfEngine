@@ -664,15 +664,12 @@ class ParticleScriptCompiler:
         root = default_stage_graph(stage)
         nodes = [root.nodes[0]]
         links = []
-        previous_uid = root.nodes[0].uid
         operation_index = 0
         expression_index = 0
-        for statement in method.body:
-            if isinstance(statement, ast.Pass):
-                continue
-            call = statement.value if isinstance(statement, ast.Expr) else None
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
-                raise self._error(source_name, statement, "stage bodies only allow particle operation calls")
+
+        def append_operation(call: ast.Call) -> tuple[str, int]:
+            nonlocal operation_index, expression_index
+            index = operation_index
             target_name = (
                 call.func.value.id
                 if isinstance(call.func.value, ast.Name)
@@ -712,12 +709,12 @@ class ParticleScriptCompiler:
                     )
                 else:
                     properties[positional_property] = self._value(argument)
-                uid = f"{stage}.{operation_index}.{call.func.attr}"
+                uid = f"{stage}.{index}.{call.func.attr}"
                 nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
                 if value_source is not None:
                     links.append(
                         GraphLinkRecord(
-                            f"{stage}.value.{operation_index}",
+                            f"{stage}.value.{index}",
                             value_source[0],
                             value_source[1],
                             uid,
@@ -725,26 +722,15 @@ class ParticleScriptCompiler:
                             PortKind.VALUE,
                         )
                     )
-                links.append(
-                    GraphLinkRecord(
-                        f"{stage}.link.{operation_index}",
-                        previous_uid,
-                        "out",
-                        uid,
-                        "in",
-                        PortKind.EXEC,
-                    )
-                )
-                previous_uid = uid
                 operation_index += 1
-                continue
+                return uid, index
             if target_name != particle_name:
                 raise self._error(source_name, call, "particle operations must target the stage particle context")
             if call.func.attr == "emit_event":
                 event_node, event_links, expression_index = self._parse_event_output_call(
                     call,
                     stage=stage,
-                    operation_index=operation_index,
+                    operation_index=index,
                     context_name=context_name,
                     particle_name=particle_name,
                     source_name=source_name,
@@ -755,20 +741,8 @@ class ParticleScriptCompiler:
                 )
                 nodes.append(event_node)
                 links.extend(event_links)
-                uid = event_node.uid
-                links.append(
-                    GraphLinkRecord(
-                        f"{stage}.link.{operation_index}",
-                        previous_uid,
-                        "out",
-                        uid,
-                        "in",
-                        PortKind.EXEC,
-                    )
-                )
-                previous_uid = uid
                 operation_index += 1
-                continue
+                return event_node.uid, index
             operation = self._OPERATIONS[operation_stage].get(call.func.attr)
             if operation is None:
                 raise self._error(source_name, call, f"unsupported {stage} operation {call.func.attr!r}")
@@ -805,13 +779,13 @@ class ParticleScriptCompiler:
                 if keyword.arg is None or keyword.arg in properties:
                     raise self._error(source_name, keyword, "invalid or duplicate particle operation argument")
                 properties[keyword.arg] = self._value(keyword.value)
-            uid = f"{stage}.{operation_index}.{call.func.attr}"
+            uid = f"{stage}.{index}.{call.func.attr}"
             nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
             if value_source is not None:
                 source_uid, source_port = value_source
                 links.append(
                     GraphLinkRecord(
-                        f"{stage}.value.{operation_index}",
+                        f"{stage}.value.{index}",
                         source_uid,
                         source_port,
                         uid,
@@ -819,18 +793,92 @@ class ParticleScriptCompiler:
                         PortKind.VALUE,
                     )
                 )
-            links.append(
-                GraphLinkRecord(
-                    f"{stage}.link.{operation_index}",
-                    previous_uid,
-                    "out",
-                    uid,
-                    "in",
-                    PortKind.EXEC,
-                )
-            )
-            previous_uid = uid
             operation_index += 1
+
+            return uid, index
+
+        def compile_statements(
+            statements: list[ast.stmt],
+            previous_uid: str,
+            previous_port: str,
+        ) -> None:
+            nonlocal operation_index, expression_index
+            for offset, statement in enumerate(statements):
+                if isinstance(statement, ast.Pass):
+                    continue
+                if isinstance(statement, ast.If):
+                    condition, expression_index = self._parse_expression(
+                        statement.test,
+                        stage=stage,
+                        context_name=context_name,
+                        particle_name=particle_name,
+                        source_name=source_name,
+                        expression_index=expression_index,
+                        nodes=nodes,
+                        links=links,
+                        event_context=event_context,
+                    )
+                    index = operation_index
+                    uid = f"{stage}.{index}.if"
+                    nodes.append(GraphNodeRecord(uid, "particle.control.if"))
+                    links.extend(
+                        (
+                            GraphLinkRecord(
+                                f"{stage}.link.{index}",
+                                previous_uid,
+                                previous_port,
+                                uid,
+                                "in",
+                                PortKind.EXEC,
+                            ),
+                            GraphLinkRecord(
+                                f"{stage}.value.{index}.condition",
+                                condition[0],
+                                condition[1],
+                                uid,
+                                "condition",
+                                PortKind.VALUE,
+                            ),
+                        )
+                    )
+                    operation_index += 1
+
+                    # Expand the continuation into both mutually exclusive paths.
+                    # This keeps Wait/Until resumes inside their original execution
+                    # lane instead of inventing a merge with ambiguous ownership.
+                    remainder = list(statements[offset + 1 :])
+                    compile_statements(
+                        [*statement.body, *remainder], uid, "true"
+                    )
+                    compile_statements(
+                        [*statement.orelse, *remainder], uid, "false"
+                    )
+                    return
+
+                call = statement.value if isinstance(statement, ast.Expr) else None
+                if not isinstance(call, ast.Call) or not isinstance(
+                    call.func, ast.Attribute
+                ):
+                    raise self._error(
+                        source_name,
+                        statement,
+                        "stage bodies only allow particle operation calls and if/else",
+                    )
+                uid, index = append_operation(call)
+                links.append(
+                    GraphLinkRecord(
+                        f"{stage}.link.{index}",
+                        previous_uid,
+                        previous_port,
+                        uid,
+                        "in",
+                        PortKind.EXEC,
+                    )
+                )
+                previous_uid = uid
+                previous_port = "out"
+
+        compile_statements(list(method.body), root.nodes[0].uid, "out")
         if stage == "rendering" and not any(node.type_id.startswith("particle.output.") for node in nodes):
             raise self._error(source_name, method, "rendering requires at least one output operation")
         return GraphDocument(root.domain, tuple(nodes), tuple(links))

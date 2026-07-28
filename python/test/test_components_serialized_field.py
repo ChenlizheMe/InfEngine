@@ -3,6 +3,8 @@
 Merges tests from test_component_annotation_defaults.py.
 """
 
+import weakref
+
 from Infernux.components import InxComponent
 from Infernux.components.serialized_field import (
     FieldType,
@@ -104,6 +106,28 @@ class TestSerializedFieldFactory:
         sf = list_field(element_type=FieldType.INT)
         assert isinstance(sf, SerializedFieldDescriptor)
         assert sf.metadata.field_type == FieldType.LIST
+
+    def test_stale_weakref_callback_cannot_remove_reused_instance_slot(self):
+        descriptor = SerializedFieldDescriptor(
+            FieldMetadata(name="value", field_type=FieldType.STRING, default="")
+        )
+
+        class Owner:
+            pass
+
+        stale_owner = Owner()
+        current_owner = Owner()
+        stale_ref = weakref.ref(stale_owner)
+        current_ref = weakref.ref(current_owner)
+        slot = 17
+        descriptor._weak_refs[slot] = current_ref
+        descriptor._values[slot] = "current"
+
+        with descriptor._lock:
+            descriptor._make_ref_callback(slot)(stale_ref)
+
+        assert descriptor._weak_refs[slot] is current_ref
+        assert descriptor._values[slot] == "current"
 
 
 # ══════════════════════════════════════════════════════════════════════

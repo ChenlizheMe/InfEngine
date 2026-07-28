@@ -124,6 +124,45 @@ class Gravity(ParticleScript):
     validate_gpu_particle_spirv(compiled, source)
 
 
+def test_particle_script_if_else_with_wait_compiles_to_valid_gpu_continuations():
+    source_text = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class ConditionalMotion(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+
+        def update(self, ctx, particles):
+            if particles.age < 1.0:
+                particles.add_velocity((0.0, 1.0, 0.0))
+                ctx.wait_frames(2)
+            else:
+                particles.multiply_size(0.5)
+            particles.add_color((0.1, 0.2, 0.3, 0.0))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    hir = ParticleScriptCompiler().compile(
+        source_text,
+        source_name="ConditionalMotion.particle.py",
+    )
+    kernel = ParticleKernelLowerer().lower(hir)
+    source = GpuParticleGlslLowerer().lower(kernel)
+    update = source.emitters[0].update
+
+    assert "inx_suspend_frames(" in update
+    assert "state.a_builtin_velocity =" in update
+    assert "state.a_builtin_size =" in update
+    assert update.count("state.a_builtin_color =") >= 2
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
 def _scene_collision_asset():
     update = GraphDocument(
         "particle.update",

@@ -312,7 +312,10 @@ class SerializedFieldDescriptor:
         self.metadata = metadata
         self._values: Dict[int, Any] = {}  # instance id -> value
         self._weak_refs: Dict[int, weakref.ref] = {}  # instance id -> weak ref
-        self._lock = threading.Lock()  # Thread-safe access
+        # Replacing a stale weakref can synchronously invoke its callback while
+        # this descriptor is being updated. The callback must be able to
+        # re-enter and then prove it still owns the slot before removing data.
+        self._lock = threading.RLock()
         self._set_count: int = 0  # Counter for periodic dead-ref cleanup
         # CDS backing (set by _cds_bridge.register_class; None = Python-only).
         self._cds_class_id: Optional[int] = None
@@ -323,6 +326,8 @@ class SerializedFieldDescriptor:
         """Create a weak-ref callback that auto-cleans on GC."""
         def _on_gc(_ref, _iid=inst_id, _self=self):
             with _self._lock:
+                if _self._weak_refs.get(_iid) is not _ref:
+                    return
                 _self._values.pop(_iid, None)
                 _self._weak_refs.pop(_iid, None)
         return _on_gc
@@ -424,10 +429,11 @@ class SerializedFieldDescriptor:
         # Normal set path
         with self._lock:
             old = self._values.get(inst_id, self.metadata.default)
-            self._values[inst_id] = value
             # Track instance with weak reference for cleanup
-            if inst_id not in self._weak_refs:
+            tracked = self._weak_refs.get(inst_id)
+            if tracked is None or tracked() is not instance:
                 self._weak_refs[inst_id] = weakref.ref(instance, self._make_ref_callback(inst_id))
+            self._values[inst_id] = value
 
         # Mark scene dirty via injectable callback
         if not getattr(instance, '_inf_deserializing', False):
