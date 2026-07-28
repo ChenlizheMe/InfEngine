@@ -90,9 +90,9 @@ def test_update_stage_can_rewrite_lifetime_velocity_and_flipbook_frame():
             ),
         ),
         links=(
-            GraphLinkRecord("velocity-stream", "root.update", "out", "velocity", "in", PortKind.STREAM),
-            GraphLinkRecord("lifetime-stream", "velocity", "out", "lifetime", "in", PortKind.STREAM),
-            GraphLinkRecord("flipbook-stream", "lifetime", "out", "flipbook", "in", PortKind.STREAM),
+            GraphLinkRecord("velocity-stream", "root.update", "out", "velocity", "in", PortKind.EXEC),
+            GraphLinkRecord("lifetime-stream", "velocity", "out", "lifetime", "in", PortKind.EXEC),
+            GraphLinkRecord("flipbook-stream", "lifetime", "out", "flipbook", "in", PortKind.EXEC),
         ),
     )
     emitter = _lower(
@@ -136,13 +136,13 @@ def test_rendering_stage_can_rewrite_particle_attributes_before_export():
         ),
         links=(
             GraphLinkRecord(
-                "lifetime-stream", "root.rendering", "out", "lifetime", "in", PortKind.STREAM
+                "lifetime-stream", "root.rendering", "out", "lifetime", "in", PortKind.EXEC
             ),
             GraphLinkRecord(
-                "flipbook-stream", "lifetime", "out", "flipbook", "in", PortKind.STREAM
+                "flipbook-stream", "lifetime", "out", "flipbook", "in", PortKind.EXEC
             ),
             GraphLinkRecord(
-                "output-stream", "flipbook", "out", "output", "in", PortKind.STREAM
+                "output-stream", "flipbook", "out", "output", "in", PortKind.EXEC
             ),
         ),
     )
@@ -184,7 +184,7 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
         ),
         links=(
             GraphLinkRecord(
-                "init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM
+                "init-stream", "root.init", "out", "orientation", "in", PortKind.EXEC
             ),
         ),
     )
@@ -200,7 +200,7 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
         ),
         links=(
             GraphLinkRecord(
-                "update-stream", "root.update", "out", "angular-velocity", "in", PortKind.STREAM
+                "update-stream", "root.update", "out", "angular-velocity", "in", PortKind.EXEC
             ),
         ),
     )
@@ -216,7 +216,7 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
         ),
         links=(
             GraphLinkRecord(
-                "render-stream", "root.rendering", "out", "mesh", "in", PortKind.STREAM
+                "render-stream", "root.rendering", "out", "mesh", "in", PortKind.EXEC
             ),
         ),
     )
@@ -258,9 +258,9 @@ def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contra
             GraphNodeRecord("break", "particle.attribute.set_ribbon_break", properties={"value": True}),
         ),
         links=(
-            GraphLinkRecord("a", "root.init", "out", "strip", "in", PortKind.STREAM),
-            GraphLinkRecord("b", "strip", "out", "order", "in", PortKind.STREAM),
-            GraphLinkRecord("c", "order", "out", "break", "in", PortKind.STREAM),
+            GraphLinkRecord("a", "root.init", "out", "strip", "in", PortKind.EXEC),
+            GraphLinkRecord("b", "strip", "out", "order", "in", PortKind.EXEC),
+            GraphLinkRecord("c", "order", "out", "break", "in", PortKind.EXEC),
         ),
     )
     rendering = GraphDocument(
@@ -270,7 +270,7 @@ def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contra
             GraphNodeRecord("ribbon", "particle.output.ribbon"),
         ),
         links=(
-            GraphLinkRecord("render", "root.rendering", "out", "ribbon", "in", PortKind.STREAM),
+            GraphLinkRecord("render", "root.rendering", "out", "ribbon", "in", PortKind.EXEC),
         ),
     )
     emitter = _lower(
@@ -316,7 +316,7 @@ def test_stage_expressions_read_state_after_prior_exec_writes():
         ),
         links=(
             GraphLinkRecord(
-                "exec-size", "root.init", "out", "set-size", "in", PortKind.STREAM
+                "exec-size", "root.init", "out", "set-size", "in", PortKind.EXEC
             ),
             GraphLinkRecord(
                 "exec-rotation",
@@ -324,7 +324,7 @@ def test_stage_expressions_read_state_after_prior_exec_writes():
                 "out",
                 "set-rotation",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "size-value",
@@ -384,7 +384,7 @@ def test_kernel_math_promotes_unspaced_constants_into_simulation_space():
             GraphNodeRecord("acceleration", "particle.update.acceleration"),
         ),
         links=(
-            GraphLinkRecord("stream", "root.update", "out", "acceleration", "in", PortKind.STREAM),
+            GraphLinkRecord("stream", "root.update", "out", "acceleration", "in", PortKind.EXEC),
             GraphLinkRecord("position", "position", "value", "noise", "position"),
             GraphLinkRecord("noise", "noise", "value", "multiply", "a"),
             GraphLinkRecord("scale", "scale", "value", "multiply", "b"),
@@ -421,7 +421,7 @@ def test_plane_collision_lowers_after_position_integration_with_portable_state_w
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -464,7 +464,7 @@ def test_sphere_collision_lowers_after_position_integration_with_typed_operands(
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -624,7 +624,7 @@ def test_vector_field_graph_lowers_to_typed_data_interface_access():
                 "out",
                 "acceleration",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord("position", "position", "value", "sample", "position"),
             GraphLinkRecord("value", "sample", "value", "acceleration", "value"),
@@ -727,7 +727,7 @@ def test_expression_source_ids_do_not_change_kernel_semantics():
                     "out",
                     f"{prefix}.acceleration",
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 ),
                 GraphLinkRecord(
                     f"{prefix}.value",
@@ -863,7 +863,7 @@ def test_random_expression_preserves_authored_node_seed_in_kernel_ir():
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.init", "out", "lifetime", "in", PortKind.STREAM
+                "stream", "root.init", "out", "lifetime", "in", PortKind.EXEC
             ),
             GraphLinkRecord("value", "random", "value", "lifetime", "value"),
             GraphLinkRecord("seed", "seed", "value", "random", "seed"),

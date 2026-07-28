@@ -82,8 +82,8 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
                 f"Event Output: {event_type.name} -> "
                 f"{emitter_names.get(route.target_emitter_id, route.target_emitter_id)}",
                 (
-                    _stream("in", PortDirection.INPUT),
-                    _stream("out", PortDirection.OUTPUT),
+                    _exec("in", PortDirection.INPUT),
+                    _exec("out", PortDirection.OUTPUT),
                     PortDef(
                         "condition",
                         PortDirection.INPUT,
@@ -175,8 +175,8 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
     )
 
 
-def _stream(port_id: str, direction: PortDirection) -> PortDef:
-    return PortDef(port_id, direction, kind=PortKind.STREAM)
+def _exec(port_id: str, direction: PortDirection) -> PortDef:
+    return PortDef(port_id, direction, kind=PortKind.EXEC)
 
 
 def _operation(type_id: str, label: str, opcode: str, properties=()) -> NodeDef:
@@ -185,8 +185,8 @@ def _operation(type_id: str, label: str, opcode: str, properties=()) -> NodeDef:
         type_id,
         label,
         (
-            _stream("in", PortDirection.INPUT),
-            _stream("out", PortDirection.OUTPUT),
+            _exec("in", PortDirection.INPUT),
+            _exec("out", PortDirection.OUTPUT),
             *(
                 PortDef(
                     item.id,
@@ -263,44 +263,44 @@ PARTICLE_NODE_DEFINITIONS = (
     NodeDef(
         "particle.root.init",
         "Initialize",
-        (_stream("out", PortDirection.OUTPUT),),
+        (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.init"},
     ),
     NodeDef(
         "particle.root.update",
         "Update",
-        (_stream("out", PortDirection.OUTPUT),),
+        (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.update"},
     ),
     NodeDef(
         "particle.root.rendering",
         "Output",
-        (_stream("out", PortDirection.OUTPUT),),
+        (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.rendering"},
     ),
     NodeDef(
         "particle.root.collision_enter",
         "Collision Enter",
-        (_stream("out", PortDirection.OUTPUT),),
+        (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.collision_enter"},
     ),
     NodeDef(
         "particle.root.collision_stay",
         "Collision Stay",
-        (_stream("out", PortDirection.OUTPUT),),
+        (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.collision_stay"},
     ),
     NodeDef(
         "particle.root.collision_exit",
         "Collision Exit",
-        (_stream("out", PortDirection.OUTPUT),),
+        (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.collision_exit"},
     ),
     NodeDef(
         "particle.control.if",
         "If",
         (
-            _stream("in", PortDirection.INPUT),
+            _exec("in", PortDirection.INPUT),
             PortDef(
                 "condition",
                 PortDirection.INPUT,
@@ -312,13 +312,13 @@ PARTICLE_NODE_DEFINITIONS = (
             PortDef(
                 "true",
                 PortDirection.OUTPUT,
-                kind=PortKind.STREAM,
+                kind=PortKind.EXEC,
                 display_name="True",
             ),
             PortDef(
                 "false",
                 PortDirection.OUTPUT,
-                kind=PortKind.STREAM,
+                kind=PortKind.EXEC,
                 display_name="False",
             ),
         ),
@@ -328,7 +328,7 @@ PARTICLE_NODE_DEFINITIONS = (
         "particle.control.wait_frames",
         "Wait For Frames",
         (
-            _stream("in", PortDirection.INPUT),
+            _exec("in", PortDirection.INPUT),
             PortDef(
                 "frames",
                 PortDirection.INPUT,
@@ -337,7 +337,7 @@ PARTICLE_NODE_DEFINITIONS = (
                 default=1,
                 display_name="Frames",
             ),
-            _stream("out", PortDirection.OUTPUT),
+            _exec("out", PortDirection.OUTPUT),
         ),
         target_opcodes={"particle_hir": "control.wait_frames"},
     ),
@@ -345,7 +345,7 @@ PARTICLE_NODE_DEFINITIONS = (
         "particle.control.wait_seconds",
         "Wait For Seconds",
         (
-            _stream("in", PortDirection.INPUT),
+            _exec("in", PortDirection.INPUT),
             PortDef(
                 "seconds",
                 PortDirection.INPUT,
@@ -354,7 +354,7 @@ PARTICLE_NODE_DEFINITIONS = (
                 default=0.1,
                 display_name="Seconds",
             ),
-            _stream("out", PortDirection.OUTPUT),
+            _exec("out", PortDirection.OUTPUT),
         ),
         target_opcodes={"particle_hir": "control.wait_seconds"},
     ),
@@ -365,12 +365,12 @@ PARTICLE_NODE_DEFINITIONS = (
             PortDef(
                 f"in{index}",
                 PortDirection.INPUT,
-                kind=PortKind.STREAM,
+                kind=PortKind.EXEC,
                 display_name=f"In {index + 1}",
             )
             for index in range(4)
         )
-        + (_stream("out", PortDirection.OUTPUT),),
+        + (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "control.join_all"},
     ),
     _operation(
@@ -556,7 +556,7 @@ PARTICLE_NODE_DEFINITIONS = (
     NodeDef(
         "particle.output.sprite",
         "Sprite Output",
-        (_stream("in", PortDirection.INPUT),),
+        (_exec("in", PortDirection.INPUT),),
         (
             PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
@@ -574,7 +574,7 @@ PARTICLE_NODE_DEFINITIONS = (
     NodeDef(
         "particle.output.mesh",
         "Static Mesh Output",
-        (_stream("in", PortDirection.INPUT),),
+        (_exec("in", PortDirection.INPUT),),
         (
             PropertyDef("mesh", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
             PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
@@ -588,7 +588,7 @@ PARTICLE_NODE_DEFINITIONS = (
     NodeDef(
         "particle.output.ribbon",
         "Ribbon Output",
-        (_stream("in", PortDirection.INPUT),),
+        (_exec("in", PortDirection.INPUT),),
         (
             PropertyDef("material", TypeRef(ValueType.ASSET_REF), AssetReference().to_dict()),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),

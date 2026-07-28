@@ -230,16 +230,16 @@ def register_particle_tools(mcp, project_path: str) -> None:
             },
         )
 
-    @mcp.tool(name="particle_graph_connect_stream")
-    def particle_graph_connect_stream(
+    @mcp.tool(name="particle_graph_connect_exec")
+    def particle_graph_connect_exec(
         source_node_uid: str,
         target_node_uid: str,
     ) -> dict:
-        """Connect the stream output/input of two nodes in the same particle stage."""
+        """Connect the Exec output/input of two nodes in the same particle stage."""
 
         def _connect():
             panel = _require_particle_graph_panel()
-            result = panel.connect_stream(source_node_uid, target_node_uid)
+            result = panel.connect_exec(source_node_uid, target_node_uid)
             return {
                 **result,
                 "source_node_uid": str(source_node_uid),
@@ -250,7 +250,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
             }
 
         return main_thread(
-            "particle_graph_connect_stream",
+            "particle_graph_connect_exec",
             _connect,
             arguments={
                 "source_node_uid": source_node_uid,
@@ -258,13 +258,13 @@ def register_particle_tools(mcp, project_path: str) -> None:
             },
         )
 
-    @mcp.tool(name="particle_graph_disconnect_stream")
-    def particle_graph_disconnect_stream(link_uid: str) -> dict:
-        """Disconnect one stream link in the live ParticleGraph document."""
+    @mcp.tool(name="particle_graph_disconnect_exec")
+    def particle_graph_disconnect_exec(link_uid: str) -> dict:
+        """Disconnect one Exec link in the live ParticleGraph document."""
 
         def _disconnect():
             panel = _require_particle_graph_panel()
-            result = panel.disconnect_stream(link_uid)
+            result = panel.disconnect_exec(link_uid)
             return {
                 **result,
                 "editor": _portable_snapshot(
@@ -273,7 +273,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
             }
 
         return main_thread(
-            "particle_graph_disconnect_stream",
+            "particle_graph_disconnect_exec",
             _disconnect,
             arguments={"link_uid": link_uid},
         )
@@ -747,7 +747,7 @@ def register_particle_tools(mcp, project_path: str) -> None:
 
     @mcp.tool(name="particle_graph_set_rendering_output")
     def particle_graph_set_rendering_output(node_uid: str) -> dict:
-        """Connect the Rendering root stream to exactly one output node."""
+        """Connect the Rendering root Exec output to exactly one output node."""
 
         def _set():
             panel = _require_particle_graph_panel()
@@ -1316,7 +1316,7 @@ def _register_authoring_metadata() -> None:
         recovery=["Use particle_graph_inspect_editor to inspect valid canvas state."],
         next_suggested_tools=[
             "particle_graph_set_node_property",
-            "particle_graph_connect_stream",
+            "particle_graph_connect_exec",
         ],
     )
     register_tool_metadata(
@@ -1379,39 +1379,39 @@ def _register_authoring_metadata() -> None:
         ],
         side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
         recovery=["Inspect the node properties before retrying."],
-        next_suggested_tools=["particle_graph_connect_stream", "editor_save_document"],
+        next_suggested_tools=["particle_graph_connect_exec", "editor_save_document"],
     )
     register_tool_metadata(
-        "particle_graph_connect_stream",
-        summary="Connect two stream nodes in one ParticleGraph stage.",
+        "particle_graph_connect_exec",
+        summary="Connect two Exec nodes in one ParticleGraph stage.",
         category="assets/particle_graph",
-        tags=["particle", "graph", "editor", "stream"],
+        tags=["particle", "graph", "editor", "exec"],
         aliases=["connect particle nodes", "连接粒子节点"],
         preconditions=[
             "Both node UIDs must exist in the same stage.",
-            "The source must expose out and the target must expose in stream ports.",
+            "The source must expose out and the target must expose in Exec ports.",
         ],
         side_effects=["Records Undo, marks the panel dirty, and republishes the live draft."],
         recovery=["Inspect existing links and endpoint stages before retrying."],
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
-        "particle_graph_disconnect_stream",
-        summary="Disconnect one stream link through the live ParticleGraph authoring model.",
+        "particle_graph_disconnect_exec",
+        summary="Disconnect one Exec link through the live ParticleGraph authoring model.",
         category="assets/particle_graph",
-        tags=["particle", "graph", "editor", "stream", "disconnect"],
+        tags=["particle", "graph", "editor", "exec", "disconnect"],
         aliases=["disconnect particle nodes", "断开粒子节点"],
         preconditions=[
-            "The link UID must identify an existing stream link in the open ParticleGraph."
+            "The link UID must identify an existing Exec link in the open ParticleGraph."
         ],
         side_effects=[
             "Records Undo, marks the panel dirty, and republishes the live draft."
         ],
         recovery=[
-            "Inspect the current links and retry with an existing stream link UID."
+            "Inspect the current links and retry with an existing Exec link UID."
         ],
         next_suggested_tools=[
-            "particle_graph_connect_stream",
+            "particle_graph_connect_exec",
             "editor_save_document",
         ],
     )
@@ -1562,7 +1562,7 @@ def _register_authoring_metadata() -> None:
         preconditions=["The route stable ID must appear in particle_graph_inspect_editor."],
         side_effects=["Selects the source emitter and records one node-add Undo transaction."],
         recovery=["Create or inspect the event route, then retry with its stable ID."],
-        next_suggested_tools=["particle_graph_connect_stream", "editor_save_document"],
+        next_suggested_tools=["particle_graph_connect_exec", "editor_save_document"],
     )
     register_tool_metadata(
         "particle_graph_add_event_payload",
@@ -1652,7 +1652,7 @@ def _register_authoring_metadata() -> None:
     )
     register_tool_metadata(
         "particle_graph_set_rendering_output",
-        summary="Route one emitter's Rendering stream to a selected output node.",
+        summary="Route one emitter's Rendering Exec output to a selected output node.",
         category="assets/particle_graph",
         tags=["particle", "graph", "editor", "output"],
         aliases=["set particle output", "connect mesh output", "设置粒子输出"],

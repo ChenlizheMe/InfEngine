@@ -174,17 +174,31 @@ class ParticleFlowProgram:
         suspension_nodes = set()
         resume_program_counters = set()
         for suspension in self.suspensions:
+            terminal = (
+                suspension.resume_node_uid == ""
+                and suspension.resume_operation_index == -1
+            )
             if (
                 suspension.node_uid in suspension_nodes
                 or suspension.node_uid not in block_ids
-                or suspension.resume_node_uid not in block_ids
+                or (
+                    not terminal
+                    and suspension.resume_node_uid not in block_ids
+                )
+                or (
+                    suspension.resume_node_uid == ""
+                    and suspension.resume_operation_index != -1
+                )
+                or (
+                    suspension.resume_node_uid != ""
+                    and suspension.resume_operation_index < 0
+                )
             ):
                 raise ParticleCompileError("particle suspension descriptor is invalid")
             suspension_nodes.add(suspension.node_uid)
             if (
                 suspension.resume_program_counter <= 0
                 or suspension.resume_program_counter in resume_program_counters
-                or suspension.resume_operation_index < 0
             ):
                 raise ParticleCompileError("particle suspension resume target is invalid")
             resume_program_counters.add(suspension.resume_program_counter)
@@ -433,6 +447,8 @@ class ParticleGraphCompiler:
             }
 
             def flow_node(node_uid: str):
+                if not node_uid:
+                    return "terminal"
                 if node_uid == stage_hir.flow.entry_node_uid:
                     return "entry"
                 return f"op:{operation_indices[node_uid]}"
@@ -1294,7 +1310,7 @@ class ParticleGraphCompiler:
         incoming: dict[str, list[str]] = {}
         exec_links = []
         for link in document.links:
-            if link.kind is not PortKind.STREAM:
+            if link.kind is not PortKind.EXEC:
                 continue
             source = by_uid.get(link.source_node)
             target = by_uid.get(link.target_node)
@@ -1305,12 +1321,12 @@ class ParticleGraphCompiler:
             if (
                 source_port is None
                 or source_port.direction is not PortDirection.OUTPUT
-                or source_port.kind is not PortKind.STREAM
+                or source_port.kind is not PortKind.EXEC
                 or target_port is None
                 or target_port.direction is not PortDirection.INPUT
-                or target_port.kind is not PortKind.STREAM
+                or target_port.kind is not PortKind.EXEC
             ):
-                raise ParticleCompileError(f"invalid particle stream link {link.uid!r}")
+                raise ParticleCompileError(f"invalid particle Exec link {link.uid!r}")
             outgoing.setdefault(link.source_node, []).append((link.uid, link.target_node))
             incoming.setdefault(link.target_node, []).append(link.uid)
             exec_links.append(link)
@@ -1354,7 +1370,7 @@ class ParticleGraphCompiler:
                     ready.append(target)
                     ready.sort()
         if len(ordered) != len(reachable):
-            raise ParticleCompileError("particle stream graph contains a cycle")
+            raise ParticleCompileError("particle Exec graph contains a cycle")
 
         result = []
         for uid in ordered:
@@ -1432,10 +1448,17 @@ class ParticleGraphCompiler:
                     raise ParticleCompileError(
                         f"Join All node {uid!r} requires at least two execution inputs"
                     )
-                joined_predicates = tuple(
-                    predicates_by_uid[link_by_uid[link_id].source_node]
-                    for link_id in sorted(input_link_ids)
-                )
+                joined_predicates = []
+                for link_id in sorted(input_link_ids):
+                    source_uid = link_by_uid[link_id].source_node
+                    predicates = predicates_by_uid.get(source_uid)
+                    if predicates is None:
+                        raise ParticleCompileError(
+                            f"Join All node {uid!r} has an input from unreachable "
+                            f"Exec node {source_uid!r}"
+                        )
+                    joined_predicates.append(predicates)
+                joined_predicates = tuple(joined_predicates)
                 predicates = joined_predicates[0]
                 if any(value != predicates for value in joined_predicates[1:]):
                     raise ParticleCompileError(
@@ -1609,11 +1632,11 @@ class ParticleGraphCompiler:
                 for edge in reachable_links
                 if edge.source_node_uid == operation.source_node_uid
             )
-            if len(outgoing_edges) != 1:
+            if len(outgoing_edges) > 1:
                 raise ParticleCompileError(
-                    f"Wait node {operation.source_node_uid!r} requires exactly one Exec output"
+                    f"Wait node {operation.source_node_uid!r} requires at most one Exec output"
                 )
-            edge = outgoing_edges[0]
+            edge = outgoing_edges[0] if outgoing_edges else None
             parameter_name = (
                 "frames" if operation.opcode == "control.wait_frames" else "seconds"
             )
@@ -1635,8 +1658,12 @@ class ParticleGraphCompiler:
                     lane_index,
                     lanes[lane_index].stable_id,
                     resume_program_counter,
-                    edge.target_node_uid,
-                    block_operation_index[edge.target_node_uid],
+                    edge.target_node_uid if edge is not None else "",
+                    (
+                        block_operation_index[edge.target_node_uid]
+                        if edge is not None
+                        else -1
+                    ),
                     value_id,
                     literal,
                 )

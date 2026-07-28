@@ -132,7 +132,7 @@ def _two_output_rendering_graph(
                 "out",
                 "output.secondary",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
         rendering.metadata,
@@ -1022,7 +1022,7 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
                 "out",
                 "acceleration",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "position-to-sample",
@@ -1149,7 +1149,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
                 "out",
                 "collision.sdf",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )

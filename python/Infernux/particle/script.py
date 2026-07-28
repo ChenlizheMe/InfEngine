@@ -619,7 +619,7 @@ class ParticleScriptCompiler:
             raise self._error(source_name, method, "ParticleScript stage methods cannot be async")
         if len(method.args.args) != 3:
             raise self._error(source_name, method, f"{stage} requires (self, ctx, particles)")
-        stream_name = method.args.args[2].arg
+        particle_name = method.args.args[2].arg
         context_name = method.args.args[1].arg
         operation_stage = (
             "update" if stage in self._COLLISION_LIFECYCLE_METHODS else stage
@@ -636,15 +636,15 @@ class ParticleScriptCompiler:
             call = statement.value if isinstance(statement, ast.Expr) else None
             if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
                 raise self._error(source_name, statement, "stage bodies only allow particle operation calls")
-            if not isinstance(call.func.value, ast.Name) or call.func.value.id != stream_name:
-                raise self._error(source_name, call, "particle operations must target the stage particle stream")
+            if not isinstance(call.func.value, ast.Name) or call.func.value.id != particle_name:
+                raise self._error(source_name, call, "particle operations must target the stage particle context")
             if call.func.attr == "emit_event":
                 event_node, event_links, expression_index = self._parse_event_output_call(
                     call,
                     stage=stage,
                     operation_index=operation_index,
                     context_name=context_name,
-                    stream_name=stream_name,
+                    particle_name=particle_name,
                     source_name=source_name,
                     expression_index=expression_index,
                     nodes=nodes,
@@ -661,7 +661,7 @@ class ParticleScriptCompiler:
                         "out",
                         uid,
                         "in",
-                        PortKind.STREAM,
+                        PortKind.EXEC,
                     )
                 )
                 previous_uid = uid
@@ -677,12 +677,12 @@ class ParticleScriptCompiler:
                 if len(call.args) != 1:
                     raise self._error(source_name, call, "particle operation requires exactly one value")
                 argument = call.args[0]
-                if self._is_particle_expression(argument, context_name, stream_name):
+                if self._is_particle_expression(argument, context_name, particle_name):
                     value_source, expression_index = self._parse_expression(
                         argument,
                         stage=stage,
                         context_name=context_name,
-                        stream_name=stream_name,
+                        particle_name=particle_name,
                         source_name=source_name,
                         expression_index=expression_index,
                         nodes=nodes,
@@ -718,7 +718,7 @@ class ParticleScriptCompiler:
                     "out",
                     uid,
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 )
             )
             previous_uid = uid
@@ -734,7 +734,7 @@ class ParticleScriptCompiler:
         stage: str,
         operation_index: int,
         context_name: str,
-        stream_name: str,
+        particle_name: str,
         source_name: str,
         expression_index: int,
         nodes: list[GraphNodeRecord],
@@ -786,12 +786,12 @@ class ParticleScriptCompiler:
 
         condition = keywords.get("condition")
         if condition is not None:
-            if self._is_particle_expression(condition, context_name, stream_name):
+            if self._is_particle_expression(condition, context_name, particle_name):
                 source, expression_index = self._parse_expression(
                     condition,
                     stage=stage,
                     context_name=context_name,
-                    stream_name=stream_name,
+                    particle_name=particle_name,
                     source_name=source_name,
                     expression_index=expression_index,
                     nodes=nodes,
@@ -839,12 +839,12 @@ class ParticleScriptCompiler:
                         source_name, key_node, f"unknown event payload field {field_id!r}"
                     )
                 port_id = particle_event_payload_port_id(field.stable_id)
-                if self._is_particle_expression(value_node, context_name, stream_name):
+                if self._is_particle_expression(value_node, context_name, particle_name):
                     source, expression_index = self._parse_expression(
                         value_node,
                         stage=stage,
                         context_name=context_name,
-                        stream_name=stream_name,
+                        particle_name=particle_name,
                         source_name=source_name,
                         expression_index=expression_index,
                         nodes=nodes,
@@ -874,7 +874,7 @@ class ParticleScriptCompiler:
         )
 
     @staticmethod
-    def _is_particle_expression(node: ast.AST, context_name: str, stream_name: str) -> bool:
+    def _is_particle_expression(node: ast.AST, context_name: str, particle_name: str) -> bool:
         if isinstance(node, ast.BinOp) and isinstance(
             node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)
         ):
@@ -886,7 +886,7 @@ class ParticleScriptCompiler:
         if isinstance(node, ast.Compare):
             return True
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            return node.value.id == stream_name
+            return node.value.id == particle_name
         return (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -900,7 +900,7 @@ class ParticleScriptCompiler:
         *,
         stage: str,
         context_name: str,
-        stream_name: str,
+        particle_name: str,
         source_name: str,
         expression_index: int,
         nodes: list[GraphNodeRecord],
@@ -936,7 +936,7 @@ class ParticleScriptCompiler:
                 node.left,
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -947,7 +947,7 @@ class ParticleScriptCompiler:
                 node.right,
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -985,7 +985,7 @@ class ParticleScriptCompiler:
                 node.values[0],
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1002,7 +1002,7 @@ class ParticleScriptCompiler:
                     value_node,
                     stage=stage,
                     context_name=context_name,
-                    stream_name=stream_name,
+                    particle_name=particle_name,
                     source_name=source_name,
                     expression_index=expression_index,
                     nodes=nodes,
@@ -1032,7 +1032,7 @@ class ParticleScriptCompiler:
                 node.operand,
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1070,7 +1070,7 @@ class ParticleScriptCompiler:
                 node.left,
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1081,7 +1081,7 @@ class ParticleScriptCompiler:
                 node.comparators[0],
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1107,7 +1107,7 @@ class ParticleScriptCompiler:
         if (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
-            and node.value.id == stream_name
+            and node.value.id == particle_name
         ):
             if node.attr == "normalized_age":
                 uid = f"{stage}.expr.{expression_index}.normalized_age"
@@ -1242,7 +1242,7 @@ class ParticleScriptCompiler:
                 node.args[0],
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1253,7 +1253,7 @@ class ParticleScriptCompiler:
                 node.args[1],
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1302,7 +1302,7 @@ class ParticleScriptCompiler:
                 node.args[1],
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1351,7 +1351,7 @@ class ParticleScriptCompiler:
                 node.args[0],
                 stage=stage,
                 context_name=context_name,
-                stream_name=stream_name,
+                particle_name=particle_name,
                 source_name=source_name,
                 expression_index=expression_index,
                 nodes=nodes,
@@ -1392,7 +1392,7 @@ class ParticleScriptCompiler:
             node.args[1],
             stage=stage,
             context_name=context_name,
-            stream_name=stream_name,
+            particle_name=particle_name,
             source_name=source_name,
             expression_index=expression_index,
             nodes=nodes,

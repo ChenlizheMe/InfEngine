@@ -587,10 +587,10 @@ def _validate_opcode_types(
             or type(immediates["lane_stable_id"]) is not str
             or not immediates["lane_stable_id"]
             or type(immediates["resume_program_counter"]) is not int
-            or immediates["resume_program_counter"] <= 0
-            or type(immediates["resume_operation_index"]) is not int
-            or immediates["resume_operation_index"] < 0
-        ):
+                or immediates["resume_program_counter"] <= 0
+                or type(immediates["resume_operation_index"]) is not int
+                or immediates["resume_operation_index"] < -1
+            ):
             raise KernelSemanticError(f"kernel {opcode} resume descriptor is invalid")
     elif opcode == "kill_if":
         if operands != (bool_type,):

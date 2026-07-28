@@ -814,8 +814,8 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._record("Remove Particle Graph Data Interface", before)
         return {**interface.to_dict(), "changed": True}
 
-    def connect_stream(self, source_node_uid: str, target_node_uid: str) -> dict:
-        """Connect two stream endpoints through the strict graph model."""
+    def connect_exec(self, source_node_uid: str, target_node_uid: str) -> dict:
+        """Connect two Exec endpoints through the strict graph model."""
         if self._model is None:
             raise RuntimeError("Particle Graph editor has no active authoring model")
         source_uid = str(source_node_uid)
@@ -824,7 +824,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         target = self._model.find_node(target_uid)
         if source is None or target is None:
             raise KeyError(
-                f"Particle Graph stream endpoint not found: {source_uid!r} -> {target_uid!r}"
+                f"Particle Graph Exec endpoint not found: {source_uid!r} -> {target_uid!r}"
             )
         for link in self._model.links:
             if (
@@ -837,7 +837,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         validation = self._model.validate_link(source_uid, "out", target_uid, "in")
         if not validation:
             raise ValueError(
-                f"Particle Graph stream connection is invalid ({validation.code}): "
+                f"Particle Graph Exec connection is invalid ({validation.code}): "
                 f"{validation.message}"
             )
         before = self._snapshot()
@@ -853,11 +853,11 @@ class ParticleGraphEditorPanel(EditorPanel):
             self._select_stage(stage)
         self._sync_model_to_asset()
         self._mark_changed()
-        self._record("Connect Particle Graph stream", before)
+        self._record("Connect Particle Graph Exec", before)
         return {"link_uid": str(created.uid), "changed": True}
 
-    def disconnect_stream(self, link_uid: str) -> dict:
-        """Disconnect one stream link through the strict graph model."""
+    def disconnect_exec(self, link_uid: str) -> dict:
+        """Disconnect one Exec link through the strict graph model."""
         if self._model is None:
             raise RuntimeError("Particle Graph editor has no active authoring model")
         link_uid = str(link_uid)
@@ -869,16 +869,16 @@ class ParticleGraphEditorPanel(EditorPanel):
             raise KeyError(f"Particle Graph link not found: {link_uid!r}")
         if link.source_pin != "out" or link.target_pin != "in":
             raise ValueError(
-                f"Particle Graph link {link_uid!r} is not a stream connection"
+                f"Particle Graph link {link_uid!r} is not an Exec connection"
             )
         before = self._snapshot()
         if not self._model.remove_link(link_uid):
             raise RuntimeError(
-                f"Particle Graph could not disconnect stream link {link_uid!r}"
+                f"Particle Graph could not disconnect Exec link {link_uid!r}"
             )
         self._sync_model_to_asset()
         self._mark_changed()
-        self._record("Disconnect Particle Graph stream", before)
+        self._record("Disconnect Particle Graph Exec", before)
         return {
             "link_uid": link_uid,
             "source_node_uid": str(link.source_node),
@@ -1863,7 +1863,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         return event_type.to_dict()
 
     def set_rendering_output(self, node_uid: str) -> dict:
-        """Route the Rendering root stream to one output through the authoring model."""
+        """Route the Rendering root Exec output through the authoring model."""
         if self._model is None:
             raise RuntimeError("Particle Graph editor has no active authoring model")
         node = self._model.find_node(str(node_uid))

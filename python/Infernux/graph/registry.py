@@ -16,7 +16,7 @@ class PortDirection(str, Enum):
 
 class PortKind(str, Enum):
     VALUE = "value"
-    STREAM = "stream"
+    EXEC = "exec"
     EVENT = "event"
 
 
@@ -56,7 +56,7 @@ class PortDef:
         if self.kind is PortKind.VALUE and self.value_type is None and not self.type_variable:
             raise ValueError("value ports require a concrete type or type variable")
         if self.kind is not PortKind.VALUE and (self.value_type is not None or self.type_variable):
-            raise ValueError("stream and event ports cannot carry a value type")
+            raise ValueError("exec and event ports cannot carry a value type")
         if self.kind is not PortKind.VALUE and self.dimension_policy is not PortDimensionPolicy.EXACT:
             raise ValueError("only value ports may define a dimension policy")
         if self.dimension_policy is PortDimensionPolicy.FIXED and self.value_type is None:

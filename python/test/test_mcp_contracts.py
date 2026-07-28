@@ -131,6 +131,8 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "particle_graph_list_node_types",
         "particle_graph_set_node_asset",
         "particle_graph_set_rendering_output",
+        "particle_graph_connect_exec",
+        "particle_graph_disconnect_exec",
         "particle_graph_reload_editor",
         "scene_pick_request",
         "scene_pick_status",
@@ -139,6 +141,8 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "runtime_read_errors",
     } <= tools
     assert "mcp_report_blocker" not in tools
+    assert "particle_graph_connect_stream" not in tools
+    assert "particle_graph_disconnect_stream" not in tools
     assert "input_key" not in tools
     assert "editor_ui_click" not in tools
 
@@ -176,6 +180,8 @@ def test_global_validation_exposes_blocker_tools_without_script_or_scene_mutatio
     assert "scene_new" not in tools
     assert "editor_select" not in tools
     assert "editor_play" not in tools
+    assert "particle_graph_connect_exec" not in tools
+    assert "particle_graph_disconnect_exec" not in tools
 
 
 def test_global_validation_discovery_only_describes_registered_tools(tmp_path):

@@ -69,7 +69,7 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     authored = next(node for node in restored.nodes if node.uid == velocity.uid)
     assert authored.position == (240.0, 20.0)
     assert authored.properties["value"] == [1.0, 2.0, 3.0]
-    assert all(link.kind.value == "stream" for link in restored.links)
+    assert all(link.kind.value == "exec" for link in restored.links)
 
 
 def test_particle_wait_nodes_are_exposed_after_gpu_resume_is_available():
@@ -962,7 +962,7 @@ def test_particle_graph_editor_rejects_wrong_data_interface_kind():
         )
 
 
-def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
+def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
@@ -974,14 +974,14 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
     changed = panel.set_node_property(
         initial["uid"], "degrees", [15.0, 30.0, 45.0]
     )
-    initial_link = panel.connect_stream("init::root.init", initial["uid"])
+    initial_link = panel.connect_exec("init::root.init", initial["uid"])
     angular = panel.add_authoring_node(
         "update", "particle.update.rotate_orientation", 240.0, 400.0
     )
     panel.set_node_property(
         angular["uid"], "degrees_per_second", [130.0, 220.0, 310.0]
     )
-    update_link = panel.connect_stream("update::root.update", angular["uid"])
+    update_link = panel.connect_exec("update::root.update", angular["uid"])
 
     assert changed == {
         "node_uid": initial["uid"],
@@ -1002,10 +1002,10 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_streams():
     ]
 
     with pytest.raises(ValueError, match="cross_stage"):
-        panel.connect_stream(initial["uid"], angular["uid"])
+        panel.connect_exec(initial["uid"], angular["uid"])
 
 
-def test_particle_graph_editor_public_api_disconnects_stream_links():
+def test_particle_graph_editor_public_api_disconnects_exec_links():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
@@ -1013,9 +1013,9 @@ def test_particle_graph_editor_public_api_disconnects_stream_links():
     lifetime = panel.add_authoring_node(
         "init", "particle.attribute.set_lifetime", 240.0, 40.0
     )
-    connected = panel.connect_stream("init::root.init", lifetime["uid"])
+    connected = panel.connect_exec("init::root.init", lifetime["uid"])
 
-    disconnected = panel.disconnect_stream(connected["link_uid"])
+    disconnected = panel.disconnect_exec(connected["link_uid"])
 
     assert disconnected == {
         "link_uid": connected["link_uid"],
@@ -1028,7 +1028,7 @@ def test_particle_graph_editor_public_api_disconnects_stream_links():
         for link in panel.authoring_snapshot()["links"]
     )
     with pytest.raises(KeyError, match="link not found"):
-        panel.disconnect_stream(connected["link_uid"])
+        panel.disconnect_exec(connected["link_uid"])
 
 
 def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
@@ -1181,7 +1181,7 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
         260.0,
         230.0,
     )
-    panel.connect_stream("update::root.update", output["uid"])
+    panel.connect_exec("update::root.update", output["uid"])
 
     panel.select_authoring_emitter(target_id)
     payload = panel.add_authoring_node(
@@ -1193,7 +1193,7 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
     size = panel.add_authoring_node(
         "init", "particle.attribute.set_size", 420.0, 0.0
     )
-    panel.connect_stream("init::root.init", size["uid"])
+    panel.connect_exec("init::root.init", size["uid"])
     panel.connect_value(
         payload["uid"],
         particle_event_payload_port_id(event_type["fields"][0]["stable_id"]),
@@ -1302,7 +1302,7 @@ def test_particle_graph_editor_updates_event_identity_in_place():
         240.0,
         230.0,
     )
-    panel.connect_stream("update::root.update", output["uid"])
+    panel.connect_exec("update::root.update", output["uid"])
     panel.select_authoring_emitter(target_id)
     payload = panel.add_authoring_node(
         "init", particle_event_payload_type_id(route["stable_id"]), 160.0, 0.0
@@ -1310,7 +1310,7 @@ def test_particle_graph_editor_updates_event_identity_in_place():
     size = panel.add_authoring_node(
         "init", "particle.attribute.set_size", 420.0, 0.0
     )
-    panel.connect_stream("init::root.init", size["uid"])
+    panel.connect_exec("init::root.init", size["uid"])
     payload_port = particle_event_payload_port_id(
         event_type["fields"][0]["stable_id"]
     )
@@ -1379,7 +1379,7 @@ def test_particle_graph_editor_prunes_only_invalid_event_edit_context():
         240.0,
         230.0,
     )
-    panel.connect_stream("update::root.update", output["uid"])
+    panel.connect_exec("update::root.update", output["uid"])
     constant = panel.add_authoring_node("update", "common.constant.f32", 80.0, 0.0)
     panel.connect_value(constant["uid"], "value", output["uid"], payload_port)
 
@@ -1451,7 +1451,7 @@ def test_particle_graph_editor_removes_event_route_nodes_transactionally():
         240.0,
         230.0,
     )
-    panel.connect_stream("update::root.update", output["uid"])
+    panel.connect_exec("update::root.update", output["uid"])
     panel.select_authoring_emitter(target_id)
     panel.add_authoring_node(
         "init",

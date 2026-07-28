@@ -378,6 +378,12 @@ def test_scene_picking_pass_publishes_dynamic_viewport_before_any_draw() -> None
     assert begin < viewport < scissor < geometry < particles
 
 
+def test_floating_editor_windows_move_only_from_their_title_bar() -> None:
+    gui = (RENDERER / "gui" / "InxGUI.cpp").read_text(encoding="utf-8")
+
+    assert "io.ConfigWindowsMoveFromTitleBarOnly = true;" in gui
+
+
 def test_per_view_descriptor_publication_only_waits_for_its_frame_slot() -> None:
     graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
     forward_plus = _function_body(graph, "bool SceneRenderGraph::PrepareForwardPlusFrame")

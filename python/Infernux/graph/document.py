@@ -177,13 +177,19 @@ class GraphDocument:
         expected = {"uid", "source_node", "source_port", "target_node", "target_port", "kind"}
         if type(value) is not dict or set(value) != expected:
             raise GraphDocumentError(f"links[{index}] has invalid fields")
+        try:
+            kind = PortKind(value["kind"])
+        except (TypeError, ValueError) as exc:
+            raise GraphDocumentError(
+                f"links[{index}] has invalid port kind {value['kind']!r}"
+            ) from exc
         return GraphLinkRecord(
             value["uid"],
             value["source_node"],
             value["source_port"],
             value["target_node"],
             value["target_port"],
-            PortKind(value["kind"]),
+            kind,
         )
 
 

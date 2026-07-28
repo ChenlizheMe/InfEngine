@@ -1921,6 +1921,55 @@ class _StageCompiler:
                 "GPU continuation resume schedule is not reachable from its lane"
             )
 
+        selected_instruction_indices = {
+            index
+            for block in selected_blocks
+            for index in range(block.instruction_begin, block.instruction_end)
+        }
+        producer_by_value = {
+            instruction.result_id: index
+            for index, instruction in enumerate(function.instructions)
+            if instruction.result_id
+        }
+        prerequisite_indices: set[int] = set()
+        pending_values = [
+            operand.value_id
+            for index in sorted(selected_instruction_indices)
+            for operand in function.instructions[index].operands
+            if operand.value_id
+        ]
+        while pending_values:
+            value_id = pending_values.pop()
+            producer_index = producer_by_value.get(value_id)
+            if producer_index is None:
+                raise GpuParticleCompileError(
+                    f"GPU continuation references unknown SSA value {value_id!r}"
+                )
+            if (
+                producer_index in selected_instruction_indices
+                or producer_index in prerequisite_indices
+            ):
+                continue
+            producer = function.instructions[producer_index]
+            if producer.opcode == "event_payload":
+                raise GpuParticleCompileError(
+                    "GPU Event Payload values cannot remain live across Wait; "
+                    "copy the value into a particle attribute first"
+                )
+            prerequisite_indices.add(producer_index)
+            pending_values.extend(
+                operand.value_id
+                for operand in producer.operands
+                if operand.value_id
+            )
+
+        # Resume shaders are separate entry points. Rebuild only the pure SSA
+        # dependency slice required by post-Wait blocks; stage stores, kills,
+        # events and suspension side effects are deliberately not replayed.
+        for index in sorted(prerequisite_indices):
+            self._active_lane_var = None
+            self._compile_instruction(function.instructions[index])
+
         self._inline_events = True
         lane_names = {
             lane.index: f"inx_resume_lane_{lane.index}_active"
@@ -2014,7 +2063,13 @@ class _StageCompiler:
     def _compile_instruction(self, instruction: KernelInstruction) -> None:
         opcode = instruction.opcode
         immediate = instruction.immediate_dict()
-        operands = [self._values[item.value_id] for item in instruction.operands]
+        try:
+            operands = [self._values[item.value_id] for item in instruction.operands]
+        except KeyError as exc:
+            raise GpuParticleCompileError(
+                f"GPU instruction {opcode!r} references unavailable SSA value "
+                f"{exc.args[0]!r}"
+            ) from exc
         result = _value_name(instruction.result_id) if instruction.result_id else ""
         result_type = instruction.result_type
         source = instruction.source
@@ -3517,28 +3572,32 @@ def _continuation_dispatch_glsl(
     ):
         flow = flow_by_stage[suspension.lifecycle_stage]
         function = function_by_stage[flow.kernel_stage]
-        if any(
-            instruction.opcode == "event_payload"
-            for instruction in function.instructions[
-                suspension.resume_instruction_index :
-            ]
-        ):
-            raise GpuParticleCompileError(
-                "GPU Event Payload values cannot remain live across Wait; copy the value into a particle attribute first"
-            )
         runtime_lane = continuation_lane_indices[suspension.lane_stable_id]
-        compiler = _StageCompiler(
-            emitter,
-            fields,
-            data_interface_layout,
-            events,
-            emitter_index,
-            parameter_slots=parameter_slots,
-            continuation_lane_indices=continuation_lane_indices,
-            continuation_join_indices=continuation_join_indices,
-            existing_continuation_lane=runtime_lane,
-        )
-        body, event_body = compiler.compile_resume(function, flow, suspension)
+        if suspension.resume_instruction_index < 0:
+            body, event_body = "", ""
+        else:
+            if any(
+                instruction.opcode == "event_payload"
+                for instruction in function.instructions[
+                    suspension.resume_instruction_index :
+                ]
+            ):
+                raise GpuParticleCompileError(
+                    "GPU Event Payload values cannot remain live across Wait; "
+                    "copy the value into a particle attribute first"
+                )
+            compiler = _StageCompiler(
+                emitter,
+                fields,
+                data_interface_layout,
+                events,
+                emitter_index,
+                parameter_slots=parameter_slots,
+                continuation_lane_indices=continuation_lane_indices,
+                continuation_join_indices=continuation_join_indices,
+                existing_continuation_lane=runtime_lane,
+            )
+            body, event_body = compiler.compile_resume(function, flow, suspension)
         finite = _finite_state_check(function, fields)
         cases.append(
             f"""        case {suspension.resume_program_counter}u: {{

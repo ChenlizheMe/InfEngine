@@ -574,6 +574,11 @@ class KernelSuspensionPoint:
         object.__setattr__(self, "kind", ParticleSuspensionKind(self.kind))
         if self.lifecycle_stage is ParticleStage.RENDERING:
             raise KernelCompileError("Rendering cannot own a kernel suspension point")
+        terminal = (
+            self.resume_operation_index == -1
+            and self.resume_instruction_index == -1
+            and self.resume_node_uid == ""
+        )
         if (
             type(self.lane_index) is not int
             or self.lane_index < 0
@@ -584,15 +589,24 @@ class KernelSuspensionPoint:
             or type(self.stage_resume_program_counter) is not int
             or self.stage_resume_program_counter <= 0
             or type(self.resume_operation_index) is not int
-            or self.resume_operation_index < 0
             or type(self.resume_instruction_index) is not int
-            or self.resume_instruction_index < 0
             or type(self.suspend_instruction_index) is not int
             or self.suspend_instruction_index < 0
             or type(self.source_node_uid) is not str
             or not self.source_node_uid
             or type(self.resume_node_uid) is not str
-            or not self.resume_node_uid
+            or (
+                not terminal
+                and (
+                    self.resume_operation_index < 0
+                    or self.resume_instruction_index < 0
+                    or not self.resume_node_uid
+                )
+            )
+            or (
+                self.resume_node_uid == ""
+                and not terminal
+            )
         ):
             raise KernelCompileError("kernel suspension point is invalid")
 
@@ -781,6 +795,11 @@ class ParticleEmitterKernelIR:
                 None,
             )
             resume_block = block_by_operation.get(suspension.resume_operation_index)
+            terminal = (
+                suspension.resume_operation_index == -1
+                and suspension.resume_instruction_index == -1
+                and suspension.resume_node_uid == ""
+            )
             if (
                 source_block is None
                 or source_block.lane_index != suspension.lane_index
@@ -791,10 +810,16 @@ class ParticleEmitterKernelIR:
                     <= suspension.suspend_instruction_index
                     < source_block.instruction_end
                 )
-                or resume_block is None
-                or resume_block.source_node_uid != suspension.resume_node_uid
-                or resume_block.instruction_begin
-                != suspension.resume_instruction_index
+                or (
+                    not terminal
+                    and (
+                        resume_block is None
+                        or resume_block.source_node_uid
+                        != suspension.resume_node_uid
+                        or resume_block.instruction_begin
+                        != suspension.resume_instruction_index
+                    )
+                )
             ):
                 raise KernelCompileError(
                     "kernel suspension metadata is inconsistent with lifecycle flow"
@@ -1528,10 +1553,15 @@ class ParticleKernelLowerer:
                 program_counter,
                 suspension.resume_program_counter,
                 suspension.resume_operation_index,
-                next(
-                    block.instruction_begin
-                    for block in flow_by_stage[stage.stage].blocks
-                    if block.operation_index == suspension.resume_operation_index
+                (
+                    next(
+                        block.instruction_begin
+                        for block in flow_by_stage[stage.stage].blocks
+                        if block.operation_index
+                        == suspension.resume_operation_index
+                    )
+                    if suspension.resume_operation_index >= 0
+                    else -1
                 ),
                 instruction_locations[(stage.stage, suspension.node_uid)],
                 suspension.node_uid,

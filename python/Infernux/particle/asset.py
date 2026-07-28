@@ -477,7 +477,7 @@ def default_stage_graph(stage: str) -> GraphDocument:
         links.extend(
             (
                 GraphLinkRecord(
-                    "root-to-lifetime", root_uid, "out", "init.lifetime", "in", PortKind.STREAM
+                    "root-to-lifetime", root_uid, "out", "init.lifetime", "in", PortKind.EXEC
                 ),
                 GraphLinkRecord(
                     "lifetime-to-velocity",
@@ -485,7 +485,7 @@ def default_stage_graph(stage: str) -> GraphDocument:
                     "out",
                     "init.velocity",
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 ),
             )
         )
@@ -505,7 +505,7 @@ def default_stage_graph(stage: str) -> GraphDocument:
                 "out",
                 "update.acceleration",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             )
         )
     elif stage == "rendering":
@@ -517,7 +517,7 @@ def default_stage_graph(stage: str) -> GraphDocument:
                 "out",
                 "output.sprite",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             )
         )
     return GraphDocument(domain, tuple(nodes), tuple(links))

@@ -81,7 +81,7 @@ def test_particle_exec_fan_out_is_preserved_in_hir_and_allows_disjoint_writes():
                 "out",
                 "move",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "exec-grow",
@@ -89,7 +89,7 @@ def test_particle_exec_fan_out_is_preserved_in_hir_and_allows_disjoint_writes():
                 "out",
                 "grow",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -145,12 +145,12 @@ def test_particle_execution_lane_identity_ignores_link_order_and_link_uid():
         return program.behavior_hash, semantic_lanes
 
     first = (
-        GraphLinkRecord("link-a", "root.update", "out", "move", "in", PortKind.STREAM),
-        GraphLinkRecord("link-b", "root.update", "out", "grow", "in", PortKind.STREAM),
+        GraphLinkRecord("link-a", "root.update", "out", "move", "in", PortKind.EXEC),
+        GraphLinkRecord("link-b", "root.update", "out", "grow", "in", PortKind.EXEC),
     )
     reordered_and_renamed = (
-        GraphLinkRecord("unrelated-z", "root.update", "out", "grow", "in", PortKind.STREAM),
-        GraphLinkRecord("unrelated-y", "root.update", "out", "move", "in", PortKind.STREAM),
+        GraphLinkRecord("unrelated-z", "root.update", "out", "grow", "in", PortKind.EXEC),
+        GraphLinkRecord("unrelated-y", "root.update", "out", "move", "in", PortKind.EXEC),
     )
 
     first_hash, first_lanes = compile_links(first)
@@ -175,7 +175,7 @@ def test_particle_exec_parallel_writes_require_explicit_order_or_merge():
                 "out",
                 "first",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "exec-second",
@@ -183,7 +183,7 @@ def test_particle_exec_parallel_writes_require_explicit_order_or_merge():
                 "out",
                 "second",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -217,7 +217,7 @@ def test_particle_exec_parallel_read_write_dependency_requires_order_or_join():
                 "out",
                 "write-position",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "exec-read",
@@ -225,7 +225,7 @@ def test_particle_exec_parallel_read_write_dependency_requires_order_or_join():
                 "out",
                 "accelerate",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "value-read",
@@ -257,14 +257,64 @@ def test_particle_exec_multiple_inputs_require_an_explicit_join():
             GraphNodeRecord("tail", "particle.update.kill_if"),
         ),
         links=(
-            GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.STREAM),
-            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.STREAM),
-            GraphLinkRecord("left-tail", "left", "out", "tail", "in", PortKind.STREAM),
-            GraphLinkRecord("right-tail", "right", "out", "tail", "in", PortKind.STREAM),
+            GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.EXEC),
+            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.EXEC),
+            GraphLinkRecord("left-tail", "left", "out", "tail", "in", PortKind.EXEC),
+            GraphLinkRecord("right-tail", "right", "out", "tail", "in", PortKind.EXEC),
         ),
     )
 
     with pytest.raises(ParticleCompileError, match="use an explicit Join All node"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+
+
+def test_particle_join_rejects_an_input_from_an_unreachable_exec_branch():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("reachable", "particle.attribute.set_size"),
+            GraphNodeRecord("orphan", "particle.attribute.set_position"),
+            GraphNodeRecord("join", "particle.control.join_all"),
+            GraphNodeRecord("tail", "particle.update.kill_if"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-reachable",
+                "root.update",
+                "out",
+                "reachable",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "reachable-join",
+                "reachable",
+                "out",
+                "join",
+                "in0",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "orphan-join",
+                "orphan",
+                "out",
+                "join",
+                "in1",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "join-tail", "join", "out", "tail", "in", PortKind.EXEC
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ParticleCompileError,
+        match="Join All node 'join' has an input from unreachable Exec node 'orphan'",
+    ):
         ParticleGraphCompiler().compile(
             ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
         )
@@ -281,11 +331,11 @@ def test_particle_exec_join_all_continues_after_every_parallel_branch():
             GraphNodeRecord("tail", "particle.update.kill_if"),
         ),
         links=(
-            GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.STREAM),
-            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.STREAM),
-            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.STREAM),
-            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.STREAM),
-            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.STREAM),
+            GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.EXEC),
+            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.EXEC),
+            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.EXEC),
+            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.EXEC),
+            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.EXEC),
         ),
     )
 
@@ -378,10 +428,10 @@ def test_particle_if_activates_only_the_selected_exec_branch():
             GraphNodeRecord("false-size", "particle.attribute.set_size", properties={"value": 0.5}),
         ),
         links=(
-            GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.STREAM),
+            GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.EXEC),
             GraphLinkRecord("condition-if", "condition", "value", "if", "condition"),
-            GraphLinkRecord("if-true", "if", "true", "true-size", "in", PortKind.STREAM),
-            GraphLinkRecord("if-false", "if", "false", "false-size", "in", PortKind.STREAM),
+            GraphLinkRecord("if-true", "if", "true", "true-size", "in", PortKind.EXEC),
+            GraphLinkRecord("if-false", "if", "false", "false-size", "in", PortKind.EXEC),
         ),
     )
 
@@ -422,13 +472,13 @@ def test_particle_join_all_rejects_mutually_exclusive_if_branches():
         ),
         links=(
             GraphLinkRecord(
-                "root-if", "root.update", "out", "if", "in", PortKind.STREAM
+                "root-if", "root.update", "out", "if", "in", PortKind.EXEC
             ),
             GraphLinkRecord(
                 "condition-if", "condition", "value", "if", "condition"
             ),
             GraphLinkRecord(
-                "if-true", "if", "true", "true-size", "in", PortKind.STREAM
+                "if-true", "if", "true", "true-size", "in", PortKind.EXEC
             ),
             GraphLinkRecord(
                 "if-false",
@@ -436,7 +486,7 @@ def test_particle_join_all_rejects_mutually_exclusive_if_branches():
                 "false",
                 "false-position",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "true-join",
@@ -444,7 +494,7 @@ def test_particle_join_all_rejects_mutually_exclusive_if_branches():
                 "out",
                 "join",
                 "in0",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "false-join",
@@ -452,10 +502,10 @@ def test_particle_join_all_rejects_mutually_exclusive_if_branches():
                 "out",
                 "join",
                 "in1",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
-                "join-tail", "join", "out", "tail", "in", PortKind.STREAM
+                "join-tail", "join", "out", "tail", "in", PortKind.EXEC
             ),
         ),
     )
@@ -487,7 +537,7 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
                 "out",
                 "wait.frames",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "frames-value",
@@ -503,7 +553,7 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
                 "out",
                 "wait.seconds",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "seconds-value",
@@ -519,7 +569,7 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
                 "out",
                 "tail",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -601,7 +651,7 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
     assert restored_kernel == kernel_program
 
 
-def test_particle_wait_requires_exactly_one_continuation_and_rejects_rendering():
+def test_particle_wait_can_finish_a_lifecycle_continuation_and_rejects_rendering():
     no_continuation = GraphDocument(
         "particle.update",
         nodes=(
@@ -615,16 +665,25 @@ def test_particle_wait_requires_exactly_one_continuation_and_rejects_rendering()
                 "out",
                 "wait",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
-    with pytest.raises(ParticleCompileError, match="requires exactly one Exec output"):
-        ParticleGraphCompiler().compile(
-            ParticleGraphAsset(
-                emitters=(ParticleEmitterAsset(update=no_continuation),)
-            )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            emitters=(ParticleEmitterAsset(update=no_continuation),)
         )
+    )
+    suspension = program.emitters[0].update.flow.suspensions[0]
+    assert suspension.resume_node_uid == ""
+    assert suspension.resume_operation_index == -1
+
+    kernel = ParticleKernelLowerer().lower(program)
+    kernel_suspension = kernel.emitters[0].suspensions[0]
+    assert kernel_suspension.resume_node_uid == ""
+    assert kernel_suspension.resume_operation_index == -1
+    assert kernel_suspension.resume_instruction_index == -1
+    assert type(kernel).from_dict(kernel.to_dict()) == kernel
 
     rendering = GraphDocument(
         "particle.rendering",
@@ -640,7 +699,7 @@ def test_particle_wait_requires_exactly_one_continuation_and_rejects_rendering()
                 "out",
                 "wait",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "wait-output",
@@ -648,7 +707,7 @@ def test_particle_wait_requires_exactly_one_continuation_and_rejects_rendering()
                 "out",
                 "output",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -676,7 +735,7 @@ def test_kernel_continuation_program_counters_are_unique_across_lifecycle_stages
                     "out",
                     f"wait.{stage}",
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 ),
                 GraphLinkRecord(
                     f"wait-tail.{stage}",
@@ -684,7 +743,7 @@ def test_kernel_continuation_program_counters_are_unique_across_lifecycle_stages
                     "out",
                     f"tail.{stage}",
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 ),
             ),
         )
@@ -731,7 +790,7 @@ def _collision_lifecycle_graph(stage: str, size: float):
                 "out",
                 operation_uid,
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -927,7 +986,7 @@ def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
                 "out",
                 "accelerate",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "wind-value",
@@ -1114,7 +1173,7 @@ def _event_output_stage(route_id: str, source_stage: str = "update") -> GraphDoc
                 "out",
                 "event.output",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -1177,7 +1236,7 @@ def test_collision_and_event_nodes_preserve_authored_exec_order():
                 "out",
                 "collision.first",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "event",
@@ -1185,7 +1244,7 @@ def test_collision_and_event_nodes_preserve_authored_exec_order():
                 "out",
                 "event.output",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "second",
@@ -1193,7 +1252,7 @@ def test_collision_and_event_nodes_preserve_authored_exec_order():
                 "out",
                 "size.after.collision",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "third",
@@ -1201,7 +1260,7 @@ def test_collision_and_event_nodes_preserve_authored_exec_order():
                 "out",
                 "collision.second",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -1500,7 +1559,7 @@ def test_particle_sprite_output_rejects_static_mesh_shadow_property():
                 "out",
                 "output.sprite",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -1530,7 +1589,7 @@ def test_particle_sprite_output_compiles_valid_flipbook_grid_and_rejects_invalid
                     "out",
                     "output.sprite",
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 ),
             ),
         )
@@ -1567,7 +1626,7 @@ def test_particle_sprite_output_compiles_alignment_and_rejects_invalid_axis():
                     "out",
                     "output.sprite",
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 ),
             ),
         )
@@ -1611,7 +1670,7 @@ def test_particle_graph_compiles_static_mesh_output_with_explicit_asset():
                 "out",
                 "output.mesh",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -1653,7 +1712,7 @@ def test_particle_graph_rejects_static_mesh_output_without_mesh_asset():
                 "out",
                 "output.mesh",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -1687,7 +1746,7 @@ def test_particle_graph_compiles_lit_shadow_receiving_static_mesh_output():
                 "out",
                 "output.mesh",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -1723,7 +1782,7 @@ def test_particle_graph_rejects_sorted_static_mesh_output():
                 "out",
                 "output.mesh",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -1737,7 +1796,7 @@ def test_particle_graph_rejects_sorted_static_mesh_output():
         )
 
 
-def test_particle_graph_stream_order_lowers_to_stage_operations():
+def test_particle_graph_exec_order_lowers_to_stage_operations():
     init = GraphDocument(
         "particle.init",
         nodes=(
@@ -1754,8 +1813,8 @@ def test_particle_graph_stream_order_lowers_to_stage_operations():
             ),
         ),
         links=(
-            GraphLinkRecord("l1", "root.init", "out", "velocity", "in", PortKind.STREAM),
-            GraphLinkRecord("l2", "velocity", "out", "lifetime", "in", PortKind.STREAM),
+            GraphLinkRecord("l1", "root.init", "out", "velocity", "in", PortKind.EXEC),
+            GraphLinkRecord("l2", "velocity", "out", "lifetime", "in", PortKind.EXEC),
         ),
     )
     emitter = ParticleEmitterAsset(init=init)
@@ -1788,7 +1847,7 @@ def test_particle_stage_value_links_use_common_typed_expression_ir():
             GraphNodeRecord("normalize", "common.vector.normalize"),
         ),
         links=(
-            GraphLinkRecord("s1", "root.update", "out", "gravity", "in", PortKind.STREAM),
+            GraphLinkRecord("s1", "root.update", "out", "gravity", "in", PortKind.EXEC),
             GraphLinkRecord("v1", "a", "value", "add", "a"),
             GraphLinkRecord("link_b", "b", "value", "add", "b"),
             GraphLinkRecord("v3", "add", "result", "normalize", "value"),
@@ -1839,8 +1898,8 @@ def test_particle_update_can_author_color_and_size_over_lifetime():
             GraphNodeRecord("size-over-life", "common.math.lerp", properties={"a": 1.0, "b": 0.0}),
         ),
         links=(
-            GraphLinkRecord("stream-color", "root.update", "out", "set-color", "in", PortKind.STREAM),
-            GraphLinkRecord("stream-size", "set-color", "out", "set-size", "in", PortKind.STREAM),
+            GraphLinkRecord("stream-color", "root.update", "out", "set-color", "in", PortKind.EXEC),
+            GraphLinkRecord("stream-size", "set-color", "out", "set-size", "in", PortKind.EXEC),
             GraphLinkRecord("age-divide", "age", "value", "normalized-age", "a"),
             GraphLinkRecord("life-divide", "lifetime", "value", "normalized-age", "b"),
             GraphLinkRecord("color-a", "start-color", "value", "color-over-life", "a"),
@@ -1890,7 +1949,7 @@ def test_particle_behavior_hash_ignores_graph_node_identity_and_layout():
                     "out",
                     f"{prefix}.gravity",
                     "in",
-                    PortKind.STREAM,
+                    PortKind.EXEC,
                 ),
                 GraphLinkRecord(
                     f"{prefix}.value-link",
@@ -2555,7 +2614,7 @@ def test_plane_collision_rejects_invalid_static_parameters(properties, message):
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -2767,7 +2826,7 @@ def test_scene_collision_rejects_invalid_static_parameters(properties, message):
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -2851,7 +2910,7 @@ def test_sphere_collision_rejects_invalid_static_parameters(properties, message)
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -2878,7 +2937,7 @@ def test_ribbon_output_rejects_ambiguous_topology_and_uv_settings(properties, me
         ),
         links=(
             GraphLinkRecord(
-                "render-stream", "root.rendering", "out", "ribbon", "in", PortKind.STREAM
+                "render-stream", "root.rendering", "out", "ribbon", "in", PortKind.EXEC
             ),
         ),
     )
@@ -3242,7 +3301,7 @@ def test_particle_graph_save_does_not_replace_valid_source_with_invalid_draft(tm
                     "out",
                     "invalid.acceleration",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "noise-to-acceleration",

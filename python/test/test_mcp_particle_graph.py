@@ -110,12 +110,12 @@ class _Panel:
             "changed": True,
         }
 
-    def connect_stream(self, source_node_uid, target_node_uid):
+    def connect_exec(self, source_node_uid, target_node_uid):
         self.calls.append(("connect", source_node_uid, target_node_uid))
         return {"link_uid": "update::new-link", "changed": True}
 
-    def disconnect_stream(self, link_uid):
-        self.calls.append(("disconnect-stream", link_uid))
+    def disconnect_exec(self, link_uid):
+        self.calls.append(("disconnect-exec", link_uid))
         return {
             "link_uid": link_uid,
             "source_node_uid": "init::root.init",
@@ -307,10 +307,10 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     property_changed = mcp.tools["particle_graph_set_node_property"](
         "update::new-node", "degrees_per_second", [1.0, 2.0, 3.0]
     )
-    connected = mcp.tools["particle_graph_connect_stream"](
+    connected = mcp.tools["particle_graph_connect_exec"](
         "update::root.update", "update::new-node"
     )
-    disconnected = mcp.tools["particle_graph_disconnect_stream"](
+    disconnected = mcp.tools["particle_graph_disconnect_exec"](
         "init::root-to-lifetime"
     )
     value_connected = mcp.tools["particle_graph_connect_value"](
@@ -426,7 +426,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
             [1.0, 2.0, 3.0],
         ),
         ("connect", "update::root.update", "update::new-node"),
-        ("disconnect-stream", "init::root-to-lifetime"),
+        ("disconnect-exec", "init::root-to-lifetime"),
         ("value", "init::payload", "value", "init::size", "value"),
         ("select-emitter", "target"),
         ("add-emitter", "Target"),

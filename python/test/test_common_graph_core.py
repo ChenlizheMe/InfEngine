@@ -49,6 +49,27 @@ def test_graph_document_round_trip_is_canonical_and_strict():
         GraphDocument.from_dict(invalid)
 
 
+def test_graph_document_uses_exec_as_the_only_control_link_kind():
+    document = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root", "particle.root.update"),
+            GraphNodeRecord("tail", "particle.attribute.set_size"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-tail", "root", "out", "tail", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    payload = document.to_dict()
+
+    assert payload["links"][0]["kind"] == "exec"
+    payload["links"][0]["kind"] = "stream"
+    with pytest.raises(GraphDocumentError, match="invalid port kind 'stream'"):
+        GraphDocument.from_dict(payload)
+
+
 def test_graph_semantic_hash_ignores_canvas_position_but_not_program_values():
     first = _expression_document((0.0, 0.0))
     moved = _expression_document((900.0, -300.0))

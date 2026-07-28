@@ -78,7 +78,7 @@ def _scene_collision_asset():
                 "out",
                 "scene-collision",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -99,10 +99,10 @@ def _if_asset():
             GraphNodeRecord("false-size", "particle.attribute.set_size", properties={"value": 0.5}),
         ),
         links=(
-            GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.STREAM),
+            GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.EXEC),
             GraphLinkRecord("condition-if", "condition", "value", "if", "condition"),
-            GraphLinkRecord("if-true", "if", "true", "true-size", "in", PortKind.STREAM),
-            GraphLinkRecord("if-false", "if", "false", "false-size", "in", PortKind.STREAM),
+            GraphLinkRecord("if-true", "if", "true", "true-size", "in", PortKind.EXEC),
+            GraphLinkRecord("if-false", "if", "false", "false-size", "in", PortKind.EXEC),
         ),
     )
     return ParticleGraphAsset(
@@ -129,7 +129,7 @@ def _collision_lifecycle_asset():
                 "out",
                 "enter-size",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -157,13 +157,13 @@ def _wait_asset(*, fork: bool = False):
     ]
     links = [
         GraphLinkRecord(
-            "root-wait", "root.update", "out", "wait", "in", PortKind.STREAM
+            "root-wait", "root.update", "out", "wait", "in", PortKind.EXEC
         ),
         GraphLinkRecord(
             "frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE
         ),
         GraphLinkRecord(
-            "wait-tail", "wait", "out", "tail", "in", PortKind.STREAM
+            "wait-tail", "wait", "out", "tail", "in", PortKind.EXEC
         ),
     ]
     if fork:
@@ -181,7 +181,7 @@ def _wait_asset(*, fork: bool = False):
                 "out",
                 "sibling",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             )
         )
     return ParticleGraphAsset(
@@ -194,6 +194,35 @@ def _wait_asset(*, fork: bool = False):
                 ),
             ),
         ),
+    )
+
+
+def _wait_acceleration_asset():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "wait", "particle.control.wait_frames", properties={"frames": 1}
+            ),
+            GraphNodeRecord(
+                "accelerate",
+                "particle.update.acceleration",
+                properties={"value": [0.0, -9.81, 0.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-wait", "root.update", "out", "wait", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "wait-accelerate", "wait", "out", "accelerate", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="wait-acceleration-gpu",
+        emitters=(ParticleEmitterAsset(update=update),),
     )
 
 
@@ -219,7 +248,7 @@ def _two_wait_asset():
                 "out",
                 "wait.frames",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "frames-value",
@@ -235,7 +264,7 @@ def _two_wait_asset():
                 "out",
                 "wait.seconds",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "seconds-value",
@@ -251,12 +280,79 @@ def _two_wait_asset():
                 "out",
                 "tail",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
     return ParticleGraphAsset(
         stable_id="two-waits-gpu",
+        emitters=(ParticleEmitterAsset(update=update),),
+    )
+
+
+def _terminal_wait_acceleration_asset():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "accelerate.down",
+                "particle.update.acceleration",
+                properties={"value": [0.0, -9.8, 0.0]},
+            ),
+            GraphNodeRecord(
+                "wait.three",
+                "particle.control.wait_seconds",
+                properties={"seconds": 3.0},
+            ),
+            GraphNodeRecord(
+                "accelerate.up_right",
+                "particle.update.acceleration",
+                properties={"value": [9.8, 9.8, 0.0]},
+            ),
+            GraphNodeRecord(
+                "wait.five",
+                "particle.control.wait_seconds",
+                properties={"seconds": 5.0},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-down",
+                "root.update",
+                "out",
+                "accelerate.down",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "down-wait",
+                "accelerate.down",
+                "out",
+                "wait.three",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "wait-up",
+                "wait.three",
+                "out",
+                "accelerate.up_right",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "up-terminal",
+                "accelerate.up_right",
+                "out",
+                "wait.five",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="terminal-wait-acceleration-gpu",
         emitters=(ParticleEmitterAsset(update=update),),
     )
 
@@ -286,13 +382,13 @@ def _wait_join_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-wait", "root.update", "out", "wait", "in", PortKind.STREAM),
+            GraphLinkRecord("root-wait", "root.update", "out", "wait", "in", PortKind.EXEC),
             GraphLinkRecord("frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE),
-            GraphLinkRecord("wait-left", "wait", "out", "left", "in", PortKind.STREAM),
-            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.STREAM),
-            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.STREAM),
-            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.STREAM),
-            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.STREAM),
+            GraphLinkRecord("wait-left", "wait", "out", "left", "in", PortKind.EXEC),
+            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.EXEC),
+            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.EXEC),
+            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.EXEC),
+            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.EXEC),
         ),
     )
     return ParticleGraphAsset(
@@ -324,15 +420,15 @@ def _dual_wait_join_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-left", "root.update", "out", "wait.left", "in", PortKind.STREAM),
+            GraphLinkRecord("root-left", "root.update", "out", "wait.left", "in", PortKind.EXEC),
             GraphLinkRecord("frames-left", "frames", "value", "wait.left", "frames", PortKind.VALUE),
-            GraphLinkRecord("left-tail", "wait.left", "out", "left", "in", PortKind.STREAM),
-            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.STREAM),
-            GraphLinkRecord("root-right", "root.update", "out", "wait.right", "in", PortKind.STREAM),
+            GraphLinkRecord("left-tail", "wait.left", "out", "left", "in", PortKind.EXEC),
+            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.EXEC),
+            GraphLinkRecord("root-right", "root.update", "out", "wait.right", "in", PortKind.EXEC),
             GraphLinkRecord("seconds-right", "seconds", "value", "wait.right", "seconds", PortKind.VALUE),
-            GraphLinkRecord("right-tail", "wait.right", "out", "right", "in", PortKind.STREAM),
-            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.STREAM),
-            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.STREAM),
+            GraphLinkRecord("right-tail", "wait.right", "out", "right", "in", PortKind.EXEC),
+            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.EXEC),
+            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.EXEC),
         ),
     )
     return ParticleGraphAsset(
@@ -381,7 +477,7 @@ def _nested_wait_join_asset():
                 "out",
                 "wait.first",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "first-frames-value",
@@ -397,7 +493,7 @@ def _nested_wait_join_asset():
                 "out",
                 "first.left",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "first-left-join",
@@ -405,7 +501,7 @@ def _nested_wait_join_asset():
                 "out",
                 "join.first",
                 "in0",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "root-first-right",
@@ -413,7 +509,7 @@ def _nested_wait_join_asset():
                 "out",
                 "first.right",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "first-right-join",
@@ -421,7 +517,7 @@ def _nested_wait_join_asset():
                 "out",
                 "join.first",
                 "in1",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "first-join-second-wait",
@@ -429,7 +525,7 @@ def _nested_wait_join_asset():
                 "out",
                 "wait.second",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "second-frames-value",
@@ -445,7 +541,7 @@ def _nested_wait_join_asset():
                 "out",
                 "second.left",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "second-left-join",
@@ -453,7 +549,7 @@ def _nested_wait_join_asset():
                 "out",
                 "join.second",
                 "in0",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "first-join-second-right",
@@ -461,7 +557,7 @@ def _nested_wait_join_asset():
                 "out",
                 "second.right",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "second-right-join",
@@ -469,7 +565,7 @@ def _nested_wait_join_asset():
                 "out",
                 "join.second",
                 "in1",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "second-join-tail",
@@ -477,7 +573,7 @@ def _nested_wait_join_asset():
                 "out",
                 "tail",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
         ),
     )
@@ -524,6 +620,20 @@ def test_gpu_wait_emits_bounded_continuation_program_and_valid_spirv(fork):
     assert all(decoded["stages"][stage] for stage in encoded["stages"])
 
 
+def test_gpu_wait_resume_rebuilds_external_ssa_dependencies():
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_wait_acceleration_asset())
+    )
+    source = GpuParticleGlslLowerer().lower(kernel)
+    continuation = source.emitters[0].continuation
+
+    assert continuation is not None
+    assert "pc.delta_time" in continuation.dispatch
+    assert "state.a_builtin_velocity =" in continuation.dispatch
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
 def test_gpu_sequential_wait_reuses_the_current_continuation_record():
     source = GpuParticleGlslLowerer().lower(
         ParticleKernelLowerer().lower(
@@ -537,6 +647,27 @@ def test_gpu_sequential_wait_reuses_the_current_continuation_record():
     assert "case 2u:" in continuation.dispatch
     assert "inx_continuation_record_index" in continuation.dispatch
     assert "inx_continuation_resuspended = true" in continuation.dispatch
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_gpu_terminal_wait_finishes_continuation_and_compiles_valid_spirv():
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_terminal_wait_acceleration_asset())
+    )
+    emitter = kernel.emitters[0]
+    first_wait, terminal_wait = emitter.suspensions
+
+    assert first_wait.resume_node_uid == "accelerate.up_right"
+    assert terminal_wait.resume_node_uid == ""
+    assert terminal_wait.resume_operation_index == -1
+    assert terminal_wait.resume_instruction_index == -1
+
+    source = GpuParticleGlslLowerer().lower(kernel)
+    continuation = source.emitters[0].continuation
+    assert continuation is not None
+    assert continuation.dispatch.count("case ") == 2
+    assert "inx_finish_continuation(" in continuation.dispatch
     compiled = compile_gpu_particle_spirv(source)
     validate_gpu_particle_spirv(compiled, source)
 
@@ -760,7 +891,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 "out",
                 "collision",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "event.stream",
@@ -768,7 +899,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 "out",
                 "impact.output",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "event.condition",
@@ -906,7 +1037,7 @@ def test_gpu_parameters_use_one_stable_uvec4_slot_and_typed_loads():
             GraphNodeRecord("accelerate", "particle.update.acceleration"),
         ),
         links=(
-            GraphLinkRecord("stream", "root.update", "out", "accelerate", "in", PortKind.STREAM),
+            GraphLinkRecord("stream", "root.update", "out", "accelerate", "in", PortKind.EXEC),
             GraphLinkRecord("value", "wind", "value", "accelerate", "value", PortKind.VALUE),
         ),
     )
@@ -995,7 +1126,7 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "set-color", "in", PortKind.STREAM
+                "stream", "root.update", "out", "set-color", "in", PortKind.EXEC
             ),
             GraphLinkRecord(
                 "texture-value", "texture", "value", "sample", "texture", PortKind.VALUE
@@ -1057,7 +1188,7 @@ def _kill_if_gpu_source():
             GraphNodeRecord("older", "common.compare.greater_than"),
         ),
         links=(
-            GraphLinkRecord("stream", "root.update", "out", "kill", "in", PortKind.STREAM),
+            GraphLinkRecord("stream", "root.update", "out", "kill", "in", PortKind.EXEC),
             GraphLinkRecord("a", "age", "value", "older", "a", PortKind.VALUE),
             GraphLinkRecord("b", "limit", "value", "older", "b", PortKind.VALUE),
             GraphLinkRecord("condition", "older", "result", "kill", "condition", PortKind.VALUE),
@@ -1091,7 +1222,7 @@ def _event_output_program():
                 "out",
                 "impact.output",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "event.position",
@@ -1121,7 +1252,7 @@ def _event_output_program():
                 "out",
                 "impact.weight",
                 "in",
-                PortKind.STREAM,
+                PortKind.EXEC,
             ),
             GraphLinkRecord(
                 "target.weight",
@@ -1198,7 +1329,7 @@ def test_gpu_backend_lowers_vector_compose_and_zero_extended_math_inputs():
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "acceleration", "in", PortKind.STREAM
+                "stream", "root.update", "out", "acceleration", "in", PortKind.EXEC
             ),
             GraphLinkRecord("xy", "xy", "value", "add", "a"),
             GraphLinkRecord("position", "position", "value", "add", "b"),
@@ -1300,7 +1431,7 @@ def _noise_gpu_source():
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "acceleration", "in", PortKind.STREAM
+                "stream", "root.update", "out", "acceleration", "in", PortKind.EXEC
             ),
             GraphLinkRecord("position", "position", "value", "noise", "position"),
             GraphLinkRecord("noise", "noise", "value", "acceleration", "value"),
@@ -1403,7 +1534,7 @@ def test_gpu_ribbon_render_instance_exports_full_width_topology_key():
             GraphNodeRecord("ribbon", "particle.output.ribbon"),
         ),
         links=(
-            GraphLinkRecord("render", "root.rendering", "out", "ribbon", "in", PortKind.STREAM),
+            GraphLinkRecord("render", "root.rendering", "out", "ribbon", "in", PortKind.EXEC),
         ),
     )
     asset = ParticleGraphAsset(
@@ -1437,7 +1568,7 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
         ),
         links=(
             GraphLinkRecord(
-                "init-stream", "root.init", "out", "flipbook", "in", PortKind.STREAM
+                "init-stream", "root.init", "out", "flipbook", "in", PortKind.EXEC
             ),
         ),
     )
@@ -1457,7 +1588,7 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
         ),
         links=(
             GraphLinkRecord(
-                "render-stream", "root.rendering", "out", "sprite", "in", PortKind.STREAM
+                "render-stream", "root.rendering", "out", "sprite", "in", PortKind.EXEC
             ),
         ),
     )
@@ -1493,7 +1624,7 @@ def test_gpu_plane_collision_uses_portable_post_integration_helpers_and_compiles
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -1528,7 +1659,7 @@ def test_gpu_sphere_collision_uses_portable_post_integration_helpers_and_compile
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -1571,7 +1702,7 @@ def _vector_field_gpu_source(*, boundary="zero", filtering="linear"):
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "acceleration", "in", PortKind.STREAM
+                "stream", "root.update", "out", "acceleration", "in", PortKind.EXEC
             ),
             GraphLinkRecord("position", "position", "value", "sample", "position"),
             GraphLinkRecord("value", "sample", "value", "acceleration", "value"),
@@ -1613,7 +1744,7 @@ def _sdf_gpu_source():
         ),
         links=(
             GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
             ),
         ),
     )
@@ -1698,10 +1829,10 @@ def test_gpu_lowerer_emits_normalized_age_lerp_rotation_and_attribute_stores():
             ),
         ),
         links=(
-            GraphLinkRecord("stream-color", "root.update", "out", "set-color", "in", PortKind.STREAM),
-            GraphLinkRecord("stream-size", "set-color", "out", "set-size", "in", PortKind.STREAM),
+            GraphLinkRecord("stream-color", "root.update", "out", "set-color", "in", PortKind.EXEC),
+            GraphLinkRecord("stream-size", "set-color", "out", "set-size", "in", PortKind.EXEC),
             GraphLinkRecord(
-                "stream-rotation", "set-size", "out", "set-rotation", "in", PortKind.STREAM
+                "stream-rotation", "set-size", "out", "set-rotation", "in", PortKind.EXEC
             ),
             GraphLinkRecord("color-a", "start-color", "value", "color-over-life", "a"),
             GraphLinkRecord("color-b", "end-color", "value", "color-over-life", "b"),
@@ -1761,8 +1892,8 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
             ),
         ),
         links=(
-            GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.STREAM),
-            GraphLinkRecord("scale-stream", "orientation", "out", "scale", "in", PortKind.STREAM),
+            GraphLinkRecord("init-stream", "root.init", "out", "orientation", "in", PortKind.EXEC),
+            GraphLinkRecord("scale-stream", "orientation", "out", "scale", "in", PortKind.EXEC),
         ),
     )
     update = GraphDocument(
@@ -1775,7 +1906,7 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
                 properties={"degrees_per_second": [90.0, 180.0, 270.0]},
             ),
         ),
-        links=(GraphLinkRecord("update-stream", "root.update", "out", "rotate", "in", PortKind.STREAM),),
+        links=(GraphLinkRecord("update-stream", "root.update", "out", "rotate", "in", PortKind.EXEC),),
     )
     rendering = GraphDocument(
         "particle.rendering",
@@ -1787,7 +1918,7 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
                 properties={"mesh": AssetReference(guid="mesh-guid").to_dict()},
             ),
         ),
-        links=(GraphLinkRecord("render-stream", "root.rendering", "out", "mesh", "in", PortKind.STREAM),),
+        links=(GraphLinkRecord("render-stream", "root.rendering", "out", "mesh", "in", PortKind.EXEC),),
     )
     hir = ParticleGraphCompiler().compile(
         ParticleGraphAsset(
@@ -1849,8 +1980,8 @@ def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():
             GraphNodeRecord("gradient", "common.gradient.sample"),
         ),
         links=(
-            GraphLinkRecord("stream-size", "root.update", "out", "set-size", "in", PortKind.STREAM),
-            GraphLinkRecord("stream-color", "set-size", "out", "set-color", "in", PortKind.STREAM),
+            GraphLinkRecord("stream-size", "root.update", "out", "set-size", "in", PortKind.EXEC),
+            GraphLinkRecord("stream-color", "set-size", "out", "set-color", "in", PortKind.EXEC),
             GraphLinkRecord("age-curve", "age", "value", "curve", "t"),
             GraphLinkRecord("age-gradient", "age", "value", "gradient", "t"),
             GraphLinkRecord("curve-size", "curve", "value", "set-size", "value"),

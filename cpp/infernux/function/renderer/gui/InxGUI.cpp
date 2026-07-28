@@ -169,6 +169,10 @@ void InxGUI::Init(SDL_Window *window)
     io.ConfigDockingWithShift = false;    // Dock without holding shift
     io.ConfigDockingAlwaysTabBar = true;  // Always show tab bar for docked windows
     io.ConfigDragClickToInputText = true; // Single click-release on DragFloat → text input
+    // Graph nodes and other canvas tools use draw-list hit testing rather than
+    // native ImGui items. Restrict floating-window movement to the title bar
+    // so those content gestures cannot also move their parent window.
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
 
     ImGui_ImplSDL3_InitForVulkan(window);
 
