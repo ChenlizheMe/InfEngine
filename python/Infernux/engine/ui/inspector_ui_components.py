@@ -97,7 +97,8 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
             _apply_if_changed(comp, field_name, tex_path, "")
 
     def _asset_items(filt):
-        patterns = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm")
+        from Infernux.core.asset_types import IMAGE_EXTENSIONS
+        patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
         items = []
         for pattern in patterns:
             items += _picker_assets(filt, pattern, assets_only=True)
@@ -109,6 +110,7 @@ def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
         clickable=False, accept="TEXTURE_FILE",
         on_drop=_on_drop, picker_asset_items=_asset_items,
         on_pick=_on_pick, on_clear=_on_clear,
+        ping_path=tex_path or None,
     )
     _record_field(ctx, comp, field_name, "object_field", label)
 

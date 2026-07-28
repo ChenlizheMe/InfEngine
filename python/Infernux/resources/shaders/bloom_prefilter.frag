@@ -1,27 +1,34 @@
 #version 450
-@shader_id: Bloom Prefilter
-@hidden
+
+ShaderInfo {
+    Name "Bloom Prefilter"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float threshold
+        Float knee
+        Float clampMax
+        Float _pad0
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Bloom prefilter pass — aligned with Unity's Bloom
 // Applies a soft knee threshold curve to extract bright pixels.
 //
-// Push constants layout (indexed by slot):
+// Push constants (indexed by slot):
 //   [0] threshold   — luminance threshold
 //   [1] knee        — softness of the threshold curve (0 = hard, 1 = full soft)
 //   [2] clamp_max   — maximum brightness clamp value
 //   [3] (unused)
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PushConstants {
-    float threshold;
-    float knee;
-    float clampMax;
-    float _pad0;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 // Unity's soft knee threshold curve:
 //   knee = threshold * pc.knee

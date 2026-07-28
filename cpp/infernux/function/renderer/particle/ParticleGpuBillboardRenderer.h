@@ -3,6 +3,7 @@
 #include "ParticleGpuOutputRenderer.h"
 #include "ParticleGpuRuntime.h"
 #include "ParticleOutputSemantics.h"
+#include <function/renderer/rhi/RhiTexture.h>
 
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/renderer/MaterialPassPipeline.h>
@@ -17,7 +18,7 @@
 namespace infernux
 {
 class InxMaterial;
-class FrameDeletionQueue;
+class GpuRetirementQueue;
 } // namespace infernux
 
 namespace infernux::particle
@@ -44,13 +45,12 @@ struct GpuBillboardTextureLease
     GpuBillboardTextureStatus status = GpuBillboardTextureStatus::Failed;
     rhi::TextureViewHandle texture;
     rhi::SamplerHandle sampler;
-    std::shared_ptr<void> keepAlive;
-    bool releaseHandles = false;
+    std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
+    std::shared_ptr<const rhi::TextureGpuView> gpuView;
 };
 
 using GpuBillboardTextureResolver =
     std::function<GpuBillboardTextureLease(const std::string &textureGuid, const std::string &bindingName)>;
-using GpuBillboardTextureVersionResolver = std::function<uint64_t(const std::string &textureGuid)>;
 
 struct GpuBillboardRendererDesc
 {
@@ -58,6 +58,8 @@ struct GpuBillboardRendererDesc
     ShaderBytecode fragmentShader;
     ShaderBytecode forwardPlusFragmentShader;
     ShaderBytecode pickingFragmentShader;
+    ShaderBytecode motionVertexShader;
+    ShaderBytecode motionFragmentShader;
     std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
     rhi::BufferHandle instances;
     rhi::BufferHandle renderIndices;
@@ -67,8 +69,7 @@ struct GpuBillboardRendererDesc
     uint32_t flipbookColumns = 1;
     uint32_t flipbookRows = 1;
     GpuBillboardTextureResolver textureResolver;
-    GpuBillboardTextureVersionResolver textureVersionResolver;
-    FrameDeletionQueue *deletionQueue = nullptr;
+    GpuRetirementQueue *deletionQueue = nullptr;
 };
 
 using GpuBillboardViewConstants = GpuParticleViewConstants;
@@ -141,8 +142,8 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
         uint64_t requestedVersion = 0;
         rhi::TextureViewHandle texture;
         rhi::SamplerHandle sampler;
-        std::shared_ptr<void> keepAlive;
-        bool releaseHandles = false;
+        std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
+        std::shared_ptr<const rhi::TextureGpuView> gpuView;
         bool pending = false;
         bool fallback = false;
     };
@@ -164,8 +165,7 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
     [[nodiscard]] bool RebuildBindGroup();
     void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
-    void RetireTexture(rhi::TextureViewHandle texture, rhi::SamplerHandle sampler, std::shared_ptr<void> keepAlive,
-                       bool releaseHandles);
+    void RetireTexture(std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<InxMaterial> m_material;
@@ -175,8 +175,7 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
     uint32_t m_flipbookColumns = 1;
     uint32_t m_flipbookRows = 1;
     GpuBillboardTextureResolver m_textureResolver;
-    GpuBillboardTextureVersionResolver m_textureVersionResolver;
-    FrameDeletionQueue *m_deletionQueue = nullptr;
+    GpuRetirementQueue *m_deletionQueue = nullptr;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_renderIndices;
     rhi::ShaderModuleHandle m_vertexShader;
@@ -185,6 +184,8 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
     rhi::ShaderModuleHandle m_forwardPlusFragmentShader;
     rhi::ShaderModuleHandle m_pickingVertexShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;
+    rhi::ShaderModuleHandle m_motionVertexShader;
+    rhi::ShaderModuleHandle m_motionFragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     struct ViewBindGroup

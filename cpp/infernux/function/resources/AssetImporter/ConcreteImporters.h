@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetImporter.h"
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 
@@ -26,8 +27,7 @@ class TextureImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif",       ".psd",
-                ".hdr", ".pic", ".pnm",  ".pgm", ".ppm", ".inxvfield", ".inxsdf"};
+        return asset_formats::ToVector(asset_formats::kTextureExtensions);
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
@@ -184,26 +184,6 @@ class ParticleGraphImporter final : public AssetImporter
 };
 
 // ==========================================================================
-// PointCacheImporter - bakes typed point channels into a runtime artifact
-// ==========================================================================
-
-class PointCacheImporter final : public AssetImporter
-{
-  public:
-    [[nodiscard]] ResourceType GetResourceType() const override
-    {
-        return ResourceType::PointCache;
-    }
-
-    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
-    {
-        return {".pointcache"};
-    }
-
-    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
-};
-
-// ==========================================================================
 // ScriptImporter
 // ==========================================================================
 
@@ -240,7 +220,7 @@ class AudioImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".wav"};
+        return asset_formats::ToVector(asset_formats::kAudioExtensions);
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override
@@ -277,7 +257,7 @@ class ModelImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl"};
+        return asset_formats::ToVector(asset_formats::kMeshExtensions);
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;

@@ -194,6 +194,7 @@ class IGUI:
         on_pick: Optional[Callable[[Any], None]] = None,
         on_clear: Optional[Callable[[], None]] = None,
         on_ping: Optional[Callable[[], None]] = None,
+        ping_path: Optional[str] = None,
         semantic_id: str = "",
     ) -> bool:
         """Render a Unity-style object-reference field with optional drop target
@@ -203,6 +204,8 @@ class IGUI:
         *on_pick*: called with the selected value when user picks an item.
         *on_clear*: called when user picks "None" to clear the field.
         *on_ping*: called on body double-click (e.g. reveal asset in Project).
+        *ping_path*: when *on_ping* is omitted, auto-reveals this asset path in
+        Project on body double-click.
 
         Returns True if the field selectable was clicked.
         """
@@ -226,8 +229,14 @@ class IGUI:
         if (interaction & 2) and has_picker:
             _popup_needs_focus.add(field_id)
             _picker_filters.pop(f"_igui_filter_{field_id}", None)
-        if doubled and on_ping is not None:
-            on_ping()
+        if doubled:
+            if on_ping is not None:
+                on_ping()
+            else:
+                path = str(ping_path or "").strip()
+                if path and path.lower() not in {"none", "null"}:
+                    from ._inspector_references import ping_asset_in_project
+                    ping_asset_in_project(path)
 
         if accept and on_drop:
             if isinstance(accept, str):

@@ -2,7 +2,7 @@
 // default_gbuffer_evaluate.glsl — Engine default GBuffer packing (pre-lit)
 //
 // Used automatically when a .shadingmodel file does not provide a custom
-// @target: gbuffer block.  Performs full PBR lighting evaluation identical to
+// ShadingModel Entry: gbuffer block.  Performs full PBR lighting evaluation identical to
 // the forward path and stores the HDR lit result in gbuf0 so that the
 // deferred lighting pass can simply pass the color through.
 //
@@ -41,7 +41,7 @@ void evaluate(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1,
                                    F0, f90, energyCompensation,
                                    v_ViewDepth, mainLight.shadow);
 
-    // Indirect lighting — keep in sync with pbr.shadingmodel @target: forward.
+    // Indirect lighting — keep in sync with pbr.shadingmodel ShadingModel Entry: forward.
     // Diffuse: cosine-convolved irradiance (roughness-free, SH-style).
     // Specular: radiance model blended toward irradiance as the GGX lobe
     // widens (analytic prefiltered-mip stand-in, metals included), gated by

@@ -22,7 +22,8 @@ for (const relative of [
     "roadmap.html",
     "download.html",
     "404.html",
-    path.join("learn", "placeholder.html"),
+    path.join("learn", "shaders.html"),
+    path.join("learn", "renderstack-post-processing.html"),
     path.join("wiki", "theme", "main.html"),
 ]) {
     const source = await readFile(path.join(docsRoot, relative), "utf8");

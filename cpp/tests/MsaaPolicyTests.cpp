@@ -32,7 +32,18 @@ int main()
     assert(!conflict.IsAccepted());
     assert(conflict.samples == 0);
 
-    rhi::DeviceCapabilities capabilities;
+    // An inactive view can retain the previous graph revision while the active
+    // view publishes a new global sample count. It must not veto that update.
+    const auto gameTransition = ResolveActiveMsaaRequests(4, false, 8, true);
+    assert(gameTransition.IsAccepted());
+    assert(gameTransition.samples == 8);
+    const auto sceneTransition = ResolveActiveMsaaRequests(2, true, 8, false);
+    assert(sceneTransition.IsAccepted());
+    assert(sceneTransition.samples == 2);
+    assert(ResolveActiveMsaaRequests(4, true, 8, true).status == MsaaRequestStatus::ConflictingRequests);
+    assert(ResolveActiveMsaaRequests(4, false, 8, false).status == MsaaRequestStatus::NoRequest);
+
+    rhi::DeviceCaps capabilities;
     auto &color = capabilities.formats[static_cast<size_t>(rhi::PixelFormat::RGBA16SFloat)];
     color.format = rhi::PixelFormat::RGBA16SFloat;
     color.sampleCounts = AllMsaaSampleCounts();

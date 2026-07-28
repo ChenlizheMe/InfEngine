@@ -309,6 +309,7 @@ class TestAssetCategory:
     def test_texture(self):
         assert asset_category_from_extension(".png") == "texture"
         assert asset_category_from_extension(".jpg") == "texture"
+        assert asset_category_from_extension(".jpe") == "texture"
 
     def test_shader(self):
         assert asset_category_from_extension(".vert") == "shader"
@@ -316,6 +317,7 @@ class TestAssetCategory:
 
     def test_audio(self):
         assert asset_category_from_extension(".wav") == "audio"
+        assert asset_category_from_extension(".ogg") == "audio"
 
     def test_font(self):
         assert asset_category_from_extension(".ttf") == "font"
@@ -323,6 +325,7 @@ class TestAssetCategory:
     def test_mesh(self):
         assert asset_category_from_extension(".fbx") == "mesh"
         assert asset_category_from_extension(".gltf") == "mesh"
+        assert asset_category_from_extension(".blend") == "mesh"
 
     def test_prefab(self):
         assert asset_category_from_extension(".prefab") == "prefab"

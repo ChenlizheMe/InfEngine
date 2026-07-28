@@ -8,7 +8,6 @@
 #include "vk/VulkanRhiDevice.h"
 
 #include <algorithm>
-#include <core/config/EngineConfig.h>
 #include <core/error/InxError.h>
 #include <unordered_map>
 #include <vector>
@@ -83,15 +82,14 @@ struct FullscreenRenderer::Impl
     rhi::SamplerHandle linearSamplerHandle;
     rhi::SamplerHandle nearestSamplerHandle;
     std::unordered_map<FullscreenPipelineKey, NativePipelineEntry, FullscreenPipelineKeyHash> pipelines;
-    std::vector<VkDescriptorPool> descriptorPools;
     std::vector<std::vector<rhi::BindGroupHandle>> frameBindGroups;
     std::vector<rhi::BindGroupHandle> globalsGroups;
 
     [[nodiscard]] uint32_t CurrentFrame() const
     {
-        if (!core || descriptorPools.empty())
+        if (!core || frameBindGroups.empty())
             return 0;
-        return core->GetSwapchain().GetCurrentFrame() % static_cast<uint32_t>(descriptorPools.size());
+        return core->GetCurrentFrameSlot() % static_cast<uint32_t>(frameBindGroups.size());
     }
 
     void ReleaseBindGroups(uint32_t frame)
@@ -118,6 +116,35 @@ struct FullscreenRenderer::Impl
         if (entry.emptyGapLayout != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device, entry.emptyGapLayout, nullptr);
         entry = {};
+    }
+
+    void RetirePipeline(NativePipelineEntry entry)
+    {
+        if (rhiDevice) {
+            rhiDevice->Release(entry.rhi.pipeline);
+            rhiDevice->Release(entry.rhi.inputLayout);
+        }
+
+        const VkDevice retiredDevice = device;
+        const VkPipeline pipeline = entry.pipeline;
+        const VkPipelineLayout layout = entry.layout;
+        const VkDescriptorSetLayout inputLayout = entry.inputLayout;
+        const VkDescriptorSetLayout emptyGapLayout = entry.emptyGapLayout;
+        auto destroy = [retiredDevice, pipeline, layout, inputLayout, emptyGapLayout] {
+            if (pipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(retiredDevice, pipeline, nullptr);
+            if (layout != VK_NULL_HANDLE)
+                vkDestroyPipelineLayout(retiredDevice, layout, nullptr);
+            if (inputLayout != VK_NULL_HANDLE)
+                vkDestroyDescriptorSetLayout(retiredDevice, inputLayout, nullptr);
+            if (emptyGapLayout != VK_NULL_HANDLE)
+                vkDestroyDescriptorSetLayout(retiredDevice, emptyGapLayout, nullptr);
+        };
+
+        if (core && core->GetRetirementQueue().HasSerialSource())
+            core->GetRetirementQueue().Retire(std::move(destroy));
+        else
+            destroy();
     }
 
     NativePipelineEntry CreatePipeline(const FullscreenPipelineKey &key)
@@ -261,26 +288,9 @@ void FullscreenRenderer::Initialize(InxVkCoreModular *vkCore)
     m_impl->linearSamplerHandle = m_impl->rhiDevice->RegisterSampler(m_impl->linearSampler);
     m_impl->nearestSamplerHandle = m_impl->rhiDevice->RegisterSampler(m_impl->nearestSampler);
 
-    const EngineConfig &config = EngineConfig::Get();
     const uint32_t frames = std::max(1u, vkCore->GetMaxFramesInFlight());
-    m_impl->descriptorPools.assign(frames, VK_NULL_HANDLE);
     m_impl->frameBindGroups.resize(frames);
     m_impl->globalsGroups.resize(frames);
-    for (auto &pool : m_impl->descriptorPools) {
-        VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                  std::max(1u, config.fullscreenSamplerDescriptorsPerFrame)};
-        VkDescriptorPoolCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        info.maxSets = std::max(1u, config.fullscreenDescriptorSetsPerFrame);
-        info.poolSizeCount = 1;
-        info.pPoolSizes = &size;
-        if (vkCreateDescriptorPool(m_impl->device, &info, nullptr, &pool) != VK_SUCCESS) {
-            INXLOG_ERROR("FullscreenRenderer: failed to create descriptor pool");
-            Destroy();
-            return;
-        }
-    }
 }
 
 void FullscreenRenderer::Destroy()
@@ -300,10 +310,6 @@ void FullscreenRenderer::Destroy()
     }
     for (auto &[key, entry] : m_impl->pipelines)
         m_impl->DestroyPipeline(entry);
-    for (const auto pool : m_impl->descriptorPools) {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(m_impl->device, pool, nullptr);
-    }
     if (m_impl->linearSampler != VK_NULL_HANDLE)
         vkDestroySampler(m_impl->device, m_impl->linearSampler, nullptr);
     if (m_impl->nearestSampler != VK_NULL_HANDLE)
@@ -323,50 +329,57 @@ const FullscreenPipelineEntry &FullscreenRenderer::EnsurePipeline(const Fullscre
     return it->second.rhi;
 }
 
+void FullscreenRenderer::InvalidateShader(const std::string &shaderName)
+{
+    if (!m_impl || shaderName.empty())
+        return;
+
+    size_t retired = 0;
+    for (auto entry = m_impl->pipelines.begin(); entry != m_impl->pipelines.end();) {
+        if (entry->first.shaderName != shaderName) {
+            ++entry;
+            continue;
+        }
+        auto pipeline = std::move(entry->second);
+        entry = m_impl->pipelines.erase(entry);
+        m_impl->RetirePipeline(std::move(pipeline));
+        ++retired;
+    }
+    if (retired > 0)
+        INXLOG_INFO("FullscreenRenderer: retired ", retired, " pipeline revision(s) for shader '", shaderName, "'");
+}
+
 rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHandle layout,
                                                            const rhi::TextureViewHandle *inputViews,
                                                            uint32_t inputViewCount, const bool *depthInputs,
                                                            rhi::SamplerHandle colorSampler)
 {
-    if (!m_impl || m_impl->descriptorPools.empty())
+    if (!m_impl || m_impl->frameBindGroups.empty())
         return {};
     const VkDescriptorSetLayout nativeLayout = m_impl->rhiDevice->Resolve(layout);
     const uint32_t frame = m_impl->CurrentFrame();
     if (nativeLayout == VK_NULL_HANDLE)
         return {};
 
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = m_impl->descriptorPools[frame];
-    allocateInfo.descriptorSetCount = 1;
-    allocateInfo.pSetLayouts = &nativeLayout;
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(m_impl->device, &allocateInfo, &set) != VK_SUCCESS)
+    rhi::BindGroupDesc groupDesc;
+    groupDesc.layout = layout;
+    groupDesc.lifetime = rhi::BindGroupLifetime::FrameTransient;
+    groupDesc.textureCount = inputViewCount;
+    if (inputViewCount > groupDesc.textures.size())
         return {};
-
-    std::vector<VkDescriptorImageInfo> imageInfos(inputViewCount);
-    std::vector<VkWriteDescriptorSet> writes(inputViewCount);
     for (uint32_t i = 0; i < inputViewCount; ++i) {
         const bool depth = depthInputs && depthInputs[i];
-        imageInfos[i].imageView = m_impl->rhiDevice->Resolve(inputViews[i]);
-        imageInfos[i].sampler = m_impl->rhiDevice->Resolve(depth ? m_impl->nearestSamplerHandle : colorSampler);
-        imageInfos[i].imageLayout =
-            depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        if (imageInfos[i].imageView == VK_NULL_HANDLE || imageInfos[i].sampler == VK_NULL_HANDLE) {
-            vkFreeDescriptorSets(m_impl->device, m_impl->descriptorPools[frame], 1, &set);
+        auto &texture = groupDesc.textures[i];
+        texture.binding = i;
+        texture.type = rhi::BindingType::CombinedTextureSampler;
+        texture.texture = inputViews[i];
+        texture.sampler = depth ? m_impl->nearestSamplerHandle : colorSampler;
+        texture.depthRead = depth;
+        if (!texture.texture.IsValid() || !texture.sampler.IsValid())
             return {};
-        }
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = set;
-        writes[i].dstBinding = i;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].descriptorCount = 1;
-        writes[i].pImageInfo = &imageInfos[i];
     }
-    if (!writes.empty())
-        vkUpdateDescriptorSets(m_impl->device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    const auto handle = m_impl->rhiDevice->RegisterBindGroup(set);
+    const auto handle = m_impl->rhiDevice->CreateBindGroup(groupDesc);
     if (handle.IsValid())
         m_impl->frameBindGroups[frame].push_back(handle);
     return handle;
@@ -399,11 +412,10 @@ void FullscreenRenderer::Draw(rhi::GraphicsCommandEncoder &encoder, const Fullsc
 
 void FullscreenRenderer::ResetPool()
 {
-    if (!m_impl || m_impl->descriptorPools.empty())
+    if (!m_impl || m_impl->frameBindGroups.empty())
         return;
     const uint32_t frame = m_impl->CurrentFrame();
     m_impl->ReleaseBindGroups(frame);
-    vkResetDescriptorPool(m_impl->device, m_impl->descriptorPools[frame], 0);
 }
 
 rhi::SamplerHandle FullscreenRenderer::GetLinearSampler() const noexcept

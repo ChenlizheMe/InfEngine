@@ -276,7 +276,7 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::BeginLoadAsset(const std::string
     return ticket;
 }
 
-bool AssetRegistry::TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket)
+bool AssetRegistry::TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool allowStaleIfUnloaded)
 {
     if (!ticket || ticket->m_registry != this)
         throw std::invalid_argument("Asset load ticket belongs to another registry");
@@ -292,10 +292,15 @@ bool AssetRegistry::TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &t
         ticket->m_rejected = true;
         std::rethrow_exception(ticket->m_failure);
     }
-    if (m_assetMutationGenerations[ticket->m_guid] != ticket->m_expectedMutationGeneration) {
+    const bool staleAfterMutation = m_assetMutationGenerations[ticket->m_guid] != ticket->m_expectedMutationGeneration;
+    const bool canUseStaleUnloadedPayload = allowStaleIfUnloaded &&
+                                            m_loadedAssets.find(ticket->m_guid) == m_loadedAssets.end();
+    if (staleAfterMutation && !canUseStaleUnloadedPayload) {
         ticket->m_rejected = true;
         throw std::logic_error("Asset load ticket is stale after a newer registry mutation");
     }
+    if (staleAfterMutation)
+        INXLOG_DEBUG("AssetRegistry: accepting stale worker payload for unloaded preview asset ", ticket->m_guid);
     if (!ticket->m_payload) {
         ticket->m_rejected = true;
         throw std::logic_error("Asset load ticket completed without a payload");

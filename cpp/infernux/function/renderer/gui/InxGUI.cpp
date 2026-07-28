@@ -173,26 +173,9 @@ void InxGUI::Init(SDL_Window *window)
     ImGui_ImplSDL3_InitForVulkan(window);
 
     VkDevice device = m_vkCore_ptr->GetDevice();
-    VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000},
-                                        {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000},
-                                        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000},
-                                        {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000}};
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 1000 * IM_ARRAYSIZE(poolSizes);
-    poolInfo.poolSizeCount = static_cast<uint32_t>(IM_ARRAYSIZE(poolSizes));
-    poolInfo.pPoolSizes = poolSizes;
-
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_descriptorPool_vk) != VK_SUCCESS) {
+    m_descriptorPool_vk = m_vkCore_ptr->GetDeviceContext().GetRhiDevice().GetDescriptorManager().AcquireExternalPool(
+        vk::DescriptorArena::ImGuiExternal);
+    if (m_descriptorPool_vk == VK_NULL_HANDLE) {
         INXLOG_FATAL("Failed to create descriptor pool for ImGui.");
         return;
     }
@@ -602,6 +585,28 @@ void InxGUI::BuildFrameInternal()
     ApplyPendingDockTabSelections();
     PromoteActiveModal();
 
+#ifndef IMGUI_DISABLE_DEBUG_TOOLS
+    // Dear ImGui only shows duplicate-ID diagnostics in an on-screen tooltip.
+    // Mirror the hovered conflict into the engine log so UI regressions remain
+    // actionable in automated Editor validation runs.
+    {
+        static ImGuiID lastConflictId = 0;
+        static std::string lastConflictWindow;
+        ImGuiContext &imgui = *m_imguiContext_ptr;
+        const ImGuiID conflictId = imgui.HoveredIdPreviousFrameItemCount > 1 ? imgui.HoveredIdPreviousFrame : 0;
+        const char *windowName = imgui.HoveredWindow != nullptr ? imgui.HoveredWindow->Name : "<no window>";
+        if (conflictId != 0 && (conflictId != lastConflictId || lastConflictWindow != windowName)) {
+            INXLOG_ERROR("[ImGui] duplicate visible item ID=", conflictId,
+                         " count=", imgui.HoveredIdPreviousFrameItemCount, " window='", windowName, "'");
+            lastConflictId = conflictId;
+            lastConflictWindow = windowName;
+        } else if (conflictId == 0) {
+            lastConflictId = 0;
+            lastConflictWindow.clear();
+        }
+    }
+#endif
+
     // ImGui normally renders modals in the regular window layer and relies on
     // root-window ordering alone. A floating dock host can still be emitted
     // over a close confirmation in that model. Use ImGui's overlay layer only
@@ -724,11 +729,9 @@ void InxGUI::Shutdown()
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
 
-    // Now safe to destroy the descriptor pool (all sets already freed).
-    if (m_descriptorPool_vk != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(m_vkCore_ptr->GetDevice(), m_descriptorPool_vk, nullptr);
-        m_descriptorPool_vk = VK_NULL_HANDLE;
-    }
+    // The central descriptor manager owns the external pool. ImGui has
+    // released its sets above; the pool survives until backend shutdown.
+    m_descriptorPool_vk = VK_NULL_HANDLE;
 
     if (m_imguiRenderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(m_vkCore_ptr->GetDevice(), m_imguiRenderPass, nullptr);

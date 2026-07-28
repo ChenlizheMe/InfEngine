@@ -1,24 +1,32 @@
 #version 450
 
-@shader_id: Skybox Procedural
-@pass_tag: skybox
-@cull: back
-@depth_write: false
-@depth_test: less_equal
-@queue: 32767
-@cast_shadows: off
-@property: skyTopColor, Color, [0.431, 0.494, 0.612, 1.0]
-@property: skyHorizonColor, Color, [0.651, 0.725, 0.816, 1.0]
-@property: groundColor, Color, [0.345, 0.345, 0.345, 1.0]
-@property: exposure, Float, 1.0
-
-@import: Math
+ShaderInfo {
+    Name "Skybox Procedural"
+    Queue 32767
+    Cull Back
+    DepthWrite Off
+    DepthTest LessEqual
+    PassTag Skybox
+    CastShadows Off
+    Imports ["Math"]
+    Capabilities [Standalone]
+    Properties {
+        Color skyTopColor = [0.431, 0.494, 0.612, 1.0]
+        Color skyHorizonColor = [0.651, 0.725, 0.816, 1.0]
+        Color groundColor = [0.345, 0.345, 0.345, 1.0]
+        Float exposure = 1.0
+    }
+    Inputs {
+        Float3 fragWorldDir
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Input from vertex shader
-layout(location = 0) in vec3 fragWorldDir;
 
 // Output
-layout(location = 0) out vec4 outColor;
 
 // ============================================================================
 // Procedural Sky

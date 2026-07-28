@@ -99,7 +99,6 @@ void RegisterResourceBindings(py::module_ &m)
         .value("PhysicMaterial", ResourceType::PhysicMaterial)
         .value("RenderEffect", ResourceType::RenderEffect)
         .value("ParticleGraph", ResourceType::ParticleGraph)
-        .value("PointCache", ResourceType::PointCache)
         .export_values();
 
     // InxResourceMeta - resource metadata

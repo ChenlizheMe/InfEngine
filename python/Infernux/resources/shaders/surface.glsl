@@ -1,4 +1,6 @@
-@shader_id: Surface
+ShaderInfo {
+    Name "Surface"
+}
 
 // ============================================================================
 // surface.glsl — SurfaceData struct for the surface() shading model
@@ -13,7 +15,7 @@
 //     the user or TA to rewrite shader code for different pipelines.
 //
 // Usage:
-//   @shading_model: PBR    (or @shading_model: Unlit)
+//   ShaderInfo ShadingModel: PBR    (or ShaderInfo ShadingModel: Unlit)
 //   void surface(out SurfaceData s) {
 //       s = InitSurfaceData();
 //       s.albedo = texture(texSampler, v_TexCoord).rgb;

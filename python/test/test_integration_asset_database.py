@@ -17,7 +17,6 @@ from Infernux.particle import (
     AssetReference,
     ParticleArtifactRegistry,
     ParticleGraphAsset,
-    PointCache,
     SdfVolume,
     VectorField,
 )
@@ -154,10 +153,6 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
             stable_id="collision-field",
             texture=AssetReference(guid="collision-field-guid"),
         ).to_dict(),
-        PointCache(
-            stable_id="spawn-points",
-            cache=AssetReference(guid="point-cache-guid"),
-        ).to_dict(),
     ]
     source.write_text(
         json.dumps(document),
@@ -177,7 +172,6 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         assert artifact.hir["stable_id"] == "integration-smoke"
         assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
             "collision-field-guid",
-            "point-cache-guid",
             "smoke-material-guid",
             "wind-field-guid",
         }
@@ -280,133 +274,6 @@ def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engin
         ParticleArtifactRegistry.clear()
 
 
-def test_point_cache_import_bakes_typed_runtime_artifact(engine, tmp_path: Path):
-    asset_db = engine.get_asset_database()
-    source = tmp_path / "Morph.pointcache"
-    source.write_text(
-        json.dumps(
-            {
-                "$schema": "infernux.point_cache",
-                "stable_id": "morph-cache",
-                "name": "Morph Cache",
-                "bake_basis": "right_handed_y_up",
-                "point_count": 2,
-                "channels": [
-                    {
-                        "name": "position",
-                        "semantic": "position",
-                        "type": "vec3",
-                        "data": [[1.0, 2.0, 3.0], [-4.0, 5.5, 6.0]],
-                    },
-                    {
-                        "name": "stable_id",
-                        "semantic": "id",
-                        "type": "u32",
-                        "data": [7, 42],
-                    },
-                    {
-                        "name": "temperature",
-                        "semantic": "custom",
-                        "type": "f32",
-                        "data": [0.25, 0.75],
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    try:
-        result = AssetManager.import_asset(str(source), database=asset_db)
-
-        artifact = Path(
-            asset_db.get_runtime_artifact_path(result.guid, ResourceType.PointCache)
-        )
-        assert result, result.error
-        assert result.resource_type == ResourceType.PointCache
-        metadata = asset_db.get_meta_by_path(str(source))
-        assert metadata.get_resource_type() == ResourceType.PointCache
-        assert metadata.get_int("artifact_point_count") == 2
-        assert metadata.get_int("artifact_channel_count") == 3
-        assert metadata.get_string("artifact_bake_basis") == "right_handed_y_up"
-        assert artifact.name == f"{result.guid}.inxpcache"
-        published_artifact = artifact.read_bytes()
-        assert published_artifact.startswith(b"INXPOINT")
-
-        registry = AssetRegistry.instance()
-        ticket = registry.begin_load_point_cache_by_guid(result.guid)
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not registry.try_commit_asset_load(ticket):
-            time.sleep(0.001)
-        assert ticket.committed is True
-        assert ticket.produced_on_worker is True
-        runtime = registry.get_point_cache(result.guid)
-        assert runtime is not None
-        assert runtime.guid == result.guid
-        assert same_path(runtime.file_path, source)
-        assert runtime.name == "Morph Cache"
-        assert runtime.stable_id == "morph-cache"
-        assert runtime.bake_basis == "right_handed_y_up"
-        assert runtime.point_count == 2
-        assert runtime.channel_names == ["position", "stable_id", "temperature"]
-        assert runtime.has_channel("position")
-        assert not runtime.has_channel("missing")
-        assert runtime.cpu_byte_size > 0
-        initial_generation = runtime.generation
-        assert initial_generation > 0
-        assert runtime.lookup_index(7) == 0
-        assert runtime.lookup_index(42) == 1
-        assert runtime.lookup_index(99) == 0xFFFFFFFF
-        lookup_source = np.asarray([42, 99, 7], dtype=np.uint32)
-        lookup_result = np.empty(3, dtype=np.uint32)
-        runtime.lookup_indices(lookup_source, lookup_result)
-        np.testing.assert_array_equal(lookup_result, [1, 0xFFFFFFFF, 0])
-
-        original_positions = runtime.channel_array("position")
-        stable_ids = runtime.channel_array("stable_id")
-        temperatures = runtime.channel_array("temperature")
-        assert original_positions.shape == (2, 3)
-        assert original_positions.dtype == np.dtype(np.float32)
-        assert stable_ids.shape == (2,)
-        assert stable_ids.dtype == np.dtype(np.uint32)
-        assert temperatures.shape == (2,)
-        assert temperatures.dtype == np.dtype(np.float32)
-        assert not original_positions.flags.writeable
-        assert not stable_ids.flags.writeable
-        np.testing.assert_array_equal(original_positions, [[1.0, 2.0, 3.0], [-4.0, 5.5, 6.0]])
-        np.testing.assert_array_equal(stable_ids, [7, 42])
-        np.testing.assert_array_equal(temperatures, [0.25, 0.75])
-        with pytest.raises(KeyError, match="channel does not exist"):
-            runtime.channel_array("missing")
-
-        updated = json.loads(source.read_text(encoding="utf-8"))
-        updated["channels"][0]["data"][0] = [9.0, 8.0, 7.0]
-        source.write_text(json.dumps(updated), encoding="utf-8")
-        reimported = AssetManager.reimport_asset(str(source), database=asset_db)
-        assert reimported, reimported.error
-
-        current_positions = runtime.channel_array("position")
-        assert runtime.generation == initial_generation + 1
-        np.testing.assert_array_equal(current_positions, [[9.0, 8.0, 7.0], [-4.0, 5.5, 6.0]])
-        np.testing.assert_array_equal(original_positions, [[1.0, 2.0, 3.0], [-4.0, 5.5, 6.0]])
-        published_artifact = artifact.read_bytes()
-
-        invalid = json.loads(source.read_text(encoding="utf-8"))
-        invalid["channels"][1]["data"] = [7, 7]
-        source.write_text(json.dumps(invalid), encoding="utf-8")
-        failed = AssetManager.reimport_asset(str(source), database=asset_db)
-
-        assert not failed
-        assert failed.guid == result.guid
-        assert "stable point IDs must be unique" in failed.error
-        assert artifact.read_bytes() == published_artifact
-        assert runtime.generation == initial_generation + 1
-        np.testing.assert_array_equal(runtime.channel_array("position"), current_positions)
-    finally:
-        if "result" in locals() and result.guid:
-            AssetRegistry.instance().remove_asset(result.guid)
-        if asset_db.contains_path(str(source)):
-            asset_db.delete_asset(str(source))
 
 
 def test_vector_field_import_exposes_immutable_volume_generations(engine, tmp_path: Path):

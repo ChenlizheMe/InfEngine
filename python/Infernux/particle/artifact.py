@@ -339,9 +339,63 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                     "parameters": list(operation.parameters),
                     "source_node_uid": operation.source_node_uid,
                     "value_bindings": list(operation.value_bindings),
+                    "execution_predicates": [
+                        {
+                            "source_node_uid": predicate.source_node_uid,
+                            "value_id": predicate.value_id,
+                            "literal": predicate.literal,
+                        "expected": predicate.expected,
+                        "runtime_condition": predicate.runtime_condition,
+                        }
+                        for predicate in operation.execution_predicates
+                    ],
                 }
                 for operation in value.operations
             ],
+            "flow": {
+                "entry_node_uid": value.flow.entry_node_uid,
+                "blocks": [
+                    {
+                        "node_uid": block.node_uid,
+                        "operation_index": block.operation_index,
+                        "incoming_edges": list(block.incoming_edges),
+                        "outgoing_edges": list(block.outgoing_edges),
+                    }
+                    for block in value.flow.blocks
+                ],
+                "edges": [
+                    {
+                        "link_uid": edge.link_uid,
+                        "source_node_uid": edge.source_node_uid,
+                        "source_port_id": edge.source_port_id,
+                        "target_node_uid": edge.target_node_uid,
+                        "target_port_id": edge.target_port_id,
+                        "predicate_node_uid": edge.predicate_node_uid,
+                        "predicate_expected": edge.predicate_expected,
+                        "lane_index": edge.lane_index,
+                    }
+                    for edge in value.flow.edges
+                ],
+                "operation_schedule": list(value.flow.operation_schedule),
+                "lanes": [
+                    {
+                        "stable_id": lane.stable_id,
+                        "index": lane.index,
+                        "parent_index": lane.parent_index,
+                        "source_node_uid": lane.source_node_uid,
+                        "source_port_id": lane.source_port_id,
+                    }
+                    for lane in value.flow.lanes
+                ],
+                "joins": [
+                    {
+                        "node_uid": join.node_uid,
+                        "input_lane_indices": list(join.input_lane_indices),
+                        "output_lane_index": join.output_lane_index,
+                    }
+                    for join in value.flow.joins
+                ],
+            },
         }
 
     return {
@@ -349,6 +403,19 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
         "name": program.name,
         "semantic_hash": program.semantic_hash,
         "behavior_hash": program.behavior_hash,
+        "parameters": [
+            {
+                "stable_id": parameter.stable_id,
+                "name": parameter.name,
+                "type": parameter.value_type.to_dict(),
+                "default": parameter.default,
+                "exposed": parameter.exposed,
+                "slot": parameter.slot,
+                "category": parameter.category,
+                "tooltip": parameter.tooltip,
+            }
+            for parameter in program.parameters
+        ],
         "schedule": list(program.schedule.emitter_ids),
         "events": {
             "event_abi_hash": program.events.event_abi_hash,
@@ -404,6 +471,21 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                 ],
                 "init": stage(emitter.init),
                 "update": stage(emitter.update),
+                "collision_enter": (
+                    stage(emitter.collision_enter)
+                    if emitter.collision_enter is not None
+                    else None
+                ),
+                "collision_stay": (
+                    stage(emitter.collision_stay)
+                    if emitter.collision_stay is not None
+                    else None
+                ),
+                "collision_exit": (
+                    stage(emitter.collision_exit)
+                    if emitter.collision_exit is not None
+                    else None
+                ),
                 "rendering": stage(emitter.rendering),
                 "render_plan": [
                     {

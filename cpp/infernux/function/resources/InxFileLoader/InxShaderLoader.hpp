@@ -64,7 +64,7 @@ class InxShaderLoader
                     bool emitNonSemanticShaderDebugSource, bool compileOnly, bool optimizerAllowExpandedIDBound);
     void SetShaderCompilerOptions(const std::string &prop, bool value);
 
-    /// Register an additional directory to scan for @import resolution.
+    /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
     /// Invalidate cached shader-id maps and shading-model descriptors for a
@@ -90,8 +90,6 @@ class InxShaderLoader
     std::shared_ptr<std::vector<char>> Compile(const char *content, size_t contentSize, InxResourceMeta &metaData);
 
     /// Link and compile a structured vertex/fragment pair as one Forward program.
-    /// This is the S2 program path; legacy per-stage Compile remains available
-    /// while runtime material registration migrates to program artifacts.
     [[nodiscard]] LinkedShaderProgramCompilation CompileLinkedForward(const std::string &vertexSource,
                                                                       const std::string &vertexPath,
                                                                       const std::string &fragmentSource,
@@ -123,10 +121,6 @@ class InxShaderLoader
                                                       const std::string &virtualPath = "<generated-vertex>");
     [[nodiscard]] std::vector<char> CompileFragmentGlsl(const std::string &source,
                                                         const std::string &virtualPath = "<generated-fragment>");
-
-    /// Parse a single "@key: value" or "// @key: value" annotation line.
-    /// Returns {key, value} or nullopt if the line is not an annotation.
-    static std::optional<std::pair<std::string, std::string>> ParseAnnotation(const std::string &line);
 
     /// Parse shader source into a structured ShaderDescriptor (single pass, no code generation).
     ShaderDescriptor ParseShaderSource(const std::string &source, const std::string &filePath) const;
@@ -182,8 +176,8 @@ class InxShaderLoader
     /// Build a mapping of shader_id → file_path by recursively scanning shader directories.
     std::unordered_map<std::string, std::string> BuildShaderIdMap(const std::string &dir);
 
-    /// Resolve @import directives by inlining referenced shader files.
-    std::string ResolveImports(const std::string &source,
+    /// Resolve structured Imports by inlining referenced shader libraries.
+    std::string ResolveImports(const std::string &source, const std::vector<std::string> &imports,
                                const std::unordered_map<std::string, std::string> &shaderIdMap,
                                std::set<std::string> &includeStack, int depth = 0);
 

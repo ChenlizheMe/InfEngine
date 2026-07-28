@@ -1,52 +1,61 @@
 #pragma once
 
-#include "../scene/SceneSystem.h"
+#include <atomic>
 #include <function/renderer/Frustum.h>
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderWorld.h>
-#include <function/resources/InxMaterial/InxMaterial.h>
-#include <functional>
 #include <memory>
 #include <vector>
-#include <vulkan/vulkan.h>
 
 namespace infernux
 {
+
+class SceneRenderBridge;
+
+struct SceneRendererProfileSnapshot
+{
+    double prepareMs = 0.0;
+    double collectMs = 0.0;
+    double updateMs = 0.0;
+    double cullMs = 0.0;
+    double sortMs = 0.0;
+    double buildMs = 0.0;
+    double buildCameraMs = 0.0;
+    double prepareCalls = 0.0;
+    double prepareFastCalls = 0.0;
+    double prepareSlowCalls = 0.0;
+    double buildCalls = 0.0;
+    double buildCameraCalls = 0.0;
+    double renderables = 0.0;
+    double visible = 0.0;
+    double drawCalls = 0.0;
+};
 
 struct CameraDrawCallResult
 {
     std::vector<DrawCall> visibleDrawCalls;
     std::vector<DrawCall> shadowDrawCalls;
     const std::vector<DrawCall> *shadowDrawCallsRef = nullptr; ///< Zero-copy ref (valid when cullingMask == all)
+    std::shared_ptr<const RenderWorldFrame> worldOwner;        ///< Keeps zero-copy data alive across frame publication.
 };
 
 /**
- * @brief SceneRenderer - bridges Scene system with Vulkan rendering.
+ * @brief Renderer frontend consuming immutable scene publications.
  *
- * Responsibilities:
- * - Collect renderable objects from the active scene
- * - Provide camera matrices to the renderer
- * - Sort objects for rendering (by material, depth, etc.)
- * - Culling (frustum, occlusion)
+ * Scene traversal and mutable Component access
+ * live in the scene adapter. This
+ * class only acquires immutable RenderWorld publications and derives camera
+ *
+ * renderer lists from value-type RenderViewData.
  */
 class SceneRenderer
 {
   public:
+    using ProfileSnapshot = SceneRendererProfileSnapshot;
+
     SceneRenderer() = default;
     ~SceneRenderer() = default;
-
-    // ========================================================================
-    // Frame preparation
-    // ========================================================================
-
-    /// @brief Prepare render data for the current frame using editor camera.
-    /// When useActiveCameraCulling is false, only updates transforms/bounds/cache state.
-    void PrepareFrame(bool useActiveCameraCulling = true);
-
-    /// @brief Prepare render data for a specific camera (independent culling).
-    /// Used by Game View to cull against the game camera's frustum.
-    void PrepareFrame(Camera *camera);
 
     /// @brief Get the view matrix for rendering
     [[nodiscard]] glm::mat4 GetViewMatrix() const;
@@ -67,12 +76,6 @@ class SceneRenderer
     // Renderable access
     // ========================================================================
 
-    /// @brief Get all renderable objects for this frame
-    [[nodiscard]] const std::vector<RenderProxy> &GetRenderables() const
-    {
-        return m_renderWorld.Proxies();
-    }
-
     [[nodiscard]] const RenderWorldSnapshot &GetRenderWorld() const
     {
         return m_renderWorld;
@@ -81,7 +84,7 @@ class SceneRenderer
     /// @brief Get number of visible objects after culling
     [[nodiscard]] size_t GetVisibleCount() const
     {
-        return m_visibleCount;
+        return m_visibleCount.load(std::memory_order_relaxed);
     }
 
     /// @brief Build draw calls from visible renderables.
@@ -89,15 +92,11 @@ class SceneRenderer
     /// @note Vertices remain in model/local space; per-object world transform is applied on GPU via push constants.
     [[nodiscard]] const DrawCallResult &BuildDrawCalls();
 
-    /// Clear one-shot mesh upload requests after a render context has
-    /// consumed the cached draw calls. Cached draw calls survive across
-    /// frames, while forceBufferUpdate must not.
-    void AcknowledgeMeshBufferUpdates();
-
     /// @brief Build draw calls by re-culling existing renderables against a different camera.
     /// Reuses cached draw-call spans and world bounds from PrepareFrame().
     /// Returns a forward-visible set, plus an optional layer-filtered shadow candidate set.
-    [[nodiscard]] CameraDrawCallResult BuildDrawCallsForCamera(Camera *camera, bool includeShadowDrawCalls);
+    [[nodiscard]] CameraDrawCallResult BuildDrawCallsForCamera(const RenderViewData &camera,
+                                                               bool includeShadowDrawCalls);
 
     // ========================================================================
     // Settings
@@ -113,29 +112,7 @@ class SceneRenderer
         return m_frustumCulling;
     }
 
-    /// @brief Set aspect ratio (from window)
-    void SetAspectRatio(float aspect);
-
 #if INFERNUX_FRAME_PROFILE
-    struct ProfileSnapshot
-    {
-        double prepareMs = 0.0;
-        double collectMs = 0.0;
-        double updateMs = 0.0;
-        double cullMs = 0.0;
-        double sortMs = 0.0;
-        double buildMs = 0.0;
-        double buildCameraMs = 0.0;
-        double prepareCalls = 0.0;
-        double prepareFastCalls = 0.0;
-        double prepareSlowCalls = 0.0;
-        double buildCalls = 0.0;
-        double buildCameraCalls = 0.0;
-        double renderables = 0.0;
-        double visible = 0.0;
-        double drawCalls = 0.0;
-    };
-
     [[nodiscard]] const ProfileSnapshot &GetProfileSnapshot() const
     {
         return m_profileSnapshot;
@@ -148,103 +125,20 @@ class SceneRenderer
 #endif
 
   private:
-    void CollectRenderables(uint32_t cullingMask = 0xFFFFFFFF);
-    void PerformCulling();
-    void SortRenderables();
+    friend class SceneRenderBridge;
 
-    /// @brief Fast-path: update world matrices, bounds, optional culling, and cached draw calls in one pass.
-    void UpdateCachedRenderableTransforms(bool useActiveCameraCulling);
-
-    /// @brief Shared draw-call emission logic used by both BuildDrawCalls() and BuildDrawCallsForCamera().
-    void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderProxy &renderable, bool visible,
-                                    bool bufferDirty) const;
-
-    [[nodiscard]] std::vector<RenderProxy> &Renderables()
+    [[nodiscard]] RenderWorldSnapshot &WritableRenderWorld() noexcept
     {
-        return m_renderWorld.MutableProxies();
-    }
-
-    [[nodiscard]] const std::vector<RenderProxy> &Renderables() const
-    {
-        return m_renderWorld.Proxies();
+        return m_renderWorld;
     }
 
     RenderWorldSnapshot m_renderWorld;
-    size_t m_visibleCount = 0;
-
-    bool m_frustumCulling = true;
-
-    // Cached camera state for the frame
-    Camera *m_activeCamera = nullptr;
-
-    // ── Renderable cache ─────────────────────────────────────────────
-    // When the renderer set hasn't changed (same MeshRenderers, same
-    // enable/disable state), we skip full CollectRenderables/Sort and
-    // only update world matrices + bounds in-place.
-    // Draw call cache: reused when renderables are cached.
-    DrawCallResult m_cachedDrawCalls;
-    bool m_drawCallsCacheValid = false;
-
-    // True after a frustum-culled frame marks some draw calls as invisible.
-    // Cleared by a one-time sweep when switching back to non-frustum mode.
-    bool m_frustumVisibilityDirty = false;
-
+    std::shared_ptr<const RenderWorldFrame> m_buildOwner;
+    std::atomic<size_t> m_visibleCount{0};
 #if INFERNUX_FRAME_PROFILE
     ProfileSnapshot m_profileSnapshot;
 #endif
-};
-
-/**
- * @brief Helper to integrate SceneRenderer with existing InxVkCore.
- *
- * This provides the DrawScene callback that reads from SceneManager.
- */
-class SceneRenderBridge
-{
-  public:
-    static SceneRenderBridge &Instance();
-
-    SceneRenderBridge(const SceneRenderBridge &) = delete;
-    SceneRenderBridge &operator=(const SceneRenderBridge &) = delete;
-
-    /// @brief Get the scene renderer
-    [[nodiscard]] SceneRenderer &GetSceneRenderer()
-    {
-        return m_sceneRenderer;
-    }
-
-    /// @brief Update camera data (call before DrawFrame)
-    /// Returns camera data in the format expected by InxVkCore::DrawFrame
-    void UpdateCameraData(float *outPos, float *outLookAt, float *outUp);
-
-    /// @brief Set aspect ratio from window dimensions
-    void OnWindowResize(uint32_t width, uint32_t height);
-
-    /// @brief Prepare editor camera rendering (call once per frame before draw calls)
-    void PrepareFrame(bool useActiveCameraCulling = true);
-
-    /// @brief Prepare rendering for a specific camera (independent culling).
-    /// @param camera The camera to cull and collect renderables for.
-    /// @return DrawCallResult with draw calls visible to this camera.
-    [[nodiscard]] DrawCallResult PrepareAndBuildForCamera(Camera *camera);
-
-    /// @brief Build draw calls for a camera reusing the editor camera's renderables.
-    /// Avoids re-collecting world matrices, bounds, and materials (from PrepareFrame).
-    /// Only re-applies frustum culling and layer filtering for the given camera.
-    [[nodiscard]] CameraDrawCallResult CullAndBuildForCamera(Camera *camera, bool includeShadowDrawCalls);
-
-    /// @brief Build draw calls from the current frame's visible renderables.
-    /// Delegates to SceneRenderer::BuildDrawCalls().
-    [[nodiscard]] const DrawCallResult &BuildDrawCalls();
-
-    /// @brief Get the editor camera.
-    [[nodiscard]] Camera *GetEditorCamera() const;
-
-  private:
-    SceneRenderBridge() = default;
-    ~SceneRenderBridge() = default;
-
-    SceneRenderer m_sceneRenderer;
+    bool m_frustumCulling = true;
 };
 
 } // namespace infernux

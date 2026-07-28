@@ -17,6 +17,8 @@ struct GpuMeshRendererDesc
     ShaderBytecode fragmentShader;
     ShaderBytecode forwardPlusFragmentShader;
     ShaderBytecode pickingFragmentShader;
+    ShaderBytecode motionVertexShader;
+    ShaderBytecode motionFragmentShader;
     rhi::BufferHandle instances;
     rhi::BufferHandle renderIndices;
     std::shared_ptr<InxMesh> mesh;
@@ -119,6 +121,8 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::ShaderModuleHandle m_forwardPlusFragmentShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;
+    rhi::ShaderModuleHandle m_motionVertexShader;
+    rhi::ShaderModuleHandle m_motionFragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     std::vector<ViewGroup> m_viewGroups;

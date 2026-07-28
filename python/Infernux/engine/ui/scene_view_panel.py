@@ -4,6 +4,7 @@ Unity-style Scene View panel with 3D viewport and camera controls.
 
 import math
 import os
+import time
 from Infernux.lib import InxGUIContext, TextureLoader, InputManager
 from Infernux.engine.i18n import t
 from .editor_panel import EditorPanel
@@ -299,6 +300,11 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._particle_preview_speed = 1.0
         self._particle_preview_playing = False
         self._particle_preview_prepared = False
+        self._particle_preview_height = 150.0
+        self._particle_preview_resize_drag = False
+        self._particle_preview_resize_start_y = 0.0
+        self._particle_preview_resize_start_height = 0.0
+        self._particle_preview_last_tick = 0.0
     
     def set_engine(self, engine):
         """Set the engine reference for camera control."""
@@ -309,7 +315,18 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def set_play_mode_manager(self, manager):
         """Set the PlayModeManager so the panel can show play-mode border."""
+        previous = self._play_mode_manager
+        if previous is manager:
+            return
+        if previous is not None:
+            previous.remove_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
         self._play_mode_manager = manager
+        if manager is not None and self._enable_called:
+            manager.add_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
 
     def set_on_object_picked(self, callback):
         """Set callback for scene object picking (receives object ID or 0)."""
@@ -353,16 +370,29 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         # Intentionally ignore persisted data for Scene View.
         return
 
+    def _pre_render(self, ctx) -> None:
+        """Keep edit-mode particle simulation independent of Scene tab visibility."""
+        now = time.monotonic()
+        previous = self._particle_preview_last_tick
+        self._particle_preview_last_tick = now
+        delta_time = 0.0 if previous <= 0.0 else min(max(now - previous, 0.0), 0.1)
+        self._tick_particle_preview(delta_time)
+
     def on_enable(self):
         # Reset transient per-session viewport/input caches.
         self._last_scene_width = 0
         self._last_scene_height = 0
         self._last_frame_time = 0.0
+        self._particle_preview_last_tick = 0.0
         self._hover_pick_cache_pos = (-1.0, -1.0)
         self._hover_pick_cache_result = 0
         from .event_bus import EditorEvent
 
         self.events.subscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        if self._play_mode_manager is not None:
+            self._play_mode_manager.add_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
         self._restore_particle_preview_selection()
 
     def on_disable(self):
@@ -370,6 +400,10 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         from .event_bus import EditorEvent
 
         self.events.unsubscribe(EditorEvent.SELECTION_CHANGED, self._on_particle_preview_selection)
+        if self._play_mode_manager is not None:
+            self._play_mode_manager.remove_state_change_listener(
+                self._on_particle_preview_play_mode_changed
+            )
         self._release_particle_preview_selection()
         self._end_camera_capture(restore_cursor=False)
         self._force_camera_input_release()
@@ -382,6 +416,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
 
     def _on_not_visible(self, ctx):
         """Window collapsed/tabbed out — mark invisible for C++ side."""
+        self._particle_preview_resize_drag = False
         if self._engine:
             self._engine.set_scene_view_visible(False)
 

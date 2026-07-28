@@ -61,6 +61,7 @@ from ._inspector_list_field import (  # noqa: F401
 )
 from ._inspector_extra_renderers import (  # noqa: F401
     _render_audio_source_extra, _render_mesh_renderer_materials,
+    _render_particle_system_parameters,
 )
 
 # _render_info_text is now render_info_text from inspector_utils
@@ -83,6 +84,7 @@ def _is_in_play_mode() -> bool:
 
 _COMPONENT_RENDERERS: dict = {}   # type_name -> render_fn(ctx, comp)
 _PY_COMPONENT_RENDERERS: dict = {}  # type_name -> render_fn(ctx, py_comp)
+_PY_COMPONENT_EXTRA_RENDERERS: dict = {}  # appended after generic serialized fields
 _COMPONENT_EXTRA_RENDERERS: dict = {}  # type_name -> render_fn(ctx, comp) appended after generic
 _COMPONENT_VALUE_CACHE: dict = {}
 _COMPONENT_VALUE_CACHE_TTL_S = 0.20
@@ -392,6 +394,11 @@ def register_py_component_renderer(type_name: str, render_fn):
         render_fn: ``fn(ctx: InxGUIContext, py_comp) -> None``
     """
     _PY_COMPONENT_RENDERERS[type_name] = render_fn
+
+
+def register_py_component_extra_renderer(type_name: str, render_fn):
+    """Append dynamic Inspector UI after a Python component's serialized fields."""
+    _PY_COMPONENT_EXTRA_RENDERERS[type_name] = render_fn
 
 
 def render_component(ctx: InxGUIContext, comp):
@@ -1238,6 +1245,9 @@ def render_py_component(ctx: InxGUIContext, py_comp):
             _render_info_text(ctx, metadata.info_text)
 
     _flush()
+    extra_renderer = _PY_COMPONENT_EXTRA_RENDERERS.get(py_comp.type_name)
+    if extra_renderer is not None:
+        extra_renderer(ctx, py_comp)
     _record_profile_timing("bodyPyGenericTotal", _py_generic_t0)
 
 
@@ -1248,6 +1258,7 @@ register_component_renderer("Transform", render_transform_component)
 register_component_extra_renderer("AudioSource", _render_audio_source_extra)
 register_component_extra_renderer("MeshRenderer", _render_mesh_renderer_materials)
 register_component_extra_renderer("SkinnedMeshRenderer", _render_mesh_renderer_materials)
+register_py_component_extra_renderer("ParticleSystem", _render_particle_system_parameters)
 
 # Registers UI component inspectors.
 from . import inspector_ui_components

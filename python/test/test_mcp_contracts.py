@@ -119,6 +119,7 @@ def test_developer_assist_exposes_scripts_and_semantic_scene_authoring(tmp_path)
         "public_api_validate_script",
         "scene_new",
         "scene_save",
+        "gameobject_create_from_model",
         "hierarchy_create_object",
         "component_ensure",
         "ui_bind_click",

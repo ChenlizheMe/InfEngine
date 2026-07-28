@@ -3,35 +3,51 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import os
 import time
+from enum import Enum
 from typing import Optional
 
 import numpy as np
 
 from Infernux.core.asset_ref import ParticleGraphRef
 from Infernux.debug import Debug
-from Infernux.graph import AssetReference
+from Infernux.graph import AssetReference, ValueType
 from Infernux.particle import (
     GpuParticleEmitterController,
+    EmitterShapeKind,
     ParticleArtifactRegistry,
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleKernelLowerer,
     ParticleKernelProgram,
     ParticleRuntimeCompatibility,
-    PointCache,
     SdfVolume,
     VectorField,
     build_gpu_particle_migration,
     classify_emitter_update,
     decode_gpu_particle_spirv,
     decode_particle_runtime_metadata,
+    pack_gpu_particle_event_payload,
+    pack_gpu_particle_parameters,
 )
 from Infernux.gizmos.gizmos import ICON_KIND_PARTICLE
+from Infernux.lib import Vector3
 from .component import InxComponent
 from .decorators import add_component_menu, disallow_multiple
 from .serialized_field import get_raw_field_value, serialized_field
+
+
+class ParticleBoundsMode(str, Enum):
+    AUTOMATIC = "automatic"
+    MANUAL = "manual"
+
+
+class ParticleOffscreenPolicy(str, Enum):
+    ALWAYS_SIMULATE = "always_simulate"
+    PAUSE_WHEN_OFFSCREEN = "pause_when_offscreen"
 
 
 @disallow_multiple
@@ -58,6 +74,27 @@ class ParticleSystem(InxComponent):
         default=True,
         display_name_key="particle_system.play_on_awake",
     )
+    offscreen_policy: ParticleOffscreenPolicy = serialized_field(
+        default=ParticleOffscreenPolicy.ALWAYS_SIMULATE,
+        display_name_key="particle_system.offscreen_policy",
+        tooltip="Always Simulate preserves gameplay timing. Pause When Offscreen skips GPU simulation when no camera sees the system.",
+    )
+    bounds_mode: ParticleBoundsMode = serialized_field(
+        default=ParticleBoundsMode.AUTOMATIC,
+        display_name_key="particle_system.bounds_mode",
+        tooltip="Automatic reduces live GPU particles; Manual uses the local bounds below.",
+    )
+    manual_bounds_center: Vector3 = serialized_field(
+        default=Vector3(0.0, 0.0, 0.0),
+        display_name_key="particle_system.manual_bounds_center",
+    )
+    manual_bounds_size: Vector3 = serialized_field(
+        default=Vector3(10.0, 10.0, 10.0),
+        display_name_key="particle_system.manual_bounds_size",
+        tooltip="Local-space full size. Negative components are treated as their absolute size.",
+    )
+    _parameter_overrides_json: str = serialized_field(default="{}", hidden=True)
+    _emitter_overrides_json: str = serialized_field(default="{}", hidden=True)
 
     _gpu_controllers: list[GpuParticleEmitterController]
     _gpu_emitter_ids: list[int]
@@ -66,17 +103,24 @@ class ParticleSystem(InxComponent):
     _particle_kernel = None
     _particle_gpu_layouts: tuple[dict, ...]
     _particle_metadata = None
+    _particle_event_routes: tuple[dict, ...]
     _artifact_revision: int = 0
     _artifact_source_key: str = ""
     _emitter_to_world_cache: Optional[np.ndarray] = None
     _gpu_transform_buffers: dict[bool, np.ndarray]
     _batch_id: int = 0
     _gpu_diagnostic_requests: set[int]
-    _data_interface_overrides: dict[str, AssetReference]
+    _gpu_view_diagnostic_requests: set[tuple[str, int]]
+    _parameter_overrides: dict[str, object]
+    _emitter_overrides: dict[str, dict[str, bool]]
+    _serialized_parameter_overrides_cache: str
+    _serialized_emitter_overrides_cache: str
     _playing: bool = False
     _editor_preview_active: bool = False
+    _editor_preview_play_requested: bool = True
     _editor_preview_muted_emitters: set[str]
     _editor_preview_solo_emitters: set[str]
+    _emitter_mesh_gizmo_bounds: dict[str, tuple[float, ...]]
     _compile_retry_at: float = 0.0
     _last_compile_error: str = ""
     _last_compile_error_log_at: float = 0.0
@@ -94,19 +138,30 @@ class ParticleSystem(InxComponent):
         self._particle_kernel = None
         self._particle_gpu_layouts = ()
         self._particle_metadata = None
+        self._particle_event_routes = ()
         self._artifact_revision = 0
         self._artifact_source_key = ""
         self._emitter_to_world_cache = None
         self._gpu_transform_buffers = {}
         self._gpu_diagnostic_requests = set()
-        self._data_interface_overrides = {}
+        self._gpu_view_diagnostic_requests = set()
+        self._serialized_parameter_overrides_cache = str(
+            get_raw_field_value(self, "_parameter_overrides_json") or "{}"
+        )
+        self._serialized_emitter_overrides_cache = str(
+            get_raw_field_value(self, "_emitter_overrides_json") or "{}"
+        )
+        self._parameter_overrides = self._decode_parameter_overrides()
+        self._emitter_overrides = self._decode_emitter_overrides()
         self._batch_id = (int(self.game_object.id) << 16) ^ int(self.component_id)
         if self._batch_id == 0:
             self._batch_id = int(self.component_id) or 1
         self._playing = bool(playing)
         self._editor_preview_active = False
+        self._editor_preview_play_requested = True
         self._editor_preview_muted_emitters = set()
         self._editor_preview_solo_emitters = set()
+        self._emitter_mesh_gizmo_bounds = {}
         self._compile_retry_at = 0.0
         self._last_compile_error = ""
         self._last_compile_error_log_at = 0.0
@@ -123,8 +178,8 @@ class ParticleSystem(InxComponent):
         if hasattr(self, "_gpu_controllers") and not self._has_runtime():
             self._compile_asset()
 
-    def play(self, emitter_index: int | None = None) -> bool:
-        if emitter_index is None:
+    def play(self, emitter: int | str | None = None) -> bool:
+        if emitter is None:
             self._playing = True
             played = False
             for index, runtime in zip(
@@ -135,6 +190,9 @@ class ParticleSystem(InxComponent):
                     runtime.play()
                     played = True
             return played
+        emitter_index = self._resolve_emitter_index(emitter)
+        if emitter_index is None:
+            return False
         if not self._emitter_is_enabled(emitter_index):
             return False
         runtime = self._runtime_at(emitter_index)
@@ -143,31 +201,338 @@ class ParticleSystem(InxComponent):
         runtime.play()
         return True
 
-    def pause(self, emitter_index: int | None = None) -> bool:
-        if emitter_index is None:
+    def pause(self, emitter: int | str | None = None) -> bool:
+        if emitter is None:
             self._playing = False
             runtimes = tuple(getattr(self, "_gpu_controllers", ()))
             for runtime in runtimes:
                 runtime.pause()
             return bool(runtimes)
+        emitter_index = self._resolve_emitter_index(emitter)
+        if emitter_index is None:
+            return False
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
         runtime.pause()
         return True
 
-    def stop(self, emitter_index: int | None = None) -> bool:
-        if emitter_index is None:
+    def stop(self, emitter: int | str | None = None) -> bool:
+        if emitter is None:
             self._playing = False
             for runtime in getattr(self, "_gpu_controllers", ()):
                 runtime.reset(playing=False)
             self._reset_gpu_emitters()
             return bool(self._gpu_controllers)
+        emitter_index = self._resolve_emitter_index(emitter)
+        if emitter_index is None:
+            return False
         runtime = self._runtime_at(emitter_index)
         if runtime is None:
             return False
         runtime.reset(playing=False)
         self._reset_gpu_emitters(emitter_index)
+        return True
+
+    def has_parameter(self, name: str) -> bool:
+        return self._find_exposed_parameter(name, compile_if_needed=True) is not None
+
+    def exposed_parameter_schema(self) -> list[dict]:
+        """Return the current instance-editable ParticleGraph parameter schema."""
+        self._sync_serialized_instance_overrides()
+        if getattr(self, "_particle_metadata", None) is None:
+            self._compile_asset()
+        metadata = getattr(self, "_particle_metadata", None)
+        result = []
+        for parameter in getattr(metadata, "parameters", ()):
+            if not parameter.exposed:
+                continue
+            value = self._parameter_overrides.get(
+                parameter.stable_id, parameter.default
+            )
+            result.append(
+                {
+                    "stable_id": parameter.stable_id,
+                    "name": parameter.name,
+                    "type": parameter.value_type.value_type.value,
+                    "default": list(parameter.default)
+                    if isinstance(parameter.default, (list, tuple))
+                    else parameter.default,
+                    "value": list(value)
+                    if isinstance(value, (list, tuple))
+                    else value,
+                    "category": parameter.category,
+                    "tooltip": parameter.tooltip,
+                }
+            )
+        return result
+
+    def emitter_instance_schema(self) -> list[dict]:
+        """Return per-component playback controls for every graph emitter."""
+        self._sync_serialized_instance_overrides()
+        if getattr(self, "_particle_metadata", None) is None:
+            self._compile_asset()
+        metadata = getattr(self, "_particle_metadata", None)
+        result = []
+        for index, emitter in enumerate(getattr(metadata, "emitters", ())):
+            options = self._emitter_instance_options(emitter.stable_id)
+            result.append(
+                {
+                    "index": index,
+                    "stable_id": emitter.stable_id,
+                    "name": str(getattr(emitter, "name", emitter.stable_id)),
+                    "enabled": options["enabled"],
+                    "play_on_start": options["play_on_start"],
+                }
+            )
+        return result
+
+    def set_emitter_options(
+        self,
+        emitter: int | str,
+        *,
+        enabled: bool | None = None,
+        play_on_start: bool | None = None,
+    ) -> bool:
+        """Set scene-instance playback policy without modifying the graph asset."""
+        if enabled is not None and type(enabled) is not bool:
+            raise TypeError("particle emitter enabled must be a boolean")
+        if play_on_start is not None and type(play_on_start) is not bool:
+            raise TypeError("particle emitter play_on_start must be a boolean")
+        self._sync_serialized_instance_overrides()
+        emitter_index = self._resolve_emitter_index(emitter)
+        if emitter_index is None:
+            return False
+        stable_id = self._emitter_stable_id(emitter_index)
+        previous = self._emitter_instance_options(stable_id)
+        updated = {
+            "enabled": previous["enabled"] if enabled is None else enabled,
+            "play_on_start": (
+                previous["play_on_start"]
+                if play_on_start is None
+                else play_on_start
+            ),
+        }
+        if updated == previous:
+            return False
+        self._emitter_overrides[stable_id] = updated
+        self._store_emitter_overrides()
+        self._apply_emitter_instance_options(emitter_index)
+        return True
+
+    def set_parameter(self, name: str, value) -> None:
+        parameter = self._require_exposed_parameter(name)
+        normalized = self._normalize_parameter_value(parameter, value)
+        current = self._parameter_overrides.get(parameter.stable_id, parameter.default)
+        if current == normalized:
+            return
+        marker = object()
+        previous = self._parameter_overrides.get(parameter.stable_id, marker)
+        self._parameter_overrides[parameter.stable_id] = normalized
+        if (
+            parameter.value_type.value_type is ValueType.TEXTURE2D
+            and self._has_runtime()
+            and not self._compile_asset(force=True)
+        ):
+            if previous is marker:
+                self._parameter_overrides.pop(parameter.stable_id, None)
+            else:
+                self._parameter_overrides[parameter.stable_id] = previous
+            raise RuntimeError(
+                f"particle texture parameter {parameter.name!r} could not rebuild the GPU resource binding"
+            )
+        self._store_parameter_overrides()
+        if parameter.value_type.value_type is not ValueType.TEXTURE2D:
+            self._upload_parameter_overrides()
+
+    def get_parameter(self, name: str):
+        parameter = self._require_exposed_parameter(name)
+        value = self._parameter_overrides.get(parameter.stable_id, parameter.default)
+        return list(value) if isinstance(value, (list, tuple)) else value
+
+    def reset_parameter(self, name: str) -> bool:
+        parameter = self._require_exposed_parameter(name)
+        if parameter.stable_id not in self._parameter_overrides:
+            return False
+        previous = self._parameter_overrides.pop(parameter.stable_id)
+        if (
+            parameter.value_type.value_type is ValueType.TEXTURE2D
+            and self._has_runtime()
+            and not self._compile_asset(force=True)
+        ):
+            self._parameter_overrides[parameter.stable_id] = previous
+            return False
+        self._store_parameter_overrides()
+        if parameter.value_type.value_type is not ValueType.TEXTURE2D:
+            self._upload_parameter_overrides()
+        return True
+
+    def set_texture(self, name: str, value) -> None:
+        self._set_typed_parameter(name, value, ValueType.TEXTURE2D)
+
+    def get_texture(self, name: str) -> AssetReference:
+        value = self._get_typed_parameter(
+            name, ValueType.TEXTURE2D, AssetReference().to_dict()
+        )
+        return AssetReference.from_dict(value)
+
+    def set_bool(self, name: str, value: bool) -> None:
+        self._set_typed_parameter(name, value, ValueType.BOOL)
+
+    def get_bool(self, name: str, default: bool = False) -> bool:
+        return bool(self._get_typed_parameter(name, ValueType.BOOL, default))
+
+    def set_int(self, name: str, value: int) -> None:
+        self._set_typed_parameter(name, value, ValueType.I32)
+
+    def get_int(self, name: str, default: int = 0) -> int:
+        return int(self._get_typed_parameter(name, ValueType.I32, default))
+
+    def set_uint(self, name: str, value: int) -> None:
+        self._set_typed_parameter(name, value, ValueType.U32)
+
+    def get_uint(self, name: str, default: int = 0) -> int:
+        return int(self._get_typed_parameter(name, ValueType.U32, default))
+
+    def set_float(self, name: str, value: float) -> None:
+        self._set_typed_parameter(name, value, ValueType.F32)
+
+    def get_float(self, name: str, default: float = 0.0) -> float:
+        return float(self._get_typed_parameter(name, ValueType.F32, default))
+
+    def set_vector2(self, name: str, x: float, y: float) -> None:
+        self._set_typed_parameter(name, [x, y], ValueType.VEC2)
+
+    def get_vector2(self, name: str) -> tuple[float, float]:
+        return tuple(self._get_typed_parameter(name, ValueType.VEC2, (0.0, 0.0)))
+
+    def set_vector3(self, name: str, x: float, y: float, z: float) -> None:
+        self._set_typed_parameter(name, [x, y, z], ValueType.VEC3)
+
+    def get_vector3(self, name: str) -> tuple[float, float, float]:
+        return tuple(
+            self._get_typed_parameter(name, ValueType.VEC3, (0.0, 0.0, 0.0))
+        )
+
+    def set_vector4(self, name: str, x: float, y: float, z: float, w: float) -> None:
+        self._set_typed_parameter(name, [x, y, z, w], ValueType.VEC4)
+
+    def get_vector4(self, name: str) -> tuple[float, float, float, float]:
+        return tuple(
+            self._get_typed_parameter(name, ValueType.VEC4, (0.0, 0.0, 0.0, 0.0))
+        )
+
+    def set_color(
+        self, name: str, r: float, g: float, b: float, a: float = 1.0
+    ) -> None:
+        self._set_typed_parameter(name, [r, g, b, a], ValueType.COLOR)
+
+    def get_color(self, name: str) -> tuple[float, float, float, float]:
+        return tuple(
+            self._get_typed_parameter(name, ValueType.COLOR, (0.0, 0.0, 0.0, 1.0))
+        )
+
+    def runtime_event_schema(self) -> list[dict]:
+        """Describe gameplay events accepted by this ParticleGraph instance."""
+        self._ensure_runtime_state()
+        return [
+            {
+                key: (
+                    [dict(field) for field in value]
+                    if key == "fields"
+                    else value
+                )
+                for key, value in route.items()
+                if not key.startswith("_")
+            }
+            for route in getattr(self, "_particle_event_routes", ())
+        ]
+
+    def send_event(
+        self,
+        event: str,
+        payload: dict | None = None,
+        count: int = 1,
+        *,
+        target: int | str | None = None,
+    ) -> bool:
+        """Queue a typed gameplay event for the next GPU simulation boundary."""
+        self._ensure_runtime_state()
+        if type(event) is not str or not event:
+            raise ValueError("particle event name or stable ID cannot be empty")
+        if payload is not None and type(payload) is not dict:
+            raise TypeError("particle event payload must be a dictionary or None")
+        if type(count) is not int or count <= 0:
+            raise ValueError("particle event count must be a positive integer")
+        if not self._has_runtime() and not self._compile_asset():
+            raise RuntimeError("ParticleSystem has no active GPU runtime")
+
+        candidates = []
+        for route in getattr(self, "_particle_event_routes", ()):
+            if event not in {
+                route["stable_id"],
+                route["event_type_id"],
+                route["event_type_name"],
+            }:
+                continue
+            if target is not None and target not in {
+                route["target_emitter_index"],
+                route["target_emitter_id"],
+                route["target_emitter_name"],
+            }:
+                continue
+            candidates.append(route)
+        if not candidates:
+            raise KeyError(f"particle event {event!r} has no matching runtime route")
+        if len(candidates) != 1:
+            raise ValueError(
+                f"particle event {event!r} is ambiguous; pass target= or use a route stable ID"
+            )
+        route = candidates[0]
+
+        supplied = dict(payload or {})
+        field_keys = {}
+        ambiguous = set()
+        for field in route["fields"]:
+            for key in (field["stable_id"], field["name"]):
+                if key in field_keys and field_keys[key] != field["stable_id"]:
+                    ambiguous.add(key)
+                else:
+                    field_keys[key] = field["stable_id"]
+        unknown = set(supplied) - set(field_keys)
+        if unknown:
+            raise KeyError(f"particle event payload has unknown fields: {sorted(unknown)}")
+        if ambiguous.intersection(supplied):
+            raise ValueError("particle event field name is ambiguous; use its stable ID")
+        normalized = {}
+        for key, value in supplied.items():
+            stable_id = field_keys[key]
+            if stable_id in normalized:
+                raise ValueError(f"particle event field {stable_id!r} was supplied twice")
+            normalized[stable_id] = value
+
+        kernel = self._particle_kernel
+        event_type = kernel.events.event_types[route["event_type_index"]]
+        payload_words = pack_gpu_particle_event_payload(event_type, normalized)
+        record = (
+            int(route["event_type_index"]),
+            int(route["source_emitter_index"]),
+            0xFFFFFFFF,
+            0,
+            *payload_words,
+        )
+        record_words = list(record) * count
+        native = self._native_engine()
+        if native is None or not hasattr(native, "_queue_gpu_particle_events"):
+            raise RuntimeError("GPU particle runtime event input is unavailable")
+        error = native._queue_gpu_particle_events(
+            self._batch_id,
+            int(route["channel_index"]),
+            record_words,
+            count,
+        )
+        if error:
+            raise RuntimeError(str(error))
         return True
 
     def runtime_diagnostics(self) -> dict:
@@ -187,6 +552,8 @@ class ParticleSystem(InxComponent):
         }
         native = self._native_engine()
         emitters = []
+        any_resident = False
+        any_playing = False
         for index, emitter in enumerate(
             getattr(metadata, "emitters", ()) if metadata is not None else ()
         ):
@@ -194,13 +561,33 @@ class ParticleSystem(InxComponent):
             emitter_id = 0
             if index in gpu:
                 emitter_id, runtime = gpu[index]
+            play_requested = bool(getattr(runtime, "is_playing", False))
+            artifact_revision = 0
+            state_preserved = False
+            if emitter_id and native is not None:
+                artifact_revision = int(
+                    native._gpu_particle_artifact_revision(emitter_id)
+                )
+                state_preserved = bool(
+                    native._gpu_particle_state_was_preserved(emitter_id)
+                )
+            resident = artifact_revision > 0
+            playing = resident and play_requested
+            any_resident = any_resident or resident
+            any_playing = any_playing or playing
             item = {
                 "index": index,
                 "stable_id": emitter.stable_id,
                 "name": str(getattr(emitter, "name", emitter.stable_id)),
-                "enabled": bool(emitter.enabled),
-                "play_on_start": bool(emitter.play_on_start),
-                "playing": bool(getattr(runtime, "is_playing", False)),
+                "enabled": self._emitter_instance_options(emitter.stable_id)[
+                    "enabled"
+                ],
+                "play_on_start": self._emitter_instance_options(
+                    emitter.stable_id
+                )["play_on_start"],
+                "play_requested": play_requested,
+                "resident": resident,
+                "playing": playing,
                 "simulation_step": int(getattr(runtime, "simulation_step", 0)),
                 "reload_compatibility": (
                     compatibility[index].value
@@ -211,13 +598,8 @@ class ParticleSystem(InxComponent):
             }
             if emitter_id:
                 item["gpu_emitter_id"] = int(emitter_id)
-                if native is not None:
-                    item["artifact_revision"] = int(
-                        native._gpu_particle_artifact_revision(emitter_id)
-                    )
-                    item["state_preserved"] = bool(
-                        native._gpu_particle_state_was_preserved(emitter_id)
-                    )
+                item["artifact_revision"] = artifact_revision
+                item["state_preserved"] = state_preserved
             emitters.append(item)
 
         event_abi_hash = 0
@@ -233,16 +615,20 @@ class ParticleSystem(InxComponent):
                 )
         return {
             "batch_id": int(self._batch_id),
-            "playing": bool(self._playing),
+            "play_requested": bool(self._playing),
+            "resident": any_resident,
+            "playing": any_playing,
             "artifact_revision": int(self._artifact_revision),
             "event_abi_hash": event_abi_hash,
             "event_domain_serial": event_domain_serial,
             "last_compile_error": str(self._last_compile_error),
+            "parameters": self.exposed_parameter_schema(),
+            "events": self.runtime_event_schema(),
             "emitters": emitters,
         }
 
     def request_gpu_diagnostics(self) -> int:
-        """Request one asynchronous GPU counter snapshot for this graph."""
+        """Request one asynchronous GPU counter-and-bounds snapshot."""
         self._ensure_runtime_state()
         native = self._native_engine()
         if native is None or not hasattr(native, "_request_gpu_particle_diagnostics"):
@@ -304,13 +690,72 @@ class ParticleSystem(InxComponent):
             )
         return result
 
+    def request_gpu_view_diagnostics(self, view: str) -> int:
+        """Request one asynchronous cull-and-draw snapshot for Scene or Game."""
+        self._ensure_runtime_state()
+        normalized_view = str(view).strip().lower()
+        if normalized_view not in {"scene", "game"}:
+            raise ValueError("particle diagnostic view must be 'scene' or 'game'")
+        native = self._native_engine()
+        if native is None or not hasattr(
+            native, "_request_gpu_particle_view_diagnostics"
+        ):
+            raise RuntimeError("GPU particle view diagnostics are unavailable")
+        request_id = int(
+            native._request_gpu_particle_view_diagnostics(
+                self._batch_id, normalized_view
+            )
+        )
+        if request_id <= 0:
+            raise RuntimeError("GPU particle view diagnostic request was rejected")
+        self._gpu_view_diagnostic_requests.add((normalized_view, request_id))
+        return request_id
+
+    def poll_gpu_view_diagnostics(self, view: str, request_id: int) -> dict:
+        """Poll a snapshot requested by :meth:`request_gpu_view_diagnostics`."""
+        self._ensure_runtime_state()
+        normalized_view = str(view).strip().lower()
+        if (
+            normalized_view not in {"scene", "game"}
+            or type(request_id) is not int
+            or (normalized_view, request_id)
+            not in self._gpu_view_diagnostic_requests
+        ):
+            raise ValueError(
+                "GPU particle view diagnostic request does not belong to this component/view"
+            )
+        native = self._native_engine()
+        if native is None or not hasattr(
+            native, "_poll_gpu_particle_view_diagnostics"
+        ):
+            raise RuntimeError("GPU particle view diagnostics are unavailable")
+        result = dict(
+            native._poll_gpu_particle_view_diagnostics(
+                normalized_view, request_id
+            )
+        )
+        if int(result.get("graph_instance_id", 0)) not in {0, self._batch_id}:
+            raise RuntimeError(
+                "GPU particle view diagnostic response belongs to another graph"
+            )
+        metadata = getattr(self, "_particle_metadata", None)
+        emitter_names = tuple(
+            emitter.stable_id for emitter in getattr(metadata, "emitters", ())
+        )
+        for output in result.get("outputs", ()):
+            index = int(output.get("emitter_index", -1))
+            output["emitter_stable_id"] = (
+                emitter_names[index] if 0 <= index < len(emitter_names) else ""
+            )
+        return result
+
     def restart(
         self,
-        emitter_index: int | None = None,
+        emitter: int | str | None = None,
         *,
         honor_play_on_start: bool = False,
     ) -> bool:
-        if emitter_index is None:
+        if emitter is None:
             self._playing = True
             restarted = False
             for index, runtime in zip(
@@ -324,6 +769,9 @@ class ParticleSystem(InxComponent):
                 restarted = restarted or should_play
             self._reset_gpu_emitters()
             return restarted
+        emitter_index = self._resolve_emitter_index(emitter)
+        if emitter_index is None:
+            return False
         if not self._emitter_is_enabled(emitter_index):
             return False
         runtime = self._runtime_at(emitter_index)
@@ -333,14 +781,14 @@ class ParticleSystem(InxComponent):
         self._reset_gpu_emitters(emitter_index)
         return True
 
-    def start_emitter(self, emitter_index: int) -> bool:
-        return self.play(emitter_index)
+    def start_emitter(self, emitter: int | str) -> bool:
+        return self.play(emitter)
 
-    def pause_emitter(self, emitter_index: int) -> bool:
-        return self.pause(emitter_index)
+    def pause_emitter(self, emitter: int | str) -> bool:
+        return self.pause(emitter)
 
-    def terminate_emitter(self, emitter_index: int) -> bool:
-        return self.stop(emitter_index)
+    def terminate_emitter(self, emitter: int | str) -> bool:
+        return self.stop(emitter)
 
     def emitter_reload_compatibility(
         self, emitter_index: int
@@ -355,67 +803,8 @@ class ParticleSystem(InxComponent):
             else None
         )
 
-    def set_data_interface_asset(
-        self,
-        stable_id: str,
-        *,
-        guid: str = "",
-        path_hint: str = "",
-    ) -> bool:
-        """Override one Data Interface asset for this ParticleSystem instance."""
-        if type(stable_id) is not str or not stable_id.strip():
-            return False
-        try:
-            reference = AssetReference(guid, path_hint)
-        except (TypeError, ValueError):
-            return False
-        if not reference.guid and not reference.path_hint:
-            return False
-
-        stable_id = stable_id.strip()
-        metadata = getattr(self, "_particle_metadata", None)
-        if metadata is not None and not any(
-            interface.stable_id == stable_id
-            for emitter in metadata.emitters
-            for interface in emitter.data_interfaces
-        ):
-            return False
-        overrides = getattr(self, "_data_interface_overrides", None)
-        if overrides is None:
-            overrides = {}
-            self._data_interface_overrides = overrides
-        marker = object()
-        previous = overrides.get(stable_id, marker)
-        overrides[stable_id] = reference
-        if self._has_runtime() and not self._compile_asset(force=True):
-            if previous is marker:
-                overrides.pop(stable_id, None)
-            else:
-                overrides[stable_id] = previous
-            return False
-        return True
-
-    def clear_data_interface_asset(self, stable_id: str) -> bool:
-        """Restore the ParticleGraph asset used by one Data Interface."""
-        if type(stable_id) is not str:
-            return False
-        stable_id = stable_id.strip()
-        overrides = getattr(self, "_data_interface_overrides", None)
-        if not stable_id or not overrides or stable_id not in overrides:
-            return False
-        previous = overrides.pop(stable_id)
-        if self._has_runtime() and not self._compile_asset(force=True):
-            overrides[stable_id] = previous
-            return False
-        return True
-
-    def data_interface_asset(self, stable_id: str) -> AssetReference | None:
-        """Return this instance's override, or ``None`` when it uses the graph default."""
-        if type(stable_id) is not str:
-            return None
-        return getattr(self, "_data_interface_overrides", {}).get(stable_id.strip())
-
     def update(self, delta_time: float):
+        self._sync_serialized_instance_overrides()
         if not self._has_runtime() and not self._compile_asset():
             return
         self._reload_published_artifact_if_needed()
@@ -429,37 +818,83 @@ class ParticleSystem(InxComponent):
         """Prepare this component for Scene View simulation outside Play mode."""
         self._ensure_runtime_state(playing=True)
         self._editor_preview_active = True
-        if not self._has_runtime() and not self._compile_asset():
+        if self._editor_preview_play_requested:
+            self._playing = True
+        ready, rebuilt = self._ensure_editor_preview_runtime()
+        if not ready:
             return False
-        self.restart(honor_play_on_start=True)
+        if self._editor_preview_play_requested:
+            if rebuilt:
+                # Scene View preview is explicit editor playback.  Emitter
+                # Play On Start only controls runtime scene startup and must
+                # not leave a selected effect partially stopped after the
+                # Play Mode scene has been restored.
+                self.restart(honor_play_on_start=False)
+            else:
+                self.play()
         return True
 
     def editor_preview_update(self, delta_time: float, speed: float = 1.0) -> bool:
         if not getattr(self, "_editor_preview_active", False):
             return False
+        if not getattr(self, "_editor_preview_play_requested", True):
+            return self._gpu_runtime_resident()
+        ready, rebuilt = self._ensure_editor_preview_runtime()
+        if not ready:
+            return False
+        if rebuilt:
+            self.restart(honor_play_on_start=False)
         self.update(max(0.0, float(delta_time)) * max(0.0, float(speed)))
-        return self._has_runtime()
+        return self._gpu_runtime_resident()
 
     def editor_preview_play(self) -> bool:
         self._ensure_runtime_state(playing=True)
         self._editor_preview_active = True
-        if not self._has_runtime() and not self._compile_asset():
+        self._editor_preview_play_requested = True
+        self._playing = True
+        ready, _rebuilt = self._ensure_editor_preview_runtime()
+        if not ready:
             return False
         return self.play()
 
     def editor_preview_pause(self) -> bool:
         if not getattr(self, "_editor_preview_active", False):
             return False
+        self._editor_preview_play_requested = False
         return self.pause()
+
+    def editor_preview_suspend(self) -> bool:
+        """Pause for editor selection changes without changing user intent."""
+        if not getattr(self, "_editor_preview_active", False):
+            return False
+        return self.pause()
+
+    def editor_preview_is_playing(self) -> bool:
+        return bool(
+            getattr(self, "_editor_preview_play_requested", True)
+            and self._gpu_runtime_resident()
+            and any(
+                controller.is_playing
+                for controller in getattr(self, "_gpu_controllers", ())
+            )
+        )
+
+    def editor_preview_is_ready(self) -> bool:
+        return bool(
+            getattr(self, "_editor_preview_active", False)
+            and self._gpu_runtime_resident()
+        )
 
     def editor_preview_stop(self) -> bool:
         self._ensure_runtime_state(playing=False)
         self._editor_preview_active = True
+        self._editor_preview_play_requested = False
         had_runtime = self.stop()
+        # Resetting the simulation is recorded on the next GPU submission.
+        # Removing the preview graph also drops its draw registrations now,
+        # so Stop clears the Scene View in the same editor frame.
         self._remove_native_batch()
-        self._clear_runtime_state()
         self._playing = False
-        self._editor_preview_active = True
         return had_runtime
 
     def editor_preview_set_emitter_muted(
@@ -493,6 +928,16 @@ class ParticleSystem(InxComponent):
     def editor_preview_restart_emitter(self, emitter_index: int) -> bool:
         if not getattr(self, "_editor_preview_active", False):
             return False
+        self._editor_preview_play_requested = True
+        resident = self._gpu_runtime_resident()
+        if not resident:
+            # A global Stop removes the GPU graph.  Recreate it paused so a
+            # per-emitter restart cannot accidentally start its siblings.
+            self._playing = False
+        ready, _rebuilt = self._ensure_editor_preview_runtime()
+        if not ready:
+            return False
+        self._playing = True
         return self.restart(emitter_index)
 
     def editor_preview_emitter_states(self) -> list[dict]:
@@ -506,8 +951,10 @@ class ParticleSystem(InxComponent):
                     "index": index,
                     "stable_id": stable_id,
                     "name": emitter.name,
-                    "enabled": emitter.enabled,
-                    "play_on_start": emitter.play_on_start,
+                    "enabled": self._emitter_instance_options(stable_id)["enabled"],
+                    "play_on_start": self._emitter_instance_options(stable_id)[
+                        "play_on_start"
+                    ],
                     "muted": stable_id in self._editor_preview_muted_emitters,
                     "solo": stable_id in self._editor_preview_solo_emitters,
                     "visible": self._editor_preview_emitter_visible(index),
@@ -518,11 +965,47 @@ class ParticleSystem(InxComponent):
 
     def editor_preview_end(self) -> None:
         if getattr(self, "_editor_preview_active", False):
-            self.pause()
+            self.editor_preview_suspend()
             self._editor_preview_active = False
             self._editor_preview_muted_emitters.clear()
             self._editor_preview_solo_emitters.clear()
             self._apply_editor_preview_visibility()
+
+    def on_draw_gizmos_selected(self) -> None:
+        """Draw every enabled emitter shape using its current authored settings."""
+        metadata = getattr(self, "_particle_metadata", None)
+        try:
+            transform = self.transform
+        except (AttributeError, ReferenceError, RuntimeError):
+            return
+        if metadata is None or transform is None:
+            return
+
+        from Infernux.gizmos import Gizmos
+
+        old_matrix = Gizmos.matrix
+        old_color = Gizmos.color
+        try:
+            for index, emitter in enumerate(metadata.emitters):
+                if not self._emitter_is_enabled(index):
+                    continue
+                shape = emitter.settings.shape
+                Gizmos.matrix = self._emitter_shape_gizmo_matrix(shape.space.value)
+                Gizmos.color = self._emitter_gizmo_color(index)
+                self._draw_emitter_shape_gizmo(Gizmos, shape)
+            raw_bounds_mode = get_raw_field_value(self, "bounds_mode")
+            if raw_bounds_mode is ParticleBoundsMode.MANUAL or str(raw_bounds_mode) == "manual":
+                center = get_raw_field_value(self, "manual_bounds_center")
+                size = get_raw_field_value(self, "manual_bounds_size")
+                Gizmos.matrix = list(transform.local_to_world_matrix())
+                Gizmos.color = (0.22, 0.82, 1.0)
+                Gizmos.draw_wire_cube(
+                    (float(center.x), float(center.y), float(center.z)),
+                    (abs(float(size.x)), abs(float(size.y)), abs(float(size.z))),
+                )
+        finally:
+            Gizmos.color = old_color
+            Gizmos.matrix = old_matrix
 
     def on_disable(self):
         self._remove_native_batch()
@@ -597,6 +1080,8 @@ class ParticleSystem(InxComponent):
                 revision = 0
                 source_key = ""
             metadata = decode_particle_runtime_metadata(hir)
+            self._reconcile_parameter_overrides(metadata.parameters)
+            self._reconcile_emitter_overrides(metadata.emitters)
             previous_metadata = getattr(self, "_particle_metadata", None)
             previous_kernel = getattr(self, "_particle_kernel", None)
             reload_compatibility = [None] * len(metadata.emitters)
@@ -620,11 +1105,6 @@ class ParticleSystem(InxComponent):
                         previous_emitter.settings,
                         emitter.settings,
                     )
-                    if (
-                        previous_emitter.enabled != emitter.enabled
-                        or previous_emitter.play_on_start != emitter.play_on_start
-                    ):
-                        compatibility = ParticleRuntimeCompatibility.EMITTER_RESTART
                     reload_compatibility[emitter_index] = compatibility
             self._publish_gpu_particle_graph(
                 artifact,
@@ -752,10 +1232,17 @@ class ParticleSystem(InxComponent):
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
                     "event_output_stages": list(glsl_emitter["event_output_stages"]),
+                    "continuation": None,
+                    "parameter_words": list(
+                        pack_gpu_particle_parameters(
+                            kernel.parameters,
+                            self._parameter_overrides,
+                        )
+                    ),
                     "preserve_state": preserve_state,
                     "migration": migration,
                     "data_interface_layout": self._gpu_data_interface_layout(
-                        kernel.emitters[index], glsl_emitter
+                        kernel.emitters[index], glsl_emitter, metadata.parameters
                     ),
                     "stages": decoded["stages"],
                     "billboard": decoded["billboard"],
@@ -765,8 +1252,8 @@ class ParticleSystem(InxComponent):
                             "id": self._gpu_output_id(emitter.stable_id, output.output_id),
                             "stable_id": output.output_id,
                             "output_type": output.output_type,
-                            "mesh": self._gpu_mesh_binding(output),
-                            "material": self._gpu_material_binding(output),
+                            "mesh": self._gpu_mesh_binding(output, emitter.stable_id),
+                            "material": self._gpu_material_binding(output, emitter.stable_id),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
                             "cast_shadows": output.cast_shadows,
@@ -789,10 +1276,7 @@ class ParticleSystem(InxComponent):
             else:
                 previous_emitter = previous_runtime_metadata.get(emitter.stable_id)
                 preserve_play_state = bool(
-                    previous_controller is not None
-                    and previous_emitter is not None
-                    and previous_emitter.enabled == emitter.enabled
-                    and previous_emitter.play_on_start == emitter.play_on_start
+                    previous_controller is not None and previous_emitter is not None
                 )
                 controller = GpuParticleEmitterController(
                     emitter.settings,
@@ -843,6 +1327,9 @@ class ParticleSystem(InxComponent):
                     for route in event_routes
                 ],
             }
+        runtime_event_routes = self._build_runtime_event_schema(
+            artifact.hir, kernel
+        )
         error = native._replace_gpu_particle_graph(
             self._batch_id,
             programs,
@@ -854,6 +1341,74 @@ class ParticleSystem(InxComponent):
         self._gpu_controllers = controllers
         self._gpu_emitter_ids = emitter_ids
         self._gpu_emitter_indices = emitter_indices
+        self._particle_event_routes = runtime_event_routes
+
+    @staticmethod
+    def _build_runtime_event_schema(hir: dict, kernel) -> tuple[dict, ...]:
+        events = hir.get("events")
+        emitters = hir.get("emitters")
+        if type(events) is not dict or type(emitters) is not list:
+            raise RuntimeError("ParticleGraph runtime event metadata is incomplete")
+        encoded_types = events.get("event_types")
+        encoded_routes = events.get("routes")
+        if type(encoded_types) is not list or type(encoded_routes) is not list:
+            raise RuntimeError("ParticleGraph runtime event metadata is invalid")
+        emitter_names = {
+            item.get("stable_id"): item.get("name", item.get("stable_id", ""))
+            for item in emitters
+            if type(item) is dict
+        }
+        types_by_index = {
+            int(item["type_index"]): item
+            for item in encoded_types
+            if type(item) is dict and type(item.get("type_index")) is int
+        }
+        if len(encoded_routes) != len(kernel.events.routes):
+            raise RuntimeError("ParticleGraph runtime event routes do not match the GPU ABI")
+        result = []
+        for channel_index, (route, kernel_route) in enumerate(
+            zip(encoded_routes, kernel.events.routes)
+        ):
+            if type(route) is not dict or route.get("stable_id") != kernel_route.stable_id:
+                raise RuntimeError("ParticleGraph runtime event route order is invalid")
+            event_type = types_by_index.get(int(route["event_type_index"]))
+            if event_type is None:
+                raise RuntimeError("ParticleGraph runtime event type is missing")
+            fields = event_type.get("fields")
+            if type(fields) is not list:
+                raise RuntimeError("ParticleGraph runtime event fields are invalid")
+            result.append(
+                {
+                    "channel_index": channel_index,
+                    "stable_id": route["stable_id"],
+                    "event_type_id": event_type["stable_id"],
+                    "event_type_name": event_type["name"],
+                    "event_type_index": int(route["event_type_index"]),
+                    "source_emitter_id": route["source_emitter_id"],
+                    "source_emitter_name": emitter_names.get(
+                        route["source_emitter_id"], route["source_emitter_id"]
+                    ),
+                    "source_emitter_index": int(route["source_emitter_index"]),
+                    "source_stage": route["source_stage"],
+                    "target_emitter_id": route["target_emitter_id"],
+                    "target_emitter_name": emitter_names.get(
+                        route["target_emitter_id"], route["target_emitter_id"]
+                    ),
+                    "target_emitter_index": int(route["target_emitter_index"]),
+                    "spawn_count": int(route["spawn_count"]),
+                    "capacity": int(route["capacity"]),
+                    "fields": tuple(
+                        {
+                            "stable_id": field["stable_id"],
+                            "name": field["name"],
+                            "type": dict(field["type"]),
+                            "default": field["default"],
+                        }
+                        for field in fields
+                    ),
+                }
+            )
+        return tuple(result)
 
     def _update_gpu_particle_graph(self, delta_time: float) -> None:
         native = self._native_engine()
@@ -869,6 +1424,18 @@ class ParticleSystem(InxComponent):
 
         frame_items = []
         emitter_position = tuple(float(value) for value in emitter_to_world[0:3, 3])
+        bounds_mode, manual_bounds_lower, manual_bounds_upper = (
+            self._gpu_bounds_request(emitter_to_world)
+        )
+        raw_offscreen_policy = get_raw_field_value(self, "offscreen_policy")
+        try:
+            offscreen_policy = (
+                raw_offscreen_policy
+                if isinstance(raw_offscreen_policy, ParticleOffscreenPolicy)
+                else ParticleOffscreenPolicy(str(raw_offscreen_policy))
+            )
+        except ValueError:
+            offscreen_policy = ParticleOffscreenPolicy.ALWAYS_SIMULATE
         for emitter_id, emitter_index, controller in zip(
             self._gpu_emitter_ids,
             self._gpu_emitter_indices,
@@ -887,15 +1454,71 @@ class ParticleSystem(InxComponent):
                     "spawn_generation": schedule.spawn_generation,
                     "system_seed": schedule.system_seed,
                     "simulation_step": schedule.simulation_step,
+                    "simulation_time_ticks": schedule.simulation_time_ticks,
                     "delta_time": schedule.delta_time,
                     "transforms": transforms,
                     "simulate": schedule.simulate,
                     "render": schedule.render
                     and self._editor_preview_emitter_visible(emitter_index),
+                    "offscreen_policy": offscreen_policy.value,
+                    "force_simulation": False,
+                    "bounds_mode": bounds_mode,
+                    "manual_bounds_lower": manual_bounds_lower,
+                    "manual_bounds_upper": manual_bounds_upper,
                 }
             )
         if frame_items:
             native._begin_gpu_particle_batch(self._batch_id, frame_items)
+
+    def _gpu_bounds_request(
+        self, emitter_to_world: np.ndarray
+    ) -> tuple[str, list[float], list[float]]:
+        raw_mode = get_raw_field_value(self, "bounds_mode")
+        try:
+            mode = (
+                raw_mode
+                if isinstance(raw_mode, ParticleBoundsMode)
+                else ParticleBoundsMode(str(raw_mode))
+            )
+        except ValueError:
+            mode = ParticleBoundsMode.AUTOMATIC
+        if mode is ParticleBoundsMode.AUTOMATIC:
+            return mode.value, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+
+        center_value = get_raw_field_value(self, "manual_bounds_center")
+        size_value = get_raw_field_value(self, "manual_bounds_size")
+        center = np.asarray(
+            [center_value.x, center_value.y, center_value.z], dtype=np.float32
+        )
+        half_size = np.abs(
+            np.asarray([size_value.x, size_value.y, size_value.z], dtype=np.float32)
+        ) * np.float32(0.5)
+        if not np.all(np.isfinite(center)) or not np.all(np.isfinite(half_size)):
+            raise ValueError("particle manual bounds must contain finite values")
+
+        signs = np.asarray(
+            [
+                (-1.0, -1.0, -1.0),
+                (-1.0, -1.0, 1.0),
+                (-1.0, 1.0, -1.0),
+                (-1.0, 1.0, 1.0),
+                (1.0, -1.0, -1.0),
+                (1.0, -1.0, 1.0),
+                (1.0, 1.0, -1.0),
+                (1.0, 1.0, 1.0),
+            ],
+            dtype=np.float32,
+        )
+        local_corners = center + signs * half_size
+        homogeneous = np.concatenate(
+            [local_corners, np.ones((8, 1), dtype=np.float32)], axis=1
+        )
+        world_corners = (emitter_to_world @ homogeneous.T).T[:, :3]
+        if not np.all(np.isfinite(world_corners)):
+            raise ValueError("particle manual bounds transform produced non-finite values")
+        lower = np.min(world_corners, axis=0)
+        upper = np.max(world_corners, axis=0)
+        return mode.value, lower.tolist(), upper.tolist()
 
     def _reload_published_artifact_if_needed(self) -> None:
         if not self._artifact_source_key:
@@ -919,6 +1542,136 @@ class ParticleSystem(InxComponent):
         except ValueError:
             return None
         return runtimes[runtime_index]
+
+    def _resolve_emitter_index(self, emitter: int | str) -> int | None:
+        """Resolve an emitter index, authored name, or stable ID without raising."""
+        metadata = getattr(self, "_particle_metadata", None)
+        emitters = getattr(metadata, "emitters", ())
+        if type(emitter) is int:
+            return emitter if 0 <= emitter < len(emitters) else None
+        if type(emitter) is not str:
+            return None
+        selector = emitter.strip()
+        if not selector:
+            return None
+        for index, candidate in enumerate(emitters):
+            if candidate.name == selector or candidate.stable_id == selector:
+                return index
+        return None
+
+    def _emitter_shape_gizmo_matrix(self, shape_space: str) -> list[float]:
+        if shape_space != "world":
+            return list(self.transform.local_to_world_matrix())
+        position = self.transform.position
+        return [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            float(position.x),
+            float(position.y),
+            float(position.z),
+            1.0,
+        ]
+
+    @staticmethod
+    def _emitter_gizmo_color(index: int) -> tuple[float, float, float]:
+        palette = (
+            (1.0, 0.68, 0.22),
+            (0.32, 0.82, 1.0),
+            (0.56, 0.92, 0.42),
+            (0.92, 0.48, 0.78),
+        )
+        return palette[index % len(palette)]
+
+    def _draw_emitter_shape_gizmo(self, gizmos, shape) -> None:
+        kind = shape.kind
+        if kind is EmitterShapeKind.SPHERE:
+            gizmos.draw_wire_sphere((0.0, 0.0, 0.0), float(shape.radius))
+            return
+        if kind is EmitterShapeKind.BOX:
+            gizmos.draw_wire_cube((0.0, 0.0, 0.0), tuple(shape.dimensions))
+            return
+        if kind is EmitterShapeKind.CONE:
+            ParticleSystem._draw_cone_emitter_gizmo(
+                gizmos, float(shape.radius), float(shape.angle_degrees)
+            )
+            return
+        if kind is EmitterShapeKind.MESH:
+            bounds = self._mesh_emitter_gizmo_bounds(shape)
+            if bounds is None:
+                self._draw_emitter_origin_gizmo(gizmos)
+                return
+            minimum = bounds[:3]
+            maximum = bounds[3:]
+            center = tuple((low + high) * 0.5 for low, high in zip(minimum, maximum))
+            size = tuple(max(0.0, high - low) for low, high in zip(minimum, maximum))
+            gizmos.draw_wire_cube(center, size)
+            return
+
+        self._draw_emitter_origin_gizmo(gizmos)
+
+    @staticmethod
+    def _draw_emitter_origin_gizmo(gizmos) -> None:
+        marker = 0.2
+        gizmos.draw_line((-marker, 0.0, 0.0), (marker, 0.0, 0.0))
+        gizmos.draw_line((0.0, -marker, 0.0), (0.0, marker, 0.0))
+        gizmos.draw_line((0.0, 0.0, -marker), (0.0, 0.0, marker))
+
+    def _mesh_emitter_gizmo_bounds(self, shape) -> tuple[float, ...] | None:
+        reference = shape.mesh
+        key = str(reference.guid or reference.path_hint).strip()
+        if not key:
+            return None
+        cache = getattr(self, "_emitter_mesh_gizmo_bounds", None)
+        if cache is None:
+            cache = self._emitter_mesh_gizmo_bounds = {}
+        if key in cache:
+            return cache[key]
+        try:
+            mesh = self._resolve_mesh_shape(shape)
+            bounds = tuple(float(value) for value in mesh.get_bounds())
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return None
+        if len(bounds) != 6 or not all(math.isfinite(value) for value in bounds):
+            return None
+        cache[key] = bounds
+        return bounds
+
+    @staticmethod
+    def _draw_cone_emitter_gizmo(gizmos, radius: float, angle_degrees: float) -> None:
+        segments = 24
+        radius = max(0.0, radius)
+        gizmos.draw_wire_arc((0.0, 0.0, 0.0), (0.0, 0.0, 1.0), radius, segments=segments)
+
+        direction_length = max(1.0, radius * 2.0)
+        if angle_degrees >= 90.0:
+            gizmos.draw_wire_sphere((0.0, 0.0, 0.0), direction_length, segments=segments)
+            return
+
+        spread = math.tan(math.radians(max(0.0, angle_degrees))) * direction_length
+        gizmos.draw_wire_arc(
+            (0.0, 0.0, direction_length),
+            (0.0, 0.0, 1.0),
+            spread,
+            segments=segments,
+        )
+        for index in range(8):
+            angle = math.tau * index / 8.0
+            end = (
+                math.cos(angle) * spread,
+                math.sin(angle) * spread,
+                direction_length,
+            )
+            gizmos.draw_line((0.0, 0.0, 0.0), end)
 
     def _valid_emitter_index(self, emitter_index: int) -> bool:
         metadata = getattr(self, "_particle_metadata", None)
@@ -953,9 +1706,11 @@ class ParticleSystem(InxComponent):
             return False
         metadata = metadata or getattr(self, "_particle_metadata", None)
         emitters = getattr(metadata, "emitters", ())
-        return bool(
-            0 <= emitter_index < len(emitters) and emitters[emitter_index].enabled
-        )
+        if not 0 <= emitter_index < len(emitters):
+            return False
+        return self._emitter_instance_options(emitters[emitter_index].stable_id)[
+            "enabled"
+        ]
 
     def _emitter_should_play(
         self,
@@ -969,14 +1724,44 @@ class ParticleSystem(InxComponent):
         if not 0 <= emitter_index < len(emitters):
             return False
         emitter = emitters[emitter_index]
+        options = self._emitter_instance_options(emitter.stable_id)
         return bool(
             self._playing
-            and emitter.enabled
-            and (emitter.play_on_start or not honor_play_on_start)
+            and options["enabled"]
+            and (options["play_on_start"] or not honor_play_on_start)
         )
 
     def _has_runtime(self) -> bool:
         return bool(getattr(self, "_gpu_controllers", ()))
+
+    def _gpu_runtime_resident(self) -> bool:
+        """Return whether every Python controller still has a native GPU peer."""
+        emitter_ids = tuple(getattr(self, "_gpu_emitter_ids", ()))
+        if not self._has_runtime() or not emitter_ids:
+            return False
+        native = self._native_engine()
+        revision = getattr(native, "_gpu_particle_artifact_revision", None)
+        if not callable(revision):
+            return True
+        try:
+            return all(int(revision(emitter_id)) > 0 for emitter_id in emitter_ids)
+        except (ReferenceError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _ensure_editor_preview_runtime(self) -> tuple[bool, bool]:
+        """Re-publish stale GPU residency after Play Mode recreates the scene."""
+        had_controllers = self._has_runtime()
+        if had_controllers and self._gpu_runtime_resident():
+            return True, False
+        if had_controllers:
+            # Scene restore can preserve Python fields after the native graph
+            # was removed. Do not let those stale controllers suppress AOT
+            # publication of the replacement graph.
+            self._gpu_controllers = []
+            self._gpu_emitter_ids = []
+            self._gpu_emitter_indices = []
+        compiled = self._compile_asset(force=had_controllers)
+        return bool(compiled and self._gpu_runtime_resident()), bool(compiled)
 
     def _emitter_matrix(self) -> np.ndarray:
         flat = self.transform.local_to_world_matrix()
@@ -1046,8 +1831,7 @@ class ParticleSystem(InxComponent):
         )
         return value or 1
 
-    @staticmethod
-    def _gpu_material_binding(output) -> dict[str, object]:
+    def _gpu_material_binding(self, output, emitter_id: str = "") -> dict[str, object]:
         is_mesh = output.output_type == "mesh"
         state: dict[str, object] = {
             "render_queue": 2000 if is_mesh else 3000,
@@ -1111,12 +1895,12 @@ class ParticleSystem(InxComponent):
             )
         return state
 
-    @classmethod
-    def _gpu_mesh_binding(cls, output) -> object:
+    def _gpu_mesh_binding(self, output, emitter_id: str = "") -> object:
         if output.output_type != "mesh":
             return None
-        return cls._resolve_mesh_reference(
-            output.mesh, "ParticleGraph Mesh Output"
+        reference = output.mesh
+        return self._resolve_mesh_reference(
+            reference, "ParticleGraph Mesh Output"
         )
 
     @classmethod
@@ -1139,94 +1923,28 @@ class ParticleSystem(InxComponent):
             shape.mesh, "ParticleGraph Mesh emitter shape"
         )
 
-    def _gpu_data_interface_layout(self, emitter, glsl_emitter) -> dict[str, object]:
+    def _gpu_data_interface_layout(
+        self, emitter, glsl_emitter, parameters
+    ) -> dict[str, object]:
         layout = glsl_emitter.get("data_interface_layout")
         if type(layout) is not dict:
             raise RuntimeError("ParticleGraph GPU data interface layout is missing")
-        point_cache_layouts = layout.get("point_caches")
-        if type(point_cache_layouts) is not list:
-            raise RuntimeError("ParticleGraph GPU Point Cache layout is invalid")
         volume_layouts = layout.get("volume_interfaces")
         if type(volume_layouts) is not list:
             raise RuntimeError("ParticleGraph GPU volume-interface layout is invalid")
+        texture_layouts = layout.get("texture2d_parameters")
+        if type(texture_layouts) is not list:
+            raise RuntimeError("ParticleGraph GPU Texture2D parameter layout is invalid")
         mesh_shape_layout = layout.get("mesh_shape")
         if mesh_shape_layout is not None and type(mesh_shape_layout) is not dict:
             raise RuntimeError("ParticleGraph GPU Mesh shape layout is invalid")
-        if not point_cache_layouts and not volume_layouts and mesh_shape_layout is None:
+        if not volume_layouts and not texture_layouts and mesh_shape_layout is None:
             return dict(layout)
 
-        interfaces = {
-            interface.stable_id: interface
-            for interface in emitter.data_interfaces
-            if isinstance(interface, PointCache)
-        }
         from Infernux.lib import AssetRegistry
 
         registry = AssetRegistry.instance()
-        decoded_point_caches = []
-        for encoded in point_cache_layouts:
-            if type(encoded) is not dict:
-                raise RuntimeError("ParticleGraph GPU Point Cache layout is invalid")
-            stable_id = encoded.get("stable_id")
-            interface = interfaces.get(stable_id)
-            if interface is None:
-                raise RuntimeError(
-                    f"ParticleGraph GPU Point Cache interface {stable_id!r} is missing"
-                )
-            reference = self._data_interface_reference(interface)
-            native = (
-                registry.load_point_cache_by_guid(reference.guid)
-                if reference.guid
-                else None
-            )
-            path = reference.path_hint
-            if native is None and path:
-                if not os.path.isabs(path):
-                    try:
-                        from Infernux.engine.project_context import get_project_root
-
-                        project_root = get_project_root()
-                        if project_root:
-                            path = os.path.join(project_root, path)
-                    except (AttributeError, RuntimeError):
-                        pass
-                native = registry.load_point_cache(path)
-            if native is None:
-                identity = reference.guid or reference.path_hint or "<empty reference>"
-                raise RuntimeError(
-                    f"ParticleGraph GPU Point Cache {stable_id!r} cannot load {identity!r}"
-                )
-
-            aliases = {
-                "$position": interface.position_channel,
-                "$normal": interface.normal_channel,
-                "$color": interface.color_channel,
-                "$id": interface.id_channel,
-            }
-            samples = []
-            for sample in encoded.get("samples", ()):
-                if type(sample) is not dict:
-                    raise RuntimeError("ParticleGraph GPU Point Cache sample is invalid")
-                decoded_sample = dict(sample)
-                decoded_sample["channel"] = aliases.get(
-                    decoded_sample.get("channel"), decoded_sample.get("channel")
-                )
-                if not decoded_sample["channel"]:
-                    raise RuntimeError(
-                        f"ParticleGraph GPU Point Cache {stable_id!r} resolves an empty channel"
-                    )
-                samples.append(decoded_sample)
-            decoded = dict(encoded)
-            decoded.update(
-                space=interface.space.value,
-                cache_to_space=list(interface.cache_to_space),
-                native=native,
-                samples=samples,
-            )
-            decoded_point_caches.append(decoded)
-
         result = dict(layout)
-        result["point_caches"] = decoded_point_caches
         volumes = {
             interface.stable_id: interface
             for interface in emitter.data_interfaces
@@ -1242,7 +1960,7 @@ class ParticleSystem(InxComponent):
                 raise RuntimeError(
                     f"ParticleGraph GPU volume interface {stable_id!r} is missing"
                 )
-            reference = self._data_interface_reference(interface)
+            reference = interface.texture
             if not reference.guid:
                 identity = reference.path_hint or "<empty reference>"
                 raise RuntimeError(
@@ -1279,6 +1997,46 @@ class ParticleSystem(InxComponent):
                 decoded.update(distance_scale=interface.distance_scale)
             decoded_volumes.append(decoded)
         result["volume_interfaces"] = decoded_volumes
+        parameter_by_id = {
+            parameter.stable_id: parameter for parameter in parameters
+        }
+        decoded_textures = []
+        for encoded in texture_layouts:
+            if type(encoded) is not dict:
+                raise RuntimeError(
+                    "ParticleGraph GPU Texture2D parameter layout is invalid"
+                )
+            stable_id = str(encoded.get("stable_id") or "")
+            parameter = parameter_by_id.get(stable_id)
+            if (
+                parameter is None
+                or parameter.value_type.value_type is not ValueType.TEXTURE2D
+            ):
+                raise RuntimeError(
+                    f"ParticleGraph GPU Texture2D parameter {stable_id!r} is missing"
+                )
+            default = AssetReference.from_dict(parameter.default)
+            reference = AssetReference.from_dict(
+                self._parameter_overrides.get(stable_id, default.to_dict())
+            )
+            native = (
+                registry.load_texture_by_guid(reference.guid)
+                if reference.guid
+                else None
+            )
+            if reference.guid and (
+                native is None or str(native.dimension).lower() != "2d"
+            ):
+                raise RuntimeError(
+                    f"ParticleGraph Texture2D parameter {parameter.name!r} cannot load a Texture2D from {reference.guid!r}"
+                )
+            decoded = dict(encoded)
+            decoded.update(
+                texture_guid=reference.guid or "white",
+                native=native,
+            )
+            decoded_textures.append(decoded)
+        result["texture2d_parameters"] = decoded_textures
         if mesh_shape_layout is not None:
             try:
                 reference = AssetReference.from_dict(mesh_shape_layout["mesh"])
@@ -1293,38 +2051,10 @@ class ParticleSystem(InxComponent):
             result["mesh_shape"] = decoded_mesh_shape
         return result
 
-    def _data_interface_reference(self, interface) -> AssetReference:
-        override = getattr(self, "_data_interface_overrides", {}).get(
-            interface.stable_id
-        )
-        if override is not None:
-            return override
-        return interface.cache if isinstance(interface, PointCache) else interface.texture
-
-    def _resolve_point_cache(self, interface: PointCache):
+    def _resolve_vector_field(self, emitter_id: str, interface: VectorField):
         from Infernux.lib import AssetRegistry
 
-        reference = self._data_interface_reference(interface)
-        registry = AssetRegistry.instance()
-        native = (
-            registry.load_point_cache_by_guid(reference.guid)
-            if reference.guid
-            else None
-        )
-        path = self._absolute_project_path(reference.path_hint)
-        if native is None and path:
-            native = registry.load_point_cache(path)
-        if native is None:
-            identity = reference.guid or reference.path_hint or "<empty reference>"
-            raise RuntimeError(
-                f"ParticleGraph Point Cache {interface.stable_id!r} cannot load {identity!r}"
-            )
-        return native
-
-    def _resolve_vector_field(self, interface: VectorField):
-        from Infernux.lib import AssetRegistry
-
-        reference = self._data_interface_reference(interface)
+        reference = interface.texture
         if not reference.guid:
             identity = reference.path_hint or "<empty reference>"
             raise RuntimeError(
@@ -1388,6 +2118,7 @@ class ParticleSystem(InxComponent):
         self._particle_kernel = None
         self._particle_gpu_layouts = ()
         self._particle_metadata = None
+        self._particle_event_routes = ()
         self._artifact_revision = 0
         self._artifact_source_key = ""
         self._emitter_to_world_cache = None
@@ -1395,6 +2126,259 @@ class ParticleSystem(InxComponent):
         self._compile_retry_at = 0.0
         self._last_compile_error = ""
         self._last_compile_error_log_at = 0.0
+
+    def _decode_parameter_overrides(self) -> dict[str, object]:
+        raw = get_raw_field_value(self, "_parameter_overrides_json")
+        try:
+            value = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            Debug.log_warning("[ParticleSystem] Invalid serialized parameter overrides were discarded")
+            return {}
+        if type(value) is not dict or any(type(key) is not str for key in value):
+            Debug.log_warning("[ParticleSystem] Invalid serialized parameter overrides were discarded")
+            return {}
+        return value
+
+    def _decode_emitter_overrides(self) -> dict[str, dict[str, bool]]:
+        raw = get_raw_field_value(self, "_emitter_overrides_json")
+        try:
+            value = json.loads(raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            Debug.log_warning(
+                "[ParticleSystem] Invalid serialized emitter overrides were discarded"
+            )
+            return {}
+        if type(value) is not dict:
+            return {}
+        result = {}
+        for stable_id, options in value.items():
+            if (
+                type(stable_id) is str
+                and type(options) is dict
+                and type(options.get("enabled")) is bool
+                and type(options.get("play_on_start")) is bool
+            ):
+                result[stable_id] = {
+                    "enabled": options["enabled"],
+                    "play_on_start": options["play_on_start"],
+                }
+        return result
+
+    def _store_parameter_overrides(self) -> None:
+        encoded = json.dumps(
+            self._parameter_overrides,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if get_raw_field_value(self, "_parameter_overrides_json") != encoded:
+            self._parameter_overrides_json = encoded
+        self._serialized_parameter_overrides_cache = str(
+            get_raw_field_value(self, "_parameter_overrides_json") or "{}"
+        )
+        self._parameter_overrides = self._decode_parameter_overrides()
+
+    def _store_emitter_overrides(self) -> None:
+        encoded = json.dumps(
+            self._emitter_overrides,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if get_raw_field_value(self, "_emitter_overrides_json") != encoded:
+            self._emitter_overrides_json = encoded
+        self._serialized_emitter_overrides_cache = str(
+            get_raw_field_value(self, "_emitter_overrides_json") or "{}"
+        )
+        self._emitter_overrides = self._decode_emitter_overrides()
+
+    def _sync_serialized_instance_overrides(self) -> None:
+        if not hasattr(self, "_parameter_overrides"):
+            self._ensure_runtime_state()
+            return
+        parameter_raw = str(
+            get_raw_field_value(self, "_parameter_overrides_json") or "{}"
+        )
+        if parameter_raw != self._serialized_parameter_overrides_cache:
+            previous = self._parameter_overrides
+            self._serialized_parameter_overrides_cache = parameter_raw
+            self._parameter_overrides = self._decode_parameter_overrides()
+            if self._has_runtime():
+                metadata = getattr(self, "_particle_metadata", None)
+                texture_ids = {
+                    parameter.stable_id
+                    for parameter in getattr(metadata, "parameters", ())
+                    if parameter.exposed
+                    and parameter.value_type.value_type is ValueType.TEXTURE2D
+                }
+                texture_changed = any(
+                    previous.get(stable_id) != self._parameter_overrides.get(stable_id)
+                    for stable_id in texture_ids
+                )
+                if texture_changed:
+                    self._compile_asset(force=True)
+                else:
+                    self._upload_parameter_overrides()
+        emitter_raw = str(
+            get_raw_field_value(self, "_emitter_overrides_json") or "{}"
+        )
+        if emitter_raw != self._serialized_emitter_overrides_cache:
+            self._serialized_emitter_overrides_cache = emitter_raw
+            self._emitter_overrides = self._decode_emitter_overrides()
+            for emitter_index in getattr(self, "_gpu_emitter_indices", ()):
+                self._apply_emitter_instance_options(emitter_index)
+
+    def _emitter_instance_options(self, stable_id: str) -> dict[str, bool]:
+        options = getattr(self, "_emitter_overrides", {}).get(str(stable_id), {})
+        return {
+            "enabled": bool(options.get("enabled", True)),
+            "play_on_start": bool(options.get("play_on_start", True)),
+        }
+
+    def _apply_emitter_instance_options(self, emitter_index: int) -> None:
+        runtime = self._runtime_at(emitter_index)
+        if runtime is None:
+            return
+        options = self._emitter_instance_options(
+            self._emitter_stable_id(emitter_index)
+        )
+        if not options["enabled"]:
+            runtime.reset(playing=False)
+            self._reset_gpu_emitters(emitter_index)
+        elif self._playing and options["play_on_start"]:
+            runtime.play()
+        else:
+            runtime.pause()
+
+    def _reconcile_parameter_overrides(self, parameters) -> None:
+        by_id = {
+            parameter.stable_id: parameter
+            for parameter in parameters
+            if parameter.exposed
+        }
+        reconciled = {}
+        for stable_id, value in self._parameter_overrides.items():
+            parameter = by_id.get(stable_id)
+            if parameter is None:
+                continue
+            try:
+                reconciled[stable_id] = self._normalize_parameter_value(
+                    parameter, value
+                )
+            except (TypeError, ValueError):
+                continue
+        if reconciled != self._parameter_overrides:
+            self._parameter_overrides = reconciled
+            self._store_parameter_overrides()
+
+    def _reconcile_emitter_overrides(self, emitters) -> None:
+        valid_ids = {str(emitter.stable_id) for emitter in emitters}
+        reconciled = {
+            stable_id: options
+            for stable_id, options in self._emitter_overrides.items()
+            if stable_id in valid_ids
+        }
+        if reconciled != self._emitter_overrides:
+            self._emitter_overrides = reconciled
+            self._store_emitter_overrides()
+
+    def _find_exposed_parameter(self, name: str, *, compile_if_needed: bool):
+        if type(name) is not str or not name:
+            return None
+        metadata = getattr(self, "_particle_metadata", None)
+        if metadata is None and compile_if_needed:
+            self._ensure_runtime_state()
+            self._compile_asset(force=True)
+            metadata = getattr(self, "_particle_metadata", None)
+        parameters = getattr(metadata, "parameters", ())
+        for parameter in parameters:
+            if parameter.exposed and parameter.stable_id == name:
+                return parameter
+        for parameter in parameters:
+            if parameter.exposed and parameter.name == name:
+                return parameter
+        return None
+
+    def _require_exposed_parameter(self, name: str):
+        parameter = self._find_exposed_parameter(name, compile_if_needed=True)
+        if parameter is None:
+            raise KeyError(f"ParticleGraph has no exposed parameter {name!r}")
+        return parameter
+
+    @staticmethod
+    def _normalize_parameter_value(parameter, value):
+        kind = parameter.value_type.value_type
+        if kind is ValueType.TEXTURE2D:
+            if isinstance(value, AssetReference):
+                reference = value
+            elif type(value) is dict:
+                reference = AssetReference.from_dict(value)
+            else:
+                raise TypeError(
+                    f"particle parameter {parameter.name!r} requires a Texture2D asset reference"
+                )
+            return reference.to_dict()
+        if kind is ValueType.BOOL:
+            if type(value) is not bool:
+                raise TypeError(f"particle parameter {parameter.name!r} requires a bool")
+            return value
+        if kind in {ValueType.I32, ValueType.U32}:
+            if type(value) is not int:
+                raise TypeError(f"particle parameter {parameter.name!r} requires an integer")
+            if kind is ValueType.U32 and value < 0:
+                raise ValueError(f"particle parameter {parameter.name!r} cannot be negative")
+            return int(value)
+        dimension = {
+            ValueType.F32: 1,
+            ValueType.VEC2: 2,
+            ValueType.VEC3: 3,
+            ValueType.VEC4: 4,
+            ValueType.COLOR: 4,
+        }.get(kind)
+        values = [value] if dimension == 1 else value
+        if (
+            dimension is None
+            or not isinstance(values, (list, tuple))
+            or len(values) != dimension
+            or any(type(item) not in {int, float} for item in values)
+        ):
+            raise TypeError(f"particle parameter {parameter.name!r} has an invalid value")
+        normalized = [float(item) for item in values]
+        if not all(math.isfinite(item) for item in normalized):
+            raise ValueError(f"particle parameter {parameter.name!r} must be finite")
+        return normalized[0] if dimension == 1 else normalized
+
+    def _set_typed_parameter(self, name: str, value, expected: ValueType) -> None:
+        parameter = self._require_exposed_parameter(name)
+        if parameter.value_type.value_type is not expected:
+            raise TypeError(
+                f"particle parameter {parameter.name!r} is {parameter.value_type.value_type.value}, "
+                f"not {expected.value}"
+            )
+        self.set_parameter(parameter.stable_id, value)
+
+    def _get_typed_parameter(self, name: str, expected: ValueType, default):
+        parameter = self._find_exposed_parameter(name, compile_if_needed=True)
+        if parameter is None:
+            return default
+        if parameter.value_type.value_type is not expected:
+            raise TypeError(
+                f"particle parameter {parameter.name!r} is {parameter.value_type.value_type.value}, "
+                f"not {expected.value}"
+            )
+        return self._parameter_overrides.get(parameter.stable_id, parameter.default)
+
+    def _upload_parameter_overrides(self) -> None:
+        kernel = getattr(self, "_particle_kernel", None)
+        if kernel is None or not self._has_runtime():
+            return
+        words = pack_gpu_particle_parameters(kernel.parameters, self._parameter_overrides)
+        native = self._native_engine()
+        if native is None or not hasattr(native, "_update_gpu_particle_parameters"):
+            raise RuntimeError("GPU particle parameter updates require the native particle runtime")
+        error = native._update_gpu_particle_parameters(self._batch_id, list(words))
+        if error:
+            raise RuntimeError(error)
 
     @staticmethod
     def _native_engine():

@@ -1,6 +1,7 @@
 #include <function/renderer/RenderWorld.h>
 
 #include <cassert>
+#include <type_traits>
 
 using infernux::RenderProxy;
 using infernux::RenderWorldSnapshot;
@@ -21,30 +22,28 @@ int main()
     assert(world.FrameRevision() == 0);
     assert(!world.IsPublished());
 
-    world.BeginFrame(7, 11);
-    assert(world.WorldId() == 7);
-    assert(world.StructuralRevision() == 11);
-    assert(world.FrameRevision() == 1);
-    assert(!world.IsPublished());
-    assert(!world.MatchesSource(7, 11));
-
-    world.Publish();
-    assert(world.IsPublished());
-    assert(world.MatchesSource(7, 11));
-    assert(!world.MatchesSource(8, 11));
-    assert(!world.MatchesSource(7, 12));
-
-    world.BeginFrame(7, 11);
-    assert(world.FrameRevision() == 2);
-    assert(!world.IsPublished());
-    assert(world.Proxies().empty());
-
     world.Clear();
-    assert(world.FrameRevision() == 3);
+    assert(world.FrameRevision() == 1);
+    assert(world.IsPublished());
     assert(world.WorldId() == 0);
     assert(world.StructuralRevision() == 0);
-    assert(world.IsPublished());
-    assert(world.Proxies().empty());
+    assert(world.MatchesSource(0, 0));
+    assert(world.Acquire()->Proxies().empty());
+
+    const auto firstPublication = world.Acquire();
+    assert(firstPublication);
+    assert(firstPublication->FrameRevision() == 1);
+
+    // A new publication must not mutate a frame retained by a render consumer.
+    world.Clear();
+    assert(world.FrameRevision() == 2);
+    const auto secondPublication = world.Acquire();
+    assert(secondPublication);
+    assert(secondPublication != firstPublication);
+    assert(secondPublication->FrameRevision() == 2);
+    assert(firstPublication->FrameRevision() == 1);
+
+    static_assert(std::is_same_v<decltype(world.Acquire()), std::shared_ptr<const infernux::RenderWorldFrame>>);
 
     return 0;
 }

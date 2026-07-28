@@ -105,46 +105,25 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     // Publish to ShaderProgram so all pipelines pick up the shared layout at set 2
     ShaderProgram::SetGlobalsDescSetLayout(m_globalsDescSetLayout);
 
-    // Pool: one UBO + four SSBOs per frame-in-flight
-    VkDescriptorPoolSize poolSizes[2]{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(m_maxFramesInFlight);
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(m_maxFramesInFlight * 4);
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = 0;
-    poolInfo.maxSets = static_cast<uint32_t>(m_maxFramesInFlight);
-    poolInfo.poolSizeCount = 2;
-    poolInfo.pPoolSizes = poolSizes;
-
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_globalsDescPool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create globals descriptor pool");
-        vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
-        m_globalsDescSetLayout = VK_NULL_HANDLE;
-        ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
-        return false;
-    }
-
-    // Allocate descriptor sets
-    std::vector<VkDescriptorSetLayout> layouts(m_maxFramesInFlight, m_globalsDescSetLayout);
-
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_globalsDescPool;
-    allocInfo.descriptorSetCount = static_cast<uint32_t>(m_maxFramesInFlight);
-    allocInfo.pSetLayouts = layouts.data();
-
+    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+    m_globalsDescriptorLeases.clear();
+    m_globalsDescriptorLeases.reserve(m_maxFramesInFlight);
     m_globalsDescSets.resize(m_maxFramesInFlight);
-    if (vkAllocateDescriptorSets(device, &allocInfo, m_globalsDescSets.data()) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to allocate globals descriptor sets");
-        vkDestroyDescriptorPool(device, m_globalsDescPool, nullptr);
-        m_globalsDescPool = VK_NULL_HANDLE;
-        vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
-        m_globalsDescSetLayout = VK_NULL_HANDLE;
-        ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
-        return false;
+    for (size_t index = 0; index < m_maxFramesInFlight; ++index) {
+        auto lease = descriptorManager.Allocate(m_globalsDescSetLayout, vk::DescriptorArena::Persistent);
+        if (!lease.IsValid()) {
+            INXLOG_ERROR("Failed to allocate globals descriptor set ", index);
+            for (const auto &allocated : m_globalsDescriptorLeases)
+                descriptorManager.Retire(allocated);
+            m_globalsDescriptorLeases.clear();
+            m_globalsDescSets.clear();
+            vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
+            m_globalsDescSetLayout = VK_NULL_HANDLE;
+            ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
+            return false;
+        }
+        m_globalsDescSets[index] = lease.set;
+        m_globalsDescriptorLeases.push_back(lease);
     }
 
     // Write each descriptor set to point at the corresponding globals buffer
@@ -274,11 +253,10 @@ void InxVkCoreModular::DestroyGlobalsDescriptorResources()
     m_instanceAuxBuffers.clear();
     m_instanceHistory.Clear();
     m_globalsDescSets.clear();
-
-    if (m_globalsDescPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_globalsDescPool, nullptr);
-        m_globalsDescPool = VK_NULL_HANDLE;
-    }
+    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+    for (const auto &lease : m_globalsDescriptorLeases)
+        descriptorManager.Retire(lease);
+    m_globalsDescriptorLeases.clear();
     if (m_globalsDescSetLayout != VK_NULL_HANDLE) {
         ShaderProgram::SetGlobalsDescSetLayout(VK_NULL_HANDLE);
         vkDestroyDescriptorSetLayout(device, m_globalsDescSetLayout, nullptr);
@@ -340,10 +318,10 @@ void InxVkCoreModular::EnsureInstanceBufferCapacity(uint32_t frameIndex, size_t 
 
     // Old instance buffers may still be referenced by commands already
     // recorded earlier in this same command buffer. Defer final destruction
-    // until the frame deletion queue says all in-flight use is complete.
+    // until the submission retirement queue says all in-flight use is complete.
     if (oldBuffer) {
         auto retiredBuffer = std::shared_ptr<vk::VkBufferHandle>(oldBuffer.release());
-        m_deletionQueue.Push([retiredBuffer]() mutable { retiredBuffer.reset(); });
+        m_deletionQueue.Retire([retiredBuffer]() mutable { retiredBuffer.reset(); });
     }
 }
 
@@ -390,7 +368,7 @@ void InxVkCoreModular::EnsureSkinBuffersCapacity(uint32_t frameIndex, size_t ski
 
         if (oldBuffer) {
             auto retiredBuffer = std::shared_ptr<vk::VkBufferHandle>(oldBuffer.release());
-            m_deletionQueue.Push([retiredBuffer]() mutable { retiredBuffer.reset(); });
+            m_deletionQueue.Retire([retiredBuffer]() mutable { retiredBuffer.reset(); });
         }
     };
 
@@ -439,7 +417,7 @@ void InxVkCoreModular::EnsureInstanceAuxBufferCapacity(uint32_t frameIndex, size
 
     if (oldBuffer) {
         auto retiredBuffer = std::shared_ptr<vk::VkBufferHandle>(oldBuffer.release());
-        m_deletionQueue.Push([retiredBuffer]() mutable { retiredBuffer.reset(); });
+        m_deletionQueue.Retire([retiredBuffer]() mutable { retiredBuffer.reset(); });
     }
 }
 

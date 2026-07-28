@@ -16,6 +16,7 @@ class GpuParticleFrameSchedule:
     spawn_generation: int
     system_seed: int
     simulation_step: int
+    simulation_time_ticks: int
     delta_time: float
     simulate: bool
     render: bool = True
@@ -31,6 +32,7 @@ class GpuParticleEmitterController:
         self._playing = bool(playing)
         self._spawn_schedule = ParticleSpawnScheduleState(settings)
         self._simulation_step = 0
+        self._simulation_time_ticks = 0
         self._next_particle_id = 0
         self._spawn_generation = 0
         self.reset(playing=playing)
@@ -43,6 +45,10 @@ class GpuParticleEmitterController:
     def simulation_step(self) -> int:
         return self._simulation_step
 
+    @property
+    def simulation_time_ticks(self) -> int:
+        return self._simulation_time_ticks
+
     def play(self) -> None:
         self._playing = True
 
@@ -54,6 +60,7 @@ class GpuParticleEmitterController:
             self._playing = bool(playing)
         self._spawn_schedule.reset()
         self._simulation_step = 0
+        self._simulation_time_ticks = 0
         self._next_particle_id = 0
         self._spawn_generation = 0
 
@@ -72,6 +79,7 @@ class GpuParticleEmitterController:
         migrated = GpuParticleEmitterController(settings, playing=self._playing)
         migrated._spawn_schedule = self._spawn_schedule.migrate_to(settings)
         migrated._simulation_step = self._simulation_step
+        migrated._simulation_time_ticks = self._simulation_time_ticks
         migrated._next_particle_id = self._next_particle_id
         migrated._spawn_generation = self._spawn_generation
         return migrated
@@ -92,6 +100,11 @@ class GpuParticleEmitterController:
             )
             base_id, generation = self._advance_particle_ids(spawn_count)
             self._simulation_step = (self._simulation_step + 1) & 0xFFFFFFFF
+            elapsed_ticks = int(round(delta_time * 1_000_000_000.0))
+            self._simulation_time_ticks = min(
+                0xFFFFFFFFFFFFFFFF,
+                self._simulation_time_ticks + elapsed_ticks,
+            )
         else:
             self._spawn_schedule.observe_position(emitter_position)
 
@@ -101,6 +114,7 @@ class GpuParticleEmitterController:
             generation,
             self.settings.seed,
             step,
+            self._simulation_time_ticks,
             delta_time,
             self._playing,
         )

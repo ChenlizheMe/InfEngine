@@ -8,12 +8,40 @@
 namespace infernux::rhi
 {
 
+using DeviceId = uint16_t;
+
+inline constexpr DeviceId InvalidDeviceId = 0;
+
+/// Returns a process-wide device identity shared by every RHI backend DLL.
+/// Identities are not recycled during the process lifetime so stale handles
+/// cannot become valid when a backend device is destroyed and recreated.
+[[nodiscard]] DeviceId AllocateDeviceId() noexcept;
+
+/// RHI handles remain 64-bit, but their generation is split into an owning
+/// device domain and a per-slot generation. This makes an accidental handle
+/// hand-off between two adapters fail validation instead of resolving to an
+/// unrelated resource at the same slot index.
+[[nodiscard]] constexpr uint32_t ComposeHandleGeneration(DeviceId device, uint16_t generation) noexcept
+{
+    return static_cast<uint32_t>(device) << 16u | generation;
+}
+
 template <typename Tag> struct Handle
 {
     static constexpr uint32_t InvalidIndex = std::numeric_limits<uint32_t>::max();
 
     uint32_t index = InvalidIndex;
     uint32_t generation = 0;
+
+    [[nodiscard]] constexpr DeviceId Device() const noexcept
+    {
+        return static_cast<DeviceId>(generation >> 16u);
+    }
+
+    [[nodiscard]] constexpr uint16_t Version() const noexcept
+    {
+        return static_cast<uint16_t>(generation & 0xffffu);
+    }
 
     [[nodiscard]] constexpr bool IsValid() const noexcept
     {

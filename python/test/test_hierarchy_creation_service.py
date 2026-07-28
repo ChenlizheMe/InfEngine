@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from Infernux.engine.hierarchy_creation_service import _unique_scene_object_name
+from Infernux.engine.hierarchy_creation_service import (
+    _component_names,
+    _unique_scene_object_name,
+)
 
 
 @dataclass
@@ -25,6 +28,16 @@ def test_unique_scene_object_name_uses_first_available_unity_style_suffix():
 
     assert _unique_scene_object_name(scene, "Cube") == "Cube (2)"
     assert _unique_scene_object_name(scene, "Cube", exclude_id=1) == "Cube"
+
+
+def test_component_names_deduplicates_python_components_in_combined_component_view():
+    component = SimpleNamespace(component_id=17, type_name="ParticleSystem")
+    obj = SimpleNamespace(
+        get_components=lambda: [component],
+        get_py_components=lambda: [component],
+    )
+
+    assert _component_names(obj) == ["ParticleSystem"]
 
 
 def test_hierarchy_creation_wiring_exposes_canvas_only_ui_and_particle_effect(monkeypatch):

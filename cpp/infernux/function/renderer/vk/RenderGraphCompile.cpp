@@ -204,13 +204,13 @@ void RenderGraph::CullPasses()
         }
     }
 
-    // Log culled passes for debugging — these passes are unreachable from
-    // the output and will not execute.
+    // Dead-pass elimination is expected for optional branches such as motion
+    // vectors when no mounted effect consumes them. Keep it available to
+    // graph diagnostics without presenting normal compilation as a warning.
     for (uint32_t i = 0; i < m_passes.size(); i++) {
         if (m_passes[i].culled) {
-            INXLOG_WARN("RenderGraph::CullPasses - Pass '", m_passes[i].name, "' (index ", i,
-                        ") was culled (no path to output). "
-                        "Check that downstream passes read this pass's outputs.");
+            INXLOG_DEBUG("RenderGraph::CullPasses - Pass '", m_passes[i].name, "' (index ", i,
+                         ") was culled (no path to output)");
         }
     }
 }
@@ -248,6 +248,8 @@ void RenderGraph::ComputeResourceLifetimes()
 bool RenderGraph::TopologicalSort()
 {
     m_executionOrder.clear();
+    for (auto &pass : m_passes)
+        pass.dependsOn.clear();
 
     // Collect non-culled pass indices
     std::vector<uint32_t> activePasses;
@@ -284,8 +286,10 @@ bool RenderGraph::TopologicalSort()
         for (const auto &read : readPass.reads) {
             readers[read.handle].push_back(readPassId);
             auto producer = producers.find(read.handle);
-            if (producer != producers.end() && producer->second != readPassId)
+            if (producer != producers.end() && producer->second != readPassId) {
                 adjacency[producer->second].push_back(readPassId);
+                m_passes[readPassId].dependsOn.push_back(producer->second);
+            }
         }
     }
 
@@ -302,8 +306,10 @@ bool RenderGraph::TopologicalSort()
         if (nextProducer == producers.end())
             continue;
         for (uint32_t readerPassId : versionReaders) {
-            if (readerPassId != nextProducer->second)
+            if (readerPassId != nextProducer->second) {
                 adjacency[readerPassId].push_back(nextProducer->second);
+                m_passes[nextProducer->second].dependsOn.push_back(readerPassId);
+            }
         }
     }
 
@@ -311,6 +317,10 @@ bool RenderGraph::TopologicalSort()
     for (auto &[passId, deps] : adjacency) {
         std::sort(deps.begin(), deps.end());
         deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
+    }
+    for (auto &pass : m_passes) {
+        std::sort(pass.dependsOn.begin(), pass.dependsOn.end());
+        pass.dependsOn.erase(std::unique(pass.dependsOn.begin(), pass.dependsOn.end()), pass.dependsOn.end());
     }
 
     // Recount in-degrees after dedup
@@ -366,6 +376,183 @@ bool RenderGraph::TopologicalSort()
     return true;
 }
 
+bool RenderGraph::CompileSubmissionPlan()
+{
+    std::vector<rhi::SubmissionWorkItem> workItems;
+    workItems.reserve(m_executionOrder.size());
+    for (const uint32_t passIndex : m_executionOrder) {
+        if (passIndex >= m_passes.size() || m_passes[passIndex].culled)
+            continue;
+        const auto &pass = m_passes[passIndex];
+        rhi::PipelineStage waitStages = rhi::PipelineStage::None;
+        for (const auto &read : pass.reads)
+            waitStages = waitStages | read.stages;
+        if (waitStages == rhi::PipelineStage::None) {
+            switch (pass.type) {
+            case PassType::Graphics:
+                waitStages = rhi::PipelineStage::AllGraphics;
+                break;
+            case PassType::Compute:
+                waitStages = rhi::PipelineStage::ComputeShader;
+                break;
+            case PassType::Transfer:
+                waitStages = rhi::PipelineStage::Transfer;
+                break;
+            case PassType::Present:
+                waitStages = rhi::PipelineStage::Bottom;
+                break;
+            }
+        }
+        workItems.push_back({pass.id, pass.device, pass.queue, pass.submissionDomain, pass.view, waitStages,
+                             pass.dependsOn, pass.forceSubmissionBoundary});
+    }
+
+    std::string error;
+    if (!rhi::BuildSubmissionPlan(workItems, m_submissionPlan, error)) {
+        INXLOG_ERROR("RenderGraph::CompileSubmissionPlan - ", error);
+        return false;
+    }
+    return true;
+}
+
+bool RenderGraph::CompileQueueOwnershipTransfers()
+{
+    m_queueOwnershipTransfers.clear();
+    m_queueOwnershipTransferInfos.clear();
+    m_batchOutgoingOwnershipTransfers.clear();
+    m_batchOutgoingOwnershipTransfers.resize(m_submissionPlan.batches.size());
+    for (auto &transfers : m_externalOutgoingOwnershipTransfers)
+        transfers.clear();
+
+    std::vector<uint32_t> passToBatch(m_passes.size(), rhi::InvalidSubmissionBatchIndex);
+    for (const auto &batch : m_submissionPlan.batches) {
+        for (const uint32_t passId : batch.workItems) {
+            if (passId < passToBatch.size())
+                passToBatch[passId] = batch.index;
+        }
+    }
+
+    std::vector<ResourceState> states = m_initialResourceStates;
+    states.resize(m_resources.size());
+
+    auto bindingFor = [&](rhi::QueueRole role) -> NativeQueueBinding {
+        if (role == rhi::QueueRole::Count)
+            return {};
+        return m_queueTopology[static_cast<size_t>(role)];
+    };
+
+    auto processAccess = [&](const RenderPassData &pass, const ResourceAccess &access, bool isWrite) -> bool {
+        if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None ||
+            access.handle.id >= m_resources.size())
+            return true;
+        const auto &resource = m_resources[access.handle.id];
+        if (resource.type == ResourceType::RendererList)
+            return true;
+
+        const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
+        const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : pass.queue;
+        const NativeQueueBinding targetBinding = bindingFor(targetQueue);
+        if (!targetBinding.IsValid()) {
+            INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Pass '", pass.name,
+                         "' targets an unavailable native queue");
+            return false;
+        }
+
+        ResourceState &state = states[access.handle.id];
+        const bool hasPreviousOwner =
+            state.queueFamily != VK_QUEUE_FAMILY_IGNORED && state.nativeQueueLane != UINT32_MAX;
+        const bool laneChange = hasPreviousOwner && state.nativeQueueLane != targetBinding.lane;
+        const bool familyChange = hasPreviousOwner && state.queueFamily != targetBinding.family;
+
+        const uint32_t sourceBatch = state.writerPassId < passToBatch.size() ? passToBatch[state.writerPassId]
+                                                                             : rhi::InvalidSubmissionBatchIndex;
+        const uint32_t targetBatch =
+            pass.id < passToBatch.size() ? passToBatch[pass.id] : rhi::InvalidSubmissionBatchIndex;
+        if (!present && laneChange && sourceBatch != rhi::InvalidSubmissionBatchIndex &&
+            targetBatch != rhi::InvalidSubmissionBatchIndex && sourceBatch < targetBatch) {
+            auto &waits = m_submissionPlan.batches[targetBatch].waitsFor;
+            const auto existing = std::find_if(waits.begin(), waits.end(),
+                                               [&](const auto &wait) { return wait.sourceBatch == sourceBatch; });
+            if (existing == waits.end())
+                waits.push_back({sourceBatch, access.stages});
+            else
+                existing->waitStages = existing->waitStages | access.stages;
+        }
+
+        // PresentRead is itself the release operation recorded on Graphics;
+        // vkQueuePresentKHR and renderFinished form the consumer side.
+        if (!present && familyChange && !resource.concurrentQueueSharing) {
+            if (targetBatch == rhi::InvalidSubmissionBatchIndex) {
+                INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Missing target batch for pass '", pass.name,
+                             "'");
+                return false;
+            }
+
+            QueueOwnershipTransfer transfer;
+            transfer.info.resourceId = access.handle.id;
+            transfer.info.sourcePass = state.writerPassId;
+            transfer.info.targetPass = pass.id;
+            transfer.info.sourceBatch = sourceBatch;
+            transfer.info.targetBatch = targetBatch;
+            transfer.info.sourceFamily = state.queueFamily;
+            transfer.info.targetFamily = targetBinding.family;
+            transfer.sourceState = state;
+            transfer.targetAccess = access;
+
+            const uint32_t transferIndex = static_cast<uint32_t>(m_queueOwnershipTransfers.size());
+            m_queueOwnershipTransfers.push_back(transfer);
+            m_queueOwnershipTransferInfos.push_back(transfer.info);
+            if (sourceBatch != rhi::InvalidSubmissionBatchIndex) {
+                if (sourceBatch >= m_batchOutgoingOwnershipTransfers.size() || sourceBatch >= targetBatch) {
+                    INXLOG_ERROR("RenderGraph::CompileQueueOwnershipTransfers - Invalid ownership order for resource '",
+                                 resource.name, "'");
+                    return false;
+                }
+                m_batchOutgoingOwnershipTransfers[sourceBatch].push_back(transferIndex);
+            } else if (transfer.sourceState.queue != rhi::QueueRole::Count) {
+                m_externalOutgoingOwnershipTransfers[static_cast<size_t>(transfer.sourceState.queue)]
+                    .push_back(transferIndex);
+            }
+        }
+
+        state.layout = access.layout;
+        state.accessMask = access.access;
+        state.stages = access.stages;
+        state.writerPassId = pass.id;
+        state.queue = targetQueue;
+        state.queueFamily = targetBinding.family;
+        state.nativeQueueLane = targetBinding.lane;
+
+        if (isWrite && pass.type == PassType::Graphics && pass.vulkanRenderPass != VK_NULL_HANDLE &&
+            (access.usage & ResourceUsage::DepthOutput) != ResourceUsage::None &&
+            IsResourceUsedAfter(access.handle.id, pass.id)) {
+            state.layout = rhi::TextureLayout::DepthStencilReadOnly;
+        }
+        return true;
+    };
+
+    for (const uint32_t passId : m_executionOrder) {
+        if (passId >= m_passes.size() || m_passes[passId].culled)
+            continue;
+        const auto &pass = m_passes[passId];
+        for (const auto &read : pass.reads) {
+            if (!processAccess(pass, read, false))
+                return false;
+        }
+        for (const auto &write : pass.writes) {
+            if (!processAccess(pass, write, true))
+                return false;
+        }
+        if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid() && pass.depthInput.id < states.size()) {
+            ResourceState &state = states[pass.depthInput.id];
+            state.layout = rhi::TextureLayout::DepthStencilReadOnly;
+            state.accessMask = rhi::Access::DepthRead;
+            state.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+        }
+    }
+    return true;
+}
+
 std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
 {
     std::vector<uint64_t> signature;
@@ -404,7 +591,6 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
     signature.push_back(m_passes.size());
     appendHandle(m_backbuffer);
     appendHandle(m_output);
-    signature.push_back(static_cast<uint64_t>(m_backbufferFinalLayout));
 
     for (size_t index = 0; index < m_resources.size(); ++index) {
         const auto &resource = m_resources[index];
@@ -435,6 +621,11 @@ std::vector<uint64_t> RenderGraph::BuildStructuralSignature() const
         appendString(pass.name);
         signature.push_back(pass.id);
         signature.push_back(static_cast<uint64_t>(pass.type));
+        signature.push_back(pass.device);
+        signature.push_back(static_cast<uint64_t>(pass.queue));
+        signature.push_back(static_cast<uint64_t>(pass.submissionDomain));
+        signature.push_back(pass.forceSubmissionBoundary ? 1u : 0u);
+        signature.push_back(pass.view);
         signature.push_back(pass.hasSideEffect);
         signature.push_back(pass.renderArea.width);
         signature.push_back(pass.renderArea.height);
@@ -475,6 +666,7 @@ bool RenderGraph::RestoreStructuralCompilation(const std::vector<uint64_t> &sign
         m_passes[index].refCount = found->passes[index].refCount;
         m_passes[index].culled = found->passes[index].culled;
         m_passes[index].cullReason = found->passes[index].cullReason;
+        m_passes[index].dependsOn = found->passes[index].dependencies;
     }
     for (size_t index = 0; index < m_resources.size(); ++index) {
         m_resources[index].firstPass = found->resources[index].firstPass;
@@ -493,7 +685,7 @@ void RenderGraph::StoreStructuralCompilation(std::vector<uint64_t> signature)
     entry.executionOrder = m_executionOrder;
     entry.passes.reserve(m_passes.size());
     for (const auto &pass : m_passes)
-        entry.passes.push_back({pass.refCount, pass.culled, pass.cullReason});
+        entry.passes.push_back({pass.refCount, pass.culled, pass.cullReason, pass.dependsOn});
     entry.resources.reserve(m_resources.size());
     for (const auto &resource : m_resources)
         entry.resources.push_back({resource.firstPass, resource.lastPass, resource.refCount});
@@ -653,10 +845,10 @@ size_t RenderGraph::HashFramebuffer(VkRenderPass renderPass, const std::vector<V
 
 void RenderGraph::FlushUnusedCaches()
 {
-    if (!m_context)
+    if (!m_context || !m_deletionQueue)
         return;
 
-    VkDevice device = m_context->GetDevice();
+    const VkDevice device = m_context->GetDevice();
 
     // Increment unused counter for framebuffers not used this frame
     for (auto &[key, entry] : m_framebufferCache) {
@@ -673,15 +865,22 @@ void RenderGraph::FlushUnusedCaches()
 
     // Remove entries unused for more than 60 frames
     constexpr uint32_t GC_THRESHOLD = 60;
+    std::vector<VkFramebuffer> retiredFramebuffers;
     for (auto it = m_framebufferCache.begin(); it != m_framebufferCache.end();) {
         if (it->second.unusedFrames > GC_THRESHOLD) {
-            if (it->second.framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device, it->second.framebuffer, nullptr);
-            }
+            if (it->second.framebuffer != VK_NULL_HANDLE)
+                retiredFramebuffers.push_back(it->second.framebuffer);
             it = m_framebufferCache.erase(it);
         } else {
             ++it;
         }
+    }
+
+    if (!retiredFramebuffers.empty()) {
+        m_deletionQueue->Retire([device, framebuffers = std::move(retiredFramebuffers)]() {
+            for (VkFramebuffer framebuffer : framebuffers)
+                vkDestroyFramebuffer(device, framebuffer, nullptr);
+        });
     }
 }
 
@@ -1186,9 +1385,9 @@ bool RenderGraph::CreateVulkanRenderPasses()
             pass.hasResolveAttachment = true;
         }
 
-        // Color final layout — COLOR_ATTACHMENT_OPTIMAL for offscreen scene targets,
-        // PRESENT_SRC_KHR for swapchain targets (set via SetBackbufferFinalLayout)
-        config.colorFinalLayout = ToVkImageLayout(m_backbufferFinalLayout);
+        // Graphics passes leave their color attachment writable. A typed Present
+        // pass owns the final swapchain transition explicitly.
+        config.colorFinalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         // Use RenderPass cache
         // Include MRT attachment count + formats in cache key
@@ -1217,6 +1416,12 @@ bool RenderGraph::CreateVulkanRenderPasses()
             pass.vulkanRenderPass = m_pipelineManager->CreateRenderPass(config);
             if (pass.vulkanRenderPass == VK_NULL_HANDLE) {
                 INXLOG_ERROR("Failed to create render pass for: ", pass.name);
+                return false;
+            }
+            if (!m_pipelineManager->DetachRenderPass(pass.vulkanRenderPass)) {
+                INXLOG_ERROR("Failed to transfer render pass ownership for: ", pass.name);
+                m_pipelineManager->DestroyRenderPass(pass.vulkanRenderPass);
+                pass.vulkanRenderPass = VK_NULL_HANDLE;
                 return false;
             }
             m_renderPassCache[cacheKey] = pass.vulkanRenderPass;
@@ -1369,7 +1574,6 @@ void RenderGraph::PrecomputeExecuteData()
 
 void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
 {
-    // Precise barrier insertion with tracked resource layouts
     const auto &pass = m_passes[passIndex];
 
     m_barrierScratch.clear();
@@ -1377,9 +1581,25 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     VkPipelineStageFlags srcStageMask = 0;
     VkPipelineStageFlags dstStageMask = 0;
 
-    // Helper: generate barrier for a resource access
+    const auto bindingFor = [&](rhi::QueueRole role) -> NativeQueueBinding {
+        if (role == rhi::QueueRole::Count)
+            return {};
+        return m_queueTopology[static_cast<size_t>(role)];
+    };
+    const rhi::QueueRole recordingQueue = m_recordingSubmissionBatches ? pass.queue : m_immediateRecordingQueue;
+
+    const auto aspectMaskFor = [](const ResourceData &resource, bool isDepthInput) {
+        bool isDepthResource = resource.type == ResourceType::DepthStencil || isDepthInput;
+        if (!isDepthResource) {
+            const VkFormat format = resource.textureDesc.format;
+            isDepthResource = format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D24_UNORM_S8_UINT ||
+                              format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        }
+        return isDepthResource ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    };
+
     auto addBarrier = [&](const ResourceAccess &access, bool isDepthInput = false) {
-        if (static_cast<int>(access.usage & ResourceUsage::VersionDependency) != 0)
+        if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None)
             return;
         if (access.handle.id >= m_resources.size())
             return;
@@ -1388,12 +1608,35 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         if (resource.type == ResourceType::RendererList)
             return;
 
-        // Look up previous state (direct index — vectors kept in sync with m_resources)
         const auto &prevState = m_resourceStates[access.handle.id];
-        const VkAccessFlags srcAccessMask = ToVkAccessFlags(prevState.accessMask);
+        const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
+        const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : recordingQueue;
+        const NativeQueueBinding targetBinding = bindingFor(targetQueue);
+        const bool hasPreviousOwner = prevState.queueFamily != VK_QUEUE_FAMILY_IGNORED &&
+                                      prevState.nativeQueueLane != UINT32_MAX && targetBinding.IsValid();
+        const bool laneChange = hasPreviousOwner && prevState.nativeQueueLane != targetBinding.lane;
+        const bool familyChange = hasPreviousOwner && prevState.queueFamily != targetBinding.family;
+        const bool ownershipTransfer =
+            m_recordingSubmissionBatches && laneChange && familyChange && !resource.concurrentQueueSharing;
+
+        VkAccessFlags srcAccessMask = ToVkAccessFlags(prevState.accessMask);
+        VkAccessFlags dstAccessMask = ToVkAccessFlags(access.access);
         VkPipelineStageFlags srcStages = ToVkPipelineStages(prevState.stages);
+        VkPipelineStageFlags dstStages = ToVkPipelineStages(access.stages);
+        if (!present && laneChange) {
+            // A timeline wait makes the source writes available. The target
+            // command buffer only performs visibility/layout acquisition.
+            srcAccessMask = 0;
+            srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        } else if (present) {
+            // PresentRead is the producer-side release/layout transition.
+            dstAccessMask = 0;
+            dstStages = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+        }
         if (srcStages == 0)
             srcStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        if (dstStages == 0)
+            dstStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 
         if (resource.type == ResourceType::Buffer) {
             const VkBuffer buffer = resource.isExternal ? resource.externalBuffer : resource.allocatedBuffer;
@@ -1404,21 +1647,21 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
                 rhi::HasAny(prevState.accessMask, rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
                                                       rhi::Access::MemoryWrite | rhi::Access::HostWrite);
             const bool currentWrite = (static_cast<int>(access.usage & ResourceUsage::Write) != 0);
-            if (!previousWrite && !currentWrite)
+            if (!previousWrite && !currentWrite && !laneChange)
                 return;
 
             VkBufferMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
             barrier.srcAccessMask = srcAccessMask;
-            barrier.dstAccessMask = ToVkAccessFlags(access.access);
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstAccessMask = dstAccessMask;
+            barrier.srcQueueFamilyIndex = ownershipTransfer ? prevState.queueFamily : VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = ownershipTransfer ? targetBinding.family : VK_QUEUE_FAMILY_IGNORED;
             barrier.buffer = buffer;
             barrier.offset = 0;
             barrier.size = resource.bufferDesc.size;
             m_bufferBarrierScratch.push_back(barrier);
             srcStageMask |= srcStages;
-            dstStageMask |= ToVkPipelineStages(access.stages);
+            dstStageMask |= dstStages;
             return;
         }
 
@@ -1430,7 +1673,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         const VkImageLayout newLayout = ToVkImageLayout(access.layout);
 
         // Skip barrier if layout is already correct and no write hazard
-        if (oldLayout == newLayout && (static_cast<int>(access.usage & ResourceUsage::Write) == 0) &&
+        if (oldLayout == newLayout && (static_cast<int>(access.usage & ResourceUsage::Write) == 0) && !laneChange &&
             !rhi::HasAny(prevState.accessMask, rhi::Access::ColorWrite | rhi::Access::DepthWrite |
                                                    rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
                                                    rhi::Access::MemoryWrite | rhi::Access::HostWrite)) {
@@ -1441,36 +1684,36 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = oldLayout;
         barrier.newLayout = newLayout;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.srcQueueFamilyIndex = ownershipTransfer ? prevState.queueFamily : VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = ownershipTransfer ? targetBinding.family : VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
-
-        // Determine correct aspect mask for the barrier.
-        // Depth-formatted images (including Texture2D with depth format,
-        // e.g. shadow maps) must use DEPTH_BIT, not COLOR_BIT.
-        bool isDepthResource = (resource.type == ResourceType::DepthStencil || isDepthInput);
-        if (!isDepthResource) {
-            VkFormat fmt = resource.textureDesc.format;
-            isDepthResource = (fmt == VK_FORMAT_D32_SFLOAT || fmt == VK_FORMAT_D24_UNORM_S8_UINT ||
-                               fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT);
-        }
-
-        if (isDepthResource) {
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        } else {
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        }
-
+        barrier.subresourceRange.aspectMask = aspectMaskFor(resource, isDepthInput);
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
         barrier.srcAccessMask = srcAccessMask;
-        barrier.dstAccessMask = ToVkAccessFlags(access.access);
+        barrier.dstAccessMask = dstAccessMask;
 
         m_barrierScratch.push_back(barrier);
         srcStageMask |= srcStages;
-        dstStageMask |= ToVkPipelineStages(access.stages);
+        dstStageMask |= dstStages;
+    };
+
+    auto updateState = [&](const ResourceAccess &access, rhi::TextureLayout layout) {
+        if (access.handle.id >= m_resourceStates.size())
+            return;
+        const bool present = (access.usage & ResourceUsage::Present) != ResourceUsage::None;
+        const rhi::QueueRole targetQueue = present ? rhi::QueueRole::Present : recordingQueue;
+        const NativeQueueBinding targetBinding = bindingFor(targetQueue);
+        auto &state = m_resourceStates[access.handle.id];
+        state.layout = layout;
+        state.accessMask = access.access;
+        state.stages = access.stages;
+        state.writerPassId = passIndex;
+        state.queue = targetQueue;
+        state.queueFamily = targetBinding.family;
+        state.nativeQueueLane = targetBinding.lane;
     };
 
     // Process read accesses
@@ -1509,11 +1752,9 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     }
 
     for (const auto &read : pass.reads) {
-        if (static_cast<int>(read.usage & ResourceUsage::VersionDependency) != 0)
+        if ((read.usage & ResourceUsage::VersionDependency) != ResourceUsage::None)
             continue;
-        if (read.handle.id < m_resources.size()) {
-            m_resourceStates[read.handle.id] = {read.layout, read.access, read.stages, passIndex};
-        }
+        updateState(read, read.layout);
     }
 
     // Process write accesses
@@ -1557,7 +1798,7 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
                 }
             }
 
-            m_resourceStates[write.handle.id] = {postPassLayout, write.access, write.stages, passIndex};
+            updateState(write, postPassLayout);
         }
     }
 
@@ -1565,9 +1806,97 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     // uses DEPTH_STENCIL_READ_ONLY_OPTIMAL throughout (initial & final layout
     // are both READ_ONLY_OPTIMAL when readOnlyDepth=true in CreateRenderPass).
     if (pass.depthInput.IsValid() && !pass.depthOutput.IsValid()) {
-        m_resourceStates[pass.depthInput.id] = {rhi::TextureLayout::DepthStencilReadOnly, rhi::Access::DepthRead,
-                                                rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth,
-                                                passIndex};
+        auto &state = m_resourceStates[pass.depthInput.id];
+        state.layout = rhi::TextureLayout::DepthStencilReadOnly;
+        state.accessMask = rhi::Access::DepthRead;
+        state.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
+    }
+}
+
+void RenderGraph::InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32_t batchIndex)
+{
+    const std::vector<uint32_t> *outgoing = nullptr;
+    if (batchIndex == rhi::InvalidSubmissionBatchIndex) {
+        const rhi::QueueRole recordingQueue = m_immediateRecordingQueue;
+        if (recordingQueue == rhi::QueueRole::Count)
+            return;
+        outgoing = &m_externalOutgoingOwnershipTransfers[static_cast<size_t>(recordingQueue)];
+    } else {
+        if (batchIndex >= m_batchOutgoingOwnershipTransfers.size())
+            return;
+        outgoing = &m_batchOutgoingOwnershipTransfers[batchIndex];
+    }
+
+    m_barrierScratch.clear();
+    m_bufferBarrierScratch.clear();
+    VkPipelineStageFlags srcStageMask = 0;
+
+    const auto aspectMaskFor = [](const ResourceData &resource) {
+        const VkFormat format = resource.textureDesc.format;
+        const bool depth = resource.type == ResourceType::DepthStencil || format == VK_FORMAT_D32_SFLOAT ||
+                           format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D16_UNORM ||
+                           format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        return depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    };
+
+    for (const uint32_t transferIndex : *outgoing) {
+        if (transferIndex >= m_queueOwnershipTransfers.size())
+            continue;
+        const auto &transfer = m_queueOwnershipTransfers[transferIndex];
+        if (transfer.info.resourceId >= m_resources.size())
+            continue;
+        const auto &resource = m_resources[transfer.info.resourceId];
+        if (resource.concurrentQueueSharing)
+            continue;
+
+        VkPipelineStageFlags sourceStages = ToVkPipelineStages(transfer.sourceState.stages);
+        if (sourceStages == 0)
+            sourceStages = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        srcStageMask |= sourceStages;
+
+        if (resource.type == ResourceType::Buffer) {
+            const VkBuffer buffer = resource.isExternal ? resource.externalBuffer : resource.allocatedBuffer;
+            if (buffer == VK_NULL_HANDLE)
+                continue;
+            VkBufferMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            barrier.srcAccessMask = ToVkAccessFlags(transfer.sourceState.accessMask);
+            barrier.dstAccessMask = 0;
+            barrier.srcQueueFamilyIndex = transfer.info.sourceFamily;
+            barrier.dstQueueFamilyIndex = transfer.info.targetFamily;
+            barrier.buffer = buffer;
+            barrier.offset = 0;
+            barrier.size = resource.bufferDesc.size;
+            m_bufferBarrierScratch.push_back(barrier);
+            continue;
+        }
+
+        const VkImage image = resource.isExternal ? resource.externalImage : resource.allocatedImage;
+        if (image == VK_NULL_HANDLE)
+            continue;
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask = ToVkAccessFlags(transfer.sourceState.accessMask);
+        barrier.dstAccessMask = 0;
+        barrier.oldLayout = ToVkImageLayout(transfer.sourceState.layout);
+        barrier.newLayout = ToVkImageLayout(transfer.targetAccess.layout);
+        barrier.srcQueueFamilyIndex = transfer.info.sourceFamily;
+        barrier.dstQueueFamilyIndex = transfer.info.targetFamily;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = aspectMaskFor(resource);
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        m_barrierScratch.push_back(barrier);
+    }
+
+    if (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty()) {
+        if (srcStageMask == 0)
+            srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        vkCmdPipelineBarrier(cmdBuffer, srcStageMask, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr,
+                             static_cast<uint32_t>(m_bufferBarrierScratch.size()), m_bufferBarrierScratch.data(),
+                             static_cast<uint32_t>(m_barrierScratch.size()), m_barrierScratch.data());
     }
 }
 
@@ -1613,7 +1942,7 @@ void RenderGraph::FreeResources()
         }
     }
 
-    if (!hasTransientResources && m_aliasedMemoryHeaps.empty()) {
+    if (!hasTransientResources && m_aliasedMemoryHeaps.empty() && m_framebufferCache.empty()) {
         // No GPU resources to destroy — just clear pass framebuffer references
         for (auto &pass : m_passes) {
             pass.framebuffer = VK_NULL_HANDLE;
@@ -1679,7 +2008,7 @@ void RenderGraph::FreeResources()
     };
 
     if (m_deletionQueue && !m_context->IsShuttingDown()) {
-        m_deletionQueue->Push(std::move(destroyRetired));
+        m_deletionQueue->Retire(std::move(destroyRetired));
     } else {
         if (!m_context->IsShuttingDown()) {
             vkDeviceWaitIdle(device);

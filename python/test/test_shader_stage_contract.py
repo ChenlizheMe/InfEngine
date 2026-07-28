@@ -32,5 +32,5 @@ def test_shader_file_creation_accepts_graphics_stages(tmp_path):
         assert ok, error
         source = (tmp_path / f"Stage_{stage}.{stage}").read_text(encoding="utf-8")
         assert "ShaderInfo {" in source
-        assert 'Name "stage_' + stage + '"' in source
-        assert "@shader_id" not in source
+        assert f'Name "Stage {stage.title()}"' in source
+        assert "@" not in source

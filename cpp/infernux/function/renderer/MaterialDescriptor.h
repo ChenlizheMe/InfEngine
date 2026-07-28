@@ -1,8 +1,9 @@
 #pragma once
 
-#include "FrameDeletionQueue.h"
+#include "rhi/GpuRetirementQueue.h"
 #include "rhi/RhiTexture.h"
 #include "shader/ShaderProgram.h"
+#include "vk/VkDescriptorManager.h"
 #include <atomic>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <functional>
@@ -119,16 +120,19 @@ struct MaterialDescriptorSet
 {
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE; // Track which layout was used to create this set
-    VkDescriptorPool ownerPool = VK_NULL_HANDLE;   // Pool this set was allocated from
+    vk::DescriptorLease descriptorLease;
     std::unique_ptr<MaterialUBO> materialUBO;
     std::unique_ptr<MaterialUBO> vertexMaterialUBO; // Vertex-stage material UBO (binding 14)
+    std::vector<MergedDescriptorBinding> bindings;
+    std::unordered_map<uint32_t, VkDescriptorBufferInfo> bufferBindings;
 
     // Texture bindings (binding -> imageView, sampler)
     struct TextureBinding
     {
         VkImageView imageView = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
-        std::shared_ptr<rhi::TextureResource> keepAlive;
+        std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
+        std::shared_ptr<const rhi::TextureGpuView> gpuView;
     };
     std::unordered_map<uint32_t, TextureBinding> textureBindings;
 
@@ -185,7 +189,7 @@ class MaterialDescriptorManager
      * @brief Initialize the manager
      */
     void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
-                    uint32_t maxMaterials = 256);
+                    vk::VkDescriptorManager *descriptorManager);
 
     /**
      * @brief Shutdown and cleanup
@@ -209,16 +213,9 @@ class MaterialDescriptorManager
      * @brief Get or create descriptor set for a material
      * @param material The material
      * @param program The shader program (for layout info)
-     * @param sceneUBO Scene uniform buffer to bind (binding=0)
-     * @param sceneUBOSize Size of scene UBO
-     * @param lightingUBO Lighting uniform buffer to bind (binding=1)
-     * @param lightingUBOSize Size of lighting UBO
      * @return Pointer to descriptor set info, or nullptr on failure
      */
-    MaterialDescriptorSet *GetOrCreateDescriptorSet(const InxMaterial &material, const ShaderProgram &program,
-                                                    VkBuffer sceneUBO, VkDeviceSize sceneUBOSize,
-                                                    VkBuffer lightingUBO = VK_NULL_HANDLE,
-                                                    VkDeviceSize lightingUBOSize = 0);
+    MaterialDescriptorSet *GetOrCreateDescriptorSet(const InxMaterial &material, const ShaderProgram &program);
 
     /**
      * @brief Update descriptor set with new material values
@@ -246,46 +243,30 @@ class MaterialDescriptorManager
     void BindTexture(const std::string &materialName, uint32_t binding, VkImageView imageView, VkSampler sampler);
 
   private:
-    /**
-     * @brief Drain the GPU before mutating a shared descriptor set.
-     *
-     * Material descriptor sets are not double-buffered, so any binding
-     * change must wait until the GPU is no longer sampling the previous
-     * binding. The current implementation calls vkDeviceWaitIdle which
-     * is correct but maximally pessimistic — it serialises 100% of GPU
-     * work on a texture swap. The long-term fix is to either duplicate
-     * descriptor sets per frame-in-flight or push the old descriptor set
-     * onto the FrameDeletionQueue and allocate a fresh one. Both paths
-     * are beyond the scope of static cleanup; this helper centralises
-     * the stall so future work can replace it in one place.
-     *
-     * Pre-condition: must be called on the main thread, OUTSIDE of a
-     * frame's command-buffer recording.
-     */
-    void WaitForGpuIdleBeforeSharedDescriptorWrite();
+    /// Publish a fully written replacement set, then retire the previous
+    /// lease after its last possible submission. Active sets are immutable.
+    [[nodiscard]] bool PublishDescriptorReplacement(
+        MaterialDescriptorSet &descriptorSet,
+        const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings);
 
   public:
-    /**
-     * @brief Set a frame deletion queue for deferred GPU resource cleanup.
-     *
-     * When set, stale descriptor sets and their UBOs are pushed into the
-     * queue instead of being freed immediately, preventing use-after-free
-     * when the GPU is still referencing them in an in-flight command buffer.
-     */
-    void SetDeletionQueue(FrameDeletionQueue *queue)
+    /// Bind submission-serial retirement for descriptor-owned buffers.
+    void SetRetirementQueue(GpuRetirementQueue *queue)
     {
         m_deletionQueue = queue;
     }
 
     /**
-     * @brief Opt into the Vulkan 1.2 UPDATE_AFTER_BIND fast path.
+     * @brief Select the Vulkan 1.2 UPDATE_AFTER_BIND descriptor arena.
      *
-     * Must be called BEFORE Initialize(): the choice flips both the pool
-     * flags (UPDATE_AFTER_BIND_BIT) and the WaitForGpuIdleBeforeSharedDescriptorWrite
-     * branch. When enabled, descriptor writes proceed without a vkDeviceWaitIdle.
-     * Both the device and the matching ShaderProgram layouts must already be
-     * configured with the descriptor-indexing flags — see
-     * VkDeviceContext::CreateLogicalDevice and ShaderProgram::SetUpdateAfterBindEnabled.
+     * Must be called BEFORE Initialize(). Material updates still use immutable
+     * copy-on-write publication, so
+     * correctness does not depend on this feature.
+     * Both the device and matching ShaderProgram layouts must be
+     * configured
+     * with descriptor-indexing flags — see
+     * VkDeviceContext::CreateLogicalDevice and
+     * ShaderProgram::SetUpdateAfterBindEnabled.
      */
     void SetUpdateAfterBindEnabled(bool enabled)
     {
@@ -323,35 +304,31 @@ class MaterialDescriptorManager
     }
     [[nodiscard]] size_t GetDescriptorPoolCount() const noexcept
     {
-        return m_descriptorPools.size();
+        return m_descriptorManager ? m_descriptorManager->GetStats().poolCount : 0;
     }
 
     /**
      * @brief Set default texture for fallback
      */
-    void SetDefaultTexture(VkImageView imageView, VkSampler sampler);
+    void SetDefaultTexture(VkImageView imageView, VkSampler sampler,
+                           std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
     /**
      * @brief Set default normal map texture (flat normal = 0.5, 0.5, 1.0)
      * Used as fallback for sampler bindings whose name contains "normal"
      */
-    void SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler);
+    void SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler,
+                                 std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
   private:
     VmaAllocator m_vmaAllocator = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
 
-    /// Growable pool chain — when a pool is exhausted, a new one is allocated.
-    std::vector<VkDescriptorPool> m_descriptorPools;
-    uint32_t m_poolPageSize = 256; ///< Number of descriptor sets per pool page
+    vk::VkDescriptorManager *m_descriptorManager = nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<MaterialDescriptorSet>> m_descriptorSets;
     std::shared_ptr<std::atomic_size_t> m_pendingDescriptorSetReleases = std::make_shared<std::atomic_size_t>(0);
-
-    /// Tracks every VkDescriptorSet handle allocated from this manager's pools.
-    /// Cleared in Clear() after vkResetDescriptorPool invalidates all handles.
-    std::unordered_set<uint64_t> m_allocatedHandles;
 
     /// Tracks currently active descriptor sets referenced by m_descriptorSets.
     /// Retired sets are removed from this set immediately so draw-time checks
@@ -361,10 +338,12 @@ class MaterialDescriptorManager
     // Default texture for fallback
     VkImageView m_defaultImageView = VK_NULL_HANDLE;
     VkSampler m_defaultSampler = VK_NULL_HANDLE;
+    std::shared_ptr<const rhi::TextureGpuView> m_defaultGpuView;
 
     // Default flat normal map texture for fallback (0.5, 0.5, 1.0 encoded)
     VkImageView m_defaultNormalImageView = VK_NULL_HANDLE;
     VkSampler m_defaultNormalSampler = VK_NULL_HANDLE;
+    std::shared_ptr<const rhi::TextureGpuView> m_defaultNormalGpuView;
 
   public:
     /// @brief Get default texture image view (for per-view descriptor fallback)
@@ -386,13 +365,6 @@ class MaterialDescriptorManager
      * Use this before vkCmdBindDescriptorSets to validate material descriptor
      * sets that come from this manager, without needing to free individual sets.
      */
-    [[nodiscard]] bool IsDescriptorSetFromThisManager(VkDescriptorSet ds) const
-    {
-        if (ds == VK_NULL_HANDLE)
-            return false;
-        return m_allocatedHandles.count(reinterpret_cast<uint64_t>(ds)) > 0;
-    }
-
   public:
     [[nodiscard]] bool IsDescriptorSetLive(VkDescriptorSet ds) const
     {
@@ -405,20 +377,12 @@ class MaterialDescriptorManager
     // Texture resolver callback (set via SetTextureResolver)
     TextureResolver m_textureResolver;
 
-    // Optional frame deletion queue for deferred GPU resource cleanup.
-    // When non-null, stale descriptor sets are pushed here instead of
-    // being freed immediately (avoids use-after-free on in-flight frames).
-    FrameDeletionQueue *m_deletionQueue = nullptr;
+    // Optional submission-serial queue for descriptor-owned resource cleanup.
+    GpuRetirementQueue *m_deletionQueue = nullptr;
 
     /// True when the device supports descriptor-indexing UPDATE_AFTER_BIND
     /// and the layouts/pool were created with the matching flags.
     bool m_updateAfterBindEnabled = false;
-
-    /**
-     * @brief Allocate a new descriptor pool page and append to m_descriptorPools.
-     * @return The newly created pool, or VK_NULL_HANDLE on failure.
-     */
-    VkDescriptorPool CreateDescriptorPool(uint32_t maxMaterials);
 
     void RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet> descriptorSet);
 
@@ -436,9 +400,7 @@ class MaterialDescriptorManager
     /**
      * @brief Update descriptor set bindings
      */
-    void UpdateDescriptorBindings(MaterialDescriptorSet &matDescSet, const ShaderProgram &program, VkBuffer sceneUBO,
-                                  VkDeviceSize sceneUBOSize, VkBuffer lightingUBO = VK_NULL_HANDLE,
-                                  VkDeviceSize lightingUBOSize = 0);
+    [[nodiscard]] bool UpdateDescriptorBindings(MaterialDescriptorSet &matDescSet, const ShaderProgram &program);
 };
 
 } // namespace infernux

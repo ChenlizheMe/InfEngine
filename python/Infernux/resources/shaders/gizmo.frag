@@ -1,14 +1,18 @@
 #version 450
 
-@shader_id: Gizmo
-@hidden
-@cast_shadows: off
-@capabilities: ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors
-
-@import: Lib Color
-
-layout(location = 0) in vec3 fragColor;
-layout(location = 0) out vec4 outColor;
+ShaderInfo {
+    Name "Gizmo"
+    Hidden On
+    CastShadows Off
+    Imports ["Lib Color"]
+    Capabilities [Standalone, ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors]
+    Inputs {
+        Float3 fragColor
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 void main() {
     // Gizmo vertex colors are authored in sRGB (editor constants); the scene

@@ -352,7 +352,7 @@ class InxMaterial
     }
 
     /// @brief Apply shader render-state annotations to this material.
-    /// Shader annotations (@cull, @depth_write, @depth_test, @blend, @queue, @pass_tag, @alpha_clip)
+    /// Render-state defaults imported from ShaderInfo.
     /// set default RenderState values only for fields NOT manually overridden.
     void ApplyShaderRenderMeta(const std::string &cullMode, const std::string &depthWrite, const std::string &depthTest,
                                const std::string &blend, int queue, const std::string &passTag = "",
@@ -478,7 +478,7 @@ class InxMaterial
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        ShaderProgram *shaderProgram = nullptr;
+        std::shared_ptr<const ShaderProgram> shaderProgram;
     };
 
     /// Access per-pass pipeline data by compile target.
@@ -509,11 +509,16 @@ class InxMaterial
         return PassPipeline_(target).descriptorSet;
     }
 
-    void SetPassShaderProgram(ShaderCompileTarget target, ShaderProgram *program)
+    void SetPassShaderProgram(ShaderCompileTarget target, std::shared_ptr<const ShaderProgram> program)
     {
-        PassPipeline_(target).shaderProgram = program;
+        PassPipeline_(target).shaderProgram = std::move(program);
     }
-    [[nodiscard]] ShaderProgram *GetPassShaderProgram(ShaderCompileTarget target) const
+    [[nodiscard]] const ShaderProgram *GetPassShaderProgram(ShaderCompileTarget target) const
+    {
+        return PassPipeline_(target).shaderProgram.get();
+    }
+    [[nodiscard]] const std::shared_ptr<const ShaderProgram> &
+    GetPassShaderProgramPublication(ShaderCompileTarget target) const
     {
         return PassPipeline_(target).shaderProgram;
     }
@@ -621,7 +626,7 @@ class InxMaterial
     ShaderAssetReference m_vertexShader;
     ShaderAssetReference m_fragmentShader;
 
-    // Pass tag for draw call filtering (set from @pass_tag shader annotation)
+    // Pass tag for draw call filtering, initialized from ShaderInfo.
     std::string m_passTag;
 
     // Render state

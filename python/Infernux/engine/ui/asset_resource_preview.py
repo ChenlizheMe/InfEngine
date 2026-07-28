@@ -16,11 +16,12 @@ from typing import Any, Optional
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.texture_task_bridge import safe_mtime_ns
+from Infernux.core.asset_types import IMAGE_EXTENSIONS, MESH_EXTENSIONS
 
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".hdr", ".pic", ".psd", ".pnm", ".pgm", ".ppm"}
+_IMAGE_EXTS = IMAGE_EXTENSIONS
 _MATERIAL_EXTS = {".mat"}
-_MODEL_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".dae", ".blend"}
+_MODEL_EXTS = MESH_EXTENSIONS
 _PREFAB_EXTS = {".prefab"}
 _AUTHORING_PREVIEW_KEYS: set[str] = set()
 _MTIME_CACHE: dict[str, tuple[float, int]] = {}

@@ -46,10 +46,14 @@
 
 #include "VkTypes.h"
 #include "VulkanRhiDevice.h"
-#include <function/renderer/FrameDeletionQueue.h>
+#include <array>
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderGraphIdentity.h>
 #include <function/renderer/RendererList.h>
+#include <function/renderer/rhi/GpuRetirementQueue.h>
+#include <function/renderer/rhi/RenderSubmissionPlan.h>
+#include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/rhi/RhiSubmission.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -65,6 +69,7 @@ namespace vk
 // Forward declarations
 class VkDeviceContext;
 class VkPipelineManager;
+class VulkanQueueManager;
 class RenderGraph;
 class RenderPass;
 class PassBuilder;
@@ -180,6 +185,10 @@ struct PassCompileInfo
     PassType type = PassType::Graphics;
     bool culled = true;
     PassCullReason reason = PassCullReason::Unreachable;
+    rhi::DeviceId device = rhi::InvalidDeviceId;
+    rhi::QueueRole queue = rhi::QueueRole::Graphics;
+    rhi::SubmissionDomain submissionDomain = rhi::SubmissionDomain::Frame;
+    rhi::RenderViewId view = rhi::InvalidRenderViewId;
 };
 
 /**
@@ -220,6 +229,41 @@ struct ResourceState
     rhi::Access accessMask = rhi::Access::None;
     rhi::PipelineStage stages = rhi::PipelineStage::None;
     uint32_t writerPassId = UINT32_MAX; ///< Pass that last wrote/used this resource
+    rhi::QueueRole queue = rhi::QueueRole::Count;
+    uint32_t queueFamily = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t nativeQueueLane = UINT32_MAX;
+};
+
+struct NativeQueueBinding
+{
+    uint32_t family = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t lane = UINT32_MAX;
+
+    [[nodiscard]] bool IsValid() const noexcept
+    {
+        return family != VK_QUEUE_FAMILY_IGNORED && lane != UINT32_MAX;
+    }
+
+    friend bool operator==(const NativeQueueBinding &left, const NativeQueueBinding &right) noexcept
+    {
+        return left.family == right.family && left.lane == right.lane;
+    }
+
+    friend bool operator!=(const NativeQueueBinding &left, const NativeQueueBinding &right) noexcept
+    {
+        return !(left == right);
+    }
+};
+
+struct QueueOwnershipTransferInfo
+{
+    uint32_t resourceId = UINT32_MAX;
+    uint32_t sourcePass = UINT32_MAX;
+    uint32_t targetPass = UINT32_MAX;
+    uint32_t sourceBatch = rhi::InvalidSubmissionBatchIndex;
+    uint32_t targetBatch = rhi::InvalidSubmissionBatchIndex;
+    uint32_t sourceFamily = VK_QUEUE_FAMILY_IGNORED;
+    uint32_t targetFamily = VK_QUEUE_FAMILY_IGNORED;
 };
 
 // ============================================================================
@@ -401,6 +445,11 @@ class PassBuilder
     /// @brief Write a resource as transfer destination (for blit/copy operations)
     ResourceHandle TransferWrite(ResourceHandle handle);
 
+    /// Preserve an image while transitioning it back to color-attachment state.
+    /// This is used by graph-owned export passes that prepare a persistent
+    /// multisampled target for the next execution without creating a new SSA version.
+    ResourceHandle PrepareColorAttachment(ResourceHandle handle);
+
     /// Declare the final presentation read and retain this pass as an external side effect.
     ResourceHandle PresentRead(ResourceHandle handle);
 
@@ -410,6 +459,12 @@ class PassBuilder
 
     /// @brief Set the pass render area
     void SetRenderArea(uint32_t width, uint32_t height);
+
+    /// Override the native queue role for commands whose Vulkan capability
+    /// requirements are stricter than their logical pass type. For example,
+    /// vkCmdResolveImage is transfer-like work but requires a Graphics-capable
+    /// command pool.
+    void SetQueueRole(rhi::QueueRole queue);
 
     /// @brief Enable/disable depth test
     void SetDepthTest(bool enable)
@@ -441,6 +496,11 @@ struct RenderPassData
     std::string name;
     uint32_t id = 0;
     PassType type = PassType::Graphics;
+    rhi::DeviceId device = rhi::InvalidDeviceId;
+    rhi::QueueRole queue = rhi::QueueRole::Graphics;
+    rhi::SubmissionDomain submissionDomain = rhi::SubmissionDomain::Frame;
+    rhi::RenderViewId view = rhi::InvalidRenderViewId;
+    bool forceSubmissionBoundary = false;
 
     // Resource accesses
     std::vector<ResourceAccess> reads;
@@ -496,6 +556,7 @@ struct ResourceData
 {
     std::string name;
     ResourceType type = ResourceType::Texture2D;
+    rhi::DeviceId ownerDevice = rhi::InvalidDeviceId;
 
     // Texture info
     TextureDesc textureDesc;
@@ -505,6 +566,7 @@ struct ResourceData
 
     // External resource (imported)
     bool isExternal = false;
+    bool concurrentQueueSharing = false;
     VkImage externalImage = VK_NULL_HANDLE;
     VkImageView externalView = VK_NULL_HANDLE;
     rhi::TextureViewHandle rhiView;
@@ -593,7 +655,22 @@ class RenderGraph
      * @param pipelineManager Pipeline manager for render pass creation
      */
     void Initialize(VkDeviceContext *context, VkPipelineManager *pipelineManager,
-                    FrameDeletionQueue *deletionQueue = nullptr);
+                    GpuRetirementQueue *deletionQueue = nullptr, const VulkanQueueManager *queueManager = nullptr);
+
+    /// Native queue identity is copied into the graph and remains stable for a
+    /// compiled generation. Backends may replace it before Compile after a
+    /// device/queue topology change.
+    void SetQueueTopology(const std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> &topology);
+
+    void SetRenderView(const rhi::RenderViewContext &view);
+    [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept
+    {
+        return m_deviceId;
+    }
+    [[nodiscard]] rhi::RenderViewId GetRenderViewId() const noexcept
+    {
+        return m_renderViewId;
+    }
 
     /**
      * @brief Reset the graph for a new frame
@@ -601,6 +678,21 @@ class RenderGraph
      * Clears all passes and transient resources.
      */
     void Reset();
+
+    /**
+     * @brief Detach every cached framebuffer and retire it after a caller-owned
+     *        submission
+     * epoch.
+     *
+     * Target replacement must call this before destroying any imported image
+     * view
+     * referenced by the current framebuffer generation. Pass framebuffer
+     * handles and the cache are cleared
+     * immediately; native destruction is
+     * deferred through the GPU retirement queue without waiting for the
+     * device.
+     */
+    void RetireFramebufferCacheAfter(rhi::SubmissionSerial retirementSerial);
 
     /**
      * @brief Cleanup all resources
@@ -623,6 +715,10 @@ class RenderGraph
     /// Add a compute pass. It records commands outside a Vulkan render pass.
     PassHandle AddComputePass(const std::string &name, PassSetupCallback setup);
 
+    /// Start a new native submission before this pass even when its queue and
+    /// domain match the previous pass. Used for explicit async phase joins.
+    void SetSubmissionBoundaryBefore(PassHandle pass);
+
     /**
      * @brief Add a transfer pass to the graph (copy/blit operations, no render pass)
      */
@@ -637,18 +733,6 @@ class RenderGraph
     ResourceHandle SetBackbuffer(VkImage image, VkImageView view, VkFormat format, uint32_t width, uint32_t height,
                                  VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
                                  rhi::TextureLayout initialLayout = rhi::TextureLayout::Automatic);
-
-    /**
-     * @brief Set the desired final image layout for the backbuffer after all passes.
-     *
-     * For swapchain targets, use TextureLayout::Present.
-     * Default is TextureLayout::ColorAttachment (offscreen
-     * scene targets).
-     */
-    void SetBackbufferFinalLayout(rhi::TextureLayout layout)
-    {
-        m_backbufferFinalLayout = layout;
-    }
 
     /**
      * @brief Import an external texture as an MSAA resolve target
@@ -668,7 +752,7 @@ class RenderGraph
      * the real Vulkan image layout at frame start.
      */
     void SetResourceInitialState(ResourceHandle handle, rhi::TextureLayout layout, rhi::Access accessMask,
-                                 rhi::PipelineStage stages);
+                                 rhi::PipelineStage stages, rhi::QueueRole ownerQueue = rhi::QueueRole::Graphics);
 
     /**
      * @brief Mark a resource as the final output
@@ -725,7 +809,18 @@ class RenderGraph
      *
      * @param commandBuffer Command buffer to record into
      */
-    void Execute(VkCommandBuffer commandBuffer);
+    void Execute(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue = rhi::QueueRole::Graphics);
+
+    /// Reset tracked resource state once before recording the compiled
+    /// submission batches. A backend executor calls this once per graph frame.
+    void BeginExecution();
+
+    /// Record one compiler-produced submission batch into a command buffer.
+    /// Batches must be recorded in SubmissionPlan order.
+    [[nodiscard]] bool RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer);
+
+    [[nodiscard]] bool HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept;
+    [[nodiscard]] bool RecordExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue, VkCommandBuffer commandBuffer);
 
     // ========================================================================
     // Per-Frame Clear Value Updates (no rebuild/recompile needed)
@@ -775,6 +870,18 @@ class RenderGraph
 
     /// Declaration-order culling report for Graph Viewer and diagnostics.
     [[nodiscard]] std::vector<PassCompileInfo> GetPassCompileInfos() const;
+
+    /// Backend-neutral queue batches produced by the compiler. The plan is the
+    /// authoritative input for backend command-buffer recording and submission.
+    [[nodiscard]] const rhi::SubmissionPlan &GetSubmissionPlan() const noexcept
+    {
+        return m_submissionPlan;
+    }
+
+    [[nodiscard]] const std::vector<QueueOwnershipTransferInfo> &GetQueueOwnershipTransfers() const noexcept
+    {
+        return m_queueOwnershipTransferInfos;
+    }
 
     /**
      * @brief Get resource count
@@ -889,8 +996,23 @@ class RenderGraph
     ///        viewport and scissor so Execute() can skip per-frame construction.
     void PrecomputeExecuteData();
 
+    /// Compile the topological pass order into device/queue/view batches.
+    [[nodiscard]] bool CompileSubmissionPlan();
+
+    /// Compile exclusive-sharing ownership transfers between native queue
+    /// families. Timeline waits alone do not transfer Vulkan ownership.
+    [[nodiscard]] bool CompileQueueOwnershipTransfers();
+
     /// @brief Insert barriers between passes using tracked resource layouts
     void InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex);
+
+    /// Emit the release half of every queue-family ownership transfer whose
+    /// source work completes in this submission batch.
+    void InsertQueueOwnershipReleases(VkCommandBuffer cmdBuffer, uint32_t batchIndex);
+
+    /// Record an ordered set of pass ids while preserving the graph's current
+    /// resource-state cursor. Used by both Execute() and batch execution.
+    void RecordPasses(VkCommandBuffer commandBuffer, const std::vector<uint32_t> &passIndices);
 
     /// @brief Free transient resources
     void FreeResources();
@@ -935,29 +1057,46 @@ class RenderGraph
   private:
     RenderGraphIdentitySource m_identity;
     VkDeviceContext *m_context = nullptr;
+    rhi::DeviceId m_deviceId = rhi::InvalidDeviceId;
+    rhi::RenderViewId m_renderViewId = rhi::InvalidRenderViewId;
     VulkanRhiDevice *m_rhiDevice = nullptr;
     VkPipelineManager *m_pipelineManager = nullptr;
-    FrameDeletionQueue *m_deletionQueue = nullptr;
+    GpuRetirementQueue *m_deletionQueue = nullptr;
+    std::array<NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> m_queueTopology{};
 
     // Graph data
     std::vector<RenderPassData> m_passes;
     std::vector<ResourceData> m_resources;
     std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;
+    rhi::SubmissionPlan m_submissionPlan;
+
+    struct QueueOwnershipTransfer
+    {
+        QueueOwnershipTransferInfo info;
+        ResourceState sourceState;
+        ResourceAccess targetAccess;
+    };
+    std::vector<QueueOwnershipTransfer> m_queueOwnershipTransfers;
+    std::vector<QueueOwnershipTransferInfo> m_queueOwnershipTransferInfos;
+    std::vector<std::vector<uint32_t>> m_batchOutgoingOwnershipTransfers;
+    std::array<std::vector<uint32_t>, static_cast<size_t>(rhi::QueueRole::Count)> m_externalOutgoingOwnershipTransfers;
 
     // Output
     ResourceHandle m_backbuffer;
     ResourceHandle m_output;
-    rhi::TextureLayout m_backbufferFinalLayout = rhi::TextureLayout::ColorAttachment;
 
     // State
     bool m_compiled = false;
+    bool m_recordingSubmissionBatches = false;
+    rhi::QueueRole m_immediateRecordingQueue = rhi::QueueRole::Graphics;
 
     struct CachedPassAnalysis
     {
         uint32_t refCount = 0;
         bool culled = true;
         PassCullReason cullReason = PassCullReason::Unreachable;
+        std::vector<uint32_t> dependencies;
     };
 
     struct CachedResourceLifetime

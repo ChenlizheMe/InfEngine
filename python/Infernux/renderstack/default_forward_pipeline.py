@@ -31,13 +31,17 @@ from Infernux.renderstack.render_pipeline import RenderPipeline
 from Infernux.components.serialized_field import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
+    POST_PROCESS_RESOURCES,
     SCENE_RESOURCES,
     add_forward_opaque_pass,
+    add_motion_vector_pass,
     add_shadow_caster_pass,
     add_skybox_pass,
     add_standard_post_process_section,
     add_transparent_pass,
     create_main_scene_targets,
+    opaque_queue_range,
+    transparent_queue_range,
 )
 
 if TYPE_CHECKING:
@@ -118,13 +122,25 @@ class DefaultForwardPipeline(RenderPipeline):
         shadow_res = max(256, min(8192, int(self.shadow_resolution)))
 
         # ---- Create resources ----
-        create_main_scene_targets(graph, shadow_resolution=shadow_res)
+        msaa_samples = int(self.msaa_samples)
+        create_main_scene_targets(
+            graph,
+            shadow_resolution=shadow_res,
+            msaa_samples=msaa_samples,
+        )
 
         # Pass 0: Shadow caster pass (depth-only, custom resolution)
         add_shadow_caster_pass(graph)
 
         # Pass 1: Opaque objects (front-to-back for early-z)
         add_forward_opaque_pass(graph, material_pass="forward_plus")
+        add_motion_vector_pass(
+            graph,
+            name="OpaqueMotionPass",
+            queue_range=opaque_queue_range(),
+            clear=True,
+            msaa_samples=msaa_samples,
+        )
         graph.injection_point("after_opaque", resources=SCENE_RESOURCES)
         graph.effects(
             "after_opaque",
@@ -149,6 +165,13 @@ class DefaultForwardPipeline(RenderPipeline):
 
         # Pass 3: Transparent objects (back-to-front for blending)
         add_transparent_pass(graph, material_pass="forward_plus")
+        add_motion_vector_pass(
+            graph,
+            name="TransparentMotionPass",
+            queue_range=transparent_queue_range(),
+            sort_mode="back_to_front",
+            msaa_samples=msaa_samples,
+        )
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
         graph.effects(
             "after_transparent",
@@ -163,7 +186,7 @@ class DefaultForwardPipeline(RenderPipeline):
             "final",
             scope="composite",
             display_name="Final Post Processing",
-            inputs={"color"},
+            inputs=POST_PROCESS_RESOURCES,
             outputs={"color"},
             capabilities={"fullscreen", "hdr_to_display"},
         )

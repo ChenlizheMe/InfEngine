@@ -144,6 +144,18 @@ struct TextureCopyRegion
     uint32_t depth = 1;
 };
 
+struct TextureResolveRegion
+{
+    TextureAspect aspect = TextureAspect::Color;
+    uint32_t sourceMip = 0;
+    uint32_t sourceLayer = 0;
+    uint32_t destinationMip = 0;
+    uint32_t destinationLayer = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+};
+
 class TransferCommandEncoder
 {
   public:
@@ -151,6 +163,7 @@ class TransferCommandEncoder
     {
         void (*copyBuffer)(void *, BufferHandle, BufferHandle, const BufferCopyRegion &) = nullptr;
         void (*copyTexture)(void *, TextureHandle, TextureHandle, const TextureCopyRegion &) = nullptr;
+        void (*resolveTexture)(void *, TextureHandle, TextureHandle, const TextureResolveRegion &) = nullptr;
     };
 
     constexpr TransferCommandEncoder() noexcept = default;
@@ -175,6 +188,13 @@ class TransferCommandEncoder
         if (IsValid() && m_dispatch->copyTexture && source.IsValid() && destination.IsValid() && region.width > 0 &&
             region.height > 0 && region.depth > 0)
             m_dispatch->copyTexture(m_context, source, destination, region);
+    }
+
+    void ResolveTexture(TextureHandle source, TextureHandle destination, const TextureResolveRegion &region) const
+    {
+        if (IsValid() && m_dispatch->resolveTexture && source.IsValid() && destination.IsValid() &&
+            source != destination && region.width > 0 && region.height > 0 && region.depth > 0)
+            m_dispatch->resolveTexture(m_context, source, destination, region);
     }
 
   private:

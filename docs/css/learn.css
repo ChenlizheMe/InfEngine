@@ -174,10 +174,110 @@
     letter-spacing: 0;
 }
 
+.learn-article-body h3 {
+    margin: 26px 0 10px;
+    font-size: 1.05rem;
+    letter-spacing: 0;
+}
+
 .learn-article-body p,
 .learn-article-body li {
     color: var(--text-soft);
     line-height: 1.75;
+}
+
+.learn-article-body code {
+    padding: 2px 5px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg-contrast);
+    color: var(--text);
+    font: 0.88em var(--font-mono);
+}
+
+.learn-article-body pre {
+    margin: 16px 0 22px;
+    padding: 18px;
+    overflow-x: auto;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    background: var(--bg-contrast);
+    color: var(--text);
+    line-height: 1.6;
+}
+
+.learn-article-body pre code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 0.82rem;
+}
+
+.learn-article-body table {
+    width: 100%;
+    margin: 16px 0 24px;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.learn-article-body th,
+.learn-article-body td {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+}
+
+.learn-article-body th {
+    background: var(--bg-panel);
+    color: var(--text);
+}
+
+.learn-article-toc {
+    margin: 24px 0 30px;
+    padding: 4px 0 4px 18px;
+    border-left: 3px solid var(--info);
+}
+
+.learn-article-toc strong {
+    display: block;
+    margin-bottom: 8px;
+}
+
+.learn-article-toc a {
+    display: inline-block;
+    margin: 3px 16px 3px 0;
+}
+
+.learn-note,
+.learn-warning {
+    margin: 22px 0;
+    padding: 16px 18px;
+    border-left: 3px solid var(--info);
+    background: var(--bg-panel);
+}
+
+.learn-warning {
+    border-left-color: var(--signal);
+}
+
+.learn-note > :first-child,
+.learn-warning > :first-child {
+    margin-top: 0;
+}
+
+.learn-note > :last-child,
+.learn-warning > :last-child {
+    margin-bottom: 0;
+}
+
+.learn-level {
+    display: inline-block;
+    margin-right: 8px;
+    color: var(--info);
+    font: 700 0.72rem var(--font-mono);
+    text-transform: uppercase;
 }
 
 .learn-placeholder-note {

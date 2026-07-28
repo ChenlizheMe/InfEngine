@@ -11,7 +11,13 @@ import re
 import shutil
 
 from Infernux.debug import Debug
-from Infernux.engine.path_utils import is_path_within, path_key, resolved_path, same_path
+from Infernux.engine.path_utils import (
+    is_path_within,
+    path_key,
+    relative_path,
+    resolved_path,
+    same_path,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -20,6 +26,7 @@ from Infernux.engine.path_utils import is_path_within, path_key, resolved_path, 
 
 SCRIPT_TEMPLATE = '''
 from Infernux import *
+from Infernux.components import *
 
 
 class {class_name}(InxComponent):

@@ -29,6 +29,12 @@ ShaderProgramStageMask ToRuntimeStageMask(ShaderStageVisibility visibility) noex
     return result;
 }
 
+bool DescriptorHasCapability(const ShaderDescriptor &descriptor, std::string_view capability)
+{
+    return std::find(descriptor.capabilities.begin(), descriptor.capabilities.end(), capability) !=
+           descriptor.capabilities.end();
+}
+
 void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderProgramArtifact &target)
 {
     target.domain = source.domain;
@@ -95,7 +101,8 @@ bool LinkedShaderProgramArtifactCompilation::IsValid() const noexcept
             requirement.target == ShaderCompileTarget::Forward ||
             requirement.target == ShaderCompileTarget::ForwardPlus ||
             requirement.target == ShaderCompileTarget::GBuffer || requirement.target == ShaderCompileTarget::Shadow ||
-            requirement.target == ShaderCompileTarget::Depth || requirement.target == ShaderCompileTarget::Picking;
+            requirement.target == ShaderCompileTarget::Depth || requirement.target == ShaderCompileTarget::Picking ||
+            requirement.target == ShaderCompileTarget::Motion;
         const uint64_t targetBit = 1ull << static_cast<uint32_t>(requirement.target);
         if (supported && (compiledTargets & targetBit) == 0)
             return false;
@@ -372,9 +379,8 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     auto desc = ParseShaderSource(std::string(content, contentSize), filePath);
 
     // ----------------------------------------------------------------
-    // Apply Surface Options defaults.
-    // @surface_type determines default render state when the user has not
-    // explicitly overridden individual settings.
+    // Apply surface defaults when the structured declaration does not
+    // explicitly override an individual render state.
     // ----------------------------------------------------------------
     if (desc.surfaceOptions.surfaceType == "transparent") {
         if (desc.renderQueue < 0)
@@ -448,8 +454,7 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
 
     metaData.AddMetadata("shader_id", desc.shaderId);
     metaData.AddMetadata("properties", propertiesJson);
-    metaData.AddMetadata("shader_schema_format",
-                         desc.usesStructuredInfo ? std::string("ShaderInfo") : std::string("LegacyAnnotations"));
+    metaData.AddMetadata("shader_schema_format", std::string("ShaderInfo"));
     metaData.AddMetadata("shader_inputs", serializeVaryings(desc.inputs));
     metaData.AddMetadata("shader_outputs", serializeVaryings(desc.outputs));
     metaData.AddMetadata("shader_capabilities", nlohmann::json(desc.capabilities).dump());
@@ -475,59 +480,6 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
 
     INXLOG_DEBUG("Shader metadata created - type: ", type, ", shader_id: ", desc.shaderId,
                  ", lighting_type: ", desc.shadingModel, ", properties: ", propertiesJson, " for file: ", filePath);
-}
-
-// ============================================================================
-// ParseAnnotation — unified single-line annotation parser
-// ============================================================================
-
-std::optional<std::pair<std::string, std::string>> InxShaderLoader::ParseAnnotation(const std::string &line)
-{
-    // Find the effective start (skip leading whitespace and optional "// " prefix)
-    size_t pos = line.find_first_not_of(" \t");
-    if (pos == std::string::npos)
-        return std::nullopt;
-
-    std::string trimmed = line.substr(pos);
-
-    // Handle "// @key: value" format (already-commented annotations)
-    if (trimmed.rfind("// @", 0) == 0) {
-        trimmed = trimmed.substr(3); // skip "// "
-    }
-
-    // Must start with '@'
-    if (trimmed.empty() || trimmed[0] != '@')
-        return std::nullopt;
-
-    // Find colon separator
-    size_t colonPos = trimmed.find(':');
-
-    // Handle annotations without value (e.g. "@hidden")
-    if (colonPos == std::string::npos) {
-        std::string key = trimmed.substr(1); // skip '@'
-        // Trim trailing whitespace from key
-        size_t keyEnd = key.find_last_not_of(" \t\r\n");
-        if (keyEnd != std::string::npos)
-            key = key.substr(0, keyEnd + 1);
-        return std::make_pair(key, std::string{});
-    }
-
-    // Extract key (between '@' and ':')
-    std::string key = trimmed.substr(1, colonPos - 1);
-    size_t keyEnd = key.find_last_not_of(" \t");
-    if (keyEnd != std::string::npos)
-        key = key.substr(0, keyEnd + 1);
-
-    // Extract value (after ':')
-    std::string value = trimmed.substr(colonPos + 1);
-    size_t valStart = value.find_first_not_of(" \t");
-    size_t valEnd = value.find_last_not_of(" \t\r\n");
-    if (valStart != std::string::npos && valEnd != std::string::npos)
-        value = value.substr(valStart, valEnd - valStart + 1);
-    else
-        value.clear();
-
-    return std::make_pair(key, value);
 }
 
 // ============================================================================
@@ -570,10 +522,12 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     };
 
     const ShaderInfoDocument shaderInfo = ParseShaderInfo(source);
-    std::string sourceForLegacyScan = source;
-    if (shaderInfo.foundDeclaration) {
-        desc.usesStructuredInfo = true;
-        sourceForLegacyScan = StripShaderInfoDeclaration(source, shaderInfo);
+    std::string shaderCode = source;
+    if (!shaderInfo.foundDeclaration) {
+        desc.errors.push_back(filePath +
+                              ":1:1: every authored shader requires a ShaderInfo or ShadingModelInfo declaration");
+    } else {
+        shaderCode = StripShaderInfoDeclaration(source, shaderInfo);
         if (!shaderInfo.name.empty())
             desc.shaderId = shaderInfo.name;
         if (!shaderInfo.shadingModel.empty()) {
@@ -638,6 +592,8 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
         desc.imports = shaderInfo.imports;
         desc.capabilities = shaderInfo.capabilities;
         desc.entries = shaderInfo.entries;
+        desc.resources = shaderInfo.resources;
+        desc.pushConstants = shaderInfo.pushConstants;
         for (const auto &diagnostic : shaderInfo.diagnostics) {
             const std::string message = filePath + ":" + std::to_string(diagnostic.location.line) + ":" +
                                         std::to_string(diagnostic.location.column) + ": " + diagnostic.message;
@@ -652,124 +608,14 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
         }
     }
 
-    const ShaderEntryPointSet entryPoints = DetectShaderEntryPoints(sourceForLegacyScan);
+    const ShaderEntryPointSet entryPoints = DetectShaderEntryPoints(shaderCode);
     desc.hasSurfaceFunc = entryPoints.surface;
     desc.hasMainFunc = entryPoints.main;
     desc.hasVertexFunc = entryPoints.vertex;
 
-    // Property parser helper
-    auto parseProperty = [&](const std::string &value) {
-        size_t firstComma = value.find(',');
-        size_t secondComma = (firstComma != std::string::npos) ? value.find(',', firstComma + 1) : std::string::npos;
-        if (firstComma == std::string::npos || secondComma == std::string::npos)
-            return;
-
-        auto trim = [](std::string s) {
-            size_t st = s.find_first_not_of(" \t");
-            size_t en = s.find_last_not_of(" \t\r\n");
-            return (st != std::string::npos && en != std::string::npos) ? s.substr(st, en - st + 1) : std::string{};
-        };
-
-        std::string name = trim(value.substr(0, firstComma));
-        std::string propType = trim(value.substr(firstComma + 1, secondComma - firstComma - 1));
-        std::string defaultVal = trim(value.substr(secondComma + 1));
-
-        bool hdr = false;
-        size_t flagsBegin = std::string::npos;
-        if (!defaultVal.empty() && defaultVal.front() == '[') {
-            const size_t bracketEnd = defaultVal.find(']');
-            if (bracketEnd != std::string::npos)
-                flagsBegin = bracketEnd + 1;
-        } else {
-            flagsBegin = defaultVal.find(',');
-        }
-        if (flagsBegin != std::string::npos) {
-            std::string flags = trim(defaultVal.substr(flagsBegin));
-            if (!flags.empty() && flags.front() == ',')
-                flags = trim(flags.substr(1));
-            std::transform(flags.begin(), flags.end(), flags.begin(),
-                           [](unsigned char character) { return static_cast<char>(std::toupper(character)); });
-            hdr = flags == "HDR";
-            defaultVal = trim(defaultVal.substr(0, flagsBegin));
-        }
-
-        ShaderProperty prop;
-        prop.name = name;
-        prop.type = propType;
-        prop.defaultValue = defaultVal;
-        prop.hdr = hdr;
-
-        if (propType == "Texture2D") {
-            prop.isTexture = true;
-            prop.textureDefault = defaultVal;
-            desc.textureProperties.push_back(prop);
-        } else {
-            auto it = typeMap.find(propType);
-            if (it != typeMap.end()) {
-                prop.glslType = it->second;
-                desc.properties.push_back(prop);
-            }
-        }
-    };
-
-    // Current target context (only used for .shadingmodel files)
-    std::string currentTargetName;
-    std::unordered_map<std::string, std::vector<std::string>> targetCodeSections;
-
-    const auto parseCapabilities = [&](const std::string &value) {
-        std::istringstream values(value);
-        std::string capability;
-        while (std::getline(values, capability, ',')) {
-            const size_t begin = capability.find_first_not_of(" \t\r\n");
-            const size_t end = capability.find_last_not_of(" \t\r\n");
-            capability = begin == std::string::npos ? std::string{} : capability.substr(begin, end - begin + 1);
-            if (capability.empty())
-                continue;
-            if (std::find(desc.capabilities.begin(), desc.capabilities.end(), capability) == desc.capabilities.end())
-                desc.capabilities.push_back(std::move(capability));
-        }
-    };
-
-    // Annotation dispatch table
-    using Handler = std::function<void(const std::string &)>;
-    std::unordered_map<std::string, Handler> handlers = {
-        {"shading_model",
-         [&](const std::string &v) {
-             // Keep authored casing so Title Case ids like "PBR" resolve.
-             desc.shadingModel = v;
-             desc.hasExplicitType = true;
-         }},
-        {"shader_id", [&](const std::string &v) { desc.shaderId = v; }},
-        {"property", [&](const std::string &v) { parseProperty(v); }},
-        {"cull", [&](const std::string &v) { desc.surfaceOptions.cullMode = toLower(v); }},
-        {"depth_write", [&](const std::string &v) { desc.depthWrite = toLower(v); }},
-        {"depth_test", [&](const std::string &v) { desc.depthTest = toLower(v); }},
-        {"blend", [&](const std::string &v) { desc.surfaceOptions.blendMode = toLower(v); }},
-        {"queue",
-         [&](const std::string &v) {
-             try {
-                 desc.renderQueue = std::stoi(v);
-             } catch (...) {
-                 INXLOG_WARN("[ShaderLoader] Invalid @queue value: '", v, "'");
-             }
-         }},
-        {"pass_tag", [&](const std::string &v) { desc.passTag = toLower(v); }},
-        {"stencil", [&](const std::string &v) { desc.stencil = toLower(v); }},
-        {"hidden", [&](const std::string &) { desc.hidden = true; }},
-        {"alpha_test", [&](const std::string &v) { desc.surfaceOptions.alphaClip = v; }},
-        {"alpha_clip", [&](const std::string &v) { desc.surfaceOptions.alphaClip = v; }},
-        {"surface_type", [&](const std::string &v) { desc.surfaceOptions.surfaceType = toLower(v); }},
-        {"blend_mode", [&](const std::string &v) { desc.surfaceOptions.blendMode = toLower(v); }},
-        {"receive_shadows", [&](const std::string &v) { desc.surfaceOptions.receiveShadows = (toLower(v) != "off"); }},
-        {"cast_shadows", [&](const std::string &v) { desc.surfaceOptions.castShadows = (toLower(v) != "off"); }},
-        {"capability", parseCapabilities},
-        {"capabilities", parseCapabilities},
-        {"import", [&](const std::string &v) { desc.imports.push_back(v); }},
-        {"target", [&](const std::string &v) { currentTargetName = toLower(v); }},
-    };
-
-    // Scan source line by line
-    std::istringstream stream(sourceForLegacyScan);
+    // Record the GLSL version and reject old annotation statements without
+    // interpreting them. Comments containing an at-sign remain ordinary GLSL.
+    std::istringstream stream(shaderCode);
     std::string line;
     uint32_t lineNumber = 0;
     while (std::getline(stream, line)) {
@@ -782,36 +628,19 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
             continue;
         }
 
-        // Try parsing as annotation
-        auto annotation = ParseAnnotation(line);
-        if (annotation) {
-            if (desc.usesStructuredInfo) {
-                desc.errors.push_back(filePath + ":" + std::to_string(lineNumber) +
-                                      ":1: ShaderInfo assets cannot mix legacy @ annotations");
-                continue;
-            }
-            auto it = handlers.find(annotation->first);
-            if (it != handlers.end()) {
-                it->second(annotation->second);
-            }
-            continue;
-        }
-
-        // For .shadingmodel files, collect code into target sections
-        if (desc.isShadingModel && !currentTargetName.empty()) {
-            targetCodeSections[currentTargetName].push_back(line);
-        }
+        if (!trimmedLine.empty() && trimmedLine.front() == '@')
+            desc.errors.push_back(filePath + ":" + std::to_string(lineNumber) +
+                                  ":1: legacy @ shader syntax was removed; use ShaderInfo fields");
     }
 
-    // Build target blocks for .shadingmodel files
+    // Structured shading models use explicit Entry declarations. Each target
+    // receives the shared helper code, with its selected function renamed to
+    // the canonical evaluate() entry expected by generated surface mains.
     if (desc.isShadingModel) {
-        for (auto &[name, lines] : targetCodeSections) {
+        for (const auto &entry : desc.entries) {
             ShaderDescriptor::TargetBlock block;
-            block.name = name;
-            std::ostringstream codeStream;
-            for (const auto &l : lines)
-                codeStream << l << "\n";
-            block.code = codeStream.str();
+            block.name = toLower(entry.role);
+            block.code = RewriteShaderEntryPoint(shaderCode, "void", entry.function, "evaluate");
             desc.targets.push_back(std::move(block));
         }
     }
@@ -869,7 +698,7 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
     if (cacheIt != s_shadingModelCache.end())
         return cacheIt->second;
 
-    // Look up via namespaced key ("shadingmodel/<id>") to avoid collision with @import resolution
+    // Use a namespaced key so shading models cannot collide with regular imports.
     auto mapIt = shaderIdMap.find("shadingmodel/" + modelName);
     if (mapIt == shaderIdMap.end()) {
         INXLOG_ERROR("Shading model '", modelName, "' not found in shader search paths");
@@ -891,7 +720,7 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
     content << file.rdbuf();
     file.close();
 
-    // Parse using the same ParseShaderSource (which handles @target blocks for .shadingmodel)
+    // Parse through the same structured source path used by regular shaders.
     ShaderDescriptor desc = ParseShaderSource(content.str(), filePath);
 
     // Cache the result
@@ -910,23 +739,23 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                           const ShaderDescriptor *shadingModel, ShaderCompileTarget target,
                                           const ShaderProgramInterfaceArtifact *linkedInterface) const
 {
-    const bool particleSpriteDomain = linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite;
-    // Separate resolved source into: version line, annotation lines, code lines
+    const auto hasCapability = [&](std::string_view capability) { return DescriptorHasCapability(desc, capability); };
+    const bool particleSpriteDomain =
+        DescriptorHasCapability(desc, "ParticleSprite") ||
+        (linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite);
+    const bool fullscreenDomain = hasCapability("Fullscreen");
+    const bool requestsEngineGlobals = hasCapability("EngineGlobals");
+    // Separate the version directive from the generated shader body.
     std::istringstream stream(resolvedSource);
     std::string line;
     std::string versionLine;
-    std::vector<std::string> annotationLines;
     std::vector<std::string> codeLines;
 
     while (std::getline(stream, line)) {
         size_t start = line.find_first_not_of(" \t");
         std::string trimmedLine = (start != std::string::npos) ? line.substr(start) : "";
 
-        if (!trimmedLine.empty() && trimmedLine[0] == '@') {
-            annotationLines.push_back("// " + line);
-        } else if (!trimmedLine.empty() && trimmedLine.rfind("// @", 0) == 0) {
-            annotationLines.push_back(line);
-        } else if (trimmedLine.rfind("#version", 0) == 0) {
+        if (trimmedLine.rfind("#version", 0) == 0) {
             versionLine = line;
         } else {
             codeLines.push_back(line);
@@ -955,17 +784,12 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // #version must be first line
     result << (versionLine.empty() ? "#version 450" : versionLine) << "\n";
 
-    // Annotation lines as comments
-    for (const auto &ann : annotationLines) {
-        result << ann << "\n";
-    }
-
     // ================================================================
     // Determine shading model capabilities
     // ================================================================
     bool needsLightingUBO = false;
     bool hasGBufferTarget = false;
-    // Shadow alpha-clip: when @alpha_clip is active, the shadow pass needs
+    // Shadow alpha-clip needs
     // texture samplers, MaterialProperties UBO, and user surface() code
     // so it can sample alpha and discard transparent fragments.
     bool shadowNeedsAlphaClip = false;
@@ -975,7 +799,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             needsLightingUBO = shadingModel->NeedsLightingUBO();
         }
         // GBuffer target: always enabled — engine provides default packing
-        // when the shadingmodel has no explicit @target: gbuffer block.
+        // when the shading model has no explicit GBuffer entry.
         if (target == ShaderCompileTarget::GBuffer) {
             hasGBufferTarget = true;
         }
@@ -1012,7 +836,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         (target == ShaderCompileTarget::Shadow && desc.isVertexShader && desc.hasVertexFunc);
     bool shadowFragmentNeedsGlobals =
         (target == ShaderCompileTarget::Shadow && desc.isFragmentShader && shadowNeedsAlphaClip);
-    if (target != ShaderCompileTarget::Shadow && !particleSpriteDomain) {
+    if (target != ShaderCompileTarget::Shadow && !particleSpriteDomain &&
+        (!fullscreenDomain || requestsEngineGlobals)) {
         result << "\n// Auto-generated engine globals UBO (set 2)\n";
         result << LoadTemplate("globals_ubo.glsl") << "\n";
     } else if (shadowVertexNeedsGlobals || shadowFragmentNeedsGlobals) {
@@ -1024,7 +849,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     // Inject remaining builtins (only when user has no layout declarations)
     // ================================================================
-    if (!userHasLayoutDecls) {
+    if (!userHasLayoutDecls && !fullscreenDomain) {
         if (desc.isVertexShader && target == ShaderCompileTarget::Shadow) {
             // Shadow vertex variant: use shadow-specific builtins (shadow UBO at set 0)
             result << "\n// Auto-generated shadow vertex builtins\n";
@@ -1040,11 +865,20 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
         } else {
             if (desc.isVertexShader) {
-                // Unified vertex builtins for all shading models
+                const bool explicitVertexInterface =
+                    linkedInterface == nullptr && hasMainFunc && (!desc.inputs.empty() || !desc.outputs.empty());
+                // Explicit main() stages receive the engine geometry inputs but
+                // declare their own stage outputs through ShaderInfo.
                 result << "\n// Auto-generated vertex builtins (unified)\n";
-                result << LoadTemplate(particleSpriteDomain ? "particle_sprite_vertex_builtins.glsl"
-                                                            : "vertex_builtins.glsl")
-                       << "\n";
+                std::string vertexBuiltins = LoadTemplate(
+                    particleSpriteDomain
+                        ? "particle_sprite_vertex_builtins.glsl"
+                        : (explicitVertexInterface ? "custom_geometry_vertex_builtins.glsl" : "vertex_builtins.glsl"));
+                if (particleSpriteDomain && target == ShaderCompileTarget::Motion) {
+                    ReplacePlaceholder(vertexBuiltins, "layout(location = 15) flat out uint _inx_ObjectLayerMask;",
+                                       "uint _inx_ObjectLayerMask;");
+                }
+                result << vertexBuiltins << "\n";
                 if (linkedInterface && !desc.outputs.empty())
                     result << GlslStageInterfaceEmitter::EmitVertexDeclarations(*linkedInterface, desc);
                 if (target == ShaderCompileTarget::Picking)
@@ -1053,7 +887,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << "\n" << LoadTemplate("motion_vertex_interface.glsl") << "\n";
                 else if ((target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
                           target == ShaderCompileTarget::GBuffer) &&
-                         !particleSpriteDomain)
+                         !particleSpriteDomain && !explicitVertexInterface)
                     result << "\n" << LoadTemplate("forward_plus_vertex_interface.glsl") << "\n";
             } else if (desc.isFragmentShader && (desc.hasExplicitType || hasSurfaceFunc)) {
                 // Forward / GBuffer: full varying + output injection
@@ -1072,9 +906,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
 
                 // Unified fragment varying inputs
                 result << "\n// Auto-generated fragment varyings (unified)\n";
-                result << LoadTemplate(particleSpriteDomain ? "particle_sprite_fragment_varyings.glsl"
-                                                            : "fragment_varyings.glsl")
-                       << "\n";
+                std::string fragmentVaryings = LoadTemplate(
+                    particleSpriteDomain ? "particle_sprite_fragment_varyings.glsl" : "fragment_varyings.glsl");
+                if (particleSpriteDomain && target == ShaderCompileTarget::Motion) {
+                    ReplacePlaceholder(fragmentVaryings, "layout(location = 15) flat in uint _inx_ObjectLayerMask;",
+                                       "const uint _inx_ObjectLayerMask = 0xffffffffu;");
+                }
+                result << fragmentVaryings << "\n";
                 if (!particleSpriteDomain &&
                     (target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
                      target == ShaderCompileTarget::GBuffer)) {
@@ -1108,6 +946,82 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         }
     }
 
+    // Standalone passes declare their stage interfaces in ShaderInfo. Linked
+    // material programs use the stage linker path above instead.
+    if (!userHasLayoutDecls && linkedInterface == nullptr && (!desc.inputs.empty() || !desc.outputs.empty())) {
+        const auto glslType = [](std::string_view type) -> std::string_view {
+            if (type == "Float")
+                return "float";
+            if (type == "Float2")
+                return "vec2";
+            if (type == "Float3")
+                return "vec3";
+            if (type == "Float4" || type == "Color")
+                return "vec4";
+            if (type == "Int")
+                return "int";
+            if (type == "Mat4")
+                return "mat4";
+            return {};
+        };
+        const auto qualifier = [](std::string_view interpolation) -> std::string_view {
+            if (interpolation == "Flat")
+                return "flat ";
+            if (interpolation == "NoPerspective")
+                return "noperspective ";
+            if (interpolation == "Centroid")
+                return "centroid ";
+            return {};
+        };
+        result << "\n// Auto-generated standalone stage interface\n";
+        for (size_t index = 0; index < desc.inputs.size(); ++index) {
+            const auto &input = desc.inputs[index];
+            result << "layout(location = " << index << ") " << qualifier(input.interpolation) << "in "
+                   << glslType(input.type) << " " << input.name << ";\n";
+        }
+        for (size_t index = 0; index < desc.outputs.size(); ++index) {
+            const auto &output = desc.outputs[index];
+            result << "layout(location = " << index << ") " << qualifier(output.interpolation) << "out "
+                   << glslType(output.type) << " " << output.name << ";\n";
+        }
+    }
+
+    if (!userHasLayoutDecls && hasCapability("CameraMatrices")) {
+        result << "\n// Auto-generated camera matrices interface\n";
+        result << LoadTemplate("camera_matrices_ubo.glsl") << "\n";
+    }
+
+    if (!userHasLayoutDecls && !desc.resources.empty()) {
+        result << "\n// Auto-generated pass resources\n";
+        for (size_t index = 0; index < desc.resources.size(); ++index) {
+            const auto &resource = desc.resources[index];
+            if (resource.type == "Texture2D")
+                result << "layout(set = 0, binding = " << index << ") uniform sampler2D " << resource.name << ";\n";
+        }
+    }
+
+    if (!userHasLayoutDecls && desc.pushConstants) {
+        const auto glslType = [](std::string_view type) -> std::string_view {
+            if (type == "Float")
+                return "float";
+            if (type == "Float2")
+                return "vec2";
+            if (type == "Float3")
+                return "vec3";
+            if (type == "Float4" || type == "Color")
+                return "vec4";
+            if (type == "Int")
+                return "int";
+            if (type == "Mat4")
+                return "mat4";
+            return {};
+        };
+        result << "\n// Auto-generated push constants\nlayout(push_constant) uniform InxPushConstants {\n";
+        for (const auto &field : desc.pushConstants->fields)
+            result << "    " << glslType(field.type) << " " << field.name << ";\n";
+        result << "} " << desc.pushConstants->instanceName << ";\n";
+    }
+
     // ================================================================
     // Texture sampler declarations  (skip for shadow unless alpha clip)
     // ================================================================
@@ -1130,7 +1044,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             if (!declarations.empty())
                 result << "\n// Linked material texture bindings\n" << declarations << "\n";
         } else if (!desc.textureProperties.empty() && desc.isFragmentShader) {
-            result << "\n// Auto-generated texture samplers from @property annotations\n";
+            result << "\n// Auto-generated material texture samplers\n";
             for (size_t i = 0; i < desc.textureProperties.size(); ++i) {
                 int binding = shadowAlphaFragment ? (shadowTexBaseBinding + static_cast<int>(i))
                                                   : (texBaseBinding + static_cast<int>(i));
@@ -1184,7 +1098,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             } else {
                 materialBinding = texBaseBinding + static_cast<int>(desc.textureProperties.size());
             }
-            result << "\n// Auto-generated MaterialProperties UBO from @property annotations\n";
+            result << "\n// Auto-generated MaterialProperties UBO\n";
             if (linkedInterface && target != ShaderCompileTarget::Shadow) {
                 result << "layout(std140, set = " << GlslStageInterfaceEmitter::MaterialDescriptorSet
                        << ", binding = " << materialBinding << ") uniform MaterialProperties {\n";
@@ -1233,11 +1147,11 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         bool skipBlock = false;
         for (const auto &codeLine : codeLines) {
             if (shadowAlphaFragment) {
-                if (codeLine.find("// --- begin @import: Lighting ---") != std::string::npos) {
+                if (codeLine.find("// --- begin import: Lighting ---") != std::string::npos) {
                     skipBlock = true;
                     continue;
                 }
-                if (skipBlock && codeLine.find("// --- end @import: Lighting ---") != std::string::npos) {
+                if (skipBlock && codeLine.find("// --- end import: Lighting ---") != std::string::npos) {
                     skipBlock = false;
                     continue;
                 }
@@ -1248,7 +1162,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         }
     } else if (target == ShaderCompileTarget::Shadow && desc.isVertexShader && desc.hasVertexFunc &&
                desc.properties.empty()) {
-        // Shadow vertex with vertex() but no @property — just include user code
+        // A shadow vertex stage without material properties only needs user code.
         for (const auto &codeLine : codeLines) {
             result << codeLine << "\n";
         }
@@ -1341,15 +1255,15 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             if (shadingModel) {
                 const auto *targetBlock = shadingModel->FindTarget(targetName);
                 if (targetBlock && !targetBlock->code.empty()) {
-                    result << "\n// evaluate() from shading model: " << desc.shadingModel << " (@target: " << targetName
+                    result << "\n// evaluate() from shading model: " << desc.shadingModel << " (Entry " << targetName
                            << ")\n";
                     result << targetBlock->code << "\n";
                 } else if (target == ShaderCompileTarget::GBuffer) {
-                    // No custom @target: gbuffer — use engine default packing
+                    // No custom GBuffer entry: use engine default packing.
                     result << "\n// Default GBuffer packing (engine-provided)\n";
                     result << LoadTemplate("default_gbuffer_evaluate.glsl") << "\n";
                 } else {
-                    INXLOG_WARN("Shading model '", desc.shadingModel, "' has no @target: ", targetName, " block");
+                    INXLOG_WARN("Shading model '", desc.shadingModel, "' has no Entry ", targetName, " block");
                 }
             }
 
@@ -1390,6 +1304,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         std::string passVertexOutput;
         if (target == ShaderCompileTarget::Picking) {
             passVertexOutput = "    _inx_ObjectId = instanceAuxData[gl_InstanceIndex].objectId;";
+        } else if (target == ShaderCompileTarget::Motion && particleSpriteDomain) {
+            passVertexOutput = R"(    vec3 previousWorldPosition = instance.previous_position_history.xyz +
+        (v.position - instance.position_size.xyz);
+    vec4 previousClip = particleView.previous_view_projection * vec4(previousWorldPosition, 1.0);
+    vec2 currentNdc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
+    vec2 previousNdc = previousClip.xy / max(abs(previousClip.w), 1e-6);
+    _inx_MotionVector = (currentNdc - previousNdc) * vec2(0.5, -0.5);)";
         } else if (target == ShaderCompileTarget::Motion) {
             passVertexOutput = R"(    InstanceAuxData aux = instanceAuxData[gl_InstanceIndex];
     if ((aux.flags & 1u) != 0u) {
@@ -1423,13 +1344,9 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
     // Stage 1: Parse source into structured descriptor
     ShaderDescriptor desc = ParseShaderSource(source, filePath);
 
-    // Stage 2: Resolve @import directives
-    std::string resolvedSource =
-        desc.usesStructuredInfo ? StripShaderInfoDeclaration(source, ParseShaderInfo(source)) : source;
-    if (desc.usesStructuredInfo) {
-        for (auto import = desc.imports.rbegin(); import != desc.imports.rend(); ++import)
-            resolvedSource = "@import: " + *import + "\n" + resolvedSource;
-    }
+    // Stage 2: resolve structured imports.
+    std::string resolvedSource = StripShaderInfoDeclaration(source, ParseShaderInfo(source));
+    std::vector<std::string> effectiveImports = desc.imports;
     const ShaderDescriptor *shadingModelPtr = nullptr;
     ShaderDescriptor shadingModelDesc;
 
@@ -1443,18 +1360,17 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
             includeStack.insert(desc.shaderId);
         }
 
-        // Load the referenced .shadingmodel (if any) and auto-inject its @import dependencies
+        // Load the referenced shading model and inject its import dependencies.
         if (!desc.shadingModel.empty() && desc.isFragmentShader && desc.hasSurfaceFunc && !desc.hasMainFunc) {
             shadingModelDesc = LoadShadingModel(desc.shadingModel, shaderIdMap);
             if (shadingModelDesc.errors.empty()) {
                 shadingModelPtr = &shadingModelDesc;
 
-                // Auto-inject the shading model's @import dependencies into the source
-                // using the IR imports list for dedup instead of regex on source text
-                std::set<std::string> existingImports(desc.imports.begin(), desc.imports.end());
+                // Auto-inject the shading model's structured import dependencies.
+                std::set<std::string> existingImports(effectiveImports.begin(), effectiveImports.end());
                 for (const auto &imp : shadingModelDesc.imports) {
                     if (existingImports.find(imp) == existingImports.end()) {
-                        resolvedSource = "@import: " + imp + "\n" + resolvedSource;
+                        effectiveImports.push_back(imp);
                         existingImports.insert(imp);
                     }
                 }
@@ -1463,7 +1379,7 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
 
         // Auto-inject the canonical surface helpers for surface() shaders.
         if (desc.hasSurfaceFunc && !desc.hasMainFunc && desc.isFragmentShader) {
-            // Check via IR: desc.imports already parsed all @import from source
+            // Check the parsed import list before adding canonical helpers.
             bool hasSurfaceImport = false;
             bool hasObjectUtilsImport = false;
             bool hasParticleSurfaceUtilsImport = false;
@@ -1476,18 +1392,19 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
                     hasParticleSurfaceUtilsImport = true;
             }
             if (!hasSurfaceImport) {
-                resolvedSource = "@import: Surface\n" + resolvedSource;
+                effectiveImports.push_back("Surface");
             }
             const bool particleSpriteDomain =
-                linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite;
+                DescriptorHasCapability(desc, "ParticleSprite") ||
+                (linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite);
             if (particleSpriteDomain && !hasParticleSurfaceUtilsImport) {
-                resolvedSource = "@import: Lib Particle Surface Utils\n" + resolvedSource;
+                effectiveImports.push_back("Lib Particle Surface Utils");
             } else if (!particleSpriteDomain && !hasObjectUtilsImport) {
-                resolvedSource = "@import: Lib Object Utils\n" + resolvedSource;
+                effectiveImports.push_back("Lib Object Utils");
             }
         }
 
-        resolvedSource = ResolveImports(resolvedSource, shaderIdMap, includeStack, 0);
+        resolvedSource = ResolveImports(resolvedSource, effectiveImports, shaderIdMap, includeStack, 0);
     }
 
     // Stage 3: Generate GLSL from descriptor + resolved source + shading model
@@ -1542,7 +1459,11 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
         if (sourceDescriptor.hasSurfaceFunc && !sourceDescriptor.hasMainFunc) {
             CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "Shadow");
 
-            if (!sourceDescriptor.shadingModel.empty() && sourceDescriptor.shadingModel != "custom") {
+            // ParticleSprite programs are forward-domain outputs. Their
+            // lighting contract intentionally depends on particle varyings and
+            // particle shadow helpers that a mesh GBuffer stage does not own.
+            if (!DescriptorHasCapability(sourceDescriptor, "ParticleSprite") &&
+                !sourceDescriptor.shadingModel.empty() && sourceDescriptor.shadingModel != "custom") {
                 CompileVariant(content, filePath, ShaderCompileTarget::GBuffer, "GBuffer");
             }
         }
@@ -1628,7 +1549,8 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
             requirement.target == ShaderCompileTarget::Forward ||
             requirement.target == ShaderCompileTarget::ForwardPlus ||
             requirement.target == ShaderCompileTarget::GBuffer || requirement.target == ShaderCompileTarget::Shadow ||
-            requirement.target == ShaderCompileTarget::Depth || requirement.target == ShaderCompileTarget::Picking;
+            requirement.target == ShaderCompileTarget::Depth || requirement.target == ShaderCompileTarget::Picking ||
+            requirement.target == ShaderCompileTarget::Motion;
         if (!supported) {
             result.pendingTargets.push_back(requirement.target);
             continue;
@@ -1951,19 +1873,7 @@ std::unordered_map<std::string, std::string> InxShaderLoader::BuildShaderIdMap(c
             source << file.rdbuf();
             const std::string sourceText = source.str();
             const ShaderInfoDocument structuredInfo = ParseShaderInfo(sourceText);
-            bool hasAuthoredId = structuredInfo.foundDeclaration && !structuredInfo.name.empty();
-            if (!hasAuthoredId) {
-                std::istringstream annotations(sourceText);
-                std::string line;
-                for (int lineCount = 0; lineCount < 20 && std::getline(annotations, line); ++lineCount) {
-                    const auto annotation = ParseAnnotation(line);
-                    if (annotation && annotation->first == "shader_id" && !annotation->second.empty()) {
-                        hasAuthoredId = true;
-                        break;
-                    }
-                }
-            }
-            if (!hasAuthoredId)
+            if (!structuredInfo.IsValid() || structuredInfo.name.empty())
                 continue;
             const ShaderDescriptor descriptor = ParseShaderSource(sourceText, pathStr);
             const std::string &id = descriptor.shaderId;
@@ -1994,7 +1904,7 @@ std::unordered_map<std::string, std::string> InxShaderLoader::BuildShaderIdMap(c
     return idMap;
 }
 
-std::string InxShaderLoader::ResolveImports(const std::string &source,
+std::string InxShaderLoader::ResolveImports(const std::string &source, const std::vector<std::string> &imports,
                                             const std::unordered_map<std::string, std::string> &shaderIdMap,
                                             std::set<std::string> &includeStack, int depth)
 {
@@ -2007,81 +1917,56 @@ std::string InxShaderLoader::ResolveImports(const std::string &source,
                 chain += " -> ";
             chain += id;
         }
-        INXLOG_ERROR("Shader @import depth exceeded maximum of ", MAX_IMPORT_DEPTH,
+        INXLOG_ERROR("Shader import depth exceeded maximum of ", MAX_IMPORT_DEPTH,
                      ". Import chain: ", chain.empty() ? "(unknown)" : chain);
         return source;
     }
 
-    std::istringstream stream(source);
     std::ostringstream result;
-    std::string line;
-
-    while (std::getline(stream, line)) {
-        auto annotation = ParseAnnotation(line);
-        if (annotation && annotation->first == "import") {
-            std::string importId = annotation->second;
-
-            // Look up the shader_id in the map
-            auto it = shaderIdMap.find(importId);
-            if (it == shaderIdMap.end()) {
-                INXLOG_ERROR("Shader @import: shader_id '", importId, "' not found in shaders directory");
-                result << "// ERROR: @import shader_id not found: " << importId << "\n";
-                continue;
-            }
-
-            const std::string &importPath = it->second;
-
-            // Diamond-dedup: file already imported via another path (e.g. A→B→D + A→C→D)
-            if (includeStack.count(importId) > 0) {
-                INXLOG_DEBUG("@import dedup, already included: ", importId);
-                result << "// @import dedup: " << importId << " (already included)\n";
-                continue;
-            }
-
-            // Read the imported file
-            std::ifstream importFile = OpenInputFile(importPath);
-            if (!importFile.is_open()) {
-                INXLOG_ERROR("Failed to open @import file: ", importPath);
-                result << "// ERROR: failed to open @import: " << importId << "\n";
-                continue;
-            }
-
-            std::ostringstream importContent;
-            importContent << importFile.rdbuf();
-            importFile.close();
-
-            // Strip #version directive from imported content (the parent file's #version takes precedence)
-            std::string content = importContent.str();
-            std::istringstream contentStream(content);
-            std::ostringstream strippedContent;
-            std::string contentLine;
-            while (std::getline(contentStream, contentLine)) {
-                size_t firstChar = contentLine.find_first_not_of(" \t");
-                if (firstChar != std::string::npos && contentLine.compare(firstChar, 8, "#version") == 0)
-                    continue;
-                strippedContent << contentLine << "\n";
-            }
-
-            // Recursively resolve imports in the imported file
-            includeStack.insert(importId);
-            std::string resolvedContent = ResolveImports(strippedContent.str(), shaderIdMap, includeStack, depth + 1);
-            // Do NOT erase importId: keep it in the set to prevent diamond
-            // imports from including the same file twice (A→B→D + A→C→D
-            // would otherwise inline D twice, causing GLSL redefinitions).
-
-            // Insert the resolved content (with markers for debugging)
-            result << "// --- begin @import: " << importId << " ---\n";
-            result << resolvedContent;
-            // Ensure newline at end of imported content
-            if (!resolvedContent.empty() && resolvedContent.back() != '\n') {
-                result << "\n";
-            }
-            result << "// --- end @import: " << importId << " ---\n";
-        } else {
-            result << line << "\n";
+    for (const auto &importId : imports) {
+        const auto mapped = shaderIdMap.find(importId);
+        if (mapped == shaderIdMap.end()) {
+            INXLOG_ERROR("Shader import '", importId, "' was not found in shader search paths");
+            result << "// ERROR: shader import not found: " << importId << "\n";
+            continue;
         }
-    }
+        if (!includeStack.insert(importId).second)
+            continue;
 
+        std::ifstream importFile = OpenInputFile(mapped->second);
+        if (!importFile.is_open()) {
+            INXLOG_ERROR("Failed to open shader import: ", mapped->second);
+            result << "// ERROR: failed to open shader import: " << importId << "\n";
+            continue;
+        }
+        std::ostringstream importedStream;
+        importedStream << importFile.rdbuf();
+        const std::string importedSource = importedStream.str();
+        const ShaderDescriptor importedDescriptor = ParseShaderSource(importedSource, mapped->second);
+        if (!importedDescriptor.errors.empty()) {
+            INXLOG_ERROR("Invalid imported ShaderInfo asset: ", mapped->second);
+            result << "// ERROR: invalid ShaderInfo import: " << importId << "\n";
+            includeStack.erase(importId);
+            continue;
+        }
+        std::string importedCode = StripShaderInfoDeclaration(importedSource, ParseShaderInfo(importedSource));
+        std::istringstream lines(importedCode);
+        std::ostringstream withoutVersion;
+        std::string line;
+        while (std::getline(lines, line)) {
+            const size_t first = line.find_first_not_of(" \t");
+            if (first != std::string::npos && line.compare(first, 8, "#version") == 0)
+                continue;
+            withoutVersion << line << '\n';
+        }
+        const std::string resolved =
+            ResolveImports(withoutVersion.str(), importedDescriptor.imports, shaderIdMap, includeStack, depth + 1);
+        result << "// --- begin import: " << importId << " ---\n" << resolved;
+        if (!resolved.empty() && resolved.back() != '\n')
+            result << '\n';
+        result << "// --- end import: " << importId << " ---\n";
+    }
+    result << source;
     return result.str();
 }
 } // namespace infernux

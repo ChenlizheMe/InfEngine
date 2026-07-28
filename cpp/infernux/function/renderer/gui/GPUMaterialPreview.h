@@ -1,5 +1,7 @@
 #pragma once
 
+#include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkHandle.h>
 #include <memory>
 #include <vector>
@@ -31,6 +33,11 @@ class GPUMaterialPreview
     bool TryCompleteRenderToPixels(const std::shared_ptr<vk::ImageReadbackTicket> &ticket, int outputSize,
                                    std::vector<unsigned char> &outPixels);
 
+    [[nodiscard]] const rhi::RenderViewContext &GetRenderViewContext() const noexcept
+    {
+        return m_renderView;
+    }
+
   private:
     bool EnsureResources(int size);
     bool EnsureViewResources();
@@ -39,8 +46,11 @@ class GPUMaterialPreview
     void CreateFramebuffer(int size);
     void CreateSphereBuffers();
     void DestroyFramebuffer();
+    void PublishRenderView();
+    void UnpublishRenderView();
 
     InxVkCoreModular *m_vkCore = nullptr;
+    rhi::RenderViewContext m_renderView;
     int m_currentSize = 0;
 
     // Render pass (compatible with MaterialPipelineManager's internal pass)
@@ -58,6 +68,7 @@ class GPUMaterialPreview
     // Default per-view shadow descriptor used when no active scene descriptor
     // is available but the shader statically uses set 1.
     VkDescriptorSet m_fallbackShadowDescSet = VK_NULL_HANDLE;
+    vk::DescriptorLease m_fallbackShadowDescLease;
 
     // Sphere geometry
     std::unique_ptr<vk::VkBufferHandle> m_sphereVBO;
@@ -71,8 +82,8 @@ class GPUMaterialPreview
     std::unique_ptr<vk::VkBufferHandle> m_previewSkinInstanceBuffer;
     std::unique_ptr<vk::VkBufferHandle> m_previewSkinPaletteBuffer;
     std::unique_ptr<vk::VkBufferHandle> m_previewInstanceAuxBuffer;
-    VkDescriptorPool m_previewGlobalsPool = VK_NULL_HANDLE;
     VkDescriptorSet m_previewGlobalsSet = VK_NULL_HANDLE;
+    vk::DescriptorLease m_previewGlobalsLease;
     std::shared_ptr<vk::ImageReadbackTicket> m_activeReadback;
 
     // Cached format info

@@ -1,12 +1,20 @@
 #version 450
-@shader_id: Route Additive Delta
-@hidden
 
-layout(set = 0, binding = 0) uniform sampler2D _OriginalTex;
-layout(set = 0, binding = 1) uniform sampler2D _ProcessedTex;
-
-layout(location = 0) in vec2 inUV;
-layout(location = 0) out vec4 outColor;
+ShaderInfo {
+    Name "Route Additive Delta"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _OriginalTex
+        Texture2D _ProcessedTex
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 void main() {
     vec3 original = texture(_OriginalTex, inUV).rgb;

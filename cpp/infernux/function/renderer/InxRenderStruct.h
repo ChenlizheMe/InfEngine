@@ -180,6 +180,10 @@ struct DrawCall
     // Used by the renderer to create/update per-object GPU buffers.
     const std::vector<Vertex> *meshVertices = nullptr;
     const std::vector<uint32_t> *meshIndices = nullptr;
+    // Keeps the storage behind meshVertices/meshIndices alive for immutable
+    // RenderWorld snapshots. Asset meshes retain their asset generation;
+    // inline meshes retain an extraction-owned snapshot.
+    std::shared_ptr<const void> meshDataOwner;
     std::string meshAssetGuid;
     uint64_t meshRuntimeVersion = 0;
 

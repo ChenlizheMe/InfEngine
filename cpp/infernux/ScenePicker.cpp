@@ -28,7 +28,7 @@
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/InxRenderer.h>
 #include <function/scene/MeshRenderer.h>
-#include <function/scene/SceneRenderer.h>
+#include <function/scene/SceneRenderBridge.h>
 #include <function/scene/physics/PhysicsWorld.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>

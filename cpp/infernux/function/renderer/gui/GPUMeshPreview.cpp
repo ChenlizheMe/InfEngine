@@ -15,6 +15,7 @@
 #include <function/renderer/RenderInstanceHistory.h>
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/vk/DescriptorBindTrace.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -126,6 +127,11 @@ FitCameraResult FitCameraToBounds(const glm::vec3 &boundsMin, const glm::vec3 &b
 
 GPUMeshPreview::GPUMeshPreview(InxVkCoreModular *vkCore) : m_vkCore(vkCore)
 {
+    m_renderView.id = rhi::AllocateRenderViewId();
+    m_renderView.device = vkCore ? vkCore->GetDeviceContext().GetDeviceId() : rhi::InvalidDeviceId;
+    m_renderView.kind = rhi::RenderViewKind::Preview;
+    m_renderView.output = rhi::RenderOutputKind::OffscreenTexture;
+    m_renderView.revision = 1;
 }
 
 GPUMeshPreview::~GPUMeshPreview()
@@ -196,7 +202,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
         VkDescriptorSet materialDescSet = VK_NULL_HANDLE;
-        ShaderProgram *program = nullptr;
+        const ShaderProgram *program = nullptr;
     };
 
     std::vector<SubmeshBinding> bindings;
@@ -230,9 +236,20 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         } else {
             previewMat = srcMat;
         }
-        if (!m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
-                                                      previewMat->GetFragShaderName(), m_previewSceneUbo->GetBuffer(),
-                                                      m_previewLightingUbo->GetBuffer(), false))
+        bool pipelineReady = m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
+                                                                      previewMat->GetFragShaderName(), false);
+        if (!pipelineReady && srcMat != defaultMat && defaultMat) {
+            // A malformed embedded material must not hide the whole FBX
+            // submesh. Keep the complete model thumbnail useful with the
+            // engine's known-good preview material.
+            previewMat = cloneMaterials ? defaultMat->Clone() : defaultMat;
+            if (previewMat && cloneMaterials)
+                previewMat->ClearAllPassPipelines();
+            pipelineReady =
+                previewMat && m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
+                                                                       previewMat->GetFragShaderName(), false);
+        }
+        if (!pipelineReady || !previewMat)
             continue;
 
         MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
@@ -250,7 +267,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         b.pipeline = rd->pipeline;
         b.pipelineLayout = rd->pipelineLayout;
         b.materialDescSet = rd->descriptorSet;
-        b.program = rd->shaderProgram;
+        b.program = rd->shaderProgram.get();
         bindings.push_back(std::move(b));
     }
 
@@ -310,11 +327,14 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     });
 
     if (requiresPerViewSet) {
-        if (m_fallbackShadowDescSet == VK_NULL_HANDLE) {
-            m_fallbackShadowDescSet = m_vkCore->AllocatePerViewDescriptorSet();
-            if (m_fallbackShadowDescSet != VK_NULL_HANDLE)
+        if (!m_fallbackShadowDescLease.IsValid()) {
+            m_fallbackShadowDescLease = m_vkCore->AllocatePerViewDescriptorLease();
+            m_fallbackShadowDescSet = m_fallbackShadowDescLease.set;
+            if (m_fallbackShadowDescLease.IsValid()) {
                 m_vkCore->UpdatePerViewLightingBuffer(m_fallbackShadowDescSet, lightingUBOBuf,
                                                       sizeof(ShaderLightingUBO));
+                m_vkCore->UpdatePerViewCameraBuffer(m_fallbackShadowDescSet, sceneUBOBuf, sizeof(UniformBufferObject));
+            }
         }
         shadowDesc = m_fallbackShadowDescSet;
         if (shadowDesc == VK_NULL_HANDLE)
@@ -589,6 +609,8 @@ bool GPUMeshPreview::EnsureResources(int size)
         DestroyFramebuffer();
         CreateFramebuffer(size);
         m_currentSize = size;
+        if (m_framebuffer != VK_NULL_HANDLE)
+            PublishRenderView();
     }
 
     return m_framebuffer != VK_NULL_HANDLE && EnsureViewResources();
@@ -611,30 +633,15 @@ bool GPUMeshPreview::EnsureViewResources()
         !m_previewSkinInstanceBuffer || !m_previewSkinPaletteBuffer || !m_previewInstanceAuxBuffer)
         throw std::runtime_error("Failed to allocate isolated mesh-preview view buffers");
 
-    VkDescriptorPoolSize poolSizes[2]{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = 1;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = 4;
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 2;
-    poolInfo.pPoolSizes = poolSizes;
     const VkDevice device = m_vkCore->GetDevice();
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_previewGlobalsPool) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create isolated mesh-preview globals descriptor pool");
-
     const VkDescriptorSetLayout layout = m_vkCore->GetGlobalsDescSetLayout();
     if (layout == VK_NULL_HANDLE)
         throw std::logic_error("Mesh preview requires the renderer globals descriptor layout");
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorPool = m_previewGlobalsPool;
-    allocateInfo.descriptorSetCount = 1;
-    allocateInfo.pSetLayouts = &layout;
-    if (vkAllocateDescriptorSets(device, &allocateInfo, &m_previewGlobalsSet) != VK_SUCCESS)
+    m_previewGlobalsLease = m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager().Allocate(
+        layout, vk::DescriptorArena::ViewPersistent);
+    if (!m_previewGlobalsLease.IsValid())
         throw std::runtime_error("Failed to allocate isolated mesh-preview globals descriptor set");
+    m_previewGlobalsSet = m_previewGlobalsLease.set;
 
     VkDescriptorBufferInfo buffers[5]{};
     buffers[0] = {m_previewGlobalsUbo->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
@@ -660,11 +667,15 @@ void GPUMeshPreview::DestroyViewResources()
 {
     m_activeSubmission.reset();
     m_activeReadback.reset();
-    m_previewGlobalsSet = VK_NULL_HANDLE;
-    if (m_previewGlobalsPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(m_vkCore->GetDevice(), m_previewGlobalsPool, nullptr);
-        m_previewGlobalsPool = VK_NULL_HANDLE;
+    if (m_vkCore) {
+        auto &descriptorManager = m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager();
+        descriptorManager.Retire(m_fallbackShadowDescLease);
+        descriptorManager.Retire(m_previewGlobalsLease);
     }
+    m_fallbackShadowDescLease = {};
+    m_fallbackShadowDescSet = VK_NULL_HANDLE;
+    m_previewGlobalsLease = {};
+    m_previewGlobalsSet = VK_NULL_HANDLE;
     m_previewSkinPaletteBuffer.reset();
     m_previewSkinInstanceBuffer.reset();
     m_previewInstanceAuxBuffer.reset();
@@ -788,6 +799,7 @@ void GPUMeshPreview::CreateFramebuffer(int size)
 
 void GPUMeshPreview::DestroyFramebuffer()
 {
+    UnpublishRenderView();
     VkDevice device = m_vkCore->GetDevice();
     if (m_framebuffer != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(device, m_framebuffer, nullptr);
@@ -800,6 +812,47 @@ void GPUMeshPreview::DestroyFramebuffer()
     m_displayImageShaderReady = false;
 }
 
+void GPUMeshPreview::PublishRenderView()
+{
+    if (!m_vkCore || m_framebuffer == VK_NULL_HANDLE)
+        return;
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    if (m_renderView.color.IsValid())
+        device.Release(m_renderView.color);
+    if (m_renderView.depth.IsValid())
+        device.Release(m_renderView.depth);
+
+    const VkImageView displayView =
+        m_sampleCount != VK_SAMPLE_COUNT_1_BIT ? m_resolveColor.GetView() : m_msaaColor.GetView();
+    m_renderView.device = m_vkCore->GetDeviceContext().GetDeviceId();
+    m_renderView.width = static_cast<uint32_t>(m_currentSize);
+    m_renderView.height = static_cast<uint32_t>(m_currentSize);
+    m_renderView.colorFormat = rhi::FromVkFormat(m_colorFormat);
+    m_renderView.depthFormat = rhi::FromVkFormat(m_depthFormat);
+    m_renderView.samples = rhi::FromVkSampleCount(m_sampleCount);
+    m_renderView.color = device.RegisterTextureView(displayView);
+    m_renderView.depth = m_depth.HasView() ? device.RegisterTextureView(m_depth.GetView()) : rhi::TextureViewHandle{};
+    ++m_renderView.revision;
+}
+
+void GPUMeshPreview::UnpublishRenderView()
+{
+    if (!m_vkCore)
+        return;
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    if (m_renderView.color.IsValid())
+        device.Release(m_renderView.color);
+    if (m_renderView.depth.IsValid())
+        device.Release(m_renderView.depth);
+    const bool wasPublished = m_renderView.color.IsValid() || m_renderView.depth.IsValid() || m_renderView.width != 0;
+    m_renderView.color = {};
+    m_renderView.depth = {};
+    m_renderView.width = 0;
+    m_renderView.height = 0;
+    if (wasPublished)
+        ++m_renderView.revision;
+}
+
 void GPUMeshPreview::DestroyImGuiDisplayDescriptor()
 {
     if (!m_vkCore)
@@ -809,11 +862,11 @@ void GPUMeshPreview::DestroyImGuiDisplayDescriptor()
     // ImTextureID) may still reference this descriptor for a few frames.
     // Freeing it immediately makes the ImGui backend bind a destroyed
     // VkDescriptorSet — validation errors and intermittent crashes — so both
-    // the descriptor and its sampler retire through the frame deletion queue.
+    // the descriptor and its sampler retire through the submission retirement queue.
     if (m_displayDescriptorSet != VK_NULL_HANDLE || m_displaySampler != VK_NULL_HANDLE) {
         VkDescriptorSet retiredSet = m_displayDescriptorSet;
         VkSampler retiredSampler = m_displaySampler;
-        m_vkCore->DeferDeletion([device, retiredSet, retiredSampler]() {
+        m_vkCore->RetireGpuResource([device, retiredSet, retiredSampler]() {
             if (retiredSet != VK_NULL_HANDLE && ImGui::GetCurrentContext() != nullptr &&
                 ImGui::GetIO().BackendRendererUserData != nullptr)
                 ImGui_ImplVulkan_RemoveTexture(retiredSet);
@@ -890,7 +943,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
         VkDescriptorSet materialDescSet = VK_NULL_HANDLE;
-        ShaderProgram *program = nullptr;
+        const ShaderProgram *program = nullptr;
     };
     std::vector<SubmeshBinding> bindings;
     bindings.reserve(mesh.GetSubMeshCount());
@@ -910,9 +963,17 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
             continue;
         if (cloneMaterials)
             previewMat->ClearAllPassPipelines();
-        if (!m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
-                                                      previewMat->GetFragShaderName(), m_previewSceneUbo->GetBuffer(),
-                                                      m_previewLightingUbo->GetBuffer(), false))
+        bool pipelineReady = m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
+                                                                      previewMat->GetFragShaderName(), false);
+        if (!pipelineReady && srcMat != defaultMat && defaultMat) {
+            previewMat = cloneMaterials ? defaultMat->Clone() : defaultMat;
+            if (previewMat && cloneMaterials)
+                previewMat->ClearAllPassPipelines();
+            pipelineReady =
+                previewMat && m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
+                                                                       previewMat->GetFragShaderName(), false);
+        }
+        if (!pipelineReady || !previewMat)
             continue;
         MaterialRenderData *rd = m_vkCore->GetMaterialPipelineManager().GetRenderData(previewMat->GetMaterialKey());
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)
@@ -927,7 +988,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         b.pipeline = rd->pipeline;
         b.pipelineLayout = rd->pipelineLayout;
         b.materialDescSet = rd->descriptorSet;
-        b.program = rd->shaderProgram;
+        b.program = rd->shaderProgram.get();
         bindings.push_back(std::move(b));
     }
     if (bindings.empty())
@@ -976,11 +1037,14 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         return binding.program && binding.program->HasDeclaredDescriptorSet(2);
     });
     if (requiresPerViewSet) {
-        if (m_fallbackShadowDescSet == VK_NULL_HANDLE) {
-            m_fallbackShadowDescSet = m_vkCore->AllocatePerViewDescriptorSet();
-            if (m_fallbackShadowDescSet != VK_NULL_HANDLE)
+        if (!m_fallbackShadowDescLease.IsValid()) {
+            m_fallbackShadowDescLease = m_vkCore->AllocatePerViewDescriptorLease();
+            m_fallbackShadowDescSet = m_fallbackShadowDescLease.set;
+            if (m_fallbackShadowDescLease.IsValid()) {
                 m_vkCore->UpdatePerViewLightingBuffer(m_fallbackShadowDescSet, lightingUBOBuf,
                                                       sizeof(ShaderLightingUBO));
+                m_vkCore->UpdatePerViewCameraBuffer(m_fallbackShadowDescSet, sceneUBOBuf, sizeof(UniformBufferObject));
+            }
         }
         shadowDesc = m_fallbackShadowDescSet;
         if (shadowDesc == VK_NULL_HANDLE)

@@ -1,15 +1,18 @@
-@shader_id: Lighting
+ShaderInfo {
+    Name "Lighting"
+    Imports ["PBR"]
+}
 
 // ============================================================================
 // lighting.glsl — Importable lighting utilities for PBR shaders
 //
 // Provides Unity-style helper functions so custom lit shaders can use shadows
 // and lighting without duplicating the full lighting loop. Requires the
-// auto-injected LightingUBO and shadowMap sampler (@shading_model: PBR).
+// auto-injected LightingUBO and shadowMap sampler (ShaderInfo ShadingModel: PBR).
 //
 // Usage in a custom shader:
-//   @shading_model: PBR
-//   @import: Lighting
+//   ShaderInfo ShadingModel: PBR
+//   ShaderInfo Imports: Lighting
 //   void main() {
 //       Light mainLight = getMainLight(worldPos, normal);
 //       vec3 color = mainLight.color * mainLight.attenuation * mainLight.shadow;
@@ -17,7 +20,6 @@
 //   }
 // ============================================================================
 
-@import: PBR
 
 // Everything below reads the LightingUBO (`lighting.`), shadow atlas sampler
 // and light buffers. The shadow pass pipeline layout does not bind any of

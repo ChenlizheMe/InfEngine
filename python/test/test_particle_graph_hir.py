@@ -22,6 +22,7 @@ from Infernux.particle import (
     ParticleGraphAsset,
     ParticleGraphCompiler,
     ParticleGraphSchemaError,
+    ParticleParameter,
     ParticleKernelLowerer,
     ParticleStage,
     ParticleScriptCompiler,
@@ -30,7 +31,6 @@ from Infernux.particle import (
     ParticleArtifactRegistry,
     ParticleBurst,
     ParticleRuntimeMetadataError,
-    PointCache,
     SdfVolume,
     SimulationSpace,
     VectorField,
@@ -56,6 +56,516 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     assert "builtin.orientation" not in {
         attribute.stable_id for attribute in hir.emitters[0].attributes
     }
+
+
+def test_particle_exec_fan_out_is_preserved_in_hir_and_allows_disjoint_writes():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "move",
+                "particle.attribute.set_position",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+            GraphNodeRecord(
+                "grow",
+                "particle.attribute.set_size",
+                properties={"value": 2.0},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-move",
+                "root.update",
+                "out",
+                "move",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "exec-grow",
+                "root.update",
+                "out",
+                "grow",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    stage = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    ).emitters[0].update
+
+    assert {edge.link_uid for edge in stage.flow.edges} == {"exec-move", "exec-grow"}
+    root = next(block for block in stage.flow.blocks if block.node_uid == "root.update")
+    assert root.operation_index == -1
+    assert set(root.outgoing_edges) == {"exec-move", "exec-grow"}
+    assert [stage.operations[index].source_node_uid for index in stage.flow.operation_schedule] == [
+        "grow",
+        "move",
+    ]
+    assert len(stage.flow.lanes) == 3
+    branch_lanes = {
+        edge.link_uid: stage.flow.lanes[edge.lane_index].stable_id
+        for edge in stage.flow.edges
+    }
+    assert branch_lanes["exec-grow"] != branch_lanes["exec-move"]
+
+
+def test_particle_execution_lane_identity_ignores_link_order_and_link_uid():
+    nodes = (
+        GraphNodeRecord("root.update", "particle.root.update"),
+        GraphNodeRecord("move", "particle.attribute.set_position"),
+        GraphNodeRecord("grow", "particle.attribute.set_size"),
+    )
+
+    def compile_links(links):
+        asset = ParticleGraphAsset(
+            stable_id="stable-lane-asset",
+            emitters=(
+                ParticleEmitterAsset(
+                    stable_id="stable-lane-emitter",
+                    update=GraphDocument("particle.update", nodes=nodes, links=links),
+                ),
+            ),
+        )
+        program = ParticleGraphCompiler().compile(asset)
+        flow = program.emitters[0].update.flow
+        semantic_lanes = {
+            (
+                edge.source_node_uid,
+                edge.source_port_id,
+                edge.target_node_uid,
+                edge.target_port_id,
+            ): flow.lanes[edge.lane_index].stable_id
+            for edge in flow.edges
+        }
+        return program.behavior_hash, semantic_lanes
+
+    first = (
+        GraphLinkRecord("link-a", "root.update", "out", "move", "in", PortKind.STREAM),
+        GraphLinkRecord("link-b", "root.update", "out", "grow", "in", PortKind.STREAM),
+    )
+    reordered_and_renamed = (
+        GraphLinkRecord("unrelated-z", "root.update", "out", "grow", "in", PortKind.STREAM),
+        GraphLinkRecord("unrelated-y", "root.update", "out", "move", "in", PortKind.STREAM),
+    )
+
+    first_hash, first_lanes = compile_links(first)
+    second_hash, second_lanes = compile_links(reordered_and_renamed)
+
+    assert first_lanes == second_lanes
+    assert first_hash == second_hash
+
+
+def test_particle_exec_parallel_writes_require_explicit_order_or_merge():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("first", "particle.attribute.set_size"),
+            GraphNodeRecord("second", "particle.attribute.set_size"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-first",
+                "root.update",
+                "out",
+                "first",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "exec-second",
+                "root.update",
+                "out",
+                "second",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ParticleCompileError,
+        match="parallel particle Exec branches have an unordered state dependency.*builtin.size",
+    ):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+
+
+def test_particle_exec_parallel_read_write_dependency_requires_order_or_join():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("write-position", "particle.attribute.set_position"),
+            GraphNodeRecord(
+                "read-position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
+            GraphNodeRecord("accelerate", "particle.update.acceleration"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-write",
+                "root.update",
+                "out",
+                "write-position",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "exec-read",
+                "root.update",
+                "out",
+                "accelerate",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "value-read",
+                "read-position",
+                "value",
+                "accelerate",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ParticleCompileError,
+        match="unordered state dependency.*builtin.position",
+    ):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+
+
+def test_particle_exec_multiple_inputs_require_an_explicit_join():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("left", "particle.attribute.set_size"),
+            GraphNodeRecord("right", "particle.attribute.set_position"),
+            GraphNodeRecord("tail", "particle.update.kill_if"),
+        ),
+        links=(
+            GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.STREAM),
+            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.STREAM),
+            GraphLinkRecord("left-tail", "left", "out", "tail", "in", PortKind.STREAM),
+            GraphLinkRecord("right-tail", "right", "out", "tail", "in", PortKind.STREAM),
+        ),
+    )
+
+    with pytest.raises(ParticleCompileError, match="use an explicit Join All node"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+
+
+def test_particle_exec_join_all_continues_after_every_parallel_branch():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("left", "particle.attribute.set_size"),
+            GraphNodeRecord("right", "particle.attribute.set_position"),
+            GraphNodeRecord("join", "particle.control.join_all"),
+            GraphNodeRecord("tail", "particle.update.kill_if"),
+        ),
+        links=(
+            GraphLinkRecord("root-left", "root.update", "out", "left", "in", PortKind.STREAM),
+            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.STREAM),
+            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.STREAM),
+            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.STREAM),
+            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.STREAM),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    stage = program.emitters[0].update
+    schedule = [
+        stage.operations[index].source_node_uid
+        for index in stage.flow.operation_schedule
+    ]
+
+    assert schedule.index("join") > schedule.index("left")
+    assert schedule.index("join") > schedule.index("right")
+    assert schedule.index("tail") > schedule.index("join")
+    assert len(stage.flow.joins) == 1
+    join = stage.flow.joins[0]
+    assert join.node_uid == "join"
+    assert len(join.input_lane_indices) == 2
+    assert join.output_lane_index not in join.input_lane_indices
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    assert all(
+        instruction.source.node_uid != "join"
+        for instruction in kernel.instructions
+    )
+
+
+def test_particle_if_activates_only_the_selected_exec_branch():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("condition", "common.constant.bool", properties={"value": True}),
+            GraphNodeRecord("if", "particle.control.if"),
+            GraphNodeRecord("true-size", "particle.attribute.set_size", properties={"value": 2.0}),
+            GraphNodeRecord("false-size", "particle.attribute.set_size", properties={"value": 0.5}),
+        ),
+        links=(
+            GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.STREAM),
+            GraphLinkRecord("condition-if", "condition", "value", "if", "condition"),
+            GraphLinkRecord("if-true", "if", "true", "true-size", "in", PortKind.STREAM),
+            GraphLinkRecord("if-false", "if", "false", "false-size", "in", PortKind.STREAM),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    stage = program.emitters[0].update
+    by_uid = {operation.source_node_uid: operation for operation in stage.operations}
+
+    assert by_uid["if"].opcode == "control.if"
+    assert by_uid["true-size"].execution_predicates[0].expected is True
+    assert by_uid["false-size"].execution_predicates[0].expected is False
+    assert next(edge for edge in stage.flow.edges if edge.link_uid == "if-true").predicate_expected is True
+    assert next(edge for edge in stage.flow.edges if edge.link_uid == "if-false").predicate_expected is False
+
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    opcodes = [instruction.opcode for instruction in kernel.instructions]
+    assert opcodes.count("begin_if") == 2
+    assert opcodes.count("end_if") == 2
+    assert "logical_not" in opcodes
+
+
+def _collision_lifecycle_graph(stage: str, size: float):
+    operation_uid = f"{stage.removeprefix('collision_')}.size"
+    return GraphDocument(
+        f"particle.{stage}",
+        nodes=(
+            GraphNodeRecord(f"root.{stage}", f"particle.root.{stage}"),
+            GraphNodeRecord(
+                operation_uid,
+                "particle.attribute.set_size",
+                properties={"value": size},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                f"{stage}.exec",
+                f"root.{stage}",
+                "out",
+                operation_uid,
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+
+def _collision_lifecycle_stages():
+    return {
+        "collision_enter": _collision_lifecycle_graph("collision_enter", 2.0),
+        "collision_stay": _collision_lifecycle_graph("collision_stay", 3.0),
+        "collision_exit": _collision_lifecycle_graph("collision_exit", 1.0),
+    }
+
+
+def test_collision_lifecycle_roots_are_first_class_emitter_stages():
+    emitter = ParticleEmitterAsset(
+        settings=EmitterSettings(collision_enabled=True),
+        **_collision_lifecycle_stages(),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(emitter,))
+    )
+    hir = program.emitters[0]
+
+    assert hir.collision_enter.stage is ParticleStage.COLLISION_ENTER
+    assert hir.collision_stay.stage is ParticleStage.COLLISION_STAY
+    assert hir.collision_exit.stage is ParticleStage.COLLISION_EXIT
+    runtime_conditions = {
+        operation.source_node_uid: operation.execution_predicates[-1].runtime_condition
+        for stage in (hir.collision_enter, hir.collision_stay, hir.collision_exit)
+        if stage is not None
+        for operation in stage.operations
+    }
+    assert runtime_conditions == {
+        "enter.size": "collision_enter",
+        "stay.size": "collision_stay",
+        "exit.size": "collision_exit",
+    }
+
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    opcodes = [instruction.opcode for instruction in kernel.instructions]
+    assert opcodes.count("collide_scene") == 1
+    assert opcodes.count("begin_if") == 3
+    assert opcodes.count("end_if") == 3
+    assert "builtin.collision_active" in kernel.written_attributes
+
+
+def test_disabled_collision_keeps_authored_roots_dormant():
+    emitter = ParticleEmitterAsset(
+        settings=EmitterSettings(collision_enabled=False),
+        **_collision_lifecycle_stages(),
+    )
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(emitter,))
+    ).emitters[0]
+
+    assert hir.collision_enter is None
+    assert hir.collision_stay is None
+    assert hir.collision_exit is None
+    assert not any(
+        operation.source_node_uid.endswith(".size")
+        for operation in hir.update.operations
+    )
+    assert "builtin.collision_active" not in {
+        attribute.stable_id for attribute in hir.attributes
+    }
+
+
+def test_particle_script_collision_methods_compile_as_lifecycle_stages():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class CollisionGraph(ParticleScript):
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings(collision_enabled=True)
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def collision_enter(self, ctx, particles):
+            particles.set_size(2.0)
+
+        def collision_stay(self, ctx, particles):
+            particles.set_size(3.0)
+
+        def collision_exit(self, ctx, particles):
+            particles.set_size(1.0)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+
+    program = ParticleScriptCompiler().compile(
+        source, source_name="Collision.particle.py"
+    )
+
+    emitter = program.emitters[0]
+    assert emitter.collision_enter.stage is ParticleStage.COLLISION_ENTER
+    assert emitter.collision_stay.stage is ParticleStage.COLLISION_STAY
+    assert emitter.collision_exit.stage is ParticleStage.COLLISION_EXIT
+
+
+def test_particle_script_collision_methods_require_collision_setting():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class CollisionGraph(ParticleScript):
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def collision_enter(self, ctx, particles):
+            particles.set_size(2.0)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+
+    with pytest.raises(
+        ParticleScriptError,
+        match="collision lifecycle methods require",
+    ):
+        ParticleScriptCompiler().parse(
+            source, source_name="CollisionDisabled.particle.py"
+        )
+
+
+def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "wind",
+                "particle.parameter.get",
+                properties={"parameter": "wind"},
+            ),
+            GraphNodeRecord("accelerate", "particle.update.acceleration"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream",
+                "root.update",
+                "out",
+                "accelerate",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "wind-value",
+                "wind",
+                "value",
+                "accelerate",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    parameter = ParticleParameter(
+        "wind",
+        "Wind",
+        TypeRef(ValueType.VEC3),
+        [1.0, 0.0, 0.0],
+    )
+    asset = ParticleGraphAsset(
+        parameters=(parameter,),
+        emitters=(ParticleEmitterAsset(update=update),),
+    )
+
+    program = ParticleGraphCompiler().compile(asset)
+    kernel = ParticleKernelLowerer().lower(program)
+    changed = ParticleGraphCompiler().compile(
+        replace(asset, parameters=(replace(parameter, default=[3.0, 2.0, 1.0]),))
+    )
+
+    assert program.parameters[0].slot == 0
+    assert program.parameters[0].stable_id == "wind"
+    assert program.behavior_hash == changed.behavior_hash
+    assert program.semantic_hash != changed.semantic_hash
+    load = next(
+        instruction
+        for instruction in kernel.emitters[0].update.instructions
+        if instruction.opcode == "load_parameter"
+    )
+    assert load.result_type == TypeRef(ValueType.VEC3)
+    assert load.immediate_dict() == {"parameter": "wind"}
+    assert kernel.to_dict() == type(kernel).from_dict(kernel.to_dict()).to_dict()
 
 
 def test_particle_graph_rejects_removed_cpu_execution_target():
@@ -240,6 +750,94 @@ def test_particle_event_output_requires_a_matching_source_route(route, match):
         ParticleGraphCompiler().compile(asset)
 
 
+def test_collision_and_event_nodes_preserve_authored_exec_order():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("collision.first", "particle.update.collide_scene"),
+            GraphNodeRecord(
+                "event.output",
+                particle_event_output_type_id("route", "update"),
+                properties={"condition": True},
+            ),
+            GraphNodeRecord(
+                "size.after.collision",
+                "particle.attribute.set_size",
+                properties={"value": 2.0},
+            ),
+            GraphNodeRecord("collision.second", "particle.update.collide_scene"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "first",
+                "root.update",
+                "out",
+                "collision.first",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "event",
+                "collision.first",
+                "out",
+                "event.output",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "second",
+                "event.output",
+                "out",
+                "size.after.collision",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "third",
+                "size.after.collision",
+                "out",
+                "collision.second",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+    source = ParticleEmitterAsset(stable_id="source", update=update)
+    target = ParticleEmitterAsset(stable_id="target")
+    asset = ParticleGraphAsset(
+        emitters=(source, target),
+        event_types=(ParticleEventType("event", "Event", 16),),
+        event_routes=(
+            ParticleEventRoute("route", "event", "source", "update", "target"),
+        ),
+    )
+
+    hir = ParticleGraphCompiler().compile(asset)
+    assert [operation.opcode for operation in hir.emitters[0].update.operations] == [
+        "collision.scene",
+        "event.emit",
+        "attribute.set_size",
+        "collision.scene",
+    ]
+    kernel = ParticleKernelLowerer().lower(hir)
+    opcodes = [
+        instruction.opcode
+        for instruction in kernel.emitters[0].update.instructions
+    ]
+    first_collision = opcodes.index("collide_scene")
+    event = opcodes.index("event_append")
+    size_write = next(
+        index
+        for index, instruction in enumerate(kernel.emitters[0].update.instructions)
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.size"
+        and instruction.source.node_uid == "size.after.collision"
+    )
+    second_collision = opcodes.index("collide_scene", first_collision + 1)
+    assert first_collision < event < size_write < second_collision
+
+
 def test_particle_event_schema_fingerprint_invalidates_stage_expression_programs():
     source = ParticleEmitterAsset(
         stable_id="source",
@@ -365,13 +963,6 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
                 filtering="linear",
                 vector_scale=2.5,
             ),
-            PointCache(
-                stable_id="morph-points",
-                name="Morph Points",
-                cache=AssetReference(path_hint="Assets/Caches/Face.pointcache"),
-                space="emitter_local",
-                id_channel="stable_id",
-            ),
             SdfVolume(
                 stable_id="collision-field",
                 name="Collision",
@@ -388,7 +979,6 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
     assert restored == asset
     assert [interface.stable_id for interface in hir.emitters[0].data_interfaces] == [
         "wind-field",
-        "morph-points",
         "collision-field",
     ]
     assert hir.emitters[0].data_interfaces[0].boundary.value == "repeat"
@@ -397,7 +987,7 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
         ParticleEmitterAsset(
             data_interfaces=(
                 VectorField(stable_id="duplicate"),
-                PointCache(stable_id="duplicate"),
+                SdfVolume(stable_id="duplicate"),
             )
         )
 
@@ -822,10 +1412,14 @@ def test_particle_update_can_author_color_and_size_over_lifetime():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("set-color", "particle.attribute.set_color"),
             GraphNodeRecord("set-size", "particle.attribute.set_size"),
-            GraphNodeRecord("age", "particle.attribute.read_f32"),
+            GraphNodeRecord(
+                "age",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.age"},
+            ),
             GraphNodeRecord(
                 "lifetime",
-                "particle.attribute.read_f32",
+                "particle.attribute.get",
                 properties={"attribute": "builtin.lifetime"},
             ),
             GraphNodeRecord("normalized-age", "common.math.divide"),
@@ -1040,7 +1634,7 @@ class MeshShapeGraph(ParticleScript):
 
 
 PARTICLE_SCRIPT_SOURCE = '''\
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, PointCache
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField
 
 class SmokeGraph(ParticleScript):
     stable_id = "smoke-graph"
@@ -1065,13 +1659,6 @@ class SmokeGraph(ParticleScript):
                 texture=AssetReference(path_hint="Assets/Fields/Wind.vectorfield"),
                 space="world",
                 boundary="repeat",
-            ),
-            PointCache(
-                stable_id="morph-points",
-                name="Morph Points",
-                cache=AssetReference(path_hint="Assets/Caches/Face.pointcache"),
-                space="emitter_local",
-                id_channel="stable_id",
             ),
         )
 
@@ -1134,9 +1721,139 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert emitter.render_plan.outputs[0].sprite_alignment == "velocity"
     assert [interface.stable_id for interface in emitter.data_interfaces] == [
         "wind-field",
-        "morph-points",
     ]
     assert program.behavior_hash == ParticleGraphCompiler().compile(asset).behavior_hash
+
+
+def test_particle_script_parameters_share_graph_hir_and_gpu_abi():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings, Parameter
+
+class ParameterGraph(ParticleScript):
+    stable_id = "parameter-graph"
+    parameters = (
+        Parameter(
+            "wind-id",
+            "Wind",
+            "vec3",
+            (1.0, 2.0, 3.0),
+            category="Motion",
+            tooltip="World-space wind velocity",
+        ),
+    )
+
+    class Smoke(ParticleEmitter):
+        stable_id = "smoke"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_velocity(ctx.parameter("Wind"))
+
+        def update(self, ctx, particles):
+            particles.acceleration(ctx.parameter("wind-id"))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="Parameters.particle.py")
+    program = compiler.compile(source, source_name="Parameters.particle.py")
+    graph_program = ParticleGraphCompiler().compile(asset)
+    kernel = ParticleKernelLowerer().lower(program)
+
+    assert asset.parameters == (
+        ParticleParameter(
+            "wind-id",
+            "Wind",
+            TypeRef(ValueType.VEC3),
+            [1.0, 2.0, 3.0],
+            category="Motion",
+            tooltip="World-space wind velocity",
+        ),
+    )
+    assert program.behavior_hash == graph_program.behavior_hash
+    assert program.parameters[0].stable_id == "wind-id"
+    assert program.parameters[0].slot == 0
+    assert kernel.parameters[0].stable_id == "wind-id"
+    assert any(
+        instruction.opcode == "load_parameter"
+        and instruction.immediate_dict()["parameter"] == "wind-id"
+        for stage in (program.emitters[0].init, program.emitters[0].update)
+        for instruction in stage.expressions.instructions
+    )
+
+
+def test_particle_script_rejects_unknown_parameter_reads():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class InvalidParameterGraph(ParticleScript):
+    class Smoke(ParticleEmitter):
+        stable_id = "smoke"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_velocity(ctx.parameter("missing"))
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    with pytest.raises(ParticleScriptError, match="unknown particle parameter 'missing'"):
+        ParticleScriptCompiler().parse(source, source_name="InvalidParameter.particle.py")
+
+
+def test_particle_script_texture2d_sample_shares_graph_hir_and_gpu_resource_abi():
+    source = '''\
+from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, Parameter
+
+class TextureParameterGraph(ParticleScript):
+    stable_id = "texture-parameter-graph"
+    parameters = (
+        Parameter(
+            "texture-id",
+            "Particle Texture",
+            "texture2d",
+            AssetReference(path_hint="Assets/Smoke.tga"),
+        ),
+        Parameter("uv-id", "Sample UV", "vec2", (0.5, 0.5)),
+    )
+
+    class Smoke(ParticleEmitter):
+        stable_id = "smoke"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_color(ctx.sample_texture2d(
+                ctx.parameter("Particle Texture"),
+                ctx.parameter("Sample UV"),
+            ))
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="TextureParameter.particle.py")
+    program = compiler.compile(source, source_name="TextureParameter.particle.py")
+    kernel = ParticleKernelLowerer().lower(program)
+
+    assert asset.parameters[0].value_type == TypeRef(ValueType.TEXTURE2D)
+    assert asset.parameters[0].default == {
+        "guid": "",
+        "path_hint": "Assets/Smoke.tga",
+    }
+    sample = next(
+        instruction
+        for instruction in kernel.emitters[0].init.instructions
+        if instruction.opcode == "sample_texture2d"
+    )
+    assert len(sample.operands) == 2
+    assert sample.result_type == TypeRef(ValueType.COLOR)
 
 
 PARTICLE_SCRIPT_EVENT_SOURCE = '''\
@@ -1487,6 +2204,177 @@ class CollisionGraph(ParticleScript):
     assert emitter == ParticleGraphCompiler().compile(asset).emitters[0]
 
 
+def test_scene_collision_graph_and_script_share_gpu_scene_contract():
+    source = '''
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class CollisionGraph(ParticleScript):
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings(capacity=1024)
+
+        def init(self, ctx, particles):
+            particles.set_velocity((0.0, 0.0, 0.0))
+
+        def update(self, ctx, particles):
+            particles.collide_scene(
+                particle_radius=0.15,
+                layer_mask=5,
+                include_triggers=True,
+                restitution_scale=0.8,
+                friction_scale=0.6,
+            )
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="SceneCollision.particle.py")
+    emitter = compiler.compile(
+        source, source_name="SceneCollision.particle.py"
+    ).emitters[0]
+
+    assert emitter.update.operations[-1].opcode == "collision.scene"
+    assert emitter.update.operations[-1].parameter_dict() == {
+        "friction_scale": 0.6,
+        "include_triggers": True,
+        "layer_mask": 5,
+        "particle_radius": 0.15,
+        "restitution_scale": 0.8,
+    }
+    assert emitter == ParticleGraphCompiler().compile(asset).emitters[0]
+
+
+def test_particle_script_scene_collision_events_read_current_hit_and_normal():
+    source = '''
+from Infernux.particle import (
+    ParticleScript, ParticleEmitter, EmitterSettings,
+    EventField, EventType, EventRoute,
+)
+
+class CollisionEvents(ParticleScript):
+    event_types = (
+        EventType(
+            stable_id="impact",
+            name="Impact",
+            capacity_per_step=64,
+            fields=(
+                EventField(
+                    "normal", "Normal", "vec3", (0.0, 1.0, 0.0),
+                    space="simulation",
+                ),
+            ),
+        ),
+    )
+    event_routes = (
+        EventRoute(
+            stable_id="impact-route",
+            event_type_id="impact",
+            source_emitter_id="source",
+            source_stage="update",
+            target_emitter_id="target",
+        ),
+    )
+
+    class Source(ParticleEmitter):
+        stable_id = "source"
+        settings = EmitterSettings(capacity=1024)
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            particles.collide_scene()
+            particles.emit_event(
+                route="impact-route",
+                condition=particles.collision_hit,
+                payload={"normal": particles.collision_normal},
+            )
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+
+    class Target(ParticleEmitter):
+        stable_id = "target"
+        settings = EmitterSettings(capacity=1024)
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    program = ParticleScriptCompiler().compile(
+        source, source_name="CollisionEvents.particle.py"
+    )
+    assert [operation.opcode for operation in program.emitters[0].update.operations] == [
+        "collision.scene",
+        "event.emit",
+    ]
+
+    kernel = ParticleKernelLowerer().lower(program)
+    instructions = kernel.emitters[0].update.instructions
+    collision_index = next(
+        index for index, instruction in enumerate(instructions)
+        if instruction.opcode == "collide_scene"
+    )
+    event_index = next(
+        index for index, instruction in enumerate(instructions)
+        if instruction.opcode == "event_append"
+    )
+    collision = instructions[collision_index]
+    assert collision.immediate_dict()["hit_attribute"] == "builtin.collision_hit"
+    assert collision.immediate_dict()["normal_attribute"] == "builtin.collision_normal"
+    assert any(
+        collision_index < index < event_index
+        and instruction.opcode == "load_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.collision_hit"
+        for index, instruction in enumerate(instructions)
+    )
+    assert any(
+        collision_index < index < event_index
+        and instruction.opcode == "load_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.collision_normal"
+        for index, instruction in enumerate(instructions)
+    )
+
+
+@pytest.mark.parametrize(
+    "properties, message",
+    [
+        ({"particle_radius": -0.1}, "particle_radius must be non-negative"),
+        ({"layer_mask": -1}, "layer_mask must be non-negative"),
+        ({"include_triggers": 1}, "include_triggers must be a bool"),
+        ({"restitution_scale": -0.1}, "restitution_scale must be finite and non-negative"),
+        ({"friction_scale": -0.1}, "friction_scale must be finite and non-negative"),
+    ],
+)
+def test_scene_collision_rejects_invalid_static_parameters(properties, message):
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "collision",
+                "particle.update.collide_scene",
+                properties=properties,
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.STREAM
+            ),
+        ),
+    )
+    with pytest.raises(ParticleCompileError, match=message):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+
+
 def test_sdf_collision_graph_and_script_share_typed_data_interface_contract():
     source = '''
 from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
@@ -1609,7 +2497,7 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
 
     assert [node.type_id for node in update.nodes] == [
         "particle.root.update",
-        "particle.attribute.read_vec3",
+        "particle.attribute.get",
         "particle.vector_field.sample",
         "particle.update.acceleration",
         "particle.update.rotate",
@@ -1631,100 +2519,12 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
     assert sample.immediate_dict() == {"interface": "wind-field"}
 
 
-def test_particle_script_point_cache_expression_matches_graph_kernel_contract():
-    source = PARTICLE_SCRIPT_SOURCE.replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
-        '''particles.set_position(ctx.sample_point_cache(
-                "morph-points", particles.id, lookup="stable_id"
-            ))
-            particles.set_color(ctx.sample_point_cache(
-                "morph-points", particles.id,
-                channel="$color", value_type="color", lookup="stable_id",
-            ))
-            particles.acceleration(ctx.sample_point_cache(
-                "morph-points", particles.id,
-                channel="FlowVector", value_type="vector3",
-                lookup="stable_id", semantic="vector",
-            ))''',
-    )
-    asset = ParticleScriptCompiler().parse(
-        source, source_name="PointCache.particle.py"
-    )
-    update = asset.emitters[0].update
-
-    assert [
-        node.type_id
-        for node in update.nodes
-        if node.type_id.startswith("particle.point_cache.sample_")
-    ] == [
-        "particle.point_cache.sample_position",
-        "particle.point_cache.sample_color",
-        "particle.point_cache.sample_vector",
-    ]
-    id_reads = [
-        node
-        for node in update.nodes
-        if node.type_id == "particle.attribute.read_u32"
-    ]
-    assert len(id_reads) == 3
-    assert all(node.properties == {"attribute": "builtin.id"} for node in id_reads)
-
-    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
-    samples = [
-        instruction.immediate_dict()
-        for instruction in kernel.emitters[0].update.instructions
-        if instruction.opcode == "sample_point_cache"
-    ]
-    assert samples == [
-        {
-            "interface": "morph-points",
-            "channel": "$position",
-            "lookup": "stable_id",
-            "semantic": "position",
-        },
-        {
-            "interface": "morph-points",
-            "channel": "$color",
-            "lookup": "stable_id",
-            "semantic": "raw",
-        },
-        {
-            "interface": "morph-points",
-            "channel": "FlowVector",
-            "lookup": "stable_id",
-            "semantic": "vector",
-        },
-    ]
-
-
-@pytest.mark.parametrize(
-    ("arguments", "message"),
-    [
-        ('"morph-points", particles.id, lookup="random"', "lookup must be"),
-        ('"morph-points", particles.id, value_type="matrix"', "value_type must be"),
-        (
-            '"morph-points", particles.id, value_type="color", semantic="normal"',
-            "transformed point cache samples require",
-        ),
-        ('"morph-points"', "requires an interface name and one index"),
-    ],
-)
-def test_particle_script_point_cache_rejects_ambiguous_authoring(arguments, message):
-    source = PARTICLE_SCRIPT_SOURCE.replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
-        f"particles.set_velocity(ctx.sample_point_cache({arguments}))",
-    )
-
-    with pytest.raises(ParticleScriptError, match=message):
-        ParticleScriptCompiler().parse(
-            source, source_name="InvalidPointCache.particle.py"
-        )
 
 
 def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, PointCache",
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, PointCache, Curve, CurveKey, Gradient, GradientKey",
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField",
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, Curve, CurveKey, Gradient, GradientKey",
     ).replace(
         "particles.acceleration((0.0, -0.2, 0.0))",
         """particles.set_size(ctx.sample_curve(
@@ -1761,6 +2561,35 @@ def test_particle_script_comparisons_and_kill_if_lower_to_composable_lifecycle_o
     assert any(node.type_id == "particle.update.kill_if" for node in update.nodes)
     assert "greater_equal" in opcodes
     assert opcodes.count("kill_if") == 2
+
+
+def test_particle_script_boolean_primitives_lower_to_common_graph_ops():
+    source = PARTICLE_SCRIPT_SOURCE.replace(
+        "particles.acceleration((0.0, -0.2, 0.0))",
+        "particles.kill_if(not ((particles.age == 0.5) or (particles.lifetime != 1.0 and False)))",
+    )
+
+    asset = ParticleScriptCompiler().parse(source, source_name="Boolean.particle.py")
+    update = asset.emitters[0].update
+    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    node_types = {node.type_id for node in update.nodes}
+    opcodes = {instruction.opcode for instruction in kernel.emitters[0].update.instructions}
+
+    assert {
+        "common.constant.bool",
+        "common.compare.equal",
+        "common.compare.not_equal",
+        "common.logic.and",
+        "common.logic.or",
+        "common.logic.not",
+    } <= node_types
+    assert {
+        "equal",
+        "not_equal",
+        "logical_and",
+        "logical_or",
+        "logical_not",
+    } <= opcodes
 
 
 def test_particle_script_noise_compiles_to_the_shared_portable_kernel_ops():
@@ -1889,7 +2718,7 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert [
         value["stable_id"]
         for value in graph_artifact.gpu_glsl["emitters"][0]["data_interfaces"]
-    ] == ["morph-points", "wind-field"]
+    ] == ["wind-field"]
     assert set(graph_artifact.gpu_glsl["emitters"][0]["stages"]) == {
         "bootstrap",
         "init",
@@ -1904,10 +2733,20 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
         graph_artifact.gpu_glsl["emitters"][0]["stages"]
     )
     assert set(graph_artifact.gpu_spirv["billboard"]) == {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+        "vertex",
+        "fragment",
+        "forward_plus_fragment",
+        "picking_fragment",
+        "motion_vertex",
+        "motion_fragment",
     }
     assert set(graph_artifact.gpu_spirv["mesh"]) == {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+        "vertex",
+        "fragment",
+        "forward_plus_fragment",
+        "picking_fragment",
+        "motion_vertex",
+        "motion_fragment",
     }
     from Infernux.particle import decode_gpu_particle_spirv
 
@@ -1915,10 +2754,20 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert decoded["stable_id"] == "smoke"
     assert set(decoded["stages"]) == set(graph_artifact.gpu_glsl["emitters"][0]["stages"])
     assert set(decoded["billboard"]) == {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+        "vertex",
+        "fragment",
+        "forward_plus_fragment",
+        "picking_fragment",
+        "motion_vertex",
+        "motion_fragment",
     }
     assert set(decoded["mesh"]) == {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+        "vertex",
+        "fragment",
+        "forward_plus_fragment",
+        "picking_fragment",
+        "motion_vertex",
+        "motion_fragment",
     }
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["stages"].values())
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["billboard"].values())
@@ -2050,3 +2899,40 @@ def test_particle_aot_rebuilds_persisted_artifact_with_stale_hir_contract(
     ][0]["render_plan"][0]
     assert persisted_output["soft_particles"] is False
     assert persisted_output["soft_distance"] == 1.0
+
+
+def test_particle_aot_rebuilds_persisted_artifact_with_stale_gpu_layout(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "Smoke.particlegraph"
+    source.parent.mkdir(parents=True)
+    graph = ParticleGraphAsset(stable_id="stale-gpu-layout-smoke")
+    source.write_text(
+        json.dumps(graph.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "Infernux.engine.project_context.get_project_root", lambda: str(project)
+    )
+
+    ParticleArtifactRegistry.clear()
+    current = ParticleArtifactRegistry.compile_path(str(source))
+    artifact_path = Path(current.artifact_path)
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    layout = payload["gpu_glsl"]["emitters"][0]["data_interface_layout"]
+    layout["obsolete_interface_table"] = []
+    artifact_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    ParticleArtifactRegistry.clear()
+    rebuilt = ParticleArtifactRegistry.compile_path(str(source))
+
+    rebuilt_layout = rebuilt.gpu_glsl["emitters"][0]["data_interface_layout"]
+    assert "obsolete_interface_table" not in rebuilt_layout
+    persisted_layout = json.loads(artifact_path.read_text(encoding="utf-8"))["gpu_glsl"][
+        "emitters"
+    ][0]["data_interface_layout"]
+    assert "obsolete_interface_table" not in persisted_layout

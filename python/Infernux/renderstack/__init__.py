@@ -72,6 +72,7 @@ from Infernux.renderstack.vignette_effect import VignetteEffect
 from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
 from Infernux.renderstack.chromatic_aberration_effect import ChromaticAberrationEffect
 from Infernux.renderstack.film_grain_effect import FilmGrainEffect
+from Infernux.renderstack.motion_blur_effect import MotionBlurEffect
 from Infernux.renderstack.white_balance_effect import WhiteBalanceEffect
 from Infernux.renderstack.sharpen_effect import SharpenEffect
 from Infernux.renderstack.render_stack import RenderStack
@@ -131,6 +132,7 @@ __all__ = [
     "ColorAdjustmentsEffect",
     "ChromaticAberrationEffect",
     "FilmGrainEffect",
+    "MotionBlurEffect",
     "WhiteBalanceEffect",
     "SharpenEffect",
     # Discovery

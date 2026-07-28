@@ -37,6 +37,50 @@ class _ToolbarContext:
         pass
 
     @staticmethod
+    def get_content_region_avail_width() -> float:
+        return 320.0
+
+    @staticmethod
+    def get_cursor_pos_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def set_cursor_pos_x(_value: float) -> None:
+        pass
+
+    @staticmethod
+    def push_style_var_vec2(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_var(*_args) -> None:
+        pass
+
+    @staticmethod
+    def get_item_rect_min_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_min_y() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_max_x() -> float:
+        return 22.0
+
+    @staticmethod
+    def get_item_rect_max_y() -> float:
+        return 22.0
+
+    @staticmethod
+    def draw_image_rect(*_args) -> None:
+        pass
+
+    @staticmethod
+    def draw_text_aligned(*_args) -> None:
+        pass
+
+    @staticmethod
     def label(_text: str) -> None:
         pass
 
@@ -187,6 +231,38 @@ class _TransitionDetailContext:
         pass
 
     @staticmethod
+    def push_style_var_vec2(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_var(*_args) -> None:
+        pass
+
+    @staticmethod
+    def get_item_rect_min_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_min_y() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_item_rect_max_x() -> float:
+        return 22.0
+
+    @staticmethod
+    def get_item_rect_max_y() -> float:
+        return 22.0
+
+    @staticmethod
+    def draw_image_rect(*_args) -> None:
+        pass
+
+    @staticmethod
+    def draw_text_aligned(*_args) -> None:
+        pass
+
+    @staticmethod
     def label(*_args) -> None:
         pass
 
@@ -270,6 +346,7 @@ def test_animfsm_parameter_add_exposes_stable_semantic_id():
     panel._fsm = AnimStateMachine(name="Locomotion")
     panel._graph = SimpleNamespace(find_node=lambda _uid: None)
     panel._selected_uid = ""
+    panel._selected_parameter_index = -1
     ctx = _ToolbarContext()
     ctx.push_style_color = lambda *_args: None
     ctx.pop_style_color = lambda *_args: None
@@ -400,6 +477,69 @@ def test_node_graph_inline_enum_records_combo_semantics():
             {"string_value": "camera_plane"},
         )
     ]
+
+
+def test_node_graph_inline_u32_accepts_full_unsigned_range():
+    class _InlineUIntContext:
+        def __init__(self) -> None:
+            self.received = None
+
+        @staticmethod
+        def set_cursor_pos_x(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def set_cursor_pos_y(_value: float) -> None:
+            pass
+
+        @staticmethod
+        def push_id_str(_value: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_id() -> None:
+            pass
+
+        @staticmethod
+        def set_next_item_width(_value: float) -> None:
+            pass
+
+        def input_uint(self, _label: str, value: int) -> int:
+            self.received = value
+            return value
+
+        @staticmethod
+        def is_item_hovered() -> bool:
+            return False
+
+        @staticmethod
+        def is_item_active() -> bool:
+            return False
+
+        @staticmethod
+        def record_semantic_item(*_args, **_kwargs) -> None:
+            pass
+
+    node = SimpleNamespace(uid="collision", data={"layer_mask": 0xFFFFFFFF})
+    layout = SimpleNamespace(node=node, sx=0.0, w=200.0)
+    field = SimpleNamespace(
+        id="layer_mask",
+        default=0xFFFFFFFF,
+        label="Layer Mask",
+        data_type="u32",
+        enum_values=(),
+    )
+    view = NodeGraphView()
+    view._origin_x = 0.0
+    view._origin_y = 0.0
+    view.zoom = 1.0
+    view._semantic_capture_active = True
+    ctx = _InlineUIntContext()
+
+    view._draw_inline_field(ctx, layout, field, 40.0)
+
+    assert ctx.received == 0xFFFFFFFF
+    assert node.data["layer_mask"] == 0xFFFFFFFF
 
 
 def test_particle_sprite_canvas_preserves_enum_and_conditional_field_metadata():
@@ -800,8 +940,8 @@ def test_node_graph_exports_input_and_output_ports_as_semantic_rects():
         "animfsm.graph.port.state-uid.input.in",
         "animfsm.graph.port.state-uid.output.out",
     ]
-    assert recorded[0][2:6] == (9.0, 19.0, 22.0, 22.0)
-    assert recorded[1][2:6] == (109.0, 19.0, 22.0, 22.0)
+    assert recorded[0][2:6] == (8.0, 18.0, 24.0, 24.0)
+    assert recorded[1][2:6] == (108.0, 18.0, 24.0, 24.0)
 
 
 def test_node_graph_exports_link_hit_point_as_semantic_rect():

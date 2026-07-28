@@ -77,7 +77,7 @@ def test_common_add_normalize_random_compile_to_typed_expression_ir():
     assert dict(program.outputs)["normal.result"].value_type is ValueType.VEC3
 
 
-def test_common_expression_compiler_rejects_shape_mismatch():
+def test_common_expression_compiler_promotes_numeric_inputs_to_largest_shape():
     document = GraphDocument(
         "particle.expression",
         nodes=(
@@ -91,8 +91,88 @@ def test_common_expression_compiler_rejects_shape_mismatch():
         ),
     )
 
-    with pytest.raises(ExpressionCompileError, match="matching shapes"):
-        ExpressionCompiler().compile(document, outputs=(("add", "result"),))
+    program = ExpressionCompiler().compile(document, outputs=(("add", "result"),))
+
+    resize = next(
+        instruction
+        for instruction in program.instructions
+        if instruction.opcode == "numeric_resize"
+    )
+    add = next(
+        instruction for instruction in program.instructions if instruction.opcode == "add"
+    )
+    assert resize.result_type == TypeRef(ValueType.VEC3)
+    assert resize.operands[0].value_type == TypeRef(ValueType.F32)
+    assert add.result_type == TypeRef(ValueType.VEC3)
+    assert all(operand.value_type == TypeRef(ValueType.VEC3) for operand in add.operands)
+
+
+def test_boolean_constants_comparisons_and_logic_compile_to_typed_expression_ir():
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord("one", "common.constant.f32", properties={"value": 1.0}),
+            GraphNodeRecord("two", "common.constant.f32", properties={"value": 2.0}),
+            GraphNodeRecord("truth", "common.constant.bool", properties={"value": True}),
+            GraphNodeRecord("equal", "common.compare.equal"),
+            GraphNodeRecord("not-equal", "common.compare.not_equal"),
+            GraphNodeRecord("and", "common.logic.and"),
+            GraphNodeRecord("or", "common.logic.or"),
+            GraphNodeRecord("not", "common.logic.not"),
+        ),
+        links=(
+            GraphLinkRecord("one-equal-a", "one", "value", "equal", "a"),
+            GraphLinkRecord("two-equal-b", "two", "value", "equal", "b"),
+            GraphLinkRecord("one-ne-a", "one", "value", "not-equal", "a"),
+            GraphLinkRecord("two-ne-b", "two", "value", "not-equal", "b"),
+            GraphLinkRecord("equal-and-a", "equal", "result", "and", "a"),
+            GraphLinkRecord("truth-and-b", "truth", "value", "and", "b"),
+            GraphLinkRecord("and-or-a", "and", "result", "or", "a"),
+            GraphLinkRecord("ne-or-b", "not-equal", "result", "or", "b"),
+            GraphLinkRecord("or-not", "or", "result", "not", "value"),
+        ),
+    )
+
+    program = ExpressionCompiler().compile(document, outputs=(("not", "result"),))
+
+    assert program.outputs[-1][1] == TypeRef(ValueType.BOOL)
+    assert {instruction.opcode for instruction in program.instructions} >= {
+        "equal",
+        "not_equal",
+        "logical_and",
+        "logical_or",
+        "logical_not",
+    }
+
+
+def test_vector_split_exposes_independent_scalar_components():
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord(
+                "vector",
+                "common.constant.vec3",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+            GraphNodeRecord("split", "common.vector.split3"),
+        ),
+        links=(
+            GraphLinkRecord("vector-split", "vector", "value", "split", "value"),
+        ),
+    )
+
+    program = ExpressionCompiler().compile(
+        document,
+        outputs=(("split", "x"), ("split", "y"), ("split", "z")),
+    )
+
+    splits = [
+        instruction
+        for instruction in program.instructions
+        if instruction.opcode == "split_component"
+    ]
+    assert [item.immediate_dict()["component"] for item in splits] == [0, 1, 2]
+    assert all(item.result_type == TypeRef(ValueType.F32) for item in splits)
 
 
 def test_numeric_space_inherits_from_spatial_operand_but_rejects_mixed_spaces():
@@ -244,3 +324,69 @@ def test_shared_noise_nodes_preserve_vector_space_and_require_coordinates():
     )
     with pytest.raises(ExpressionCompileError, match="required input"):
         ExpressionCompiler().compile(missing, outputs=(("noise", "value"),))
+
+
+def test_fixed_noise_coordinate_truncates_but_frequency_remains_scalar():
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord(
+                "position",
+                "common.vector.compose4",
+                properties={"x": 1.0, "y": 2.0, "z": 3.0, "w": 4.0},
+            ),
+            GraphNodeRecord(
+                "frequency", "common.constant.f32", properties={"value": 2.5}
+            ),
+            GraphNodeRecord("noise", "common.noise.value3d"),
+        ),
+        links=(
+            GraphLinkRecord("position-link", "position", "value", "noise", "position"),
+            GraphLinkRecord("frequency-link", "frequency", "value", "noise", "frequency"),
+        ),
+    )
+
+    program = ExpressionCompiler().compile(document, outputs=(("noise", "value"),))
+    resize = next(
+        instruction
+        for instruction in program.instructions
+        if instruction.opcode == "numeric_resize"
+    )
+    noise = next(
+        instruction
+        for instruction in program.instructions
+        if instruction.opcode == "value_noise_3d"
+    )
+
+    assert resize.operands[0].value_type == TypeRef(ValueType.VEC4)
+    assert resize.result_type == TypeRef(ValueType.VEC3)
+    assert noise.operands[0].value_type == TypeRef(ValueType.VEC3)
+    assert noise.operands[1].value_type == TypeRef(ValueType.F32)
+    assert noise.operands[1].value_id == "frequency.value"
+
+
+def test_vector_compose_nodes_expose_independent_component_inputs():
+    document = GraphDocument(
+        "particle.expression",
+        nodes=(
+            GraphNodeRecord("x", "common.constant.f32", properties={"value": 1.0}),
+            GraphNodeRecord("vector", "common.vector.compose3", properties={"y": 2.0, "z": 3.0}),
+        ),
+        links=(GraphLinkRecord("x-link", "x", "value", "vector", "x"),),
+    )
+
+    program = ExpressionCompiler().compile(document, outputs=(("vector", "value"),))
+    compose = next(
+        instruction
+        for instruction in program.instructions
+        if instruction.opcode == "compose_vec3"
+    )
+
+    assert compose.result_type == TypeRef(ValueType.VEC3)
+    assert [operand.value_type for operand in compose.operands] == [
+        TypeRef(ValueType.F32),
+        TypeRef(ValueType.F32),
+        TypeRef(ValueType.F32),
+    ]
+    assert compose.operands[0].value_id == "x.value"
+    assert [operand.literal for operand in compose.operands[1:]] == [2.0, 3.0]

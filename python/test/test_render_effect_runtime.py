@@ -619,6 +619,77 @@ def test_render_stack_batches_only_changed_effect_parameters_without_rebuild():
     assert any(dict(update.values).get("exposure") == 2.0 for update in updates)
 
 
+def test_motion_blur_consumes_color_depth_and_resolved_motion():
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.motion_blur",
+            parameters={
+                "intensity": 1.25,
+                "max_blur_pixels": 48.0,
+                "depth_rejection": 2.0,
+            },
+        )
+    )
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+
+    description = stack.build_graph()
+    motion_blur = next(
+        render_pass
+        for render_pass in description.passes
+        if render_pass.name.endswith("MotionBlur_Apply")
+    )
+    command = motion_blur.commands[0]
+    bindings = dict(command.input_bindings)
+    constants = dict(command.push_constants)
+
+    assert command.shader_name == "Motion Blur"
+    assert bindings["_SourceTex"]
+    assert bindings["_DepthTex"] == "depth"
+    assert bindings["_MotionTex"] == "motion"
+    assert set(motion_blur.read_textures) >= {
+        bindings["_SourceTex"],
+        "depth",
+        "motion",
+    }
+    assert constants == {
+        "intensity": pytest.approx(1.25),
+        "maxBlurPixels": pytest.approx(48.0),
+        "depthRejection": pytest.approx(2.0),
+        "_pad0": pytest.approx(0.0),
+    }
+    assert stack.effect_compile_errors == ()
+
+
+def test_motion_blur_parameters_update_without_graph_rebuild():
+    effect = RenderEffect(
+        RenderEffectAsset(
+            feature_type="infernux.post.motion_blur",
+            parameters={
+                "intensity": 1.0,
+                "max_blur_pixels": 32.0,
+                "depth_rejection": 1.0,
+            },
+        )
+    )
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+    stack._graph_desc = stack.build_graph()
+
+    class Context:
+        graph_instance_id = 29
+
+    assert stack._collect_effect_parameter_updates(Context())[0] is False
+    effect.set_float("max_blur_pixels", 64.0)
+    requires_rebuild, updates = stack._collect_effect_parameter_updates(Context())
+
+    assert requires_rebuild is False
+    assert any(
+        dict(update.values).get("maxBlurPixels") == pytest.approx(64.0)
+        for update in updates
+    )
+
+
 def test_render_stack_rebuilds_when_effect_topology_parameter_changes():
     effect = RenderEffect(
         RenderEffectAsset(

@@ -10,6 +10,10 @@ from .inspector_utils import (
     max_label_w,
     field_label,
     float_close as _float_close,
+    has_field_changed,
+    render_compact_section_header,
+    render_compact_section_title,
+    render_serialized_field,
     semantic_capture_enabled,
     inspector_component_semantic_id,
 )
@@ -19,8 +23,208 @@ from ._inspector_undo import (
     _record_generic_component,
 )
 from ._inspector_references import (
-    _picker_assets, render_object_field,
+    _picker_assets, _portable_asset_path_hint, render_object_field,
 )
+
+
+def _particle_parameter_ui_value(kind: str, value):
+    """Adapt ParticleGraph storage values to the Inspector's native vectors."""
+    if kind == "vec2":
+        from Infernux.lib import Vector2
+        return Vector2(float(value[0]), float(value[1]))
+    if kind == "vec3":
+        from Infernux.lib import Vector3
+        return Vector3(float(value[0]), float(value[1]), float(value[2]))
+    if kind == "vec4":
+        from Infernux.lib import vec4f
+        return vec4f(
+            float(value[0]),
+            float(value[1]),
+            float(value[2]),
+            float(value[3]),
+        )
+    return value
+
+
+def _particle_parameter_storage_value(kind: str, value):
+    """Adapt Inspector vector results back to the ParticleGraph JSON contract."""
+    if kind == "vec2":
+        return [float(value.x), float(value.y)]
+    if kind == "vec3":
+        return [float(value.x), float(value.y), float(value.z)]
+    if kind == "vec4":
+        return [float(value.x), float(value.y), float(value.z), float(value.w)]
+    return value
+
+
+def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
+    """Render emitter playback and graph parameters as instance overrides."""
+    from Infernux.components.serialized_field import FieldMetadata, FieldType
+    from Infernux.core.asset_types import IMAGE_EXTENSIONS
+
+    emitter_schema = getattr(comp, "emitter_instance_schema", None)
+    emitters = emitter_schema() if callable(emitter_schema) else []
+    if emitters:
+        ctx.separator()
+        emitter_header = (
+            f"{t('particle_graph_editor.emitters')}"
+            f"##particle_system_emitters_{getattr(comp, 'component_id', id(comp))}"
+        )
+        if render_compact_section_header(ctx, emitter_header, level="secondary"):
+            lw = max_label_w(
+                ctx,
+                [
+                    t("particle_graph_editor.enabled"),
+                    t("particle_graph_editor.play_on_start"),
+                ],
+            )
+            for emitter in emitters:
+                stable_id = str(emitter["stable_id"])
+                render_compact_section_title(ctx, str(emitter["name"]), level="secondary")
+                for option, label in (
+                    ("enabled", t("particle_graph_editor.enabled")),
+                    ("play_on_start", t("particle_graph_editor.play_on_start")),
+                ):
+                    metadata = FieldMetadata(
+                        name=option,
+                        field_type=FieldType.BOOL,
+                        default=True,
+                    )
+                    current = bool(emitter[option])
+                    changed = render_serialized_field(
+                        ctx,
+                        f"##particle_emitter_{stable_id}_{option}",
+                        f"{label}##particle_emitter_{stable_id}_{option}",
+                        metadata,
+                        current,
+                        lw,
+                    )
+                    if bool(changed) != current:
+                        try:
+                            comp.set_emitter_options(
+                                stable_id, **{option: bool(changed)}
+                            )
+                        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                            Debug.log_error(f"Particle emitter option edit failed: {exc}")
+
+    schema = comp.exposed_parameter_schema()
+    if not schema:
+        return
+    field_types = {
+        "bool": FieldType.BOOL,
+        "i32": FieldType.INT,
+        "u32": FieldType.INT,
+        "f32": FieldType.FLOAT,
+        "vec2": FieldType.VEC2,
+        "vec3": FieldType.VEC3,
+        "vec4": FieldType.VEC4,
+        "color": FieldType.COLOR,
+    }
+    labels = [str(parameter["name"]) for parameter in schema]
+    lw = max_label_w(ctx, labels)
+    ctx.separator()
+    parameter_header = (
+        f"{t('particle_graph_editor.parameters')}"
+        f"##particle_system_parameters_{getattr(comp, 'component_id', id(comp))}"
+    )
+    if not render_compact_section_header(
+        ctx, parameter_header, level="secondary"
+    ):
+        return
+    active_category = None
+    for parameter in schema:
+        category = str(parameter.get("category") or "")
+        if category and category != active_category:
+            render_compact_section_title(ctx, category, level="secondary")
+        active_category = category
+        kind = str(parameter["type"])
+        stable_id = str(parameter["stable_id"])
+        if kind == "texture2d":
+            reference = dict(parameter["value"])
+            path_hint = str(reference.get("path_hint") or "")
+            extensions = tuple(sorted(IMAGE_EXTENSIONS))
+
+            def _set_texture(path, *, _stable_id=stable_id):
+                target = str(path)
+                if os.path.splitext(target)[1].lower() not in IMAGE_EXTENSIONS:
+                    Debug.log_warning(
+                        f"Particle Texture2D parameter requires an image asset: {target}"
+                    )
+                    return
+                try:
+                    from Infernux.lib import AssetRegistry
+
+                    database = AssetRegistry.instance().get_asset_database()
+                    guid = database.get_guid_from_path(target) if database else ""
+                    if not guid:
+                        Debug.log_warning(
+                            f"Particle texture parameter asset is not imported: {target}"
+                        )
+                        return
+                    comp.set_parameter(
+                        _stable_id,
+                        {
+                            "guid": guid,
+                            "path_hint": _portable_asset_path_hint(target),
+                        },
+                    )
+                except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle texture assignment failed: {exc}")
+
+            def _clear_texture(*, _stable_id=stable_id):
+                try:
+                    comp.reset_parameter(_stable_id)
+                except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                    Debug.log_error(f"Particle texture reset failed: {exc}")
+
+            field_label(ctx, str(parameter["name"]), lw)
+            render_object_field(
+                ctx,
+                f"particle_system_parameter_{stable_id}",
+                os.path.basename(path_hint) if path_hint else t("igui.none"),
+                "Texture",
+                accept_drag_type=(
+                    "TEXTURE_GUID",
+                    "TEXTURE_FILE",
+                    "ASSET_FILE",
+                ),
+                on_drop_callback=_set_texture,
+                picker_asset_items=lambda query, _extensions=extensions: [
+                    item
+                    for extension in _extensions
+                    for item in _picker_assets(query, f"*{extension}")
+                ],
+                on_pick=_set_texture,
+                on_clear=_clear_texture,
+                ping_path=path_hint or None,
+                semantic_id=f"inspector.particle_system.parameter.{stable_id}",
+            )
+            continue
+        metadata = FieldMetadata(
+            name=stable_id,
+            field_type=field_types[kind],
+            default=parameter["default"],
+            tooltip=str(parameter.get("tooltip") or ""),
+        )
+        current = _particle_parameter_ui_value(kind, parameter["value"])
+        changed = render_serialized_field(
+            ctx,
+            f"##particle_parameter_{parameter['stable_id']}",
+            str(parameter["name"]),
+            metadata,
+            current,
+            lw,
+        )
+        if metadata.tooltip and ctx.is_item_hovered():
+            ctx.set_tooltip(metadata.tooltip)
+        if has_field_changed(metadata.field_type, current, changed):
+            try:
+                comp.set_parameter(
+                    stable_id,
+                    _particle_parameter_storage_value(kind, changed),
+                )
+            except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+                Debug.log_error(f"Particle parameter edit failed: {exc}")
 
 
 # ============================================================================
@@ -99,7 +303,8 @@ def _render_audio_source_extra(ctx: InxGUIContext, comp):
 
 def _audio_clip_picker_items(filter_text: str):
     items = []
-    for pattern in ("*.wav", "*.mp3", "*.ogg"):
+    from Infernux.core.asset_types import AUDIO_EXTENSIONS
+    for pattern in (f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS)):
         items += _picker_assets(filter_text, pattern)
     return items
 

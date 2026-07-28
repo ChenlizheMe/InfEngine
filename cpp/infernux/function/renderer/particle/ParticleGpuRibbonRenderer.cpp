@@ -21,11 +21,14 @@ struct ParticleRenderInstance {
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SortedIndices { uint sorted_indices[]; };
+layout(std430, set = 0, binding = 2) readonly buffer VisibleSegments { uint visible_segments[]; };
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
@@ -42,7 +45,8 @@ const uint endpoint_for_vertex[6] = uint[](0u, 0u, 1u, 0u, 1u, 1u);
 const float side_for_vertex[6] = float[](-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
 
 void main() {
-    uint segment = uint(gl_VertexIndex) / 6u;
+    bool compacted_segments = view.rendering_control.w > 0.5;
+    uint segment = compacted_segments ? visible_segments[uint(gl_InstanceIndex)] : uint(gl_VertexIndex) / 6u;
     uint corner = uint(gl_VertexIndex) % 6u;
     ParticleRenderInstance first = instances[sorted_indices[segment]];
     ParticleRenderInstance second = instances[sorted_indices[segment + 1u]];
@@ -96,6 +100,89 @@ void main() {
 }
 )glsl";
 
+constexpr std::string_view MotionVertexSource = R"glsl(#version 450
+struct ParticleRenderInstance {
+    vec4 position_size;
+    vec4 color;
+    vec4 rotation_custom;
+    vec4 scale_custom;
+    uvec4 ribbon_data;
+    vec4 custom_data;
+    vec4 previous_position_history;
+};
+layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
+layout(std430, set = 0, binding = 1) readonly buffer SortedIndices { uint sorted_indices[]; };
+layout(std430, set = 0, binding = 2) readonly buffer VisibleSegments { uint visible_segments[]; };
+layout(push_constant) uniform ViewConstants {
+    mat4 view_projection;
+    mat4 previous_view_projection;
+    vec4 camera_right;
+    vec4 camera_up;
+    vec4 material_tint;
+    vec4 depth_reconstruct;
+    vec4 lighting_control;
+    vec4 rendering_control;
+    vec4 alignment_reference;
+} view;
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec2 out_motion;
+
+const uint endpoint_for_vertex[6] = uint[](0u, 0u, 1u, 0u, 1u, 1u);
+const float side_for_vertex[6] = float[](-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
+
+vec3 ribbon_side(vec3 first_position, vec3 second_position) {
+    vec3 tangent = second_position - first_position;
+    float tangent_length = length(tangent);
+    tangent = tangent_length > 1e-7 ? tangent / tangent_length : normalize(view.camera_up.xyz);
+    vec3 camera_forward = cross(view.camera_right.xyz, view.camera_up.xyz);
+    vec3 side = cross(camera_forward, tangent);
+    float side_length = length(side);
+    return side_length > 1e-7 ? side / side_length : normalize(view.camera_right.xyz);
+}
+
+void main() {
+    bool compacted_segments = view.rendering_control.w > 0.5;
+    uint segment = compacted_segments ? visible_segments[uint(gl_InstanceIndex)] : uint(gl_VertexIndex) / 6u;
+    uint corner = uint(gl_VertexIndex) % 6u;
+    ParticleRenderInstance first = instances[sorted_indices[segment]];
+    ParticleRenderInstance second = instances[sorted_indices[segment + 1u]];
+    bool connected = first.ribbon_data.x == second.ribbon_data.x && (second.ribbon_data.z & 1u) == 0u;
+
+    vec3 first_position = first.position_size.xyz;
+    vec3 second_position = connected ? second.position_size.xyz : first_position;
+    vec3 previous_first_position = first.previous_position_history.xyz;
+    vec3 previous_second_position = connected ? second.previous_position_history.xyz : previous_first_position;
+    vec3 side = ribbon_side(first_position, second_position);
+    vec3 previous_side = ribbon_side(previous_first_position, previous_second_position);
+
+    uint endpoint = endpoint_for_vertex[corner];
+    ParticleRenderInstance point = endpoint == 0u ? first : second;
+    vec3 center = endpoint == 0u ? first_position : second_position;
+    vec3 previous_center = endpoint == 0u ? previous_first_position : previous_second_position;
+    float half_width = max(abs(point.position_size.w), 0.0) * 0.5;
+    float vertex_side = side_for_vertex[corner];
+    vec4 current_clip = view.view_projection * vec4(center + side * vertex_side * half_width, 1.0);
+    vec4 previous_clip =
+        view.previous_view_projection * vec4(previous_center + previous_side * vertex_side * half_width, 1.0);
+    gl_Position = current_clip;
+    vec2 current_ndc = current_clip.xy / max(abs(current_clip.w), 1e-6);
+    vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
+    out_motion = (current_ndc - previous_ndc) * vec2(0.5, -0.5);
+    out_color = point.color * view.material_tint;
+    if (!connected) out_color.a = 0.0;
+}
+)glsl";
+
+constexpr std::string_view MotionFragmentSource = R"glsl(#version 450
+layout(location = 0) in vec4 in_color;
+layout(location = 1) in vec2 in_motion;
+layout(location = 0) out vec2 out_motion;
+void main() {
+    if (in_color.a <= 0.0) discard;
+    out_motion = in_motion;
+}
+)glsl";
+
 bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
 {
     return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
@@ -124,17 +211,29 @@ std::string_view GpuParticleRibbonRenderShaderSources::PickingFragment() noexcep
     return PickingFragmentSource;
 }
 
+std::string_view GpuParticleRibbonRenderShaderSources::MotionVertex() noexcept
+{
+    return MotionVertexSource;
+}
+
+std::string_view GpuParticleRibbonRenderShaderSources::MotionFragment() noexcept
+{
+    return MotionFragmentSource;
+}
+
 bool GpuParticleRibbonRenderProgram::IsValid() const noexcept
 {
-    return IsShaderBytecodeValid(vertex) && IsShaderBytecodeValid(fragment) && IsShaderBytecodeValid(pickingFragment);
+    return IsShaderBytecodeValid(vertex) && IsShaderBytecodeValid(fragment) && IsShaderBytecodeValid(pickingFragment) &&
+           IsShaderBytecodeValid(motionVertex) && IsShaderBytecodeValid(motionFragment);
 }
 
 bool GpuParticleRibbonRenderProgramStorage::Assign(const GpuParticleRibbonRenderProgram &program)
 {
     if (!program.IsValid())
         return false;
-    const std::array<ShaderBytecode, 3> sources = {program.vertex, program.fragment, program.pickingFragment};
-    std::array<std::vector<uint32_t>, 3> candidate;
+    const std::array<ShaderBytecode, 5> sources = {program.vertex, program.fragment, program.pickingFragment,
+                                                   program.motionVertex, program.motionFragment};
+    std::array<std::vector<uint32_t>, 5> candidate;
     for (size_t index = 0; index < sources.size(); ++index)
         candidate[index].assign(sources[index].words, sources[index].words + sources[index].wordCount);
     shaders = std::move(candidate);
@@ -149,9 +248,9 @@ bool GpuParticleRibbonRenderProgramStorage::IsValid() const noexcept
 GpuParticleRibbonRenderProgram GpuParticleRibbonRenderProgramStorage::View() const noexcept
 {
     return {
-        {shaders[0].data(), shaders[0].size()},
-        {shaders[1].data(), shaders[1].size()},
-        {shaders[2].data(), shaders[2].size()},
+        {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
+        {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
+        {shaders[4].data(), shaders[4].size()},
     };
 }
 
@@ -180,13 +279,19 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
     m_fragmentShader = device.CreateShaderModule({desc.program.fragment.words, desc.program.fragment.wordCount});
     m_pickingFragmentShader =
         device.CreateShaderModule({desc.program.pickingFragment.words, desc.program.pickingFragment.wordCount});
-    if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() || !m_pickingFragmentShader.IsValid()) {
+    m_motionVertexShader =
+        device.CreateShaderModule({desc.program.motionVertex.words, desc.program.motionVertex.wordCount});
+    m_motionFragmentShader =
+        device.CreateShaderModule({desc.program.motionFragment.words, desc.program.motionFragment.wordCount});
+    if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
+        !m_motionVertexShader.IsValid() || !m_motionFragmentShader.IsValid()) {
         Destroy();
         return false;
     }
     rhi::BindingLayoutDesc layout;
     layout.entries[layout.entryCount++] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     layout.entries[layout.entryCount++] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
+    layout.entries[layout.entryCount++] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     m_layout = device.CreateBindingLayout(layout);
     m_group = CreateBindGroup(m_topology->SortedIndexBuffer());
     if (!m_layout.IsValid() || !m_group.IsValid()) {
@@ -206,6 +311,8 @@ void ParticleGpuRibbonRenderer::Destroy() noexcept
         m_device->Release(m_group);
         m_device->Release(m_layout);
         m_device->Release(m_pickingFragmentShader);
+        m_device->Release(m_motionFragmentShader);
+        m_device->Release(m_motionVertexShader);
         m_device->Release(m_fragmentShader);
         m_device->Release(m_vertexShader);
     }
@@ -219,6 +326,8 @@ void ParticleGpuRibbonRenderer::Destroy() noexcept
     m_vertexShader = {};
     m_fragmentShader = {};
     m_pickingFragmentShader = {};
+    m_motionVertexShader = {};
+    m_motionFragmentShader = {};
     m_layout = {};
     m_group = {};
     m_viewGroups.clear();
@@ -228,7 +337,8 @@ void ParticleGpuRibbonRenderer::Destroy() noexcept
 bool ParticleGpuRibbonRenderer::IsValid() const noexcept
 {
     return m_device && m_topology && m_topology->IsValid() && m_vertexShader.IsValid() && m_fragmentShader.IsValid() &&
-           m_pickingFragmentShader.IsValid() && m_layout.IsValid() && m_group.IsValid();
+           m_pickingFragmentShader.IsValid() && m_motionVertexShader.IsValid() && m_motionFragmentShader.IsValid() &&
+           m_layout.IsValid() && m_group.IsValid();
 }
 
 int32_t ParticleGpuRibbonRenderer::RenderQueue() const noexcept
@@ -278,7 +388,8 @@ rhi::BindGroupHandle ParticleGpuRibbonRenderer::CreateBindGroup(rhi::BufferHandl
     rhi::BindGroupDesc group;
     group.layout = m_layout;
     group.buffers[group.bufferCount++] = {0, rhi::BindingType::StorageBuffer, InstanceBuffer(), 0, 0};
-    group.buffers[group.bufferCount++] = {1, rhi::BindingType::StorageBuffer, renderIndices, 0, 0};
+    group.buffers[group.bufferCount++] = {1, rhi::BindingType::StorageBuffer, RenderIndexBuffer(), 0, 0};
+    group.buffers[group.bufferCount++] = {2, rhi::BindingType::StorageBuffer, renderIndices, 0, 0};
     return m_device->CreateBindGroup(group);
 }
 
@@ -316,6 +427,7 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
     constants.materialTint = ResolveMaterialTint();
     constants.renderingControl[1] = m_uvScale;
     constants.renderingControl[2] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
+    constants.renderingControl[3] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
@@ -347,6 +459,7 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
     std::memcpy(constants.materialTint.data(), objectId.data(), sizeof(objectId));
     constants.renderingControl[1] = m_uvScale;
     constants.renderingControl[2] = m_uvMode == ParticleRibbonUvMode::Repeat ? 1.0f : 0.0f;
+    constants.renderingControl[3] = renderIndices.IsValid() && renderIndices != RenderIndexBuffer() ? 1.0f : 0.0f;
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, group);
     encoder.PushConstants(pipeline, rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, sizeof(constants),
@@ -361,10 +474,13 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
 {
     if (!renderTargetLayout.IsValid() || !pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
-         pass.target != ShaderCompileTarget::Picking))
+         pass.target != ShaderCompileTarget::Picking && pass.target != ShaderCompileTarget::Motion))
         return {};
     const bool picking = pass.target == ShaderCompileTarget::Picking;
-    const auto state = picking ? GpuBillboardMaterialState{3000, false, true, true} : ResolveMaterialState();
+    const bool motion = pass.target == ShaderCompileTarget::Motion;
+    const auto state = picking  ? GpuBillboardMaterialState{3000, false, true, true}
+                       : motion ? GpuBillboardMaterialState{3000, false, true, false}
+                                : ResolveMaterialState();
     const uint8_t signature = PipelineStateSignature(state);
     const auto found = std::find_if(m_pipelines.begin(), m_pipelines.end(), [&](const auto &entry) {
         return entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
@@ -374,8 +490,8 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
         return found->pipeline;
 
     rhi::GraphicsPipelineDesc desc;
-    desc.vertexShader = m_vertexShader;
-    desc.fragmentShader = picking ? m_pickingFragmentShader : m_fragmentShader;
+    desc.vertexShader = motion ? m_motionVertexShader : m_vertexShader;
+    desc.fragmentShader = picking ? m_pickingFragmentShader : motion ? m_motionFragmentShader : m_fragmentShader;
     desc.renderTargetLayout = renderTargetLayout;
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;

@@ -41,14 +41,22 @@ _PIN_COLORS = {
     "f32": (0.34, 0.72, 0.42, 1.0),
     "i32": (0.30, 0.68, 0.52, 1.0),
     "u32": (0.30, 0.68, 0.52, 1.0),
-    "vec2": (0.90, 0.58, 0.24, 1.0),
+    "vec2": (0.30, 0.70, 0.86, 1.0),
     "vec3": (0.90, 0.58, 0.24, 1.0),
-    "vec4": (0.90, 0.58, 0.24, 1.0),
+    "vec4": (0.72, 0.45, 0.88, 1.0),
     "color": (0.88, 0.78, 0.28, 1.0),
     "asset_ref": (0.48, 0.62, 0.90, 1.0),
     "stream": (0.76, 0.76, 0.78, 1.0),
     "event": (0.84, 0.44, 0.40, 1.0),
 }
+
+_PARTICLE_COLLISION_ROOT_TYPES = frozenset(
+    {
+        "particle.root.collision_enter",
+        "particle.root.collision_stay",
+        "particle.root.collision_exit",
+    }
+)
 
 _PROPERTY_ENUM_VALUES = {
     "alignment": ("camera_plane", "camera_position", "axis", "velocity"),
@@ -69,10 +77,25 @@ def _canvas_type_name(port) -> str:
     return "any"
 
 
-def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
+def _canvas_definition(
+    definition: NodeDef,
+    *,
+    port_type_overrides=None,
+    property_enum_entries=None,
+    display_name_override: str = "",
+    hidden_property_ids=(),
+) -> NodeTypeDef:
+    port_type_overrides = dict(port_type_overrides or {})
+    property_enum_entries = dict(property_enum_entries or {})
+    hidden_property_ids = frozenset(hidden_property_ids or ())
     pins = []
     for port in definition.ports:
-        data_type = _canvas_type_name(port)
+        resolved_type = port_type_overrides.get(port.id)
+        data_type = (
+            resolved_type.value_type.value
+            if resolved_type is not None
+            else _canvas_type_name(port)
+        )
         pins.append(
             CanvasPinDef(
                 id=port.id,
@@ -91,6 +114,11 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
             )
         )
     is_root = definition.type_id.startswith("particle.root.")
+    is_mandatory_root = definition.type_id in {
+        "particle.root.init",
+        "particle.root.update",
+        "particle.root.rendering",
+    }
     property_by_id = {item.id: item for item in definition.properties}
     inline_fields = [
         NodeInlineFieldDef(
@@ -99,11 +127,25 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
             item.value_type.value_type.value,
             copy.deepcopy(item.default),
             asset_type="Material" if item.id == "material" else "",
-            enum_values=_PROPERTY_ENUM_VALUES.get(item.id, ()),
+            enum_values=tuple(
+                value
+                for _label, value in property_enum_entries.get(
+                    item.id,
+                    tuple((value, value) for value in _PROPERTY_ENUM_VALUES.get(item.id, ())),
+                )
+            ),
+            enum_labels=tuple(
+                label
+                for label, _value in property_enum_entries.get(
+                    item.id,
+                    tuple((value, value) for value in _PROPERTY_ENUM_VALUES.get(item.id, ())),
+                )
+            ),
             visible_when_field=_PROPERTY_VISIBILITY.get(item.id, ("", None))[0],
             visible_when_value=_PROPERTY_VISIBILITY.get(item.id, ("", None))[1],
         )
         for item in definition.properties
+        if item.id not in hidden_property_ids
         if item.value_type.value_type not in {ValueType.CURVE, ValueType.GRADIENT}
     ]
     for port in definition.ports:
@@ -127,15 +169,6 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
         if port.direction is PortDirection.INPUT and port.kind is PortKind.VALUE
     }
     detached_fields = sum(1 for item in inline_fields if item.id not in input_ids)
-    category = definition.type_id.split(".", 1)[0].upper()
-    if definition.type_id.startswith("common.math."):
-        category = "MATH"
-    elif definition.type_id.startswith("common.vector."):
-        category = "VECTOR"
-    elif definition.type_id.startswith("common.constant."):
-        category = "CONSTANT"
-    elif is_root:
-        category = "CONTEXT"
     # Unity VFX Graph–style stage colours: Initialize / Update / Output.
     root_header = (0.22, 0.46, 0.38, 1.0)
     if definition.type_id.endswith(".init"):
@@ -146,15 +179,15 @@ def _canvas_definition(definition: NodeDef) -> NodeTypeDef:
         root_header = (0.46, 0.24, 0.28, 1.0)
     return NodeTypeDef(
         type_id=definition.type_id,
-        label=definition.display_name,
+        label=display_name_override or definition.display_name,
         header_color=root_header if is_root else (0.28, 0.31, 0.36, 1.0),
         pins=pins,
-        min_width=236.0 if is_root else 190.0,
-        deletable=not is_root,
-        body_bottom_pad=detached_fields * 20.0,
+        min_width=248.0 if is_root else 210.0,
+        deletable=not is_mandatory_root,
+        body_bottom_pad=detached_fields * 24.0,
         visual_style="context" if is_root else "graph",
-        # Contexts use the Unity-style coloured title bar; hide the category chip.
-        category_label="" if is_root else category,
+        # Node chrome shows only the display name — no MATH/COMMON chips.
+        category_label="",
         show_header_color_swatch=False,
         inline_fields=inline_fields,
     )
@@ -329,15 +362,29 @@ class GraphDocumentAuthoringModel(NodeGraph):
 
 
 class ParticleEmitterGraphAuthoringModel(NodeGraph):
-    """One authoring canvas backed by an emitter's three strict stage documents.
+    """One authoring canvas backed by an emitter's lifecycle documents.
 
     Stage documents remain the compiler contract.  This adapter namespaces their
-    identities on the mutable canvas, keeps the three context chains independent,
+    identities on the mutable canvas, keeps every context chain independent,
     and splits them back into strict documents when the editor saves.
     """
 
-    STAGES = ("init", "update", "rendering")
-    _STAGE_Y = {"init": 0.0, "update": 230.0, "rendering": 460.0}
+    STAGES = (
+        "init",
+        "update",
+        "collision_enter",
+        "collision_stay",
+        "collision_exit",
+        "rendering",
+    )
+    _STAGE_Y = {
+        "init": 0.0,
+        "update": 230.0,
+        "collision_enter": 460.0,
+        "collision_stay": 690.0,
+        "collision_exit": 920.0,
+        "rendering": 1150.0,
+    }
     _UID_SEPARATOR = "::"
 
     def __init__(
@@ -348,10 +395,23 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         definition_set=None,
     ) -> None:
         super().__init__(graph_kind="particle.emitter")
+        from Infernux.particle.asset import particle_attribute_catalog
+
         if definition_set is not None:
             registry = definition_set.registry
         self._definitions = registry
         self._definition_set = definition_set
+        self._collision_enabled = bool(emitter.settings.collision_enabled)
+        self._attribute_catalog = {
+            attribute.stable_id: attribute
+            for attribute in particle_attribute_catalog(emitter)
+        }
+        self._parameter_catalog = (
+            dict(definition_set.parameter_by_id)
+            if definition_set is not None
+            else {}
+        )
+        self._dynamic_type_cache: dict[str, NodeTypeDef] = {}
         self._documents = {stage: getattr(emitter, stage) for stage in self.STAGES}
         self._creatable_type_ids: list[str] = []
         self._allowed_stages: dict[str, set[str]] = {}
@@ -388,11 +448,16 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 continue
             self.register_type(_canvas_definition(definition))
             self._allowed_stages[definition.type_id] = stages
-            if not definition.type_id.startswith("particle.root."):
+            if (
+                not definition.type_id.startswith("particle.root.")
+                or definition.type_id in _PARTICLE_COLLISION_ROOT_TYPES
+            ):
                 self._creatable_type_ids.append(definition.type_id)
 
         for stage in self.STAGES:
             document = self._documents[stage]
+            if document is None:
+                continue
             y_offset = self._STAGE_Y[stage]
             for record in document.nodes:
                 if self.get_type(record.type_id) is None:
@@ -447,6 +512,18 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
     def prepare_node_creation(self, stage: str) -> None:
         self._pending_creation_stage = stage if stage in self.STAGES else ""
 
+    def set_collision_enabled(self, enabled: bool) -> None:
+        self._collision_enabled = bool(enabled)
+
+    def node_creation_state(self, type_id: str) -> tuple[bool, str]:
+        if type_id not in _PARTICLE_COLLISION_ROOT_TYPES:
+            return True, ""
+        if not self._collision_enabled:
+            return False, "Enable Collision in Emitter Settings first"
+        if any(node.type_id == type_id for node in self.nodes):
+            return False, "This collision lifecycle root already exists"
+        return True, ""
+
     def stage_nearest_y(self, y: float) -> str:
         return min(self.STAGES, key=lambda stage: abs(float(y) - self._STAGE_Y[stage]))
 
@@ -459,6 +536,78 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def definition_for_type(self, type_id: str) -> NodeDef | None:
         return self._definitions.get(type_id)
+
+    def attribute_entries(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (item.name.replace("_", " ").title(), item.stable_id)
+            for item in self._attribute_catalog.values()
+        )
+
+    def parameter_entries(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (item.name, item.stable_id)
+            for item in self._parameter_catalog.values()
+        )
+
+    def get_node_type(self, node) -> NodeTypeDef | None:
+        base = super().get_node_type(node)
+        if base is None or node.type_id not in {
+            "particle.attribute.get",
+            "particle.parameter.get",
+        }:
+            return base
+        is_parameter = node.type_id == "particle.parameter.get"
+        property_id = "parameter" if is_parameter else "attribute"
+        selected_id = str(
+            node.data.get(property_id, "" if is_parameter else "builtin.position")
+        )
+        cache_key = f"{property_id}:{selected_id}"
+        cached = self._dynamic_type_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        selected = (
+            self._parameter_catalog.get(selected_id)
+            if is_parameter
+            else self._attribute_catalog.get(selected_id)
+        )
+        definition = self._definitions.get(node.type_id)
+        if selected is None or definition is None:
+            return base
+        resolved = _canvas_definition(
+            definition,
+            port_type_overrides={"value": selected.value_type},
+            property_enum_entries={
+                property_id: (
+                    self.parameter_entries()
+                    if is_parameter
+                    else self.attribute_entries()
+                )
+            },
+            display_name_override=selected.name if is_parameter else "",
+            hidden_property_ids={"parameter"} if is_parameter else (),
+        )
+        self._dynamic_type_cache[cache_key] = resolved
+        return resolved
+
+    def remove_invalid_links_for_node(self, node_uid: str) -> tuple[str, ...]:
+        removed = []
+        kept = []
+        for link in self.links:
+            if node_uid not in {link.source_node, link.target_node}:
+                kept.append(link)
+                continue
+            if self.validate_link(
+                link.source_node,
+                link.source_pin,
+                link.target_node,
+                link.target_pin,
+                ignore_link_uid=link.uid,
+            ):
+                kept.append(link)
+            else:
+                removed.append(link.uid)
+        self.links = kept
+        return tuple(removed)
 
     def _stage_for_new_node(self, type_id: str, y: float) -> str:
         allowed = self._allowed_stages.get(type_id, set())
@@ -480,11 +629,30 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         definition = self._definitions.get(type_id)
         if definition is None:
             raise ValueError(f"unknown graph node type {type_id!r}")
+        enabled, reason = self.node_creation_state(type_id)
+        if not enabled:
+            raise ValueError(reason)
         stage = self._stage_for_new_node(type_id, float(y))
+        if (
+            stage in {"collision_enter", "collision_stay", "collision_exit"}
+            and type_id != f"particle.root.{stage}"
+            and not any(
+                node.type_id == f"particle.root.{stage}" for node in self.nodes
+            )
+        ):
+            raise ValueError(
+                f"Create the {stage.replace('_', ' ').title()} lifecycle root first"
+            )
         self._pending_creation_stage = ""
         properties = _authoring_defaults(definition)
+        if type_id == "particle.parameter.get" and self._parameter_catalog:
+            properties["parameter"] = next(iter(self._parameter_catalog))
         properties.update(data)
-        raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
+        raw_uid = (
+            f"root.{stage}"
+            if type_id == f"particle.root.{stage}"
+            else str(uid) if uid else uuid.uuid4().hex[:8]
+        )
         canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
         node = super().add_node(type_id, x, y, uid=canvas_uid, **properties)
         self._authoring_stage = stage
@@ -496,6 +664,23 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if definition is not None and not definition.deletable:
             return False
         return super().remove_node(uid)
+
+    def _effective_port_type(self, node, port):
+        if port is None or port.kind is not PortKind.VALUE:
+            return None
+        if port.value_type is not None:
+            return port.value_type
+        if port.type_property == "attribute":
+            attribute = self._attribute_catalog.get(
+                str(node.data.get("attribute", "builtin.position"))
+            )
+            return attribute.value_type if attribute is not None else None
+        if port.type_property == "parameter":
+            parameter = self._parameter_catalog.get(
+                str(node.data.get("parameter", ""))
+            )
+            return parameter.value_type if parameter is not None else None
+        return None
 
     def validate_link(
         self,
@@ -531,11 +716,13 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return LinkValidationResult(False, "missing_port", "Link endpoint port does not exist")
         if source_port.kind is not target_port.kind:
             return LinkValidationResult(False, "kind_mismatch", "Graph port kinds do not match")
+        source_type = self._effective_port_type(source, source_port)
+        target_type = self._effective_port_type(target, target_port)
         if (
             source_port.kind is PortKind.VALUE
-            and source_port.value_type is not None
-            and target_port.value_type is not None
-            and not PORTABLE_TYPE_SYSTEM.can_connect(source_port.value_type, target_port.value_type)
+            and source_type is not None
+            and target_type is not None
+            and not PORTABLE_TYPE_SYSTEM.can_connect(source_type, target_type)
         ):
             return LinkValidationResult(False, "type_mismatch", "Graph value types do not match")
         return LinkValidationResult(True)
@@ -548,7 +735,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
         )
 
-    def to_documents(self) -> dict[str, GraphDocument]:
+    def to_documents(self) -> dict[str, GraphDocument | None]:
         result = {}
         for stage in self.STAGES:
             nodes = tuple(
@@ -581,8 +768,22 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                     )
                 )
             original = self._documents[stage]
+            if not nodes and stage in {
+                "collision_enter",
+                "collision_stay",
+                "collision_exit",
+            }:
+                result[stage] = None
+                continue
             result[stage] = GraphDocument(
-                original.domain, nodes, tuple(links), copy.deepcopy(dict(original.metadata))
+                (
+                    original.domain
+                    if original is not None
+                    else f"particle.{stage}"
+                ),
+                nodes,
+                tuple(links),
+                copy.deepcopy(dict(original.metadata)) if original is not None else {},
             )
         return result
 
@@ -600,8 +801,20 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
             return type_id.startswith(f"particle.event.output.{stage}.")
         if type_id.startswith("particle.event.payload."):
             return stage == "init"
-        if stage in {"init", "update", "rendering"} and type_id.startswith(
-            ("particle.attribute.", "particle.point_cache.", "particle.vector_field.")
+        if stage in {
+            "init",
+            "update",
+            "collision_enter",
+            "collision_stay",
+            "collision_exit",
+            "rendering",
+        } and type_id.startswith(
+            (
+                "particle.attribute.",
+                "particle.control.",
+                "particle.parameter.",
+                "particle.vector_field.",
+            )
         ):
             return True
         if type_id == f"particle.root.{stage}":

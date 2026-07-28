@@ -1,8 +1,26 @@
 #version 450
-@shader_id: Film Grain
-@hidden
 
-@import: Lib Utils
+ShaderInfo {
+    Name "Film Grain"
+    Hidden On
+    Imports ["Lib Utils"]
+    Capabilities [Fullscreen, EngineGlobals]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float intensity
+        Float response
+        Float size
+        Float colored
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Film Grain post-process — physically-inspired photographic grain.
 //
@@ -24,18 +42,6 @@
 // Time comes from the engine globals UBO (set 2), which the fullscreen
 // pipeline always binds — push constants are only refreshed on parameter
 // edits, so a push-constant clock would freeze the grain between rebuilds.
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PushConstants {
-    float intensity;
-    float response;
-    float size;
-    float colored;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 // Bilinearly-interpolated value noise: soft grain clumps with a physical
 // size, unlike per-pixel hash which reads as digital static.

@@ -704,7 +704,7 @@ def write_mesh_import_settings(asset_path: str, settings: MeshImportSettings) ->
 
 # Image extensions supported by InxTextureLoader / stb_image
 IMAGE_EXTENSIONS = frozenset({
-    ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
+    ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
     ".inxvfield", ".inxsdf",
 })
 
@@ -718,17 +718,18 @@ MATERIAL_EXTENSIONS = frozenset({".mat"})
 PHYSIC_MATERIAL_EXTENSIONS = frozenset({".physicmaterial"})
 RENDER_EFFECT_EXTENSIONS = frozenset({".effect", ".effectgroup"})
 PARTICLE_GRAPH_EXTENSIONS = frozenset({".particlegraph"})
-POINT_CACHE_EXTENSIONS = frozenset({".pointcache"})
 
 # Audio extensions supported by AudioImporter
-AUDIO_EXTENSIONS = frozenset({".wav"})
+AUDIO_EXTENSIONS = frozenset({".wav", ".ogg"})
 
 # Font extensions recognized by the editor asset pipeline.
 FONT_EXTENSIONS = frozenset({".ttf", ".otf"})
 
 # 3D model extensions supported by ModelImporter / MeshLoader
 MESH_EXTENSIONS = frozenset({
-    ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl",
+    ".fbx", ".obj", ".gltf", ".glb", ".dae", ".3ds", ".ply", ".stl", ".x", ".b3d", ".ase", ".blend",
+    ".bvh", ".cob", ".c4d", ".csm", ".dxf", ".hmp", ".ifc", ".iqm", ".irrmesh", ".lwo", ".lws",
+    ".m3d", ".md2", ".md3", ".md4", ".md5mesh", ".mdc", ".mmd", ".ms3d", ".nff", ".off", ".ogex", ".x3d",
 })
 
 # Prefab extension
@@ -761,8 +762,6 @@ def asset_category_from_extension(ext: str) -> Optional[str]:
         return "render_effect"
     if ext in PARTICLE_GRAPH_EXTENSIONS:
         return "particle_graph"
-    if ext in POINT_CACHE_EXTENSIONS:
-        return "point_cache"
     if ext in IMAGE_EXTENSIONS:
         return "texture"
     if ext in SHADER_EXTENSIONS:

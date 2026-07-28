@@ -32,6 +32,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
+#include <vector>
 
 namespace infernux
 {
@@ -69,7 +70,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     // Without this guard, vkAcquireNextImageKHR blocks indefinitely
     // because the swapchain has no presentable images at 0×0.
     {
-        VkExtent2D ext = m_swapchain.GetExtent();
+        VkExtent2D ext = m_backend.Presentation().GetExtent();
         if (ext.width == 0 || ext.height == 0) {
             // Yield a bit so we don't spin-lock the CPU while minimized
             SDL_Delay(16);
@@ -77,9 +78,11 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         }
     }
 
-    // Acquire next swapchain image
+    const uint32_t frameSlot = GetCurrentFrameSlot();
+
+    // Acquire next swapchain image using the renderer-owned frame slot.
     uint32_t imageIndex;
-    auto result = m_swapchain.AcquireNextImage(imageIndex);
+    auto result = m_backend.Presentation().AcquireNextImage(frameSlot, imageIndex);
 
     if (result == vk::SwapchainResult::NeedRecreate) {
         RecreateSwapchain();
@@ -96,59 +99,247 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     _tPrev = _tNow;
 #endif
 
-    // Update uniform buffer
-    UpdateUniformBuffer(m_currentFrame, viewPos, viewLookAt, viewUp);
+    rhi::SubmissionPlan submissionPlan;
+    std::string submissionPlanError;
+    const auto graphicsQueue = m_backend.Queues().GetSnapshot(rhi::QueueRole::Graphics);
+    const auto computeQueue = m_backend.Queues().GetSnapshot(rhi::QueueRole::Compute);
+    const bool independentCompute = graphicsQueue.queue != VK_NULL_HANDLE && computeQueue.queue != VK_NULL_HANDLE &&
+                                    graphicsQueue.nativeLane != UINT32_MAX && computeQueue.nativeLane != UINT32_MAX &&
+                                    graphicsQueue.nativeLane != computeQueue.nativeLane;
+    const bool asyncCompute = independentCompute && m_frameAsyncSimulationExecutor && m_frameAsyncExportExecutor &&
+                              m_frameAsyncComputeReady && m_frameAsyncComputeGeneration && m_frameAsyncComputeReady();
+    const uint64_t asyncComputeGeneration = asyncCompute ? m_frameAsyncComputeGeneration() : 0;
+    const bool primeAsyncCompute =
+        asyncCompute && (!m_frameAsyncComputePrimed || asyncComputeGeneration != m_frameAsyncComputePrimedGeneration);
+    const bool separateComputeBatch = !asyncCompute && m_frameComputeExecutor &&
+                                      graphicsQueue.queue != VK_NULL_HANDLE && computeQueue.queue != VK_NULL_HANDLE;
 
-    // Reset fence for this frame before submission
-    m_swapchain.ResetCurrentFence();
+    const bool composedFrame = static_cast<bool>(m_frameSubmissionBuilder);
+    if (composedFrame) {
+        if (!EnsureGuiRenderGraph(imageIndex))
+            return;
 
-    // Reset and record command buffer
-    vkResetCommandBuffer(m_commandBuffers[m_currentFrame], 0);
-    RecordCommandBuffer(imageIndex);
+        m_frameSubmission.Reset();
+        const rhi::DeviceId device = m_backend.Device().GetDeviceId();
+        std::vector<uint32_t> setupDependencies;
+        if (primeAsyncCompute) {
+            const uint32_t prime = m_frameSubmission.AddWork(
+                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+                rhi::PipelineStage::ComputeShader, {}, [this](VkCommandBuffer commandBuffer) {
+                    return m_frameAsyncSimulationExecutor(commandBuffer) && m_frameAsyncExportExecutor(commandBuffer);
+                });
+            setupDependencies.push_back(prime);
+        } else if (separateComputeBatch) {
+            const uint32_t compute = m_frameSubmission.AddWork(
+                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+                rhi::PipelineStage::ComputeShader, {}, [this](VkCommandBuffer commandBuffer) {
+                    m_frameComputeExecutor(commandBuffer);
+                    return true;
+                });
+            setupDependencies.push_back(compute);
+        }
+
+        const uint32_t setupWork = m_frameSubmission.AddWork(
+            device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, m_presentationView.id,
+            rhi::PipelineStage::AllGraphics, std::move(setupDependencies), [this](VkCommandBuffer commandBuffer) {
+#if INFERNUX_FRAME_PROFILE
+                m_gpuTimestampQueries.BeginFrame(commandBuffer, m_currentFrame);
+#endif
+                CmdUpdateGlobals(commandBuffer);
+                return true;
+            });
+
+        if (!m_frameSubmissionBuilder(m_frameSubmission, setupWork)) {
+            INXLOG_ERROR("Failed to compose frame RenderGraph submissions");
+            return;
+        }
+
+        uint32_t simulationWork = 0;
+        if (asyncCompute && !primeAsyncCompute) {
+            // RenderGraphs consume the previous exported generation. Queueing
+            // next-frame simulation after their view-local compute batches
+            // lets simulation overlap the current Graphics lane.
+            simulationWork = m_frameSubmission.AddWork(
+                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+                rhi::PipelineStage::ComputeShader, {},
+                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncSimulationExecutor(commandBuffer); });
+        }
+
+        vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);
+        const auto guiRange = m_frameSubmission.AppendRenderGraph(guiGraph, {setupWork}, {}, [this](VkCommandBuffer) {
+#if INFERNUX_FRAME_PROFILE
+            m_gpuTimestampQueries.FinishFrame(m_currentFrame);
+#endif
+            return true;
+        });
+        if (guiRange.Empty()) {
+            INXLOG_ERROR("Swapchain GUI RenderGraph produced no submission work");
+            return;
+        }
+
+        if (asyncCompute && !primeAsyncCompute) {
+            std::vector<uint32_t> exportDependencies{simulationWork};
+            const uint32_t finalGraphics = m_frameSubmission.LastWork(rhi::QueueRole::Graphics);
+            if (finalGraphics != 0)
+                exportDependencies.push_back(finalGraphics);
+            (void)m_frameSubmission.AddWork(
+                device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
+                rhi::PipelineStage::ComputeShader, std::move(exportDependencies),
+                [this](VkCommandBuffer commandBuffer) { return m_frameAsyncExportExecutor(commandBuffer); });
+        }
+
+        if (!m_frameSubmission.Build(submissionPlan, submissionPlanError)) {
+            INXLOG_ERROR("Failed to build composed frame submission plan: ", submissionPlanError);
+            return;
+        }
+    } else {
+        std::vector<rhi::SubmissionWorkItem> frameWork;
+        if (asyncCompute && !primeAsyncCompute) {
+            frameWork.push_back({0,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Compute,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::ComputeShader,
+                                 {}});
+            frameWork.push_back({1,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Graphics,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::AllGraphics,
+                                 {}});
+            frameWork.push_back({2,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Compute,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::ComputeShader,
+                                 {0, 1}});
+        } else if (asyncCompute || separateComputeBatch) {
+            frameWork.push_back({0,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Compute,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::ComputeShader,
+                                 {}});
+            frameWork.push_back({1,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Graphics,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::AllGraphics,
+                                 {0}});
+        } else {
+            frameWork.push_back({0,
+                                 m_backend.Device().GetDeviceId(),
+                                 rhi::QueueRole::Graphics,
+                                 rhi::SubmissionDomain::Frame,
+                                 rhi::InvalidRenderViewId,
+                                 rhi::PipelineStage::AllGraphics,
+                                 {}});
+        }
+        if (!rhi::BuildSubmissionPlan(frameWork, submissionPlan, submissionPlanError)) {
+            INXLOG_ERROR("Failed to build frame submission plan: ", submissionPlanError);
+            return;
+        }
+    }
+    if (submissionPlan.batches.empty()) {
+        INXLOG_ERROR("Failed to build frame submission plan: ", submissionPlanError);
+        return;
+    }
+    {
+        const rhi::SubmissionPlanStatistics statistics = rhi::AnalyzeSubmissionPlan(submissionPlan);
+        auto &telemetry = m_frameSubmissionTelemetry;
+        ++telemetry.generation;
+        telemetry.composed = composedFrame;
+        telemetry.computeQueueIndependent = independentCompute;
+        const auto transferQueue = m_backend.Queues().GetSnapshot(rhi::QueueRole::Transfer);
+        telemetry.transferQueueIndependent =
+            graphicsQueue.queue != VK_NULL_HANDLE && transferQueue.queue != VK_NULL_HANDLE &&
+            graphicsQueue.nativeLane != UINT32_MAX && transferQueue.nativeLane != UINT32_MAX &&
+            graphicsQueue.nativeLane != transferQueue.nativeLane;
+        telemetry.asyncComputeActive = asyncCompute;
+        telemetry.batchCount = statistics.batchCount;
+        telemetry.graphicsBatchCount = statistics.graphicsBatchCount;
+        telemetry.computeBatchCount = statistics.computeBatchCount;
+        telemetry.transferBatchCount = statistics.transferBatchCount;
+        telemetry.crossQueueDependencyCount = statistics.crossQueueDependencyCount;
+        telemetry.unorderedComputeGraphicsPairCount = statistics.unorderedComputeGraphicsPairCount;
+        telemetry.parallelComputeGraphics = independentCompute && statistics.unorderedComputeGraphicsPairCount != 0;
+    }
+    if (!m_backend.Queues().ResetGraphicsFrameFence(frameSlot)) {
+        INXLOG_ERROR("Failed to reset graphics frame fence for slot ", frameSlot);
+        return;
+    }
+
+    vk::VulkanSubmissionExecutor::ExternalSync externalSync{};
+    externalSync.imageAvailable = m_backend.Presentation().GetImageAvailableSemaphore(frameSlot);
+    externalSync.imageAvailableStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    externalSync.uploadTimeline = m_resourceManager.GetUploadTimelineSemaphore();
+    externalSync.uploadTimelineValue = m_resourceManager.GetRequiredUploadTimelineValue();
+    externalSync.renderFinished = m_backend.Presentation().GetRenderFinishedSemaphore(imageIndex);
+    externalSync.completionFence = m_backend.Queues().GetGraphicsFrameFence(frameSlot);
+    externalSync.completionEpoch = m_backend.Queues().GetFrameCompletionEpoch(frameSlot);
+    if (asyncCompute && !primeAsyncCompute) {
+        externalSync.previousFrameTimeline = m_frameAsyncPreviousExportTimeline;
+        externalSync.previousFrameTimelineValue = m_frameAsyncPreviousExportTimelineValue;
+        externalSync.previousFrameStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    }
+
+    vk::VulkanSubmissionExecutor::ExecuteResult executeResult{};
+    try {
+        executeResult = m_submissionExecutor.Execute(
+            frameSlot, submissionPlan,
+            [this, imageIndex, asyncCompute, primeAsyncCompute, separateComputeBatch, composedFrame,
+             &submissionPlan](uint32_t batchIndex, VkCommandBuffer commandBuffer) {
+                if (batchIndex >= submissionPlan.batches.size())
+                    return false;
+                if (composedFrame)
+                    return m_frameSubmission.RecordBatch(submissionPlan, batchIndex, commandBuffer);
+                const auto queue = submissionPlan.batches[batchIndex].queue;
+                if (asyncCompute) {
+                    if (primeAsyncCompute) {
+                        if (batchIndex == 0)
+                            return m_frameAsyncSimulationExecutor(commandBuffer) &&
+                                   m_frameAsyncExportExecutor(commandBuffer);
+                        return batchIndex == 1 && RecordFrameCommands(commandBuffer, imageIndex);
+                    }
+                    if (batchIndex == 0)
+                        return m_frameAsyncSimulationExecutor(commandBuffer);
+                    if (batchIndex == 1)
+                        return RecordFrameCommands(commandBuffer, imageIndex);
+                    if (batchIndex == 2)
+                        return m_frameAsyncExportExecutor(commandBuffer);
+                    return false;
+                }
+                if (queue == rhi::QueueRole::Compute && separateComputeBatch) {
+                    m_frameComputeExecutor(commandBuffer);
+                    return true;
+                }
+                if (queue != rhi::QueueRole::Graphics)
+                    return false;
+                if (!separateComputeBatch && m_frameComputeExecutor)
+                    m_frameComputeExecutor(commandBuffer);
+                return RecordFrameCommands(commandBuffer, imageIndex);
+            },
+            externalSync);
+    } catch (...) {
+        if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
+            INXLOG_ERROR("Failed to restore graphics frame slot after command recording exception");
+        throw;
+    }
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[1] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
     _tPrev = _tNow;
 #endif
 
-    // Submit command buffer
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-    VkSemaphore waitSemaphores[] = {m_swapchain.GetImageAvailableSemaphore(), VK_NULL_HANDLE};
-    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
-    uint64_t waitValues[] = {0, 0};
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores;
-    submitInfo.pWaitDstStageMask = waitStages;
-
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &m_commandBuffers[m_currentFrame];
-
-    VkSemaphore signalSemaphores[] = {m_swapchain.GetRenderFinishedSemaphore(imageIndex)};
-    uint64_t signalValues[] = {0};
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = signalSemaphores;
-
-    VkTimelineSemaphoreSubmitInfo timelineSubmit{};
-    const VkSemaphore uploadTimeline = m_resourceManager.GetUploadTimelineSemaphore();
-    const uint64_t uploadValue = m_resourceManager.GetRequiredUploadTimelineValue();
-    if (uploadTimeline != VK_NULL_HANDLE && uploadValue != 0) {
-        waitSemaphores[1] = uploadTimeline;
-        waitValues[1] = uploadValue;
-        submitInfo.waitSemaphoreCount = 2;
-        timelineSubmit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timelineSubmit.waitSemaphoreValueCount = 2;
-        timelineSubmit.pWaitSemaphoreValues = waitValues;
-        timelineSubmit.signalSemaphoreValueCount = 1;
-        timelineSubmit.pSignalSemaphoreValues = signalValues;
-        submitInfo.pNext = &timelineSubmit;
-    }
-
-    VkResult submitResult =
-        vkQueueSubmit(m_deviceContext.GetGraphicsQueue(), 1, &submitInfo, m_swapchain.GetInFlightFence());
+    const VkResult submitResult = executeResult.result;
     if (submitResult != VK_SUCCESS) {
+        if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
+            INXLOG_ERROR("Failed to restore graphics frame fence after submission failure");
         // DEVICE_LOST cascades produce one failure per frame; throttle so the
         // Console does not flood and hide the first useful diagnostic.
         static int s_submitFailLogs = 0;
@@ -158,6 +349,20 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
             INXLOG_ERROR("Further draw-command submit failures suppressed (device likely lost)");
         }
         ++s_submitFailLogs;
+        return;
+    } else {
+        (void)m_backend.Queues().AssociateFrameSlot(frameSlot, executeResult.completionTicket);
+        if (asyncCompute)
+            m_frameAsyncComputePrimed = true;
+        if (asyncCompute)
+            m_frameAsyncComputePrimedGeneration = asyncComputeGeneration;
+        if (asyncCompute && !primeAsyncCompute) {
+            m_frameAsyncPreviousExportTimeline = executeResult.completionTimeline;
+            m_frameAsyncPreviousExportTimelineValue = executeResult.completionTimelineValue;
+        } else {
+            m_frameAsyncPreviousExportTimeline = VK_NULL_HANDLE;
+            m_frameAsyncPreviousExportTimelineValue = 0;
+        }
     }
 #if INFERNUX_FRAME_PROFILE
     if (submitResult == VK_SUCCESS) {
@@ -171,7 +376,7 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
 #endif
 
     // Present
-    result = m_swapchain.Present(imageIndex);
+    result = m_backend.Presentation().Present(m_backend.Queues(), imageIndex);
     if (result == vk::SwapchainResult::NeedRecreate || m_framebufferResized) {
         m_framebufferResized = false;
         RecreateSwapchain();
@@ -184,7 +389,6 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
 #endif
 
     // Advance frame
-    m_swapchain.AdvanceFrame();
     m_currentFrame = (m_currentFrame + 1) % m_maxFramesInFlight;
 }
 
@@ -228,42 +432,11 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
 }
 
 // ============================================================================
-// Multi-camera UBO update via command buffer
-// ============================================================================
-
-void InxVkCoreModular::CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm::mat4 &view, const glm::mat4 &proj,
-                                              const glm::mat4 *previousViewProj)
-{
-    // All material descriptor sets reference the single scene UBO; the
-    // in-command-buffer update below is what makes one buffer safe across
-    // frames in flight (no CPU-side write can race the GPU).
-    if (!m_sceneUbo) {
-        return;
-    }
-
-    VkBuffer buffer = m_sceneUbo->GetBuffer();
-
-    UniformBufferObject ubo{};
-    ubo.model = glm::mat4(1.0f);
-    ubo.view = view;
-    ubo.proj = proj;
-    ubo.previousViewProj = previousViewProj ? *previousViewProj : proj * view;
-
-    // Barrier: ensure previous shader reads from the UBO are complete
-    vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);
-
-    // Update the UBO inline in the command buffer
-    vkCmdUpdateBuffer(cmdBuf, buffer, 0, sizeof(ubo), &ubo);
-
-    // Barrier: ensure write is visible before subsequent shader reads
-    vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
-}
-
-// ============================================================================
 // Filtered draw — renders only draw calls within a queue range
 // ============================================================================
 
-void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
+void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
+                                         rhi::BindGroupHandle perViewGroup, const glm::mat4 &viewMatrix, int queueMin,
                                          int queueMax, const std::string &sortMode, const std::string &overrideMaterial,
                                          const std::string &passTag,
                                          const MaterialPassPipelineDescriptor *pipelineDescriptor)
@@ -273,6 +446,11 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     if (!activePass.IsValid()) {
         INXLOG_ERROR("DrawSceneFiltered received an invalid ", ShaderCompileTargetName(activePass.target),
                      " pass pipeline descriptor");
+        return;
+    }
+    const VkDescriptorSet perViewDescriptorSet = m_backend.Device().GetRhiDevice().Resolve(perViewGroup);
+    if (perViewDescriptorSet == VK_NULL_HANDLE) {
+        INXLOG_ERROR("DrawSceneFiltered received an invalid per-view bind group");
         return;
     }
     // One-shot diagnostic: log queue-range filtering for first N frames
@@ -365,7 +543,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // cost every frame is avoided via the is_sorted() early-out.
         float sortKey = 0.0f;
         if (sortMode == "back_to_front") {
-            glm::vec4 viewPos = m_stagedUBO.view * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
+            glm::vec4 viewPos = viewMatrix * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
             sortKey = viewPos.z;
         }
 
@@ -610,7 +788,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        ShaderProgram *program = nullptr;
+        ShaderProgramPublication program;
 
         [[nodiscard]] bool IsValid() const noexcept
         {
@@ -667,7 +845,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             return {forward->pipeline, forward->pipelineLayout, forward->descriptorSet, forward->shaderProgram};
         }
 
-        ShaderProgram *program = forward->shaderProgram;
+        ShaderProgramPublication program = forward->shaderProgram;
         if (activePass.target != ShaderCompileTarget::Forward) {
             // Every semantic pass belongs to the same committed generation as
             // Forward. The material may currently hold a rejected shader pair,
@@ -684,7 +862,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             if (!program)
                 return {};
         }
-        MaterialPassRenderData *pass = m_materialPipelineManager.GetOrCreatePassRenderData(owner, *program, activePass);
+        MaterialPassRenderData *pass = m_materialPipelineManager.GetOrCreatePassRenderData(owner, program, activePass);
         if (!pass || !pass->isValid)
             return {};
         return {pass->pipeline, pass->pipelineLayout, pass->descriptorSet, pass->shaderProgram};
@@ -767,6 +945,19 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             continue;
         }
 
+        // Commit CPU-side material changes before selecting the immutable GPU
+        // generation used by this draw. Texture resolution may publish a new
+        // descriptor set, so resolving first and updating afterwards leaves a
+        // stale set in the local draw state during the same command recording.
+        if (matRaw != currentMaterialRaw) {
+            UpdateMaterialUBO(*matRaw);
+            resolved = resolveMaterialPass(*matOwner);
+            if (!resolved.IsValid()) {
+                emitBatch();
+                continue;
+            }
+        }
+
         VkPipeline pipeline = resolved.pipeline;
         VkPipelineLayout pipelineLayout = resolved.layout;
         VkDescriptorSet descriptorSet = resolved.descriptorSet;
@@ -825,7 +1016,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
 
         if (matRaw != currentMaterialRaw) {
-            UpdateMaterialUBO(*matRaw);
             currentMaterialRaw = matRaw;
             currentLayout = VK_NULL_HANDLE;
             currentDescriptorSet = VK_NULL_HANDLE;
@@ -864,14 +1054,12 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             currentDescriptorSet = descriptorSet;
             currentLayout = pipelineLayout;
 
-            ShaderProgram *program = resolved.program;
+            const ShaderProgram *program = resolved.program.get();
 
-            if (m_activeShadowDescSet != VK_NULL_HANDLE) {
-                if (program && program->HasDeclaredDescriptorSet(1)) {
-                    vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set1", cmdBuf,
-                                                          VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
-                                                          &m_activeShadowDescSet, 0, nullptr);
-                }
+            if (program && program->HasDeclaredDescriptorSet(1)) {
+                vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set1", cmdBuf,
+                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
+                                                      &perViewDescriptorSet, 0, nullptr);
             }
 
             if (program && program->HasDeclaredDescriptorSet(2)) {
@@ -1307,24 +1495,31 @@ InxVkCoreModular::ShadowCameraResourceId InxVkCoreModular::CreateShadowCameraRes
 void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResources &resources) noexcept
 {
     const VkDevice device = GetDevice();
-    const VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
-    if (allocator != VK_NULL_HANDLE) {
-        for (size_t index = 0; index < resources.uniformBuffers.size(); ++index) {
-            if (resources.uniformBuffers[index] != VK_NULL_HANDLE)
-                vmaDestroyBuffer(allocator, resources.uniformBuffers[index], resources.allocations[index]);
-        }
-    }
-    resources.uniformBuffers.clear();
-    resources.allocations.clear();
+    const VmaAllocator allocator = m_backend.Device().GetVmaAllocator();
+    auto uniformBuffers = std::make_shared<std::vector<VkBuffer>>(std::move(resources.uniformBuffers));
+    auto allocations = std::make_shared<std::vector<VmaAllocation>>(std::move(resources.allocations));
+    auto streamFrames =
+        std::make_shared<std::vector<ShadowCameraResources::StreamFrame>>(std::move(resources.streamFrames));
     resources.mappedPointers.clear();
     resources.descriptorSets.clear();
-    resources.streamFrames.clear();
-    if (device != VK_NULL_HANDLE && resources.descriptorPool != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device, resources.descriptorPool, nullptr);
-    if (device != VK_NULL_HANDLE && resources.streamDescriptorPool != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device, resources.streamDescriptorPool, nullptr);
-    resources.descriptorPool = VK_NULL_HANDLE;
-    resources.streamDescriptorPool = VK_NULL_HANDLE;
+    if (device != VK_NULL_HANDLE) {
+        auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+        for (const auto &lease : resources.descriptorLeases)
+            descriptorManager.Retire(lease);
+        for (const auto &lease : resources.streamDescriptorLeases)
+            descriptorManager.Retire(lease);
+    }
+    resources.descriptorLeases.clear();
+    resources.streamDescriptorLeases.clear();
+    if (allocator != VK_NULL_HANDLE) {
+        m_deletionQueue.Retire([allocator, uniformBuffers, allocations, streamFrames]() mutable {
+            for (size_t index = 0; index < uniformBuffers->size(); ++index) {
+                if ((*uniformBuffers)[index] != VK_NULL_HANDLE)
+                    vmaDestroyBuffer(allocator, (*uniformBuffers)[index], (*allocations)[index]);
+            }
+            streamFrames->clear();
+        });
+    }
 }
 
 void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResourceId resourceId) noexcept
@@ -1348,37 +1543,25 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
         return true;
 
     const uint32_t totalSets = m_maxFramesInFlight * lighting::MaxShadowViews;
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = totalSets;
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = totalSets;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    if (vkCreateDescriptorPool(GetDevice(), &poolInfo, nullptr, &resources.descriptorPool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create camera-local shadow descriptor pool");
-        return false;
-    }
-
+    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
     resources.descriptorSets.resize(totalSets, VK_NULL_HANDLE);
-    std::vector<VkDescriptorSetLayout> layouts(totalSets, m_shadowDescSetLayout);
-    VkDescriptorSetAllocateInfo allocationInfo{};
-    allocationInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocationInfo.descriptorPool = resources.descriptorPool;
-    allocationInfo.descriptorSetCount = totalSets;
-    allocationInfo.pSetLayouts = layouts.data();
-    if (vkAllocateDescriptorSets(GetDevice(), &allocationInfo, resources.descriptorSets.data()) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to allocate camera-local shadow descriptor sets");
-        DestroyShadowCameraResources(resources);
-        return false;
+    resources.descriptorLeases.reserve(totalSets);
+    for (uint32_t index = 0; index < totalSets; ++index) {
+        auto lease = descriptorManager.Allocate(m_shadowDescSetLayout, vk::DescriptorArena::ViewPersistent);
+        if (!lease.IsValid()) {
+            INXLOG_ERROR("Failed to allocate camera-local shadow descriptor set ", index);
+            DestroyShadowCameraResources(resources);
+            return false;
+        }
+        resources.descriptorSets[index] = lease.set;
+        resources.descriptorLeases.push_back(lease);
     }
 
     const VkDeviceSize uboSize = sizeof(ShadowPassUniformData);
     resources.uniformBuffers.resize(totalSets, VK_NULL_HANDLE);
     resources.allocations.resize(totalSets, VK_NULL_HANDLE);
     resources.mappedPointers.resize(totalSets, nullptr);
-    const VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
+    const VmaAllocator allocator = m_backend.Device().GetVmaAllocator();
     for (uint32_t index = 0; index < totalSets; ++index) {
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1408,33 +1591,17 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
         vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
     }
 
-    VkDescriptorPoolSize streamPoolSizes[2]{};
-    streamPoolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    streamPoolSizes[0].descriptorCount = m_maxFramesInFlight;
-    streamPoolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    streamPoolSizes[1].descriptorCount = m_maxFramesInFlight * 3;
-    VkDescriptorPoolCreateInfo streamPoolInfo{};
-    streamPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    streamPoolInfo.maxSets = m_maxFramesInFlight;
-    streamPoolInfo.poolSizeCount = 2;
-    streamPoolInfo.pPoolSizes = streamPoolSizes;
-    if (vkCreateDescriptorPool(GetDevice(), &streamPoolInfo, nullptr, &resources.streamDescriptorPool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create camera-local shadow stream descriptor pool");
-        DestroyShadowCameraResources(resources);
-        return false;
-    }
-
-    std::vector<VkDescriptorSetLayout> streamLayouts(m_maxFramesInFlight, m_shadowGlobalsDescSetLayout);
     std::vector<VkDescriptorSet> streamDescriptorSets(m_maxFramesInFlight, VK_NULL_HANDLE);
-    VkDescriptorSetAllocateInfo streamAllocationInfo{};
-    streamAllocationInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    streamAllocationInfo.descriptorPool = resources.streamDescriptorPool;
-    streamAllocationInfo.descriptorSetCount = m_maxFramesInFlight;
-    streamAllocationInfo.pSetLayouts = streamLayouts.data();
-    if (vkAllocateDescriptorSets(GetDevice(), &streamAllocationInfo, streamDescriptorSets.data()) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to allocate camera-local shadow stream descriptor sets");
-        DestroyShadowCameraResources(resources);
-        return false;
+    resources.streamDescriptorLeases.reserve(m_maxFramesInFlight);
+    for (uint32_t index = 0; index < m_maxFramesInFlight; ++index) {
+        auto lease = descriptorManager.Allocate(m_shadowGlobalsDescSetLayout, vk::DescriptorArena::ViewPersistent);
+        if (!lease.IsValid()) {
+            INXLOG_ERROR("Failed to allocate camera-local shadow stream descriptor set ", index);
+            DestroyShadowCameraResources(resources);
+            return false;
+        }
+        streamDescriptorSets[index] = lease.set;
+        resources.streamDescriptorLeases.push_back(lease);
     }
 
     resources.streamFrames.resize(m_maxFramesInFlight);
@@ -1749,9 +1916,14 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyPipelineLayout(device, m_shadowPipelineLayout, nullptr);
         m_shadowPipelineLayout = VK_NULL_HANDLE;
     }
-    // Cached material sets are reclaimed with their owner pool pages. Deferred
-    // replacements were flushed before this device-idle cleanup path.
+    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+    for (auto &[owner, entry] : m_shadowMaterialBindingCache) {
+        (void)owner;
+        descriptorManager.Retire(entry.descriptorLease);
+    }
     m_shadowMaterialBindingCache.clear();
+    descriptorManager.Retire(m_shadowMaterialDummyLease);
+    m_shadowMaterialDummyLease = {};
     m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
     for (auto &[resourceId, resources] : m_shadowCameraResources) {
         (void)resourceId;
@@ -1766,11 +1938,7 @@ void InxVkCoreModular::CleanupShadowPipeline()
         vkDestroyDescriptorSetLayout(device, m_shadowGlobalsDescSetLayout, nullptr);
         m_shadowGlobalsDescSetLayout = VK_NULL_HANDLE;
     }
-    for (VkDescriptorPool pool : m_shadowMaterialDescPools) {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device, pool, nullptr);
-    }
-    m_shadowMaterialDescPools.clear();
+    (void)descriptorManager.Collect((std::numeric_limits<rhi::SubmissionSerial>::max)());
     if (m_shadowMaterialDescSetLayout != VK_NULL_HANDLE) {
         vkDestroyDescriptorSetLayout(device, m_shadowMaterialDescSetLayout, nullptr);
         m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;
@@ -1864,6 +2032,13 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
         if (objectIt->second.sharedKey == sharedKey) {
             objectIt->second.lastVertexPtr = vertices.data();
             objectIt->second.lastIndexPtr = indices.data();
+            // Pointer identity is only a fast-path hint. RenderWorld frame
+            // publications may recycle equivalent CPU mesh storage, so a
+            // pointer change with identical content is still a live use of
+            // this object on the current ensure frame. Without this stamp the
+            // frame-end sweep removes the object, and it is recreated on the
+            // next frame, producing an appear/disappear cycle.
+            objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
             return;
         }
     }
@@ -2024,7 +2199,7 @@ void InxVkCoreModular::RetireSharedMeshBuffers(SharedMeshBuffers buffers, bool e
         throw std::logic_error("Cannot retire invalid shared mesh residency");
     m_retiredMeshLeases.push_back({buffers.vertexBuffer, buffers.indexBuffer, buffers.residentBytes});
     auto retired = std::make_shared<SharedMeshBuffers>(std::move(buffers));
-    m_deletionQueue.Push([retired = std::move(retired)]() mutable {
+    m_deletionQueue.Retire([retired = std::move(retired)]() mutable {
         retired->vertexBuffer.reset();
         retired->indexBuffer.reset();
     });
@@ -2195,7 +2370,7 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     // Canonical per-view ABI. Geometry uses binding 0 plus the tiled buffers;
     // particles also consume binding 4 because their set 0 remains dedicated
     // to simulation instances and material resources.
-    std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[0].descriptorCount = 1;
@@ -2210,6 +2385,10 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -2222,31 +2401,7 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     }
     ShaderProgram::SetPerViewDescSetLayout(m_perViewDescSetLayout);
 
-    // Pool: enough for multiple render graphs (scene + game + future cameras)
-    std::array<VkDescriptorPoolSize, 3> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = 16;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = 48;
-    poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[2].descriptorCount = 16;
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = 16;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-
-    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_perViewDescPool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create per-view descriptor pool");
-        vkDestroyDescriptorSetLayout(device, m_perViewDescSetLayout, nullptr);
-        m_perViewDescSetLayout = VK_NULL_HANDLE;
-        ShaderProgram::SetPerViewDescSetLayout(VK_NULL_HANDLE);
-        return false;
-    }
-
-    INXLOG_INFO("Created per-view descriptor set layout and pool (multi-camera shadow)");
+    INXLOG_INFO("Created per-view descriptor set layout (multi-camera shadow)");
     return true;
 }
 
@@ -2256,12 +2411,6 @@ void InxVkCoreModular::DestroyPerViewDescriptorResources()
     if (device == VK_NULL_HANDLE)
         return;
 
-    m_activeShadowDescSet = VK_NULL_HANDLE;
-
-    if (m_perViewDescPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_perViewDescPool, nullptr);
-        m_perViewDescPool = VK_NULL_HANDLE;
-    }
     if (m_perViewDescSetLayout != VK_NULL_HANDLE) {
         ShaderProgram::SetPerViewDescSetLayout(VK_NULL_HANDLE);
         vkDestroyDescriptorSetLayout(device, m_perViewDescSetLayout, nullptr);
@@ -2269,29 +2418,24 @@ void InxVkCoreModular::DestroyPerViewDescriptorResources()
     }
 }
 
-VkDescriptorSet InxVkCoreModular::AllocatePerViewDescriptorSet()
+vk::DescriptorLease InxVkCoreModular::AllocatePerViewDescriptorLease()
 {
-    if (m_perViewDescSetLayout == VK_NULL_HANDLE || m_perViewDescPool == VK_NULL_HANDLE) {
+    if (m_perViewDescSetLayout == VK_NULL_HANDLE) {
         INXLOG_ERROR("Per-view descriptor resources not initialized");
-        return VK_NULL_HANDLE;
+        return {};
     }
 
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_perViewDescPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &m_perViewDescSetLayout;
-
-    VkDescriptorSet descSet = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(GetDevice(), &allocInfo, &descSet) != VK_SUCCESS) {
+    auto lease = m_backend.Device().GetRhiDevice().GetDescriptorManager().Allocate(m_perViewDescSetLayout,
+                                                                                   vk::DescriptorArena::ViewPersistent);
+    if (!lease.IsValid()) {
         INXLOG_ERROR("Failed to allocate per-view descriptor set");
-        return VK_NULL_HANDLE;
+        return {};
     }
 
     // Initialize with default (white) texture so shaders don't sample garbage
-    ClearPerViewShadowMap(descSet);
+    ClearPerViewShadowMap(lease.set);
 
-    return descSet;
+    return lease;
 }
 
 void InxVkCoreModular::UpdatePerViewShadowMap(VkDescriptorSet perViewDescSet, VkImageView shadowView,
@@ -2344,7 +2488,7 @@ void InxVkCoreModular::UpdatePerViewForwardPlusBuffers(VkDescriptorSet perViewDe
     if (perViewDescSet == VK_NULL_HANDLE || canonicalBytes == 0 || tileHeaderBytes == 0 || tileLightMaskBytes == 0)
         return;
 
-    auto &rhiDevice = m_deviceContext.GetRhiDevice();
+    auto &rhiDevice = m_backend.Device().GetRhiDevice();
     const std::array<VkDescriptorBufferInfo, 3> infos = {{
         {rhiDevice.Resolve(canonicalLights), 0, canonicalBytes},
         {rhiDevice.Resolve(tileHeaders), 0, tileHeaderBytes},
@@ -2390,6 +2534,22 @@ void InxVkCoreModular::UpdatePerViewLightingBuffer(VkDescriptorSet perViewDescSe
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = perViewDescSet;
     write.dstBinding = 4;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo = &info;
+    vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
+}
+
+void InxVkCoreModular::UpdatePerViewCameraBuffer(VkDescriptorSet perViewDescSet, VkBuffer cameraUbo,
+                                                 uint64_t cameraUboBytes)
+{
+    if (perViewDescSet == VK_NULL_HANDLE || cameraUbo == VK_NULL_HANDLE || cameraUboBytes == 0)
+        return;
+    VkDescriptorBufferInfo info{cameraUbo, 0, cameraUboBytes};
+    VkWriteDescriptorSet write{};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = perViewDescSet;
+    write.dstBinding = 5;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.pBufferInfo = &info;

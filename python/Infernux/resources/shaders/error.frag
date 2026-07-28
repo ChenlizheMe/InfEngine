@@ -1,9 +1,11 @@
 #version 450
 
-@shader_id: Error
-@shading_model: Unlit
-@queue: 2000
-@hidden
+ShaderInfo {
+    Name "Error"
+    Hidden On
+    ShadingModel Unlit
+    Queue 2000
+}
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();

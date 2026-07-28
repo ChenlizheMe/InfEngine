@@ -322,6 +322,21 @@ void VkPipelineManager::DestroyRenderPass(VkRenderPass renderPass)
     vkDestroyRenderPass(m_device, renderPass, nullptr);
 }
 
+bool VkPipelineManager::DetachRenderPass(VkRenderPass renderPass) noexcept
+{
+    if (renderPass == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    const auto it = std::find(m_renderPasses.begin(), m_renderPasses.end(), renderPass);
+    if (it == m_renderPasses.end()) {
+        return false;
+    }
+
+    m_renderPasses.erase(it);
+    return true;
+}
+
 // ============================================================================
 // Pipeline Layout Management
 // ============================================================================

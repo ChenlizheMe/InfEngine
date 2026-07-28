@@ -81,6 +81,26 @@ class _Panel:
             "properties": {},
         }
 
+    def add_authoring_parameter(self, name, value_type, default, *, exposed):
+        self.calls.append(
+            ("add-parameter", name, value_type, default, exposed)
+        )
+        return {
+            "stable_id": "parameter-id",
+            "name": name,
+            "type": {"value_type": value_type, "space": "none"},
+            "default": default,
+            "exposed": exposed,
+        }
+
+    def update_authoring_parameter(self, parameter_id, values):
+        self.calls.append(("update-parameter", parameter_id, values))
+        return {"stable_id": parameter_id, **values, "changed": True}
+
+    def remove_authoring_parameter(self, parameter_id):
+        self.calls.append(("remove-parameter", parameter_id))
+        return {"stable_id": parameter_id, "changed": True}
+
     def set_node_property(self, node_uid, property_name, value):
         self.calls.append(("property", node_uid, property_name, value))
         return {
@@ -124,19 +144,6 @@ class _Panel:
     def patch_authoring_emitter_settings(self, emitter_id, values):
         self.calls.append(("patch-emitter-settings", emitter_id, values))
         return {"stable_id": emitter_id, "settings": values, "changed": True}
-
-    def set_authoring_emitter_lifecycle(
-        self, emitter_id, *, enabled, play_on_start
-    ):
-        self.calls.append(
-            ("emitter-lifecycle", emitter_id, enabled, play_on_start)
-        )
-        return {
-            "stable_id": emitter_id,
-            "enabled": enabled,
-            "play_on_start": play_on_start,
-            "changed": True,
-        }
 
     def add_authoring_data_interface(self, emitter_id, kind, name):
         self.calls.append(("add-data-interface", emitter_id, kind, name))
@@ -317,9 +324,6 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     patched_settings = mcp.tools["particle_graph_patch_emitter_settings"](
         "target", {"capacity": 8}
     )
-    lifecycle = mcp.tools["particle_graph_set_emitter_lifecycle"](
-        "target", False, False
-    )
     data_interface = mcp.tools["particle_graph_add_data_interface"](
         "target", "sdf_volume", "Collision"
     )
@@ -393,8 +397,7 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert emitter["emitter"]["stable_id"] == "target"
     assert emitter_settings["changed"] is True
     assert patched_settings["settings"] == {"capacity": 8}
-    assert lifecycle["enabled"] is False
-    assert lifecycle["play_on_start"] is False
+    assert "particle_graph_set_emitter_lifecycle" not in mcp.tools
     assert data_interface["interface"]["kind"] == "sdf_volume"
     assert data_asset["interface"]["texture"]["guid"] == "sdf-guid"
     assert data_patch["interface"]["distance_scale"] == 2.0
@@ -429,7 +432,6 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         ("add-emitter", "Target"),
         ("emitter-settings", "target", {"spawn_rate": 0.0}),
         ("patch-emitter-settings", "target", {"capacity": 8}),
-        ("emitter-lifecycle", "target", False, False),
         ("add-data-interface", "target", "sdf_volume", "Collision"),
         (
             "set-data-interface-asset",
@@ -648,6 +650,120 @@ def test_particle_system_runtime_tool_reads_only_the_control_plane(monkeypatch):
     }
 
 
+def test_particle_graph_mcp_tools_author_blackboard_parameters(tmp_path, monkeypatch):
+    graph_path = tmp_path / "Assets" / "Parameters.particlegraph"
+    graph_path.parent.mkdir(parents=True)
+    graph_path.write_text("{}", encoding="utf-8")
+    panel = _Panel(graph_path)
+    monkeypatch.setattr(module, "_require_particle_graph_panel", lambda: panel)
+    monkeypatch.setattr(
+        module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    mcp = _FakeMcp()
+    module.register_particle_tools(mcp, str(tmp_path))
+
+    added = mcp.tools["particle_graph_add_parameter"](
+        "Wind", "vec3", [1.0, 2.0, 3.0], True
+    )
+    updated = mcp.tools["particle_graph_update_parameter"](
+        "parameter-id", {"default": [4.0, 5.0, 6.0], "category": "Motion"}
+    )
+    removed = mcp.tools["particle_graph_remove_parameter"]("parameter-id")
+
+    assert added["parameter"]["type"]["value_type"] == "vec3"
+    assert updated["parameter"]["category"] == "Motion"
+    assert removed["parameter"]["changed"] is True
+    assert panel.calls == [
+        ("add-parameter", "Wind", "vec3", [1.0, 2.0, 3.0], True),
+        (
+            "update-parameter",
+            "parameter-id",
+            {"default": [4.0, 5.0, 6.0], "category": "Motion"},
+        ),
+        ("remove-parameter", "parameter-id"),
+    ]
+
+
+def test_particle_system_mcp_tools_get_and_set_exposed_parameters(monkeypatch):
+    class _Component:
+        def __init__(self):
+            self.values = {"Wind": [1.0, 2.0, 3.0]}
+            self.emitter_options = {
+                "enabled": True,
+                "play_on_start": True,
+            }
+
+        def get_parameter(self, name):
+            return self.values[name]
+
+        def set_parameter(self, name, value):
+            self.values[name] = list(value)
+
+        def runtime_diagnostics(self):
+            return {"artifact_revision": 9}
+
+        def set_emitter_options(self, emitter, *, enabled, play_on_start):
+            assert emitter == "Smoke"
+            self.emitter_options = {
+                "enabled": enabled,
+                "play_on_start": play_on_start,
+            }
+            return True
+
+        def emitter_instance_schema(self):
+            return [
+                {
+                    "stable_id": "smoke",
+                    "name": "Smoke",
+                    **self.emitter_options,
+                }
+            ]
+
+    class _Object:
+        id = 456
+        name = "Parameterized VFX"
+
+    component = _Component()
+    monkeypatch.setattr(module, "find_game_object", lambda object_id: _Object())
+    monkeypatch.setattr(module, "_find_particle_system", lambda _obj, ordinal: component)
+    monkeypatch.setattr(
+        module,
+        "main_thread",
+        lambda _operation, callback, **_kwargs: callback(),
+    )
+    mcp = _FakeMcp()
+    module.register_particle_runtime_tools(mcp)
+
+    before = mcp.tools["particle_system_get_parameter"](456, "Wind")
+    changed = mcp.tools["particle_system_set_parameter"](
+        456, "Wind", [4.0, 5.0, 6.0]
+    )
+    emitter_changed = mcp.tools["particle_system_set_emitter_options"](
+        456, "Smoke", False, False
+    )
+
+    assert before["value"] == [1.0, 2.0, 3.0]
+    assert changed["value"] == [4.0, 5.0, 6.0]
+    assert changed["runtime"]["artifact_revision"] == 9
+    assert emitter_changed["changed"] is True
+    assert emitter_changed["emitters"][0]["enabled"] is False
+
+
+def test_particle_system_mcp_has_one_parameter_contract(monkeypatch):
+    mcp = _FakeMcp()
+    module.register_particle_runtime_tools(mcp)
+
+    assert "particle_system_get_parameter" in mcp.tools
+    assert "particle_system_set_parameter" in mcp.tools
+    assert "particle_system_set_emitter_options" in mcp.tools
+    assert "particle_system_list_resources" not in mcp.tools
+    assert "particle_system_get_resource" not in mcp.tools
+    assert "particle_system_set_resource" not in mcp.tools
+    assert "particle_system_clear_resource" not in mcp.tools
+
+
 def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
     class _Component:
         def request_gpu_diagnostics(self):
@@ -660,6 +776,27 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
                 "status": "completed",
                 "emitters": [{"stable_id": "target", "alive_count": 12}],
                 "events": [{"route_stable_id": "impact", "spawned_count": 12}],
+            }
+
+        def request_gpu_view_diagnostics(self, view):
+            assert view == "game"
+            return 78
+
+        def poll_gpu_view_diagnostics(self, view, request_id):
+            assert view == "game"
+            assert request_id == 78
+            return {
+                "request_id": 78,
+                "view": "game",
+                "status": "completed",
+                "outputs": [
+                    {
+                        "output_stable_id": "ribbon",
+                        "cull_mode": "ribbon_segments",
+                        "source_count": 20,
+                        "visible_count": 7,
+                    }
+                ],
             }
 
     class _Object:
@@ -683,6 +820,12 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
 
     requested = mcp.tools["particle_system_request_gpu_diagnostics"](456)
     polled = mcp.tools["particle_system_poll_gpu_diagnostics"](456, 77)
+    view_requested = mcp.tools["particle_system_request_gpu_view_diagnostics"](
+        456, "GAME"
+    )
+    view_polled = mcp.tools["particle_system_poll_gpu_view_diagnostics"](
+        456, "game", 78
+    )
 
     assert requested == {
         "object_id": 456,
@@ -692,6 +835,9 @@ def test_particle_system_gpu_diagnostic_tools_request_then_poll(monkeypatch):
     }
     assert polled["diagnostics"]["emitters"][0]["alive_count"] == 12
     assert polled["diagnostics"]["events"][0]["spawned_count"] == 12
+    assert view_requested["request_id"] == 78
+    assert view_requested["view"] == "game"
+    assert view_polled["diagnostics"]["outputs"][0]["visible_count"] == 7
 
 
 def test_particle_system_emitter_control_tools_are_indexed_no_ops(monkeypatch):

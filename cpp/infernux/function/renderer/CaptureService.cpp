@@ -188,11 +188,14 @@ CaptureService::CaptureService() : m_impl(std::make_unique<Impl>())
 
 CaptureService::~CaptureService() = default;
 
-uint64_t CaptureService::Request(CaptureSource source, uint64_t sourceGeneration, uint64_t engineFrame,
-                                 std::string outputPath)
+uint64_t CaptureService::Request(CaptureSource source, const rhi::RenderViewContext &view, uint64_t sourceGeneration,
+                                 uint64_t engineFrame, std::string outputPath)
 {
     if (outputPath.empty())
         throw std::invalid_argument("Capture output path cannot be empty");
+    if (!view.IsValid() || view.kind != rhi::RenderViewKind::Capture ||
+        view.output != rhi::RenderOutputKind::Readback || view.source == rhi::InvalidRenderViewId)
+        throw std::invalid_argument("Capture requires a valid readback view derived from a source render view");
 
     size_t inFlight = 0;
     for (const auto &[id, record] : m_impl->records) {
@@ -220,7 +223,10 @@ uint64_t CaptureService::Request(CaptureSource source, uint64_t sourceGeneration
     record.snapshot.source = source;
     record.snapshot.status = CaptureStatus::PendingGpu;
     record.snapshot.sourceGeneration = sourceGeneration;
+    record.snapshot.view = view;
     record.snapshot.engineFrame = engineFrame;
+    record.snapshot.width = view.width;
+    record.snapshot.height = view.height;
     record.snapshot.outputPath = std::move(outputPath);
     m_impl->records.emplace(id, std::move(record));
     return id;

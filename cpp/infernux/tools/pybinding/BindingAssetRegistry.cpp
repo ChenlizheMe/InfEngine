@@ -1,7 +1,6 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
-#include <function/resources/InxPointCache/InxPointCache.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
@@ -16,57 +15,6 @@ namespace infernux
 {
 namespace
 {
-uint32_t PointCacheChannelComponentCount(PointCacheChannelType type)
-{
-    switch (type) {
-    case PointCacheChannelType::Float:
-    case PointCacheChannelType::UInt:
-        return 1;
-    case PointCacheChannelType::Float2:
-        return 2;
-    case PointCacheChannelType::Float3:
-        return 3;
-    case PointCacheChannelType::Float4:
-        return 4;
-    case PointCacheChannelType::Count:
-        break;
-    }
-    throw std::invalid_argument("point cache channel has an invalid type");
-}
-
-py::array PointCacheChannelArray(const std::shared_ptr<InxPointCache> &pointCache, const std::string &channelName)
-{
-    if (!pointCache)
-        throw std::invalid_argument("point cache is null");
-    const auto cpuData = pointCache->GetCpuData();
-    if (!cpuData || !cpuData->IsValid())
-        throw std::runtime_error("point cache has no valid CPU data");
-    const auto *channel = cpuData->FindChannel(channelName);
-    if (!channel)
-        throw py::key_error("point cache channel does not exist: " + channelName);
-
-    const uint32_t componentCount = PointCacheChannelComponentCount(channel->type);
-    const uint64_t requiredBytes = static_cast<uint64_t>(channel->elementStride) * cpuData->pointCount;
-    if (channel->byteOffset > cpuData->bytes.size() || requiredBytes > cpuData->bytes.size() - channel->byteOffset)
-        throw std::runtime_error("point cache channel range is outside the immutable CPU payload");
-
-    std::vector<py::ssize_t> shape{static_cast<py::ssize_t>(cpuData->pointCount)};
-    std::vector<py::ssize_t> strides{static_cast<py::ssize_t>(channel->elementStride)};
-    if (componentCount > 1) {
-        shape.push_back(static_cast<py::ssize_t>(componentCount));
-        strides.push_back(static_cast<py::ssize_t>(sizeof(float)));
-    }
-
-    auto *generation = new std::shared_ptr<const PointCacheCpuData>(cpuData);
-    py::capsule owner(generation,
-                      [](void *value) { delete static_cast<std::shared_ptr<const PointCacheCpuData> *>(value); });
-    const auto dtype =
-        channel->type == PointCacheChannelType::UInt ? py::dtype::of<uint32_t>() : py::dtype::of<float>();
-    py::array result(dtype, shape, strides, cpuData->bytes.data() + channel->byteOffset, owner);
-    result.attr("setflags")(false);
-    return result;
-}
-
 py::array VolumeArray(const std::shared_ptr<InxTexture> &texture)
 {
     if (!texture)
@@ -114,28 +62,6 @@ py::array VolumeArray(const std::shared_ptr<InxTexture> &texture)
     return result;
 }
 
-void PointCacheLookupIndices(const std::shared_ptr<InxPointCache> &pointCache,
-                             const py::array_t<uint32_t, py::array::c_style> &stableIds,
-                             py::array_t<uint32_t, py::array::c_style> pointIndices)
-{
-    if (!pointCache)
-        throw std::invalid_argument("point cache is null");
-    const auto cpuData = pointCache->GetCpuData();
-    if (!cpuData || !cpuData->IsValid())
-        throw std::runtime_error("point cache has no valid CPU data");
-    const auto input = stableIds.request();
-    auto output = pointIndices.request();
-    if (input.ndim != 1 || output.ndim != 1 || input.shape[0] != output.shape[0])
-        throw std::invalid_argument("point cache ID lookup requires matching one-dimensional arrays");
-    if (!pointIndices.writeable())
-        throw std::invalid_argument("point cache ID lookup output must be writable");
-    const auto *source = static_cast<const uint32_t *>(input.ptr);
-    auto *destination = static_cast<uint32_t *>(output.ptr);
-    const size_t count = static_cast<size_t>(input.shape[0]);
-    py::gil_scoped_release release;
-    for (size_t index = 0; index < count; ++index)
-        destination[index] = cpuData->FindPointIndex(source[index]);
-}
 } // namespace
 
 void RegisterAssetRegistryBindings(py::module_ &m)
@@ -354,61 +280,6 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def("volume_array", &VolumeArray,
              "Return a zero-copy, read-only (depth, height, width, 4) NumPy view of one volume generation");
 
-    py::class_<InxPointCache, std::shared_ptr<InxPointCache>>(m, "InxPointCache")
-        .def_property_readonly("name", &InxPointCache::GetName)
-        .def_property_readonly("guid", &InxPointCache::GetGuid)
-        .def_property_readonly("file_path", &InxPointCache::GetFilePath)
-        .def_property_readonly("generation", &InxPointCache::GetGeneration)
-        .def_property_readonly("stable_id",
-                               [](const InxPointCache &self) {
-                                   const auto &cpu = self.GetCpuData();
-                                   return cpu ? cpu->stableId : std::string{};
-                               })
-        .def_property_readonly("bake_basis",
-                               [](const InxPointCache &self) {
-                                   const auto &cpu = self.GetCpuData();
-                                   return cpu ? cpu->bakeBasis : std::string{};
-                               })
-        .def_property_readonly("point_count",
-                               [](const InxPointCache &self) {
-                                   const auto &cpu = self.GetCpuData();
-                                   return cpu ? cpu->pointCount : 0U;
-                               })
-        .def_property_readonly("channel_names",
-                               [](const InxPointCache &self) {
-                                   std::vector<std::string> names;
-                                   const auto &cpu = self.GetCpuData();
-                                   if (!cpu)
-                                       return names;
-                                   names.reserve(cpu->channels.size());
-                                   for (const auto &channel : cpu->channels)
-                                       names.push_back(channel.name);
-                                   return names;
-                               })
-        .def_property_readonly("cpu_byte_size",
-                               [](const InxPointCache &self) {
-                                   const auto &cpu = self.GetCpuData();
-                                   return cpu ? cpu->bytes.size() : size_t{0};
-                               })
-        .def(
-            "has_channel",
-            [](const InxPointCache &self, const std::string &name) {
-                const auto &cpu = self.GetCpuData();
-                return cpu && cpu->FindChannel(name) != nullptr;
-            },
-            py::arg("name"))
-        .def("channel_array", &PointCacheChannelArray, py::arg("name"),
-             "Return a zero-copy, read-only NumPy view of one channel generation")
-        .def(
-            "lookup_index",
-            [](const InxPointCache &self, uint32_t stableId) {
-                const auto &cpu = self.GetCpuData();
-                return cpu ? cpu->FindPointIndex(stableId) : UINT32_MAX;
-            },
-            py::arg("stable_id"))
-        .def("lookup_indices", &PointCacheLookupIndices, py::arg("stable_ids"), py::arg("point_indices"),
-             "Map a contiguous uint32 stable-ID array to point indices in one native batch");
-
     // ── AssetRegistry — unified asset cache (singleton) ─────────────────
     py::class_<AssetRegistry, std::unique_ptr<AssetRegistry, py::nodelete>>(m, "AssetRegistry")
         .def_static("instance", &AssetRegistry::Instance, py::return_value_policy::reference,
@@ -492,29 +363,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
                 return self.BeginLoadAsset(guid, ResourceType::Texture);
             },
             py::arg("guid"), "Schedule texture artifact load/decode on JobSystem")
-        .def(
-            "load_point_cache",
-            [](AssetRegistry &self, const std::string &path) {
-                return self.LoadAssetByPath<InxPointCache>(path, ResourceType::PointCache);
-            },
-            py::arg("path"), "Load an imported Point Cache CPU artifact by path")
-        .def(
-            "load_point_cache_by_guid",
-            [](AssetRegistry &self, const std::string &guid) {
-                return self.LoadAsset<InxPointCache>(guid, ResourceType::PointCache);
-            },
-            py::arg("guid"), "Load an imported Point Cache CPU artifact by GUID")
-        .def(
-            "get_point_cache",
-            [](AssetRegistry &self, const std::string &guid) { return self.GetAsset<InxPointCache>(guid); },
-            py::arg("guid"), "Get a cached Point Cache by GUID")
-        .def(
-            "begin_load_point_cache_by_guid",
-            [](AssetRegistry &self, const std::string &guid) {
-                return self.BeginLoadAsset(guid, ResourceType::PointCache);
-            },
-            py::arg("guid"), "Schedule Point Cache artifact loading on JobSystem")
         .def("try_commit_asset_load", &AssetRegistry::TryCommitAssetLoad, py::arg("ticket"),
+             py::arg("allow_stale_if_unloaded") = false,
              "Publish a completed typed CPU payload; false means still pending")
 
         // Hot-reload / invalidation

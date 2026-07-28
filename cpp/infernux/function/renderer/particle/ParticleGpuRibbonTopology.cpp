@@ -19,6 +19,7 @@ struct ParticleRenderInstance {
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndices { uint source_indices[]; };
@@ -43,6 +44,12 @@ layout(std430, set = 0, binding = 9) buffer RibbonIndirectArguments {
     uint ribbon_instance_count;
     uint ribbon_first_vertex;
     uint ribbon_first_instance;
+};
+layout(std430, set = 0, binding = 10) readonly buffer SimulationControl {
+    uint any_view_visible;
+    uint simulation_allowed;
+    uint offscreen_policy;
+    uint simulation_control_reserved;
 };
 layout(push_constant) uniform RibbonConstants {
     uint capacity;
@@ -85,6 +92,7 @@ std::string_view GpuParticleRibbonShaderSources::Reset() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 1) in;\n", R"glsl(
 void main() {
+    if (simulation_allowed == 0u) return;
     uint live_count = inx_live_count();
     dispatch_group_count_x = (live_count + 255u) / 256u;
     dispatch_group_count_y = 1u;
@@ -102,6 +110,7 @@ std::string_view GpuParticleRibbonShaderSources::Initialize() noexcept
 {
     static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
 void main() {
+    if (simulation_allowed == 0u) return;
     uint index = gl_GlobalInvocationID.x;
     if (index < inx_live_count()) input_indices[index] = source_indices[index];
 }
@@ -114,6 +123,7 @@ std::string_view GpuParticleRibbonShaderSources::Histogram() noexcept
     static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
 shared uint local_histogram[16];
 void main() {
+    if (simulation_allowed == 0u) return;
     uint local_index = gl_LocalInvocationID.x;
     if (local_index < 16u) local_histogram[local_index] = 0u;
     barrier();
@@ -136,6 +146,7 @@ std::string_view GpuParticleRibbonShaderSources::Scan() noexcept
     static const std::string Source = BuildShader({}, "layout(local_size_x = 16) in;\n", R"glsl(
 shared uint totals[16];
 void main() {
+    if (simulation_allowed == 0u) return;
     uint bin = gl_LocalInvocationID.x;
     uint running = 0u;
     uint active_block_count = min(dispatch_group_count_x, pc.block_count);
@@ -163,6 +174,7 @@ std::string_view GpuParticleRibbonShaderSources::Scatter() noexcept
 const uint INX_MAX_SUBGROUPS = 64u;
 shared uint subgroup_counts[16 * INX_MAX_SUBGROUPS];
 void main() {
+    if (simulation_allowed == 0u) return;
     uint local_index = gl_LocalInvocationID.x;
     uint subgroup_count = (256u + gl_SubgroupSize - 1u) / gl_SubgroupSize;
     uint clear_count = min(subgroup_count, INX_MAX_SUBGROUPS) * 16u;
@@ -238,7 +250,8 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
 {
     Destroy();
     if (desc.capacity == 0 || desc.capacity > std::numeric_limits<uint32_t>::max() / 6u || !desc.instances.IsValid() ||
-        !desc.sourceIndices.IsValid() || !desc.sourceIndirectArguments.IsValid() || !desc.program.IsValid())
+        !desc.sourceIndices.IsValid() || !desc.sourceIndirectArguments.IsValid() ||
+        !desc.simulationControl.IsValid() || !desc.program.IsValid())
         return false;
 
     m_device = &device;
@@ -247,14 +260,22 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
     m_instances = desc.instances;
     m_sourceIndices = desc.sourceIndices;
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
+    m_simulationControl = desc.simulationControl;
 
     const uint64_t elementBytes = static_cast<uint64_t>(m_capacity) * sizeof(uint32_t);
     const uint64_t blockBytes = static_cast<uint64_t>(m_blockCount) * Radix * sizeof(uint32_t);
     const auto storage = rhi::BufferUsageFlags::Storage;
     const auto storageIndirect = storage | rhi::BufferUsageFlags::Indirect;
+    const auto createRenderExport = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+        rhi::BufferDesc bufferDesc;
+        bufferDesc.byteSize = bytes;
+        bufferDesc.usage = usage;
+        bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+        return device.CreateBuffer(bufferDesc);
+    };
     for (auto &buffer : m_indices)
-        buffer = device.CreateBuffer({elementBytes, storage});
-    m_drawIndirectArguments = device.CreateBuffer({16, storageIndirect});
+        buffer = createRenderExport(elementBytes, storage);
+    m_drawIndirectArguments = createRenderExport(16, storageIndirect);
     m_dispatchArguments = device.CreateBuffer({12, storageIndirect});
     m_histograms = device.CreateBuffer({blockBytes, storage});
     m_blockOffsets = device.CreateBuffer({blockBytes, storage});
@@ -267,7 +288,7 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
     }
 
     rhi::BindingLayoutDesc layout;
-    for (uint32_t binding = 0; binding < 10; ++binding)
+    for (uint32_t binding = 0; binding < 11; ++binding)
         layout.entries[layout.entryCount++] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     m_layout = device.CreateBindingLayout(layout);
     if (!m_layout.IsValid()) {
@@ -276,9 +297,10 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
     }
 
     for (uint32_t pingPong = 0; pingPong < m_groups.size(); ++pingPong) {
-        const std::array<rhi::BufferHandle, 10> buffers = {
+        const std::array<rhi::BufferHandle, 11> buffers = {
             m_instances,  m_sourceIndices, m_sourceIndirectArguments, m_indices[pingPong], m_indices[1u - pingPong],
             m_histograms, m_blockOffsets,  m_globalOffsets,           m_dispatchArguments, m_drawIndirectArguments,
+            m_simulationControl,
         };
         rhi::BindGroupDesc group;
         group.layout = m_layout;
@@ -342,6 +364,7 @@ void ParticleGpuRibbonTopology::Destroy() noexcept
     m_instances = {};
     m_sourceIndices = {};
     m_sourceIndirectArguments = {};
+    m_simulationControl = {};
     m_indices.fill({});
     m_drawIndirectArguments = {};
     m_dispatchArguments = {};
@@ -360,7 +383,8 @@ void ParticleGpuRibbonTopology::Destroy() noexcept
 bool ParticleGpuRibbonTopology::IsValid() const noexcept
 {
     return m_device && m_capacity > 0 && m_blockCount > 0 && m_instances.IsValid() && m_sourceIndices.IsValid() &&
-           m_sourceIndirectArguments.IsValid() && m_indices[0].IsValid() && m_indices[1].IsValid() &&
+           m_sourceIndirectArguments.IsValid() && m_simulationControl.IsValid() && m_indices[0].IsValid() &&
+           m_indices[1].IsValid() &&
            m_drawIndirectArguments.IsValid() && m_dispatchArguments.IsValid() && m_histograms.IsValid() &&
            m_blockOffsets.IsValid() && m_globalOffsets.IsValid() && m_layout.IsValid() && m_groups[0].IsValid() &&
            m_groups[1].IsValid() && m_resetPipeline.IsValid() && m_initializePipeline.IsValid() &&

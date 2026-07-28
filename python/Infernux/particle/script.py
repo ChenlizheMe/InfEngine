@@ -21,10 +21,11 @@ from .asset import (
     ParticleEventRoute,
     ParticleEventType,
     ParticleGraphAsset,
+    ParticleParameter,
     ScalarRange,
     default_stage_graph,
 )
-from .data_interface import PointCache, SdfVolume, VectorField
+from .data_interface import SdfVolume, VectorField
 from .hir import ParticleGraphCompiler
 from .nodes import (
     particle_event_output_type_id,
@@ -39,6 +40,19 @@ class ParticleScript:
 
 class ParticleEmitter:
     """Marker base for one emitter declaration nested in ParticleScript."""
+
+
+@dataclass(frozen=True)
+class Parameter:
+    """One graph-level parameter declaration for the AST-only frontend."""
+
+    stable_id: str
+    name: str
+    value_type: str
+    default: Any
+    exposed: bool = True
+    category: str = ""
+    tooltip: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,19 +93,13 @@ class _EventParseContext:
     emitter_id: str
     event_types: dict[str, ParticleEventType]
     event_routes: dict[str, ParticleEventRoute]
+    parameters_by_id: dict[str, ParticleParameter]
+    parameter_id_by_name: dict[str, str]
 
 
 class _ParticleStageContext:
-    def sample_point_cache(
-        self,
-        interface: str,
-        index_or_id: int,
-        *,
-        channel: str = "$position",
-        value_type: str = "vec3",
-        lookup: str = "index",
-        semantic: str = "auto",
-    ): ...
+    def parameter(self, name_or_stable_id: str): ...
+    def sample_texture2d(self, texture, uv): ...
     def sample_vector_field(self, interface: str, position): ...
     def sample_curve(self, curve: Curve, t: float) -> float: ...
     def sample_gradient(self, gradient: Gradient, t: float): ...
@@ -125,6 +133,8 @@ class ParticleStream:
     ribbon_strip_id: int
     ribbon_order: int
     ribbon_break: bool
+    collision_hit: bool
+    collision_normal: tuple[float, float, float]
 
     def set_position(self, value) -> None: ...
     def set_velocity(self, value) -> None: ...
@@ -165,6 +175,15 @@ class ParticleStream:
         restitution: float = 0.5,
         friction: float = 0.1,
         inverted: bool = False,
+    ) -> None: ...
+    def collide_scene(
+        self,
+        *,
+        particle_radius: float = 0.0,
+        layer_mask: int = 0xFFFFFFFF,
+        include_triggers: bool = False,
+        restitution_scale: float = 1.0,
+        friction_scale: float = 1.0,
     ) -> None: ...
     def rotate(self, degrees_per_second) -> None: ...
     def rotate_orientation(self, degrees_per_second) -> None: ...
@@ -222,6 +241,9 @@ class ParticleScriptCompiler:
     """Parse the public DSL into ParticleGraph without executing source code."""
 
     _STAGE_METHODS = frozenset({"init", "update", "rendering"})
+    _COLLISION_LIFECYCLE_METHODS = frozenset(
+        {"collision_enter", "collision_stay", "collision_exit"}
+    )
     _ATTRIBUTE_OPERATIONS = {
         "set_position": ("particle.attribute.set_position", "value"),
         "set_velocity": ("particle.attribute.set_velocity", "value"),
@@ -244,6 +266,7 @@ class ParticleScriptCompiler:
             "collide_plane": ("particle.update.collide_plane", ""),
             "collide_sphere": ("particle.update.collide_sphere", ""),
             "collide_sdf": ("particle.update.collide_sdf", ""),
+            "collide_scene": ("particle.update.collide_scene", ""),
             "rotate": ("particle.update.rotate", "degrees_per_second"),
             "rotate_orientation": (
                 "particle.update.rotate_orientation",
@@ -292,10 +315,13 @@ class ParticleScriptCompiler:
         emitter_names = [node.name for node in emitter_nodes]
         if len(set(emitter_names)) != len(emitter_names):
             raise ParticleScriptError("ParticleScript emitter class names must be unique")
+        parameters = self._parse_parameters(script, source_name)
         event_types = self._parse_event_types(script, source_name)
         event_routes = self._parse_event_routes(script, source_name)
         event_type_map = {value.stable_id: value for value in event_types}
         event_route_map = {value.stable_id: value for value in event_routes}
+        parameter_map = {value.stable_id: value for value in parameters}
+        parameter_id_by_name = {value.name: value.stable_id for value in parameters}
         emitter_id_set = set(emitter_ids)
         for route in event_routes:
             if route.event_type_id not in event_type_map:
@@ -314,7 +340,13 @@ class ParticleScriptCompiler:
             self._parse_emitter(
                 node,
                 source_name,
-                _EventParseContext(emitter_id, event_type_map, event_route_map),
+                _EventParseContext(
+                    emitter_id,
+                    event_type_map,
+                    event_route_map,
+                    parameter_map,
+                    parameter_id_by_name,
+                ),
             )
             for node, emitter_id in zip(emitter_nodes, emitter_ids)
         )
@@ -326,6 +358,7 @@ class ParticleScriptCompiler:
                 stable_id=stable_id,
                 name=script.name,
                 emitters=emitters,
+                parameters=parameters,
                 event_types=event_types,
                 event_routes=event_routes,
             )
@@ -337,6 +370,48 @@ class ParticleScriptCompiler:
 
     def load(self, path: str):
         return self.compile(Path(path).read_text(encoding="utf-8"), source_name=str(path))
+
+    def _parse_parameters(
+        self, script: ast.ClassDef, source_name: str
+    ) -> tuple[ParticleParameter, ...]:
+        assignment = self._assignment(script, "parameters")
+        if assignment is None:
+            return ()
+        values = self._value(assignment)
+        if not isinstance(values, (list, tuple)) or not all(
+            isinstance(value, Parameter) for value in values
+        ):
+            raise self._error(
+                source_name,
+                assignment,
+                "parameters must be a list or tuple of Parameter values",
+            )
+        try:
+            result = tuple(
+                ParticleParameter(
+                    value.stable_id,
+                    value.name,
+                    TypeRef(ValueType(value.value_type)),
+                    list(value.default)
+                    if isinstance(value.default, tuple)
+                    else value.default,
+                    value.exposed,
+                    value.category,
+                    value.tooltip,
+                )
+                for value in values
+            )
+        except (TypeError, ValueError) as exc:
+            raise self._error(
+                source_name, assignment, f"invalid ParticleScript parameter: {exc}"
+            ) from exc
+        if len({value.stable_id for value in result}) != len(result):
+            raise self._error(
+                source_name, assignment, "parameter stable IDs must be unique"
+            )
+        if len({value.name for value in result}) != len(result):
+            raise self._error(source_name, assignment, "parameter names must be unique")
+        return result
 
     def _parse_event_types(
         self, script: ast.ClassDef, source_name: str
@@ -463,12 +538,12 @@ class ParticleScriptCompiler:
                 )
             data_interfaces = tuple(decoded_interfaces)
         if not all(
-            isinstance(value, (VectorField, SdfVolume, PointCache)) for value in data_interfaces
+            isinstance(value, (VectorField, SdfVolume)) for value in data_interfaces
         ):
             raise self._error(
                 source_name,
                 data_interfaces_node or node,
-                "emitter data_interfaces must contain VectorField, SdfVolume, or PointCache values",
+                "emitter data_interfaces must contain VectorField or SdfVolume values",
             )
         methods = {
             item.name: item
@@ -476,12 +551,21 @@ class ParticleScriptCompiler:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         missing = self._STAGE_METHODS - set(methods)
-        unknown = set(methods) - self._STAGE_METHODS
+        unknown = set(methods) - (
+            self._STAGE_METHODS | self._COLLISION_LIFECYCLE_METHODS
+        )
         if missing or unknown:
             raise self._error(
                 source_name,
                 node,
                 f"emitter methods mismatch; missing={sorted(missing)}, unknown={sorted(unknown)}",
+            )
+        collision_methods = self._COLLISION_LIFECYCLE_METHODS & set(methods)
+        if collision_methods and not settings.collision_enabled:
+            raise self._error(
+                source_name,
+                node,
+                "collision lifecycle methods require EmitterSettings(collision_enabled=True)",
             )
         stages = {
             stage: self._parse_stage(
@@ -492,6 +576,23 @@ class ParticleScriptCompiler:
             )
             for stage in ("init", "update", "rendering")
         }
+        collision_stages = {
+            stage: (
+                self._parse_stage(
+                    stage,
+                    methods[stage],
+                    source_name,
+                    event_context,
+                )
+                if stage in collision_methods
+                else None
+            )
+            for stage in (
+                "collision_enter",
+                "collision_stay",
+                "collision_exit",
+            )
+        }
         return ParticleEmitterAsset(
             stable_id=stable_id,
             name=node.name,
@@ -501,6 +602,9 @@ class ParticleScriptCompiler:
             data_interfaces=data_interfaces,
             init=stages["init"],
             update=stages["update"],
+            collision_enter=collision_stages["collision_enter"],
+            collision_stay=collision_stages["collision_stay"],
+            collision_exit=collision_stages["collision_exit"],
             rendering=stages["rendering"],
         )
 
@@ -517,6 +621,9 @@ class ParticleScriptCompiler:
             raise self._error(source_name, method, f"{stage} requires (self, ctx, particles)")
         stream_name = method.args.args[2].arg
         context_name = method.args.args[1].arg
+        operation_stage = (
+            "update" if stage in self._COLLISION_LIFECYCLE_METHODS else stage
+        )
         root = default_stage_graph(stage)
         nodes = [root.nodes[0]]
         links = []
@@ -560,7 +667,7 @@ class ParticleScriptCompiler:
                 previous_uid = uid
                 operation_index += 1
                 continue
-            operation = self._OPERATIONS[stage].get(call.func.attr)
+            operation = self._OPERATIONS[operation_stage].get(call.func.attr)
             if operation is None:
                 raise self._error(source_name, call, f"unsupported {stage} operation {call.func.attr!r}")
             type_id, positional_property = operation
@@ -772,6 +879,10 @@ class ParticleScriptCompiler:
             node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)
         ):
             return True
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            return True
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return True
         if isinstance(node, ast.Compare):
             return True
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
@@ -796,6 +907,17 @@ class ParticleScriptCompiler:
         links: list[GraphLinkRecord],
         event_context: _EventParseContext,
     ) -> tuple[tuple[str, str], int]:
+        if isinstance(node, ast.Constant) and type(node.value) is bool:
+            uid = f"{stage}.expr.{expression_index}.bool"
+            nodes.append(
+                GraphNodeRecord(
+                    uid,
+                    "common.constant.bool",
+                    properties={"value": node.value},
+                )
+            )
+            return (uid, "value"), expression_index + 1
+
         if isinstance(node, ast.Constant) and type(node.value) in {int, float}:
             uid = f"{stage}.expr.{expression_index}.constant"
             nodes.append(
@@ -854,6 +976,79 @@ class ParticleScriptCompiler:
             )
             return (uid, "result"), expression_index + 1
 
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            if len(node.values) < 2:
+                raise self._error(
+                    source_name, node, "particle boolean operations require two inputs"
+                )
+            result, expression_index = self._parse_expression(
+                node.values[0],
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+                event_context=event_context,
+            )
+            operation = (
+                ("and", "common.logic.and")
+                if isinstance(node.op, ast.And)
+                else ("or", "common.logic.or")
+            )
+            for value_node in node.values[1:]:
+                right, expression_index = self._parse_expression(
+                    value_node,
+                    stage=stage,
+                    context_name=context_name,
+                    stream_name=stream_name,
+                    source_name=source_name,
+                    expression_index=expression_index,
+                    nodes=nodes,
+                    links=links,
+                    event_context=event_context,
+                )
+                uid = f"{stage}.expr.{expression_index}.{operation[0]}"
+                nodes.append(GraphNodeRecord(uid, operation[1]))
+                links.extend(
+                    (
+                        GraphLinkRecord(
+                            f"{stage}.expr.link.{expression_index}.a",
+                            result[0], result[1], uid, "a", PortKind.VALUE,
+                        ),
+                        GraphLinkRecord(
+                            f"{stage}.expr.link.{expression_index}.b",
+                            right[0], right[1], uid, "b", PortKind.VALUE,
+                        ),
+                    )
+                )
+                result = (uid, "result")
+                expression_index += 1
+            return result, expression_index
+
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            operand, expression_index = self._parse_expression(
+                node.operand,
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+                event_context=event_context,
+            )
+            uid = f"{stage}.expr.{expression_index}.not"
+            nodes.append(GraphNodeRecord(uid, "common.logic.not"))
+            links.append(
+                GraphLinkRecord(
+                    f"{stage}.expr.link.{expression_index}.value",
+                    operand[0], operand[1], uid, "value", PortKind.VALUE,
+                )
+            )
+            return (uid, "result"), expression_index + 1
+
         if isinstance(node, ast.Compare):
             if len(node.ops) != 1 or len(node.comparators) != 1:
                 raise self._error(source_name, node, "chained particle comparisons are unsupported")
@@ -862,9 +1057,15 @@ class ParticleScriptCompiler:
                 ast.LtE: ("less_equal", "common.compare.less_equal"),
                 ast.Gt: ("greater_than", "common.compare.greater_than"),
                 ast.GtE: ("greater_equal", "common.compare.greater_equal"),
+                ast.Eq: ("equal", "common.compare.equal"),
+                ast.NotEq: ("not_equal", "common.compare.not_equal"),
             }.get(type(node.ops[0]))
             if comparison is None:
-                raise self._error(source_name, node, "particle comparisons support <, <=, > and >=")
+                raise self._error(
+                    source_name,
+                    node,
+                    "particle comparisons support <, <=, >, >=, == and !=",
+                )
             left, expression_index = self._parse_expression(
                 node.left,
                 stage=stage,
@@ -913,26 +1114,28 @@ class ParticleScriptCompiler:
                 nodes.append(GraphNodeRecord(uid, "particle.attribute.normalized_age"))
                 return (uid, "value"), expression_index + 1
             attributes = {
-                "id": ("particle.attribute.read_u32", "builtin.id"),
-                "position": ("particle.attribute.read_vec3", "builtin.position"),
-                "age": ("particle.attribute.read_f32", "builtin.age"),
-                "lifetime": ("particle.attribute.read_f32", "builtin.lifetime"),
-                "size": ("particle.attribute.read_f32", "builtin.size"),
-                "scale": ("particle.attribute.read_vec3", "builtin.scale"),
-                "ribbon_strip_id": ("particle.attribute.read_u32", "builtin.ribbon_strip_id"),
-                "ribbon_order": ("particle.attribute.read_u32", "builtin.ribbon_order"),
-                "ribbon_break": ("particle.attribute.read_bool", "builtin.ribbon_break"),
-                "rotation": ("particle.attribute.read_f32", "builtin.rotation"),
-                "color": ("particle.attribute.read_color", "builtin.color"),
+                "id": "builtin.id",
+                "position": "builtin.position",
+                "age": "builtin.age",
+                "lifetime": "builtin.lifetime",
+                "size": "builtin.size",
+                "scale": "builtin.scale",
+                "ribbon_strip_id": "builtin.ribbon_strip_id",
+                "ribbon_order": "builtin.ribbon_order",
+                "ribbon_break": "builtin.ribbon_break",
+                "collision_hit": "builtin.collision_hit",
+                "collision_normal": "builtin.collision_normal",
+                "rotation": "builtin.rotation",
+                "color": "builtin.color",
             }
             if node.attr not in attributes:
                 raise self._error(source_name, node, f"unsupported particle attribute {node.attr!r}")
-            type_id, attribute = attributes[node.attr]
+            attribute = attributes[node.attr]
             uid = f"{stage}.expr.{expression_index}.{node.attr}"
             nodes.append(
                 GraphNodeRecord(
                     uid,
-                    type_id,
+                    "particle.attribute.get",
                     properties={"attribute": attribute},
                 )
             )
@@ -945,6 +1148,36 @@ class ParticleScriptCompiler:
             and node.func.value.id == context_name
         ):
             raise self._error(source_name, node, "unsupported particle expression")
+        if node.func.attr == "parameter":
+            if len(node.args) != 1 or node.keywords:
+                raise self._error(
+                    source_name,
+                    node,
+                    "parameter requires exactly one name or stable ID string",
+                )
+            lookup = self._literal(node.args[0])
+            if type(lookup) is not str or not lookup:
+                raise self._error(
+                    source_name,
+                    node.args[0],
+                    "parameter name or stable ID must be a non-empty string",
+                )
+            stable_id = lookup
+            if stable_id not in event_context.parameters_by_id:
+                stable_id = event_context.parameter_id_by_name.get(lookup, "")
+            if not stable_id:
+                raise self._error(
+                    source_name, node.args[0], f"unknown particle parameter {lookup!r}"
+                )
+            uid = f"{stage}.expr.{expression_index}.parameter"
+            nodes.append(
+                GraphNodeRecord(
+                    uid,
+                    "particle.parameter.get",
+                    properties={"parameter": stable_id},
+                )
+            )
+            return (uid, "value"), expression_index + 1
         if node.func.attr == "event_payload":
             if stage != "init":
                 raise self._error(
@@ -998,6 +1231,58 @@ class ParticleScriptCompiler:
                 uid,
                 particle_event_payload_port_id(field_id),
             ), expression_index + 1
+        if node.func.attr == "sample_texture2d":
+            if len(node.args) != 2 or node.keywords:
+                raise self._error(
+                    source_name,
+                    node,
+                    "sample_texture2d requires a Texture2D value and UV value",
+                )
+            texture_source, expression_index = self._parse_expression(
+                node.args[0],
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+                event_context=event_context,
+            )
+            uv_source, expression_index = self._parse_expression(
+                node.args[1],
+                stage=stage,
+                context_name=context_name,
+                stream_name=stream_name,
+                source_name=source_name,
+                expression_index=expression_index,
+                nodes=nodes,
+                links=links,
+                event_context=event_context,
+            )
+            uid = f"{stage}.expr.{expression_index}.sample_texture2d"
+            nodes.append(GraphNodeRecord(uid, "common.texture.sample2d"))
+            links.extend(
+                (
+                    GraphLinkRecord(
+                        f"{stage}.expr.link.{expression_index}.texture",
+                        texture_source[0],
+                        texture_source[1],
+                        uid,
+                        "texture",
+                        PortKind.VALUE,
+                    ),
+                    GraphLinkRecord(
+                        f"{stage}.expr.link.{expression_index}.uv",
+                        uv_source[0],
+                        uv_source[1],
+                        uid,
+                        "uv",
+                        PortKind.VALUE,
+                    ),
+                )
+            )
+            return (uid, "color"), expression_index + 1
         if node.func.attr in {"sample_curve", "sample_gradient"}:
             if len(node.args) != 2 or node.keywords:
                 raise self._error(
@@ -1092,158 +1377,6 @@ class ParticleScriptCompiler:
             )
             return (uid, "value"), expression_index + 1
 
-        if node.func.attr == "sample_point_cache":
-            if len(node.args) != 2:
-                raise self._error(
-                    source_name,
-                    node,
-                    "sample_point_cache requires an interface name and one index or stable ID",
-                )
-            keyword_nodes = {}
-            allowed_keywords = {"channel", "value_type", "lookup", "semantic"}
-            for keyword in node.keywords:
-                if (
-                    keyword.arg not in allowed_keywords
-                    or keyword.arg in keyword_nodes
-                ):
-                    raise self._error(
-                        source_name,
-                        keyword,
-                        "invalid or duplicate sample_point_cache argument",
-                    )
-                keyword_nodes[keyword.arg] = keyword.value
-
-            interface = self._literal(node.args[0])
-            if type(interface) is not str or not interface.strip():
-                raise self._error(
-                    source_name,
-                    node.args[0],
-                    "point cache interface must be a non-empty string",
-                )
-
-            properties = {
-                "channel": "$position",
-                "value_type": "vec3",
-                "lookup": "index",
-                "semantic": "auto",
-            }
-            for name, value_node in keyword_nodes.items():
-                value = self._literal(value_node)
-                if type(value) is not str or not value.strip():
-                    raise self._error(
-                        source_name,
-                        value_node,
-                        f"point cache {name} must be a non-empty string",
-                    )
-                properties[name] = (
-                    value.strip() if name == "channel" else value.strip().lower()
-                )
-
-            channel = properties["channel"]
-            lookup = properties["lookup"]
-            if lookup not in {"index", "stable_id"}:
-                raise self._error(
-                    source_name,
-                    keyword_nodes.get("lookup", node),
-                    "point cache lookup must be 'index' or 'stable_id'",
-                )
-
-            value_type_aliases = {
-                "float": "f32",
-                "f32": "f32",
-                "uint": "u32",
-                "u32": "u32",
-                "vector2": "vec2",
-                "vec2": "vec2",
-                "vector3": "vec3",
-                "vec3": "vec3",
-                "vector4": "vec4",
-                "vec4": "vec4",
-                "color": "color",
-            }
-            value_type = value_type_aliases.get(properties["value_type"])
-            if value_type is None:
-                raise self._error(
-                    source_name,
-                    keyword_nodes.get("value_type", node),
-                    "point cache value_type must be f32, u32, vec2, vec3, vec4, or color",
-                )
-
-            semantic = properties["semantic"]
-            if semantic == "auto":
-                semantic = {
-                    "$position": "position",
-                    "$normal": "normal",
-                }.get(channel, "raw")
-            if semantic not in {"raw", "position", "direction", "normal", "vector"}:
-                raise self._error(
-                    source_name,
-                    keyword_nodes.get("semantic", node),
-                    "point cache semantic must be raw, position, direction, normal, vector, or auto",
-                )
-
-            raw_node_types = {
-                "f32": "particle.point_cache.sample_f32",
-                "u32": "particle.point_cache.sample_u32",
-                "vec2": "particle.point_cache.sample_vec2",
-                "vec3": "particle.point_cache.sample_vec3_raw",
-                "vec4": "particle.point_cache.sample_vec4",
-                "color": "particle.point_cache.sample_color",
-            }
-            semantic_node_types = {
-                "position": "particle.point_cache.sample_position",
-                "direction": "particle.point_cache.sample_direction",
-                "normal": "particle.point_cache.sample_normal",
-                "vector": "particle.point_cache.sample_vector",
-            }
-            if semantic != "raw" and value_type != "vec3":
-                raise self._error(
-                    source_name,
-                    keyword_nodes.get("value_type", node),
-                    "transformed point cache samples require value_type='vec3'",
-                )
-            type_id = (
-                raw_node_types[value_type]
-                if semantic == "raw"
-                else semantic_node_types[semantic]
-            )
-
-            index_source, expression_index = self._parse_expression(
-                node.args[1],
-                stage=stage,
-                context_name=context_name,
-                stream_name=stream_name,
-                source_name=source_name,
-                expression_index=expression_index,
-                nodes=nodes,
-                links=links,
-                event_context=event_context,
-            )
-            uid = f"{stage}.expr.{expression_index}.sample_point_cache"
-            nodes.append(
-                GraphNodeRecord(
-                    uid,
-                    type_id,
-                    properties={
-                        "interface": interface.strip(),
-                        "channel": channel,
-                        "lookup": lookup,
-                        "semantic": semantic,
-                    },
-                )
-            )
-            links.append(
-                GraphLinkRecord(
-                    f"{stage}.expr.link.{expression_index}",
-                    index_source[0],
-                    index_source[1],
-                    uid,
-                    "index",
-                    PortKind.VALUE,
-                )
-            )
-            return (uid, "value"), expression_index + 1
-
         if node.func.attr != "sample_vector_field":
             raise self._error(source_name, node, f"unsupported particle context expression {node.func.attr!r}")
         if len(node.args) != 2 or node.keywords:
@@ -1311,12 +1444,20 @@ class ParticleScriptCompiler:
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),
             "SdfVolume": (),
-            "PointCache": (),
             "CurveKey": ("time", "value", "in_tangent", "out_tangent"),
             "Curve": ("keys", "pre_wrap", "post_wrap"),
             "GradientKey": ("time", "color"),
             "Gradient": ("keys", "mode"),
             "EventField": ("stable_id", "name", "value_type", "default", "space"),
+            "Parameter": (
+                "stable_id",
+                "name",
+                "value_type",
+                "default",
+                "exposed",
+                "category",
+                "tooltip",
+            ),
             "EventType": ("stable_id", "name", "capacity_per_step", "fields"),
             "EventRoute": (
                 "stable_id",
@@ -1345,12 +1486,12 @@ class ParticleScriptCompiler:
             "AssetReference": AssetReference,
             "VectorField": VectorField,
             "SdfVolume": SdfVolume,
-            "PointCache": PointCache,
             "CurveKey": CurveKey,
             "Curve": Curve,
             "GradientKey": GradientKey,
             "Gradient": Gradient,
             "EventField": EventField,
+            "Parameter": Parameter,
             "EventType": EventType,
             "EventRoute": EventRoute,
         }[expected_name]
@@ -1359,8 +1500,6 @@ class ParticleScriptCompiler:
                 values["texture"] = AssetReference.from_dict(values["texture"])
             if expected_name == "SdfVolume" and type(values.get("texture")) is dict:
                 values["texture"] = AssetReference.from_dict(values["texture"])
-            if expected_name == "PointCache" and type(values.get("cache")) is dict:
-                values["cache"] = AssetReference.from_dict(values["cache"])
             if expected_name == "EmitterShape" and type(values.get("mesh")) is dict:
                 values["mesh"] = AssetReference.from_dict(values["mesh"])
             result = constructor(**values)
@@ -1376,12 +1515,12 @@ class ParticleScriptCompiler:
             "AssetReference",
             "VectorField",
             "SdfVolume",
-            "PointCache",
             "CurveKey",
             "Curve",
             "GradientKey",
             "Gradient",
             "EventField",
+            "Parameter",
             "EventType",
             "EventRoute",
         }:
@@ -1452,6 +1591,8 @@ class ParticleScriptCompiler:
                 continue
             if self._is_named_assignment(statement, "stable_id"):
                 continue
+            if self._is_named_assignment(statement, "parameters"):
+                continue
             if self._is_named_assignment(statement, "event_types"):
                 continue
             if self._is_named_assignment(statement, "event_routes"):
@@ -1511,11 +1652,11 @@ __all__ = [
     "Gradient",
     "GradientKey",
     "ParticleEmitter",
+    "Parameter",
     "ParticleScript",
     "ParticleScriptCompiler",
     "ParticleScriptError",
     "ParticleStream",
-    "PointCache",
     "RenderingContext",
     "UpdateContext",
     "SdfVolume",

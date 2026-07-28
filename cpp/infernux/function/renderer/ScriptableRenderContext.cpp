@@ -10,7 +10,7 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Scene.h>
-#include <function/scene/SceneRenderer.h>
+#include <function/scene/SceneRenderBridge.h>
 
 #include <core/log/InxLog.h>
 
@@ -441,12 +441,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 
     if (!reuseObjectBuffers)
         m_vkCore->PrimeObjectBufferBindingCache(bufferIdentity, bufferIdentityDrawCallCount);
-
-    // Mesh dirtiness is a one-shot upload request. SceneRenderer caches draw
-    // calls across frames, so leaving the bit set would re-hash every mesh on
-    // every frame. The first context has now consumed the request; later
-    // cameras share the same VkCore object buffers.
-    SceneRenderBridge::Instance().GetSceneRenderer().AcknowledgeMeshBufferUpdates();
 
     DrawCallResult result;
     result.drawCalls = std::move(forwardDrawCalls);

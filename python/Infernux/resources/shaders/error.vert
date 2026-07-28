@@ -1,7 +1,9 @@
 #version 450
 
-@shader_id: Error
-@hidden
+ShaderInfo {
+    Name "Error"
+    Hidden On
+}
 
 // The error material uses the canonical mesh vertex path. Keeping it in the
 // linked shader system guarantees that every required material pass is built

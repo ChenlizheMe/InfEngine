@@ -1,21 +1,28 @@
 #version 450
-@shader_id: Pixelation
-@hidden
 
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PixelationParams {
-    float pixelSize;
-    float pixelAspect;
-    float gridOffsetX;
-    float gridOffsetY;
-    float intensity;
-    float samplingMode;
-    float preserveAlphaCoverage;
-} pc;
-
-layout(location = 0) in vec2 inUV;
-layout(location = 0) out vec4 outColor;
+ShaderInfo {
+    Name "Pixelation"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float pixelSize
+        Float pixelAspect
+        Float gridOffsetX
+        Float gridOffsetY
+        Float intensity
+        Float samplingMode
+        Float preserveAlphaCoverage
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 vec2 clampToTexel(vec2 pixelPosition, vec2 textureSizePx) {
     return clamp(pixelPosition, vec2(0.5), textureSizePx - vec2(0.5));

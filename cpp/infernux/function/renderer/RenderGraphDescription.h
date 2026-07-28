@@ -32,6 +32,10 @@ namespace infernux
  * Commands describe engine rendering operations
  * rather than Vulkan calls so
  * the same graph artifact can be compiled by another RHI backend later.
+ * Compute work
+ * is intentionally engine-owned and enters the native RHI
+ * RenderGraph directly; Python pipelines do not expose raw
+ * compute programs.
  */
 enum class GraphCommandType
 {
@@ -48,7 +52,6 @@ enum class GraphCommandType
 enum class GraphPassType
 {
     Raster,
-    Compute,
     Copy,
     Present
 };

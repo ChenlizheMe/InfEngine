@@ -31,6 +31,8 @@
 namespace infernux
 {
 
+class AssetLoadTicket;
+
 enum class RuntimeMode
 {
     Graphical,
@@ -257,6 +259,9 @@ class Infernux
     /// @brief Pump completed preview tasks on main thread and upload textures.
     void PumpPreviewTasks();
 
+    /// @brief Poll asynchronous GPU completion without waiting for the device.
+    void PollGpuCompletions();
+
     /// @brief Get uploaded texture id for a material preview key.
     /// @return Non-zero ImGui texture id when available (stale-return for anti-flicker).
     uint64_t GetMaterialPreviewTextureId(const std::string &resourceKey) const;
@@ -271,6 +276,11 @@ class Infernux
     /// @brief Get uploaded texture preview dimensions.
     /// @return (width,height); (0,0) when not ready.
     std::pair<int, int> GetTexturePreviewSize(const std::string &resourceKey) const;
+
+    /// @brief Get an already uploaded mesh preview without scheduling work.
+    /// Model thumbnails are imported asynchronously; this accessor is intentionally
+    /// a cache lookup so FileManager can stay responsive while an FBX is loading.
+    uint64_t GetMeshPreviewTextureId(const std::string &resourceKey) const;
 
     /// @brief Invalidate one material preview task/cache entry.
     void InvalidateMaterialPreviewTask(const std::string &resourceKey);
@@ -493,12 +503,16 @@ class Infernux
     {
         uint64_t generation = 0;
         uint64_t readyGeneration = 0;
+        uint64_t failedGeneration = 0;
         uint64_t lastFileMtime = 0;
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
         uint64_t renderGeneration = 0;
         std::shared_ptr<vk::ImageReadbackTicket> renderTicket;
+        std::shared_ptr<AssetLoadTicket> loadTicket;
+        std::string loadGuid;
+        uint64_t loadGeneration = 0;
         int pendingSize = 0;
         int readySize = 0;
         std::string textureName;

@@ -1,9 +1,10 @@
 #include <core/config/EngineConfig.h>
 #include <core/types/ColorSpace.h>
-#include <function/renderer/FrameDeletionQueue.h>
 #include <function/renderer/SceneDepthResolver.h>
+#include <function/renderer/VkTextureCache.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
+#include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuEventDomain.h>
@@ -13,6 +14,7 @@
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
+#include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -21,6 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -62,7 +65,10 @@ struct FakeDevice final : rhi::Device
     uint32_t graphicsPipelineReleases = 0;
     uint32_t pipelineReleases = 0;
     uint32_t writes = 0;
+    uint32_t readbacks = 0;
     std::vector<std::vector<uint8_t>> writtenBytes;
+    std::vector<uint64_t> writtenOffsets;
+    std::vector<rhi::BufferHandle> writtenBuffers;
     uint32_t nextIndex = 1;
 
     rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override
@@ -122,8 +128,8 @@ struct FakeDevice final : rhi::Device
     {
         assert(desc.computeShader.IsValid() &&
                (desc.bindingLayoutCount == 1 || desc.bindingLayoutCount == 2 || desc.bindingLayoutCount == 4) &&
-               (desc.pushConstantBytes == 16 || desc.pushConstantBytes == 32 || desc.pushConstantBytes == 80 ||
-                desc.pushConstantBytes == 112));
+               (desc.pushConstantBytes == 16 || desc.pushConstantBytes == 32 || desc.pushConstantBytes == 48 ||
+                desc.pushConstantBytes == 80 || desc.pushConstantBytes == 112));
         computePipelineDescs.push_back(desc);
         ++pipelineCreates;
         return {nextIndex++, 1};
@@ -138,11 +144,19 @@ struct FakeDevice final : rhi::Device
 
     bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override
     {
-        assert(handle.IsValid() && offset == 0 && data && byteSize > 0);
+        assert(handle.IsValid() && data && byteSize > 0);
         const auto *begin = static_cast<const uint8_t *>(data);
         writtenBytes.emplace_back(begin, begin + byteSize);
+        writtenOffsets.push_back(offset);
+        writtenBuffers.push_back(handle);
         ++writes;
         return true;
+    }
+
+    bool ReadBuffer(rhi::BufferHandle, uint64_t, void *, uint64_t) override
+    {
+        ++readbacks;
+        return false;
     }
 
     void Release(rhi::BufferHandle handle) noexcept override
@@ -183,6 +197,34 @@ struct FakeDevice final : rhi::Device
     }
 };
 
+using TestTextureSlots = std::unordered_map<std::string, std::shared_ptr<rhi::TextureGpuViewSlot>>;
+
+particle::GpuBillboardTextureLease AcquireTestTexture(FakeDevice &device, TestTextureSlots &slots,
+                                                       const std::string &sourceId, uint64_t revision,
+                                                       rhi::TextureViewHandle view, rhi::SamplerHandle sampler)
+{
+    const std::string canonicalSourceId = sourceId.empty() ? "white" : sourceId;
+    auto &slot = slots[canonicalSourceId];
+    if (!slot)
+        slot = std::make_shared<rhi::TextureGpuViewSlot>(canonicalSourceId);
+    auto publication = slot->Acquire();
+    if (!publication || publication->GetRevision() != revision) {
+        auto owner = std::shared_ptr<const void>(
+            new uint32_t(static_cast<uint32_t>(revision)),
+            [&device, view, sampler](const void *value) {
+                device.Release(view);
+                device.Release(sampler);
+                delete static_cast<const uint32_t *>(value);
+            });
+        auto next = std::make_shared<const rhi::TextureGpuView>(canonicalSourceId, revision, rhi::TextureHandle{},
+                                                                view, sampler, 1, std::move(owner));
+        (void)slot->Publish(next);
+        publication = std::move(next);
+    }
+    return {particle::GpuBillboardTextureStatus::Ready, publication->GetView(), publication->GetSampler(), slot,
+            std::move(publication)};
+}
+
 struct CommandTrace
 {
     std::vector<rhi::ComputePipelineHandle> pipelines;
@@ -216,6 +258,46 @@ struct CommandTrace
     }
     static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
     {
+    }
+};
+
+struct ContinuationTrace
+{
+    std::vector<rhi::ComputePipelineHandle> pipelines;
+    std::vector<rhi::BindGroupHandle> groups;
+    std::vector<uint32_t> groupSets;
+    std::vector<particle::GpuParticleContinuationConstants> constants;
+    std::vector<std::array<uint32_t, 3>> dispatches;
+    std::vector<rhi::BufferHandle> indirectBuffers;
+    std::vector<uint64_t> indirectOffsets;
+
+    static void BindPipeline(void *context, rhi::ComputePipelineHandle pipeline)
+    {
+        static_cast<ContinuationTrace *>(context)->pipelines.push_back(pipeline);
+    }
+    static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
+    {
+        assert(setIndex <= 1 && group.IsValid());
+        auto &trace = *static_cast<ContinuationTrace *>(context);
+        trace.groups.push_back(group);
+        trace.groupSets.push_back(setIndex);
+    }
+    static void PushConstants(void *context, rhi::ComputePipelineHandle, uint32_t byteSize, const void *data)
+    {
+        assert(byteSize == sizeof(particle::GpuParticleContinuationConstants));
+        particle::GpuParticleContinuationConstants value;
+        std::memcpy(&value, data, sizeof(value));
+        static_cast<ContinuationTrace *>(context)->constants.push_back(value);
+    }
+    static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
+    {
+        static_cast<ContinuationTrace *>(context)->dispatches.push_back({x, y, z});
+    }
+    static void DispatchIndirect(void *context, rhi::BufferHandle buffer, uint64_t offset)
+    {
+        auto &trace = *static_cast<ContinuationTrace *>(context);
+        trace.indirectBuffers.push_back(buffer);
+        trace.indirectOffsets.push_back(offset);
     }
 };
 
@@ -275,6 +357,29 @@ struct EventTrace
         static_cast<EventTrace *>(context)->dispatch = {x, y, z};
     }
     static void DispatchIndirect(void *, rhi::BufferHandle, uint64_t)
+    {
+    }
+};
+
+struct EventTransferTrace
+{
+    struct Copy
+    {
+        rhi::BufferHandle source;
+        rhi::BufferHandle destination;
+        rhi::BufferCopyRegion region;
+    };
+    std::vector<Copy> copies;
+
+    static void CopyBuffer(void *context, rhi::BufferHandle source, rhi::BufferHandle destination,
+                           const rhi::BufferCopyRegion &region)
+    {
+        static_cast<EventTransferTrace *>(context)->copies.push_back({source, destination, region});
+    }
+    static void CopyTexture(void *, rhi::TextureHandle, rhi::TextureHandle, const rhi::TextureCopyRegion &)
+    {
+    }
+    static void ResolveTexture(void *, rhi::TextureHandle, rhi::TextureHandle, const rhi::TextureResolveRegion &)
     {
     }
 };
@@ -498,6 +603,225 @@ struct BoundsTrace
 int main()
 {
     {
+        FakeDevice continuationDevice;
+        const auto ownerLayout = continuationDevice.CreateBindingLayout({});
+        rhi::BindGroupDesc ownerGroupDesc;
+        ownerGroupDesc.layout = ownerLayout;
+        const auto ownerGroup = continuationDevice.CreateBindGroup(ownerGroupDesc);
+        std::array<uint32_t, 5> continuationShader = {0x07230203u, 0u, 0u, 0u, 0u};
+        particle::GpuParticleContinuationDesc continuationDesc;
+        continuationDesc.capacity = 513;
+        continuationDesc.recordStride = 96;
+        continuationDesc.initialProgramGeneration = 41;
+        continuationDesc.ownerLayout = ownerLayout;
+        continuationDesc.ownerGroup = ownerGroup;
+        continuationDesc.program = {
+            {continuationShader.data(), continuationShader.size()},
+            {continuationShader.data(), continuationShader.size()},
+            {continuationShader.data(), continuationShader.size()},
+        };
+
+        auto current = std::make_shared<particle::ParticleGpuContinuationRuntime>();
+        assert(current->Create(continuationDevice, continuationDesc));
+        assert(current->IsValid() && current->Capacity() == 513 && current->ProgramGeneration() == 41 &&
+               current->ResetSerial() == 1 && current->RecordStride() == 96);
+        assert(continuationDevice.buffers.size() == 7);
+        assert(continuationDevice.buffers[0].byteSize ==
+                   uint64_t(continuationDesc.capacity) * continuationDesc.recordStride &&
+               continuationDevice.buffers[1].byteSize == uint64_t(continuationDesc.capacity) * sizeof(uint32_t) &&
+               continuationDevice.buffers[2].byteSize == continuationDevice.buffers[1].byteSize &&
+               continuationDevice.buffers[3].byteSize == continuationDevice.buffers[1].byteSize &&
+               continuationDevice.buffers[4].byteSize == sizeof(particle::GpuParticleContinuationCounters) &&
+               continuationDevice.buffers[5].byteSize ==
+                   particle::ParticleGpuContinuationRuntime::IndirectBufferBytes &&
+               continuationDevice.buffers[6].byteSize ==
+                   particle::ParticleGpuContinuationRuntime::IndirectBufferBytes);
+        for (size_t index = 0; index < continuationDevice.buffers.size(); ++index) {
+            assert(rhi::HasBufferUsage(continuationDevice.buffers[index].usage, rhi::BufferUsageFlags::Storage));
+            assert(continuationDevice.buffers[index].memory == rhi::BufferMemory::DeviceLocal &&
+                   continuationDevice.buffers[index].initialData == nullptr &&
+                   continuationDevice.buffers[index].initialDataBytes == 0 &&
+                   continuationDevice.buffers[index].queueAccess == rhi::QueueAccessFlags::Compute);
+        }
+        assert(rhi::HasBufferUsage(continuationDevice.buffers[4].usage,
+                                   rhi::BufferUsageFlags::TransferSource));
+        assert(rhi::HasBufferUsage(continuationDevice.buffers[5].usage, rhi::BufferUsageFlags::Indirect) &&
+               rhi::HasBufferUsage(continuationDevice.buffers[6].usage, rhi::BufferUsageFlags::Indirect));
+        assert(continuationDevice.layouts.back().entryCount == 7);
+        assert(continuationDevice.bindGroups.back().bufferCount == 7);
+        assert(continuationDevice.pipelineCreates == 3);
+        assert(continuationDevice.computePipelineDescs.size() == 3);
+        assert(continuationDevice.computePipelineDescs[0].bindingLayoutCount == 1);
+        assert(continuationDevice.computePipelineDescs[1].bindingLayoutCount == 1);
+        assert(continuationDevice.computePipelineDescs[2].bindingLayoutCount == 2);
+
+        ContinuationTrace continuationTrace;
+        const rhi::ComputeCommandEncoder::DispatchTable continuationDispatch = {
+            &ContinuationTrace::BindPipeline, &ContinuationTrace::BindGroup, &ContinuationTrace::PushConstants,
+            &ContinuationTrace::Dispatch, &ContinuationTrace::DispatchIndirect};
+        const rhi::ComputeCommandEncoder continuationEncoder(&continuationTrace, &continuationDispatch);
+        current->RequestReset();
+        assert(current->ProgramGeneration() == 42 && current->ResetSerial() == 2 &&
+               current->Telemetry().resetPending);
+        constexpr uint64_t Clock = 0x1122334455667788ull;
+        assert(!current->RecordClassify(continuationEncoder, 17, Clock));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock));
+        assert(current->RecordPrepare(continuationEncoder, 17, Clock));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock));
+        assert(current->RecordClassify(continuationEncoder, 17, Clock));
+        assert(!current->RecordClassify(continuationEncoder, 17, Clock));
+        assert(current->RecordDispatch(continuationEncoder, 17, Clock));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock));
+        const std::vector<std::array<uint32_t, 3>> expectedContinuationDispatches = {{{1, 1, 1}}};
+        assert(continuationTrace.pipelines.size() == 3 &&
+               continuationTrace.groupSets == std::vector<uint32_t>({0, 0, 0, 1}) &&
+               continuationTrace.dispatches == expectedContinuationDispatches);
+        assert(continuationTrace.indirectBuffers ==
+               std::vector<rhi::BufferHandle>({current->Resources().classifyIndirectArguments,
+                                               current->Resources().dispatchIndirectArguments}));
+        assert(continuationTrace.indirectOffsets == std::vector<uint64_t>({0, 0}));
+        assert(continuationTrace.constants.size() == 3 && continuationTrace.constants[0].capacity == 513 &&
+               continuationTrace.constants[0].programGeneration == 42 &&
+               continuationTrace.constants[0].simulationStep == 17 &&
+               continuationTrace.constants[0].resetSerial == 2 &&
+               continuationTrace.constants[0].resetRequested == 1 &&
+               continuationTrace.constants[0].elapsedTimeLow == 0x55667788u &&
+               continuationTrace.constants[0].elapsedTimeHigh == 0x11223344u &&
+               continuationTrace.constants[1].resetRequested == 0 &&
+               continuationTrace.constants[2].resetRequested == 0);
+        const auto telemetry = current->Telemetry();
+        assert(telemetry.capacity == 513 && telemetry.recordStride == 96 && telemetry.programGeneration == 42 &&
+               telemetry.resetSerial == 2 &&
+               telemetry.recordBytes == continuationDevice.buffers[0].byteSize &&
+               telemetry.queueBytes == continuationDevice.buffers[1].byteSize && telemetry.prepareRecordCalls == 1 &&
+               telemetry.classifyRecordCalls == 1 && telemetry.dispatchRecordCalls == 1 &&
+               !telemetry.resetPending && telemetry.gpuCountersOnly &&
+               telemetry.gpuCounters == current->Resources().counters &&
+               telemetry.gpuClassifyIndirectArguments == current->Resources().classifyIndirectArguments &&
+               telemetry.gpuDispatchIndirectArguments == current->Resources().dispatchIndirectArguments);
+        assert(continuationDevice.readbacks == 0);
+
+        auto replacement = std::make_shared<particle::ParticleGpuContinuationRuntime>();
+        assert(replacement->CreateCompatible(continuationDevice, continuationDesc, *current));
+        assert(replacement->IsValid() && replacement->SharesStorageWith(*current) &&
+               replacement->ProgramGeneration() == 43 && replacement->ResetSerial() == 1 &&
+               continuationDevice.buffers.size() == 7 && continuationDevice.pipelineCreates == 6);
+
+        GpuRetirementQueue retirement;
+        retirement.BindSerialSource([] { return rhi::SubmissionSerial{9}; });
+        const uint32_t pipelineReleasesBeforeRetire = continuationDevice.pipelineReleases;
+        retirement.Retire([retired = std::move(current)]() mutable { retired.reset(); });
+        assert(retirement.PendingCount() == 1 && continuationDevice.bufferReleases == 0 &&
+               continuationDevice.pipelineReleases == pipelineReleasesBeforeRetire);
+        assert(retirement.Collect(8) == 0 && continuationDevice.bufferReleases == 0);
+        assert(retirement.Collect(9) == 1 && continuationDevice.bufferReleases == 0 &&
+               continuationDevice.pipelineReleases == pipelineReleasesBeforeRetire + 3);
+        replacement->Destroy();
+        assert(continuationDevice.bufferReleases == 7 && continuationDevice.pipelineReleases == 6 &&
+               continuationDevice.groupReleases == 2 && continuationDevice.layoutReleases == 2);
+        continuationDevice.Release(ownerGroup);
+        continuationDevice.Release(ownerLayout);
+
+        FakeDevice invalidDevice;
+        const auto invalidOwnerLayout = invalidDevice.CreateBindingLayout({});
+        rhi::BindGroupDesc invalidOwnerGroupDesc;
+        invalidOwnerGroupDesc.layout = invalidOwnerLayout;
+        continuationDesc.ownerLayout = invalidOwnerLayout;
+        continuationDesc.ownerGroup = invalidDevice.CreateBindGroup(invalidOwnerGroupDesc);
+        continuationDesc.capacity = particle::ParticleGpuContinuationRuntime::MaximumCapacity + 1;
+        particle::ParticleGpuContinuationRuntime invalid;
+        assert(!invalid.Create(invalidDevice, continuationDesc) && invalidDevice.buffers.empty());
+    }
+
+    {
+        FakeDevice runtimeDevice;
+        std::array<uint32_t, 5> shader = {0x07230203u, 0u, 0u, 0u, 0u};
+        particle::GpuEmitterDesc runtimeDesc;
+        runtimeDesc.capacity = 64;
+        runtimeDesc.stateStride = 16;
+        runtimeDesc.parameterWords = {0, 0, 0, 0};
+        for (auto &kernel : runtimeDesc.kernels)
+            kernel = {shader.data(), shader.size()};
+        runtimeDesc.eventInitKernel = {shader.data(), shader.size()};
+        runtimeDesc.collisionSceneHeader = {901, 1};
+        runtimeDesc.collisionSceneColliders = {902, 1};
+        runtimeDesc.collisionSceneGridOffsets = {903, 1};
+        runtimeDesc.collisionSceneGridColliderIndices = {904, 1};
+        runtimeDesc.collisionSceneMeshVertices = {905, 1};
+        runtimeDesc.collisionSceneMeshIndices = {906, 1};
+        runtimeDesc.collisionSceneMeshBvhNodes = {907, 1};
+        runtimeDesc.continuation.capacity = 32;
+        runtimeDesc.continuation.initialProgramGeneration = 7;
+        runtimeDesc.continuation.program = {
+            {shader.data(), shader.size()},
+            {shader.data(), shader.size()},
+            {shader.data(), shader.size()},
+        };
+
+        particle::ParticleGpuRuntime current;
+        particle::ParticleGpuRuntime replacement;
+        assert(current.Create(runtimeDevice, runtimeDesc));
+        assert(current.IsValid() && current.HasContinuations() &&
+               current.ContinuationTelemetry().capacity == 32 &&
+               current.ContinuationTelemetry().programGeneration == 7);
+        assert(replacement.CreateCompatible(runtimeDevice, runtimeDesc, current));
+        assert(replacement.IsValid() && replacement.HasContinuations() && replacement.SharesStateWith(current) &&
+               replacement.SharesContinuationStateWith(current) &&
+               replacement.ContinuationTelemetry().programGeneration == 8);
+        const auto continuationRecords = current.ContinuationResources().records;
+        assert(current.AdoptCompatibleRevision(replacement));
+        assert(current.ContinuationTelemetry().programGeneration == 8 &&
+               replacement.ContinuationTelemetry().programGeneration == 7 &&
+               current.ContinuationResources().records == continuationRecords &&
+               replacement.ContinuationResources().records == continuationRecords);
+        const uint32_t buffersBeforeRetiredRevision = runtimeDevice.bufferReleases;
+        replacement.Destroy();
+        assert(runtimeDevice.bufferReleases == buffersBeforeRetiredRevision + 1);
+        current.RequestContinuationReset();
+        assert(current.ContinuationTelemetry().programGeneration == 9 &&
+               current.ContinuationTelemetry().resetPending);
+        current.Destroy();
+        assert(runtimeDevice.bufferReleases == buffersBeforeRetiredRevision + 17);
+    }
+
+    {
+        FakeDevice cacheDevice;
+        VkTextureCache cache;
+        const auto makeTexture = [&](uint32_t base, uint64_t bytes) {
+            return std::make_shared<rhi::TextureResource>(cacheDevice, rhi::TextureHandle{base, 1},
+                                                          rhi::TextureViewHandle{base + 1, 1},
+                                                          rhi::SamplerHandle{base + 2, 1}, bytes);
+        };
+
+        auto slot = cache.Insert("asset::linear", makeTexture(100, 100), 1, false, "texture-guid", 1);
+        assert(slot && slot->Acquire() && slot->Acquire()->GetRevision() == 1 && cache.GetEntryCount() == 1 &&
+               cache.GetResidentBytes() == 100);
+        auto retainedRevisionOne = slot->Acquire();
+        assert(cache.RequestAssetRevision("texture-guid", 2) == 1 && slot->GetRequestedRevision() == 2 &&
+               slot->NeedsRefresh());
+        auto replacementSlot = cache.Insert("asset::linear", makeTexture(200, 200), 2, false, "texture-guid", 2);
+        assert(replacementSlot == slot && replacementSlot->Acquire()->GetRevision() == 2 &&
+               !replacementSlot->NeedsRefresh() && cache.GetResidentBytes() == 300 &&
+               cache.GetRetiredLeaseCount() == 1 &&
+               cache.GetRetiredLeaseBytes() == 100);
+        assert(!cache.FindAsset("asset::linear", "texture-guid", 1, 3));
+        assert(cache.FindAsset("asset::linear", "texture-guid", 2, 3) == slot);
+
+        retainedRevisionOne.reset();
+        assert(cache.GetResidentBytes() == 200 && cache.GetRetiredLeaseCount() == 0 &&
+               cacheDevice.textureReleases == 2 && cacheDevice.samplerReleases == 1);
+
+        auto externalSlot = slot;
+        assert(cache.EvictByPrefix("asset") == 1 && cache.GetEntryCount() == 0 && cache.GetResidentBytes() == 200 &&
+               cache.GetRetiredLeaseCount() == 1);
+        slot.reset();
+        replacementSlot.reset();
+        externalSlot.reset();
+        assert(cache.GetResidentBytes() == 0 && cache.GetRetiredLeaseCount() == 0 &&
+               cacheDevice.textureReleases == 4 && cacheDevice.samplerReleases == 2);
+    }
+
+    {
         FakeDevice eventDevice;
         particle::GpuParticleEventDomainDesc eventDesc;
         eventDesc.graphInstanceId = 71;
@@ -520,36 +844,44 @@ int main()
         const auto targetLayout = eventDevice.CreateBindingLayout(targetLayoutDesc);
         const auto targetFreeList = eventDevice.CreateBuffer({512 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
         const auto targetCounters = eventDevice.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
+        const auto targetSimulationControl = eventDevice.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
         const std::vector<particle::GpuParticleEventTargetDesc> eventTargets = {
-            {1, 512, targetFreeList, targetCounters, targetLayout},
-            {2, 512, targetFreeList, targetCounters, targetLayout},
+            {1, 512, targetFreeList, targetCounters, targetSimulationControl, targetLayout},
+            {2, 512, targetFreeList, targetCounters, targetSimulationControl, targetLayout},
         };
         assert(events.Create(eventDevice, eventDesc, eventProgram, eventTargets));
         assert(events.IsValid() && events.GraphInstanceId() == 71 && events.EventAbiHash() == 0x12345678u &&
                events.PageCount() == 3 && events.ChannelCount() == 2);
         assert(events.RecordBufferBytes() == (128u * 7u + 64u * 5u) * sizeof(uint32_t));
-        assert(eventDevice.buffers.size() == 15 && eventDevice.initialBufferBytes[2].size() == 96);
+        assert(eventDevice.buffers.size() == 22 && eventDevice.initialBufferBytes[3].size() == 96);
         std::array<particle::GpuParticleEventChannelRecord, 2> eventRecords{};
-        std::memcpy(eventRecords.data(), eventDevice.initialBufferBytes[2].data(), sizeof(eventRecords));
+        std::memcpy(eventRecords.data(), eventDevice.initialBufferBytes[3].data(), sizeof(eventRecords));
         assert(eventRecords[0].spawnCount == 3 && eventRecords[1].spawnCount == 2);
         assert(eventRecords[0].spawnBaseIndices == 0 && eventRecords[1].spawnBaseIndices == 384);
         assert(events.SpawnIndexBufferBytes() == (128u * 3u + 64u * 2u) * sizeof(uint32_t));
-        assert(eventDevice.buffers[2].memory == rhi::BufferMemory::Upload &&
-               eventDevice.buffers[2].usage == rhi::BufferUsageFlags::Storage);
+        assert(eventDevice.buffers[3].memory == rhi::BufferMemory::Upload &&
+               eventDevice.buffers[3].usage == rhi::BufferUsageFlags::Storage);
         for (size_t page = 0; page < 3; ++page) {
-            const size_t base = 3 + page * 4;
+            const size_t base = 4 + page * 6;
             assert(eventDevice.buffers[base].byteSize == events.RecordBufferBytes());
+            assert(rhi::HasBufferUsage(eventDevice.buffers[base].usage, rhi::BufferUsageFlags::TransferDestination));
             assert(eventDevice.buffers[base + 1].byteSize == 2 * sizeof(particle::GpuParticleEventCounter));
             assert(rhi::HasBufferUsage(eventDevice.buffers[base + 1].usage, rhi::BufferUsageFlags::TransferSource));
+            assert(
+                rhi::HasBufferUsage(eventDevice.buffers[base + 1].usage, rhi::BufferUsageFlags::TransferDestination));
             assert(eventDevice.buffers[base + 2].byteSize == 2 * sizeof(particle::GpuParticleEventDispatchArguments) &&
                    rhi::HasBufferUsage(eventDevice.buffers[base + 2].usage, rhi::BufferUsageFlags::Indirect));
             assert(eventDevice.buffers[base + 3].byteSize == events.SpawnIndexBufferBytes());
+            assert(eventDevice.buffers[base + 4].memory == rhi::BufferMemory::Upload &&
+                   eventDevice.buffers[base + 4].usage == rhi::BufferUsageFlags::TransferSource);
+            assert(eventDevice.buffers[base + 5].memory == rhi::BufferMemory::Upload &&
+                   eventDevice.buffers[base + 5].usage == rhi::BufferUsageFlags::TransferSource);
         }
         assert(events.Page(0) != nullptr && events.Page(2) != nullptr && events.Page(3) == nullptr);
         assert(eventDevice.layouts.size() == 4 && eventDevice.layouts[1].entryCount == 3 &&
-               eventDevice.layouts[2].entryCount == 5 && eventDevice.layouts[3].entryCount == 5);
+               eventDevice.layouts[2].entryCount == 5 && eventDevice.layouts[3].entryCount == 6);
         assert(eventDevice.bindGroups.size() == 18 && eventDevice.bindGroups[0].bufferCount == 3 &&
-               eventDevice.bindGroups[3].bufferCount == 5);
+               eventDevice.bindGroups[3].bufferCount == 5 && eventDevice.bindGroups[6].bufferCount == 6);
         assert(eventDevice.computePipelineDescs.size() == 2 && eventDevice.computePipelineDescs[0].pushConstantBytes ==
                                                                    sizeof(particle::GpuParticleEventPrepareConstants));
         EventTrace eventTrace;
@@ -559,18 +891,37 @@ int main()
         const rhi::ComputeCommandEncoder eventEncoder(&eventTrace, &eventDispatch);
         const auto initialOutputGroup = events.CurrentEventOutputGroup();
         assert(initialOutputGroup.IsValid());
+        std::vector<uint32_t> externalRecords(2u * 7u, 0u);
+        externalRecords[0] = 0u;
+        externalRecords[7] = 0u;
+        std::string externalError;
+        assert(events.QueueExternalEvents(0, externalRecords, 2, &externalError) && externalError.empty() &&
+               events.PendingExternalEventCount(0) == 2);
+        assert(!events.QueueExternalEvents(2, externalRecords, 2, &externalError) && !externalError.empty());
         events.RecordPrepare(eventEncoder);
         const std::array<uint32_t, 3> expectedEventDispatch = {1, 1, 1};
         assert(eventTrace.pipeline.IsValid() && eventTrace.group.IsValid() && eventTrace.constants.channelCount == 2 &&
                eventTrace.constants.hasInput == 0 && eventTrace.dispatch == expectedEventDispatch);
+        EventTransferTrace transferTrace;
+        const rhi::TransferCommandEncoder::DispatchTable transferDispatch = {
+            &EventTransferTrace::CopyBuffer,
+            &EventTransferTrace::CopyTexture,
+            &EventTransferTrace::ResolveTexture,
+        };
+        const rhi::TransferCommandEncoder transferEncoder(&transferTrace, &transferDispatch);
+        assert(events.RecordExternalInjection(transferEncoder) && transferTrace.copies.size() == 2 &&
+               events.PendingExternalEventCount(0) == 0 && eventDevice.writes == 2);
+        assert(transferTrace.copies[0].region.byteSize == externalRecords.size() * sizeof(uint32_t) &&
+               transferTrace.copies[1].region.byteSize == sizeof(particle::GpuParticleEventCounter));
+        assert(!events.RecordExternalInjection(transferEncoder));
         const auto firstEventGroup = eventTrace.group;
         assert(events.CurrentEventOutputGroup() == initialOutputGroup);
         events.RecordPrepare(eventEncoder);
         assert(eventTrace.constants.hasInput == 1 && eventTrace.group != firstEventGroup &&
                events.CurrentEventOutputGroup() != initialOutputGroup);
-        events.RecordAllocate(eventEncoder, 0);
+        events.RecordAllocate(eventEncoder, 0, true, true);
         events.Destroy();
-        assert(!events.IsValid() && eventDevice.bufferReleases == 13 && eventDevice.groupReleases == 18 &&
+        assert(!events.IsValid() && eventDevice.bufferReleases == 19 && eventDevice.groupReleases == 18 &&
                eventDevice.layoutReleases == 3 && eventDevice.pipelineReleases == 2);
 
         eventDesc.framesInFlight = 1;
@@ -585,6 +936,7 @@ int main()
         events.Destroy();
         eventDevice.Release(targetCounters);
         eventDevice.Release(targetFreeList);
+        eventDevice.Release(targetSimulationControl);
         eventDevice.Release(targetLayout);
     }
 
@@ -681,11 +1033,156 @@ int main()
     }
 
     {
+        FakeDevice collisionDevice;
+        particle::ParticleGpuCollisionScene collisionScene;
+        assert(collisionScene.Create(collisionDevice, 2, 2));
+        assert(collisionScene.IsValid() && collisionScene.Capacity() == 2 && collisionScene.PublishedRevision() == 0 &&
+               collisionScene.HasPendingUpload());
+        assert(collisionDevice.buffers.size() == 21 && collisionDevice.writes == 2);
+
+        particle::GpuParticleCollisionSceneSnapshot collisionSnapshot;
+        collisionSnapshot.revision = 2;
+        collisionSnapshot.topologyRevision = 1;
+        collisionSnapshot.staticColliders.resize(1);
+        collisionSnapshot.staticColliders[0].metadata[0] =
+            static_cast<uint32_t>(particle::GpuParticleColliderType::Sphere);
+        std::string collisionError;
+        assert(collisionScene.Publish(collisionSnapshot, &collisionError) && collisionError.empty() &&
+               collisionScene.HasPendingUpload() && collisionDevice.writes == 6);
+        EventTransferTrace collisionTransferTrace;
+        const rhi::TransferCommandEncoder::DispatchTable collisionTransferDispatch = {
+            &EventTransferTrace::CopyBuffer,
+            &EventTransferTrace::CopyTexture,
+            &EventTransferTrace::ResolveTexture,
+        };
+        const rhi::TransferCommandEncoder collisionTransferEncoder(&collisionTransferTrace, &collisionTransferDispatch);
+        assert(collisionScene.RecordPendingUpload(collisionTransferEncoder));
+        assert(!collisionScene.HasPendingUpload() && collisionScene.PublishedColliderCount() == 1 &&
+               collisionTransferTrace.copies.size() == 4 &&
+               collisionTransferTrace.copies[0].region.byteSize == sizeof(particle::GpuParticleCollisionSceneHeader) &&
+               collisionTransferTrace.copies[1].region.byteSize == 2 * sizeof(uint32_t) &&
+               collisionTransferTrace.copies[2].region.byteSize == sizeof(uint32_t) &&
+               collisionTransferTrace.copies[3].region.byteSize == sizeof(particle::GpuParticleColliderRecord));
+        assert(collisionScene.PublishedStaticColliderCount() == 1 &&
+               collisionScene.PublishedDynamicColliderCount() == 0 &&
+               collisionScene.PublishedGridReferenceCount() == 1);
+        assert(collisionScene.PublishedRevision() == 2);
+        const uint32_t writesBeforeDuplicate = collisionDevice.writes;
+        assert(collisionScene.Publish(collisionSnapshot, &collisionError) &&
+               collisionDevice.writes == writesBeforeDuplicate);
+
+        collisionSnapshot.revision = 3;
+        collisionSnapshot.dynamicColliders.resize(1);
+        collisionSnapshot.dynamicColliders[0].metadata[0] =
+            static_cast<uint32_t>(particle::GpuParticleColliderType::Box);
+        collisionSnapshot.dynamicColliders[0].worldAabbMin = {8.0f, 0.0f, 0.0f, 0.0f};
+        collisionSnapshot.dynamicColliders[0].worldAabbMax = {9.0f, 1.0f, 1.0f, 0.0f};
+        collisionSnapshot.dynamicColliders[0].previousWorldAabbMin = {-9.0f, 0.0f, 0.0f, 0.0f};
+        collisionSnapshot.dynamicColliders[0].previousWorldAabbMax = {-8.0f, 1.0f, 1.0f, 0.0f};
+        const uint32_t writesBeforeDynamic = collisionDevice.writes;
+        assert(collisionScene.Publish(collisionSnapshot, &collisionError) &&
+               collisionDevice.writes == writesBeforeDynamic + 4);
+        EventTransferTrace dynamicTransferTrace;
+        const rhi::TransferCommandEncoder dynamicTransferEncoder(&dynamicTransferTrace, &collisionTransferDispatch);
+        assert(collisionScene.RecordPendingUpload(dynamicTransferEncoder));
+        assert(dynamicTransferTrace.copies.size() == 4 &&
+               dynamicTransferTrace.copies[3].region.sourceOffset == sizeof(particle::GpuParticleColliderRecord) &&
+               dynamicTransferTrace.copies[3].region.destinationOffset == sizeof(particle::GpuParticleColliderRecord) &&
+               dynamicTransferTrace.copies[3].region.byteSize == sizeof(particle::GpuParticleColliderRecord));
+        assert(collisionScene.PublishedColliderCount() == 2 && collisionScene.PublishedStaticColliderCount() == 1 &&
+               collisionScene.PublishedDynamicColliderCount() == 1);
+        assert(collisionScene.PublishedGridReferenceCount() > 2);
+        assert(collisionDevice.writtenBuffers[writesBeforeDynamic] != collisionDevice.writtenBuffers[0]);
+
+        collisionSnapshot.revision = 4;
+        collisionSnapshot.topologyRevision = 2;
+        collisionSnapshot.replaceMeshTopology = true;
+        collisionSnapshot.staticColliders[0].metadata[0] =
+            static_cast<uint32_t>(particle::GpuParticleColliderType::Mesh);
+        collisionSnapshot.staticColliders[0].identity = {0x1234u, 0u, 0u, 0u};
+        particle::GpuParticleCollisionMeshGeometry triangleGeometry;
+        triangleGeometry.identity = 0x1234u;
+        triangleGeometry.positions = {
+            {{-1.0f, 0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, -1.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}}};
+        triangleGeometry.indices = {0u, 1u, 2u};
+        collisionSnapshot.meshGeometries = {triangleGeometry};
+        const uint32_t writesBeforeTopology = collisionDevice.writes;
+        assert(collisionScene.Publish(collisionSnapshot, &collisionError) && collisionError.empty() &&
+               collisionDevice.writes == writesBeforeTopology + 8);
+        EventTransferTrace topologyTransferTrace;
+        const rhi::TransferCommandEncoder topologyTransferEncoder(&topologyTransferTrace, &collisionTransferDispatch);
+        assert(collisionScene.RecordPendingUpload(topologyTransferEncoder));
+        assert(topologyTransferTrace.copies.size() == 7);
+        assert(topologyTransferTrace.copies[4].region.byteSize == 3u * sizeof(std::array<float, 4>));
+        assert(topologyTransferTrace.copies[5].region.byteSize == 3u * sizeof(uint32_t));
+        assert(topologyTransferTrace.copies[6].region.byteSize == sizeof(particle::GpuParticleCollisionBvhNode));
+        assert(collisionScene.PublishedTopologyRevision() == 2 && collisionScene.PublishedMeshVertexCount() == 3 &&
+               collisionScene.PublishedMeshIndexCount() == 3 && collisionScene.PublishedMeshBvhNodeCount() == 1);
+        collisionSnapshot.replaceMeshTopology = false;
+        collisionSnapshot.meshGeometries.clear();
+
+        auto rejectedTopology = collisionSnapshot;
+        rejectedTopology.revision = 5;
+        rejectedTopology.topologyRevision = 3;
+        rejectedTopology.replaceMeshTopology = true;
+        auto invalidGeometry = triangleGeometry;
+        invalidGeometry.indices[2] = 9u;
+        rejectedTopology.meshGeometries = {invalidGeometry};
+        const uint32_t writesBeforeRejectedTopology = collisionDevice.writes;
+        assert(!collisionScene.Publish(rejectedTopology, &collisionError) && !collisionError.empty() &&
+               collisionDevice.writes == writesBeforeRejectedTopology && !collisionScene.HasPendingUpload());
+        assert(collisionScene.PublishedRevision() == 4 && collisionScene.PublishedTopologyRevision() == 2 &&
+               collisionScene.PublishedMeshVertexCount() == 3 && collisionScene.PublishedMeshIndexCount() == 3 &&
+               collisionScene.PublishedMeshBvhNodeCount() == 1);
+
+        rejectedTopology.meshGeometries = {triangleGeometry, triangleGeometry};
+        assert(!collisionScene.Publish(rejectedTopology, &collisionError) && !collisionError.empty() &&
+               collisionDevice.writes == writesBeforeRejectedTopology && !collisionScene.HasPendingUpload());
+
+        rejectedTopology.topologyRevision = 2;
+        rejectedTopology.meshGeometries = {triangleGeometry};
+        assert(!collisionScene.Publish(rejectedTopology, &collisionError) && !collisionError.empty() &&
+               collisionDevice.writes == writesBeforeRejectedTopology && !collisionScene.HasPendingUpload());
+
+        collisionSnapshot.revision = 5;
+        collisionSnapshot.dynamicColliders[0].worldAabbMin[0] = 7.0f;
+        const uint32_t writesBeforeTransformOnly = collisionDevice.writes;
+        assert(collisionScene.Publish(collisionSnapshot, &collisionError) && collisionError.empty() &&
+               collisionDevice.writes == writesBeforeTransformOnly + 4);
+        EventTransferTrace transformOnlyTransferTrace;
+        const rhi::TransferCommandEncoder transformOnlyTransferEncoder(&transformOnlyTransferTrace,
+                                                                       &collisionTransferDispatch);
+        assert(collisionScene.RecordPendingUpload(transformOnlyTransferEncoder));
+        assert(transformOnlyTransferTrace.copies.size() == 4 &&
+               transformOnlyTransferTrace.copies[3].region.byteSize == sizeof(particle::GpuParticleColliderRecord));
+        assert(collisionScene.PublishedRevision() == 5 && collisionScene.PublishedTopologyRevision() == 2 &&
+               collisionScene.PublishedMeshVertexCount() == 3 && collisionScene.PublishedMeshIndexCount() == 3 &&
+               collisionScene.PublishedMeshBvhNodeCount() == 1);
+
+        collisionSnapshot.revision = 3;
+        assert(!collisionScene.Publish(collisionSnapshot, &collisionError) && !collisionError.empty());
+
+        collisionSnapshot.revision = 6;
+        collisionSnapshot.staticColliders.resize(2);
+        collisionSnapshot.dynamicColliders.resize(1);
+        assert(!collisionScene.Publish(collisionSnapshot, &collisionError) && !collisionError.empty());
+        collisionScene.Destroy();
+        assert(!collisionScene.IsValid() && collisionDevice.bufferReleases == 21);
+    }
+
+    {
         FakeDevice sharingDevice;
         std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> sharingWords{};
         particle::GpuEmitterDesc sharingDesc;
         sharingDesc.capacity = 128;
         sharingDesc.stateStride = 32;
+        sharingDesc.collisionSceneHeader = {0xfff0u, 1};
+        sharingDesc.collisionSceneColliders = {0xfff1u, 1};
+        sharingDesc.collisionSceneGridOffsets = {0xfff2u, 1};
+        sharingDesc.collisionSceneGridColliderIndices = {0xfff3u, 1};
+        sharingDesc.collisionSceneMeshVertices = {0xfff4u, 1};
+        sharingDesc.collisionSceneMeshIndices = {0xfff5u, 1};
+        sharingDesc.collisionSceneMeshBvhNodes = {0xfff6u, 1};
         for (size_t index = 0; index < sharingWords.size(); ++index) {
             sharingWords[index][0] = 0x07230203;
             sharingDesc.kernels[index] = {sharingWords[index].data(), sharingWords[index].size()};
@@ -709,7 +1206,7 @@ int main()
         assert(compatible.SharesStateWith(previous));
         assert(!compatible.NeedsBootstrap());
         assert(compatible.StateBuffer() == state && compatible.CounterBuffer() == counters);
-        assert(sharingDevice.buffers.size() == 7);
+        assert(sharingDevice.buffers.size() == 10);
         assert(previous.AdoptCompatibleRevision(compatible));
         assert(previous.IsValid() && compatible.IsValid() && previous.SharesStateWith(compatible));
         compatible.RequestBootstrap();
@@ -717,127 +1214,27 @@ int main()
         compatible.RecordBootstrap(sharingEncoder, 13);
         assert(!previous.NeedsBootstrap() && !compatible.NeedsBootstrap());
         previous.Destroy();
-        assert(compatible.IsValid() && sharingDevice.bufferReleases == 0);
+        assert(compatible.IsValid() && sharingDevice.bufferReleases == 1);
         compatible.Destroy();
-        assert(sharingDevice.bufferReleases == 7 && sharingDevice.pipelineReleases == 12 &&
+        assert(sharingDevice.bufferReleases == 10 && sharingDevice.pipelineReleases == 12 &&
                sharingDevice.groupReleases == 4 && sharingDevice.layoutReleases == 6);
     }
 
-    {
-        FakeDevice pointCacheDevice;
-        std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> pointCacheWords{};
-        particle::GpuEmitterDesc pointCacheDesc;
-        pointCacheDesc.capacity = 64;
-        pointCacheDesc.stateStride = 48;
-        for (size_t index = 0; index < pointCacheWords.size(); ++index) {
-            pointCacheWords[index][0] = 0x07230203;
-            pointCacheDesc.kernels[index] = {pointCacheWords[index].data(), pointCacheWords[index].size()};
-        }
-        pointCacheDesc.eventInitKernel = pointCacheDesc.kernels[static_cast<size_t>(particle::GpuKernelStage::Init)];
-
-        auto cache = std::make_shared<PointCacheCpuData>();
-        cache->stableId = "runtime-points";
-        cache->name = "Runtime Points";
-        cache->bakeBasis = "right_handed_y_up";
-        cache->pointCount = 2;
-        cache->channels = {
-            {"position", PointCacheChannelType::Float3, PointCacheChannelSemantic::Position, 0, 12},
-            {"id", PointCacheChannelType::UInt, PointCacheChannelSemantic::Id, 32, 4},
-        };
-        cache->bytes.resize(40);
-        const std::array<float, 6> positions = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
-        const std::array<uint32_t, 2> ids = {7, 42};
-        std::memcpy(cache->bytes.data(), positions.data(), sizeof(positions));
-        std::memcpy(cache->bytes.data() + 32, ids.data(), sizeof(ids));
-        cache->RebuildIdLookup();
-        assert(cache->IsValid() && cache->idLookupMode == PointCacheIdLookupMode::Hash);
-
-        particle::GpuPointCacheDesc pointCache;
-        pointCache.interfaceIndex = 0;
-        pointCache.dataBinding = 1;
-        pointCache.lookupBinding = 2;
-        pointCache.worldSpace = false;
-        pointCache.cacheToSpace = {
-            1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-        };
-        pointCache.data = cache;
-        rhi::BufferDesc cacheDataDesc;
-        cacheDataDesc.byteSize = cache->bytes.size();
-        cacheDataDesc.usage = rhi::BufferUsageFlags::Storage;
-        const auto cacheDataResource = std::make_shared<rhi::BufferResource>(
-            pointCacheDevice, pointCacheDevice.CreateBuffer(cacheDataDesc), cacheDataDesc.byteSize);
-        rhi::BufferDesc cacheLookupDesc;
-        cacheLookupDesc.byteSize = cache->idLookup.size() * sizeof(PointCacheIdLookupEntry);
-        cacheLookupDesc.usage = rhi::BufferUsageFlags::Storage;
-        const auto cacheLookupResource = std::make_shared<rhi::BufferResource>(
-            pointCacheDevice, pointCacheDevice.CreateBuffer(cacheLookupDesc), cacheLookupDesc.byteSize);
-        const auto cacheResources = std::make_shared<std::array<std::shared_ptr<rhi::BufferResource>, 2>>();
-        (*cacheResources)[0] = cacheDataResource;
-        (*cacheResources)[1] = cacheLookupResource;
-        pointCache.dataBuffer = cacheDataResource->GetBuffer();
-        pointCache.lookupBuffer = cacheLookupResource->GetBuffer();
-        pointCache.keepAlive = cacheResources;
-        pointCache.samples.push_back({0, "position", PointCacheChannelType::Float3, false});
-        pointCacheDesc.pointCaches.sampleCount = 1;
-        pointCacheDesc.pointCaches.pointCaches.push_back(pointCache);
-
-        particle::ParticleGpuRuntime pointCacheRuntime;
-        assert(pointCacheRuntime.Create(pointCacheDevice, pointCacheDesc));
-        assert(pointCacheRuntime.IsValid());
-        assert(pointCacheDevice.buffers.size() == 10);
-        assert(pointCacheDevice.layouts.size() == 5 && pointCacheDevice.layouts[0].entryCount == 4 &&
-               pointCacheDevice.layouts[4].entryCount == 3);
-        assert(pointCacheDevice.bindGroups.size() == 3 && pointCacheDevice.bindGroups[2].bufferCount == 3);
-        assert(pointCacheDevice.computePipelineDescs.size() == 6 &&
-               pointCacheDevice.computePipelineDescs[0].bindingLayoutCount == 2 &&
-               pointCacheDevice.computePipelineDescs.back().bindingLayoutCount == 4);
-        assert(pointCacheDevice.buffers[0].memory == rhi::BufferMemory::DeviceLocal &&
-               pointCacheDevice.buffers[1].memory == rhi::BufferMemory::DeviceLocal);
-        const auto readWord = [](const std::vector<uint8_t> &bytes, size_t index) {
-            uint32_t result = 0;
-            std::memcpy(&result, bytes.data() + index * sizeof(result), sizeof(result));
-            return result;
-        };
-        assert(readWord(pointCacheDevice.initialBufferBytes[9], 28) == 2 &&
-               readWord(pointCacheDevice.initialBufferBytes[9], 29) == 3 &&
-               readWord(pointCacheDevice.initialBufferBytes[9], 30) == 1);
-        assert(readWord(pointCacheDevice.initialBufferBytes[9], 32) == 0 &&
-               readWord(pointCacheDevice.initialBufferBytes[9], 33) == 3);
-
-        particle::GpuParticleTransforms pointCacheTransforms;
-        for (uint32_t index = 0; index < 4; ++index) {
-            pointCacheTransforms.emitterToWorld[index * 5] = 1.0f;
-            pointCacheTransforms.worldToEmitter[index * 5] = 1.0f;
-            pointCacheTransforms.simulationToWorld[index * 5] = 1.0f;
-            pointCacheTransforms.worldToSimulation[index * 5] = 1.0f;
-        }
-        pointCacheTransforms.emitterToWorld[12] = 10.0f;
-        assert(pointCacheRuntime.UpdateTransforms(pointCacheTransforms));
-        assert(pointCacheDevice.writes == 2 && pointCacheDevice.writtenBytes[1].size() == 36 * sizeof(uint32_t));
-        const uint32_t translatedBits = readWord(pointCacheDevice.writtenBytes[1], 12);
-        float translatedX = 0.0f;
-        std::memcpy(&translatedX, &translatedBits, sizeof(translatedX));
-        assert(translatedX == 12.0f);
-
-        CommandTrace pointCacheTrace;
-        const rhi::ComputeCommandEncoder::DispatchTable pointCacheDispatch = {
-            &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
-            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect};
-        const rhi::ComputeCommandEncoder pointCacheEncoder(&pointCacheTrace, &pointCacheDispatch);
-        pointCacheRuntime.RecordUpdate(pointCacheEncoder, 11, 3, 1.0f / 60.0f);
-        assert(pointCacheTrace.groups.size() == 2 && pointCacheTrace.groupSets == std::vector<uint32_t>({0, 1}));
-        pointCacheRuntime.Destroy();
-        assert(pointCacheDevice.bufferReleases == 8 && pointCacheDevice.layoutReleases == 5 &&
-               pointCacheDevice.groupReleases == 3 && pointCacheDevice.pipelineReleases == 6);
-    }
-
     FakeDevice device;
-    FrameDeletionQueue deletionQueue;
-    deletionQueue.Initialize(2);
+    GpuRetirementQueue deletionQueue;
+    deletionQueue.BindSerialSource([] { return rhi::SubmissionSerial{1}; });
     std::array<std::array<uint32_t, 4>, static_cast<size_t>(particle::GpuKernelStage::Count)> words{};
     particle::GpuEmitterDesc desc;
     desc.capacity = 1000;
     desc.stateStride = 64;
+    desc.collisionSceneHeader = {0xfff2u, 1};
+    desc.collisionSceneColliders = {0xfff3u, 1};
+    desc.collisionSceneGridOffsets = {0xfff4u, 1};
+    desc.collisionSceneGridColliderIndices = {0xfff5u, 1};
+    desc.collisionSceneMeshVertices = {0xfff6u, 1};
+    desc.collisionSceneMeshIndices = {0xfff7u, 1};
+    desc.collisionSceneMeshBvhNodes = {0xfff8u, 1};
+    desc.parameterWords = {11u, 22u, 33u, 44u};
     for (size_t index = 0; index < words.size(); ++index) {
         words[index][0] = 0x07230203;
         desc.kernels[index] = {words[index].data(), words[index].size()};
@@ -847,7 +1244,7 @@ int main()
     particle::ParticleGpuRuntime runtime;
     assert(runtime.Create(device, desc));
     assert(runtime.IsValid() && runtime.Capacity() == 1000 && runtime.StateStride() == 64);
-    assert(device.buffers.size() == 7);
+    assert(device.buffers.size() == 9);
     assert(device.buffers[0].byteSize == 64000);
     assert(rhi::HasBufferUsage(device.buffers[2].usage, rhi::BufferUsageFlags::TransferSource));
     assert(device.buffers[3].byteSize ==
@@ -856,12 +1253,21 @@ int main()
     assert(device.buffers[5].byteSize == 4000 && device.buffers[5].usage == rhi::BufferUsageFlags::Storage);
     assert(device.buffers[6].byteSize == sizeof(particle::GpuParticleTransforms) &&
            device.buffers[6].memory == rhi::BufferMemory::Upload);
+    assert(device.buffers[7].byteSize == sizeof(particle::GpuParticleSimulationControl) &&
+           device.buffers[7].usage == (rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource) &&
+           device.buffers[7].memory == rhi::BufferMemory::DeviceLocal && device.initialBufferBytes[7].empty());
+    assert(device.buffers[8].byteSize == 4 * sizeof(uint32_t) && device.buffers[8].memory == rhi::BufferMemory::Upload);
+    assert(device.initialBufferBytes[8].size() == 4 * sizeof(uint32_t));
     assert(device.shaderCreates == 6 && device.shaderReleases == 6);
     assert(device.layoutCreates == 4 && device.groupCreates == 2 && device.pipelineCreates == 6);
 
     particle::GpuParticleTransforms transforms;
     assert(runtime.UpdateTransforms(transforms));
     assert(device.writes == 1);
+    assert(runtime.UpdateParameters({55u, 66u, 77u, 88u}));
+    assert(device.writes == 2 && device.writtenBytes.back().size() == 4 * sizeof(uint32_t));
+    assert(!runtime.UpdateParameters({1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u}));
+    assert(device.writes == 2);
 
     CommandTrace trace;
     const rhi::ComputeCommandEncoder::DispatchTable dispatch = {&CommandTrace::BindPipeline, &CommandTrace::BindGroup,
@@ -879,49 +1285,67 @@ int main()
     assert(trace.constants[2].simulationStep == 9);
 
     FakeDevice boundsDevice;
-    std::array<std::array<uint32_t, 5>, 2> boundsWords{};
+    std::array<std::array<uint32_t, 5>, 3> boundsWords{};
     for (auto &shader : boundsWords)
         shader[0] = 0x07230203u;
     particle::GpuParticleBoundsDesc boundsDesc;
     boundsDesc.capacity = runtime.Capacity();
     boundsDesc.instances = runtime.InstanceBuffer();
+    boundsDesc.sourceIndices = runtime.RenderIndexBuffer();
     boundsDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+    boundsDesc.simulationControl = runtime.SimulationControlBuffer();
     boundsDesc.program = {
         {boundsWords[0].data(), boundsWords[0].size()},
         {boundsWords[1].data(), boundsWords[1].size()},
+        {boundsWords[2].data(), boundsWords[2].size()},
     };
     particle::GpuParticleBoundsProgramStorage boundsProgramStorage;
     assert(boundsProgramStorage.Assign(boundsDesc.program) && boundsProgramStorage.IsValid());
-    assert(boundsProgramStorage.View().reset.words != boundsDesc.program.reset.words &&
+    assert(boundsProgramStorage.View().prepare.words != boundsDesc.program.prepare.words &&
+           boundsProgramStorage.View().reset.words != boundsDesc.program.reset.words &&
            boundsProgramStorage.View().reset.wordCount == boundsDesc.program.reset.wordCount);
     particle::ParticleGpuBounds bounds;
     assert(bounds.Create(boundsDevice, boundsDesc));
     assert(bounds.IsValid() && bounds.Capacity() == 1000 && bounds.InstanceBuffer() == runtime.InstanceBuffer() &&
+           bounds.SourceIndexBuffer() == runtime.RenderIndexBuffer() &&
            bounds.SourceIndirectBuffer() == runtime.IndirectBuffer());
     assert(boundsDevice.buffers.size() == 2 &&
            boundsDevice.buffers[0].byteSize == particle::ParticleGpuBounds::BoundsBufferBytes &&
-           boundsDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage &&
+           rhi::HasBufferUsage(boundsDevice.buffers[0].usage, rhi::BufferUsageFlags::Storage) &&
+           rhi::HasBufferUsage(boundsDevice.buffers[0].usage, rhi::BufferUsageFlags::TransferSource) &&
            boundsDevice.buffers[1].byteSize == particle::ParticleGpuBounds::DispatchBufferBytes &&
            rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Storage) &&
            rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect));
-    assert(boundsDevice.layouts.size() == 1 && boundsDevice.layouts[0].entryCount == 4 &&
-           boundsDevice.bindGroups.size() == 1 && boundsDevice.bindGroups[0].bufferCount == 4 &&
-           boundsDevice.shaderCreates == 2 && boundsDevice.shaderReleases == 2 && boundsDevice.pipelineCreates == 2);
+    assert(boundsDevice.layouts.size() == 1 && boundsDevice.layouts[0].entryCount == 6 &&
+           boundsDevice.bindGroups.size() == 1 && boundsDevice.bindGroups[0].bufferCount == 6 &&
+           boundsDevice.shaderCreates == 3 && boundsDevice.shaderReleases == 3 && boundsDevice.pipelineCreates == 3);
 
     BoundsTrace boundsTrace;
     const rhi::ComputeCommandEncoder::DispatchTable boundsDispatch = {
         &BoundsTrace::BindPipeline, &BoundsTrace::BindGroup, &BoundsTrace::PushConstants, &BoundsTrace::Dispatch,
         &BoundsTrace::DispatchIndirect};
     const rhi::ComputeCommandEncoder boundsEncoder(&boundsTrace, &boundsDispatch);
-    bounds.RecordReset(boundsEncoder);
+    bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen, false);
+    bounds.RecordReset(boundsEncoder, particle::GpuParticleBoundsMode::Automatic, {}, {});
+    const std::array<float, 3> manualLower = {-4.0f, -2.0f, 1.0f};
+    const std::array<float, 3> manualUpper = {8.0f, 6.0f, 9.0f};
+    bounds.RecordReset(boundsEncoder, particle::GpuParticleBoundsMode::Manual, manualLower, manualUpper);
     bounds.RecordReduce(boundsEncoder);
-    assert(boundsTrace.pipelines.size() == 2 && boundsTrace.groups.size() == 2 && boundsTrace.constants.size() == 2);
-    assert(boundsTrace.dispatches == std::vector<uint32_t>({1}));
+    assert(boundsTrace.pipelines.size() == 4 && boundsTrace.groups.size() == 4 && boundsTrace.constants.size() == 4);
+    assert(boundsTrace.dispatches == std::vector<uint32_t>({1, 1, 1}));
     assert(boundsTrace.indirectDispatches == std::vector<rhi::BufferHandle>({bounds.DispatchBuffer()}));
-    assert(boundsTrace.constants[0].capacity == 1000 && boundsTrace.constants[1].capacity == 1000);
+    assert(boundsTrace.constants[0].capacity == 1000 &&
+           boundsTrace.constants[0].offscreenPolicy == particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen &&
+           boundsTrace.constants[1].capacity == 1000 &&
+           boundsTrace.constants[1].boundsMode == particle::GpuParticleBoundsMode::Automatic &&
+           boundsTrace.constants[2].capacity == 1000 &&
+           boundsTrace.constants[2].boundsMode == particle::GpuParticleBoundsMode::Manual &&
+           std::equal(manualLower.begin(), manualLower.end(), boundsTrace.constants[2].manualLower.begin()) &&
+           std::equal(manualUpper.begin(), manualUpper.end(), boundsTrace.constants[2].manualUpper.begin()) &&
+           boundsTrace.constants[3].capacity == 1000);
     bounds.Destroy();
     assert(!bounds.IsValid() && boundsDevice.bufferReleases == 2 && boundsDevice.groupReleases == 1 &&
-           boundsDevice.layoutReleases == 1 && boundsDevice.pipelineReleases == 2);
+           boundsDevice.layoutReleases == 1 && boundsDevice.pipelineReleases == 3);
 
     FakeDevice cullDevice;
     std::array<std::array<uint32_t, 5>, 3> cullWords{};
@@ -932,7 +1356,9 @@ int main()
     cullerDesc.vertexCount = 6;
     cullerDesc.instances = runtime.InstanceBuffer();
     cullerDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+    cullerDesc.sourceIndices = runtime.RenderIndexBuffer();
     cullerDesc.bounds = {800, 1};
+    cullerDesc.simulationControl = runtime.SimulationControlBuffer();
     cullerDesc.program = {
         {cullWords[0].data(), cullWords[0].size()},
         {cullWords[1].data(), cullWords[1].size()},
@@ -949,6 +1375,8 @@ int main()
     assert(sceneCuller.IsValid() && gameCuller.IsValid() && sceneCuller.Capacity() == 1000 &&
            sceneCuller.InstanceBuffer() == runtime.InstanceBuffer() &&
            sceneCuller.SourceIndirectBuffer() == runtime.IndirectBuffer() &&
+           sceneCuller.SourceIndexBuffer() == runtime.RenderIndexBuffer() &&
+           sceneCuller.Mode() == particle::GpuParticleCullMode::Instances &&
            sceneCuller.BoundsBuffer() == cullerDesc.bounds);
     assert(sceneCuller.VisibleIndexBuffer() != gameCuller.VisibleIndexBuffer() &&
            sceneCuller.DrawIndirectBuffer() != gameCuller.DrawIndirectBuffer() &&
@@ -956,10 +1384,11 @@ int main()
     assert(cullDevice.buffers.size() == 6 && cullDevice.buffers[0].byteSize == 4000 &&
            cullDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage && cullDevice.buffers[1].byteSize == 16 &&
            rhi::HasBufferUsage(cullDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect) &&
-           cullDevice.buffers[2].byteSize == 12 &&
-           rhi::HasBufferUsage(cullDevice.buffers[2].usage, rhi::BufferUsageFlags::Indirect));
-    assert(cullDevice.layouts.size() == 2 && cullDevice.layouts[0].entryCount == 6 &&
-           cullDevice.bindGroups.size() == 2 && cullDevice.bindGroups[0].bufferCount == 6 &&
+           cullDevice.buffers[2].byteSize == sizeof(particle::GpuParticleCullDispatchState) &&
+           rhi::HasBufferUsage(cullDevice.buffers[2].usage, rhi::BufferUsageFlags::Indirect) &&
+           rhi::HasBufferUsage(cullDevice.buffers[2].usage, rhi::BufferUsageFlags::TransferSource));
+    assert(cullDevice.layouts.size() == 2 && cullDevice.layouts[0].entryCount == 8 &&
+           cullDevice.bindGroups.size() == 2 && cullDevice.bindGroups[0].bufferCount == 8 &&
            cullDevice.shaderCreates == 6 && cullDevice.shaderReleases == 6 && cullDevice.pipelineCreates == 6);
 
     CullTrace cullTrace;
@@ -978,7 +1407,8 @@ int main()
     assert(cullTrace.indirectDispatches == std::vector<rhi::BufferHandle>({sceneCuller.SortDispatchBuffer()}));
     assert(cullTrace.constants[0].capacity == 1000 && cullTrace.constants[0].frustumPlanes == frustumPlanes &&
            cullTrace.constants[1].capacity == 1000 && cullTrace.constants[1].frustumPlanes == frustumPlanes &&
-           cullTrace.constants[2].capacity == 1000);
+           cullTrace.constants[2].capacity == 1000 &&
+           cullTrace.constants[0].mode == particle::GpuParticleCullMode::Instances);
     sceneCuller.Destroy();
     gameCuller.Destroy();
     assert(!sceneCuller.IsValid() && !gameCuller.IsValid() && cullDevice.bufferReleases == 6 &&
@@ -1012,7 +1442,7 @@ int main()
            sorter.SourceIndexBuffer() == runtime.RenderIndexBuffer() &&
            sorter.DispatchBuffer() == expectedSortDispatch && sorter.SortedIndices() == sorter.IndexBuffer(0) &&
            gameViewSorter.IsValid() && gameViewSorter.SortedIndices() != sorter.SortedIndices());
-    assert(sortDevice.buffers.size() == 14 && sortDevice.buffers[0].byteSize == 4000 &&
+    assert(sortDevice.buffers.size() == 14 && sortDevice.buffers[0].byteSize == 8000 &&
            sortDevice.buffers[4].byteSize == 256 && sortDevice.buffers[5].byteSize == 256 &&
            sortDevice.buffers[6].byteSize == 64);
     assert(sortDevice.layouts.size() == 2 && sortDevice.layouts[0].entryCount == 11 &&
@@ -1085,6 +1515,7 @@ int main()
     ribbonDesc.instances = runtime.InstanceBuffer();
     ribbonDesc.sourceIndices = runtime.RenderIndexBuffer();
     ribbonDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+    ribbonDesc.simulationControl = runtime.SimulationControlBuffer();
     ribbonDesc.program = {
         {ribbonTopologyWords[0].data(), ribbonTopologyWords[0].size()},
         {ribbonTopologyWords[1].data(), ribbonTopologyWords[1].size()},
@@ -1108,9 +1539,25 @@ int main()
            rhi::HasBufferUsage(ribbonDevice.buffers[3].usage, rhi::BufferUsageFlags::Indirect) &&
            ribbonDevice.buffers[4].byteSize == 256 && ribbonDevice.buffers[5].byteSize == 256 &&
            ribbonDevice.buffers[6].byteSize == 64);
-    assert(ribbonDevice.layouts.size() == 1 && ribbonDevice.layouts[0].entryCount == 10 &&
-           ribbonDevice.bindGroups.size() == 2 && ribbonDevice.bindGroups[0].bufferCount == 10 &&
+    assert(ribbonDevice.layouts.size() == 1 && ribbonDevice.layouts[0].entryCount == 11 &&
+           ribbonDevice.bindGroups.size() == 2 && ribbonDevice.bindGroups[0].bufferCount == 11 &&
            ribbonDevice.shaderCreates == 5 && ribbonDevice.shaderReleases == 5 && ribbonDevice.pipelineCreates == 5);
+
+    particle::GpuParticleCullerDesc ribbonCullerDesc;
+    ribbonCullerDesc.capacity = runtime.Capacity();
+    ribbonCullerDesc.vertexCount = 6;
+    ribbonCullerDesc.instances = runtime.InstanceBuffer();
+    ribbonCullerDesc.sourceIndirectArguments = ribbonTopology->DrawIndirectBuffer();
+    ribbonCullerDesc.sourceIndices = ribbonTopology->SortedIndexBuffer();
+    ribbonCullerDesc.bounds = {801, 1};
+    ribbonCullerDesc.simulationControl = runtime.SimulationControlBuffer();
+    ribbonCullerDesc.mode = particle::GpuParticleCullMode::RibbonSegments;
+    ribbonCullerDesc.program = cullProgramStorage.View();
+    particle::ParticleGpuCuller ribbonCuller;
+    assert(ribbonCuller.Create(ribbonDevice, ribbonCullerDesc));
+    assert(ribbonCuller.IsValid() && ribbonCuller.Mode() == particle::GpuParticleCullMode::RibbonSegments &&
+           ribbonCuller.SourceIndexBuffer() == ribbonTopology->SortedIndexBuffer() &&
+           ribbonCuller.SourceIndirectBuffer() == ribbonTopology->DrawIndirectBuffer());
 
     RibbonTrace ribbonTrace;
     const rhi::ComputeCommandEncoder::DispatchTable ribbonDispatch = {
@@ -1135,13 +1582,15 @@ int main()
            ribbonTrace.constants[6].keyField == 0 && ribbonTrace.constants[7].keyField == 0 &&
            ribbonTrace.constants[7].digitShift == 28);
 
-    std::array<std::array<uint32_t, 5>, 3> ribbonRenderWords{};
+    std::array<std::array<uint32_t, 5>, 5> ribbonRenderWords{};
     for (auto &shader : ribbonRenderWords)
         shader[0] = 0x07230203u;
     particle::GpuParticleRibbonRenderProgram ribbonRenderProgram = {
         {ribbonRenderWords[0].data(), ribbonRenderWords[0].size()},
         {ribbonRenderWords[1].data(), ribbonRenderWords[1].size()},
         {ribbonRenderWords[2].data(), ribbonRenderWords[2].size()},
+        {ribbonRenderWords[3].data(), ribbonRenderWords[3].size()},
+        {ribbonRenderWords[4].data(), ribbonRenderWords[4].size()},
     };
     particle::GpuParticleRibbonRenderProgramStorage ribbonRenderStorage;
     assert(ribbonRenderStorage.Assign(ribbonRenderProgram) && ribbonRenderStorage.IsValid());
@@ -1156,6 +1605,7 @@ int main()
     assert(ribbonRenderer.IsValid() && !ribbonRenderer.CanCastShadows() &&
            ribbonRenderer.InstanceBuffer() == runtime.InstanceBuffer() &&
            ribbonRenderer.RenderIndexBuffer() == ribbonTopology->SortedIndexBuffer());
+    const auto ribbonViewIndices = ribbonCuller.VisibleIndexBuffer();
 
     GraphicsTrace ribbonGraphicsTrace;
     const rhi::GraphicsCommandEncoder::Dispatch ribbonGraphicsDispatch = {
@@ -1175,31 +1625,43 @@ int main()
            std::vector<rhi::BufferHandle>({ribbonTopology->DrawIndirectBuffer()}));
     assert(ribbonGraphicsTrace.constants.size() == 1 && ribbonGraphicsTrace.constants[0].renderingControl[1] == 2.5f &&
            ribbonGraphicsTrace.constants[0].renderingControl[2] == 1.0f);
+    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
+                                     ribbonTopology->DrawIndirectBuffer(), ribbonView, ribbonViewIndices));
+    assert(ribbonGraphicsTrace.constants.back().renderingControl[3] == 1.0f);
     ribbonPass.target = ShaderCompileTarget::Picking;
     ribbonPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     assert(ribbonRenderer.RecordPickingDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
                                             ribbonTopology->DrawIndirectBuffer(), ribbonView, 0x123456789abcdef0ull));
+    ribbonPass.target = ShaderCompileTarget::Motion;
+    ribbonPass.colorFormats = {rhi::PixelFormat::RG16SFloat};
+    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonTarget, ribbonPass,
+                                     ribbonTopology->DrawIndirectBuffer(), ribbonView));
     const auto floatBits = [](float value) {
         uint32_t bits = 0;
         std::memcpy(&bits, &value, sizeof(bits));
         return bits;
     };
-    assert(ribbonGraphicsTrace.constants.size() == 2 &&
-           floatBits(ribbonGraphicsTrace.constants[1].materialTint[0]) == 0x9abcdef0u &&
-           floatBits(ribbonGraphicsTrace.constants[1].materialTint[1]) == 0x12345678u &&
-           ribbonGraphicsTrace.constants[1].materialTint[3] == 1.0f);
+    assert(ribbonGraphicsTrace.constants.size() == 4 &&
+           floatBits(ribbonGraphicsTrace.constants[2].materialTint[0]) == 0x9abcdef0u &&
+           floatBits(ribbonGraphicsTrace.constants[2].materialTint[1]) == 0x12345678u &&
+           ribbonGraphicsTrace.constants[2].materialTint[3] == 1.0f);
     ribbonRenderer.Destroy();
+    ribbonCuller.Destroy();
     ribbonTopology->Destroy();
     assert(!ribbonRenderer.IsValid() && !ribbonTopology->IsValid());
 
     const auto instanceBuffer = runtime.InstanceBuffer();
     const auto renderIndexBuffer = runtime.RenderIndexBuffer();
     const auto indirectBuffer = runtime.IndirectBuffer();
+    const uint32_t textureReleasesBeforeBillboard = device.textureReleases;
+    const uint32_t samplerReleasesBeforeBillboard = device.samplerReleases;
     std::array<uint32_t, 4> billboardVertex = {0x07230203};
     std::array<uint32_t, 4> billboardFragment = {0x07230203};
     particle::GpuBillboardRendererDesc billboardDesc;
     billboardDesc.vertexShader = {billboardVertex.data(), billboardVertex.size()};
     billboardDesc.fragmentShader = {billboardFragment.data(), billboardFragment.size()};
+    billboardDesc.motionVertexShader = {billboardVertex.data(), billboardVertex.size()};
+    billboardDesc.motionFragmentShader = {billboardFragment.data(), billboardFragment.size()};
     billboardDesc.instances = instanceBuffer;
     billboardDesc.renderIndices = renderIndexBuffer;
     billboardDesc.flipbookColumns = 4;
@@ -1216,29 +1678,24 @@ int main()
     billboardDesc.material->SetTextureGuid("texSampler", "white");
     uint32_t textureResolveCount = 0;
     bool normalTextureReady = false;
-    billboardDesc.textureResolver = [&textureResolveCount, &normalTextureReady](const std::string &textureGuid,
-                                                                                const std::string &name) {
+    TestTextureSlots textureSlots;
+    billboardDesc.textureResolver = [&device, &textureResolveCount, &normalTextureReady,
+                                     &textureSlots](const std::string &textureGuid, const std::string &name) {
         assert(name == "texSampler");
         ++textureResolveCount;
         if (textureGuid == "normal" && !normalTextureReady)
             return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Pending};
         const uint32_t identity = textureGuid == "normal" ? 2u : 1u;
-        return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Ready,
-                                                  {400u + identity, 1},
-                                                  {500u + identity, 1},
-                                                  std::make_shared<uint32_t>(identity),
-                                                  true};
-    };
-    billboardDesc.textureVersionResolver = [](const std::string &textureGuid) {
-        return textureGuid == "normal" ? uint64_t{2} : uint64_t{1};
+        return AcquireTestTexture(device, textureSlots, textureGuid, identity, {400u + identity, 1},
+                                  {500u + identity, 1});
     };
     billboardDesc.deletionQueue = &deletionQueue;
 
     particle::ParticleGpuBillboardRenderer billboard;
     assert(billboard.Create(device, billboardDesc));
     assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    assert(device.layoutEntryCounts == std::vector<uint32_t>({4, 3, 7, 0, 4}));
-    assert(device.groupBufferCounts == std::vector<uint32_t>({7, 0, 2}));
+    assert(device.layoutEntryCounts == std::vector<uint32_t>({4, 3, 16, 0, 4}));
+    assert(device.groupBufferCounts == std::vector<uint32_t>({16, 0, 2}));
     assert(device.groupTextureCounts == std::vector<uint32_t>({0, 0, 2}));
     assert(device.bindGroups.back().textures[0].binding == 2 && device.bindGroups.back().textures[1].binding == 15 &&
            !device.bindGroups.back().textures[1].depthRead);
@@ -1285,16 +1742,39 @@ int main()
     billboardDesc.material->SetTextureGuid("texSampler", "normal");
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(textureResolveCount == 3 && device.groupCreates == 4 && device.groupReleases == 0);
-    assert(device.textureReleases == 0 && device.samplerReleases == 0);
+    assert(device.textureReleases == textureReleasesBeforeBillboard &&
+           device.samplerReleases == samplerReleasesBeforeBillboard);
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(textureResolveCount == 4 && device.groupCreates == 4);
     normalTextureReady = true;
     assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(textureResolveCount == 5 && device.groupCreates == 5 && device.groupReleases == 0);
-    deletionQueue.Tick();
-    deletionQueue.Tick();
-    deletionQueue.Tick();
-    assert(device.groupReleases == 2 && device.textureReleases == 2 && device.samplerReleases == 2);
+    (void)deletionQueue.Collect(1);
+    assert(device.groupReleases == 2 && device.textureReleases == textureReleasesBeforeBillboard &&
+           device.samplerReleases == samplerReleasesBeforeBillboard);
+
+    auto normalSlot = textureSlots.at("normal");
+    auto normalRevisionTwoOwner = normalSlot->Acquire();
+    assert(normalRevisionTwoOwner && normalRevisionTwoOwner->GetRevision() == 2);
+    std::weak_ptr<const rhi::TextureGpuView> normalRevisionTwo = normalRevisionTwoOwner;
+    normalSlot->RequestRevision(3);
+    normalTextureReady = false;
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(textureResolveCount == 6 && device.groupCreates == 5 && !normalRevisionTwo.expired());
+    auto normalRevisionThree = AcquireTestTexture(device, textureSlots, "normal", 3, {403, 1}, {503, 1});
+    assert(normalRevisionThree.gpuSlot == normalSlot && normalRevisionThree.gpuView->GetRevision() == 3);
+    normalRevisionTwoOwner.reset();
+    assert(!normalRevisionTwo.expired());
+    const uint32_t resolvesBeforeSlotPublication = textureResolveCount;
+    assert(billboard.RecordDraw(graphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
+    assert(textureResolveCount == resolvesBeforeSlotPublication && device.groupCreates == 6 &&
+           !normalRevisionTwo.expired());
+    (void)deletionQueue.Collect(1);
+    assert(device.groupReleases == 3 && normalRevisionTwo.expired() &&
+           device.textureReleases == textureReleasesBeforeBillboard + 1 &&
+           device.samplerReleases == samplerReleasesBeforeBillboard + 1);
+    normalRevisionThree = {};
+    normalSlot.reset();
     liveMaterialState = billboardDesc.material->GetRenderState();
     liveMaterialState.blendEnable = false;
     liveMaterialState.depthWriteEnable = true;
@@ -1412,11 +1892,14 @@ int main()
     std::memcpy(linkedForward.vertexSpirv.data(), &spirvMagic, sizeof(spirvMagic));
     std::memcpy(linkedForward.fragmentSpirv.data(), &spirvMagic, sizeof(spirvMagic));
     linkedArtifact->variants.push_back(std::move(linkedForward));
+    auto linkedMotion = linkedArtifact->variants.front();
+    linkedMotion.target = ShaderCompileTarget::Motion;
+    linkedArtifact->variants.push_back(std::move(linkedMotion));
     assert(linkedArtifact->IsValid());
 
     FakeDevice linkedDevice;
-    FrameDeletionQueue linkedDeletionQueue;
-    linkedDeletionQueue.Initialize(2);
+    GpuRetirementQueue linkedDeletionQueue;
+    linkedDeletionQueue.BindSerialSource([] { return rhi::SubmissionSerial{1}; });
     particle::GpuBillboardRendererDesc linkedDesc;
     linkedDesc.shaderProgram = linkedArtifact;
     linkedDesc.instances = instanceBuffer;
@@ -1427,18 +1910,15 @@ int main()
     linkedDesc.material->SetTextureGuid("albedo", "white");
     linkedDesc.material->SetTextureGuid("detail", "normal");
     uint32_t linkedTextureResolves = 0;
-    linkedDesc.textureResolver = [&linkedTextureResolves](const std::string &guid, const std::string &name) {
+    TestTextureSlots linkedTextureSlots;
+    linkedDesc.textureResolver = [&linkedDevice, &linkedTextureResolves,
+                                  &linkedTextureSlots](const std::string &guid, const std::string &name) {
         ++linkedTextureResolves;
         const uint32_t identity = name == "albedo" ? 1u : 2u;
         assert((name == "albedo" && (guid == "white" || guid == "black")) || (name == "detail" && guid == "normal"));
-        return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Ready,
-                                                  {600u + identity, 1},
-                                                  {700u + identity, 1},
-                                                  std::make_shared<uint32_t>(identity),
-                                                  true};
-    };
-    linkedDesc.textureVersionResolver = [](const std::string &guid) {
-        return guid == "black" ? uint64_t{2} : uint64_t{1};
+        const uint64_t revision = guid == "black" ? 2u : 1u;
+        return AcquireTestTexture(linkedDevice, linkedTextureSlots, guid, revision, {600u + identity, 1},
+                                  {700u + identity, 1});
     };
     linkedDesc.deletionQueue = &linkedDeletionQueue;
 
@@ -1449,7 +1929,7 @@ int main()
 
     particle::ParticleGpuBillboardRenderer linkedBillboard;
     assert(linkedBillboard.Create(linkedDevice, linkedDesc));
-    assert(linkedDevice.shaderCreates == 2 && linkedDevice.buffers.size() == 1);
+    assert(linkedDevice.shaderCreates == 4 && linkedDevice.buffers.size() == 1);
     assert(linkedDevice.buffers[0].byteSize == 32 && linkedDevice.buffers[0].usage == rhi::BufferUsageFlags::Uniform &&
            linkedDevice.buffers[0].memory == rhi::BufferMemory::Upload);
     assert(linkedDevice.layouts.size() == 1 && linkedDevice.layouts[0].entryCount == 6);
@@ -1503,10 +1983,8 @@ int main()
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, firstTarget, forwardPass, indirectBuffer, view));
     assert(linkedDevice.writes == 3 && linkedDevice.groupCreates == 4 && linkedDevice.graphicsPipelineCreates == 1 &&
            linkedTextureResolves == 3);
-    linkedDeletionQueue.Tick();
-    linkedDeletionQueue.Tick();
-    linkedDeletionQueue.Tick();
-    assert(linkedDevice.groupReleases == 3 && linkedDevice.textureReleases == 1 && linkedDevice.samplerReleases == 1);
+    (void)linkedDeletionQueue.Collect(1);
+    assert(linkedDevice.groupReleases == 3 && linkedDevice.textureReleases == 0 && linkedDevice.samplerReleases == 0);
 
     auto linkedMaterialState = linkedDesc.material->GetRenderState();
     linkedMaterialState.alphaClipEnabled = true;
@@ -1525,8 +2003,8 @@ int main()
     assert(packedAlphaClipThreshold == 0.0f);
 
     linkedBillboard.Destroy();
-    assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 4 && linkedDevice.textureReleases == 3 &&
-           linkedDevice.samplerReleases == 3);
+    assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 4 && linkedDevice.textureReleases == 0 &&
+           linkedDevice.samplerReleases == 0);
 
     auto linkedForwardPlusArtifact = std::make_shared<ShaderProgramArtifact>(*linkedArtifact);
     linkedForwardPlusArtifact->key.revision = 8;
@@ -1541,7 +2019,7 @@ int main()
     linkedForwardPlusDesc.deletionQueue = nullptr;
     particle::ParticleGpuBillboardRenderer linkedForwardPlusBillboard;
     assert(linkedForwardPlusBillboard.Create(linkedForwardPlusDevice, linkedForwardPlusDesc));
-    assert(linkedForwardPlusDevice.shaderCreates == 4);
+    assert(linkedForwardPlusDevice.shaderCreates == 6);
     GraphicsTrace linkedForwardPlusTrace;
     const rhi::GraphicsCommandEncoder linkedForwardPlusEncoder(&linkedForwardPlusTrace, &graphicsDispatch);
     auto linkedForwardPlusPass = forwardPass;
@@ -1553,6 +2031,8 @@ int main()
            linkedForwardPlusDevice.graphicsPipelineDescs[0].bindingLayoutCount == 2 &&
            linkedForwardPlusTrace.groupSets == std::vector<uint32_t>({0, 1}));
     linkedForwardPlusBillboard.Destroy();
+    linkedTextureSlots.clear();
+    assert(linkedDevice.textureReleases == 3 && linkedDevice.samplerReleases == 3);
 
     {
         FakeDevice meshDevice;
@@ -1577,6 +2057,8 @@ int main()
         meshDesc.vertexShader = {meshVertexShader.data(), meshVertexShader.size()};
         meshDesc.fragmentShader = {meshFragmentShader.data(), meshFragmentShader.size()};
         meshDesc.pickingFragmentShader = {meshPickingShader.data(), meshPickingShader.size()};
+        meshDesc.motionVertexShader = {meshVertexShader.data(), meshVertexShader.size()};
+        meshDesc.motionFragmentShader = {meshFragmentShader.data(), meshFragmentShader.size()};
         meshDesc.instances = instanceBuffer;
         meshDesc.renderIndices = renderIndexBuffer;
         meshDesc.mesh = mesh;
@@ -1632,7 +2114,7 @@ int main()
         assert(encodedObjectId[0] == 0x9abcdef0u && encodedObjectId[1] == 0x12345678u);
 
         meshRenderer.Destroy();
-        assert(!meshRenderer.IsValid() && meshDevice.bufferReleases == 0 && meshDevice.shaderReleases == 3 &&
+        assert(!meshRenderer.IsValid() && meshDevice.bufferReleases == 0 && meshDevice.shaderReleases == 5 &&
                meshDevice.layoutReleases == 1 && meshDevice.groupReleases == 1 &&
                meshDevice.graphicsPipelineReleases == 2);
 
@@ -1681,12 +2163,15 @@ int main()
         const uint64_t initialRevision = registry.Revision();
         particle::GpuParticleDrawEntry registryEntry;
         registryEntry.id = 77;
+        registryEntry.emitterId = 701;
+        registryEntry.graphInstanceId = 702;
         registryEntry.ownerLayerMask = 1u << 6u;
         registryEntry.capacity = runtime.Capacity();
         registryEntry.instances = instanceBuffer;
         registryEntry.renderIndices = renderIndexBuffer;
         registryEntry.indirectArguments = indirectBuffer;
         registryEntry.bounds = {999, 1};
+        registryEntry.simulationControl = runtime.SimulationControlBuffer();
         registryEntry.renderer = registeredBillboard;
         assert(registry.Set(std::move(registryEntry)));
         assert(registry.Revision() == initialRevision + 1 && registry.Size() == 1);
@@ -1696,16 +2181,17 @@ int main()
         assert(registry.Snapshot(0, 2999).empty());
         assert(registry.Remove(77) && !registry.Remove(77) && registry.Size() == 0);
     }
+    textureSlots.clear();
 
     runtime.Destroy();
     assert(!runtime.IsValid() && runtime.StateStride() == 0);
-    if (device.pipelineReleases != 6 || device.groupReleases != 6 || device.layoutReleases != 6) {
+    if (device.pipelineReleases != 6 || device.groupReleases != 7 || device.layoutReleases != 6) {
         std::cerr << "release counts: pipelines=" << device.pipelineReleases << " groups=" << device.groupReleases
                   << " layouts=" << device.layoutReleases << '\n';
     }
-    assert(device.pipelineReleases == 6 && device.groupReleases == 6 && device.layoutReleases == 6);
-    assert(device.textureReleases == 4 && device.samplerReleases == 4);
-    assert(device.shaderReleases == 10);
-    assert(device.bufferReleases == 7);
+    assert(device.pipelineReleases == 6 && device.groupReleases == 7 && device.layoutReleases == 6);
+    assert(device.textureReleases == 3 && device.samplerReleases == 3);
+    assert(device.shaderReleases == 14);
+    assert(device.bufferReleases == 9);
     return 0;
 }

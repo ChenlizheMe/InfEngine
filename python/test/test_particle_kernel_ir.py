@@ -8,6 +8,7 @@ import pytest
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.particle import (
+    EmitterSettings,
     EmitterShape,
     KernelCompileError,
     KernelInstruction,
@@ -20,7 +21,7 @@ from Infernux.particle import (
     ParticleKernelLowerer,
     ParticleKernelProgram,
     ParticleRuntimeCompatibility,
-    PointCache,
+    SdfVolume,
     VectorField,
     classify_emitter_update,
     particle_random_f32,
@@ -296,12 +297,77 @@ def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contra
     assert set(topology).issubset(exports)
 
 
+def test_stage_expressions_read_state_after_prior_exec_writes():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "set-size",
+                "particle.attribute.set_size",
+                properties={"value": 2.0},
+            ),
+            GraphNodeRecord(
+                "read-size",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.size"},
+            ),
+            GraphNodeRecord("set-rotation", "particle.attribute.set_rotation"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec-size", "root.init", "out", "set-size", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord(
+                "exec-rotation",
+                "set-size",
+                "out",
+                "set-rotation",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "size-value",
+                "read-size",
+                "value",
+                "set-rotation",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+
+    instructions = _lower(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(init=init),))
+    ).emitters[0].init.instructions
+    size_store = next(
+        index
+        for index, instruction in enumerate(instructions)
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.size"
+        and instruction.source.node_uid == "set-size"
+    )
+    size_read = next(
+        index
+        for index, instruction in enumerate(instructions)
+        if instruction.opcode == "load_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.size"
+        and instruction.source.node_uid == "read-size"
+    )
+
+    assert size_store < size_read
+
+
 def test_kernel_math_promotes_unspaced_constants_into_simulation_space():
     update = GraphDocument(
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord(
+                "position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
             GraphNodeRecord("noise", "common.noise.vector3d"),
             GraphNodeRecord(
                 "scale",
@@ -335,7 +401,8 @@ def test_kernel_math_promotes_unspaced_constants_into_simulation_space():
     math = [
         instruction
         for instruction in kernel.instructions
-        if instruction.source.node_uid in {"multiply", "add"}
+        if instruction.opcode in {"multiply", "add"}
+        and instruction.source.node_uid in {"multiply", "add"}
     ]
 
     assert [instruction.result_type for instruction in math] == [simulation, simulation]
@@ -435,9 +502,9 @@ def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
                 stable_id="wind",
                 texture=AssetReference(path_hint="Assets/WindA.vectorfield"),
             ),
-            PointCache(
-                stable_id="points",
-                cache=AssetReference(path_hint="Assets/Face.pointcache"),
+            SdfVolume(
+                stable_id="collision",
+                texture=AssetReference(path_hint="Assets/Collision.inxsdf"),
             ),
         ),
     )
@@ -446,7 +513,7 @@ def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
 
     assert restored == first
     assert [value.stable_id for value in restored.emitters[0].data_interfaces] == [
-        "points",
+        "collision",
         "wind",
     ]
 
@@ -489,7 +556,7 @@ def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
     assert reordered.kernel_hash == first.kernel_hash
     assert [
         interface.stable_id for interface in reordered.emitters[0].data_interfaces
-    ] == ["points", "wind"]
+    ] == ["collision", "wind"]
 
     extended_emitter = replace(
         first_emitter,
@@ -510,13 +577,40 @@ def test_data_interface_abi_round_trips_and_resource_rebind_preserves_state():
     )
 
 
+def test_enabling_collision_is_a_layout_migratable_kernel_change():
+    previous_emitter = ParticleEmitterAsset(
+        stable_id="collision-toggle",
+        settings=EmitterSettings(collision_enabled=False),
+    )
+    next_emitter = replace(
+        previous_emitter,
+        settings=replace(previous_emitter.settings, collision_enabled=True),
+    )
+    previous = _lower(ParticleGraphAsset(emitters=(previous_emitter,))).emitters[0]
+    current = _lower(ParticleGraphAsset(emitters=(next_emitter,))).emitters[0]
+
+    assert (
+        classify_emitter_update(
+            previous,
+            current,
+            previous_emitter.settings,
+            next_emitter.settings,
+        )
+        is ParticleRuntimeCompatibility.LAYOUT_MIGRATABLE
+    )
+
+
 def test_vector_field_graph_lowers_to_typed_data_interface_access():
     update = GraphDocument(
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("acceleration", "particle.update.acceleration"),
-            GraphNodeRecord("position", "particle.attribute.read_vec3"),
+            GraphNodeRecord(
+                "position",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.position"},
+            ),
             GraphNodeRecord(
                 "sample",
                 "particle.vector_field.sample",
@@ -572,9 +666,9 @@ def test_vector_field_graph_lowers_to_typed_data_interface_access():
                     replace(
                         emitter,
                         data_interfaces=(
-                            PointCache(
+                            SdfVolume(
                                 stable_id="wind",
-                                cache=AssetReference(guid="wrong-resource"),
+                                texture=AssetReference(guid="wrong-resource"),
                             ),
                         ),
                     ),
@@ -605,6 +699,8 @@ def test_kernel_random_slots_are_unique_and_source_uid_independent():
 
     moved = first.to_dict()
     for stage in moved["emitters"][0]["stages"].values():
+        if stage is None:
+            continue
         for index, node in enumerate(stage["nodes"]):
             node["position"] = [float(index * 700), 350.0]
     second = ParticleGraphAsset.from_dict(moved)

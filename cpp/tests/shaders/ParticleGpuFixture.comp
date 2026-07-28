@@ -19,6 +19,8 @@ struct ParticleInstance
     vec4 rotationCustom;
     vec4 scaleCustom;
     uvec4 ribbonData;
+    vec4 customData;
+    vec4 previousPositionHistory;
 };
 
 layout(set = 0, binding = 3, std430) buffer Instances { ParticleInstance instances[]; };
@@ -30,6 +32,7 @@ layout(set = 0, binding = 4, std430) buffer IndirectArguments
     uint firstInstance;
 } indirectArgs;
 layout(set = 0, binding = 5, std140) uniform Transforms { mat4 transforms[4]; };
+layout(set = 0, binding = 6, std430) buffer RenderIndices { uint renderIndices[]; };
 
 layout(push_constant) uniform PushConstants
 {
@@ -55,6 +58,9 @@ void main()
     instances[0].rotationCustom = vec4(0.0);
     instances[0].scaleCustom = vec4(1.0, 1.0, 1.0, 0.0);
     instances[0].ribbonData = uvec4(7u, pc.simulationStep, 0u, pc.spawnBaseId);
+    instances[0].customData = vec4(0.0);
+    instances[0].previousPositionHistory = vec4(0.0, 0.0, 0.0, uintBitsToFloat(pc.spawnGeneration));
+    renderIndices[0] = 0u;
     indirectArgs.vertexCount = 6u;
     indirectArgs.instanceCount = 1u;
     indirectArgs.firstVertex = 0u;

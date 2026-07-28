@@ -4,7 +4,7 @@
 #include "Light.h"
 #include "Scene.h"
 #include "SceneManager.h"
-#include "SceneRenderer.h"
+#include "SceneRenderBridge.h"
 #include "Transform.h"
 #include <algorithm>
 #include <array>

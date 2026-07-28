@@ -142,6 +142,11 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert Path(result) == (tmp_path / "SafeProject").resolve()
     assert runtime_locations == [Path(result)]
     assert (Path(result) / "Assets").is_dir()
+    gitignore = (Path(result) / ".gitignore").read_text(encoding="utf-8")
+    assert "/Library/" in gitignore
+    assert "/.venv/" in gitignore
+    assert "/.runtime/" in gitignore
+    assert "*.meta\n" not in gitignore
     assert not (Path(result) / "Assets" / "README.md").exists()
     assert (Path(result) / "Assets" / "Scenes" / "Start.scene").is_file()
     assert (Path(result) / "Assets" / "Rendering" / "Bloom.effect").is_file()

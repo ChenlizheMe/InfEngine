@@ -202,65 +202,7 @@ class SdfVolume:
         }
 
 
-@dataclass(frozen=True)
-class PointCache:
-    stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    name: str = "Point Cache"
-    cache: AssetReference = AssetReference()
-    space: CoordinateSpace = CoordinateSpace.WORLD
-    cache_to_space: tuple[float, ...] = field(default_factory=_identity_matrix)
-    position_channel: str = "position"
-    normal_channel: str = "normal"
-    color_channel: str = "color"
-    id_channel: str = "id"
-
-    kind = "point_cache"
-
-    def __post_init__(self) -> None:
-        _validate_identity(self.stable_id, self.name, "point cache")
-        if not isinstance(self.cache, AssetReference):
-            raise ParticleDataInterfaceError("point cache asset is invalid")
-        channels = (
-            self.position_channel,
-            self.normal_channel,
-            self.color_channel,
-            self.id_channel,
-        )
-        if not all(type(value) is str for value in channels):
-            raise ParticleDataInterfaceError("point cache channel names must be strings")
-        if not self.position_channel.strip() or not self.id_channel.strip():
-            raise ParticleDataInterfaceError(
-                "point cache position and stable id channels cannot be empty"
-            )
-        object.__setattr__(self, "stable_id", self.stable_id.strip())
-        object.__setattr__(self, "name", self.name.strip())
-        object.__setattr__(self, "space", _validate_space(self.space, "point cache"))
-        object.__setattr__(
-            self,
-            "cache_to_space",
-            _validate_matrix(self.cache_to_space, "point cache"),
-        )
-        object.__setattr__(self, "position_channel", self.position_channel.strip())
-        object.__setattr__(self, "normal_channel", self.normal_channel.strip())
-        object.__setattr__(self, "color_channel", self.color_channel.strip())
-        object.__setattr__(self, "id_channel", self.id_channel.strip())
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "stable_id": self.stable_id,
-            "name": self.name,
-            "cache": self.cache.to_dict(),
-            "space": self.space.value,
-            "cache_to_space": list(self.cache_to_space),
-            "position_channel": self.position_channel,
-            "normal_channel": self.normal_channel,
-            "color_channel": self.color_channel,
-            "id_channel": self.id_channel,
-        }
-
-
-ParticleDataInterface: TypeAlias = VectorField | SdfVolume | PointCache
+ParticleDataInterface: TypeAlias = VectorField | SdfVolume
 
 
 def particle_data_interface_from_dict(
@@ -293,32 +235,6 @@ def particle_data_interface_from_dict(
             boundary=value["boundary"],
             filtering=value["filtering"],
         )
-    if kind == PointCache.kind:
-        expected = {
-            "kind",
-            "stable_id",
-            "name",
-            "cache",
-            "space",
-            "cache_to_space",
-            "position_channel",
-            "normal_channel",
-            "color_channel",
-            "id_channel",
-        }
-        if set(value) != expected:
-            raise ParticleDataInterfaceError(f"{location} keys do not match PointCache")
-        return PointCache(
-            stable_id=value["stable_id"],
-            name=value["name"],
-            cache=AssetReference.from_dict(value["cache"]),
-            space=value["space"],
-            cache_to_space=tuple(value["cache_to_space"]),
-            position_channel=value["position_channel"],
-            normal_channel=value["normal_channel"],
-            color_channel=value["color_channel"],
-            id_channel=value["id_channel"],
-        )
     if kind == SdfVolume.kind:
         expected = {
             "kind",
@@ -347,7 +263,6 @@ def particle_data_interface_from_dict(
 __all__ = [
     "ParticleDataInterface",
     "ParticleDataInterfaceError",
-    "PointCache",
     "SdfFilter",
     "SdfVolume",
     "VectorField",

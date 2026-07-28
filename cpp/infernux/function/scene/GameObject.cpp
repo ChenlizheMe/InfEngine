@@ -9,6 +9,7 @@
 #include "Scene.h"
 #include "function/audio/AudioSource.h"
 #include "physics/PhysicsWorld.h"
+#include "physics/PhysicsECSStore.h"
 #include <InxLog.h>
 #include <algorithm>
 #include <atomic>
@@ -76,6 +77,7 @@ void GameObject::SetLayer(int layer)
     }
 
     m_layer = layer;
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     auto &physics = PhysicsWorld::Instance();
     if (!physics.IsInitialized()) {

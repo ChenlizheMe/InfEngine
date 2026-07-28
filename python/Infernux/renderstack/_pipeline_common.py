@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 COLOR_TEXTURE = "color"
 DEPTH_TEXTURE = "depth"
 SHADOW_MAP_TEXTURE = "shadow_map"
+MOTION_TEXTURE = "motion"
+MOTION_MSAA_TEXTURE = "_motion_msaa"
 BEFORE_POST_PROCESS_POINT = "before_post_process"
 AFTER_POST_PROCESS_POINT = "after_post_process"
 
@@ -26,14 +28,15 @@ GBUFFER_NORMAL_TEXTURE = "gbuffer_normal"
 GBUFFER_MATERIAL_TEXTURE = "gbuffer_material"
 GBUFFER_EMISSION_TEXTURE = "gbuffer_emission"
 
-SCENE_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE}
-POST_PROCESS_RESOURCES = {COLOR_TEXTURE}
+SCENE_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE}
+POST_PROCESS_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE}
 GBUFFER_RESOURCES = {
     GBUFFER_ALBEDO_TEXTURE,
     GBUFFER_NORMAL_TEXTURE,
     GBUFFER_MATERIAL_TEXTURE,
     GBUFFER_EMISSION_TEXTURE,
     DEPTH_TEXTURE,
+    MOTION_TEXTURE,
 }
 
 FORWARD_CLEAR_COLOR = (0.1, 0.1, 0.1, 1.0)
@@ -62,7 +65,12 @@ def shadow_caster_queue_range() -> tuple[int, int]:
     return (config.shadow_caster_queue_min, config.shadow_caster_queue_max)
 
 
-def create_main_scene_targets(graph: "RenderGraph", *, shadow_resolution: int) -> None:
+def create_main_scene_targets(
+    graph: "RenderGraph",
+    *,
+    shadow_resolution: int,
+    msaa_samples: int = 1,
+) -> None:
     from Infernux.rendergraph.graph import Format
 
     shadow_resolution = int(shadow_resolution)
@@ -73,6 +81,13 @@ def create_main_scene_targets(graph: "RenderGraph", *, shadow_resolution: int) -
 
     graph.create_texture(COLOR_TEXTURE, camera_target=True)
     graph.create_texture(DEPTH_TEXTURE, format=Format.D32_SFLOAT)
+    graph.create_texture(MOTION_TEXTURE, format=Format.RG16_SFLOAT, samples=1)
+    if int(msaa_samples) > 1:
+        graph.create_texture(
+            MOTION_MSAA_TEXTURE,
+            format=Format.RG16_SFLOAT,
+            samples=int(msaa_samples),
+        )
     graph.create_texture(
         SHADOW_MAP_TEXTURE,
         format=Format.D32_SFLOAT,
@@ -151,6 +166,36 @@ def add_transparent_pass(
             queue_range=queue_range or transparent_queue_range(),
             sort_mode="back_to_front",
             material_pass=material_pass,
+        )
+
+
+def add_motion_vector_pass(
+    graph: "RenderGraph",
+    *,
+    name: str,
+    queue_range: tuple[int, int],
+    clear: bool = False,
+    sort_mode: str = "front_to_back",
+    msaa_samples: int = 1,
+) -> None:
+    """Rasterize camera-relative motion into the shared RG16F target.
+
+    The pass stays a normal graph dependency. When no mounted effect consumes
+    ``motion``, native dead-pass elimination removes every motion draw.
+    """
+    multisampled = int(msaa_samples) > 1
+    draw_target = MOTION_MSAA_TEXTURE if multisampled else MOTION_TEXTURE
+    with graph.add_pass(name) as p:
+        p.read(DEPTH_TEXTURE)
+        p.write_color(draw_target)
+        if multisampled:
+            p.write_resolve(MOTION_TEXTURE)
+        if clear:
+            p.set_clear(color=(0.0, 0.0, 0.0, 0.0))
+        p.draw_renderers(
+            queue_range=queue_range,
+            sort_mode=sort_mode,
+            material_pass="motion",
         )
 
 

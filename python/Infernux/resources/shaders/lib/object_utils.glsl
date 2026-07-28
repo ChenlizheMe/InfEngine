@@ -1,6 +1,7 @@
-@shader_id: Lib Object Utils
-
-@import: Lib Surface Utils
+ShaderInfo {
+    Name "Lib Object Utils"
+    Imports ["Lib Surface Utils"]
+}
 
 // Particle-only surface shaders are also compiled once without a linked
 // particle vertex stage for asset validation and material previews. In that
@@ -18,7 +19,7 @@ vec2 getParticleLocalUV() {
 // Requires: fragment varyings (v_WorldPos, v_Normal, v_Tangent, v_Color,
 //           v_TexCoord, v_ViewDepth) + InfGlobals UBO.
 //
-// Usage: @import: Lib Object Utils
+// Usage: ShaderInfo Imports: Lib Object Utils
 //
 // Includes (via lib/surface_utils → lib/normal_utils, lib/camera, lib/common):
 //

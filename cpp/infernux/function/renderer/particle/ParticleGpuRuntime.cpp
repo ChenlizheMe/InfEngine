@@ -99,6 +99,7 @@ struct ParticleGpuRuntime::ResidentState
         if (!device)
             return;
         device->Release(transforms);
+        device->Release(simulationControl);
         device->Release(eventInputLayout);
         device->Release(eventOutputLayout);
         device->Release(renderIndices);
@@ -117,6 +118,7 @@ struct ParticleGpuRuntime::ResidentState
     rhi::BufferHandle indirect;
     rhi::BufferHandle renderIndices;
     rhi::BufferHandle transforms;
+    rhi::BufferHandle simulationControl;
     rhi::BindingLayoutHandle eventInputLayout;
     rhi::BindingLayoutHandle eventOutputLayout;
     bool bootstrapRecorded = false;
@@ -137,11 +139,8 @@ struct ParticleGpuRuntime::DataInterfaceState
     rhi::BindingLayoutHandle layout;
     rhi::BindGroupHandle group;
     rhi::BufferHandle metadataBuffer;
-    std::vector<GpuPointCacheDesc> pointCaches;
     std::optional<GpuMeshShapeDesc> meshShape;
     std::vector<uint32_t> metadataWords;
-    uint32_t interfaceStrideWords = 0;
-    uint32_t sampleStrideWords = 0;
 };
 
 struct ParticleGpuRuntime::VectorFieldState
@@ -160,6 +159,7 @@ struct ParticleGpuRuntime::VectorFieldState
     rhi::BindGroupHandle group;
     rhi::BufferHandle metadataBuffer;
     std::vector<GpuVectorFieldDesc> vectorFields;
+    std::vector<GpuTexture2DParameterDesc> textureParameters;
     std::vector<uint32_t> metadataWords;
     uint32_t interfaceStrideWords = 0;
 };
@@ -173,7 +173,7 @@ ParticleGpuRuntime::~ParticleGpuRuntime()
 
 bool ParticleGpuRuntime::Create(rhi::Device &device, const GpuEmitterDesc &desc)
 {
-    return CreateInternal(device, desc, {});
+    return CreateInternal(device, desc, {}, nullptr);
 }
 
 bool ParticleGpuRuntime::CreateCompatible(rhi::Device &device, const GpuEmitterDesc &desc,
@@ -182,7 +182,9 @@ bool ParticleGpuRuntime::CreateCompatible(rhi::Device &device, const GpuEmitterD
     if (!previous.IsValid() || previous.m_device != &device || previous.Capacity() != desc.capacity ||
         previous.StateStride() != desc.stateStride)
         return false;
-    return CreateInternal(device, desc, previous.m_residentState);
+    if ((desc.continuation.capacity == 0) != !previous.HasContinuations())
+        return false;
+    return CreateInternal(device, desc, previous.m_residentState, previous.m_continuation.get());
 }
 
 bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement) noexcept
@@ -193,6 +195,8 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
         return false;
     std::swap(m_layout, replacement.m_layout);
     std::swap(m_group, replacement.m_group);
+    std::swap(m_parameterBuffer, replacement.m_parameterBuffer);
+    std::swap(m_parameterWordCount, replacement.m_parameterWordCount);
     std::swap(m_dataInterfaces, replacement.m_dataInterfaces);
     std::swap(m_vectorFields, replacement.m_vectorFields);
     std::swap(m_emptyDataInterfaceLayout, replacement.m_emptyDataInterfaceLayout);
@@ -202,11 +206,13 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_eventOutputStageMask, replacement.m_eventOutputStageMask);
     std::swap(m_eventInitPipeline, replacement.m_eventInitPipeline);
     std::swap(m_pipelines, replacement.m_pipelines);
+    std::swap(m_continuation, replacement.m_continuation);
     return true;
 }
 
 bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
-                                        std::shared_ptr<ResidentState> residentState)
+                                        std::shared_ptr<ResidentState> residentState,
+                                        const ParticleGpuContinuationRuntime *previousContinuation)
 {
     Destroy();
     uint64_t stateBytes = 0;
@@ -240,15 +246,31 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState->freeList =
             device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
         m_residentState->counters = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::TransferSource});
-        m_residentState->instances = device.CreateBuffer({instanceBytes, storage});
-        m_residentState->indirect = device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect});
+        const auto createRenderExport = [&](uint64_t bytes, rhi::BufferUsageFlags usage) {
+            rhi::BufferDesc bufferDesc;
+            bufferDesc.byteSize = bytes;
+            bufferDesc.usage = usage;
+            bufferDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+            return device.CreateBuffer(bufferDesc);
+        };
+        m_residentState->instances = createRenderExport(instanceBytes, storage);
+        m_residentState->indirect = createRenderExport(16, storage | rhi::BufferUsageFlags::Indirect);
         m_residentState->renderIndices =
-            device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
+            createRenderExport(static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage);
         rhi::BufferDesc transformDesc;
         transformDesc.byteSize = sizeof(GpuParticleTransforms);
         transformDesc.usage = rhi::BufferUsageFlags::Uniform;
         transformDesc.memory = rhi::BufferMemory::Upload;
         m_residentState->transforms = device.CreateBuffer(transformDesc);
+        rhi::BufferDesc simulationControlDesc;
+        simulationControlDesc.byteSize = sizeof(GpuParticleSimulationControl);
+        simulationControlDesc.usage = rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource;
+        simulationControlDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
+        // The first Bounds Prepare dispatch initializes all four words. Keeping
+        // this buffer device-local avoids a permanently host-visible control
+        // allocation and respects the RHI rule that DeviceLocal buffers cannot
+        // be created with direct initialData.
+        m_residentState->simulationControl = device.CreateBuffer(simulationControlDesc);
         rhi::BindingLayoutDesc eventLayoutDesc;
         for (uint32_t binding = 0; binding < 4; ++binding) {
             eventLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
@@ -264,19 +286,55 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_residentState->eventOutputLayout = device.CreateBindingLayout(eventOutputLayoutDesc);
         if (!StateBuffer().IsValid() || !FreeListBuffer().IsValid() || !CounterBuffer().IsValid() ||
             !InstanceBuffer().IsValid() || !IndirectBuffer().IsValid() || !RenderIndexBuffer().IsValid() ||
-            !TransformBuffer().IsValid() || !m_residentState->eventInputLayout.IsValid() ||
-            !m_residentState->eventOutputLayout.IsValid()) {
+            !TransformBuffer().IsValid() || !SimulationControlBuffer().IsValid() ||
+            !m_residentState->eventInputLayout.IsValid() || !m_residentState->eventOutputLayout.IsValid()) {
             Destroy();
             return false;
         }
     }
 
+    std::vector<uint32_t> parameterWords = desc.parameterWords;
+    if (parameterWords.empty())
+        parameterWords.resize(4, 0u);
+    if (parameterWords.size() % 4 != 0 || parameterWords.size() > std::numeric_limits<uint32_t>::max()) {
+        Destroy();
+        return false;
+    }
+    rhi::BufferDesc parameterDesc;
+    parameterDesc.byteSize = parameterWords.size() * sizeof(uint32_t);
+    parameterDesc.usage = rhi::BufferUsageFlags::Storage;
+    parameterDesc.memory = rhi::BufferMemory::Upload;
+    parameterDesc.initialData = parameterWords.data();
+    parameterDesc.initialDataBytes = parameterDesc.byteSize;
+    m_parameterBuffer = device.CreateBuffer(parameterDesc);
+    m_parameterWordCount = static_cast<uint32_t>(parameterWords.size());
+    if (!m_parameterBuffer.IsValid()) {
+        Destroy();
+        return false;
+    }
+
     rhi::BindingLayoutDesc layoutDesc;
+    if (!desc.collisionSceneHeader.IsValid() || !desc.collisionSceneColliders.IsValid() ||
+        !desc.collisionSceneGridOffsets.IsValid() || !desc.collisionSceneGridColliderIndices.IsValid() ||
+        !desc.collisionSceneMeshVertices.IsValid() || !desc.collisionSceneMeshIndices.IsValid() ||
+        !desc.collisionSceneMeshBvhNodes.IsValid()) {
+        Destroy();
+        return false;
+    }
     for (uint32_t binding = 0; binding < 5; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     layoutDesc.entries[5] = {5, rhi::BindingType::UniformBuffer, rhi::ShaderStage::Compute, 1};
     layoutDesc.entries[6] = {6, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 7;
+    layoutDesc.entries[7] = {7, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[8] = {8, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[9] = {9, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[10] = {10, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[11] = {11, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[12] = {12, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[13] = {13, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[14] = {14, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entries[15] = {15, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entryCount = 16;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
@@ -285,9 +343,23 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 7> buffers = {
-        StateBuffer(),    FreeListBuffer(),  CounterBuffer(),     InstanceBuffer(),
-        IndirectBuffer(), TransformBuffer(), RenderIndexBuffer(),
+    const std::array<rhi::BufferHandle, 16> buffers = {
+        StateBuffer(),
+        FreeListBuffer(),
+        CounterBuffer(),
+        InstanceBuffer(),
+        IndirectBuffer(),
+        TransformBuffer(),
+        RenderIndexBuffer(),
+        ParameterBuffer(),
+        desc.collisionSceneHeader,
+        desc.collisionSceneColliders,
+        desc.collisionSceneGridOffsets,
+        desc.collisionSceneGridColliderIndices,
+        desc.collisionSceneMeshVertices,
+        desc.collisionSceneMeshIndices,
+        desc.collisionSceneMeshBvhNodes,
+        SimulationControlBuffer(),
     };
     for (uint32_t binding = 0; binding < buffers.size(); ++binding) {
         groupDesc.buffers[binding].binding = binding;
@@ -314,157 +386,43 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     m_eventInputLayout = m_residentState->eventInputLayout;
     m_eventOutputLayout = m_residentState->eventOutputLayout;
 
-    const auto &pointCacheLayout = desc.pointCaches;
-    if (!pointCacheLayout.pointCaches.empty() || desc.meshShape) {
-        const size_t maxPointCaches = desc.meshShape ? 6 : 7;
-        if (pointCacheLayout.metadataBinding != 0 || pointCacheLayout.interfaceStrideWords < 32 ||
-            pointCacheLayout.sampleStrideWords < 4 ||
-            (!pointCacheLayout.pointCaches.empty() && pointCacheLayout.sampleCount == 0) ||
-            pointCacheLayout.pointCaches.size() > maxPointCaches) {
-            Destroy();
-            return false;
-        }
-        const uint64_t pointCacheMetadataWordCount =
-            static_cast<uint64_t>(pointCacheLayout.pointCaches.size()) * pointCacheLayout.interfaceStrideWords +
-            static_cast<uint64_t>(pointCacheLayout.sampleCount) * pointCacheLayout.sampleStrideWords;
-        const uint64_t metadataWordCount = pointCacheMetadataWordCount + (desc.meshShape ? 4u : 0u);
-        if (metadataWordCount == 0 || metadataWordCount > std::numeric_limits<uint32_t>::max()) {
-            Destroy();
-            return false;
-        }
-
+    if (desc.meshShape) {
+        constexpr uint32_t metadataBinding = 0;
         auto dataInterfaces = std::make_unique<DataInterfaceState>();
         dataInterfaces->device = &device;
-        dataInterfaces->pointCaches = pointCacheLayout.pointCaches;
-        dataInterfaces->interfaceStrideWords = pointCacheLayout.interfaceStrideWords;
-        dataInterfaces->sampleStrideWords = pointCacheLayout.sampleStrideWords;
-        dataInterfaces->metadataWords.assign(static_cast<size_t>(metadataWordCount), 0);
+        dataInterfaces->metadataWords.assign(4, 0);
 
         std::array<bool, rhi::BindingLayoutDesc::MaxEntries> usedBindings{};
-        usedBindings[pointCacheLayout.metadataBinding] = true;
-        std::vector<bool> usedSamples(pointCacheLayout.sampleCount, false);
+        usedBindings[metadataBinding] = true;
         rhi::BindingLayoutDesc dataLayoutDesc;
-        dataLayoutDesc.entries[0] = {pointCacheLayout.metadataBinding, rhi::BindingType::StorageBuffer,
-                                     rhi::ShaderStage::Compute, 1};
+        dataLayoutDesc.entries[0] = {metadataBinding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
         dataLayoutDesc.entryCount = 1;
 
         rhi::BindGroupDesc dataGroupDesc;
         dataGroupDesc.bufferCount = 1;
-        dataGroupDesc.buffers[0].binding = pointCacheLayout.metadataBinding;
+        dataGroupDesc.buffers[0].binding = metadataBinding;
         dataGroupDesc.buffers[0].type = rhi::BindingType::StorageBuffer;
 
-        for (size_t index = 0; index < pointCacheLayout.pointCaches.size(); ++index) {
-            const auto &pointCache = pointCacheLayout.pointCaches[index];
-            if (pointCache.interfaceIndex != index || pointCache.dataBinding >= usedBindings.size() ||
-                pointCache.lookupBinding >= usedBindings.size() || usedBindings[pointCache.dataBinding] ||
-                usedBindings[pointCache.lookupBinding] || !pointCache.data || !pointCache.data->IsValid() ||
-                !pointCache.dataBuffer.IsValid() || !pointCache.lookupBuffer.IsValid() || !pointCache.keepAlive ||
-                pointCache.data->bytes.empty() || pointCache.data->bytes.size() % sizeof(uint32_t) != 0) {
-                Destroy();
-                return false;
-            }
-            usedBindings[pointCache.dataBinding] = true;
-            usedBindings[pointCache.lookupBinding] = true;
-            const size_t interfaceBase = index * pointCacheLayout.interfaceStrideWords;
-            const glm::mat4 cacheToSpace = RowMajorMatrix(pointCache.cacheToSpace);
-            if (!IsFinite(cacheToSpace)) {
-                Destroy();
-                return false;
-            }
-            StoreMatrix(dataInterfaces->metadataWords, interfaceBase, cacheToSpace);
-            const bool requiresNormal =
-                std::any_of(pointCache.samples.begin(), pointCache.samples.end(),
-                            [](const GpuPointCacheSampleDesc &sample) { return sample.requiresNormalTransform; });
-            const glm::mat3 linear(cacheToSpace);
-            const float determinant = glm::determinant(linear);
-            if (requiresNormal && (!std::isfinite(determinant) || std::abs(determinant) <= 1.0e-8f)) {
-                Destroy();
-                return false;
-            }
-            const glm::mat3 normal = requiresNormal ? glm::transpose(glm::inverse(linear)) : glm::mat3(1.0f);
-            if (!IsFinite(normal)) {
-                Destroy();
-                return false;
-            }
-            StoreNormalMatrix(dataInterfaces->metadataWords, interfaceBase + 16, normal);
-            dataInterfaces->metadataWords[interfaceBase + 28] = pointCache.data->pointCount;
-            dataInterfaces->metadataWords[interfaceBase + 29] =
-                pointCache.data->idLookupMode == PointCacheIdLookupMode::Hash
-                    ? static_cast<uint32_t>(pointCache.data->idLookup.size() - 1)
-                    : 0;
-            dataInterfaces->metadataWords[interfaceBase + 30] =
-                pointCache.data->idLookupMode == PointCacheIdLookupMode::Hash ? 1u : 0u;
-
-            for (const auto &sample : pointCache.samples) {
-                const auto *channel = pointCache.data->FindChannel(sample.channel);
-                if (sample.sampleIndex >= usedSamples.size() || usedSamples[sample.sampleIndex] || !channel ||
-                    channel->type != sample.expectedType || channel->byteOffset % sizeof(uint32_t) != 0 ||
-                    channel->elementStride % sizeof(uint32_t) != 0 ||
-                    channel->byteOffset / sizeof(uint32_t) > std::numeric_limits<uint32_t>::max()) {
-                    Destroy();
-                    return false;
-                }
-                usedSamples[sample.sampleIndex] = true;
-                const size_t sampleBase = pointCacheLayout.pointCaches.size() * pointCacheLayout.interfaceStrideWords +
-                                          sample.sampleIndex * pointCacheLayout.sampleStrideWords;
-                dataInterfaces->metadataWords[sampleBase] =
-                    static_cast<uint32_t>(channel->byteOffset / sizeof(uint32_t));
-                dataInterfaces->metadataWords[sampleBase + 1] = channel->elementStride / sizeof(uint32_t);
-                dataInterfaces->metadataWords[sampleBase + 2] = static_cast<uint32_t>(channel->type);
-                dataInterfaces->metadataWords[sampleBase + 3] = pointCache.interfaceIndex;
-            }
-
-            const bool hashedLookup = pointCache.data->idLookupMode == PointCacheIdLookupMode::Hash;
-            if (hashedLookup && (pointCache.data->idLookup.empty() ||
-                                 (pointCache.data->idLookup.size() & (pointCache.data->idLookup.size() - 1)) != 0)) {
-                Destroy();
-                return false;
-            }
-            const uint32_t layoutOffset = dataLayoutDesc.entryCount;
-            dataLayoutDesc.entries[layoutOffset] = {pointCache.dataBinding, rhi::BindingType::StorageBuffer,
-                                                    rhi::ShaderStage::Compute, 1};
-            dataLayoutDesc.entries[layoutOffset + 1] = {pointCache.lookupBinding, rhi::BindingType::StorageBuffer,
-                                                        rhi::ShaderStage::Compute, 1};
-            dataLayoutDesc.entryCount += 2;
-            const uint32_t groupOffset = dataGroupDesc.bufferCount;
-            dataGroupDesc.buffers[groupOffset] = {pointCache.dataBinding, rhi::BindingType::StorageBuffer,
-                                                  pointCache.dataBuffer};
-            dataGroupDesc.buffers[groupOffset + 1] = {pointCache.lookupBinding, rhi::BindingType::StorageBuffer,
-                                                      pointCache.lookupBuffer};
-            dataGroupDesc.bufferCount += 2;
-        }
-        if (desc.meshShape) {
-            const auto &meshShape = *desc.meshShape;
-            if (meshShape.metadataOffsetWords != pointCacheMetadataWordCount ||
-                meshShape.vertexBinding >= usedBindings.size() || meshShape.triangleBinding >= usedBindings.size() ||
-                meshShape.vertexBinding == meshShape.triangleBinding || usedBindings[meshShape.vertexBinding] ||
-                usedBindings[meshShape.triangleBinding] || meshShape.vertexCount == 0 || meshShape.triangleCount == 0 ||
-                !meshShape.vertices.IsValid() || !meshShape.triangles.IsValid() || !meshShape.keepAlive) {
-                Destroy();
-                return false;
-            }
-            usedBindings[meshShape.vertexBinding] = true;
-            usedBindings[meshShape.triangleBinding] = true;
-            dataInterfaces->metadataWords[meshShape.metadataOffsetWords] = meshShape.vertexCount;
-            dataInterfaces->metadataWords[meshShape.metadataOffsetWords + 1] = meshShape.triangleCount;
-            dataInterfaces->meshShape = meshShape;
-            const uint32_t layoutOffset = dataLayoutDesc.entryCount;
-            dataLayoutDesc.entries[layoutOffset] = {meshShape.vertexBinding, rhi::BindingType::StorageBuffer,
-                                                    rhi::ShaderStage::Compute, 1};
-            dataLayoutDesc.entries[layoutOffset + 1] = {meshShape.triangleBinding, rhi::BindingType::StorageBuffer,
-                                                        rhi::ShaderStage::Compute, 1};
-            dataLayoutDesc.entryCount += 2;
-            const uint32_t groupOffset = dataGroupDesc.bufferCount;
-            dataGroupDesc.buffers[groupOffset] = {meshShape.vertexBinding, rhi::BindingType::StorageBuffer,
-                                                  meshShape.vertices};
-            dataGroupDesc.buffers[groupOffset + 1] = {meshShape.triangleBinding, rhi::BindingType::StorageBuffer,
-                                                      meshShape.triangles};
-            dataGroupDesc.bufferCount += 2;
-        }
-        if (std::find(usedSamples.begin(), usedSamples.end(), false) != usedSamples.end()) {
+        const auto &meshShape = *desc.meshShape;
+        if (meshShape.metadataOffsetWords != 0 || meshShape.vertexBinding >= usedBindings.size() ||
+            meshShape.triangleBinding >= usedBindings.size() || meshShape.vertexBinding == meshShape.triangleBinding ||
+            usedBindings[meshShape.vertexBinding] || usedBindings[meshShape.triangleBinding] ||
+            meshShape.vertexCount == 0 || meshShape.triangleCount == 0 || !meshShape.vertices.IsValid() ||
+            !meshShape.triangles.IsValid() || !meshShape.keepAlive) {
             Destroy();
             return false;
         }
+        dataInterfaces->metadataWords[0] = meshShape.vertexCount;
+        dataInterfaces->metadataWords[1] = meshShape.triangleCount;
+        dataInterfaces->meshShape = meshShape;
+        dataLayoutDesc.entries[1] = {meshShape.vertexBinding, rhi::BindingType::StorageBuffer,
+                                     rhi::ShaderStage::Compute, 1};
+        dataLayoutDesc.entries[2] = {meshShape.triangleBinding, rhi::BindingType::StorageBuffer,
+                                     rhi::ShaderStage::Compute, 1};
+        dataLayoutDesc.entryCount = 3;
+        dataGroupDesc.buffers[1] = {meshShape.vertexBinding, rhi::BindingType::StorageBuffer, meshShape.vertices};
+        dataGroupDesc.buffers[2] = {meshShape.triangleBinding, rhi::BindingType::StorageBuffer, meshShape.triangles};
+        dataGroupDesc.bufferCount = 3;
 
         rhi::BufferDesc metadataBufferDesc;
         metadataBufferDesc.byteSize = dataInterfaces->metadataWords.size() * sizeof(uint32_t);
@@ -490,21 +448,18 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             return false;
         }
         m_dataInterfaces = std::move(dataInterfaces);
-    } else if (pointCacheLayout.sampleCount != 0) {
-        Destroy();
-        return false;
     }
 
     const auto &vectorFieldLayout = desc.vectorFields;
-    if (!vectorFieldLayout.vectorFields.empty()) {
+    if (!vectorFieldLayout.vectorFields.empty() || !vectorFieldLayout.textureParameters.empty()) {
         if (vectorFieldLayout.metadataBinding != 0 || vectorFieldLayout.interfaceStrideWords < 32 ||
-            vectorFieldLayout.vectorFields.size() > 15) {
+            vectorFieldLayout.vectorFields.size() + vectorFieldLayout.textureParameters.size() > 15) {
             Destroy();
             return false;
         }
-        const uint64_t metadataWordCount =
-            static_cast<uint64_t>(vectorFieldLayout.vectorFields.size()) * vectorFieldLayout.interfaceStrideWords;
-        if (metadataWordCount == 0 || metadataWordCount > std::numeric_limits<uint32_t>::max()) {
+        const uint64_t metadataWordCount = std::max<uint64_t>(
+            4, static_cast<uint64_t>(vectorFieldLayout.vectorFields.size()) * vectorFieldLayout.interfaceStrideWords);
+        if (metadataWordCount > std::numeric_limits<uint32_t>::max()) {
             Destroy();
             return false;
         }
@@ -512,6 +467,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         auto vectorFields = std::make_unique<VectorFieldState>();
         vectorFields->device = &device;
         vectorFields->vectorFields = vectorFieldLayout.vectorFields;
+        vectorFields->textureParameters = vectorFieldLayout.textureParameters;
         vectorFields->interfaceStrideWords = vectorFieldLayout.interfaceStrideWords;
         vectorFields->metadataWords.assign(static_cast<size_t>(metadataWordCount), 0);
 
@@ -544,6 +500,21 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                 field.textureBinding, rhi::BindingType::CombinedTextureSampler, rhi::ShaderStage::Compute, 1};
             groupDesc.textures[groupDesc.textureCount++] = {
                 field.textureBinding, rhi::BindingType::CombinedTextureSampler, field.texture, field.sampler};
+        }
+        for (size_t index = 0; index < vectorFieldLayout.textureParameters.size(); ++index) {
+            const auto &parameter = vectorFieldLayout.textureParameters[index];
+            if (parameter.resourceIndex != index || parameter.textureBinding >= usedBindings.size() ||
+                usedBindings[parameter.textureBinding] || !parameter.texture.IsValid() ||
+                !parameter.sampler.IsValid() || !parameter.keepAlive) {
+                Destroy();
+                return false;
+            }
+            usedBindings[parameter.textureBinding] = true;
+            layoutDesc.entries[layoutDesc.entryCount++] = {
+                parameter.textureBinding, rhi::BindingType::CombinedTextureSampler, rhi::ShaderStage::Compute, 1};
+            groupDesc.textures[groupDesc.textureCount++] = {parameter.textureBinding,
+                                                            rhi::BindingType::CombinedTextureSampler, parameter.texture,
+                                                            parameter.sampler};
         }
 
         rhi::BufferDesc metadataDesc;
@@ -633,17 +604,36 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         Destroy();
         return false;
     }
+    if (desc.continuation.capacity > 0) {
+        auto continuationDesc = desc.continuation;
+        continuationDesc.ownerLayout = m_layout;
+        continuationDesc.ownerGroup = m_group;
+        m_continuation = std::make_unique<ParticleGpuContinuationRuntime>();
+        const bool continuationCreated = previousContinuation
+                                             ? m_continuation->CreateCompatible(device, continuationDesc,
+                                                                                *previousContinuation)
+                                             : m_continuation->Create(device, continuationDesc);
+        if (!continuationCreated) {
+            Destroy();
+            return false;
+        }
+    } else if (previousContinuation) {
+        Destroy();
+        return false;
+    }
     return true;
 }
 
 void ParticleGpuRuntime::Destroy() noexcept
 {
+    m_continuation.reset();
     if (m_device) {
         m_device->Release(m_eventInitPipeline);
         for (auto pipeline : m_pipelines)
             m_device->Release(pipeline);
         m_device->Release(m_group);
         m_device->Release(m_layout);
+        m_device->Release(m_parameterBuffer);
         m_device->Release(m_emptyDataInterfaceGroup);
         m_device->Release(m_emptyDataInterfaceLayout);
     }
@@ -656,6 +646,8 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_eventOutputStageMask = 0;
     m_layout = {};
     m_group = {};
+    m_parameterBuffer = {};
+    m_parameterWordCount = 0;
     m_emptyDataInterfaceLayout = {};
     m_emptyDataInterfaceGroup = {};
     m_eventInputLayout = {};
@@ -666,9 +658,9 @@ void ParticleGpuRuntime::Destroy() noexcept
 
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
-    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid() || !m_eventInputLayout.IsValid() ||
-        !m_eventOutputLayout.IsValid() || !m_eventInitPipeline.IsValid() || !m_emptyDataInterfaceLayout.IsValid() ||
-        !m_emptyDataInterfaceGroup.IsValid())
+    if (!m_device || !m_residentState || m_capacity == 0 || !m_group.IsValid() || !m_parameterBuffer.IsValid() ||
+        m_parameterWordCount == 0 || !m_eventInputLayout.IsValid() || !m_eventOutputLayout.IsValid() ||
+        !m_eventInitPipeline.IsValid() || !m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid())
         return false;
     if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
                              !m_dataInterfaces->metadataBuffer.IsValid()))
@@ -678,6 +670,8 @@ bool ParticleGpuRuntime::IsValid() const noexcept
         return false;
     if (m_vectorFields && !m_dataInterfaces &&
         (!m_emptyDataInterfaceLayout.IsValid() || !m_emptyDataInterfaceGroup.IsValid()))
+        return false;
+    if (m_continuation && !m_continuation->IsValid())
         return false;
     for (auto pipeline : m_pipelines) {
         if (!pipeline.IsValid())
@@ -689,6 +683,51 @@ bool ParticleGpuRuntime::IsValid() const noexcept
 bool ParticleGpuRuntime::HasEventOutput(GpuKernelStage stage) const noexcept
 {
     return (m_eventOutputStageMask & EventOutputStageBit(stage)) != 0u;
+}
+
+bool ParticleGpuRuntime::HasContinuations() const noexcept
+{
+    return m_continuation && m_continuation->IsValid();
+}
+
+const GpuParticleContinuationResources &ParticleGpuRuntime::ContinuationResources() const noexcept
+{
+    static const GpuParticleContinuationResources Empty;
+    return m_continuation ? m_continuation->Resources() : Empty;
+}
+
+GpuParticleContinuationTelemetry ParticleGpuRuntime::ContinuationTelemetry() const noexcept
+{
+    return m_continuation ? m_continuation->Telemetry() : GpuParticleContinuationTelemetry{};
+}
+
+bool ParticleGpuRuntime::SharesContinuationStateWith(const ParticleGpuRuntime &other) const noexcept
+{
+    return m_continuation && other.m_continuation && m_continuation->SharesStorageWith(*other.m_continuation);
+}
+
+void ParticleGpuRuntime::RequestContinuationReset() noexcept
+{
+    if (m_continuation)
+        m_continuation->RequestReset();
+}
+
+bool ParticleGpuRuntime::RecordContinuationPrepare(const rhi::ComputeCommandEncoder &encoder,
+                                                   uint32_t simulationStep, uint64_t elapsedTimeTicks)
+{
+    return m_continuation && m_continuation->RecordPrepare(encoder, simulationStep, elapsedTimeTicks);
+}
+
+bool ParticleGpuRuntime::RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder,
+                                                    uint32_t simulationStep, uint64_t elapsedTimeTicks) const
+{
+    return m_continuation && m_continuation->RecordClassify(encoder, simulationStep, elapsedTimeTicks);
+}
+
+bool ParticleGpuRuntime::RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder,
+                                                    uint32_t simulationStep, uint64_t elapsedTimeTicks) const
+{
+    return m_continuation && m_continuation->RecordDispatch(encoder, simulationStep, elapsedTimeTicks);
 }
 
 bool ParticleGpuRuntime::SharesStateWith(const ParticleGpuRuntime &other) const noexcept
@@ -717,39 +756,14 @@ bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transform
 {
     if (!m_device || !m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
         return false;
-    return UpdatePointCacheMetadata(transforms) && UpdateVectorFieldMetadata(transforms);
+    return UpdateVectorFieldMetadata(transforms);
 }
 
-bool ParticleGpuRuntime::UpdatePointCacheMetadata(const GpuParticleTransforms &transforms)
+bool ParticleGpuRuntime::UpdateParameters(const std::vector<uint32_t> &parameterWords)
 {
-    if (!m_dataInterfaces)
-        return true;
-    const glm::mat4 emitterToWorld = glm::make_mat4(transforms.emitterToWorld.data());
-    const glm::mat4 worldToSimulation = glm::make_mat4(transforms.worldToSimulation.data());
-    if (!IsFinite(emitterToWorld) || !IsFinite(worldToSimulation))
+    if (!m_device || parameterWords.size() != m_parameterWordCount || parameterWords.size() % 4 != 0)
         return false;
-    for (size_t index = 0; index < m_dataInterfaces->pointCaches.size(); ++index) {
-        const auto &pointCache = m_dataInterfaces->pointCaches[index];
-        const glm::mat4 sourceToWorld = pointCache.worldSpace ? glm::mat4(1.0f) : emitterToWorld;
-        const glm::mat4 cacheToSimulation = worldToSimulation * sourceToWorld * RowMajorMatrix(pointCache.cacheToSpace);
-        if (!IsFinite(cacheToSimulation))
-            return false;
-        const bool requiresNormal =
-            std::any_of(pointCache.samples.begin(), pointCache.samples.end(),
-                        [](const GpuPointCacheSampleDesc &sample) { return sample.requiresNormalTransform; });
-        const glm::mat3 linear(cacheToSimulation);
-        const float determinant = glm::determinant(linear);
-        if (requiresNormal && (!std::isfinite(determinant) || std::abs(determinant) <= 1.0e-8f))
-            return false;
-        const glm::mat3 normal = requiresNormal ? glm::transpose(glm::inverse(linear)) : glm::mat3(1.0f);
-        if (!IsFinite(normal))
-            return false;
-        const size_t interfaceBase = index * m_dataInterfaces->interfaceStrideWords;
-        StoreMatrix(m_dataInterfaces->metadataWords, interfaceBase, cacheToSimulation);
-        StoreNormalMatrix(m_dataInterfaces->metadataWords, interfaceBase + 16, normal);
-    }
-    return m_device->WriteBuffer(m_dataInterfaces->metadataBuffer, 0, m_dataInterfaces->metadataWords.data(),
-                                 m_dataInterfaces->metadataWords.size() * sizeof(uint32_t));
+    return m_device->WriteBuffer(ParameterBuffer(), 0, parameterWords.data(), parameterWords.size() * sizeof(uint32_t));
 }
 
 bool ParticleGpuRuntime::UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms)
@@ -823,6 +837,11 @@ rhi::BufferHandle ParticleGpuRuntime::RenderIndexBuffer() const noexcept
 rhi::BufferHandle ParticleGpuRuntime::TransformBuffer() const noexcept
 {
     return m_residentState ? m_residentState->transforms : rhi::BufferHandle{};
+}
+
+rhi::BufferHandle ParticleGpuRuntime::SimulationControlBuffer() const noexcept
+{
+    return m_residentState ? m_residentState->simulationControl : rhi::BufferHandle{};
 }
 
 void ParticleGpuRuntime::RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed)

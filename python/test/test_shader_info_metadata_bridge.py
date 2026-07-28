@@ -55,13 +55,13 @@ def test_inspector_reads_native_shader_schema_without_parsing_source(tmp_path):
     assert inspector_shader_utils.is_shader_hidden(str(shader)) is True
 
 
-def test_inspector_repairs_legacy_hdr_vector_metadata(tmp_path):
-    shader = tmp_path / "legacy.frag"
-    shader.write_text("@shader_id: Legacy/Hdr\n", encoding="utf-8")
+def test_inspector_normalizes_encoded_hdr_vector_metadata(tmp_path):
+    shader = tmp_path / "encoded.frag"
+    shader.write_text('ShaderInfo { Name "Encoded/Hdr" }\n', encoding="utf-8")
     _write_meta(
         shader,
         {
-            "shader_id": "Legacy/Hdr",
+            "shader_id": "Encoded/Hdr",
             "properties": json.dumps([{
                 "name": "emissionColor",
                 "type": "Color",
@@ -244,20 +244,51 @@ def test_material_inspector_uses_shader_range_sliders():
     ]
 
 
-def test_inspector_keeps_legacy_annotation_fallback(tmp_path):
-    shader = tmp_path / "legacy.vert"
+def test_inspector_reads_structured_properties_without_meta(tmp_path):
+    shader = tmp_path / "structured.vert"
     shader.write_text(
-        "@shader_id: Legacy/Fallback\n"
-        "@property: amount, Float, 0.25\n"
+        'ShaderInfo {\n'
+        '    Name "Structured/Fallback"\n'
+        '    Properties {\n'
+        '        Float amount = 0.25 Range(0.0, 1.0)\n'
+        '        Color glow = [0.1, 0.2, 0.3, 1.0] HDR\n'
+        '    }\n'
+        '}\n'
         "void main() {}\n",
         encoding="utf-8",
     )
 
-    assert inspector_shader_utils.parse_shader_id(str(shader)) == "Legacy/Fallback"
+    assert inspector_shader_utils.parse_shader_id(str(shader)) == "Structured/Fallback"
     assert inspector_shader_utils.parse_shader_properties(str(shader)) == [
-        {"name": "amount", "type": "Float", "default": 0.25, "hdr": False}
+        {"name": "amount", "type": "Float", "default": 0.25, "hdr": False, "range": [0.0, 1.0]},
+        {"name": "glow", "type": "Color", "default": [0.1, 0.2, 0.3, 1.0], "hdr": True},
     ]
     assert inspector_shader_utils.is_shader_hidden(str(shader)) is False
+
+
+def test_inspector_catalog_reads_structured_shader_without_meta(tmp_path):
+    shader = tmp_path / "particle_sprite.vert"
+    shader.write_text(
+        '// ShaderInfo { Name "Commented Out" }\n'
+        'ShaderInfo {\n'
+        '    Name "Particle Sprite"\n'
+        '    Capabilities [ParticleSprite]\n'
+        '}\n',
+        encoding="utf-8",
+    )
+
+    assert inspector_shader_utils.parse_shader_id(str(shader)) == "Particle Sprite"
+    assert inspector_shader_utils.is_shader_hidden(str(shader)) is False
+
+
+def test_inspector_catalog_reads_structured_hidden_flag_without_meta(tmp_path):
+    shader = tmp_path / "internal.vert"
+    shader.write_text(
+        'ShaderInfo { Name "Internal/Pass" Hidden On }\n', encoding="utf-8"
+    )
+
+    assert inspector_shader_utils.parse_shader_id(str(shader)) == "Internal/Pass"
+    assert inspector_shader_utils.is_shader_hidden(str(shader)) is True
 
 
 def test_shader_catalog_cache_tracks_project_search_roots(monkeypatch, tmp_path):
@@ -266,10 +297,10 @@ def test_shader_catalog_cache_tracks_project_search_roots(monkeypatch, tmp_path)
     first_root.mkdir()
     second_root.mkdir()
     (first_root / "first.frag").write_text(
-        "@shader_id: Tests/First\nvoid main() {}\n", encoding="utf-8"
+        'ShaderInfo { Name "Tests/First" }\nvoid main() {}\n', encoding="utf-8"
     )
     (second_root / "second.frag").write_text(
-        "@shader_id: Tests/Second\nvoid main() {}\n", encoding="utf-8"
+        'ShaderInfo { Name "Tests/Second" }\nvoid main() {}\n', encoding="utf-8"
     )
     roots = [str(first_root)]
     monkeypatch.setattr(inspector_shader_utils, "_get_shader_search_roots", lambda: roots)
@@ -319,7 +350,7 @@ def test_mcp_catalog_consumes_native_shader_metadata(tmp_path):
 def test_mcp_shader_examples_prefer_structured_schema():
     examples = mcp_api._shader_examples()
     assert "ShaderInfo {" in examples["surface_fragment"]
-    assert "@shader_id" not in examples["surface_fragment"]
+    assert "@" not in examples["surface_fragment"]
     assert "fullscreen_effect_fragment" not in examples
 
 

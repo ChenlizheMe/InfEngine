@@ -1,8 +1,29 @@
 #version 450
-@shader_id: Vignette
-@hidden
 
-@import: Lib Color
+ShaderInfo {
+    Name "Vignette"
+    Hidden On
+    Imports ["Lib Color"]
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float intensity
+        Float smoothness
+        Float roundness
+        Float rounded
+        Float colorR
+        Float colorG
+        Float colorB
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Vignette post-process — darkens screen edges.
 // Matches Unity URP's vignette math (ApplyVignette in Common.hlsl):
@@ -15,21 +36,6 @@
 //   [2] roundness  — shape (1 = circular, lower = squared)
 //   [3] rounded    — 1.0 = force circular, 0.0 = follow aspect ratio
 //   [4..6] colorR/G/B — vignette color (usually black)
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PushConstants {
-    float intensity;
-    float smoothness;
-    float roundness;
-    float rounded;
-    float colorR;
-    float colorG;
-    float colorB;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 void main() {
     vec4 color = texture(_SourceTex, inUV);

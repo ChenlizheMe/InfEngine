@@ -84,7 +84,7 @@ void InxVkCoreModular::PumpPendingTextureLoads()
                 ++pending;
                 continue;
             }
-            m_materialPipelineManager.InvalidateMaterialsUsingTexture(pending->first);
+            m_materialPipelineManager.RefreshMaterialsUsingTexture(pending->first);
         } catch (const std::exception &exception) {
             INXLOG_ERROR("Texture CPU load failed for GUID '", pending->first, "': ", exception.what());
         }
@@ -105,7 +105,7 @@ void InxVkCoreModular::PumpPendingTextureLoads()
             }
             (void)m_textureCache.Insert(pending->first, std::move(texture), m_ensureFrameCounter, false,
                                         pending->second.guid, pending->second.runtimeVersion);
-            m_materialPipelineManager.InvalidateMaterialsUsingTexture(pending->second.guid);
+            m_materialPipelineManager.RefreshMaterialsUsingTexture(pending->second.guid);
             ++m_completedTextureUploadCount;
         } catch (const std::exception &exception) {
             INXLOG_ERROR("Texture GPU upload failed for GUID '", pending->second.guid, "': ", exception.what());
@@ -185,14 +185,13 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     const uint64_t runtimeVersion = registry.GetAssetVersion(textureGuid);
     if (runtimeVersion == 0)
         throw std::logic_error("TextureResolver resolved a payload without a published runtime version");
-    const bool normalMapMode = infTex->IsNormalMapMode();
     const std::string filterMode = filterOverride ? filterOverride : infTex->GetFilterMode();
     const std::string wrapMode = wrapOverride ? wrapOverride : infTex->GetWrapMode();
     const int anisoLevel = infTex->GetAnisoLevel();
     rhi::SamplerDesc sampler;
     sampler.maxLod = static_cast<float>(infTex->GetCpuData()->mipLevels.size() - 1);
     sampler.maxAnisotropy = (std::min)(static_cast<float>((std::max)(1, anisoLevel)),
-                                       m_deviceContext.GetCapabilities().limits.maxSamplerAnisotropy);
+                                       m_backend.Device().GetCapabilities().limits.maxSamplerAnisotropy);
     if (filterMode == "point") {
         sampler.minFilter = rhi::FilterMode::Nearest;
         sampler.magFilter = rhi::FilterMode::Nearest;
@@ -210,18 +209,23 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::MirroredRepeat;
 
     // Cache key uses GUID so that a renamed file still shares its cache entry
+    // The cache key identifies a stable consumer slot, not the mutable import
+    // result. Format, color space and asset-controlled sampler settings may
+    // change and must publish a new revision into the same slot.
+    const std::string filterIdentity = filterOverride ? filterMode : "asset";
+    const std::string wrapIdentity = wrapOverride ? wrapMode : "asset";
     std::string cacheKey = textureGuid + "::dim" + std::to_string(static_cast<uint32_t>(expectedDimension)) +
-                           "::format" + std::to_string(static_cast<uint32_t>(infTex->GetFormat())) +
-                           (normalMapMode ? "::normalmap" : "::raw") + "::" + filterMode + "::" + wrapMode + "::aniso" +
-                           std::to_string(anisoLevel);
+                           "::filter=" + filterIdentity + "::wrap=" + wrapIdentity;
 
     // Check texture cache (thread-safe)
     {
-        auto cached = m_textureCache.FindAsset(cacheKey, textureGuid, runtimeVersion, m_ensureFrameCounter);
-        if (cached) {
-            auto &rhiDevice = m_deviceContext.GetRhiDevice();
+        auto cachedSlot = m_textureCache.FindAsset(cacheKey, textureGuid, runtimeVersion, m_ensureFrameCounter);
+        auto cached = cachedSlot ? cachedSlot->Acquire() : nullptr;
+        if (cached && cached->IsValid()) {
+            auto &rhiDevice = m_backend.Device().GetRhiDevice();
             return {TextureResolveStatus::Ready,
-                    {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()), std::move(cached)}};
+                    {rhiDevice.Resolve(cached->GetView()), rhiDevice.Resolve(cached->GetSampler()),
+                     std::move(cachedSlot), std::move(cached)}};
         }
     }
 
@@ -245,7 +249,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
         if (!m_resourceManager.TryPublishTextureUpload(pendingGpu->second.ticket))
             return {TextureResolveStatus::Pending, {}};
         auto texture = pendingGpu->second.ticket->GetTexture();
-        auto &rhiDevice = m_deviceContext.GetRhiDevice();
+        auto &rhiDevice = m_backend.Device().GetRhiDevice();
         const VkImageView view = rhiDevice.Resolve(texture->GetView());
         const VkSampler nativeSampler = rhiDevice.Resolve(texture->GetSampler());
         if (!registry.IsLoaded(textureGuid) ||
@@ -253,11 +257,15 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             m_pendingTextureGpuUploads.erase(pendingGpu);
             return {TextureResolveStatus::Pending, {}};
         }
-        auto resident = m_textureCache.Insert(cacheKey, std::move(texture), m_ensureFrameCounter, false, textureGuid,
-                                              pendingGpu->second.runtimeVersion);
+        auto residentSlot = m_textureCache.Insert(cacheKey, std::move(texture), m_ensureFrameCounter, false,
+                                                  textureGuid, pendingGpu->second.runtimeVersion);
+        auto resident = residentSlot ? residentSlot->Acquire() : nullptr;
+        if (!resident || !resident->IsValid())
+            throw std::logic_error("GPU texture cache published an invalid view");
         m_pendingTextureGpuUploads.erase(pendingGpu);
         ++m_completedTextureUploadCount;
-        return {TextureResolveStatus::Ready, {view, nativeSampler, std::move(resident)}};
+        return {TextureResolveStatus::Ready,
+                {view, nativeSampler, std::move(residentSlot), std::move(resident)}};
     } catch (const std::exception &exception) {
         INXLOG_ERROR("TextureResolver: GPU upload failed for '", textureGuid, "': ", exception.what());
         m_pendingTextureGpuUploads.erase(pendingGpu);
@@ -331,7 +339,7 @@ void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
         }
     }
 
-    ShaderProgram *shaderProgram = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
+    const ShaderProgram *shaderProgram = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
     const MaterialUBOLayout *uboLayout = shaderProgram ? shaderProgram->GetMaterialUBOLayout() : nullptr;
 
     if (!uboLayout || uboLayout->size == 0) {
@@ -413,7 +421,7 @@ void InxVkCoreModular::EnsureMaterialUBO(std::shared_ptr<InxMaterial> material)
     void *uboMappedData = nullptr;
 
     // Require reflection layout for UBO creation
-    ShaderProgram *shaderProgram = material->GetPassShaderProgram(ShaderCompileTarget::Forward);
+    const ShaderProgram *shaderProgram = material->GetPassShaderProgram(ShaderCompileTarget::Forward);
     const MaterialUBOLayout *uboLayout = shaderProgram ? shaderProgram->GetMaterialUBOLayout() : nullptr;
     if (!uboLayout || uboLayout->size == 0) {
         INXLOG_WARN("VkCoreMaterial: material '", material->GetName(),
@@ -424,7 +432,7 @@ void InxVkCoreModular::EnsureMaterialUBO(std::shared_ptr<InxMaterial> material)
     CreateBuffer(uboSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uboBuffer, uboAllocation);
 
-    VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
+    VmaAllocator allocator = m_backend.Device().GetVmaAllocator();
     vmaMapMemory(allocator, uboAllocation, &uboMappedData);
     if (uboMappedData) {
         std::memset(uboMappedData, 0, uboSize);
@@ -446,7 +454,7 @@ void InxVkCoreModular::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
     bufferInfo.usage = usage;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VmaAllocator allocator = m_deviceContext.GetVmaAllocator();
+    VmaAllocator allocator = m_backend.Device().GetVmaAllocator();
     VmaAllocationCreateInfo allocCreateInfo{};
 
     if (properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
@@ -488,14 +496,14 @@ void InxVkCoreModular::InitializeMaterialSystem()
     if (!m_materialPipelineManagerInitialized) {
         // Use SceneRenderTarget-compatible formats: HDR R16G16B16A16_SFLOAT color + device depth format
         VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-        VkFormat depthFormat = m_deviceContext.FindDepthFormat();
-        const auto colorSamples = m_deviceContext.GetImageSampleCountMask(
+        VkFormat depthFormat = m_backend.Device().FindDepthFormat();
+        const auto colorSamples = m_backend.Device().GetImageSampleCountMask(
             colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-        const auto resolveSamples = m_deviceContext.GetImageSampleCountMask(
+        const auto resolveSamples = m_backend.Device().GetImageSampleCountMask(
             colorFormat, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                              VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
         const auto depthSamples =
-            m_deviceContext.GetImageSampleCountMask(depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+            m_backend.Device().GetImageSampleCountMask(depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
         const auto supportedSamples = GetSceneTargetSampleCountMask(colorSamples, resolveSamples, depthSamples);
         const int requestedSamples = static_cast<int>(m_msaaSampleCount);
         if (!SupportsMsaaSampleCount(supportedSamples, requestedSamples)) {
@@ -509,24 +517,27 @@ void InxVkCoreModular::InitializeMaterialSystem()
                         "x. Runtime requests remain strict and will not silently downgrade.");
             m_msaaSampleCount = rhi::ToVkSampleCount(ToRhiSampleCount(fallbackSamples));
         }
-        m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
+        m_materialPipelineManager.Initialize(m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
                                              colorFormat, depthFormat, m_msaaSampleCount,
                                              m_shaderCache.GetProgramCache(), &m_deletionQueue,
-                                             m_deviceContext.IsDescriptorIndexingEnabled());
+                                             m_backend.Device().IsDescriptorIndexingEnabled(),
+                                             &m_backend.Device().GetRhiDevice().GetDescriptorManager());
         m_materialPipelineManagerInitialized = true;
 
-        auto whiteTex = m_textureCache.Find("white", m_ensureFrameCounter);
+        auto whiteSlot = m_textureCache.Find("white", m_ensureFrameCounter);
+        auto whiteTex = whiteSlot ? whiteSlot->Acquire() : nullptr;
         if (whiteTex) {
-            auto &rhiDevice = m_deviceContext.GetRhiDevice();
+            auto &rhiDevice = m_backend.Device().GetRhiDevice();
             m_materialPipelineManager.SetDefaultTexture(rhiDevice.Resolve(whiteTex->GetView()),
-                                                        rhiDevice.Resolve(whiteTex->GetSampler()));
+                                                         rhiDevice.Resolve(whiteTex->GetSampler()), whiteTex);
         }
 
-        auto normalTex = m_textureCache.Find("_default_normal", m_ensureFrameCounter);
+        auto normalSlot = m_textureCache.Find("_default_normal", m_ensureFrameCounter);
+        auto normalTex = normalSlot ? normalSlot->Acquire() : nullptr;
         if (normalTex) {
-            auto &rhiDevice = m_deviceContext.GetRhiDevice();
+            auto &rhiDevice = m_backend.Device().GetRhiDevice();
             m_materialPipelineManager.SetDefaultNormalTexture(rhiDevice.Resolve(normalTex->GetView()),
-                                                              rhiDevice.Resolve(normalTex->GetSampler()));
+                                                               rhiDevice.Resolve(normalTex->GetSampler()), normalTex);
         }
 
         // Set up texture resolver for material Texture2D properties
@@ -546,11 +557,8 @@ void InxVkCoreModular::InitializeMaterialSystem()
         const auto *fragCode = m_shaderCache.FindFragCode(fragId);
 
         if (vertCode && fragCode) {
-            VkBuffer lightingBuffer = m_lightingUbo ? m_lightingUbo->GetBuffer() : VK_NULL_HANDLE;
-            m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-                defaultMaterial, *vertCode, *fragCode, ShaderProgramKey{{vertId, fragId}, 0},
-                m_sceneUbo ? m_sceneUbo->GetBuffer() : VK_NULL_HANDLE, sizeof(UniformBufferObject), lightingBuffer,
-                sizeof(ShaderLightingUBO));
+            m_materialPipelineManager.GetOrCreateRenderDataWithReflection(defaultMaterial, *vertCode, *fragCode,
+                                                                          ShaderProgramKey{{vertId, fragId}, 0});
         } else {
             INXLOG_ERROR("InitializeMaterialSystem: SPIR-V shader codes not found for default material "
                          "(vert='",
@@ -568,11 +576,8 @@ void InxVkCoreModular::InitializeMaterialSystem()
         const auto *errFragCode = m_shaderCache.FindFragCode(errFragId);
 
         if (errVertCode && errFragCode) {
-            VkBuffer lightingBuffer = m_lightingUbo ? m_lightingUbo->GetBuffer() : VK_NULL_HANDLE;
             auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-                errorMaterial, *errVertCode, *errFragCode, ShaderProgramKey{{errVertId, errFragId}, 0},
-                m_sceneUbo ? m_sceneUbo->GetBuffer() : VK_NULL_HANDLE, sizeof(UniformBufferObject), lightingBuffer,
-                sizeof(ShaderLightingUBO));
+                errorMaterial, *errVertCode, *errFragCode, ShaderProgramKey{{errVertId, errFragId}, 0});
             if (renderData && renderData->isValid) {
                 INXLOG_INFO("Error material pipeline created successfully (shaders: ", errVertId, "/", errFragId, ")");
             } else {
@@ -588,58 +593,35 @@ void InxVkCoreModular::InitializeMaterialSystem()
     m_materialSystemInitialized = true;
 }
 
-void InxVkCoreModular::ReinitializeMaterialPipelines(VkSampleCountFlagBits newSampleCount)
+bool InxVkCoreModular::CommitMaterialPipelineGeneration(VkSampleCountFlagBits newSampleCount)
 {
-    m_msaaSampleCount = newSampleCount;
     if (!m_materialPipelineManagerInitialized) {
-        return;
+        m_msaaSampleCount = newSampleCount;
+        return true;
     }
 
-    // Shutdown existing pipelines (caller must have called WaitIdle already)
-    m_deletionQueue.FlushAll();
-    m_materialPipelineManager.Shutdown(/* skipWaitIdle */ true);
-    m_materialPipelineManagerInitialized = false;
-
-    // Re-initialize with new sample count
-    VkFormat colorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-    VkFormat depthFormat = m_deviceContext.FindDepthFormat();
-    m_materialPipelineManager.Initialize(m_deviceContext.GetVmaAllocator(), GetDevice(), GetPhysicalDevice(),
-                                         colorFormat, depthFormat, newSampleCount, m_shaderCache.GetProgramCache(),
-                                         &m_deletionQueue, m_deviceContext.IsDescriptorIndexingEnabled());
-    m_materialPipelineManagerInitialized = true;
-
-    // Restore default textures
-    auto whiteTex = m_textureCache.Find("white", m_ensureFrameCounter);
-    if (whiteTex) {
-        auto &rhiDevice = m_deviceContext.GetRhiDevice();
-        m_materialPipelineManager.SetDefaultTexture(rhiDevice.Resolve(whiteTex->GetView()),
-                                                    rhiDevice.Resolve(whiteTex->GetSampler()));
-    }
-    auto normalTex = m_textureCache.Find("_default_normal", m_ensureFrameCounter);
-    if (normalTex) {
-        auto &rhiDevice = m_deviceContext.GetRhiDevice();
-        m_materialPipelineManager.SetDefaultNormalTexture(rhiDevice.Resolve(normalTex->GetView()),
-                                                          rhiDevice.Resolve(normalTex->GetSampler()));
-    }
-
-    // Restore texture resolver
-    m_materialPipelineManager.SetTextureResolver(
-        [this](const std::string &textureRef, const std::string &bindingName) -> TextureResolveResult {
-            return ResolveTextureForMaterial(textureRef, bindingName);
-        });
+    if (!m_materialPipelineManager.ReconfigureSampleCount(newSampleCount))
+        return false;
+    m_msaaSampleCount = newSampleCount;
 
     // Preview render targets cache a render pass / framebuffer that must stay
-    // compatible with the material pipelines' MSAA sample count.
-    m_gpuMaterialPreview.reset();
-    m_gpuMeshPreview.reset();
+    // compatible with the material pipelines' MSAA sample count. Keep the old
+    // previews alive until every queue that may reference them has completed.
+    if (m_gpuMaterialPreview) {
+        std::shared_ptr<GPUMaterialPreview> retired(m_gpuMaterialPreview.release());
+        m_deletionQueue.Retire([retired = std::move(retired)] {});
+    }
+    if (m_gpuMeshPreview) {
+        std::shared_ptr<GPUMeshPreview> retired(m_gpuMeshPreview.release());
+        m_deletionQueue.Retire([retired = std::move(retired)] {});
+    }
+    return true;
 }
 
 bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                                const std::string &fragShaderName)
 {
-    return RefreshPreviewMaterialPipeline(material, vertShaderName, fragShaderName,
-                                          m_sceneUbo ? m_sceneUbo->GetBuffer() : VK_NULL_HANDLE,
-                                          m_lightingUbo ? m_lightingUbo->GetBuffer() : VK_NULL_HANDLE);
+    return RefreshPreviewMaterialPipeline(material, vertShaderName, fragShaderName);
 }
 
 void InxVkCoreModular::ReleaseGpuPreviews()
@@ -651,8 +633,7 @@ void InxVkCoreModular::ReleaseGpuPreviews()
 
 bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material,
                                                       const std::string &vertShaderName,
-                                                      const std::string &fragShaderName, VkBuffer sceneUbo,
-                                                      VkBuffer lightingUbo, bool reportDomainMismatch)
+                                                      const std::string &fragShaderName, bool reportDomainMismatch)
 {
     if (!material) {
         return false;
@@ -707,10 +688,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     const ShaderProgramKey programKey = artifact ? artifact->key : ShaderProgramKey{stages, 0};
 
     if (vertCode && fragCode && m_materialPipelineManagerInitialized) {
-        VkDeviceSize sceneUboSize = sizeof(UniformBufferObject);
-        VkDeviceSize lightingUboSize = sizeof(ShaderLightingUBO);
-        auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-            material, *vertCode, *fragCode, programKey, sceneUbo, sceneUboSize, lightingUbo, lightingUboSize);
+        auto *renderData =
+            m_materialPipelineManager.GetOrCreateRenderDataWithReflection(material, *vertCode, *fragCode, programKey);
 
         bool forwardOk = renderData && renderData->isValid;
 
@@ -766,17 +745,7 @@ void InxVkCoreModular::SetAmbientColor(const glm::vec3 &color, float intensity)
     INXLOG_DEBUG("SetAmbientColor: (", color.r, ", ", color.g, ", ", color.b, ") intensity=", intensity);
 }
 
-void InxVkCoreModular::UpdateLightingUBO(const glm::vec3 &cameraPosition)
-{
-    // Delegate to StageLightingUBO — the actual GPU write now happens
-    // inline in the command buffer via CmdUpdateLightingUBO().
-    StageLightingUBO(cameraPosition);
-    const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
-    if (!m_canonicalLightGpuBuffer.Update(frameIndex, m_lightCollector.GetCanonicalLightSnapshot()))
-        INXLOG_ERROR("Failed to upload canonical light snapshot for frame slot ", frameIndex);
-}
-
-void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)
+void InxVkCoreModular::UpdateLightingState()
 {
     // Environment lighting follows the active scene's settings (Unity-style
     // Lighting > Environment): ambient is derived from the skybox material,
@@ -850,47 +819,9 @@ void InxVkCoreModular::StageLightingUBO(const glm::vec3 &cameraPosition)
 
     // Build the shader-compatible UBO from collected lights
     m_lightCollector.BuildShaderLightingUBO();
-    m_stagedLightingUBO = m_lightCollector.GetShaderLightingUBO();
-    m_stagedLightingUBO.cameraPos = glm::vec4(cameraPosition, 1.0f);
-    m_lightingUBODirty = true;
-}
-
-void InxVkCoreModular::CmdUpdateLightingCameraPos(VkCommandBuffer cmdBuf, const glm::vec3 &cameraPos)
-{
-    if (!m_lightingUbo)
-        return;
-
-    VkBuffer buffer = m_lightingUbo->GetBuffer();
-
-    // cameraPos sits at offset 32 in ShaderLightingUBO (after lightCounts + ambientColor).
-    constexpr VkDeviceSize cameraPosOffset = offsetof(ShaderLightingUBO, cameraPos);
-    glm::vec4 cameraPosVec4(cameraPos, 1.0f);
-
-    vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);
-
-    vkCmdUpdateBuffer(cmdBuf, buffer, cameraPosOffset, sizeof(glm::vec4), &cameraPosVec4);
-
-    vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
-}
-
-void InxVkCoreModular::CmdUpdateLightingUBO(VkCommandBuffer cmdBuf)
-{
-    if (!m_lightingUBODirty || !m_lightingUbo)
-        return;
-
-    VkBuffer buffer = m_lightingUbo->GetBuffer();
-
-    // Barrier: ensure previous shader reads from the lighting UBO are complete
-    vkrender::CmdBarrierUniformReadToTransferWrite(cmdBuf);
-
-    // Update the lighting UBO inline in the command buffer
-    // vkCmdUpdateBuffer has a 65536-byte limit; ShaderLightingUBO is well within that.
-    vkCmdUpdateBuffer(cmdBuf, buffer, 0, sizeof(ShaderLightingUBO), &m_stagedLightingUBO);
-
-    // Barrier: ensure write is visible before subsequent shader reads
-    vkrender::CmdBarrierTransferWriteToUniformRead(cmdBuf);
-
-    m_lightingUBODirty = false;
+    const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
+    if (!m_canonicalLightGpuBuffer.Update(frameIndex, m_lightCollector.GetCanonicalLightSnapshot()))
+        INXLOG_ERROR("Failed to upload canonical light snapshot for frame slot ", frameIndex);
 }
 
 // ============================================================================
@@ -913,14 +844,9 @@ VkBuffer InxVkCoreModular::GetObjectIndexBuffer(uint64_t objectId) const
     return VK_NULL_HANDLE;
 }
 
-VkBuffer InxVkCoreModular::GetSceneUbo() const
+VkBuffer InxVkCoreModular::GetFallbackMaterialUbo() const
 {
-    return m_sceneUbo ? m_sceneUbo->GetBuffer() : VK_NULL_HANDLE;
-}
-
-VkBuffer InxVkCoreModular::GetLightingUbo() const
-{
-    return m_lightingUbo ? m_lightingUbo->GetBuffer() : VK_NULL_HANDLE;
+    return m_materialUbo ? m_materialUbo->GetBuffer() : VK_NULL_HANDLE;
 }
 
 VkBuffer InxVkCoreModular::GetInstanceSSBO(size_t index) const
@@ -939,68 +865,14 @@ VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const 
 // Shared shadow material bindings and pipeline creation
 // ============================================================================
 
-VkDescriptorPool InxVkCoreModular::CreateShadowMaterialDescriptorPoolPage(uint32_t maxSets)
-{
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = maxSets * 2;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = maxSets * kMaxShadowMaterialTextures;
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    poolInfo.maxSets = maxSets;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    if (vkCreateDescriptorPool(GetDevice(), &poolInfo, nullptr, &pool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create shadow material descriptor pool page (sets=", maxSets, ")");
-        return VK_NULL_HANDLE;
-    }
-    m_shadowMaterialDescPools.push_back(pool);
-    return pool;
-}
-
 InxVkCoreModular::ShadowDescriptorAllocation InxVkCoreModular::AllocateShadowMaterialDescriptorSet()
 {
     if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE)
         return {};
-
-    auto allocateFrom = [&](VkDescriptorPool pool) {
-        ShadowDescriptorAllocation allocation{};
-        allocation.ownerPool = pool;
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = pool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &m_shadowMaterialDescSetLayout;
-        const VkResult result = vkAllocateDescriptorSets(GetDevice(), &allocInfo, &allocation.descriptorSet);
-        if (result != VK_SUCCESS)
-            allocation.descriptorSet = VK_NULL_HANDLE;
-        return std::pair{allocation, result};
-    };
-
-    if (!m_shadowMaterialDescPools.empty()) {
-        auto [allocation, result] = allocateFrom(m_shadowMaterialDescPools.back());
-        if (result == VK_SUCCESS)
-            return allocation;
-        if (result != VK_ERROR_OUT_OF_POOL_MEMORY && result != VK_ERROR_FRAGMENTED_POOL) {
-            INXLOG_WARN("Shadow material descriptor allocation failed: ", static_cast<int>(result));
-            return {};
-        }
-    }
-
-    VkDescriptorPool newPage = CreateShadowMaterialDescriptorPoolPage(kShadowMaterialPoolPageSize);
-    if (newPage == VK_NULL_HANDLE)
-        return {};
-    auto [allocation, result] = allocateFrom(newPage);
-    if (result != VK_SUCCESS) {
-        INXLOG_ERROR("Shadow material descriptor allocation failed after growing pool chain: ",
-                     static_cast<int>(result));
-        return {};
-    }
+    ShadowDescriptorAllocation allocation{};
+    allocation.descriptorLease = m_backend.Device().GetRhiDevice().GetDescriptorManager().Allocate(
+        m_shadowMaterialDescSetLayout, vk::DescriptorArena::Persistent);
+    allocation.descriptorSet = allocation.descriptorLease.set;
     return allocation;
 }
 
@@ -1010,15 +882,16 @@ bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
         return true;
     if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE)
         return false;
-    auto defaultTex = m_textureCache.Find("white", m_ensureFrameCounter);
+    auto defaultSlot = m_textureCache.Find("white", m_ensureFrameCounter);
+    auto defaultTex = defaultSlot ? defaultSlot->Acquire() : nullptr;
     if (!defaultTex)
         return false;
-    auto &rhiDevice = m_deviceContext.GetRhiDevice();
+    auto &rhiDevice = m_backend.Device().GetRhiDevice();
     const VkImageView defaultView = rhiDevice.Resolve(defaultTex->GetView());
     const VkSampler defaultSampler = rhiDevice.Resolve(defaultTex->GetSampler());
     if (defaultView == VK_NULL_HANDLE || defaultSampler == VK_NULL_HANDLE)
         return false;
-    if (!m_sceneUbo)
+    if (!m_materialUbo)
         return false;
     const ShadowDescriptorAllocation allocation = AllocateShadowMaterialDescriptorSet();
     if (allocation.descriptorSet == VK_NULL_HANDLE)
@@ -1041,7 +914,7 @@ bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
         writes.push_back(w);
     }
     VkDescriptorBufferInfo fragBi{};
-    fragBi.buffer = m_sceneUbo->GetBuffer();
+    fragBi.buffer = m_materialUbo->GetBuffer();
     fragBi.offset = 0;
     fragBi.range = 16;
     VkWriteDescriptorSet wf{};
@@ -1052,7 +925,7 @@ bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
     wf.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     wf.pBufferInfo = &fragBi;
     VkDescriptorBufferInfo vtxBi{};
-    vtxBi.buffer = m_sceneUbo->GetBuffer();
+    vtxBi.buffer = m_materialUbo->GetBuffer();
     vtxBi.offset = 0;
     vtxBi.range = 16;
     VkWriteDescriptorSet wv{};
@@ -1066,25 +939,20 @@ bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
     writes.push_back(wv);
     vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     m_shadowMaterialDummyDescSet = set;
+    m_shadowMaterialDummyLease = allocation.descriptorLease;
     return true;
 }
 
 void InxVkCoreModular::RetireShadowMaterialBinding(ShadowMaterialBindingEntry entry)
 {
     if (entry.descriptorSet == VK_NULL_HANDLE || entry.descriptorSet == m_shadowMaterialDummyDescSet ||
-        entry.ownerPool == VK_NULL_HANDLE) {
+        !entry.descriptorLease.IsValid()) {
         return;
     }
 
-    const VkDevice device = GetDevice();
+    m_backend.Device().GetRhiDevice().GetDescriptorManager().Retire(entry.descriptorLease);
     ++m_shadowMaterialBindingRetirements;
-    m_deletionQueue.Push([device, pool = entry.ownerPool, descriptorSet = entry.descriptorSet,
-                          keepAlive = std::move(entry.textureKeepAlive)]() mutable {
-        const VkResult result = vkFreeDescriptorSets(device, pool, 1, &descriptorSet);
-        if (result != VK_SUCCESS)
-            INXLOG_WARN("Failed to retire cached shadow material descriptor set: ", static_cast<int>(result));
-        keepAlive.clear();
-    });
+    m_deletionQueue.Retire([keepAlive = std::move(entry.textureKeepAlive)]() mutable { keepAlive.clear(); });
 }
 
 void InxVkCoreModular::CollectUnusedShadowMaterialBindings()
@@ -1147,11 +1015,12 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
         return VK_NULL_HANDLE;
     }
 
-    auto defaultTex = m_textureCache.Find("white", m_ensureFrameCounter);
-    if (!defaultTex || !m_sceneUbo) {
+    auto defaultSlot = m_textureCache.Find("white", m_ensureFrameCounter);
+    auto defaultTex = defaultSlot ? defaultSlot->Acquire() : nullptr;
+    if (!defaultTex || !m_materialUbo) {
         return VK_NULL_HANDLE;
     }
-    auto &rhiDevice = m_deviceContext.GetRhiDevice();
+    auto &rhiDevice = m_backend.Device().GetRhiDevice();
     const VkImageView defaultView = rhiDevice.Resolve(defaultTex->GetView());
     const VkSampler defaultSampler = rhiDevice.Resolve(defaultTex->GetSampler());
     if (defaultView == VK_NULL_HANDLE || defaultSampler == VK_NULL_HANDLE)
@@ -1227,7 +1096,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     const MaterialUBO *vertexUbo = hasVertexMaterialUBO ? forwardMaterialDesc->vertexMaterialUBO.get() : nullptr;
     VkDescriptorBufferInfo fragmentBuffer{};
     fragmentBuffer.buffer =
-        fragmentUbo ? fragmentUbo->GetBuffer() : (vertexUbo ? vertexUbo->GetBuffer() : m_sceneUbo->GetBuffer());
+        fragmentUbo ? fragmentUbo->GetBuffer() : (vertexUbo ? vertexUbo->GetBuffer() : m_materialUbo->GetBuffer());
     fragmentBuffer.offset = 0;
     fragmentBuffer.range = fragmentUbo ? fragmentUbo->GetSize() : (vertexUbo ? vertexUbo->GetSize() : 16);
     VkDescriptorBufferInfo vertexBuffer{};
@@ -1272,12 +1141,12 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     replacement.artifactRevision = artifactRevision;
     replacement.resourceSignature = resourceSignature;
     replacement.descriptorSet = allocation.descriptorSet;
-    replacement.ownerPool = allocation.ownerPool;
+    replacement.descriptorLease = allocation.descriptorLease;
     replacement.textureKeepAlive.push_back(defaultTex);
     for (const auto &[binding, texture] : sortedTextures) {
         (void)binding;
-        if (texture.keepAlive)
-            replacement.textureKeepAlive.push_back(texture.keepAlive);
+        if (texture.gpuView)
+            replacement.textureKeepAlive.push_back(texture.gpuView);
     }
 
     if (existing != m_shadowMaterialBindingCache.end()) {
@@ -1310,13 +1179,14 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
 
     MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
-    ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram : nullptr;
+    const ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram.get() : nullptr;
     const ShaderStagePair stagePair{vertShaderName, fragShaderName};
     const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
-    ShaderProgram *linkedShadowProgram = nullptr;
+    ShaderProgramPublication linkedShadowPublication;
     if (linkedArtifact && linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
-        linkedShadowProgram = m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
+        linkedShadowPublication = m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
     }
+    const ShaderProgram *linkedShadowProgram = linkedShadowPublication.get();
     material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
 
     // Structured programs consume the semantic Shadow variant directly. The
@@ -1359,7 +1229,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
         material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
-        material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowProgram);
+        material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowPublication);
         return EnsureShadowMaterialBinding(material, forwardMaterialDesc, forwardProgram, linkedShadowProgram,
                                            linkedArtifact ? linkedArtifact->key.revision : 0);
     }
@@ -1458,7 +1328,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     m_shadowPipelineCache[shadowShaderKey] = shadowPipeline;
     material->SetPassPipeline(ShaderCompileTarget::Shadow, shadowPipeline);
     material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
-    material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowProgram);
+    material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowPublication);
     INXLOG_DEBUG("Created shared shadow pipeline for '", material->GetName(), "'");
     return EnsureShadowMaterialBinding(material, forwardMaterialDesc, forwardProgram, linkedShadowProgram,
                                        linkedArtifact ? linkedArtifact->key.revision : 0);

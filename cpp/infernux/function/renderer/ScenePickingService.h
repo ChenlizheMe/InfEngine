@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <function/renderer/rhi/RhiHandles.h>
+#include <glm/glm.hpp>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -44,7 +45,7 @@ struct ScenePickSnapshot
 class ScenePickingService
 {
   public:
-    ScenePickingService() = default;
+    ScenePickingService();
     ~ScenePickingService();
 
     ScenePickingService(const ScenePickingService &) = delete;
@@ -63,9 +64,12 @@ class ScenePickingService
 
     /// Record one picking render and one-pixel copy into the current graphics
     /// command buffer. Completion is published after the frame fence retires.
-    void Record(VkCommandBuffer commandBuffer, uint32_t targetWidth, uint32_t targetHeight);
+    void Record(VkCommandBuffer commandBuffer, uint32_t targetWidth, uint32_t targetHeight,
+                rhi::BindGroupHandle perViewGroup, const glm::mat4 &viewMatrix);
 
   private:
+    struct TargetGeneration;
+
     struct RequestData
     {
         uint64_t id = 0;
@@ -92,14 +96,7 @@ class ScenePickingService
     bool m_hasPending = false;
     uint64_t m_nextRequestId = 1;
 
-    std::unique_ptr<vk::VkImageHandle> m_color;
-    std::unique_ptr<vk::VkImageHandle> m_depth;
-    VkRenderPass m_renderPass = VK_NULL_HANDLE;
-    VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
-    uint32_t m_width = 0;
-    uint32_t m_height = 0;
-    VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
-    rhi::RenderTargetLayoutHandle m_renderTargetLayout;
+    std::unique_ptr<TargetGeneration> m_target;
 };
 
 } // namespace infernux

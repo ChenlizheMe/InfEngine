@@ -1,15 +1,19 @@
 #version 450
 
-@shader_id: Gizmo Icon
-@shading_model: Unlit
-@hidden
-@surface_type: transparent
-@depth_write: off
-@blend: alpha
-@alpha_clip: 0.01
-@cast_shadows: off
-@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-@property: texSampler, Texture2D, white
+ShaderInfo {
+    Name "Gizmo Icon"
+    Hidden On
+    ShadingModel Unlit
+    Surface Transparent
+    DepthWrite Off
+    Blend Alpha
+    AlphaClip 0.01
+    CastShadows Off
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D texSampler = white
+    }
+}
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();

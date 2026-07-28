@@ -279,6 +279,7 @@ void Rigidbody::SetIsKinematic(bool kinematic)
     bool wasKinematic = d.isKinematic;
     d.isKinematic = kinematic;
     NotifyCollidersBodyTypeChanged();
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     // When switching kinematic → dynamic, synchronise interpolation caches
     // from the current Jolt body position.  During kinematic mode neither
@@ -394,6 +395,7 @@ void Rigidbody::SetVelocity(const glm::vec3 &vel)
             data.hasLinearVelocity = false;
         }
     }
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 glm::vec3 Rigidbody::GetAngularVelocity() const

@@ -87,7 +87,11 @@ uint32_t Collider::GetBodyId() const
 
 void Collider::SetCachedRigidbody(Rigidbody *rigidbody)
 {
-    ActorMut().rigidbody = rigidbody;
+    auto &actor = ActorMut();
+    if (actor.rigidbody == rigidbody)
+        return;
+    actor.rigidbody = rigidbody;
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 Rigidbody *Collider::GetCachedRigidbody() const
@@ -151,6 +155,7 @@ void Collider::Awake()
 
 void Collider::OnEnable()
 {
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
     if (GetBodyId() == 0xFFFFFFFF) {
         // Body not yet created (deferred from Awake) — ensure it's queued.
         PhysicsECSStore::Instance().QueueBodyCreation(m_ecsHandle);
@@ -166,6 +171,7 @@ void Collider::OnEnable()
 
 void Collider::OnDisable()
 {
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
     if (IsBeingDestroyed()) {
         return;
     }
@@ -213,6 +219,7 @@ void Collider::SetIsTrigger(bool trigger)
     if (d.isTrigger == trigger)
         return;
     d.isTrigger = trigger;
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF) {
@@ -307,6 +314,7 @@ void Collider::SetPhysicMaterial(std::shared_ptr<PhysicMaterial> material)
     if (!guid.empty())
         graph.AddRuntimeDependency(GetInstanceGuid(), guid);
     ApplyMaterialToBody(this);
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 void Collider::SetPhysicMaterialGuid(const std::string &guid)
@@ -334,6 +342,8 @@ void Collider::OnPhysicMaterialAssetEvent(AssetEvent event)
     }
     if (event == AssetEvent::Modified)
         ApplyMaterialToBody(this);
+    if (event == AssetEvent::Modified)
+        PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
 
 float Collider::GetFriction() const
@@ -563,6 +573,7 @@ void Collider::RestoreSceneResidency()
 
 void Collider::RebuildShape()
 {
+    PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
     auto &actor = ActorMut();
     if (actor.bodyId == 0xFFFFFFFF)
         return;

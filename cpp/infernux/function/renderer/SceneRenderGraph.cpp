@@ -11,6 +11,7 @@
 #include "FullscreenRenderer.h"
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
+#include "OutlineRenderer.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
 #include "particle/ParticleGpuBounds.h"
@@ -21,12 +22,14 @@
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
 #include "vk/VkRenderUtils.h"
+#include "vk/VulkanRhiDevice.h"
 #include <algorithm>
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/error/InxError.h>
 #include <core/types/ColorSpace.h>
 #include <cstring>
+#include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/Camera.h>
@@ -315,7 +318,7 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
         const bool copyCommand = command && (command->type == GraphCommandType::CopyTexture ||
                                              command->type == GraphCommandType::CopyBuffer);
         if ((pass.type == GraphPassType::Raster && command && !rasterCommand) ||
-            (pass.type == GraphPassType::Compute && command) || (pass.type == GraphPassType::Copy && !copyCommand) ||
+            (pass.type == GraphPassType::Copy && !copyCommand) ||
             (pass.type == GraphPassType::Present && (!command || command->type != GraphCommandType::Present))) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                          "' command does not match its execution domain");
@@ -425,6 +428,27 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: depth-only material pass '", pass.name,
                          "' requires one depth output and no color outputs");
             return false;
+        }
+        const bool motionMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
+                                        command->shaderTarget == ShaderCompileTarget::Motion;
+        if (motionMaterialPass) {
+            const auto color =
+                pass.writeColors.size() == 1 ? textures.find(pass.writeColors.front().second) : textures.end();
+            const bool hasReadableDepth =
+                std::any_of(pass.readTextures.begin(), pass.readTextures.end(), [&](const std::string &textureName) {
+                    const auto texture = textures.find(textureName);
+                    const bool sampled =
+                        std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
+                                    [&](const auto &binding) { return binding.second == textureName; });
+                    return texture != textures.end() && texture->second->isDepth && !sampled;
+                });
+            if (color == textures.end() || pass.writeColors.front().first != 0 ||
+                color->second->format != rhi::PixelFormat::RG16SFloat || !hasReadableDepth ||
+                !pass.writeDepth.empty()) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: motion pass '", pass.name,
+                             "' requires one RG16SFloat color[0], one readable depth attachment, and no depth write");
+                return false;
+            }
         }
 
         std::unordered_set<int> colorSlots;
@@ -554,7 +578,9 @@ bool SceneRenderGraph::ValidateGraphDescription(const RenderGraphDescription &de
 // Constructor / Destructor
 // ============================================================================
 
-SceneRenderGraph::SceneRenderGraph() : m_renderGraph(std::make_unique<vk::RenderGraph>())
+SceneRenderGraph::SceneRenderGraph()
+    : m_particleViewDiagnosticState(std::make_shared<ParticleViewDiagnosticState>()),
+      m_renderGraph(std::make_unique<vk::RenderGraph>())
 {
 }
 
@@ -572,7 +598,8 @@ uint64_t SceneRenderGraph::GetTransientResidentBytes() const
 // Initialization
 // ============================================================================
 
-bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *sceneTarget)
+bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *sceneTarget,
+                                  rhi::RenderViewKind viewKind)
 {
     if (!vkCore || !sceneTarget) {
         INXLOG_ERROR("SceneRenderGraph::Initialize: Invalid parameters");
@@ -584,8 +611,21 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     m_width = sceneTarget->GetWidth();
     m_height = sceneTarget->GetHeight();
 
+    m_renderView.id = rhi::AllocateRenderViewId();
+    m_renderView.device = vkCore->GetDeviceContext().GetDeviceId();
+    m_renderView.kind = viewKind;
+    m_renderView.output = rhi::RenderOutputKind::OffscreenTexture;
+    m_renderView.width = m_width;
+    m_renderView.height = m_height;
+    m_renderView.colorFormat = rhi::FromVkFormat(sceneTarget->GetColorFormat());
+    m_renderView.depthFormat = rhi::FromVkFormat(sceneTarget->GetDepthFormat());
+    m_renderView.samples = rhi::FromVkSampleCount(sceneTarget->GetMsaaSampleCount());
+    m_renderView.revision = 1;
+
     // Initialize the underlying RenderGraph with device context and pipeline manager
-    m_renderGraph->Initialize(&vkCore->GetDeviceContext(), &vkCore->GetPipelineManager(), &vkCore->GetDeletionQueue());
+    m_renderGraph->Initialize(&vkCore->GetDeviceContext(), &vkCore->GetPipelineManager(), &vkCore->GetRetirementQueue(),
+                              &vkCore->GetBackendContext().Queues());
+    m_renderGraph->SetRenderView(m_renderView);
 
     // Allocate a complete camera-local lighting domain. Geometry and particles
     // share this camera's atlas and LightingUBO, but Scene, Game and future
@@ -595,9 +635,20 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     lightingBufferDesc.byteSize = sizeof(ShaderLightingUBO);
     lightingBufferDesc.usage = rhi::BufferUsageFlags::Uniform;
     lightingBufferDesc.memory = rhi::BufferMemory::Upload;
-    for (auto &buffer : m_cameraLightingBuffers) {
-        buffer = rhiDevice.CreateBuffer(lightingBufferDesc);
-        if (!buffer.IsValid()) {
+    rhi::BufferDesc cameraBufferDesc{};
+    cameraBufferDesc.byteSize = sizeof(UniformBufferObject);
+    cameraBufferDesc.usage = rhi::BufferUsageFlags::Uniform;
+    cameraBufferDesc.memory = rhi::BufferMemory::Upload;
+    for (auto &frame : m_perViewFrames) {
+        frame.cameraMatrix = rhiDevice.CreateBuffer(cameraBufferDesc);
+        if (!frame.cameraMatrix.IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local matrix UBO");
+            return false;
+        }
+    }
+    for (auto &frame : m_perViewFrames) {
+        frame.lighting = rhiDevice.CreateBuffer(lightingBufferDesc);
+        if (!frame.lighting.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local LightingUBO");
             return false;
         }
@@ -611,23 +662,28 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local shadow resource identity");
         return false;
     }
-    m_particlePerViewLayout = rhiDevice.RegisterBindingLayout(vkCore->GetPerViewDescSetLayout());
-    if (!m_particlePerViewLayout.IsValid()) {
-        INXLOG_ERROR("SceneRenderGraph: failed to register the canonical particle per-view descriptor layout");
+    m_perViewLayout = rhiDevice.RegisterBindingLayout(vkCore->GetPerViewDescSetLayout());
+    if (!m_perViewLayout.IsValid()) {
+        INXLOG_ERROR("SceneRenderGraph: failed to register the canonical per-view descriptor layout");
         return false;
     }
     for (uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
-        m_perViewDescSets[i] = vkCore->AllocatePerViewDescriptorSet();
-        m_particlePerViewDescSets[i] = vkCore->AllocatePerViewDescriptorSet();
-        m_particlePerViewGroups[i] = rhiDevice.RegisterBindGroup(m_particlePerViewDescSets[i]);
-        if (m_perViewDescSets[i] == VK_NULL_HANDLE || m_particlePerViewDescSets[i] == VK_NULL_HANDLE ||
-            !m_particlePerViewGroups[i].IsValid()) {
+        auto &frame = m_perViewFrames[i];
+        frame.geometryDescriptor = vkCore->AllocatePerViewDescriptorLease();
+        frame.particleDescriptor = vkCore->AllocatePerViewDescriptorLease();
+        frame.geometryGroup = rhiDevice.RegisterBindGroup(frame.GeometrySet());
+        frame.particleGroup = rhiDevice.RegisterBindGroup(frame.ParticleSet());
+        if (!frame.geometryDescriptor.IsValid() || !frame.particleDescriptor.IsValid() ||
+            !frame.geometryGroup.IsValid() || !frame.particleGroup.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: failed to allocate the canonical per-view descriptor resources [", i, "]");
             return false;
         }
-        const VkBuffer lightingBuffer = rhiDevice.Resolve(m_cameraLightingBuffers[i]);
-        vkCore->UpdatePerViewLightingBuffer(m_perViewDescSets[i], lightingBuffer, sizeof(ShaderLightingUBO));
-        vkCore->UpdatePerViewLightingBuffer(m_particlePerViewDescSets[i], lightingBuffer, sizeof(ShaderLightingUBO));
+        const VkBuffer lightingBuffer = rhiDevice.Resolve(frame.lighting);
+        const VkBuffer cameraBuffer = rhiDevice.Resolve(frame.cameraMatrix);
+        vkCore->UpdatePerViewLightingBuffer(frame.GeometrySet(), lightingBuffer, sizeof(ShaderLightingUBO));
+        vkCore->UpdatePerViewLightingBuffer(frame.ParticleSet(), lightingBuffer, sizeof(ShaderLightingUBO));
+        vkCore->UpdatePerViewCameraBuffer(frame.GeometrySet(), cameraBuffer, sizeof(UniformBufferObject));
+        vkCore->UpdatePerViewCameraBuffer(frame.ParticleSet(), cameraBuffer, sizeof(UniformBufferObject));
     }
 
     // Initialize fullscreen effect renderer for FullscreenQuad passes
@@ -665,9 +721,8 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
             std::memcpy(spirv.data(), bytes.data(), bytes.size());
             if (!m_forwardPlusGeometryGrid.Initialize(rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
-            } else if (!m_particlePerViewLayout.IsValid() ||
-                       !m_forwardPlusParticleGrid.Initialize(rhiDevice, kMaxFramesInFlight,
-                                                             {spirv.data(), spirv.size()})) {
+            } else if (!m_perViewLayout.IsValid() || !m_forwardPlusParticleGrid.Initialize(
+                                                         rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
                 INXLOG_ERROR("SceneRenderGraph: failed to initialize the particle Forward+ tiled-light builder");
             } else {
                 for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
@@ -686,6 +741,14 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     return true;
 }
 
+void SceneRenderGraph::RetireFramebuffersBeforeTargetReplacement(rhi::SubmissionSerial retirementSerial)
+{
+    if (m_renderGraph)
+        m_renderGraph->RetireFramebufferCacheAfter(retirementSerial);
+    m_graphBuilt = false;
+    m_needsCompile = true;
+}
+
 void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
 {
     if (!sceneTarget)
@@ -694,6 +757,14 @@ void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
     m_sceneTarget = sceneTarget;
     m_width = sceneTarget->GetWidth();
     m_height = sceneTarget->GetHeight();
+    m_renderView.width = m_width;
+    m_renderView.height = m_height;
+    m_renderView.colorFormat = rhi::FromVkFormat(sceneTarget->GetColorFormat());
+    m_renderView.depthFormat = rhi::FromVkFormat(sceneTarget->GetDepthFormat());
+    m_renderView.samples = rhi::FromVkSampleCount(sceneTarget->GetMsaaSampleCount());
+    ++m_renderView.revision;
+    if (m_renderGraph)
+        m_renderGraph->SetRenderView(m_renderView);
     m_graphBuilt = false;
     m_needsRebuild = true;
     m_needsCompile = true;
@@ -706,6 +777,17 @@ void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
 
 void SceneRenderGraph::Destroy()
 {
+    if (m_particleViewDiagnosticState) {
+        std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
+        for (const auto &request : m_pendingParticleViewDiagnostics) {
+            auto &snapshot = m_particleViewDiagnosticState->snapshots[request.requestId];
+            if (snapshot.status == particle::GpuParticleViewDiagnosticStatus::Pending) {
+                snapshot.status = particle::GpuParticleViewDiagnosticStatus::Failed;
+                snapshot.error = "Particle view render graph was destroyed before diagnostics were recorded";
+            }
+        }
+    }
+    m_pendingParticleViewDiagnostics.clear();
     m_particleCullers.clear();
     m_particleSorters.clear();
     m_fullscreenRenderer.Destroy();
@@ -714,19 +796,21 @@ void SceneRenderGraph::Destroy()
     m_forwardPlusParticleGrid.Shutdown();
     if (m_vkCore) {
         auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
-        for (auto &group : m_particlePerViewGroups) {
-            rhiDevice.Release(group);
-            group = {};
+        auto &descriptorManager = rhiDevice.GetDescriptorManager();
+        for (auto &frame : m_perViewFrames) {
+            rhiDevice.Release(frame.geometryGroup);
+            rhiDevice.Release(frame.particleGroup);
+            descriptorManager.Retire(frame.geometryDescriptor);
+            descriptorManager.Retire(frame.particleDescriptor);
+            rhiDevice.Release(frame.lighting);
+            rhiDevice.Release(frame.cameraMatrix);
+            frame = {};
         }
-        rhiDevice.Release(m_particlePerViewLayout);
-        for (auto &buffer : m_cameraLightingBuffers) {
-            rhiDevice.Release(buffer);
-            buffer = {};
-        }
+        rhiDevice.Release(m_perViewLayout);
         m_cameraCanonicalLights.Shutdown();
         m_vkCore->DestroyShadowCameraResources(m_shadowCameraResourceId);
     }
-    m_particlePerViewLayout = {};
+    m_perViewLayout = {};
     m_shadowCameraResourceId = 0;
     m_transientResources.clear();
     m_parameterBlocks.clear();
@@ -736,17 +820,232 @@ void SceneRenderGraph::Destroy()
     }
     m_importedColorTarget = {};
     m_importedDepthTarget = {};
+    m_outlineRenderer = nullptr;
+    m_outlinePassesEnabled = false;
+    m_outlinePipelineFailureReported = false;
     m_graphBuilt = false;
     m_vkCore = nullptr;
     m_sceneTarget = nullptr;
+}
+
+uint64_t SceneRenderGraph::RequestParticleViewDiagnostics(uint64_t graphInstanceId)
+{
+    if (!m_particleViewDiagnosticState)
+        return 0;
+    uint64_t requestId = m_nextParticleViewDiagnosticRequestId++;
+    if (requestId == 0)
+        requestId = m_nextParticleViewDiagnosticRequestId++;
+
+    particle::GpuParticleViewDiagnosticSnapshot snapshot;
+    snapshot.requestId = requestId;
+    snapshot.graphInstanceId = graphInstanceId;
+    if (!m_vkCore || !m_particleDrawRegistry || graphInstanceId == 0) {
+        snapshot.status = particle::GpuParticleViewDiagnosticStatus::Failed;
+        snapshot.error = "Particle view diagnostics require an initialized render graph and a resident particle graph";
+    } else {
+        snapshot.status = particle::GpuParticleViewDiagnosticStatus::Pending;
+        m_pendingParticleViewDiagnostics.push_back({requestId, graphInstanceId});
+    }
+
+    std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
+    if (m_particleViewDiagnosticState->snapshots.size() >= 128) {
+        auto oldest = m_particleViewDiagnosticState->snapshots.end();
+        for (auto it = m_particleViewDiagnosticState->snapshots.begin();
+             it != m_particleViewDiagnosticState->snapshots.end(); ++it) {
+            if (it->second.status == particle::GpuParticleViewDiagnosticStatus::Pending)
+                continue;
+            if (oldest == m_particleViewDiagnosticState->snapshots.end() || it->first < oldest->first)
+                oldest = it;
+        }
+        if (oldest != m_particleViewDiagnosticState->snapshots.end())
+            m_particleViewDiagnosticState->snapshots.erase(oldest);
+    }
+    m_particleViewDiagnosticState->snapshots[requestId] = std::move(snapshot);
+    return requestId;
+}
+
+particle::GpuParticleViewDiagnosticSnapshot SceneRenderGraph::QueryParticleViewDiagnostics(uint64_t requestId) const
+{
+    if (!m_particleViewDiagnosticState)
+        return {};
+    std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
+    const auto found = m_particleViewDiagnosticState->snapshots.find(requestId);
+    return found != m_particleViewDiagnosticState->snapshots.end() ? found->second
+                                                                   : particle::GpuParticleViewDiagnosticSnapshot{};
+}
+
+void SceneRenderGraph::RecordParticleViewDiagnostics(VkCommandBuffer commandBuffer)
+{
+    if (m_pendingParticleViewDiagnostics.empty() || !m_vkCore || !m_particleDrawRegistry ||
+        commandBuffer == VK_NULL_HANDLE) {
+        return;
+    }
+
+    auto requests = std::move(m_pendingParticleViewDiagnostics);
+    m_pendingParticleViewDiagnostics.clear();
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    vk::VulkanTransferCommandContext transferContext;
+    const auto transfer = device.MakeTransferCommandEncoder(transferContext, commandBuffer);
+    const auto entries =
+        m_particleDrawRegistry->Snapshot(std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max());
+
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+                         &barrier, 0, nullptr, 0, nullptr);
+
+    for (const auto &request : requests) {
+        struct OutputCapture
+        {
+            particle::GpuParticleViewOutputDiagnostic diagnostic;
+            uint64_t dispatchOffset = 0;
+            uint64_t drawOffset = 0;
+            std::shared_ptr<particle::ParticleGpuCuller> culler;
+        };
+
+        std::vector<OutputCapture> captures;
+        for (const auto &entry : entries) {
+            if (entry.graphInstanceId != request.graphInstanceId)
+                continue;
+            const auto culler = m_particleCullers.find(entry.id);
+            if (culler == m_particleCullers.end() || !culler->second || !culler->second->IsValid())
+                continue;
+            OutputCapture capture;
+            capture.diagnostic.outputId = entry.id;
+            capture.diagnostic.emitterId = entry.emitterId;
+            capture.diagnostic.emitterIndex = entry.emitterIndex;
+            capture.diagnostic.outputStableId = entry.outputStableId;
+            capture.diagnostic.capacity = entry.capacity;
+            capture.diagnostic.cullMode = entry.cullMode;
+            capture.culler = culler->second;
+            captures.push_back(std::move(capture));
+        }
+        std::sort(captures.begin(), captures.end(), [](const auto &lhs, const auto &rhs) {
+            if (lhs.diagnostic.emitterIndex != rhs.diagnostic.emitterIndex)
+                return lhs.diagnostic.emitterIndex < rhs.diagnostic.emitterIndex;
+            return lhs.diagnostic.outputStableId < rhs.diagnostic.outputStableId;
+        });
+
+        if (captures.empty()) {
+            std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
+            auto &snapshot = m_particleViewDiagnosticState->snapshots[request.requestId];
+            snapshot.status = particle::GpuParticleViewDiagnosticStatus::Failed;
+            snapshot.error = "Particle view contains no resident outputs for the requested graph";
+            continue;
+        }
+
+        constexpr uint64_t BytesPerOutput = sizeof(particle::GpuParticleCullDispatchState) + 16u;
+        const uint64_t totalBytes = captures.size() * BytesPerOutput;
+        const auto readbackHandle =
+            device.CreateBuffer({totalBytes, rhi::BufferUsageFlags::TransferDestination, rhi::BufferMemory::Readback});
+        if (!readbackHandle.IsValid()) {
+            std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
+            auto &snapshot = m_particleViewDiagnosticState->snapshots[request.requestId];
+            snapshot.status = particle::GpuParticleViewDiagnosticStatus::Failed;
+            snapshot.error = "Failed to allocate particle view diagnostic readback buffer";
+            continue;
+        }
+        auto readback = std::make_shared<rhi::BufferResource>(device, readbackHandle, totalBytes);
+        uint64_t offset = 0;
+        for (auto &capture : captures) {
+            capture.dispatchOffset = offset;
+            transfer.CopyBuffer(capture.culler->SortDispatchBuffer(), readbackHandle,
+                                {0, offset, sizeof(particle::GpuParticleCullDispatchState)});
+            offset += sizeof(particle::GpuParticleCullDispatchState);
+            capture.drawOffset = offset;
+            transfer.CopyBuffer(capture.culler->DrawIndirectBuffer(), readbackHandle, {0, offset, 16});
+            offset += 16;
+        }
+
+        const auto state = m_particleViewDiagnosticState;
+        auto *readbackDevice = static_cast<rhi::Device *>(&device);
+        m_vkCore->GetRetirementQueue().Retire([state, readback, captures = std::move(captures), request,
+                                               readbackDevice]() mutable {
+            std::vector<uint8_t> bytes(static_cast<size_t>(readback->GetByteSize()));
+            particle::GpuParticleViewDiagnosticSnapshot result;
+            result.requestId = request.requestId;
+            result.graphInstanceId = request.graphInstanceId;
+            if (!readbackDevice->ReadBuffer(readback->GetBuffer(), 0, bytes.data(), bytes.size())) {
+                result.status = particle::GpuParticleViewDiagnosticStatus::Failed;
+                result.error = "Failed to read completed particle view diagnostic buffer";
+            } else {
+                result.status = particle::GpuParticleViewDiagnosticStatus::Completed;
+                for (auto &capture : captures) {
+                    particle::GpuParticleCullDispatchState dispatch{};
+                    std::array<uint32_t, 4> draw{};
+                    std::memcpy(&dispatch, bytes.data() + capture.dispatchOffset, sizeof(dispatch));
+                    std::memcpy(draw.data(), bytes.data() + capture.drawOffset, sizeof(draw));
+                    capture.diagnostic.sourceCount = dispatch.sourceCount;
+                    capture.diagnostic.visibleCount = draw[1];
+                    capture.diagnostic.boundsValid = (dispatch.flags & 1u) != 0u;
+                    capture.diagnostic.coarseRejected = capture.diagnostic.boundsValid && (dispatch.flags & 2u) == 0u;
+                    capture.diagnostic.cullMode = (dispatch.flags & 4u) != 0u
+                                                      ? particle::GpuParticleCullMode::RibbonSegments
+                                                      : particle::GpuParticleCullMode::Instances;
+                    capture.diagnostic.drawVertexCount = draw[0];
+                    capture.diagnostic.drawInstanceCount = draw[1];
+                    result.outputs.push_back(std::move(capture.diagnostic));
+                }
+            }
+            std::scoped_lock lock(state->mutex);
+            const auto found = state->snapshots.find(request.requestId);
+            if (found != state->snapshots.end() &&
+                found->second.status == particle::GpuParticleViewDiagnosticStatus::Pending) {
+                found->second = std::move(result);
+            }
+        });
+    }
 }
 
 VkDescriptorSet SceneRenderGraph::GetPerViewDescriptorSet() const
 {
     if (!m_vkCore)
         return VK_NULL_HANDLE;
-    uint32_t frameIdx = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
-    return m_perViewDescSets[frameIdx];
+    uint32_t frameIdx = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    return m_perViewFrames[frameIdx].GeometrySet();
+}
+
+rhi::BindGroupHandle SceneRenderGraph::GetPerViewBindGroup() const
+{
+    if (!m_vkCore)
+        return {};
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    return m_perViewFrames[frameIndex].geometryGroup;
+}
+
+void SceneRenderGraph::SetCachedCameraVP(const glm::mat4 &view, const glm::mat4 &proj)
+{
+    m_cachedView = view;
+    m_drawView = view;
+    m_cachedProj = proj;
+    m_hasCachedCameraVP = true;
+    (void)StageCameraMatrices(view, proj);
+}
+
+bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj,
+                                           const glm::mat4 *previousViewProj)
+{
+    if (!m_vkCore)
+        return false;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    auto &frame = m_perViewFrames[frameIndex];
+    if (!frame.cameraMatrix.IsValid())
+        return false;
+
+    UniformBufferObject camera{};
+    camera.model = glm::mat4(1.0f);
+    camera.view = view;
+    camera.proj = proj;
+    camera.previousViewProj =
+        previousViewProj ? *previousViewProj : (m_cameraHistoryValid ? m_previousViewProj : proj * view);
+    auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
+    if (!rhiDevice.WriteBuffer(frame.cameraMatrix, 0, &camera, sizeof(camera))) {
+        INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local matrix UBO");
+        return false;
+    }
+    return true;
 }
 
 void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
@@ -769,11 +1068,11 @@ void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const g
                                            visibleDepthRange);
     m_cameraLightCollector.BuildShaderLightingUBO();
 
-    const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    auto &frame = m_perViewFrames[frameIndex];
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     const ShaderLightingUBO &lighting = m_cameraLightCollector.GetShaderLightingUBO();
-    if (!m_cameraLightingBuffers[frameIndex].IsValid() ||
-        !rhiDevice.WriteBuffer(m_cameraLightingBuffers[frameIndex], 0, &lighting, sizeof(lighting))) {
+    if (!frame.lighting.IsValid() || !rhiDevice.WriteBuffer(frame.lighting, 0, &lighting, sizeof(lighting))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local LightingUBO");
     }
     if (!m_cameraCanonicalLights.Update(frameIndex, m_cameraLightCollector.GetCanonicalLightSnapshot())) {
@@ -820,6 +1119,21 @@ vk::ResourceHandle SceneRenderGraph::CreateTransientTexture(const std::string &n
 // ============================================================================
 // RenderGraph topology defined from Python
 // ============================================================================
+
+void SceneRenderGraph::SetOutlineRenderer(OutlineRenderer *renderer)
+{
+    const bool enabled = m_renderView.kind == rhi::RenderViewKind::Scene && renderer && renderer->IsReady() &&
+                         renderer->HasActiveOutline();
+    if (m_outlineRenderer != renderer)
+        m_outlinePipelineFailureReported = false;
+    m_outlineRenderer = renderer;
+    if (m_outlinePassesEnabled == enabled)
+        return;
+
+    m_outlinePassesEnabled = enabled;
+    m_outlinePipelineFailureReported = false;
+    m_needsRebuild = true;
+}
 
 void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
@@ -976,12 +1290,13 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                                             materialPass](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
             switch (commandType) {
             case GraphCommandType::DrawRenderers:
-                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, sortMode, overrideMaterial,
-                                          passTag, &materialPass);
+                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, queueMin,
+                                          queueMax, sortMode, overrideMaterial, passTag, &materialPass);
                 break;
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
-                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, skyboxQueue, skyboxQueue);
+                vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, skyboxQueue,
+                                          skyboxQueue);
                 break;
             }
             case GraphCommandType::DrawShadowCasters:
@@ -1016,8 +1331,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static constexpr int COMP_GIZMO_QUEUE_MIN = 10000;
     static constexpr int COMP_GIZMO_QUEUE_MAX = 20000;
     static const std::string kComponentGizmosPassName = "_ComponentGizmos";
-    m_pythonCallbacks[kComponentGizmosPassName] = [vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX);
+    m_pythonCallbacks[kComponentGizmosPassName] = [this, vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, COMP_GIZMO_QUEUE_MIN,
+                                  COMP_GIZMO_QUEUE_MAX);
     };
 
     // ========================================================================
@@ -1030,8 +1346,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static constexpr int GIZMO_QUEUE_MIN = 20001;
     static constexpr int GIZMO_QUEUE_MAX = 25000;
     static const std::string kEditorGizmosPassName = "_EditorGizmos";
-    m_pythonCallbacks[kEditorGizmosPassName] = [vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GIZMO_QUEUE_MIN, GIZMO_QUEUE_MAX);
+    m_pythonCallbacks[kEditorGizmosPassName] = [this, vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, GIZMO_QUEUE_MIN,
+                                  GIZMO_QUEUE_MAX);
     };
 
     // ========================================================================
@@ -1042,8 +1359,9 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static constexpr int TOOLS_QUEUE_MIN = 25001;
     static constexpr int TOOLS_QUEUE_MAX = 30000;
     static const std::string kEditorToolsPassName = "_EditorTools";
-    m_pythonCallbacks[kEditorToolsPassName] = [vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve");
+    m_pythonCallbacks[kEditorToolsPassName] = [this, vkCore](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, TOOLS_QUEUE_MIN,
+                                  TOOLS_QUEUE_MAX, "preserve");
     };
 
     // Store description for BuildRenderGraph()'s topology traversal. Exact
@@ -1197,7 +1515,27 @@ void SceneRenderGraph::EnsureGraphBuilt()
             m_graphBuilt = false;
             return;
         }
+        const vk::ResourceHandle displayTarget =
+            m_importedResolveTarget.IsValid() ? m_importedResolveTarget : m_importedColorTarget;
+        m_renderView.color = m_renderGraph->ResolveRhiTextureView(displayTarget);
+        m_renderView.depth = m_renderGraph->ResolveRhiTextureView(m_importedDepthTarget);
         m_needsCompile = false;
+    }
+
+    if (m_graphBuilt && m_outlinePassesEnabled) {
+        const bool outlineReady =
+            m_outlineRenderer &&
+            m_outlineRenderer->EnsureGraphPipelines(m_renderGraph->GetPassRenderPass("__EditorOutlineMask"),
+                                                    m_renderGraph->GetPassRenderPass("__EditorOutlineComposite"));
+        if (outlineReady) {
+            m_outlinePipelineFailureReported = false;
+        } else if (!m_outlinePipelineFailureReported) {
+            INXLOG_ERROR("SceneRenderGraph: failed to prepare graph-compatible editor outline pipelines");
+            m_outlinePipelineFailureReported = true;
+        }
+        // Outline is an editor aid. Keep the otherwise valid scene graph
+        // executable and retry pipeline publication on a later frame instead
+        // of blacking out the Scene view after a transient creation failure.
     }
 
     if (m_graphBuilt) {
@@ -1246,7 +1584,7 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
     if (!m_vkCore || !m_forwardPlusGeometryGrid.IsValid() ||
         (m_forwardPlusParticlesRequired && !m_forwardPlusParticleGrid.IsValid()))
         return false;
-    const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
     const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
     if (!lights.buffer.IsValid())
         return false;
@@ -1279,14 +1617,15 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
     }
 
     RetireForwardPlusResources();
-    const VkDescriptorSet descriptorSet = m_perViewDescSets[frameIndex];
+    auto &viewFrame = m_perViewFrames[frameIndex];
+    const VkDescriptorSet descriptorSet = viewFrame.GeometrySet();
     if (descriptorSet == VK_NULL_HANDLE)
         return false;
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     const PerViewBufferBindingState geometryBindings{rhiDevice.Resolve(lights.buffer),
                                                      rhiDevice.Resolve(frame.headers),
                                                      rhiDevice.Resolve(frame.lightMasks),
-                                                     rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]),
+                                                     rhiDevice.Resolve(viewFrame.lighting),
                                                      lights.dataBytes,
                                                      frame.config.headerBytes,
                                                      frame.config.maskBytes,
@@ -1297,7 +1636,7 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
                left.lighting != right.lighting || left.canonicalBytes != right.canonicalBytes ||
                left.tileHeaderBytes != right.tileHeaderBytes || left.tileLightMaskBytes != right.tileLightMaskBytes;
     };
-    const bool geometryBindingsDirty = bindingsDiffer(m_geometryBindingState[frameIndex], geometryBindings);
+    const bool geometryBindingsDirty = bindingsDiffer(viewFrame.geometryBindings, geometryBindings);
     bool particleBindingsDirty = false;
     PerViewBufferBindingState particleBindings{};
     if (m_forwardPlusParticlesRequired) {
@@ -1305,35 +1644,36 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         particleBindings = {rhiDevice.Resolve(lights.buffer),
                             rhiDevice.Resolve(particleFrame.headers),
                             rhiDevice.Resolve(particleFrame.lightMasks),
-                            rhiDevice.Resolve(m_cameraLightingBuffers[frameIndex]),
+                            rhiDevice.Resolve(viewFrame.lighting),
                             lights.dataBytes,
                             particleFrame.config.headerBytes,
                             particleFrame.config.maskBytes,
                             true};
-        particleBindingsDirty = bindingsDiffer(m_particleBindingState[frameIndex], particleBindings);
+        particleBindingsDirty = bindingsDiffer(viewFrame.particleBindings, particleBindings);
     }
-    if ((geometryBindingsDirty && m_geometryBindingState[frameIndex].initialized) ||
-        (particleBindingsDirty && m_particleBindingState[frameIndex].initialized)) {
-        m_vkCore->GetDeviceContext().WaitIdle();
-    }
+    // InxRenderer waits for this frame slot's graphics fence before any
+    // SceneRenderGraph update. Each slot owns distinct per-view descriptor
+    // sets, so publishing new buffer bindings here cannot race a command
+    // buffer that still consumes the same sets. A device-wide idle would
+    // unnecessarily drain the other frame slot and all independent queues.
     if (geometryBindingsDirty) {
         m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights.buffer, lights.dataBytes, frame.headers,
                                                   frame.config.headerBytes, frame.lightMasks, frame.config.maskBytes,
-                                                  m_cameraLightingBuffers[frameIndex], sizeof(ShaderLightingUBO));
-        m_geometryBindingState[frameIndex] = geometryBindings;
+                                                  viewFrame.lighting, sizeof(ShaderLightingUBO));
+        viewFrame.geometryBindings = geometryBindings;
     }
     if (m_forwardPlusParticlesRequired) {
-        if (m_particlePerViewDescSets[frameIndex] == VK_NULL_HANDLE || !m_particlePerViewLayout.IsValid() ||
-            !m_particlePerViewGroups[frameIndex].IsValid() || !m_cameraLightingBuffers[frameIndex].IsValid()) {
+        if (viewFrame.ParticleSet() == VK_NULL_HANDLE || !m_perViewLayout.IsValid() ||
+            !viewFrame.particleGroup.IsValid() || !viewFrame.lighting.IsValid()) {
             return false;
         }
         if (particleBindingsDirty) {
             const auto &particleFrame = m_forwardPlusParticleGrid.Frame(frameIndex);
-            m_vkCore->UpdatePerViewForwardPlusBuffers(
-                m_particlePerViewDescSets[frameIndex], lights.buffer, lights.dataBytes, particleFrame.headers,
-                particleFrame.config.headerBytes, particleFrame.lightMasks, particleFrame.config.maskBytes,
-                m_cameraLightingBuffers[frameIndex], sizeof(ShaderLightingUBO));
-            m_particleBindingState[frameIndex] = particleBindings;
+            m_vkCore->UpdatePerViewForwardPlusBuffers(viewFrame.ParticleSet(), lights.buffer, lights.dataBytes,
+                                                      particleFrame.headers, particleFrame.config.headerBytes,
+                                                      particleFrame.lightMasks, particleFrame.config.maskBytes,
+                                                      viewFrame.lighting, sizeof(ShaderLightingUBO));
+            viewFrame.particleBindings = particleBindings;
         }
     }
     return true;
@@ -1348,7 +1688,7 @@ void SceneRenderGraph::RetireForwardPlusResources()
     if (retired.empty() || !m_vkCore)
         return;
     rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
-    m_vkCore->GetDeletionQueue().Push([device, retired = std::move(retired)]() mutable {
+    m_vkCore->GetRetirementQueue().Retire([device, retired = std::move(retired)]() mutable {
         for (const auto &resource : retired) {
             device->Release(resource.bindGroup);
             device->Release(resource.consumerBindGroup);
@@ -1358,10 +1698,10 @@ void SceneRenderGraph::RetireForwardPlusResources()
     });
 }
 
-void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
+bool SceneRenderGraph::PrepareSubmissionExecution()
 {
     if (!m_sceneTarget || !m_sceneTarget->IsReady() || !m_renderGraph) {
-        return;
+        return false;
     }
 
     if (m_importedColorTarget.IsValid()) {
@@ -1379,50 +1719,53 @@ void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
                                                rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
     }
 
-    if (m_graphBuilt) {
-        if (m_hasCameraClearOverride && !m_mainClearPassName.empty()) {
-            if (m_cameraClearFlags == CameraClearFlags::SolidColor) {
-                m_renderGraph->UpdatePassClearColor(m_mainClearPassName, m_cameraBgColor.r, m_cameraBgColor.g,
-                                                    m_cameraBgColor.b, m_cameraBgColor.a);
-            }
-        }
+    if (!m_graphBuilt)
+        return false;
 
-        m_prevClearStateValid = true;
-        m_prevCameraClearFlags = m_cameraClearFlags;
-        m_prevCameraBgColor = m_cameraBgColor;
-
-        m_fullscreenRenderer.ResetPool();
-
-        if (!m_particleCullers.empty()) {
-            Frustum frustum;
-            frustum.ExtractFromMatrix(m_cachedProj * m_cachedView);
-            for (uint32_t index = 0; index < particle::ParticleGpuCuller::PlaneCount; ++index) {
-                const auto &plane = frustum.GetPlane(static_cast<Frustum::PlaneIndex>(index));
-                m_particleFrustumPlanes[index * 4 + 0] = plane.normal.x;
-                m_particleFrustumPlanes[index * 4 + 1] = plane.normal.y;
-                m_particleFrustumPlanes[index * 4 + 2] = plane.normal.z;
-                m_particleFrustumPlanes[index * 4 + 3] = plane.distance;
-            }
-        }
-
-        m_renderGraph->Execute(commandBuffer);
-        ++m_executionCount;
-        m_lastExecutedBuildRevision = m_graphBuildRevision;
-
-        // Non-MSAA scene/game targets are sampled by ImGui after the render
-        // graph finishes. The graph leaves offscreen color outputs in
-        // COLOR_ATTACHMENT_OPTIMAL, so transition them back here before any
-        // descriptor-based sampling occurs later in the frame.
-        if (!m_sceneTarget->IsMsaaEnabled() && m_importedColorTarget.IsValid()) {
-            VkImageMemoryBarrier barrier =
-                vkrender::MakeImageBarrier(m_sceneTarget->GetColorImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-
-            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    if (m_hasCameraClearOverride && !m_mainClearPassName.empty()) {
+        if (m_cameraClearFlags == CameraClearFlags::SolidColor) {
+            m_renderGraph->UpdatePassClearColor(m_mainClearPassName, m_cameraBgColor.r, m_cameraBgColor.g,
+                                                m_cameraBgColor.b, m_cameraBgColor.a);
         }
     }
+
+    m_prevClearStateValid = true;
+    m_prevCameraClearFlags = m_cameraClearFlags;
+    m_prevCameraBgColor = m_cameraBgColor;
+
+    m_fullscreenRenderer.ResetPool();
+
+    if (!m_particleCullers.empty()) {
+        Frustum frustum;
+        frustum.ExtractFromMatrix(m_cachedProj * m_cachedView);
+        for (uint32_t index = 0; index < particle::ParticleGpuCuller::PlaneCount; ++index) {
+            const auto &plane = frustum.GetPlane(static_cast<Frustum::PlaneIndex>(index));
+            m_particleFrustumPlanes[index * 4 + 0] = plane.normal.x;
+            m_particleFrustumPlanes[index * 4 + 1] = plane.normal.y;
+            m_particleFrustumPlanes[index * 4 + 2] = plane.normal.z;
+            m_particleFrustumPlanes[index * 4 + 3] = plane.distance;
+        }
+    }
+    return true;
+}
+
+bool SceneRenderGraph::CompleteSubmissionExecution(VkCommandBuffer commandBuffer)
+{
+    if (!m_graphBuilt || !m_renderGraph || commandBuffer == VK_NULL_HANDLE)
+        return false;
+
+    RecordParticleViewDiagnostics(commandBuffer);
+    ++m_executionCount;
+    m_lastExecutedBuildRevision = m_graphBuildRevision;
+    return true;
+}
+
+void SceneRenderGraph::Execute(VkCommandBuffer commandBuffer)
+{
+    if (!PrepareSubmissionExecution())
+        return;
+    m_renderGraph->Execute(commandBuffer);
+    (void)CompleteSubmissionExecution(commandBuffer);
 }
 
 void SceneRenderGraph::RefreshPerViewShadowDescriptor()
@@ -1432,8 +1775,9 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     }
 
     VkDescriptorSet graphShadowDesc = GetPerViewDescriptorSet();
-    const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
-    VkDescriptorSet particleShadowDesc = m_particlePerViewDescSets[frameIndex];
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    auto &viewFrame = m_perViewFrames[frameIndex];
+    VkDescriptorSet particleShadowDesc = viewFrame.ParticleSet();
     if (graphShadowDesc == VK_NULL_HANDLE || particleShadowDesc == VK_NULL_HANDLE) {
         return;
     }
@@ -1444,11 +1788,10 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
             INXLOG_WARN("SceneRenderGraph: no valid shadowMap input handle for per-view descriptor; binding fallback "
                         "white texture");
         }
-        if (!m_shadowBindingState[frameIndex].fallback) {
-            m_vkCore->GetDeviceContext().WaitIdle();
+        if (!viewFrame.shadowBinding.fallback) {
             m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
-            m_shadowBindingState[frameIndex] = {};
+            viewFrame.shadowBinding = {};
         }
         return;
     }
@@ -1462,36 +1805,25 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
                 "SceneRenderGraph: shadow map view/sampler unavailable (view=", view == VK_NULL_HANDLE ? "null" : "ok",
                 ", sampler=", shadowSampler == VK_NULL_HANDLE ? "null" : "ok", "); binding fallback white texture");
         }
-        if (!m_shadowBindingState[frameIndex].fallback) {
-            m_vkCore->GetDeviceContext().WaitIdle();
+        if (!viewFrame.shadowBinding.fallback) {
             m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
-            m_shadowBindingState[frameIndex] = {};
+            viewFrame.shadowBinding = {};
         }
         return;
     }
 
     const VkImageLayout imageLayout = m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
                                                               : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    const auto &bound = m_shadowBindingState[frameIndex];
+    const auto &bound = viewFrame.shadowBinding;
     if (!bound.fallback && bound.imageView == view && bound.sampler == shadowSampler && bound.layout == imageLayout)
         return;
-    m_vkCore->GetDeviceContext().WaitIdle();
+    // The renderer has already waited for this frame slot. Geometry and
+    // particles publish the camera-local shadow binding together so neither
+    // domain can observe a half-updated per-view generation.
     m_vkCore->UpdatePerViewShadowMap(graphShadowDesc, view, shadowSampler, imageLayout);
     m_vkCore->UpdatePerViewShadowMap(particleShadowDesc, view, shadowSampler, imageLayout);
-    m_shadowBindingState[frameIndex] = {view, shadowSampler, imageLayout, false};
-}
-
-void SceneRenderGraph::OnResize(uint32_t width, uint32_t height)
-{
-    if (m_width != width || m_height != height) {
-        m_width = width;
-        m_height = height;
-        m_needsRebuild = true;
-        m_graphBuilt = false; // Force complete rebuild
-
-        INXLOG_DEBUG("SceneRenderGraph: Resized to ", width, "x", height);
-    }
+    viewFrame.shadowBinding = {view, shadowSampler, imageLayout, false};
 }
 
 // ============================================================================
@@ -1572,64 +1904,6 @@ void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, 
     }
 }
 
-void SceneRenderGraph::ResolveSceneMsaa(VkCommandBuffer commandBuffer)
-{
-    if (!m_sceneTarget) {
-        return;
-    }
-
-    if (!m_sceneTarget->IsMsaaEnabled()) {
-        return;
-    }
-
-    VkImage msaaImage = m_sceneTarget->GetMsaaColorImage();
-    VkImage resolveImage = m_sceneTarget->GetColorImage();
-
-    {
-        VkImageMemoryBarrier barriers[2] = {
-            // MSAA source
-            vkrender::MakeImageBarrier(msaaImage, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
-            // 1x resolve destination
-            vkrender::MakeImageBarrier(resolveImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT),
-        };
-
-        vkCmdPipelineBarrier(commandBuffer,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
-    }
-
-    VkImageResolve resolveRegion{};
-    resolveRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    resolveRegion.srcOffset = {0, 0, 0};
-    resolveRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    resolveRegion.dstOffset = {0, 0, 0};
-    resolveRegion.extent = {m_width, m_height, 1};
-
-    vkCmdResolveImage(commandBuffer, msaaImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, resolveImage,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolveRegion);
-
-    {
-        VkImageMemoryBarrier barriers[2] = {
-            // MSAA source: restore to COLOR_ATTACHMENT_OPTIMAL
-            vkrender::MakeImageBarrier(msaaImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT),
-            // 1x resolve destination: ready for outline / ImGui sampling
-            vkrender::MakeImageBarrier(resolveImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
-                                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
-        };
-
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                             0, nullptr, 0, nullptr, 2, barriers);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // BuildRenderGraph helpers
 // ---------------------------------------------------------------------------
@@ -1707,25 +1981,131 @@ vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk:
     return writtenColor.IsValid() ? writtenColor : colorTarget;
 }
 
+vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle displayTarget)
+{
+    if (!m_outlinePassesEnabled || !m_outlineRenderer || !displayTarget.IsValid() || !m_visibleRendererList.IsValid() ||
+        !m_sceneTarget || !m_sceneTarget->IsReady()) {
+        return displayTarget;
+    }
+
+    const uint32_t width = m_width;
+    const uint32_t height = m_height;
+    const vk::ResourceHandle rendererList = m_visibleRendererList;
+    vk::ResourceHandle mask;
+    vk::ResourceHandle writtenMask;
+    m_renderGraph->AddPass("__EditorOutlineMask", [this, width, height, rendererList, &mask,
+                                                   &writtenMask](vk::PassBuilder &builder) {
+        mask = builder.ImportTexture("__EditorOutlineMaskTexture", m_sceneTarget->GetOutlineMaskImage(),
+                                     m_sceneTarget->GetOutlineMaskImageView(), VK_FORMAT_R8G8B8A8_UNORM, width, height);
+        if (mask.IsValid()) {
+            m_renderGraph->SetResourceInitialState(mask, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
+                                                   rhi::PipelineStage::FragmentShader);
+            writtenMask = builder.WriteColor(mask, 0);
+            builder.SetClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+        builder.ReadRendererList(rendererList);
+        builder.SetDepthTest(false);
+        builder.SetRenderArea(width, height);
+
+        return [this, rendererList](vk::RenderContext &context) {
+            if (!m_outlineRenderer)
+                return;
+            const RendererList *list = context.GetRendererList(rendererList);
+            if (list)
+                m_outlineRenderer->RecordMaskDraws(context.GetCommandBuffer(), list->DrawCalls(),
+                                                   GetPerViewBindGroup());
+        };
+    });
+
+    if (!writtenMask.IsValid())
+        return displayTarget;
+
+    vk::ResourceHandle composited;
+    m_renderGraph->AddPass("__EditorOutlineComposite",
+                           [this, width, height, displayTarget, writtenMask, &composited](vk::PassBuilder &builder) {
+                               builder.Read(writtenMask, rhi::PipelineStage::FragmentShader);
+                               composited = builder.WriteColor(displayTarget, 0);
+                               builder.SetDepthTest(false);
+                               builder.SetRenderArea(width, height);
+                               return [this](vk::RenderContext &context) {
+                                   if (m_outlineRenderer)
+                                       m_outlineRenderer->RecordCompositeDraw(context.GetCommandBuffer());
+                               };
+                           });
+    return composited.IsValid() ? composited : displayTarget;
+}
+
 void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
-    bool outputSet = false;
+    vk::ResourceHandle graphOutput;
     if (m_hasPythonGraph && !m_pythonGraphDesc.outputTexture.empty()) {
         auto texIt = std::find_if(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
                                   [&](const GraphTextureDesc &t) { return t.name == m_pythonGraphDesc.outputTexture; });
         if (texIt != m_pythonGraphDesc.textures.end()) {
             if (!texIt->isBackbuffer && !texIt->isDepth) {
                 auto rtIt = customRTHandles.find(m_pythonGraphDesc.outputTexture);
-                if (rtIt != customRTHandles.end()) {
-                    m_renderGraph->SetOutput(rtIt->second);
-                    outputSet = true;
-                }
+                if (rtIt != customRTHandles.end())
+                    graphOutput = rtIt->second;
             }
         }
     }
-    if (!outputSet && m_importedColorTarget.IsValid()) {
-        m_renderGraph->SetOutput(m_importedColorTarget);
+
+    vk::ResourceHandle displayTarget = m_importedColorTarget;
+    const vk::ResourceHandle msaaSource = m_importedColorTarget;
+    if (m_sceneTarget->IsMsaaEnabled() && msaaSource.IsValid() && m_importedResolveTarget.IsValid()) {
+        const auto resolveDestination = m_importedResolveTarget;
+        const uint32_t width = m_width;
+        const uint32_t height = m_height;
+        vk::ResourceHandle resolvedVersion;
+        m_renderGraph->AddTransferPass("__SceneFinalMsaaResolve", [=, &resolvedVersion](vk::PassBuilder &builder) {
+            // Vulkan image resolve requires a graphics-capable command pool,
+            // while its resource accesses remain transfer operations.
+            builder.SetQueueRole(rhi::QueueRole::Graphics);
+            builder.TransferRead(msaaSource);
+            resolvedVersion = builder.TransferWrite(resolveDestination);
+            builder.SetRenderArea(width, height);
+            return [=](vk::RenderContext &context) {
+                context.GetTransferCommandEncoder().ResolveTexture(
+                    context.GetTextureHandle(msaaSource), context.GetTextureHandle(resolvedVersion),
+                    {rhi::TextureAspect::Color, 0, 0, 0, 0, width, height, 1});
+            };
+        });
+        if (resolvedVersion.IsValid()) {
+            m_importedResolveTarget = resolvedVersion;
+            displayTarget = resolvedVersion;
+        }
     }
+
+    const vk::ResourceHandle outlinedDisplay = AppendEditorOutline(displayTarget);
+    if (outlinedDisplay.IsValid() && outlinedDisplay != displayTarget) {
+        displayTarget = outlinedDisplay;
+        if (m_importedResolveTarget.IsValid() && displayTarget.id == m_importedResolveTarget.id)
+            m_importedResolveTarget = displayTarget;
+        else if (m_importedColorTarget.IsValid() && displayTarget.id == m_importedColorTarget.id)
+            m_importedColorTarget = displayTarget;
+    }
+
+    if (!graphOutput.IsValid())
+        graphOutput = displayTarget;
+
+    if (displayTarget.IsValid()) {
+        const bool preserveMsaaAttachment = m_sceneTarget->IsMsaaEnabled() && msaaSource.IsValid();
+        m_renderGraph->AddPresentPass("__SceneOutputExport", [=](vk::PassBuilder &builder) {
+            // Scene/Game targets are sampled by ImGui, capture and later view
+            // consumers. The graph, not an out-of-band Vulkan barrier, owns
+            // their published layout.
+            builder.Read(displayTarget, rhi::PipelineStage::FragmentShader);
+            if (graphOutput.IsValid() && graphOutput != displayTarget)
+                builder.Read(graphOutput, rhi::PipelineStage::FragmentShader);
+            if (preserveMsaaAttachment)
+                builder.PrepareColorAttachment(msaaSource);
+            builder.SetSideEffect();
+            return [](vk::RenderContext &) {};
+        });
+    }
+
+    if (graphOutput.IsValid())
+        m_renderGraph->SetOutput(graphOutput);
 }
 
 void SceneRenderGraph::BuildRenderGraph()
@@ -1738,12 +2118,16 @@ void SceneRenderGraph::BuildRenderGraph()
     auto retiredDepthResolveGroups = m_sceneDepthResolver.TakeBindGroups();
     if (!retiredDepthResolveGroups.empty()) {
         rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
-        m_vkCore->GetDeletionQueue().Push([device, groups = std::move(retiredDepthResolveGroups)]() mutable {
+        m_vkCore->GetRetirementQueue().Retire([device, groups = std::move(retiredDepthResolveGroups)]() mutable {
             for (const auto group : groups)
                 device->Release(group);
         });
     }
     m_renderGraph->Reset();
+    m_renderView.color = {};
+    m_renderView.depth = {};
+    m_renderView.motion = {};
+    m_renderView.history = {};
     // The renderer has waited only for the current frame slot. Leave the
     // other descriptor set untouched until its own fence is observed; the
     // old graph resources remain alive in the deferred deletion queue.
@@ -1761,11 +2145,11 @@ void SceneRenderGraph::BuildRenderGraph()
     const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {
         if (!culler)
             return;
-        m_vkCore->GetDeletionQueue().Push([culler = std::move(culler)]() mutable { culler.reset(); });
+        m_vkCore->GetRetirementQueue().Retire([culler = std::move(culler)]() mutable { culler.reset(); });
     };
     const auto retireSorter = [this](std::shared_ptr<particle::ParticleGpuSorter> sorter) {
         if (sorter)
-            m_vkCore->GetDeletionQueue().Push([sorter = std::move(sorter)]() mutable { sorter.reset(); });
+            m_vkCore->GetRetirementQueue().Retire([sorter = std::move(sorter)]() mutable { sorter.reset(); });
     };
     const auto particleSnapshot =
         m_particleDrawRegistry
@@ -1782,7 +2166,10 @@ void SceneRenderGraph::BuildRenderGraph()
             existing->second->VertexCount() == entry.renderer->VertexCount() &&
             existing->second->InstanceBuffer() == entry.instances &&
             existing->second->SourceIndirectBuffer() == entry.indirectArguments &&
-            existing->second->BoundsBuffer() == entry.bounds) {
+            existing->second->SourceIndexBuffer() == entry.renderIndices &&
+            existing->second->BoundsBuffer() == entry.bounds &&
+            existing->second->SimulationControlBuffer() == entry.simulationControl &&
+            existing->second->Mode() == entry.cullMode) {
             continue;
         }
 
@@ -1792,7 +2179,10 @@ void SceneRenderGraph::BuildRenderGraph()
         desc.vertexCount = entry.renderer->VertexCount();
         desc.instances = entry.instances;
         desc.sourceIndirectArguments = entry.indirectArguments;
+        desc.sourceIndices = entry.renderIndices;
         desc.bounds = entry.bounds;
+        desc.simulationControl = entry.simulationControl;
+        desc.mode = entry.cullMode;
         desc.program = entry.cullProgram->View();
         if (!culler->Create(m_vkCore->GetDeviceContext().GetRhiDevice(), desc)) {
             INXLOG_ERROR("SceneRenderGraph: failed to create per-view culler for GPU particle output ", entry.id);
@@ -1918,7 +2308,9 @@ void SceneRenderGraph::BuildRenderGraph()
         {
             vk::ResourceHandle instances;
             vk::ResourceHandle sourceIndirectArguments;
+            vk::ResourceHandle sourceRenderIndices;
             vk::ResourceHandle bounds;
+            vk::ResourceHandle simulationControl;
             vk::ResourceHandle renderIndices;
             vk::ResourceHandle indirectArguments;
             vk::ResourceHandle sortDispatchArguments;
@@ -1947,21 +2339,36 @@ void SceneRenderGraph::BuildRenderGraph()
                                                                particle::ParticleGpuRuntime::RenderInstanceStride);
                 resources.sourceIndirectArguments =
                     builder.ImportBuffer(prefix + "/SourceIndirect", entry.indirectArguments, 16);
+                resources.sourceRenderIndices =
+                    builder.ImportBuffer(prefix + "/SourceIndices", entry.renderIndices, elementBytes);
                 resources.bounds = builder.ImportBuffer(prefix + "/Bounds", entry.bounds,
                                                         particle::ParticleGpuBounds::BoundsBufferBytes);
+                resources.simulationControl =
+                    builder.ImportBuffer(prefix + "/SimulationControl", entry.simulationControl,
+                                         sizeof(particle::GpuParticleSimulationControl));
                 resources.renderIndices =
                     builder.ImportBuffer(prefix + "/VisibleIndices", culler->VisibleIndexBuffer(), elementBytes);
                 resources.indirectArguments =
                     builder.ImportBuffer(prefix + "/DrawIndirect", culler->DrawIndirectBuffer(), 16);
                 resources.sortDispatchArguments =
-                    builder.ImportBuffer(prefix + "/SortDispatch", culler->SortDispatchBuffer(), 12);
+                    builder.ImportBuffer(prefix + "/SortDispatch", culler->SortDispatchBuffer(),
+                                         sizeof(particle::GpuParticleCullDispatchState));
 
                 m_renderGraph->SetResourceInitialState(resources.instances, rhi::TextureLayout::Undefined,
-                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader,
+                                                       rhi::QueueRole::Compute);
                 m_renderGraph->SetResourceInitialState(resources.sourceIndirectArguments, rhi::TextureLayout::Undefined,
-                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader,
+                                                       rhi::QueueRole::Compute);
+                m_renderGraph->SetResourceInitialState(resources.sourceRenderIndices, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader,
+                                                       rhi::QueueRole::Compute);
                 m_renderGraph->SetResourceInitialState(resources.bounds, rhi::TextureLayout::Undefined,
-                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader);
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader,
+                                                       rhi::QueueRole::Compute);
+                m_renderGraph->SetResourceInitialState(resources.simulationControl, rhi::TextureLayout::Undefined,
+                                                       rhi::Access::ShaderWrite, rhi::PipelineStage::ComputeShader,
+                                                       rhi::QueueRole::Compute);
                 const auto visibleIndexLastStage = entry.semantics.sortMode == particle::ParticleSortMode::None
                                                        ? rhi::PipelineStage::VertexShader
                                                        : rhi::PipelineStage::ComputeShader;
@@ -1977,9 +2384,10 @@ void SceneRenderGraph::BuildRenderGraph()
                                                        : rhi::PipelineStage::DrawIndirect;
                 m_renderGraph->SetResourceInitialState(resources.sortDispatchArguments, rhi::TextureLayout::Undefined,
                                                        sortDispatchLastAccess, sortDispatchLastStage);
-
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
                 builder.ReadStorageBuffer(resources.bounds);
+                resources.simulationControl =
+                    builder.ReadWrite(resources.simulationControl, rhi::PipelineStage::ComputeShader);
                 resources.indirectArguments = builder.WriteStorageBuffer(resources.indirectArguments);
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
                 return [this, culler](vk::RenderContext &ctx) {
@@ -1989,6 +2397,7 @@ void SceneRenderGraph::BuildRenderGraph()
             m_renderGraph->AddComputePass(prefix + "/Cull", [&, culler](vk::PassBuilder &builder) {
                 builder.ReadStorageBuffer(resources.instances);
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
+                builder.ReadStorageBuffer(resources.sourceRenderIndices);
                 builder.ReadIndirectBuffer(resources.sortDispatchArguments);
                 resources.renderIndices = builder.WriteStorageBuffer(resources.renderIndices);
                 resources.indirectArguments =
@@ -2003,8 +2412,9 @@ void SceneRenderGraph::BuildRenderGraph()
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
                 return [culler](vk::RenderContext &ctx) { culler->RecordFinalize(ctx.GetComputeCommandEncoder()); };
             });
-            if (resources.instances.IsValid() && resources.bounds.IsValid() && resources.renderIndices.IsValid() &&
-                resources.indirectArguments.IsValid() && resources.sortDispatchArguments.IsValid()) {
+            if (resources.instances.IsValid() && resources.bounds.IsValid() && resources.simulationControl.IsValid() &&
+                resources.renderIndices.IsValid() && resources.indirectArguments.IsValid() &&
+                resources.sortDispatchArguments.IsValid()) {
                 particleGraphResources.emplace(entry.id, resources);
             }
         }
@@ -2208,7 +2618,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     resources.headers = builder.WriteStorageBuffer(resources.headers);
                     resources.lightMasks = builder.WriteStorageBuffer(resources.lightMasks);
                     return [this, frameIndex](vk::RenderContext &ctx) {
-                        const uint32_t activeFrame = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+                        const uint32_t activeFrame = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
                         if (activeFrame != frameIndex)
                             return;
                         lighting::ForwardPlusGridConstants constants{};
@@ -2247,8 +2657,7 @@ void SceneRenderGraph::BuildRenderGraph()
                         resources.headers = builder.WriteStorageBuffer(resources.headers);
                         resources.lightMasks = builder.WriteStorageBuffer(resources.lightMasks);
                         return [this, frameIndex](vk::RenderContext &ctx) {
-                            const uint32_t activeFrame =
-                                m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
+                            const uint32_t activeFrame = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
                             if (activeFrame != frameIndex)
                                 return;
                             lighting::ForwardPlusGridConstants constants{};
@@ -2280,7 +2689,8 @@ void SceneRenderGraph::BuildRenderGraph()
             MaterialPassPipelineDescriptor particlePass;
             const bool particleSurfacePass = command && command->type == GraphCommandType::DrawRenderers &&
                                              (command->shaderTarget == ShaderCompileTarget::Forward ||
-                                              command->shaderTarget == ShaderCompileTarget::ForwardPlus);
+                                              command->shaderTarget == ShaderCompileTarget::ForwardPlus ||
+                                              command->shaderTarget == ShaderCompileTarget::Motion);
             const bool particleShadowPass = command && command->type == GraphCommandType::DrawShadowCasters &&
                                             command->shaderTarget == ShaderCompileTarget::Shadow;
             if (m_particleDrawRegistry && (particleSurfacePass || particleShadowPass)) {
@@ -2324,46 +2734,6 @@ void SceneRenderGraph::BuildRenderGraph()
                 }
                 return {resourceWidth, resourceHeight, 1};
             };
-
-            if (passDesc.type == GraphPassType::Compute) {
-                m_renderGraph->AddComputePass(passDesc.name, [&](vk::PassBuilder &builder) {
-                    for (const auto &textureName : passDesc.readTextures) {
-                        const auto handle = resolveTextureHandle(textureName);
-                        if (!handle.IsValid())
-                            continue;
-                        const auto texture = texDescMap.find(textureName);
-                        if (texture != texDescMap.end() && texture->second->isDepth)
-                            builder.ReadSampledDepth(handle, rhi::PipelineStage::ComputeShader);
-                        else
-                            builder.Read(handle, rhi::PipelineStage::ComputeShader);
-                    }
-                    for (const auto &access : passDesc.bufferAccesses) {
-                        auto buffer = bufferHandles.find(access.resource);
-                        if (buffer == bufferHandles.end())
-                            continue;
-                        switch (access.type) {
-                        case GraphBufferAccessType::StorageRead:
-                            builder.ReadStorageBuffer(buffer->second);
-                            break;
-                        case GraphBufferAccessType::StorageWrite:
-                            buffer->second = builder.WriteStorageBuffer(buffer->second);
-                            break;
-                        case GraphBufferAccessType::IndirectRead:
-                            builder.ReadIndirectBuffer(buffer->second);
-                            break;
-                        case GraphBufferAccessType::TransferRead:
-                            builder.TransferRead(buffer->second);
-                            break;
-                        case GraphBufferAccessType::TransferWrite:
-                            buffer->second = builder.TransferWrite(buffer->second);
-                            break;
-                        }
-                    }
-                    builder.SetSideEffect(passDesc.sideEffect);
-                    return [](vk::RenderContext &) {};
-                });
-                continue;
-            }
 
             if (passDesc.type == GraphPassType::Copy && command) {
                 if (command->type == GraphCommandType::CopyBuffer) {
@@ -2664,8 +3034,6 @@ void SceneRenderGraph::BuildRenderGraph()
                         // TransferRead / TransferWrite declarations.
                         auto importedColor = m_importedColorTarget;
                         auto importedResolve = m_importedResolveTarget;
-                        VkImage msaaImage = m_sceneTarget->GetMsaaColorImage();
-                        VkImage resolveImage = m_sceneTarget->GetColorImage();
                         uint32_t resolveW = width;
                         uint32_t resolveH = height;
                         std::string resolvePassName =
@@ -2673,21 +3041,17 @@ void SceneRenderGraph::BuildRenderGraph()
                         vk::ResourceHandle resolvedVersion;
 
                         m_renderGraph->AddTransferPass(resolvePassName, [importedColor, importedResolve, resolveW,
-                                                                         resolveH, msaaImage, resolveImage,
+                                                                         resolveH,
                                                                          &resolvedVersion](vk::PassBuilder &builder) {
+                            builder.SetQueueRole(rhi::QueueRole::Graphics);
                             builder.TransferRead(importedColor);
                             resolvedVersion = builder.TransferWrite(importedResolve);
                             builder.SetRenderArea(resolveW, resolveH);
 
-                            return [msaaImage, resolveImage, resolveW, resolveH](vk::RenderContext &ctx) {
-                                VkImageResolve region{};
-                                region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                                region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                                region.extent = {resolveW, resolveH, 1};
-
-                                vkCmdResolveImage(ctx.GetCommandBuffer(), msaaImage,
-                                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, resolveImage,
-                                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                            return [importedColor, resolvedVersion, resolveW, resolveH](vk::RenderContext &ctx) {
+                                ctx.GetTransferCommandEncoder().ResolveTexture(
+                                    ctx.GetTextureHandle(importedColor), ctx.GetTextureHandle(resolvedVersion),
+                                    {rhi::TextureAspect::Color, 0, 0, 0, 0, resolveW, resolveH, 1});
                             };
                         });
                         publishResourceVersion(resolvedVersion);
@@ -2974,20 +3338,25 @@ void SceneRenderGraph::BuildRenderGraph()
                         renderIndices = builder.ImportBuffer(prefix + "/RenderIndices", entry.renderIndices,
                                                              static_cast<uint64_t>(entry.capacity) * sizeof(uint32_t));
                         indirectArguments = builder.ImportBuffer(prefix + "/Indirect", entry.indirectArguments, 16);
-                        m_renderGraph->SetResourceInitialState(instances, rhi::TextureLayout::Undefined,
-                                                               rhi::Access::ShaderWrite,
-                                                               rhi::PipelineStage::ComputeShader);
-                        m_renderGraph->SetResourceInitialState(indirectArguments, rhi::TextureLayout::Undefined,
-                                                               rhi::Access::ShaderWrite,
-                                                               rhi::PipelineStage::ComputeShader);
-                        m_renderGraph->SetResourceInitialState(renderIndices, rhi::TextureLayout::Undefined,
-                                                               rhi::Access::ShaderWrite,
-                                                               rhi::PipelineStage::ComputeShader);
+                        m_renderGraph->SetResourceInitialState(
+                            instances, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                            rhi::PipelineStage::ComputeShader, rhi::QueueRole::Compute);
+                        m_renderGraph->SetResourceInitialState(
+                            indirectArguments, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                            rhi::PipelineStage::ComputeShader, rhi::QueueRole::Compute);
+                        m_renderGraph->SetResourceInitialState(
+                            renderIndices, rhi::TextureLayout::Undefined, rhi::Access::ShaderWrite,
+                            rhi::PipelineStage::ComputeShader, rhi::QueueRole::Compute);
                     }
                     if (!instances.IsValid() || !renderIndices.IsValid() || !indirectArguments.IsValid())
                         continue;
                     builder.ReadStorageBuffer(instances, rhi::PipelineStage::VertexShader);
                     builder.ReadStorageBuffer(renderIndices, rhi::PipelineStage::VertexShader);
+                    if (entry.cullMode == particle::GpuParticleCullMode::RibbonSegments &&
+                        sorted != particleGraphResources.end() && sorted->second.sourceRenderIndices.IsValid() &&
+                        sorted->second.sourceRenderIndices.id != renderIndices.id) {
+                        builder.ReadStorageBuffer(sorted->second.sourceRenderIndices, rhi::PipelineStage::VertexShader);
+                    }
                     uint32_t staticBufferIndex = 0;
                     for (const auto &staticBuffer : entry.renderer->StaticVertexStorageBuffers()) {
                         const std::string name = "GpuParticle/" + std::to_string(entry.id) + "/StaticVertex" +
@@ -3174,6 +3543,7 @@ void SceneRenderGraph::BuildRenderGraph()
                                 particle::GpuParticleViewConstants shadowView;
                                 std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
                                             sizeof(activeShadowView.viewProjection));
+                                shadowView.previousViewProjection = shadowView.viewProjection;
                                 // Particle billboards expand along these axes in
                                 // the vertex shader; the caster pass must face
                                 // the light, not the camera, or the quads
@@ -3204,8 +3574,11 @@ void SceneRenderGraph::BuildRenderGraph()
                     if (!particlePackets.empty()) {
                         particle::GpuParticleViewConstants view;
                         const glm::mat4 viewProjection = m_cachedProj * m_cachedView;
+                        const glm::mat4 previousViewProjection = GetPreviousViewProj();
                         const glm::mat4 inverseView = glm::inverse(m_cachedView);
                         std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
+                        std::memcpy(view.previousViewProjection.data(), &previousViewProjection[0][0],
+                                    sizeof(previousViewProjection));
                         std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
                         std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
                         std::memcpy(view.alignmentReference.data(), &inverseView[3][0], sizeof(glm::vec4));
@@ -3217,10 +3590,11 @@ void SceneRenderGraph::BuildRenderGraph()
                                                                              : rhi::TextureViewHandle{};
                         particle::GpuParticleForwardPlusBindings particleLighting;
                         if (particlePass.target == ShaderCompileTarget::ForwardPlus && m_forwardPlusParticlesRequired) {
-                            const uint32_t frameIndex = m_vkCore->GetSwapchain().GetCurrentFrame() % kMaxFramesInFlight;
-                            if (m_particlePerViewLayout.IsValid() && m_particlePerViewGroups[frameIndex].IsValid()) {
-                                particleLighting.layout = m_particlePerViewLayout;
-                                particleLighting.group = m_particlePerViewGroups[frameIndex];
+                            const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+                            const auto &viewFrame = m_perViewFrames[frameIndex];
+                            if (m_perViewLayout.IsValid() && viewFrame.particleGroup.IsValid()) {
+                                particleLighting.layout = m_perViewLayout;
+                                particleLighting.group = viewFrame.particleGroup;
                             }
                         }
                         for (const auto &packet : particlePackets) {
@@ -3247,6 +3621,7 @@ void SceneRenderGraph::BuildRenderGraph()
             // all scene-size depth texture names so subsequent fullscreen quad
             // passes can reference depth via inputBindings / set_input().
             if (sharedDepth.IsValid()) {
+                m_importedDepthTarget = sharedDepth;
                 for (const auto &tex : m_pythonGraphDesc.textures) {
                     if (tex.isDepth && tex.width == 0 && tex.height == 0 &&
                         customRTHandles.find(tex.name) == customRTHandles.end()) {

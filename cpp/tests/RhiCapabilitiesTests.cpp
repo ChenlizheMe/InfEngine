@@ -7,7 +7,7 @@ using namespace infernux::rhi;
 
 int main()
 {
-    DeviceCapabilities capabilities;
+    DeviceCaps capabilities;
     capabilities.backend = BackendType::Vulkan;
     capabilities.adapterType = AdapterType::Discrete;
     capabilities.SetAdapterName("Test Adapter");
@@ -31,8 +31,8 @@ int main()
     const auto invalidCheck = capabilities.CheckFormat(PixelFormat::Undefined, FormatFeature::Sampled);
     assert(invalidCheck.code == CapabilityDiagnosticCode::InvalidFormat);
 
-    const std::string longName(DeviceCapabilities::AdapterNameCapacity * 2, 'x');
+    const std::string longName(DeviceCaps::AdapterNameCapacity * 2, 'x');
     capabilities.SetAdapterName(longName);
-    assert(capabilities.AdapterName().size() == DeviceCapabilities::AdapterNameCapacity - 1);
+    assert(capabilities.AdapterName().size() == DeviceCaps::AdapterNameCapacity - 1);
     return 0;
 }

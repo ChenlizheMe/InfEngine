@@ -24,6 +24,7 @@
 #include "VkTypes.h"
 #include <array>
 #include <function/renderer/rhi/RhiCapabilities.h>
+#include <function/renderer/rhi/RhiHandles.h>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -213,10 +214,22 @@ class VkDeviceContext
         return m_deviceFeatures;
     }
 
-    [[nodiscard]] const rhi::DeviceCapabilities &GetCapabilities() const noexcept
+    [[nodiscard]] const rhi::DeviceCaps &GetCapabilities() const noexcept
     {
         return m_capabilities;
     }
+
+    [[nodiscard]] VkQueue GetComputeQueue() const
+    {
+        return m_computeQueue;
+    }
+
+    [[nodiscard]] bool HasIndependentComputeQueue() const
+    {
+        return m_hasIndependentComputeQueue;
+    }
+
+    [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept;
 
     /// Query sample support for one concrete image descriptor usage. Format
     /// capabilities expose the generic attachment baseline; render targets
@@ -353,9 +366,11 @@ class VkDeviceContext
 
     // Queue handles (not destroyed - owned by device)
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
+    VkQueue m_computeQueue = VK_NULL_HANDLE;
     VkQueue m_presentQueue = VK_NULL_HANDLE;
     VkQueue m_transferQueue = VK_NULL_HANDLE; ///< Either dedicated DMA queue or alias for m_graphicsQueue
     bool m_hasDedicatedTransferQueue = false; ///< True iff transferFamily != graphicsFamily
+    bool m_hasIndependentComputeQueue = false;
 
     // ========================================================================
     // Device Information Cache
@@ -364,7 +379,7 @@ class VkDeviceContext
     QueueFamilyIndices m_queueIndices{};
     VkPhysicalDeviceProperties m_deviceProperties{};
     VkPhysicalDeviceFeatures m_deviceFeatures{};
-    rhi::DeviceCapabilities m_capabilities{};
+    rhi::DeviceCaps m_capabilities{};
     std::unique_ptr<VulkanRhiDevice> m_rhiDevice;
 
     // Vulkan 1.2 capability flags resolved at device creation. Callers gate

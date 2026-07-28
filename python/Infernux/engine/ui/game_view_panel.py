@@ -29,7 +29,7 @@ from .game_input_policy import should_process_game_ui_events, should_route_game_
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
-from .theme import Theme, ImGuiCol
+from .theme import Theme, ImGuiStyleVar
 from .viewport_utils import capture_viewport_info
 from Infernux.debug import Debug
 
@@ -367,13 +367,15 @@ class GameViewPanel(EditorPanel):
         if abs(old_scale - self._display_scale) > 0.001:
             self._fit_mode = False
             self._save_resolution_settings()
-        ctx.same_line(0, 4)
-        pushed_fit_style = self._fit_mode
-        if pushed_fit_style:
-            ctx.push_style_color(ImGuiCol.Button, *Theme.PLAY_ACTIVE)
-        ctx.button(t("game_view.fit"), self._fit_scale, width=32, height=0)
-        if pushed_fit_style:
-            ctx.pop_style_color(1)
+        ctx.same_line(0, 6)
+        ctx.align_text_to_frame_padding()
+        fit_label = t("game_view.fit")
+        fit_w = max(44.0, ctx.calc_text_width(fit_label) + 12.0)
+        color_count = Theme.push_inline_button_style(ctx, active=self._fit_mode)
+        ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
+        ctx.button(f"{fit_label}##game_view_fit", self._fit_scale, width=fit_w, height=0)
+        ctx.pop_style_var(1)
+        ctx.pop_style_color(color_count)
 
         return target_w, target_h, fit_scale
 

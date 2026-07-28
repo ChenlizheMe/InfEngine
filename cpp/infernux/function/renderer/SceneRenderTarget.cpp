@@ -1,5 +1,6 @@
 #include "SceneRenderTarget.h"
 #include "InxVkCoreModular.h"
+#include "rhi/GpuRetirementQueue.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkRenderUtils.h"
 #include <array>
@@ -21,6 +22,50 @@ inline void SafeDestroyVmaImage(VmaAllocator allocator, VkImage &image, VmaAlloc
         alloc = VK_NULL_HANDLE;
     }
 }
+
+struct RetiredSceneRenderTargetResources
+{
+    VkDevice device = VK_NULL_HANDLE;
+    VmaAllocator allocator = VK_NULL_HANDLE;
+
+    VkDescriptorSet imguiDescriptorSet = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkSampler outlineMaskSampler = VK_NULL_HANDLE;
+
+    VkImageView outlineMaskImageView = VK_NULL_HANDLE;
+    VkImageView msaaColorImageView = VK_NULL_HANDLE;
+    VkImageView depthImageView = VK_NULL_HANDLE;
+    VkImageView colorImageView = VK_NULL_HANDLE;
+
+    VkImage outlineMaskImage = VK_NULL_HANDLE;
+    VmaAllocation outlineMaskAllocation = VK_NULL_HANDLE;
+    VkImage msaaColorImage = VK_NULL_HANDLE;
+    VmaAllocation msaaColorAllocation = VK_NULL_HANDLE;
+    VkImage depthImage = VK_NULL_HANDLE;
+    VmaAllocation depthAllocation = VK_NULL_HANDLE;
+    VkImage colorImage = VK_NULL_HANDLE;
+    VmaAllocation colorAllocation = VK_NULL_HANDLE;
+
+    void Destroy()
+    {
+        if (imguiDescriptorSet != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(imguiDescriptorSet);
+            imguiDescriptorSet = VK_NULL_HANDLE;
+        }
+
+        vkrender::SafeDestroy(device, sampler);
+        vkrender::SafeDestroy(device, outlineMaskSampler);
+        vkrender::SafeDestroy(device, outlineMaskImageView);
+        vkrender::SafeDestroy(device, msaaColorImageView);
+        vkrender::SafeDestroy(device, depthImageView);
+        vkrender::SafeDestroy(device, colorImageView);
+
+        SafeDestroyVmaImage(allocator, outlineMaskImage, outlineMaskAllocation);
+        SafeDestroyVmaImage(allocator, msaaColorImage, msaaColorAllocation);
+        SafeDestroyVmaImage(allocator, depthImage, depthAllocation);
+        SafeDestroyVmaImage(allocator, colorImage, colorAllocation);
+    }
+};
 
 } // anonymous namespace
 
@@ -60,19 +105,6 @@ bool SceneRenderTarget::Initialize(uint32_t width, uint32_t height)
         CleanupResources();
         return false;
     }
-}
-
-void SceneRenderTarget::Resize(uint32_t width, uint32_t height)
-{
-    if (width == m_width && height == m_height) {
-        return;
-    }
-
-    // Wait for device to be idle before recreating resources
-    m_vkCore->GetDeviceContext().WaitIdle();
-
-    CleanupResources();
-    Initialize(width, height);
 }
 
 VkFormat SceneRenderTarget::GetDepthFormat() const
@@ -289,9 +321,71 @@ void SceneRenderTarget::CleanupResources()
     m_isInitialized = false;
 }
 
+bool SceneRenderTarget::HasOwnedResources() const noexcept
+{
+    return m_imguiDescriptorSet != VK_NULL_HANDLE || m_sampler != VK_NULL_HANDLE ||
+           m_outlineMaskSampler != VK_NULL_HANDLE || m_outlineMaskImageView != VK_NULL_HANDLE ||
+           m_outlineMaskImage != VK_NULL_HANDLE || m_outlineMaskAllocation != VK_NULL_HANDLE ||
+           m_msaaColorImageView != VK_NULL_HANDLE || m_msaaColorImage != VK_NULL_HANDLE ||
+           m_msaaColorAllocation != VK_NULL_HANDLE || m_depthImageView != VK_NULL_HANDLE ||
+           m_depthImage != VK_NULL_HANDLE || m_depthAllocation != VK_NULL_HANDLE ||
+           m_colorImageView != VK_NULL_HANDLE || m_colorImage != VK_NULL_HANDLE || m_colorAllocation != VK_NULL_HANDLE;
+}
+
+void SceneRenderTarget::RetireResourcesAfter(GpuRetirementQueue &retirementQueue,
+                                             rhi::SubmissionSerial retirementSerial)
+{
+    if (!HasOwnedResources()) {
+        m_width = 0;
+        m_height = 0;
+        m_isInitialized = false;
+        return;
+    }
+
+    RetiredSceneRenderTargetResources resources{};
+    resources.device = m_vkCore->GetDevice();
+    resources.allocator = m_vkCore->GetDeviceContext().GetVmaAllocator();
+    resources.imguiDescriptorSet = m_imguiDescriptorSet;
+    resources.sampler = m_sampler;
+    resources.outlineMaskSampler = m_outlineMaskSampler;
+    resources.outlineMaskImageView = m_outlineMaskImageView;
+    resources.msaaColorImageView = m_msaaColorImageView;
+    resources.depthImageView = m_depthImageView;
+    resources.colorImageView = m_colorImageView;
+    resources.outlineMaskImage = m_outlineMaskImage;
+    resources.outlineMaskAllocation = m_outlineMaskAllocation;
+    resources.msaaColorImage = m_msaaColorImage;
+    resources.msaaColorAllocation = m_msaaColorAllocation;
+    resources.depthImage = m_depthImage;
+    resources.depthAllocation = m_depthAllocation;
+    resources.colorImage = m_colorImage;
+    resources.colorAllocation = m_colorAllocation;
+
+    retirementQueue.RetireAfter(retirementSerial, [resources]() mutable { resources.Destroy(); });
+
+    m_imguiDescriptorSet = VK_NULL_HANDLE;
+    m_sampler = VK_NULL_HANDLE;
+    m_outlineMaskSampler = VK_NULL_HANDLE;
+    m_outlineMaskImageView = VK_NULL_HANDLE;
+    m_outlineMaskImage = VK_NULL_HANDLE;
+    m_outlineMaskAllocation = VK_NULL_HANDLE;
+    m_msaaColorImageView = VK_NULL_HANDLE;
+    m_msaaColorImage = VK_NULL_HANDLE;
+    m_msaaColorAllocation = VK_NULL_HANDLE;
+    m_depthImageView = VK_NULL_HANDLE;
+    m_depthImage = VK_NULL_HANDLE;
+    m_depthAllocation = VK_NULL_HANDLE;
+    m_colorImageView = VK_NULL_HANDLE;
+    m_colorImage = VK_NULL_HANDLE;
+    m_colorAllocation = VK_NULL_HANDLE;
+    m_width = 0;
+    m_height = 0;
+    m_isInitialized = false;
+}
+
 void SceneRenderTarget::Cleanup()
 {
-    if (m_vkCore && m_vkCore->GetDevice() != VK_NULL_HANDLE) {
+    if (m_vkCore && m_vkCore->GetDevice() != VK_NULL_HANDLE && HasOwnedResources()) {
         if (!m_vkCore->IsShuttingDown()) {
             m_vkCore->GetDeviceContext().WaitIdle();
         }

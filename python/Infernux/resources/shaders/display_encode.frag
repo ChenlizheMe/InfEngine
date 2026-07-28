@@ -1,8 +1,20 @@
 #version 450
-@shader_id: Display Encode
-@hidden
 
-@import: Lib Color
+ShaderInfo {
+    Name "Display Encode"
+    Hidden On
+    Imports ["Lib Color"]
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Built-in display encode — the final image pass of every RenderStack
 // pipeline (inserted automatically by the render graph).
@@ -11,11 +23,6 @@
 // sRGB encoding, so the graph explicitly encodes linear scene color to sRGB
 // here. Scene rendering, post-process effects and tone mapping all operate
 // in linear space; this pass is the single place where gamma is applied.
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 void main() {
     vec4 source = texture(_SourceTex, inUV);

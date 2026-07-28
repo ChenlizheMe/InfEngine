@@ -19,6 +19,7 @@ struct ParticleInstance {
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer IndirectArguments {

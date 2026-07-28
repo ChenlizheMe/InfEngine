@@ -1,7 +1,7 @@
-@shader_id: Lib Screen Utils
-
-@import: Lib Camera
-@import: Lib Depth
+ShaderInfo {
+    Name "Lib Screen Utils"
+    Imports ["Lib Camera", "Lib Depth"]
+}
 
 // ============================================================================
 // lib/screen_utils.glsl — Screen-space & camera utility toolkit
@@ -9,7 +9,7 @@
 // Aggregates screen-space and camera-related libraries.
 // Requires: InfGlobals UBO (_Globals at set 2, binding 0).
 //
-// Usage: @import: Lib Screen Utils
+// Usage: ShaderInfo Imports: Lib Screen Utils
 //
 // Includes:
 //   lib/camera  — getScreenUV, getPixelCoord, getCameraPosition,

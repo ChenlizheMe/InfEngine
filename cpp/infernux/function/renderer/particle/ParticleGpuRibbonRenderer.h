@@ -23,6 +23,8 @@ struct GpuParticleRibbonRenderShaderSources
     [[nodiscard]] static std::string_view Vertex() noexcept;
     [[nodiscard]] static std::string_view Fragment() noexcept;
     [[nodiscard]] static std::string_view PickingFragment() noexcept;
+    [[nodiscard]] static std::string_view MotionVertex() noexcept;
+    [[nodiscard]] static std::string_view MotionFragment() noexcept;
 };
 
 struct GpuParticleRibbonRenderProgram
@@ -30,13 +32,15 @@ struct GpuParticleRibbonRenderProgram
     ShaderBytecode vertex;
     ShaderBytecode fragment;
     ShaderBytecode pickingFragment;
+    ShaderBytecode motionVertex;
+    ShaderBytecode motionFragment;
 
     [[nodiscard]] bool IsValid() const noexcept;
 };
 
 struct GpuParticleRibbonRenderProgramStorage
 {
-    std::array<std::vector<uint32_t>, 3> shaders;
+    std::array<std::vector<uint32_t>, 5> shaders;
 
     [[nodiscard]] bool Assign(const GpuParticleRibbonRenderProgram &program);
     [[nodiscard]] bool IsValid() const noexcept;
@@ -128,6 +132,8 @@ class ParticleGpuRibbonRenderer final : public ParticleGpuOutputRenderer
     rhi::ShaderModuleHandle m_vertexShader;
     rhi::ShaderModuleHandle m_fragmentShader;
     rhi::ShaderModuleHandle m_pickingFragmentShader;
+    rhi::ShaderModuleHandle m_motionVertexShader;
+    rhi::ShaderModuleHandle m_motionFragmentShader;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
     std::vector<ViewGroup> m_viewGroups;

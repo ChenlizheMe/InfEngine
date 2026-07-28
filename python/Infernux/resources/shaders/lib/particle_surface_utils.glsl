@@ -1,6 +1,7 @@
-@shader_id: Lib Particle Surface Utils
-
-@import: Lib Normal Utils
+ShaderInfo {
+    Name "Lib Particle Surface Utils"
+    Imports ["Lib Normal Utils"]
+}
 
 // Surface helpers shared by billboard and mesh particle materials. Particle
 // programs own their view state through ParticleViewConstants, so this library

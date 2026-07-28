@@ -55,15 +55,18 @@ from Infernux.renderstack._pipeline_common import (
     GBUFFER_MATERIAL_TEXTURE,
     GBUFFER_NORMAL_TEXTURE,
     GBUFFER_RESOURCES,
+    POST_PROCESS_RESOURCES,
     SCENE_RESOURCES,
     SHADOW_MAP_TEXTURE,
     add_shadow_caster_pass,
     add_skybox_pass,
+    add_motion_vector_pass,
     add_standard_post_process_section,
     add_transparent_pass,
     create_deferred_gbuffer,
     create_main_scene_targets,
     opaque_queue_range,
+    transparent_queue_range,
 )
 
 if TYPE_CHECKING:
@@ -134,7 +137,11 @@ class DefaultDeferredPipeline(RenderPipeline):
         shadow_res = self.shadow_resolution
 
         # ---- GBuffer textures (MRT) ----
-        create_main_scene_targets(graph, shadow_resolution=shadow_res)
+        create_main_scene_targets(
+            graph,
+            shadow_resolution=shadow_res,
+            msaa_samples=1,
+        )
         create_deferred_gbuffer(graph)
 
         # ---- Pass 0: Shadow casters ----
@@ -156,6 +163,13 @@ class DefaultDeferredPipeline(RenderPipeline):
                 sort_mode="front_to_back",
                 material_pass="gbuffer",
             )
+
+        add_motion_vector_pass(
+            graph,
+            name="OpaqueMotionPass",
+            queue_range=opaque_queue_range(),
+            clear=True,
+        )
 
         graph.injection_point("after_gbuffer", resources=GBUFFER_RESOURCES)
         graph.effects(
@@ -207,6 +221,12 @@ class DefaultDeferredPipeline(RenderPipeline):
 
         # ---- Pass 4: Transparent objects (Forward+ rendering) ----
         add_transparent_pass(graph, material_pass="forward_plus")
+        add_motion_vector_pass(
+            graph,
+            name="TransparentMotionPass",
+            queue_range=transparent_queue_range(),
+            sort_mode="back_to_front",
+        )
         graph.injection_point("after_transparent", resources=SCENE_RESOURCES)
         graph.effects(
             "after_transparent",
@@ -221,7 +241,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             "final",
             scope="composite",
             display_name="Final Post Processing",
-            inputs={"color"},
+            inputs=POST_PROCESS_RESOURCES,
             outputs={"color"},
             capabilities={"fullscreen", "hdr_to_display"},
         )

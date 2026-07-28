@@ -1,8 +1,26 @@
 #version 450
-@shader_id: Color Adjustments
-@hidden
 
-@import: Lib Utils
+ShaderInfo {
+    Name "Color Adjustments"
+    Hidden On
+    Imports ["Lib Utils"]
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _SourceTex
+    }
+    PushConstants pc {
+        Float postExposure
+        Float contrast
+        Float saturation
+        Float hueShift
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Color Adjustments post-process — Brightness, Contrast, Saturation, Hue Shift.
 // Matches Unity URP Color Adjustments parameters.
@@ -12,18 +30,6 @@
 //   [1] contrast       — contrast (-100 to 100, 0 = no change)
 //   [2] saturation     — saturation (-100 to 100, 0 = no change)
 //   [3] hueShift       — hue rotation in degrees (-180 to 180)
-
-layout(set = 0, binding = 0) uniform sampler2D _SourceTex;
-
-layout(push_constant) uniform PushConstants {
-    float postExposure;
-    float contrast;
-    float saturation;
-    float hueShift;
-} pc;
-
-layout(location = 0) in  vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 // ---- Alexa LogC (El 1000) — matches Unity URP's contrast space ----
 // URP applies contrast in LogC space around ACEScc_MIDGRAY (0.4135884).

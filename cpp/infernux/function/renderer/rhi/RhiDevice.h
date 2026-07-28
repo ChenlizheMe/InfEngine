@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RhiCapabilities.h"
 #include "RhiDescriptors.h"
 
 #include <cstdint>
@@ -13,6 +14,16 @@ class Device
 {
   public:
     virtual ~Device() = default;
+
+    [[nodiscard]] virtual DeviceId GetDeviceId() const noexcept
+    {
+        return InvalidDeviceId;
+    }
+    [[nodiscard]] virtual const DeviceCaps &GetCapabilities() const noexcept
+    {
+        static const DeviceCaps empty{};
+        return empty;
+    }
 
     [[nodiscard]] virtual BufferHandle CreateBuffer(const BufferDesc &desc) = 0;
     [[nodiscard]] virtual TextureHandle CreateTexture(const TextureDesc &desc) = 0;

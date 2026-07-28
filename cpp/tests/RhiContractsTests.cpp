@@ -1,7 +1,10 @@
+#include <function/renderer/rhi/RenderSubmissionPlan.h>
 #include <function/renderer/rhi/RhiCommand.h>
 
 #include <cassert>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 using namespace infernux::rhi;
 
@@ -29,6 +32,9 @@ struct RecordedCommands
     TextureHandle copySourceTexture;
     TextureHandle copyDestinationTexture;
     TextureCopyRegion textureCopy;
+    TextureHandle resolveSourceTexture;
+    TextureHandle resolveDestinationTexture;
+    TextureResolveRegion textureResolve;
 };
 
 void BindPipeline(void *context, GraphicsPipelineHandle pipeline)
@@ -104,6 +110,14 @@ void CopyTexture(void *context, TextureHandle source, TextureHandle destination,
     recorded.textureCopy = region;
 }
 
+void ResolveTexture(void *context, TextureHandle source, TextureHandle destination, const TextureResolveRegion &region)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.resolveSourceTexture = source;
+    recorded.resolveDestinationTexture = destination;
+    recorded.textureResolve = region;
+}
+
 } // namespace
 
 int main()
@@ -166,11 +180,13 @@ int main()
     const BufferHandle copyDestinationBuffer{12, 1};
     const TextureHandle copySourceTexture{13, 1};
     const TextureHandle copyDestinationTexture{14, 1};
-    const TransferCommandEncoder::DispatchTable transferDispatch{CopyBuffer, CopyTexture};
+    const TransferCommandEncoder::DispatchTable transferDispatch{CopyBuffer, CopyTexture, ResolveTexture};
     const TransferCommandEncoder transferEncoder(&recorded, &transferDispatch);
     transferEncoder.CopyBuffer(copySourceBuffer, copyDestinationBuffer, {16, 32, 128});
     transferEncoder.CopyTexture(copySourceTexture, copyDestinationTexture,
                                 {TextureAspect::Depth, 1, 2, 3, 4, 64, 32, 1});
+    transferEncoder.ResolveTexture(copySourceTexture, copyDestinationTexture,
+                                   {TextureAspect::Color, 0, 1, 0, 2, 128, 64, 1});
     assert(recorded.copySourceBuffer == copySourceBuffer);
     assert(recorded.copyDestinationBuffer == copyDestinationBuffer);
     assert(recorded.bufferCopy.sourceOffset == 16);
@@ -183,6 +199,12 @@ int main()
     assert(recorded.textureCopy.destinationLayer == 4);
     assert(recorded.textureCopy.width == 64);
     assert(recorded.textureCopy.height == 32);
+    assert(recorded.resolveSourceTexture == copySourceTexture);
+    assert(recorded.resolveDestinationTexture == copyDestinationTexture);
+    assert(recorded.textureResolve.sourceLayer == 1);
+    assert(recorded.textureResolve.destinationLayer == 2);
+    assert(recorded.textureResolve.width == 128);
+    assert(recorded.textureResolve.height == 64);
 
     GraphicsPipelineDesc desc;
     desc.vertexShader = {1, 1};
@@ -235,5 +257,90 @@ int main()
     groupDesc.textureCount = 1;
     assert(groupDesc.textures[0].texture.IsValid());
     assert(groupDesc.textures[0].sampler.IsValid());
+
+    const DeviceId planDevice = 3;
+    const RenderViewId planView = 9;
+    const std::vector<SubmissionWorkItem> workItems = {
+        {0, planDevice, QueueRole::Graphics, SubmissionDomain::Frame, planView, PipelineStage::ColorOutput, {}},
+        {1, planDevice, QueueRole::Compute, SubmissionDomain::Frame, planView, PipelineStage::ComputeShader, {0}},
+        {2, planDevice, QueueRole::Compute, SubmissionDomain::Frame, planView, PipelineStage::ComputeShader, {1}},
+        {3, planDevice, QueueRole::Graphics, SubmissionDomain::Frame, planView, PipelineStage::FragmentShader, {2}},
+        {4, planDevice, QueueRole::Transfer, SubmissionDomain::Background, planView, PipelineStage::Transfer, {0}},
+    };
+    SubmissionPlan plan;
+    std::string planError;
+    assert(BuildSubmissionPlan(workItems, plan, planError));
+    assert(plan.batches.size() == 4);
+    assert((plan.batches[0].workItems == std::vector<uint32_t>{0}));
+    assert((plan.batches[1].workItems == std::vector<uint32_t>{1, 2}));
+    assert(plan.batches[1].waitsFor.size() == 1 && plan.batches[1].waitsFor[0].sourceBatch == 0);
+    assert(plan.batches[2].queuePredecessor == 0);
+    assert(plan.batches[2].waitsFor.size() == 1 && plan.batches[2].waitsFor[0].sourceBatch == 1);
+    assert(plan.batches[3].waitsFor.size() == 1 && plan.batches[3].waitsFor[0].sourceBatch == 0);
+
+    auto forcedBoundary = workItems;
+    forcedBoundary[2].forceBatchBoundary = true;
+    assert(BuildSubmissionPlan(forcedBoundary, plan, planError));
+    assert(plan.batches.size() == 5);
+    assert((plan.batches[1].workItems == std::vector<uint32_t>{1}));
+    assert((plan.batches[2].workItems == std::vector<uint32_t>{2}));
+    assert(plan.batches[2].queuePredecessor == 1);
+
+    auto invalidOrder = workItems;
+    invalidOrder[0].dependencies = {4};
+    assert(!BuildSubmissionPlan(invalidOrder, plan, planError));
+    assert(!planError.empty());
+
+    auto crossDevice = workItems;
+    crossDevice[1].device = 4;
+    assert(!BuildSubmissionPlan(crossDevice, plan, planError));
+    assert(planError.find("crosses devices") != std::string::npos);
+
+    SubmissionPlan nestedPlan;
+    const std::vector<SubmissionWorkItem> nestedWork = {
+        {30, planDevice, QueueRole::Compute, SubmissionDomain::Frame, planView, PipelineStage::ComputeShader, {}},
+        {31, planDevice, QueueRole::Graphics, SubmissionDomain::Frame, planView, PipelineStage::VertexShader, {30}},
+        {32, planDevice, QueueRole::Graphics, SubmissionDomain::Frame, planView, PipelineStage::FragmentShader, {31}},
+    };
+    assert(BuildSubmissionPlan(nestedWork, nestedPlan, planError));
+
+    SubmissionPlanComposer composer;
+    const uint32_t setup = composer.AddWork(planDevice, QueueRole::Graphics, SubmissionDomain::Frame,
+                                            InvalidRenderViewId, PipelineStage::AllGraphics);
+    const auto imported = composer.Append(nestedPlan, {setup});
+    assert(imported.workItems.size() == nestedPlan.batches.size());
+    assert(imported.roots.size() == 1);
+    assert(imported.terminals.size() == 1);
+    assert(composer.Build(plan, planError));
+    assert(plan.batches.size() == 1 + nestedPlan.batches.size());
+    assert(plan.batches[1].queue == QueueRole::Compute);
+    assert(!plan.batches[1].waitsFor.empty());
+    assert(plan.batches[1].waitsFor.front().sourceBatch == 0);
+    assert(plan.batches[2].queue == QueueRole::Graphics);
+    assert(!plan.batches[2].waitsFor.empty());
+    assert(plan.batches[2].waitsFor.front().sourceBatch == 1);
+
+    const std::vector<SubmissionWorkItem> parallelWork = {
+        {100, planDevice, QueueRole::Graphics, SubmissionDomain::Frame, planView, PipelineStage::AllGraphics, {}},
+        {101, planDevice, QueueRole::Compute, SubmissionDomain::Frame, planView, PipelineStage::ComputeShader, {100}},
+        {102, planDevice, QueueRole::Graphics, SubmissionDomain::Frame, planView, PipelineStage::AllGraphics, {101}},
+        {103,
+         planDevice,
+         QueueRole::Compute,
+         SubmissionDomain::Frame,
+         InvalidRenderViewId,
+         PipelineStage::ComputeShader,
+         {}},
+    };
+    assert(BuildSubmissionPlan(parallelWork, plan, planError));
+    const SubmissionPlanStatistics statistics = AnalyzeSubmissionPlan(plan);
+    assert(statistics.batchCount == 4);
+    assert(statistics.graphicsBatchCount == 2);
+    assert(statistics.computeBatchCount == 2);
+    assert(statistics.crossQueueDependencyCount == 2);
+    // Logical Compute work is serialized on its own queue. The final Compute
+    // batch can overlap only the final Graphics batch after their shared
+    // predecessor completes.
+    assert(statistics.unorderedComputeGraphicsPairCount == 1);
     return 0;
 }

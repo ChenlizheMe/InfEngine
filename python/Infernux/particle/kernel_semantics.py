@@ -7,7 +7,13 @@ from enum import Enum
 import math
 from typing import Any, Mapping, Sequence
 
-from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import (
+    AssetReference,
+    CoordinateSpace,
+    PORTABLE_TYPE_SYSTEM,
+    TypeRef,
+    ValueType,
+)
 from Infernux.graph.ramp import Curve, Gradient
 
 
@@ -62,6 +68,7 @@ _SHAPE_IMMEDIATES = frozenset(
 KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "constant": KernelOpcodeSpec(True, 0, frozenset({"value"})),
     "load_attribute": KernelOpcodeSpec(True, 0, frozenset({"attribute"})),
+    "load_parameter": KernelOpcodeSpec(True, 0, frozenset({"parameter"})),
     "store_attribute": KernelOpcodeSpec(False, 1, frozenset({"attribute"})),
     "load_uniform": KernelOpcodeSpec(True, 0, frozenset({"name"})),
     "event_payload": KernelOpcodeSpec(
@@ -70,6 +77,11 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         frozenset({"channel_index", "word_offset", "word_count", "default"}),
         _INIT_ONLY,
     ),
+    "numeric_resize": KernelOpcodeSpec(True, 1),
+    "compose_vec2": KernelOpcodeSpec(True, 2),
+    "compose_vec3": KernelOpcodeSpec(True, 3),
+    "compose_vec4": KernelOpcodeSpec(True, 4),
+    "split_component": KernelOpcodeSpec(True, 1, frozenset({"component"})),
     "add": KernelOpcodeSpec(True, 2),
     "subtract": KernelOpcodeSpec(True, 2),
     "multiply": KernelOpcodeSpec(True, 2),
@@ -80,16 +92,11 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "random_f32": KernelOpcodeSpec(True, 3, frozenset({"random_slot"})),
     "sample_curve": KernelOpcodeSpec(True, 1, frozenset({"curve"})),
     "sample_gradient": KernelOpcodeSpec(True, 1, frozenset({"gradient"})),
+    "sample_texture2d": KernelOpcodeSpec(True, 2),
     "value_noise_3d": KernelOpcodeSpec(True, 3),
     "vector_noise_3d": KernelOpcodeSpec(True, 3),
     "sample_shape_position": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
     "sample_shape_direction": KernelOpcodeSpec(True, 0, _SHAPE_IMMEDIATES, _INIT_ONLY),
-    "sample_point_cache": KernelOpcodeSpec(
-        True,
-        1,
-        frozenset({"interface", "channel", "lookup", "semantic"}),
-        _ALL_STAGES,
-    ),
     "sample_vector_field": KernelOpcodeSpec(
         True,
         1,
@@ -100,7 +107,13 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "less_equal": KernelOpcodeSpec(True, 2),
     "greater_than": KernelOpcodeSpec(True, 2),
     "greater_equal": KernelOpcodeSpec(True, 2),
+    "equal": KernelOpcodeSpec(True, 2),
+    "not_equal": KernelOpcodeSpec(True, 2),
+    "logical_and": KernelOpcodeSpec(True, 2),
+    "logical_or": KernelOpcodeSpec(True, 2),
     "logical_not": KernelOpcodeSpec(True, 1),
+    "begin_if": KernelOpcodeSpec(False, 1),
+    "end_if": KernelOpcodeSpec(False, 0),
     "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
     "event_append": KernelOpcodeSpec(
         False,
@@ -122,6 +135,19 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
         True,
         5,
         frozenset({"interface", "inverted"}),
+        _UPDATE_ONLY,
+    ),
+    "collide_scene": KernelOpcodeSpec(
+        False,
+        7,
+        frozenset(
+            {
+                "position_attribute",
+                "velocity_attribute",
+                "hit_attribute",
+                "normal_attribute",
+            }
+        ),
         _UPDATE_ONLY,
     ),
     "export_attribute": KernelOpcodeSpec(
@@ -301,6 +327,9 @@ def _validate_opcode_types(
     bool_type = TypeRef(ValueType.BOOL)
     if opcode == "constant":
         _validate_literal(result_type, immediates["value"])
+    elif opcode == "load_parameter":
+        if type(immediates["parameter"]) is not str or not immediates["parameter"]:
+            raise KernelSemanticError("kernel parameter id cannot be empty")
     elif opcode == "load_uniform":
         expected = KERNEL_RUNTIME_UNIFORMS.get(immediates["name"])
         if expected is None or result_type != expected:
@@ -324,6 +353,40 @@ def _validate_opcode_types(
         if expected_words is None or immediates["word_count"] != expected_words:
             raise KernelSemanticError("kernel event payload result layout is invalid")
         _validate_literal(result_type, immediates["default"])
+    elif opcode == "numeric_resize":
+        if (
+            result_type is None
+            or len(operands) != 1
+            or not PORTABLE_TYPE_SYSTEM.can_resize_numeric(operands[0], result_type)
+        ):
+            raise KernelSemanticError(
+                "kernel numeric_resize requires one compatible numeric operand"
+            )
+    elif opcode in {"compose_vec2", "compose_vec3", "compose_vec4"}:
+        dimension = int(opcode[-1])
+        expected_type = TypeRef(getattr(ValueType, f"VEC{dimension}"))
+        if result_type != expected_type or operands != (f32,) * dimension:
+            raise KernelSemanticError(
+                f"kernel {opcode} requires {dimension} f32 inputs and a vec{dimension} result"
+            )
+    elif opcode == "split_component":
+        component = immediates["component"]
+        dimensions = {
+            ValueType.VEC2: 2,
+            ValueType.VEC3: 3,
+            ValueType.VEC4: 4,
+            ValueType.COLOR: 4,
+        }
+        dimension = dimensions.get(operands[0].value_type) if len(operands) == 1 else None
+        if (
+            result_type != f32
+            or type(component) is not int
+            or dimension is None
+            or not 0 <= component < dimension
+        ):
+            raise KernelSemanticError(
+                "kernel split_component requires one vector and an in-range component"
+            )
     elif opcode in {"add", "subtract", "divide"}:
         if result_type is None or not all(
             _matches_numeric_result(operand, result_type) for operand in operands
@@ -387,6 +450,14 @@ def _validate_opcode_types(
             Gradient.from_dict(immediates["gradient"])
         except (TypeError, ValueError) as exc:
             raise KernelSemanticError(f"invalid gradient literal: {exc}") from exc
+    elif opcode == "sample_texture2d":
+        if result_type != TypeRef(ValueType.COLOR) or operands != (
+            TypeRef(ValueType.TEXTURE2D),
+            TypeRef(ValueType.VEC2),
+        ):
+            raise KernelSemanticError(
+                "Texture2D sampling requires a Texture2D, vec2 UV and color result"
+            )
     elif opcode in {"value_noise_3d", "vector_noise_3d"}:
         if (
             len(operands) != 3
@@ -438,40 +509,6 @@ def _validate_opcode_types(
             _validate_u32(random_slot, "random_slot")
         if len(set(random_slots)) != len(random_slots):
             raise KernelSemanticError("kernel shape sampling random slots must be unique")
-    elif opcode == "sample_point_cache":
-        if operands != (TypeRef(ValueType.U32),):
-            raise KernelSemanticError("point cache sampling requires one u32 index or stable ID")
-        if result_type is None or result_type.value_type not in {
-            ValueType.F32,
-            ValueType.U32,
-            ValueType.VEC2,
-            ValueType.VEC3,
-            ValueType.VEC4,
-            ValueType.COLOR,
-        }:
-            raise KernelSemanticError("point cache sampling has an unsupported result type")
-        if any(
-            type(immediates[name]) is not str or not immediates[name].strip()
-            for name in ("interface", "channel")
-        ):
-            raise KernelSemanticError("point cache interface and channel names cannot be empty")
-        if immediates["lookup"] not in {"index", "stable_id"}:
-            raise KernelSemanticError("point cache lookup must use index or stable_id")
-        if immediates["semantic"] not in {
-            "raw",
-            "position",
-            "direction",
-            "vector",
-            "normal",
-        }:
-            raise KernelSemanticError("point cache sample semantic is invalid")
-        if immediates["semantic"] == "raw":
-            if result_type.space is not CoordinateSpace.NONE:
-                raise KernelSemanticError("raw point cache samples cannot carry a coordinate space")
-        elif result_type != TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION):
-            raise KernelSemanticError(
-                "transformed point cache samples must produce a simulation-space vec3"
-            )
     elif opcode == "sample_vector_field":
         simulation_vector = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
         if operands != (simulation_vector,) or result_type != simulation_vector:
@@ -480,16 +517,25 @@ def _validate_opcode_types(
             )
         if type(immediates["interface"]) is not str or not immediates["interface"].strip():
             raise KernelSemanticError("vector field interface cannot be empty")
-    elif opcode in {"less_than", "less_equal", "greater_than", "greater_equal"}:
+    elif opcode in {"less_than", "less_equal", "greater_than", "greater_equal", "equal", "not_equal"}:
         if result_type != bool_type or operands[0] != operands[1] or operands[0].value_type not in {
             ValueType.I32,
             ValueType.U32,
             ValueType.F32,
         }:
             raise KernelSemanticError(f"kernel {opcode} requires matching scalar operands")
+    elif opcode in {"logical_and", "logical_or"}:
+        if result_type != bool_type or operands != (bool_type, bool_type):
+            raise KernelSemanticError(f"kernel {opcode} requires and produces bool values")
     elif opcode == "logical_not":
         if result_type != bool_type or operands != (bool_type,):
             raise KernelSemanticError("kernel logical_not requires and produces one bool")
+    elif opcode == "begin_if":
+        if operands != (bool_type,):
+            raise KernelSemanticError("kernel begin_if requires one bool operand")
+    elif opcode == "end_if":
+        if operands:
+            raise KernelSemanticError("kernel end_if cannot have operands")
     elif opcode == "kill_if":
         if operands != (bool_type,):
             raise KernelSemanticError("kernel kill_if requires one bool operand")
@@ -592,6 +638,31 @@ def _validate_opcode_types(
             raise KernelSemanticError("SDF collision interface cannot be empty")
         if type(immediates["inverted"]) is not bool:
             raise KernelSemanticError("SDF collision inverted must be a boolean")
+    elif opcode == "collide_scene":
+        simulation_vec3 = TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION)
+        if operands != (
+            simulation_vec3,
+            simulation_vec3,
+            f32,
+            TypeRef(ValueType.U32),
+            bool_type,
+            f32,
+            f32,
+        ):
+            raise KernelSemanticError(
+                "kernel collide_scene requires simulation-space position and velocity, "
+                "particle radius, layer mask, trigger flag, restitution scale and friction scale"
+            )
+        for name in (
+            "position_attribute",
+            "velocity_attribute",
+            "hit_attribute",
+            "normal_attribute",
+        ):
+            if type(immediates[name]) is not str:
+                raise KernelSemanticError(
+                    f"kernel collide_scene {name} must be an attribute ID string"
+                )
     elif opcode == "convert_space":
         if result_type is None or operands[0].value_type != result_type.value_type:
             raise KernelSemanticError("kernel space conversion must preserve value type")

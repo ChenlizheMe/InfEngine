@@ -78,6 +78,83 @@ def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
     assert transparent._sort_mode == "back_to_front"
 
 
+def test_default_pipelines_publish_depth_tested_motion_for_both_queue_domains():
+    from Infernux.rendergraph.graph import Format, RenderGraph
+
+    for pipeline in (DefaultForwardPipeline(), DefaultDeferredPipeline()):
+        graph = RenderGraph(type(pipeline).__name__)
+        pipeline.define_topology(graph)
+
+        motion = graph.get_texture("motion")
+        assert motion is not None
+        assert motion.format == Format.RG16_SFLOAT
+        assert motion.samples == 1
+        multisampled = isinstance(pipeline, DefaultForwardPipeline)
+        motion_target = "_motion_msaa" if multisampled else "motion"
+        if multisampled:
+            assert graph.get_texture(motion_target).samples == 4
+
+        passes = {
+            render_pass.name: render_pass
+            for render_pass in graph._passes
+            if render_pass._material_pass == "motion"
+        }
+        assert list(passes) == ["OpaqueMotionPass", "TransparentMotionPass"]
+        assert passes["OpaqueMotionPass"]._reads == ["depth"]
+        assert passes["OpaqueMotionPass"]._write_colors == {0: motion_target}
+        assert passes["OpaqueMotionPass"]._resolve_color == (
+            "motion" if multisampled else None
+        )
+        assert passes["OpaqueMotionPass"]._write_depth is None
+        assert passes["OpaqueMotionPass"]._clear_color == (0.0, 0.0, 0.0, 0.0)
+        assert passes["TransparentMotionPass"]._reads == ["depth"]
+        assert passes["TransparentMotionPass"]._write_colors == {0: motion_target}
+        assert passes["TransparentMotionPass"]._resolve_color == (
+            "motion" if multisampled else None
+        )
+        assert passes["TransparentMotionPass"]._write_depth is None
+        assert passes["TransparentMotionPass"]._clear_color is None
+
+        stages = {stage.stable_id: stage for stage in graph.effect_stages}
+        assert "motion" in stages["after_transparent"].contract.inputs
+        assert "motion" in stages["final"].contract.inputs
+        graph.build()
+
+
+def test_forward_motion_targets_follow_every_supported_msaa_value():
+    from Infernux.rendergraph.graph import RenderGraph
+    from Infernux.renderstack.default_forward_pipeline import MSAASamples
+
+    revisions = set()
+    for samples in MSAASamples:
+        pipeline = DefaultForwardPipeline()
+        pipeline.msaa_samples = samples
+        graph = RenderGraph(f"Forward Motion X{int(samples)}")
+        pipeline.define_topology(graph)
+        description = graph.build()
+        textures = {texture.name: texture for texture in description.textures}
+        motion_passes = [
+            render_pass
+            for render_pass in description.passes
+            if render_pass.commands
+            and render_pass.commands[0].material_pass == "motion"
+        ]
+
+        assert description.msaa_samples == int(samples)
+        assert textures["motion"].samples == 1
+        if int(samples) == 1:
+            assert "_motion_msaa" not in textures
+            assert all(p.write_colors == [(0, "motion")] for p in motion_passes)
+            assert all(not p.resolve_color for p in motion_passes)
+        else:
+            assert textures["_motion_msaa"].samples == int(samples)
+            assert all(p.write_colors == [(0, "_motion_msaa")] for p in motion_passes)
+            assert all(p.resolve_color == "motion" for p in motion_passes)
+        revisions.add(description.source_revision)
+
+    assert len(revisions) == len(MSAASamples)
+
+
 def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
     from Infernux.renderstack.default_forward_pipeline import MSAASamples
 
@@ -91,10 +168,21 @@ def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state():
     pipeline = control.target()
 
     old_value = pipeline.msaa_samples
+    stack._graph_desc = object()
     pipeline.msaa_samples = MSAASamples.X2
     control.on_change(pipeline, "msaa_samples", old_value, pipeline.msaa_samples)
 
     assert '"msaa_samples": {"__enum_name__": "X2"}' in stack.pipeline_params_json
+    assert stack._graph_desc is None
+    assert stack.build_graph().msaa_samples == 2
+
+    stack._graph_desc = object()
+    old_value = pipeline.msaa_samples
+    pipeline.msaa_samples = MSAASamples.X8
+    control.on_change(pipeline, "msaa_samples", old_value, pipeline.msaa_samples)
+
+    assert stack._graph_desc is None
+    assert stack.build_graph().msaa_samples == 8
 
 
 def test_renderstack_inspector_exposes_only_effect_mount_points_with_inline_slots():

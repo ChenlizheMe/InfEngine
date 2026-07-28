@@ -168,7 +168,11 @@ class AssetRegistry
     void RemoveAsset(const std::string &guid);
 
     [[nodiscard]] std::shared_ptr<AssetLoadTicket> BeginLoadAsset(const std::string &guid, ResourceType type);
-    bool TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket);
+    /// Commit a completed worker load on the owner thread.  The optional
+    /// stale-if-unloaded mode is reserved for non-authoritative previews: if
+    /// no live cache entry exists, metadata/index churn during a first import
+    /// must not discard an otherwise valid decoded payload.
+    bool TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool allowStaleIfUnloaded = false);
     void DrainPendingLoads() noexcept;
 
     /// Patch path-bearing state after AssetDatabase has committed a GUID-stable move.

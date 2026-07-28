@@ -259,6 +259,9 @@ class HierarchyCreationService:
 
         hp = self._hierarchy_panel
         if hp is not None:
+            expand_created_parent = getattr(hp, "set_pending_expand_id", None)
+            if callable(expand_created_parent):
+                expand_created_parent(parent_go.id)
             ensure_visible = getattr(hp, "set_selected_object_by_id", None)
             if callable(ensure_visible):
                 ensure_visible(parent_go.id)
@@ -506,14 +509,27 @@ class HierarchyCreationService:
 
 def _component_names(obj) -> list[str]:
     names: list[str] = []
+    seen: set[tuple[str, int]] = set()
+
+    def _append(comp) -> None:
+        component_id = int(getattr(comp, "component_id", 0) or 0)
+        key = (
+            "component_id" if component_id else "object_id",
+            component_id if component_id else id(comp),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        names.append(str(getattr(comp, "type_name", type(comp).__name__)))
+
     try:
         for comp in obj.get_components() or []:
-            names.append(str(getattr(comp, "type_name", type(comp).__name__)))
+            _append(comp)
     except Exception as exc:
         Debug.log_suppressed("HierarchyCreationService.components.native", exc)
     try:
         for comp in obj.get_py_components() or []:
-            names.append(str(getattr(comp, "type_name", type(comp).__name__)))
+            _append(comp)
     except Exception as exc:
         Debug.log_suppressed("HierarchyCreationService.components.py", exc)
     return names

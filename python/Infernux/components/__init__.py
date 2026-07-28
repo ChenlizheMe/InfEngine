@@ -100,7 +100,7 @@ from .decorators import (
 from .spirit_animator import SpiritAnimator
 from .skeletal_animator import SkeletalAnimator
 from .timeline_action import TimelineAction
-from .particle_system import ParticleSystem
+from .particle_system import ParticleBoundsMode, ParticleOffscreenPolicy, ParticleSystem
 
 __all__ = [
     "InxComponent",
@@ -180,6 +180,8 @@ __all__ = [
     "Icon",
     # Animation
     "ParticleSystem",
+    "ParticleBoundsMode",
+    "ParticleOffscreenPolicy",
     "SpiritAnimator",
     "SkeletalAnimator",
     "TimelineAction",

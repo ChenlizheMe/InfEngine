@@ -5,6 +5,7 @@ struct ParticleInstance {
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer ParticleInstances {
@@ -17,6 +18,7 @@ layout(set = 0, binding = 1, std430) readonly buffer ParticleDrawIndices {
 
 layout(push_constant) uniform ParticleViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;

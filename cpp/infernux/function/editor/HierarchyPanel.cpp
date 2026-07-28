@@ -453,11 +453,11 @@ void HierarchyPanel::BuildFlatListRecurse(GameObject *obj, int depth)
     // Determine expanded state
     bool isExpanded = m_expandedNodes.count(objId) > 0;
 
-    // Auto-expand when search is active
+    // Search expansion is transient.  Do not write it into the persistent
+    // user-authored expansion set, otherwise clearing a search permanently
+    // changes the tree layout.
     if (HasActiveSearch() && hasVisibleChildren) {
         isExpanded = true;
-        m_expandedNodes.insert(objId);
-        m_forceExpandIds.insert(objId);
     }
 
     if (hasVisibleChildren && isExpanded) {
@@ -1318,11 +1318,12 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     if (isLeaf)
         nodeFlags |= ImGuiTreeNodeFlags_Leaf;
 
-    // Force-expand (one-shot for auto-expand, selection expand, etc.)
-    if (m_forceExpandIds.count(objId)) {
-        ctx->SetNextItemOpen(true);
-        m_forceExpandIds.erase(objId);
-    }
+    // Keep our stable object-ID set authoritative. ImGui normally owns tree
+    // state by widget ID; rows disappearing during reparenting or changing
+    // their visible labels during rename must not reset that state.
+    const bool requestedOpen = HasActiveSearch() || m_expandedNodes.count(objId) > 0;
+    ctx->SetNextItemOpen(requestedOpen, ImGuiCond_Always);
+    m_forceExpandIds.erase(objId);
 
     // Display name with prefab decoration
     bool isPrefab = obj->IsPrefabInstance();
@@ -1361,7 +1362,12 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     if (indentPx > 0)
         ImGui::Indent(indentPx);
 
-    bool isOpen = ctx->TreeNodeEx(*displayName, nodeFlags);
+    std::string stableLabel;
+    stableLabel.reserve(displayName->size() + 40);
+    stableLabel = *displayName;
+    stableLabel += "###HierarchyObject_";
+    stableLabel += std::to_string(objId);
+    bool isOpen = ctx->TreeNodeEx(stableLabel, nodeFlags);
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("hierarchy_object", objectName, true, "hierarchy.object." + std::to_string(objId));
 
@@ -1371,13 +1377,16 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     if (textColorPushed)
         ctx->PopStyleColor(1);
 
-    // Sync expand state from TreeNodeEx return value
-    if (isOpen && !isLeaf) {
-        if (m_expandedNodes.insert(objId).second)
-            m_flatListDirty = true; // newly expanded
-    } else {
-        if (m_expandedNodes.erase(objId) > 0)
-            m_flatListDirty = true; // newly collapsed
+    // Search forces matching branches open only for presentation. Preserve the
+    // user's pre-search expansion choices until normal tree interaction resumes.
+    if (!HasActiveSearch()) {
+        if (isOpen && !isLeaf) {
+            if (m_expandedNodes.insert(objId).second)
+                m_flatListDirty = true; // newly expanded
+        } else {
+            if (m_expandedNodes.erase(objId) > 0)
+                m_flatListDirty = true; // newly collapsed
+        }
     }
 
     // ── Selection ───────────────────────────────────────────────
@@ -1692,7 +1701,9 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
 
     // Keyboard shortcuts (F2 rename, Delete)
     auto shortcutStart = Clock::now();
-    if (!ctx->WantTextInput() && m_selCount > 0) {
+    const bool hierarchyFocused =
+        ctx->IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    if (hierarchyFocused && !ctx->WantTextInput() && m_selCount > 0) {
         if (ctx->IsKeyPressed(kKeyF2) && m_renameId == 0) {
             if (m_selPrimary)
                 BeginRename(m_selPrimary);

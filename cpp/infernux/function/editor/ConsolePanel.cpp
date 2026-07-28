@@ -245,7 +245,6 @@ void ConsolePanel::OnRenderContent(InxGUIContext *ctx)
     const auto toolbarStart = std::chrono::steady_clock::now();
     RenderToolbar(ctx);
     const auto bodyStart = std::chrono::steady_clock::now();
-    ImGui::Separator();
     RenderBody(ctx);
     const auto bodyEnd = std::chrono::steady_clock::now();
     m_subToolbar += std::chrono::duration<double, std::milli>(bodyStart - toolbarStart).count();
@@ -763,16 +762,19 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
 {
     const auto &log = m_logs[ve.logIndex];
     const ImVec4 &clr = LevelColor(log.level);
+    // Console selection is intentionally neutral. The blue default header
+    // color reads like an active editor selection and overwhelms log levels.
+    const ImVec4 selectedRow(59.0f / 255.0f, 59.0f / 255.0f, 64.0f / 255.0f, 1.0f);
     // Row background
     if (isSel)
-        ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::SELECTION_BG);
+        ImGui::PushStyleColor(ImGuiCol_Header, selectedRow);
     else if (visIdx % 2 == 1)
         ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::ROW_ALT);
     else
         ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::ROW_NONE);
 
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorTheme::SELECTION_BG);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorTheme::SELECTION_BG);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, selectedRow);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, selectedRow);
     ImGui::PushStyleColor(ImGuiCol_Text, clr);
 
     // Unique ID to avoid ImGui ID conflicts

@@ -56,6 +56,40 @@ particle::ParticleSortMode DecodeParticleSortMode(const std::string &value)
     throw std::invalid_argument("GPU particle output sort_mode must be 'none', 'back_to_front', or 'front_to_back'");
 }
 
+particle::GpuParticleBoundsMode DecodeParticleBoundsMode(const std::string &value)
+{
+    if (value == "automatic")
+        return particle::GpuParticleBoundsMode::Automatic;
+    if (value == "manual")
+        return particle::GpuParticleBoundsMode::Manual;
+    throw std::invalid_argument("GPU particle bounds_mode must be 'automatic' or 'manual'");
+}
+
+particle::GpuParticleOffscreenPolicy DecodeParticleOffscreenPolicy(const std::string &value)
+{
+    if (value == "always_simulate")
+        return particle::GpuParticleOffscreenPolicy::AlwaysSimulate;
+    if (value == "pause_when_offscreen")
+        return particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen;
+    throw std::invalid_argument("GPU particle offscreen_policy must be 'always_simulate' or 'pause_when_offscreen'");
+}
+
+std::array<float, 3> DecodeParticleBoundsVector(const py::handle &value, const char *label)
+{
+    if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
+        throw std::invalid_argument(std::string(label) + " must be a three-value sequence");
+    const py::sequence sequence = py::reinterpret_borrow<py::sequence>(value);
+    if (sequence.size() != 3)
+        throw std::invalid_argument(std::string(label) + " must contain exactly three values");
+    std::array<float, 3> result{};
+    for (size_t axis = 0; axis < result.size(); ++axis) {
+        result[axis] = py::cast<float>(sequence[axis]);
+        if (!std::isfinite(result[axis]))
+            throw std::invalid_argument(std::string(label) + " values must be finite");
+    }
+    return result;
+}
+
 const char *ParticleSortModeName(particle::ParticleSortMode value)
 {
     switch (value) {
@@ -69,28 +103,13 @@ const char *ParticleSortModeName(particle::ParticleSortMode value)
     return "none";
 }
 
-PointCacheChannelType DecodePointCacheChannelType(const std::string &value)
-{
-    if (value == "f32")
-        return PointCacheChannelType::Float;
-    if (value == "vec2")
-        return PointCacheChannelType::Float2;
-    if (value == "vec3")
-        return PointCacheChannelType::Float3;
-    if (value == "vec4" || value == "color")
-        return PointCacheChannelType::Float4;
-    if (value == "u32")
-        return PointCacheChannelType::UInt;
-    throw std::invalid_argument("GPU Point Cache sample has an unsupported value_type");
-}
-
 particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &value)
 {
     static constexpr std::array<const char *, static_cast<size_t>(particle::GpuKernelStage::Count)> StageNames = {
         "bootstrap", "init", "update", "render_reset", "rendering"};
     for (const char *field : {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask",
                               "artifact_revision", "stable_id", "capacity", "state_stride", "event_output_stages",
-                              "stages", "billboard", "mesh_shaders", "outputs"}) {
+                              "parameter_words", "continuation", "stages", "billboard", "mesh_shaders", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -105,6 +124,28 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     program.stableId = py::cast<std::string>(value["stable_id"]);
     program.capacity = py::cast<uint32_t>(value["capacity"]);
     program.stateStride = py::cast<uint32_t>(value["state_stride"]);
+    program.parameterWords = py::cast<std::vector<uint32_t>>(value["parameter_words"]);
+    if (program.parameterWords.size() % 4 != 0)
+        throw std::invalid_argument("GPU particle parameter words must contain complete uvec4 slots");
+    if (!value["continuation"].is_none()) {
+        if (!py::isinstance<py::dict>(value["continuation"]))
+            throw std::invalid_argument("GPU particle continuation must be a dictionary or None");
+        const py::dict continuation = py::cast<py::dict>(value["continuation"]);
+        for (const char *field : {"capacity", "record_stride", "prepare", "classify", "dispatch"}) {
+            if (!continuation.contains(field))
+                throw std::invalid_argument(std::string("GPU particle continuation is missing ") + field);
+        }
+        if (py::len(continuation) != 5)
+            throw std::invalid_argument("GPU particle continuation contains unknown fields");
+        program.continuationCapacity = py::cast<uint32_t>(continuation["capacity"]);
+        program.continuationRecordStride = py::cast<uint32_t>(continuation["record_stride"]);
+        program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Prepare)] =
+            DecodeParticleSpirv(continuation["prepare"], "particle continuation prepare");
+        program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Classify)] =
+            DecodeParticleSpirv(continuation["classify"], "particle continuation classify");
+        program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Dispatch)] =
+            DecodeParticleSpirv(continuation["dispatch"], "particle continuation dispatch");
+    }
     const py::sequence eventOutputStages = py::cast<py::sequence>(value["event_output_stages"]);
     for (const py::handle item : eventOutputStages) {
         const std::string stage = py::cast<std::string>(item);
@@ -158,66 +199,12 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 
     if (value.contains("data_interface_layout") && !value["data_interface_layout"].is_none()) {
         const py::dict layout = py::cast<py::dict>(value["data_interface_layout"]);
-        for (const char *field : {"version", "metadata_binding", "interface_stride_words", "sample_stride_words",
-                                  "sample_count", "point_caches", "mesh_shape"}) {
+        for (const char *field : {"version", "metadata_binding", "mesh_shape"}) {
             if (!layout.contains(field))
                 throw std::invalid_argument(std::string("GPU data interface layout is missing ") + field);
         }
         if (py::cast<uint32_t>(layout["version"]) != 1)
             throw std::invalid_argument("GPU data interface layout version is unsupported");
-        program.pointCaches.metadataBinding = py::cast<uint32_t>(layout["metadata_binding"]);
-        program.pointCaches.interfaceStrideWords = py::cast<uint32_t>(layout["interface_stride_words"]);
-        program.pointCaches.sampleStrideWords = py::cast<uint32_t>(layout["sample_stride_words"]);
-        program.pointCaches.sampleCount = py::cast<uint32_t>(layout["sample_count"]);
-        const py::sequence pointCaches = py::cast<py::sequence>(layout["point_caches"]);
-        program.pointCaches.pointCaches.reserve(pointCaches.size());
-        for (const py::handle item : pointCaches) {
-            if (!py::isinstance<py::dict>(item))
-                throw std::invalid_argument("GPU Point Cache layout must contain dictionaries");
-            const py::dict pointCache = py::reinterpret_borrow<py::dict>(item);
-            for (const char *field : {"stable_id", "interface_index", "data_binding", "lookup_binding", "space",
-                                      "cache_to_space", "native", "samples"}) {
-                if (!pointCache.contains(field))
-                    throw std::invalid_argument(std::string("GPU Point Cache binding is missing ") + field);
-            }
-            particle::GpuParticlePointCacheProgram decoded;
-            decoded.stableId = py::cast<std::string>(pointCache["stable_id"]);
-            decoded.interfaceIndex = py::cast<uint32_t>(pointCache["interface_index"]);
-            decoded.dataBinding = py::cast<uint32_t>(pointCache["data_binding"]);
-            decoded.lookupBinding = py::cast<uint32_t>(pointCache["lookup_binding"]);
-            const std::string space = py::cast<std::string>(pointCache["space"]);
-            if (space != "world" && space != "emitter_local")
-                throw std::invalid_argument("GPU Point Cache space must be world or emitter_local");
-            decoded.worldSpace = space == "world";
-            const auto cacheToSpace = py::cast<std::vector<float>>(pointCache["cache_to_space"]);
-            if (cacheToSpace.size() != decoded.cacheToSpace.size() ||
-                !std::all_of(cacheToSpace.begin(), cacheToSpace.end(), [](float item) { return std::isfinite(item); }))
-                throw std::invalid_argument("GPU Point Cache cache_to_space must contain 16 finite floats");
-            std::copy(cacheToSpace.begin(), cacheToSpace.end(), decoded.cacheToSpace.begin());
-            if (pointCache["native"].is_none())
-                throw std::invalid_argument("GPU Point Cache native asset is missing");
-            decoded.cache = py::cast<std::shared_ptr<InxPointCache>>(pointCache["native"]);
-
-            const py::sequence samples = py::cast<py::sequence>(pointCache["samples"]);
-            decoded.samples.reserve(samples.size());
-            for (const py::handle sampleItem : samples) {
-                if (!py::isinstance<py::dict>(sampleItem))
-                    throw std::invalid_argument("GPU Point Cache samples must contain dictionaries");
-                const py::dict sample = py::reinterpret_borrow<py::dict>(sampleItem);
-                for (const char *field : {"sample_index", "channel", "value_type", "semantic"}) {
-                    if (!sample.contains(field))
-                        throw std::invalid_argument(std::string("GPU Point Cache sample is missing ") + field);
-                }
-                particle::GpuPointCacheSampleDesc sampleDesc;
-                sampleDesc.sampleIndex = py::cast<uint32_t>(sample["sample_index"]);
-                sampleDesc.channel = py::cast<std::string>(sample["channel"]);
-                sampleDesc.expectedType = DecodePointCacheChannelType(py::cast<std::string>(sample["value_type"]));
-                sampleDesc.requiresNormalTransform = py::cast<std::string>(sample["semantic"]) == "normal";
-                decoded.samples.push_back(std::move(sampleDesc));
-            }
-            program.pointCaches.pointCaches.push_back(std::move(decoded));
-        }
-
         if (!layout["mesh_shape"].is_none()) {
             if (!py::isinstance<py::dict>(layout["mesh_shape"]))
                 throw std::invalid_argument("GPU Mesh shape layout must be a dictionary or None");
@@ -242,7 +229,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             program.meshShape = std::move(decoded);
         }
 
-        for (const char *field : {"volume_metadata_binding", "volume_stride_words", "volume_interfaces"}) {
+        for (const char *field :
+             {"volume_metadata_binding", "volume_stride_words", "volume_interfaces", "texture2d_parameters"}) {
             if (!layout.contains(field))
                 throw std::invalid_argument(std::string("GPU volume-interface layout is missing ") + field);
         }
@@ -309,6 +297,37 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
                 throw std::invalid_argument("GPU volume native texture identity does not match its GUID");
             program.vectorFields.vectorFields.push_back(std::move(decoded));
         }
+
+        const py::sequence textureParameters = py::cast<py::sequence>(layout["texture2d_parameters"]);
+        program.vectorFields.textureParameters.reserve(textureParameters.size());
+        for (const py::handle item : textureParameters) {
+            if (!py::isinstance<py::dict>(item))
+                throw std::invalid_argument("GPU Texture2D parameter layout must contain dictionaries");
+            const py::dict field = py::reinterpret_borrow<py::dict>(item);
+            for (const char *name :
+                 {"stable_id", "resource_index", "parameter_slot", "texture_binding", "texture_guid", "native"}) {
+                if (!field.contains(name))
+                    throw std::invalid_argument(std::string("GPU Texture2D parameter binding is missing ") + name);
+            }
+            particle::GpuParticleTexture2DParameterProgram decoded;
+            decoded.stableId = py::cast<std::string>(field["stable_id"]);
+            decoded.resourceIndex = py::cast<uint32_t>(field["resource_index"]);
+            decoded.parameterSlot = py::cast<uint32_t>(field["parameter_slot"]);
+            decoded.textureBinding = py::cast<uint32_t>(field["texture_binding"]);
+            decoded.textureGuid = py::cast<std::string>(field["texture_guid"]);
+            if (decoded.stableId.empty() || decoded.textureGuid.empty())
+                throw std::invalid_argument("GPU Texture2D parameter identity cannot be empty");
+            if (!field["native"].is_none()) {
+                decoded.texture = py::cast<std::shared_ptr<InxTexture>>(field["native"]);
+                if (!decoded.texture || decoded.texture->GetGuid() != decoded.textureGuid)
+                    throw std::invalid_argument(
+                        "GPU Texture2D parameter native texture identity does not match its GUID");
+            } else if (decoded.textureGuid != "white" && decoded.textureGuid != "black" &&
+                       decoded.textureGuid != "normal") {
+                throw std::invalid_argument("GPU Texture2D parameter native texture is missing");
+            }
+            program.vectorFields.textureParameters.push_back(std::move(decoded));
+        }
     }
 
     const py::dict stages = py::cast<py::dict>(value["stages"]);
@@ -324,7 +343,8 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
 
     const py::dict billboard = py::cast<py::dict>(value["billboard"]);
     if (!billboard.contains("vertex") || !billboard.contains("fragment") ||
-        !billboard.contains("forward_plus_fragment"))
+        !billboard.contains("forward_plus_fragment") || !billboard.contains("picking_fragment") ||
+        !billboard.contains("motion_vertex") || !billboard.contains("motion_fragment"))
         throw std::invalid_argument("GPU particle billboard shaders are incomplete");
     program.billboardVertexShader = DecodeParticleSpirv(billboard["vertex"], "particle billboard vertex shader");
     program.billboardFragmentShader = DecodeParticleSpirv(billboard["fragment"], "particle billboard fragment shader");
@@ -332,9 +352,14 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         DecodeParticleSpirv(billboard["forward_plus_fragment"], "particle billboard Forward+ fragment shader");
     program.billboardPickingFragmentShader =
         DecodeParticleSpirv(billboard["picking_fragment"], "particle billboard picking fragment shader");
+    program.billboardMotionVertexShader =
+        DecodeParticleSpirv(billboard["motion_vertex"], "particle billboard motion vertex shader");
+    program.billboardMotionFragmentShader =
+        DecodeParticleSpirv(billboard["motion_fragment"], "particle billboard motion fragment shader");
 
     const py::dict meshShaders = py::cast<py::dict>(value["mesh_shaders"]);
-    for (const char *field : {"vertex", "fragment", "forward_plus_fragment", "picking_fragment"}) {
+    for (const char *field :
+         {"vertex", "fragment", "forward_plus_fragment", "picking_fragment", "motion_vertex", "motion_fragment"}) {
         if (!meshShaders.contains(field))
             throw std::invalid_argument(std::string("GPU particle mesh shaders are missing ") + field);
     }
@@ -344,6 +369,10 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         DecodeParticleSpirv(meshShaders["forward_plus_fragment"], "particle mesh Forward+ fragment shader");
     program.meshPickingFragmentShader =
         DecodeParticleSpirv(meshShaders["picking_fragment"], "particle mesh picking fragment shader");
+    program.meshMotionVertexShader =
+        DecodeParticleSpirv(meshShaders["motion_vertex"], "particle mesh motion vertex shader");
+    program.meshMotionFragmentShader =
+        DecodeParticleSpirv(meshShaders["motion_fragment"], "particle mesh motion fragment shader");
 
     const py::sequence outputs = py::cast<py::sequence>(value["outputs"]);
     program.outputs.reserve(outputs.size());
@@ -1117,6 +1146,18 @@ PYBIND11_MODULE(_Infernux, m)
                                        snapshot.gpuParticleRenderingSystemCount;
                                    result["gpu_particle_requested_spawn_count"] =
                                        snapshot.gpuParticleRequestedSpawnCount;
+                                   result["gpu_particle_collision_scene_revision"] =
+                                       snapshot.gpuParticleCollisionSceneRevision;
+                                   result["gpu_particle_collision_scene_collider_count"] =
+                                       snapshot.gpuParticleCollisionSceneColliderCount;
+                                   result["gpu_particle_collision_scene_topology_revision"] =
+                                       snapshot.gpuParticleCollisionSceneTopologyRevision;
+                                   result["gpu_particle_collision_scene_mesh_vertex_count"] =
+                                       snapshot.gpuParticleCollisionSceneMeshVertexCount;
+                                   result["gpu_particle_collision_scene_mesh_index_count"] =
+                                       snapshot.gpuParticleCollisionSceneMeshIndexCount;
+                                   result["gpu_particle_collision_scene_mesh_bvh_node_count"] =
+                                       snapshot.gpuParticleCollisionSceneMeshBvhNodeCount;
                                    result["scene_render_graph_name"] = snapshot.sceneRenderGraphName;
                                    result["game_render_graph_name"] = snapshot.gameRenderGraphName;
                                    result["scene_render_graph_execution_count"] =
@@ -1131,6 +1172,27 @@ PYBIND11_MODULE(_Infernux, m)
                                    result["game_render_graph_pass_names"] = snapshot.gameRenderGraphPassNames;
                                    result["scene_render_graph_debug"] = snapshot.sceneRenderGraphDebug;
                                    result["game_render_graph_debug"] = snapshot.gameRenderGraphDebug;
+                                   result["submission_generation"] = snapshot.submissionGeneration;
+                                   result["submission_composed"] = snapshot.submissionComposed;
+                                   result["submission_compute_queue_independent"] =
+                                       snapshot.submissionComputeQueueIndependent;
+                                   result["submission_transfer_queue_independent"] =
+                                       snapshot.submissionTransferQueueIndependent;
+                                   result["submission_async_compute_active"] =
+                                       snapshot.submissionAsyncComputeActive;
+                                   result["submission_parallel_compute_graphics"] =
+                                       snapshot.submissionParallelComputeGraphics;
+                                   result["submission_batch_count"] = snapshot.submissionBatchCount;
+                                   result["submission_graphics_batch_count"] =
+                                       snapshot.submissionGraphicsBatchCount;
+                                   result["submission_compute_batch_count"] =
+                                       snapshot.submissionComputeBatchCount;
+                                   result["submission_transfer_batch_count"] =
+                                       snapshot.submissionTransferBatchCount;
+                                   result["submission_cross_queue_dependency_count"] =
+                                       snapshot.submissionCrossQueueDependencyCount;
+                                   result["submission_unordered_compute_graphics_pair_count"] =
+                                       snapshot.submissionUnorderedComputeGraphicsPairCount;
                                    result["game_render_ms"] = snapshot.gameRenderMs;
                                    result["game_only_frame_ms"] = snapshot.gameOnlyFrameMs;
                                    result["scene_update_ms"] = snapshot.sceneUpdateMs;
@@ -1500,6 +1562,8 @@ PYBIND11_MODULE(_Infernux, m)
              "Combined query + schedule for mesh/model preview. Returns ImGui texture id.")
         .def("pump_preview_tasks", &Infernux::PumpPreviewTasks, py::call_guard<py::gil_scoped_release>(),
              "Pump completed preview work and submit texture upload tickets")
+        .def("poll_gpu_completions", &Infernux::PollGpuCompletions, py::call_guard<py::gil_scoped_release>(),
+             "Poll asynchronous GPU completion without waiting for a queue or device")
         .def("get_material_preview_texture_id", &Infernux::GetMaterialPreviewTextureId, py::arg("resource_key"),
              py::call_guard<py::gil_scoped_release>(),
              "Get texture id for material preview (stale-return for anti-flicker)")
@@ -1550,6 +1614,9 @@ PYBIND11_MODULE(_Infernux, m)
         .def("get_texture_preview_texture_id", &Infernux::GetTexturePreviewTextureId, py::arg("resource_key"),
              py::call_guard<py::gil_scoped_release>(),
              "Get texture id for texture preview (stale-return for anti-flicker)")
+        .def("get_mesh_preview_texture_id", &Infernux::GetMeshPreviewTextureId, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Get uploaded mesh preview texture id without scheduling an import")
         .def("get_texture_preview_size", &Infernux::GetTexturePreviewSize, py::arg("resource_key"),
              py::call_guard<py::gil_scoped_release>(), "Get texture preview dimensions (stale-return for anti-flicker)")
         .def("invalidate_material_preview_task", &Infernux::InvalidateMaterialPreviewTask, py::arg("resource_key"),
@@ -1672,6 +1739,9 @@ PYBIND11_MODULE(_Infernux, m)
                 result["os_capture_fallback"] = false;
                 result["status"] = CaptureStatusName(value.status);
                 result["source_generation"] = value.sourceGeneration;
+                result["render_view_id"] = value.view.id;
+                result["source_render_view_id"] = value.view.source;
+                result["device_id"] = value.view.device;
                 result["engine_frame"] = value.engineFrame;
                 result["width"] = value.width;
                 result["height"] = value.height;
@@ -2220,6 +2290,36 @@ PYBIND11_MODULE(_Infernux, m)
             py::arg("remove_ids") = std::vector<uint64_t>{}, py::arg("event_domain") = py::none(),
             "Internal control-plane publication for one saved ParticleGraph revision")
         .def(
+            "_update_gpu_particle_parameters",
+            [](Infernux &self, uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                if (!manager)
+                    return std::string("GPU particle runtime requires graphical renderer initialization");
+                std::string error;
+                if (!manager->UpdateGraphParameters(graphInstanceId, parameterWords, &error))
+                    return error.empty() ? std::string("failed to update GPU particle parameters") : error;
+                return std::string{};
+            },
+            py::arg("graph_instance_id"), py::arg("parameter_words"),
+            "Update one live ParticleGraph parameter block without rebuilding its pipelines")
+        .def(
+            "_queue_gpu_particle_events",
+            [](Infernux &self, uint64_t graphInstanceId, uint32_t channelIndex,
+               const std::vector<uint32_t> &recordWords, uint32_t recordCount) {
+                auto *renderer = self.GetRenderer();
+                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
+                if (!manager)
+                    return std::string("GPU particle runtime requires graphical renderer initialization");
+                std::string error;
+                if (!manager->QueueExternalEvents(graphInstanceId, channelIndex, recordWords, recordCount, &error))
+                    return error.empty() ? std::string("failed to queue GPU particle events") : error;
+                return std::string{};
+            },
+            py::arg("graph_instance_id"), py::arg("channel_index"), py::arg("record_words"),
+            py::arg("record_count"),
+            "Queue ABI-packed gameplay events for the next GPU particle simulation boundary")
+        .def(
             "_begin_gpu_particle_batch",
             [](Infernux &self, uint64_t graphInstanceId, const py::sequence &encodedItems) {
                 auto *renderer = self.GetRenderer();
@@ -2234,8 +2334,9 @@ PYBIND11_MODULE(_Infernux, m)
                         throw std::invalid_argument("GPU particle frame batch must contain dictionaries");
                     const py::dict item = py::reinterpret_borrow<py::dict>(value);
                     for (const char *field : {"emitter_id", "spawn_count", "spawn_base_id", "spawn_generation",
-                                              "system_seed", "simulation_step", "delta_time", "transforms",
-                                              "simulate", "render"}) {
+                                              "system_seed", "simulation_step", "simulation_time_ticks", "delta_time", "transforms",
+                                              "simulate", "render", "offscreen_policy", "force_simulation",
+                                              "bounds_mode", "manual_bounds_lower", "manual_bounds_upper"}) {
                         if (!item.contains(field))
                             throw std::invalid_argument(std::string("GPU particle frame item is missing ") + field);
                     }
@@ -2247,9 +2348,19 @@ PYBIND11_MODULE(_Infernux, m)
                     decoded.request.spawnGeneration = py::cast<uint32_t>(item["spawn_generation"]);
                     decoded.request.systemSeed = py::cast<uint32_t>(item["system_seed"]);
                     decoded.request.simulationStep = py::cast<uint32_t>(item["simulation_step"]);
+                    decoded.request.continuationTimeTicks = py::cast<uint64_t>(item["simulation_time_ticks"]);
                     decoded.request.deltaTime = py::cast<float>(item["delta_time"]);
                     decoded.request.simulate = py::cast<bool>(item["simulate"]);
                     decoded.request.render = py::cast<bool>(item["render"]);
+                    decoded.request.offscreenPolicy =
+                        DecodeParticleOffscreenPolicy(py::cast<std::string>(item["offscreen_policy"]));
+                    decoded.request.forceSimulation = py::cast<bool>(item["force_simulation"]);
+                    decoded.request.boundsMode =
+                        DecodeParticleBoundsMode(py::cast<std::string>(item["bounds_mode"]));
+                    decoded.request.manualBoundsLower =
+                        DecodeParticleBoundsVector(item["manual_bounds_lower"], "GPU particle manual_bounds_lower");
+                    decoded.request.manualBoundsUpper =
+                        DecodeParticleBoundsVector(item["manual_bounds_upper"], "GPU particle manual_bounds_upper");
                     decoded.transforms =
                         DecodeGpuParticleTransforms(py::cast<py::buffer>(item["transforms"]));
                     items.push_back(std::move(decoded));
@@ -2313,7 +2424,7 @@ PYBIND11_MODULE(_Infernux, m)
                 auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
                 return manager ? manager->RequestDiagnostics(graphInstanceId) : uint64_t{0};
             },
-            py::arg("graph_instance_id"), "Request one asynchronous GPU particle counter snapshot")
+            py::arg("graph_instance_id"), "Request one asynchronous GPU particle counter-and-bounds snapshot")
         .def(
             "_poll_gpu_particle_diagnostics",
             [](Infernux &self, uint64_t requestId) {
@@ -2330,6 +2441,9 @@ PYBIND11_MODULE(_Infernux, m)
                     break;
                 case particle::GpuParticleDiagnosticStatus::Completed:
                     result["status"] = "completed";
+                    break;
+                case particle::GpuParticleDiagnosticStatus::Inactive:
+                    result["status"] = "inactive";
                     break;
                 case particle::GpuParticleDiagnosticStatus::Failed:
                     result["status"] = "failed";
@@ -2349,6 +2463,12 @@ PYBIND11_MODULE(_Infernux, m)
                     item["alive_count"] = emitter.aliveCount;
                     item["visible_count"] = emitter.visibleCount;
                     item["dropped_count"] = emitter.droppedCount;
+                    item["bounds_mode"] = emitter.boundsMode == particle::GpuParticleBoundsMode::Manual
+                                               ? "manual"
+                                               : "automatic";
+                    item["bounds_valid"] = emitter.boundsValid;
+                    item["bounds_lower"] = emitter.boundsLower;
+                    item["bounds_upper"] = emitter.boundsUpper;
                     emitters.append(std::move(item));
                 }
                 result["emitters"] = std::move(emitters);
@@ -2374,16 +2494,70 @@ PYBIND11_MODULE(_Infernux, m)
                 result["events"] = std::move(events);
                 return result;
             },
-            py::arg("request_id"), "Poll one asynchronous GPU particle counter snapshot")
+            py::arg("request_id"), "Poll one asynchronous GPU particle counter-and-bounds snapshot")
         .def(
-            "_gpu_particle_point_cache_generation",
-            [](Infernux &self, uint64_t emitterId, uint32_t interfaceIndex) {
+            "_request_gpu_particle_view_diagnostics",
+            [](Infernux &self, uint64_t graphInstanceId, const std::string &view) {
+                if (view != "scene" && view != "game")
+                    throw py::value_error("particle view must be 'scene' or 'game'");
                 auto *renderer = self.GetRenderer();
-                auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
-                return manager ? manager->ActivePointCacheGeneration(emitterId, interfaceIndex) : uint64_t{0};
+                return renderer ? renderer->RequestGpuParticleViewDiagnostics(view == "game", graphInstanceId)
+                                : uint64_t{0};
             },
-            py::arg("emitter_id"), py::arg("interface_index"),
-            "Return the active GPU Point Cache generation for validation")
+            py::arg("graph_instance_id"), py::arg("view"),
+            "Request one asynchronous per-view GPU particle cull-and-draw snapshot")
+        .def(
+            "_poll_gpu_particle_view_diagnostics",
+            [](Infernux &self, const std::string &view, uint64_t requestId) {
+                if (view != "scene" && view != "game")
+                    throw py::value_error("particle view must be 'scene' or 'game'");
+                auto *renderer = self.GetRenderer();
+                const auto snapshot = renderer
+                                          ? renderer->QueryGpuParticleViewDiagnostics(view == "game", requestId)
+                                          : particle::GpuParticleViewDiagnosticSnapshot{};
+                py::dict result;
+                result["request_id"] = snapshot.requestId;
+                result["graph_instance_id"] = snapshot.graphInstanceId;
+                result["view"] = view;
+                switch (snapshot.status) {
+                case particle::GpuParticleViewDiagnosticStatus::Pending:
+                    result["status"] = "pending";
+                    break;
+                case particle::GpuParticleViewDiagnosticStatus::Completed:
+                    result["status"] = "completed";
+                    break;
+                case particle::GpuParticleViewDiagnosticStatus::Failed:
+                    result["status"] = "failed";
+                    break;
+                default:
+                    result["status"] = "unknown";
+                    break;
+                }
+                result["error"] = snapshot.error;
+                py::list outputs;
+                for (const auto &output : snapshot.outputs) {
+                    py::dict item;
+                    item["output_id"] = output.outputId;
+                    item["output_stable_id"] = output.outputStableId;
+                    item["emitter_id"] = output.emitterId;
+                    item["emitter_index"] = output.emitterIndex;
+                    item["capacity"] = output.capacity;
+                    item["source_count"] = output.sourceCount;
+                    item["visible_count"] = output.visibleCount;
+                    item["draw_vertex_count"] = output.drawVertexCount;
+                    item["draw_instance_count"] = output.drawInstanceCount;
+                    item["bounds_valid"] = output.boundsValid;
+                    item["coarse_rejected"] = output.coarseRejected;
+                    item["cull_mode"] = output.cullMode == particle::GpuParticleCullMode::RibbonSegments
+                                                ? "ribbon_segments"
+                                                : "instances";
+                    outputs.append(std::move(item));
+                }
+                result["outputs"] = std::move(outputs);
+                return result;
+            },
+            py::arg("view"), py::arg("request_id"),
+            "Poll one asynchronous per-view GPU particle cull-and-draw snapshot")
         .def(
             "_gpu_particle_vector_field_generation",
             [](Infernux &self, uint64_t emitterId, uint32_t interfaceIndex) {

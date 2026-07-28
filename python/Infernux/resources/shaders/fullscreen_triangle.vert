@@ -1,12 +1,17 @@
 #version 450
-@shader_id: Fullscreen Triangle
-@hidden
+
+ShaderInfo {
+    Name "Fullscreen Triangle"
+    Hidden On
+    Capabilities [Fullscreen]
+    Outputs {
+        Float2 outUV
+    }
+}
 
 // Shared fullscreen triangle vertex shader for all FullScreenEffect passes.
 // Generates a single triangle covering the entire screen.
 // No vertex input required — vertices are procedurally generated.
-
-layout(location = 0) out vec2 outUV;
 
 void main() {
     // Generate full-screen triangle from gl_VertexIndex (3 vertices):

@@ -564,11 +564,6 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
                         {
                             "data_interfaces": [
                                 {
-                                    "kind": "point_cache",
-                                    "stable_id": "points",
-                                    "cache": {"guid": "point-guid", "path_hint": ""},
-                                },
-                                {
                                     "kind": "vector_field",
                                     "stable_id": "wind",
                                     "texture": {"guid": "field-guid", "path_hint": ""},
@@ -584,7 +579,7 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
                                     "texture": {"guid": "sdf-guid", "path_hint": ""},
                                 },
                             ],
-                            "init": {"instructions": [sample("sample_point_cache", "points")]},
+                            "init": {"instructions": []},
                             "update": {
                                 "instructions": [
                                     sample("sample_vector_field", "wind"),
@@ -600,9 +595,6 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
         ),
         encoding="utf-8",
     )
-    point_artifact = (
-        project / "Library" / "Artifacts" / "PointCache" / "point-guid.inxpcache"
-    )
     texture_artifact = (
         project / "Library" / "Artifacts" / "Texture" / "field-guid.inxtex"
     )
@@ -613,7 +605,6 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
         project / "Library" / "Artifacts" / "Texture" / "sdf-guid.inxtex"
     )
     for path, payload in (
-        (point_artifact, b"point-cache"),
         (texture_artifact, b"vector-field"),
         (sdf_artifact, b"signed-distance-field"),
         (unused_artifact, b"unused"),
@@ -625,7 +616,6 @@ def test_game_data_collects_sampled_particle_interface_artifacts(tmp_path):
     builder._copy_game_data(str(final_dir))
 
     shipped = final_dir / "Data" / "Library" / "Artifacts"
-    assert (shipped / "PointCache" / point_artifact.name).read_bytes() == b"point-cache"
     assert (shipped / "Texture" / texture_artifact.name).read_bytes() == b"vector-field"
     assert (shipped / "Texture" / sdf_artifact.name).read_bytes() == b"signed-distance-field"
     assert not (shipped / "Texture" / unused_artifact.name).exists()

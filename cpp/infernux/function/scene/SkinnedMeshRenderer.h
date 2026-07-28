@@ -112,6 +112,10 @@ class SkinnedMeshRenderer : public MeshRenderer
     [[nodiscard]] const std::vector<Vertex> &GetRuntimeSkinnedVertices() const;
     [[nodiscard]] const std::vector<uint32_t> &GetRuntimeSkinnedIndices() const;
     [[nodiscard]] const std::vector<SubMesh> &GetRuntimeSkinnedSubMeshes() const;
+    [[nodiscard]] std::shared_ptr<const InxSkinnedMesh> GetRuntimeModelSnapshot() const
+    {
+        return m_runtimeModel;
+    }
     [[nodiscard]] const std::vector<glm::mat4> &GetRuntimeSkinBoneMatrices() const;
     [[nodiscard]] std::shared_ptr<const std::vector<glm::mat4>> GetRuntimeSkinBonePalette() const
     {

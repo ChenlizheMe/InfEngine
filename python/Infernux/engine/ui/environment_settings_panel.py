@@ -249,6 +249,8 @@ class EnvironmentSettingsPanel:
         def _clear() -> None:
             self._apply(scene, skybox_material_guid="")
 
+        adb = self._asset_database()
+        sky_path = adb.get_path_from_guid(guid) if adb and guid else ""
         render_object_field(
             ctx,
             "env_skybox_material",
@@ -260,6 +262,7 @@ class EnvironmentSettingsPanel:
             picker_asset_items=lambda filt: _picker_assets(filt, "*.mat"),
             on_pick=_assign_from_path,
             on_clear=_clear,
+            ping_path=sky_path or None,
             semantic_id="environment.skybox_material",
         )
 

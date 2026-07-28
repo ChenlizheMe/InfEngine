@@ -4,6 +4,8 @@
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
 
+#include "VkDescriptorManager.h"
+
 #include <cstdint>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -37,14 +39,10 @@ struct VulkanTransferCommandContext
 class VulkanRhiDevice final : public rhi::Device
 {
   public:
-    VulkanRhiDevice() = default;
+    VulkanRhiDevice();
     explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
-                             const rhi::DeviceCapabilities &capabilities = {}, uint32_t graphicsQueueFamily = 0,
-                             uint32_t transferQueueFamily = 0) noexcept
-        : m_device(device), m_allocator(allocator), m_capabilities(capabilities),
-          m_graphicsQueueFamily(graphicsQueueFamily), m_transferQueueFamily(transferQueueFamily)
-    {
-    }
+                             const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
+                             uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0) noexcept;
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;
@@ -53,9 +51,18 @@ class VulkanRhiDevice final : public rhi::Device
 
     ~VulkanRhiDevice();
 
+    [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept override
+    {
+        return m_deviceId;
+    }
+    [[nodiscard]] const rhi::DeviceCaps &GetCapabilities() const noexcept override
+    {
+        return m_capabilities;
+    }
+
     void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
-               const rhi::DeviceCapabilities &capabilities = {}, uint32_t graphicsQueueFamily = 0,
-               uint32_t transferQueueFamily = 0) noexcept;
+               const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
+               uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0) noexcept;
 
     [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0);
     [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
@@ -82,6 +89,25 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] bool ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize) override;
     [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
 
+    /// Set while command buffers for a submission are being recorded. Bind
+    /// groups touched by encoders inherit this serial for safe retirement.
+    void SetRecordingSubmissionSerial(rhi::SubmissionSerial serial) noexcept
+    {
+        m_recordingSubmissionSerial = serial;
+    }
+    size_t CollectDescriptorRetirements(rhi::SubmissionSerial completedSerial) noexcept
+    {
+        return m_descriptorManager.Collect(completedSerial);
+    }
+    [[nodiscard]] VkDescriptorManager::Stats GetDescriptorStats() const noexcept
+    {
+        return m_descriptorManager.GetStats();
+    }
+    [[nodiscard]] VkDescriptorManager &GetDescriptorManager() noexcept
+    {
+        return m_descriptorManager;
+    }
+
     void Release(rhi::BufferHandle handle) noexcept override;
     void Release(rhi::TextureHandle handle) noexcept override;
     void Release(rhi::TextureViewHandle handle) noexcept override;
@@ -94,6 +120,7 @@ class VulkanRhiDevice final : public rhi::Device
     void Release(rhi::RenderTargetLayoutHandle handle) noexcept;
 
     [[nodiscard]] VkBuffer Resolve(rhi::BufferHandle handle) const noexcept;
+    [[nodiscard]] bool UsesConcurrentQueueSharing(rhi::BufferHandle handle) const noexcept;
     [[nodiscard]] VkImage Resolve(rhi::TextureHandle handle) const noexcept;
     [[nodiscard]] VkImageView Resolve(rhi::TextureViewHandle handle) const noexcept;
     [[nodiscard]] VkSampler Resolve(rhi::SamplerHandle handle) const noexcept;
@@ -118,6 +145,7 @@ class VulkanRhiDevice final : public rhi::Device
         uint64_t byteSize = 0;
         bool owned = false;
         rhi::BufferMemory memory = rhi::BufferMemory::DeviceLocal;
+        bool concurrentQueueSharing = false;
     };
 
     struct TexturePayload
@@ -154,8 +182,7 @@ class VulkanRhiDevice final : public rhi::Device
 
     struct BindGroupPayload
     {
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorPool pool = VK_NULL_HANDLE;
+        DescriptorLease lease;
         bool owned = false;
     };
 
@@ -170,24 +197,21 @@ class VulkanRhiDevice final : public rhi::Device
     template <typename Payload> struct Slot
     {
         Payload payload{};
-        uint32_t generation = 1;
+        uint16_t generation = 1;
         uint32_t nextFree = UINT32_MAX;
         bool occupied = false;
     };
 
     template <typename HandleType, typename Payload>
-    [[nodiscard]] static HandleType Register(std::vector<Slot<Payload>> &slots, uint32_t &freeHead,
-                                             const Payload &payload);
+    [[nodiscard]] HandleType Register(std::vector<Slot<Payload>> &slots, uint32_t &freeHead, const Payload &payload);
     template <typename HandleType, typename Payload>
-    static void Release(std::vector<Slot<Payload>> &slots, uint32_t &freeHead, HandleType handle) noexcept;
+    void Release(std::vector<Slot<Payload>> &slots, uint32_t &freeHead, HandleType handle) noexcept;
     template <typename Payload> static void ResetSlots(std::vector<Slot<Payload>> &slots, uint32_t &freeHead) noexcept;
     template <typename HandleType, typename Payload>
-    [[nodiscard]] static const Payload *Resolve(const std::vector<Slot<Payload>> &slots, HandleType handle) noexcept;
+    [[nodiscard]] const Payload *Resolve(const std::vector<Slot<Payload>> &slots, HandleType handle) const noexcept;
 
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::GraphicsPipelineHandle handle) const noexcept;
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept;
-    [[nodiscard]] VkDescriptorPool CreateDescriptorPool();
-    [[nodiscard]] VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool &pool);
     void DestroyOwnedResources() noexcept;
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline);
@@ -212,15 +236,19 @@ class VulkanRhiDevice final : public rhi::Device
                            const rhi::BufferCopyRegion &region);
     static void CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
                             const rhi::TextureCopyRegion &region);
+    static void ResolveTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
+                               const rhi::TextureResolveRegion &region);
 
     static const rhi::GraphicsCommandEncoder::Dispatch s_graphicsDispatch;
     static const rhi::ComputeCommandEncoder::DispatchTable s_computeDispatch;
     static const rhi::TransferCommandEncoder::DispatchTable s_transferDispatch;
 
+    rhi::DeviceId m_deviceId = rhi::InvalidDeviceId;
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
-    rhi::DeviceCapabilities m_capabilities{};
+    rhi::DeviceCaps m_capabilities{};
     uint32_t m_graphicsQueueFamily = 0;
+    uint32_t m_computeQueueFamily = 0;
     uint32_t m_transferQueueFamily = 0;
     std::vector<Slot<BufferPayload>> m_buffers;
     std::vector<Slot<TexturePayload>> m_textures;
@@ -232,7 +260,8 @@ class VulkanRhiDevice final : public rhi::Device
     std::vector<Slot<GraphicsPipelinePayload>> m_graphicsPipelines;
     std::vector<Slot<GraphicsPipelinePayload>> m_computePipelines;
     std::vector<Slot<VkRenderPass>> m_renderTargetLayouts;
-    std::vector<VkDescriptorPool> m_ownedDescriptorPools;
+    VkDescriptorManager m_descriptorManager;
+    rhi::SubmissionSerial m_recordingSubmissionSerial = rhi::InvalidSubmissionSerial;
 
     uint32_t m_freeBuffer = UINT32_MAX;
     uint32_t m_freeTexture = UINT32_MAX;

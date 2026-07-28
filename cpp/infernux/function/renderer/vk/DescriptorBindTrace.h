@@ -5,6 +5,13 @@
 
 #include <vulkan/vulkan.h>
 
+#include <function/renderer/rhi/RhiSubmission.h>
+
+namespace infernux::vk
+{
+class VkDescriptorManager;
+}
+
 namespace infernux::vkdebug
 {
 
@@ -21,6 +28,26 @@ struct DescriptorBindTraceSnapshot
     uint32_t firstSet = 0;
     uint32_t descriptorSetCount = 0;
     std::array<uint64_t, 4> descriptorSetRaws{};
+};
+
+void SetDescriptorRecordingContext(vk::VkDescriptorManager *manager, rhi::SubmissionSerial submissionSerial) noexcept;
+void ClearDescriptorRecordingContext() noexcept;
+void PushDescriptorRecordingContext(vk::VkDescriptorManager *manager, rhi::SubmissionSerial submissionSerial) noexcept;
+void PopDescriptorRecordingContext() noexcept;
+
+class DescriptorRecordingScope
+{
+  public:
+    DescriptorRecordingScope(vk::VkDescriptorManager *manager, rhi::SubmissionSerial submissionSerial) noexcept
+    {
+        PushDescriptorRecordingContext(manager, submissionSerial);
+    }
+    ~DescriptorRecordingScope()
+    {
+        PopDescriptorRecordingContext();
+    }
+    DescriptorRecordingScope(const DescriptorRecordingScope &) = delete;
+    DescriptorRecordingScope &operator=(const DescriptorRecordingScope &) = delete;
 };
 
 inline bool IsSuspiciousDescriptorRaw(uint64_t raw)
@@ -43,11 +70,6 @@ void RecordDescriptorBind(const char *site, VkCommandBuffer cmdBuf, VkPipelineLa
 [[nodiscard]] bool FindRecentDescriptorBindByRaw(uint64_t descriptorRaw, DescriptorBindTraceSnapshot &outMatch,
                                                  uint32_t &outLocalIndex);
 
-void CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf, VkPipelineBindPoint pipelineBindPoint,
-                                  VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
-                                  const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
-                                  const uint32_t *dynamicOffsets);
-
 #else
 
 inline void RecordDescriptorBind(const char *, VkCommandBuffer, VkPipelineLayout, uint32_t, uint32_t,
@@ -65,15 +87,11 @@ inline void RecordDescriptorBind(const char *, VkCommandBuffer, VkPipelineLayout
     return false;
 }
 
-inline void CmdBindDescriptorSetsTracked(const char *, VkCommandBuffer cmdBuf, VkPipelineBindPoint pipelineBindPoint,
-                                         VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
-                                         const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
-                                         const uint32_t *dynamicOffsets)
-{
-    vkCmdBindDescriptorSets(cmdBuf, pipelineBindPoint, layout, firstSet, descriptorSetCount, descriptorSets,
-                            dynamicOffsetCount, dynamicOffsets);
-}
-
 #endif
+
+void CmdBindDescriptorSetsTracked(const char *site, VkCommandBuffer cmdBuf, VkPipelineBindPoint pipelineBindPoint,
+                                  VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount,
+                                  const VkDescriptorSet *descriptorSets, uint32_t dynamicOffsetCount,
+                                  const uint32_t *dynamicOffsets);
 
 } // namespace infernux::vkdebug

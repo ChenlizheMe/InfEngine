@@ -60,13 +60,19 @@ struct MsaaRequestResolution
     return {MsaaRequestStatus::Accepted, gameSamples != 0 ? gameSamples : sceneSamples};
 }
 
+[[nodiscard]] constexpr MsaaRequestResolution ResolveActiveMsaaRequests(int sceneSamples, bool sceneActive,
+                                                                        int gameSamples, bool gameActive) noexcept
+{
+    return ResolveMsaaRequests(sceneActive ? sceneSamples : 0, gameActive ? gameSamples : 0);
+}
+
 [[nodiscard]] constexpr rhi::SampleCountMask AllMsaaSampleCounts() noexcept
 {
     return rhi::SampleCountBit(rhi::SampleCount::One) | rhi::SampleCountBit(rhi::SampleCount::Two) |
            rhi::SampleCountBit(rhi::SampleCount::Four) | rhi::SampleCountBit(rhi::SampleCount::Eight);
 }
 
-[[nodiscard]] inline rhi::SampleCountMask GetAttachmentSampleCountMask(const rhi::DeviceCapabilities &capabilities,
+[[nodiscard]] inline rhi::SampleCountMask GetAttachmentSampleCountMask(const rhi::DeviceCaps &capabilities,
                                                                        rhi::PixelFormat colorFormat,
                                                                        rhi::PixelFormat depthFormat) noexcept
 {

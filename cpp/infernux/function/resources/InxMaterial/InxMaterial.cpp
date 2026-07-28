@@ -83,7 +83,8 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
 }
 
 std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std::string &name,
-                                                                      const std::string &textureRef)
+                                                                      const std::string &textureRef,
+                                                                      bool hardAlpha = false)
 {
     auto material = std::make_shared<InxMaterial>(name);
     material->SetShader("Gizmo Icon");
@@ -102,8 +103,11 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
     state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     state.alphaBlendOp = VK_BLEND_OP_ADD;
-    state.alphaClipEnabled = false;
-    state.alphaClipThreshold = 0.0f;
+    // Camera and particle icons keep their soft source edges.  The light
+    // icon is authored as a binary white mask, so use a cutout there to
+    // prevent bilinear sampling from creating a gray translucent fringe.
+    state.alphaClipEnabled = hardAlpha;
+    state.alphaClipThreshold = hardAlpha ? 0.5f : 0.0f;
     state.renderQueue = 24950;
     material->SetRenderState(state);
     material->SyncAlphaClipProperty();
@@ -649,7 +653,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         }
     }
 
-    // @cull: none / front / back — skip if user has overridden CullMode
+    // Cull: none / front / back. Skip when the material overrides CullMode.
     if (!cullMode.empty() && !HasOverride(RenderStateOverride::CullMode)) {
         VkCullModeFlags newCull = m_renderState.cullMode;
         if (cullMode == "none" || cullMode == "off")
@@ -664,7 +668,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         }
     }
 
-    // @depth_write: on / off — skip if user has overridden DepthWrite
+    // DepthWrite: on / off. Skip when the material overrides DepthWrite.
     if (!depthWrite.empty() && !HasOverride(RenderStateOverride::DepthWrite)) {
         bool newDW = m_renderState.depthWriteEnable;
         if (depthWrite == "on" || depthWrite == "true")
@@ -677,26 +681,26 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         }
     }
 
-    // @depth_test: on / off / less / less_equal / always / never
+    // DepthTest: on / off / less / less_equal / always / never.
     // Skip if user has overridden DepthTest or DepthCompareOp
     changed |= ApplyDepthTestMeta(m_renderState, depthTest, !HasOverride(RenderStateOverride::DepthTest),
                                   !HasOverride(RenderStateOverride::DepthCompareOp));
 
-    // @blend: off / alpha / additive — skip if user has overridden BlendEnable or BlendMode
+    // Blend: off / alpha / additive. Skip when the material overrides blending.
     changed |= ApplyBlendMeta(m_renderState, blend, !HasOverride(RenderStateOverride::BlendEnable),
                               !HasOverride(RenderStateOverride::BlendMode));
 
-    // @queue: integer render queue — skip if overridden or builtin
+    // Queue: integer render queue, skipped when overridden or built in.
     if (!m_builtin && !HasOverride(RenderStateOverride::RenderQueue) && queue >= 0 &&
         queue != m_renderState.renderQueue) {
         m_renderState.renderQueue = queue;
         changed = true;
     }
 
-    // @stencil: compare_op, ref, pass_op, fail_op, depth_fail_op
+    // Stencil: compare_op, ref, pass_op, fail_op, depth_fail_op.
     changed |= ApplyStencilMeta(m_renderState, stencil);
 
-    // @alpha_clip: <threshold> — skip if user has overridden AlphaClip
+    // AlphaClip threshold. Skip when the material overrides alpha clipping.
     if (!alphaClip.empty() && alphaClip != "off" && !HasOverride(RenderStateOverride::AlphaClip)) {
         if (!m_renderState.alphaClipEnabled) {
             m_renderState.alphaClipEnabled = true;
@@ -1300,7 +1304,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoCameraIconMaterial
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoLightIconMaterial()
 {
-    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png");
+    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png",
+                                                   true);
 }
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoParticleIconMaterial()
@@ -1312,7 +1317,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
 {
     auto material = std::make_shared<InxMaterial>("SkyboxProcedural");
 
-    // Use procedural skybox shader (registered by @shader_id in .vert/.frag)
+    // Use the procedural skybox shader registered by ShaderInfo Name.
     material->SetShader("Skybox Procedural");
 
     // Skybox render state:
@@ -1333,7 +1338,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
     state.renderQueue = EngineConfig::Get().skyboxQueue; // After all opaque/transparent, outside shadow caster range
     material->SetRenderState(state);
 
-    // Default sky properties (matching shader @property annotations)
+    // Default sky properties matching the ShaderInfo property declaration.
     // sRGB: zenith #6E7E9C, horizon #A6B9D0, ground #585858
     material->SetColor("skyTopColor", glm::vec4(0.431f, 0.494f, 0.612f, 1.0f));
     material->SetColor("skyHorizonColor", glm::vec4(0.651f, 0.725f, 0.816f, 1.0f));

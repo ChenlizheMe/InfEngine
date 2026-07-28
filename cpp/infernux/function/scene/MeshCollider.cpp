@@ -43,6 +43,8 @@ struct CookedGeometry
     std::vector<uint32_t> indices;
     std::vector<glm::vec3> hullPositions;
     std::vector<uint32_t> hullEdges;
+    std::vector<glm::vec3> collisionPositions;
+    std::vector<uint32_t> collisionIndices;
 };
 
 struct CookingCacheKey
@@ -386,12 +388,22 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
             }
             for (const auto *face : builder.GetFaces()) {
                 const auto *edge = face->mFirstEdge;
+                std::vector<uint32_t> faceIndices;
                 do {
-                    cooked->hullEdges.push_back(originalToCompact.at(edge->mStartIdx));
-                    cooked->hullEdges.push_back(originalToCompact.at(edge->mNextEdge->mStartIdx));
+                    const uint32_t start = originalToCompact.at(edge->mStartIdx);
+                    const uint32_t end = originalToCompact.at(edge->mNextEdge->mStartIdx);
+                    cooked->hullEdges.push_back(start);
+                    cooked->hullEdges.push_back(end);
+                    faceIndices.push_back(start);
                     edge = edge->mNextEdge;
                 } while (edge != face->mFirstEdge);
+                for (size_t index = 1; index + 1 < faceIndices.size(); ++index) {
+                    cooked->collisionIndices.push_back(faceIndices[0]);
+                    cooked->collisionIndices.push_back(faceIndices[index]);
+                    cooked->collisionIndices.push_back(faceIndices[index + 1]);
+                }
             }
+            cooked->collisionPositions = cooked->hullPositions;
         }
 
         if (hullPoints.empty())
@@ -411,6 +423,14 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
         error = "mesh cooking removed every triangle";
         return nullptr;
     }
+    const glm::vec3 inverseScale(worldScale.x != 0.0f ? 1.0f / worldScale.x : 1.0f,
+                                 worldScale.y != 0.0f ? 1.0f / worldScale.y : 1.0f,
+                                 worldScale.z != 0.0f ? 1.0f / worldScale.z : 1.0f);
+    cooked->collisionPositions.reserve(vertices.size());
+    for (const auto &vertex : vertices)
+        cooked->collisionPositions.emplace_back(vertex.x * inverseScale.x, vertex.y * inverseScale.y,
+                                                vertex.z * inverseScale.z);
+    cooked->collisionIndices = indices;
     cooked->vertices = std::move(vertices);
     cooked->indices = std::move(indices);
     return cooked;
@@ -610,6 +630,15 @@ void *MeshCollider::CreateJoltShapeRaw() const
         return nullptr;
     m_convexHullPositions = cookedGeometry->hullPositions;
     m_convexHullEdges = cookedGeometry->hullEdges;
+    if (m_collisionPositions != cookedGeometry->collisionPositions ||
+        m_collisionIndices != cookedGeometry->collisionIndices) {
+        m_collisionPositions = cookedGeometry->collisionPositions;
+        m_collisionIndices = cookedGeometry->collisionIndices;
+        ++m_collisionGeometryRevision;
+        if (m_collisionGeometryRevision == 0)
+            ++m_collisionGeometryRevision;
+        PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
+    }
 
     glm::vec3 center = GetCenter();
     if (auto *go = GetGameObject()) {

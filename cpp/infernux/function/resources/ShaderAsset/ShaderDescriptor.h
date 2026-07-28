@@ -64,7 +64,6 @@ struct SurfaceOptions
 
 struct ShaderDescriptor
 {
-    bool usesStructuredInfo = false;
 
     std::string shaderId;
     std::string filePath;
@@ -95,6 +94,8 @@ struct ShaderDescriptor
     std::vector<ShaderVarying> outputs;
     std::vector<std::string> capabilities;
     std::vector<ShaderInfoEntry> entries;
+    std::vector<ShaderInfoResource> resources;
+    std::optional<ShaderInfoPushConstants> pushConstants;
     std::vector<std::string> imports;
     std::string versionDirective;
 
@@ -149,6 +150,13 @@ struct ShaderDescriptor
             bytes += sizeof(value) + value.capacity();
         for (const auto &entry : entries)
             bytes += sizeof(entry) + entry.role.capacity() + entry.function.capacity();
+        for (const auto &resource : resources)
+            bytes += sizeof(resource) + resource.type.capacity() + resource.name.capacity();
+        if (pushConstants) {
+            bytes += sizeof(*pushConstants) + pushConstants->instanceName.capacity();
+            for (const auto &field : pushConstants->fields)
+                bytes += sizeof(field) + field.type.capacity() + field.name.capacity();
+        }
         for (const auto &value : imports)
             bytes += sizeof(value) + value.capacity();
         for (const auto &target : targets)

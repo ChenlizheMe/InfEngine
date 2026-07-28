@@ -18,7 +18,13 @@ from Infernux.graph.expression_ir import (
 )
 from Infernux.graph.types import AssetReference, TypeRef, ValueType
 
-from .asset import EmitterSettings, ParticleAttribute, ParticleGraphAsset
+from .asset import (
+    EmitterSettings,
+    ParticleAttribute,
+    ParticleGraphAsset,
+    ParticleParameter,
+    particle_attribute_catalog,
+)
 from .data_interface import ParticleDataInterface, SdfVolume
 from .nodes import particle_event_output_type_id, particle_graph_node_definitions
 
@@ -26,6 +32,9 @@ from .nodes import particle_event_output_type_id, particle_graph_node_definition
 class ParticleStage(str, Enum):
     INIT = "init"
     UPDATE = "update"
+    COLLISION_ENTER = "collision_enter"
+    COLLISION_STAY = "collision_stay"
+    COLLISION_EXIT = "collision_exit"
     RENDERING = "rendering"
 
 
@@ -34,14 +43,115 @@ class ParticleCompileError(ValueError):
 
 
 @dataclass(frozen=True)
+class ParticleExecutionPredicate:
+    source_node_uid: str
+    value_id: str
+    literal: bool
+    expected: bool
+    runtime_condition: str = ""
+
+
+@dataclass(frozen=True)
 class ParticleOperation:
     opcode: str
     parameters: tuple[tuple[str, Any], ...]
     source_node_uid: str
     value_bindings: tuple[tuple[str, str], ...] = ()
+    execution_predicates: tuple[ParticleExecutionPredicate, ...] = ()
 
     def parameter_dict(self) -> dict[str, Any]:
         return dict(self.parameters)
+
+
+@dataclass(frozen=True)
+class ParticleExecEdge:
+    link_uid: str
+    source_node_uid: str
+    source_port_id: str
+    target_node_uid: str
+    target_port_id: str
+    predicate_node_uid: str = ""
+    predicate_expected: bool | None = None
+    lane_index: int = 0
+
+
+@dataclass(frozen=True)
+class ParticleFlowBlock:
+    node_uid: str
+    operation_index: int
+    incoming_edges: tuple[str, ...]
+    outgoing_edges: tuple[str, ...]
+    lane_index: int = 0
+
+
+@dataclass(frozen=True)
+class ParticleExecutionLane:
+    stable_id: str
+    index: int
+    parent_index: int
+    source_node_uid: str
+    source_port_id: str
+
+
+@dataclass(frozen=True)
+class ParticleJoinDescriptor:
+    node_uid: str
+    input_lane_indices: tuple[int, ...]
+    output_lane_index: int
+
+
+@dataclass(frozen=True)
+class ParticleFlowProgram:
+    entry_node_uid: str
+    blocks: tuple[ParticleFlowBlock, ...]
+    edges: tuple[ParticleExecEdge, ...]
+    operation_schedule: tuple[int, ...]
+    lanes: tuple[ParticleExecutionLane, ...] = ()
+    joins: tuple[ParticleJoinDescriptor, ...] = ()
+
+    def __post_init__(self) -> None:
+        block_ids = {block.node_uid for block in self.blocks}
+        if self.entry_node_uid not in block_ids:
+            raise ParticleCompileError("particle flow entry block is missing")
+        if len(block_ids) != len(self.blocks):
+            raise ParticleCompileError("particle flow block ids must be unique")
+        edge_ids = {edge.link_uid for edge in self.edges}
+        if len(edge_ids) != len(self.edges):
+            raise ParticleCompileError("particle flow edge ids must be unique")
+        if any(
+            edge.source_node_uid not in block_ids or edge.target_node_uid not in block_ids
+            for edge in self.edges
+        ):
+            raise ParticleCompileError("particle flow edge references an unknown block")
+        if not self.lanes:
+            raise ParticleCompileError("particle flow requires at least one execution lane")
+        if tuple(lane.index for lane in self.lanes) != tuple(range(len(self.lanes))):
+            raise ParticleCompileError("particle execution lane indices must be dense")
+        if len({lane.stable_id for lane in self.lanes}) != len(self.lanes):
+            raise ParticleCompileError("particle execution lane identities must be unique")
+        for lane in self.lanes:
+            if lane.index == 0:
+                if lane.parent_index != -1:
+                    raise ParticleCompileError("particle root lane cannot have a parent")
+            elif not 0 <= lane.parent_index < lane.index:
+                raise ParticleCompileError("particle execution lane parent is invalid")
+        if any(not 0 <= edge.lane_index < len(self.lanes) for edge in self.edges):
+            raise ParticleCompileError("particle flow edge lane is invalid")
+        if any(not 0 <= block.lane_index < len(self.lanes) for block in self.blocks):
+            raise ParticleCompileError("particle flow block lane is invalid")
+        join_nodes = set()
+        for join in self.joins:
+            if join.node_uid in join_nodes or join.node_uid not in block_ids:
+                raise ParticleCompileError("particle Join All descriptor is invalid")
+            join_nodes.add(join.node_uid)
+            if len(join.input_lane_indices) < 2 or len(set(join.input_lane_indices)) != len(
+                join.input_lane_indices
+            ):
+                raise ParticleCompileError("particle Join All input lanes are invalid")
+            if any(not 0 <= value < len(self.lanes) for value in join.input_lane_indices):
+                raise ParticleCompileError("particle Join All references an unknown input lane")
+            if not 0 <= join.output_lane_index < len(self.lanes):
+                raise ParticleCompileError("particle Join All output lane is invalid")
 
 
 @dataclass(frozen=True)
@@ -50,6 +160,7 @@ class ParticleStageHIR:
     root_uid: str
     expressions: ExpressionProgram
     operations: tuple[ParticleOperation, ...]
+    flow: ParticleFlowProgram
 
 
 @dataclass(frozen=True)
@@ -87,9 +198,29 @@ class ParticleEmitterHIR:
     attributes: tuple[ParticleAttribute, ...]
     init: ParticleStageHIR
     update: ParticleStageHIR
+    collision_enter: ParticleStageHIR | None
+    collision_stay: ParticleStageHIR | None
+    collision_exit: ParticleStageHIR | None
     rendering: ParticleStageHIR
     render_plan: ParticleRenderPlan
     data_interfaces: tuple[ParticleDataInterface, ...] = ()
+
+    def lifecycle_stages(self) -> tuple[ParticleStageHIR, ...]:
+        """Return active lifecycle stages in their deterministic execution order."""
+        return (
+            self.init,
+            self.update,
+            *(
+                stage
+                for stage in (
+                    self.collision_enter,
+                    self.collision_stay,
+                    self.collision_exit,
+                )
+                if stage is not None
+            ),
+            self.rendering,
+        )
 
 
 @dataclass(frozen=True)
@@ -146,11 +277,37 @@ class ParticleEventSchedule:
 
 
 @dataclass(frozen=True)
+class ParticleParameterHIR:
+    stable_id: str
+    name: str
+    value_type: TypeRef
+    default: Any
+    exposed: bool
+    slot: int
+    category: str
+    tooltip: str
+
+    @classmethod
+    def from_asset(cls, parameter: ParticleParameter, slot: int) -> "ParticleParameterHIR":
+        return cls(
+            parameter.stable_id,
+            parameter.name,
+            parameter.value_type,
+            parameter.default,
+            parameter.exposed,
+            slot,
+            parameter.category,
+            parameter.tooltip,
+        )
+
+
+@dataclass(frozen=True)
 class ParticleProgramHIR:
     stable_id: str
     name: str
     semantic_hash: str
     behavior_hash: str
+    parameters: tuple[ParticleParameterHIR, ...]
     emitters: tuple[ParticleEmitterHIR, ...]
     schedule: ParticleSystemSchedule
     events: ParticleEventSchedule
@@ -162,6 +319,12 @@ class ParticleGraphCompiler:
     def compile(self, asset: ParticleGraphAsset) -> ParticleProgramHIR:
         events = self._compile_events(asset)
         definitions = particle_graph_node_definitions(asset)
+        parameters = tuple(
+            ParticleParameterHIR.from_asset(parameter, slot)
+            for slot, parameter in enumerate(
+                sorted(asset.parameters, key=lambda item: item.stable_id)
+            )
+        )
         emitters = tuple(
             self._compile_emitter(emitter, events, definitions)
             for emitter in asset.emitters
@@ -170,14 +333,15 @@ class ParticleGraphCompiler:
             asset.stable_id,
             asset.name,
             asset.semantic_hash(),
-            self._behavior_hash(emitters, events),
+            self._behavior_hash(parameters, emitters, events),
+            parameters,
             emitters,
             ParticleSystemSchedule(tuple(emitter.stable_id for emitter in emitters)),
             events,
         )
 
     @staticmethod
-    def _behavior_hash(emitters, events: ParticleEventSchedule) -> str:
+    def _behavior_hash(parameters, emitters, events: ParticleEventSchedule) -> str:
         def stage_payload(stage_hir):
             canonical_ids = {
                 instruction.result_id: f"%{index}"
@@ -209,12 +373,76 @@ class ParticleGraphCompiler:
                         (name, canonical_ids.get(value_id, value_id))
                         for name, value_id in operation.value_bindings
                     ],
+                    "execution_predicates": [
+                        {
+                            "value": canonical_ids.get(
+                                predicate.value_id, predicate.value_id
+                            ),
+                            "literal": predicate.literal,
+                            "expected": predicate.expected,
+                            "runtime_condition": predicate.runtime_condition,
+                        }
+                        for predicate in operation.execution_predicates
+                    ],
                 }
                 for operation in stage_hir.operations
             ]
-            return {"expressions": expressions, "operations": operations}
+            operation_indices = {
+                operation.source_node_uid: index
+                for index, operation in enumerate(stage_hir.operations)
+            }
 
-        payload = []
+            def flow_node(node_uid: str):
+                if node_uid == stage_hir.flow.entry_node_uid:
+                    return "entry"
+                return f"op:{operation_indices[node_uid]}"
+
+            flow_edges = sorted(
+                (
+                    flow_node(edge.source_node_uid),
+                    edge.source_port_id,
+                    flow_node(edge.target_node_uid),
+                    edge.target_port_id,
+                    edge.lane_index,
+                )
+                for edge in stage_hir.flow.edges
+            )
+            return {
+                "expressions": expressions,
+                "operations": operations,
+                "flow_edges": flow_edges,
+                "lanes": [
+                    {
+                        "stable_id": lane.stable_id,
+                        "index": lane.index,
+                        "parent": lane.parent_index,
+                        "source": flow_node(lane.source_node_uid),
+                        "port": lane.source_port_id,
+                    }
+                    for lane in stage_hir.flow.lanes
+                ],
+                "joins": [
+                    {
+                        "node": flow_node(join.node_uid),
+                        "inputs": list(join.input_lane_indices),
+                        "output": join.output_lane_index,
+                    }
+                    for join in stage_hir.flow.joins
+                ],
+            }
+
+        payload = [
+            {
+                "parameters": [
+                    {
+                        "stable_id": parameter.stable_id,
+                        "type": parameter.value_type.to_dict(),
+                        "slot": parameter.slot,
+                    }
+                    for parameter in parameters
+                ]
+            }
+        ]
         for emitter in emitters:
             payload.append(
                 {
@@ -230,9 +458,20 @@ class ParticleGraphCompiler:
                             key=lambda value: value.stable_id,
                         )
                     ],
-                    "stages": {
-                        stage_name: stage_payload(getattr(emitter, stage_name))
-                        for stage_name in ("init", "update", "rendering")
+                    "lifecycles": {
+                        stage_name: (
+                            stage_payload(stage)
+                            if (stage := getattr(emitter, stage_name)) is not None
+                            else None
+                        )
+                        for stage_name in (
+                            "init",
+                            "update",
+                            "collision_enter",
+                            "collision_stay",
+                            "collision_exit",
+                            "rendering",
+                        )
                     },
                     "outputs": [
                         {
@@ -409,6 +648,23 @@ class ParticleGraphCompiler:
             events,
             emitter,
         )
+        def compile_collision_lifecycle(stage: ParticleStage) -> ParticleStageHIR | None:
+            document = getattr(emitter, stage.value)
+            if not emitter.settings.collision_enabled or document is None:
+                return None
+            return self._compile_stage(
+                stage,
+                document,
+                emitter.settings,
+                definitions,
+                events,
+                emitter,
+                entry_condition=stage.value,
+            )
+
+        collision_enter = compile_collision_lifecycle(ParticleStage.COLLISION_ENTER)
+        collision_stay = compile_collision_lifecycle(ParticleStage.COLLISION_STAY)
+        collision_exit = compile_collision_lifecycle(ParticleStage.COLLISION_EXIT)
         rendering = self._compile_stage(
             ParticleStage.RENDERING,
             emitter.rendering,
@@ -418,12 +674,17 @@ class ParticleGraphCompiler:
             emitter,
         )
         routes_by_id = {route.stable_id: route for route in events.routes}
-        stage_documents = {
-            ParticleStage.INIT: emitter.init,
-            ParticleStage.UPDATE: emitter.update,
-            ParticleStage.RENDERING: emitter.rendering,
-        }
-        for stage in (init, update, rendering):
+        event_source_stages = (
+            (init, ParticleStage.INIT, emitter.init),
+            (update, ParticleStage.UPDATE, emitter.update),
+            *(
+                (stage, stage.stage, getattr(emitter, stage.stage.value))
+                for stage in (collision_enter, collision_stay, collision_exit)
+                if stage is not None
+            ),
+            (rendering, ParticleStage.RENDERING, emitter.rendering),
+        )
+        for stage, event_source_stage, stage_document in event_source_stages:
             for operation in stage.operations:
                 if operation.opcode != "event.emit":
                     continue
@@ -438,10 +699,11 @@ class ParticleGraphCompiler:
                         f"Event Output route {route_id!r} belongs to emitter "
                         f"{route.source_emitter_id!r}, not {emitter.stable_id!r}"
                     )
-                if route.source_stage is not stage.stage:
+                if route.source_stage is not event_source_stage:
                     raise ParticleCompileError(
                         f"Event Output route {route_id!r} belongs to the "
-                        f"{route.source_stage.value} stage, not {stage.stage.value}"
+                        f"{route.source_stage.value} stage, not the "
+                        f"{stage.stage.value} lifecycle timing"
                     )
                 expected_type_id = particle_event_output_type_id(
                     route.stable_id, route.source_stage.value
@@ -449,7 +711,7 @@ class ParticleGraphCompiler:
                 source_node = next(
                     (
                         node
-                        for node in stage_documents[stage.stage].nodes
+                        for node in stage_document.nodes
                         if node.uid == operation.source_node_uid
                     ),
                     None,
@@ -623,19 +885,17 @@ class ParticleGraphCompiler:
                 f"particle ribbon output {invalid_ribbon_uv.output_id!r} requires uv_mode "
                 "'stretch' or 'repeat' and a finite positive uv_scale"
             )
-        collision_opcodes = {"collision.plane", "collision.sphere", "collision.sdf"}
+        collision_opcodes = {
+            "collision.plane",
+            "collision.sphere",
+            "collision.sdf",
+            "collision.scene",
+        }
         collision_indices = [
             index
             for index, operation in enumerate(update.operations)
             if operation.opcode in collision_opcodes
         ]
-        if collision_indices and any(
-            operation.opcode not in collision_opcodes | {"event.emit"}
-            for operation in update.operations[collision_indices[0] :]
-        ):
-            raise ParticleCompileError(
-                "Collision nodes must form the final operation group in the Update stream"
-            )
         for operation in (update.operations[index] for index in collision_indices):
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
@@ -643,6 +903,7 @@ class ParticleGraphCompiler:
                 "collision.plane": "Plane Collision",
                 "collision.sphere": "Sphere Collision",
                 "collision.sdf": "SDF Collision",
+                "collision.scene": "Scene Collision",
             }[operation.opcode]
             if operation.opcode == "collision.plane":
                 normal = parameters["normal"]
@@ -655,7 +916,7 @@ class ParticleGraphCompiler:
                 radius_names = ("radius",)
             elif operation.opcode == "collision.sphere":
                 radius_names = ("sphere_radius", "particle_radius")
-            else:
+            elif operation.opcode == "collision.sdf":
                 interface_id = parameters["interface"]
                 interface = next(
                     (
@@ -672,7 +933,23 @@ class ParticleGraphCompiler:
                 if type(parameters["inverted"]) is not bool:
                     raise ParticleCompileError("SDF Collision inverted must be a boolean")
                 radius_names = ("particle_radius",)
+            else:
+                radius_names = ("particle_radius",)
+                if type(parameters["layer_mask"]) is not int or not 0 <= parameters["layer_mask"] <= 0xFFFFFFFF:
+                    raise ParticleCompileError("Scene Collision layer_mask must be a uint32")
+                if type(parameters["include_triggers"]) is not bool:
+                    raise ParticleCompileError("Scene Collision include_triggers must be a boolean")
+                for name in ("restitution_scale", "friction_scale"):
+                    if name in bindings:
+                        continue
+                    value = float(parameters[name])
+                    if not math.isfinite(value) or value < 0.0:
+                        raise ParticleCompileError(
+                            f"Scene Collision {name} must be finite and non-negative"
+                        )
             for name in (*radius_names, "restitution", "friction"):
+                if name not in parameters:
+                    continue
                 if name in bindings:
                     continue
                 value = float(parameters[name])
@@ -687,83 +964,75 @@ class ParticleGraphCompiler:
             "integrate.angular_velocity_3d",
         }
         scale_opcodes = {"attribute.set_scale"}
+        all_lifecycles = (
+            init,
+            update,
+            *(stage for stage in (collision_enter, collision_stay, collision_exit) if stage),
+            rendering,
+        )
         needs_orientation = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in orientation_opcodes
-            for stage in (init, update, rendering)
+            for stage in all_lifecycles
             for operation in stage.operations
         )
         needs_scale = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in scale_opcodes
-            for stage in (init, update, rendering)
+            for stage in all_lifecycles
             for operation in stage.operations
         )
         needs_flipbook_frame = any(
             operation.opcode == "attribute.set_flipbook_frame"
-            for stage in (init, update, rendering)
+            for stage in all_lifecycles
             for operation in stage.operations
         )
-        attributes = emitter.attributes
+        catalog = {
+            attribute.stable_id: attribute
+            for attribute in particle_attribute_catalog(emitter)
+        }
+        attributes = list(emitter.attributes)
+        allocated = {attribute.stable_id for attribute in attributes}
+
+        def allocate(stable_id: str) -> None:
+            if stable_id in allocated:
+                return
+            attribute = catalog.get(stable_id)
+            if attribute is None:
+                raise ParticleCompileError(
+                    f"particle graph references unknown attribute {stable_id!r}"
+                )
+            attributes.append(attribute)
+            allocated.add(stable_id)
+
+        for stage_hir in all_lifecycles:
+            for instruction in stage_hir.expressions.instructions:
+                if instruction.opcode == "load_attribute":
+                    allocate(str(instruction.immediate_dict()["attribute"]))
         if needs_orientation:
-            attributes = (
-                *attributes,
-                ParticleAttribute(
-                    "builtin.orientation",
-                    "orientation",
-                    TypeRef(ValueType.VEC3),
-                    [0.0, 0.0, 0.0],
-                ),
-            )
+            allocate("builtin.orientation")
         if needs_scale:
-            attributes = (
-                *attributes,
-                ParticleAttribute(
-                    "builtin.scale",
-                    "scale",
-                    TypeRef(ValueType.VEC3),
-                    [1.0, 1.0, 1.0],
-                ),
-            )
+            allocate("builtin.scale")
         if needs_flipbook_frame:
-            attributes = (
-                *attributes,
-                ParticleAttribute(
-                    "builtin.flipbook_frame",
-                    "flipbook_frame",
-                    TypeRef(ValueType.F32),
-                    0.0,
-                ),
-            )
+            allocate("builtin.flipbook_frame")
+        if emitter.settings.collision_enabled:
+            allocate("builtin.collision_hit")
+            allocate("builtin.collision_normal")
+            allocate("builtin.collision_active")
         if any(output.output_type == "ribbon" for output in outputs):
-            attributes = (
-                *attributes,
-                ParticleAttribute(
-                    "builtin.ribbon_strip_id",
-                    "ribbon_strip_id",
-                    TypeRef(ValueType.U32),
-                    0,
-                ),
-                ParticleAttribute(
-                    "builtin.ribbon_order",
-                    "ribbon_order",
-                    TypeRef(ValueType.U32),
-                    0,
-                ),
-                ParticleAttribute(
-                    "builtin.ribbon_break",
-                    "ribbon_break",
-                    TypeRef(ValueType.BOOL),
-                    False,
-                ),
-            )
+            allocate("builtin.ribbon_strip_id")
+            allocate("builtin.ribbon_order")
+            allocate("builtin.ribbon_break")
         return ParticleEmitterHIR(
             emitter.stable_id,
             emitter.name,
             emitter.enabled,
             emitter.play_on_start,
             emitter.settings,
-            attributes,
+            tuple(attributes),
             init,
             update,
+            collision_enter,
+            collision_stay,
+            collision_exit,
             rendering,
             ParticleRenderPlan(outputs),
             emitter.data_interfaces,
@@ -806,6 +1075,8 @@ class ParticleGraphCompiler:
         definitions,
         events: ParticleEventSchedule,
         emitter,
+        *,
+        entry_condition: str = "",
     ) -> ParticleStageHIR:
         registry = definitions.registry
         root_type = f"particle.root.{stage.value}"
@@ -823,10 +1094,23 @@ class ParticleGraphCompiler:
             (link.source_node, link.source_port)
             for link in value_links
         )
+        attribute_types = {
+            attribute.stable_id: attribute.value_type
+            for attribute in particle_attribute_catalog(emitter)
+        }
+
+        def _resolve_property_type(property_name: str, selected) -> TypeRef | None:
+            if property_name == "attribute":
+                return attribute_types.get(str(selected))
+            if property_name == "parameter":
+                return definitions.parameter_type_by_id.get(str(selected))
+            return None
+
         try:
             expressions = ExpressionCompiler(
                 registry,
                 definition_fingerprint=definitions.abi_fingerprint,
+                property_type_resolver=_resolve_property_type,
             ).compile(
                 document, expression_outputs
             )
@@ -844,11 +1128,23 @@ class ParticleGraphCompiler:
             (link.target_node, link.target_port): result_id
             for link, (result_id, _value_type) in zip(value_links, expressions.outputs)
         }
-        operations = list(self._settings_operations(stage, settings))
-        operations.extend(
-            self._graph_operations(document, root.uid, value_bindings, definitions)
+        settings_operations = tuple(self._settings_operations(stage, settings))
+        graph_operations, flow = self._graph_operations(
+            document,
+            root.uid,
+            value_bindings,
+            definitions,
+            expressions,
+            operation_offset=len(settings_operations),
+            entry_condition=entry_condition,
         )
-        return ParticleStageHIR(stage, root.uid, expressions, tuple(operations))
+        return ParticleStageHIR(
+            stage,
+            root.uid,
+            expressions,
+            settings_operations + graph_operations,
+            flow,
+        )
 
     @staticmethod
     def _resolve_event_payload_expressions(
@@ -923,10 +1219,22 @@ class ParticleGraphCompiler:
             tuple(resolved), expressions.outputs, expressions.semantic_hash
         )
 
-    def _graph_operations(self, document, root_uid: str, value_bindings, definitions):
+    def _graph_operations(
+        self,
+        document,
+        root_uid: str,
+        value_bindings,
+        definitions,
+        expressions,
+        *,
+        operation_offset: int,
+        entry_condition: str = "",
+    ):
         registry = definitions.registry
         by_uid = {node.uid: node for node in document.nodes}
         outgoing: dict[str, list[tuple[str, str]]] = {}
+        incoming: dict[str, list[str]] = {}
+        exec_links = []
         for link in document.links:
             if link.kind is not PortKind.STREAM:
                 continue
@@ -946,6 +1254,22 @@ class ParticleGraphCompiler:
             ):
                 raise ParticleCompileError(f"invalid particle stream link {link.uid!r}")
             outgoing.setdefault(link.source_node, []).append((link.uid, link.target_node))
+            incoming.setdefault(link.target_node, []).append(link.uid)
+            exec_links.append(link)
+
+        multiple_inputs = {
+            node_uid: tuple(sorted(link_ids))
+            for node_uid, link_ids in incoming.items()
+            if len(link_ids) > 1
+        }
+        for node_uid in sorted(multiple_inputs):
+            node = by_uid.get(node_uid)
+            definition = registry.get(node.type_id) if node else None
+            opcode = definition.target_opcodes.get("particle_hir", "") if definition else ""
+            if opcode != "control.join_all":
+                raise ParticleCompileError(
+                    f"particle Exec node {node_uid!r} has multiple inputs; use an explicit Join All node"
+                )
 
         reachable = set()
         pending = [root_uid]
@@ -1033,7 +1357,381 @@ class ParticleGraphCompiler:
                     ),
                 )
             )
-        return tuple(result)
+
+        link_by_uid = {link.uid: link for link in exec_links}
+        operation_by_uid = {operation.source_node_uid: operation for operation in result}
+        predicates_by_uid: dict[str, tuple[ParticleExecutionPredicate, ...]] = {
+            root_uid: ()
+        }
+        predicated_result = []
+        for uid in ordered:
+            if uid == root_uid:
+                continue
+            input_link_ids = incoming.get(uid, ())
+            operation = operation_by_uid[uid]
+            if operation.opcode == "control.join_all":
+                if len(input_link_ids) < 2:
+                    raise ParticleCompileError(
+                        f"Join All node {uid!r} requires at least two execution inputs"
+                    )
+                joined_predicates = tuple(
+                    predicates_by_uid[link_by_uid[link_id].source_node]
+                    for link_id in sorted(input_link_ids)
+                )
+                predicates = joined_predicates[0]
+                if any(value != predicates for value in joined_predicates[1:]):
+                    raise ParticleCompileError(
+                        f"Join All node {uid!r} cannot join mutually exclusive or differently predicated branches"
+                    )
+                input_link = None
+            elif len(input_link_ids) != 1:
+                raise ParticleCompileError(
+                    f"particle Exec node {uid!r} must have exactly one execution input"
+                )
+            else:
+                input_link = link_by_uid[input_link_ids[0]]
+                predicates = predicates_by_uid[input_link.source_node]
+                source_operation = operation_by_uid.get(input_link.source_node)
+                if source_operation is not None and source_operation.opcode == "control.if":
+                    if input_link.source_port not in {"true", "false"}:
+                        raise ParticleCompileError(
+                            f"If node {input_link.source_node!r} has invalid Exec output "
+                            f"{input_link.source_port!r}"
+                        )
+                    source_bindings = dict(source_operation.value_bindings)
+                    predicates = predicates + (
+                        ParticleExecutionPredicate(
+                            source_operation.source_node_uid,
+                            source_bindings.get("condition", ""),
+                            bool(source_operation.parameter_dict().get("condition", False)),
+                            input_link.source_port == "true",
+                        ),
+                    )
+            if entry_condition:
+                predicates = predicates + (
+                    ParticleExecutionPredicate(
+                        root_uid,
+                        "",
+                        False,
+                        True,
+                        entry_condition,
+                    ),
+                )
+            predicates_by_uid[uid] = predicates
+            operation = ParticleOperation(
+                operation.opcode,
+                operation.parameters,
+                operation.source_node_uid,
+                operation.value_bindings,
+                predicates,
+            )
+            predicated_result.append(operation)
+            operation_by_uid[uid] = operation
+        result = predicated_result
+        descendants: dict[str, set[str]] = {uid: set() for uid in reachable}
+        for uid in reversed(ordered):
+            for _link_uid, target_uid in outgoing.get(uid, ()):
+                if target_uid not in reachable:
+                    continue
+                descendants[uid].add(target_uid)
+                descendants[uid].update(descendants[target_uid])
+        operation_uids = [uid for uid in ordered if uid != root_uid]
+        expression_reads = self._expression_attribute_reads(expressions)
+        for index, left_uid in enumerate(operation_uids):
+            left = operation_by_uid[left_uid]
+            left_writes = self._operation_writes(left.opcode)
+            left_reads = self._operation_reads(left, expression_reads)
+            if not left_writes and not left_reads:
+                continue
+            for right_uid in operation_uids[index + 1 :]:
+                if right_uid in descendants[left_uid] or left_uid in descendants[right_uid]:
+                    continue
+                right = operation_by_uid[right_uid]
+                left_conditions = {
+                    predicate.source_node_uid: predicate.expected
+                    for predicate in left.execution_predicates
+                }
+                right_conditions = {
+                    predicate.source_node_uid: predicate.expected
+                    for predicate in right.execution_predicates
+                }
+                if any(
+                    source_uid in right_conditions
+                    and right_conditions[source_uid] != expected
+                    for source_uid, expected in left_conditions.items()
+                ):
+                    continue
+                right_writes = self._operation_writes(right.opcode)
+                right_reads = self._operation_reads(right, expression_reads)
+                conflicts = (
+                    (left_writes & right_writes)
+                    | (left_writes & right_reads)
+                    | (right_writes & left_reads)
+                )
+                if conflicts:
+                    joined = ", ".join(sorted(conflicts))
+                    raise ParticleCompileError(
+                        "parallel particle Exec branches have an unordered state dependency "
+                        f"({joined}): {left_uid!r} and {right_uid!r}; "
+                        "connect them in sequence or use an explicit Join All"
+                    )
+
+        reachable_links_without_lanes = tuple(
+            sorted(
+                (
+                    ParticleExecEdge(
+                        link.uid,
+                        link.source_node,
+                        link.source_port,
+                        link.target_node,
+                        link.target_port,
+                        (
+                            link.source_node
+                            if operation_by_uid.get(link.source_node) is not None
+                            and operation_by_uid[link.source_node].opcode == "control.if"
+                            else ""
+                        ),
+                        (
+                            link.source_port == "true"
+                            if operation_by_uid.get(link.source_node) is not None
+                            and operation_by_uid[link.source_node].opcode == "control.if"
+                            else None
+                        ),
+                    )
+                    for link in exec_links
+                    if link.source_node in reachable and link.target_node in reachable
+                ),
+                key=lambda edge: (
+                    edge.source_node_uid,
+                    edge.source_port_id,
+                    edge.target_node_uid,
+                    edge.target_port_id,
+                ),
+            )
+        )
+        lanes, joins, edge_lanes, block_lanes = self._execution_lane_layout(
+            root_uid,
+            ordered,
+            operation_by_uid,
+            reachable_links_without_lanes,
+        )
+        reachable_links = tuple(
+            ParticleExecEdge(
+                edge.link_uid,
+                edge.source_node_uid,
+                edge.source_port_id,
+                edge.target_node_uid,
+                edge.target_port_id,
+                edge.predicate_node_uid,
+                edge.predicate_expected,
+                edge_lanes[edge.link_uid],
+            )
+            for edge in reachable_links_without_lanes
+        )
+        block_operation_index = {root_uid: -1}
+        block_operation_index.update(
+            {
+                uid: operation_offset + index
+                for index, uid in enumerate(operation_uids)
+            }
+        )
+        flow = ParticleFlowProgram(
+            root_uid,
+            tuple(
+                ParticleFlowBlock(
+                    uid,
+                    block_operation_index[uid],
+                    tuple(
+                        edge.link_uid
+                        for edge in reachable_links
+                        if edge.target_node_uid == uid
+                    ),
+                    tuple(
+                        edge.link_uid
+                        for edge in reachable_links
+                        if edge.source_node_uid == uid
+                    ),
+                    block_lanes[uid],
+                )
+                for uid in ordered
+            ),
+            reachable_links,
+            tuple(block_operation_index[uid] for uid in operation_uids),
+            lanes,
+            joins,
+        )
+        return tuple(result), flow
+
+    @staticmethod
+    def _execution_lane_layout(
+        root_uid: str,
+        ordered: list[str],
+        operation_by_uid: Mapping[str, ParticleOperation],
+        edges: tuple[ParticleExecEdge, ...],
+    ):
+        def stable_id(*parts: str) -> str:
+            encoded = "\x1f".join(parts).encode("utf-8")
+            return hashlib.sha256(encoded).hexdigest()[:32]
+
+        outgoing: dict[str, list[ParticleExecEdge]] = {}
+        incoming: dict[str, list[ParticleExecEdge]] = {}
+        for edge in edges:
+            outgoing.setdefault(edge.source_node_uid, []).append(edge)
+            incoming.setdefault(edge.target_node_uid, []).append(edge)
+        for values in (*outgoing.values(), *incoming.values()):
+            values.sort(
+                key=lambda edge: (
+                    edge.source_node_uid,
+                    edge.source_port_id,
+                    edge.target_node_uid,
+                    edge.target_port_id,
+                )
+            )
+
+        lanes = [
+            ParticleExecutionLane(
+                stable_id("root", root_uid),
+                0,
+                -1,
+                root_uid,
+                "",
+            )
+        ]
+        block_lanes = {root_uid: 0}
+        edge_lanes: dict[str, int] = {}
+        joins = []
+
+        def add_lane(parent: int, source_uid: str, source_port: str, target_uid: str) -> int:
+            index = len(lanes)
+            lanes.append(
+                ParticleExecutionLane(
+                    stable_id(
+                        "lane",
+                        lanes[parent].stable_id,
+                        source_uid,
+                        source_port,
+                        target_uid,
+                    ),
+                    index,
+                    parent,
+                    source_uid,
+                    source_port,
+                )
+            )
+            return index
+
+        for uid in ordered:
+            operation = operation_by_uid.get(uid)
+            if operation is not None and operation.opcode == "control.join_all":
+                input_lanes = tuple(
+                    edge_lanes[edge.link_uid]
+                    for edge in incoming.get(uid, ())
+                )
+                parent = min(input_lanes)
+                lane_index = add_lane(parent, uid, "out", uid)
+                block_lanes[uid] = lane_index
+                joins.append(ParticleJoinDescriptor(uid, input_lanes, lane_index))
+            lane_index = block_lanes[uid]
+            outgoing_edges = outgoing.get(uid, ())
+            fork = len(outgoing_edges) > 1
+            for edge in outgoing_edges:
+                edge_lane = (
+                    add_lane(
+                        lane_index,
+                        uid,
+                        edge.source_port_id,
+                        edge.target_node_uid,
+                    )
+                    if fork
+                    else lane_index
+                )
+                edge_lanes[edge.link_uid] = edge_lane
+                target_operation = operation_by_uid.get(edge.target_node_uid)
+                if target_operation is None or target_operation.opcode != "control.join_all":
+                    block_lanes[edge.target_node_uid] = edge_lane
+
+        return tuple(lanes), tuple(joins), edge_lanes, block_lanes
+
+    @staticmethod
+    def _operation_writes(opcode: str) -> frozenset[str]:
+        writes = {
+            "emitter.sample_shape": {"builtin.position"},
+            "attribute.set_position": {"builtin.position"},
+            "attribute.set_velocity": {"builtin.velocity"},
+            "attribute.set_lifetime": {"builtin.lifetime"},
+            "attribute.set_flipbook_frame": {"builtin.flipbook_frame"},
+            "attribute.set_color": {"builtin.color"},
+            "attribute.set_size": {"builtin.size"},
+            "attribute.set_scale": {"builtin.scale"},
+            "attribute.set_rotation": {"builtin.rotation"},
+            "attribute.set_orientation": {"builtin.orientation"},
+            "attribute.set_strip_id": {"builtin.ribbon_strip_id"},
+            "attribute.set_ribbon_order": {"builtin.ribbon_order"},
+            "attribute.set_ribbon_break": {"builtin.ribbon_break"},
+            "integrate.acceleration": {"builtin.velocity"},
+            "integrate.angular_velocity": {"builtin.rotation"},
+            "integrate.angular_velocity_3d": {"builtin.orientation"},
+            "collision.plane": {
+                "builtin.position",
+                "builtin.velocity",
+                "builtin.collision_hit",
+                "builtin.collision_normal",
+            },
+            "collision.sphere": {
+                "builtin.position",
+                "builtin.velocity",
+                "builtin.collision_hit",
+                "builtin.collision_normal",
+            },
+            "collision.sdf": {
+                "builtin.position",
+                "builtin.velocity",
+                "builtin.collision_hit",
+                "builtin.collision_normal",
+            },
+            "collision.scene": {
+                "builtin.position",
+                "builtin.velocity",
+                "builtin.collision_hit",
+                "builtin.collision_normal",
+            },
+        }
+        return frozenset(writes.get(opcode, ()))
+
+    @staticmethod
+    def _expression_attribute_reads(expressions) -> dict[str, frozenset[str]]:
+        reads: dict[str, frozenset[str]] = {}
+        for instruction in expressions.instructions:
+            inherited = set()
+            for operand in instruction.operands:
+                if operand.value_id:
+                    inherited.update(reads.get(operand.value_id, ()))
+            if instruction.opcode == "load_attribute":
+                inherited.add(str(instruction.immediate_dict()["attribute"]))
+            reads[instruction.result_id] = frozenset(inherited)
+        return reads
+
+    @staticmethod
+    def _operation_reads(
+        operation: ParticleOperation,
+        expression_reads: Mapping[str, frozenset[str]],
+    ) -> frozenset[str]:
+        reads = {
+            "integrate.acceleration": {"builtin.velocity"},
+            "integrate.angular_velocity": {"builtin.rotation"},
+            "integrate.angular_velocity_3d": {"builtin.orientation"},
+            "collision.plane": {"builtin.position", "builtin.velocity"},
+            "collision.sphere": {"builtin.position", "builtin.velocity"},
+            "collision.sdf": {"builtin.position", "builtin.velocity"},
+            "collision.scene": {"builtin.position", "builtin.velocity"},
+        }
+        result = set(reads.get(operation.opcode, ()))
+        for _property_id, value_id in operation.value_bindings:
+            result.update(expression_reads.get(value_id, ()))
+        for predicate in operation.execution_predicates:
+            if predicate.value_id:
+                result.update(expression_reads.get(predicate.value_id, ()))
+        return frozenset(result)
 
     @staticmethod
     def _settings_operations(stage: ParticleStage, settings: EmitterSettings):
@@ -1091,6 +1789,12 @@ def _event_word_count(value_type: TypeRef) -> int:
 
 __all__ = [
     "ParticleCompileError",
+    "ParticleExecutionPredicate",
+    "ParticleExecEdge",
+    "ParticleExecutionLane",
+    "ParticleFlowBlock",
+    "ParticleFlowProgram",
+    "ParticleJoinDescriptor",
     "ParticleEmitterHIR",
     "ParticleEventFieldHIR",
     "ParticleEventRouteHIR",

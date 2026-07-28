@@ -2,6 +2,7 @@
 
 #include "ParticleGpuBillboardRenderer.h"
 #include "ParticleGpuBounds.h"
+#include "ParticleGpuCollisionScene.h"
 #include "ParticleGpuCuller.h"
 #include "ParticleGpuEventDomain.h"
 #include "ParticleGpuMeshRenderer.h"
@@ -13,7 +14,6 @@
 #include "ParticleRenderGraph.h"
 
 #include <core/types/ShaderProgramArtifact.h>
-#include <function/resources/InxPointCache/InxPointCache.h>
 #include <function/resources/InxTexture/InxTexture.h>
 
 #include <array>
@@ -29,7 +29,7 @@
 namespace infernux
 {
 
-class FrameDeletionQueue;
+class GpuRetirementQueue;
 namespace vk
 {
 class VkDeviceContext;
@@ -65,27 +65,6 @@ struct GpuParticleOutputProgram
     uint32_t flipbookRows = 1;
 };
 
-struct GpuParticlePointCacheProgram
-{
-    std::string stableId;
-    uint32_t interfaceIndex = 0;
-    uint32_t dataBinding = 0;
-    uint32_t lookupBinding = 0;
-    bool worldSpace = true;
-    std::array<float, 16> cacheToSpace{};
-    std::shared_ptr<InxPointCache> cache;
-    std::vector<GpuPointCacheSampleDesc> samples;
-};
-
-struct GpuParticlePointCacheLayoutProgram
-{
-    uint32_t metadataBinding = 0;
-    uint32_t interfaceStrideWords = 32;
-    uint32_t sampleStrideWords = 4;
-    uint32_t sampleCount = 0;
-    std::vector<GpuParticlePointCacheProgram> pointCaches;
-};
-
 struct GpuParticleMeshShapeProgram
 {
     uint32_t metadataOffsetWords = 0;
@@ -108,11 +87,22 @@ struct GpuParticleVectorFieldProgram
     std::shared_ptr<InxTexture> texture;
 };
 
+struct GpuParticleTexture2DParameterProgram
+{
+    std::string stableId;
+    uint32_t resourceIndex = 0;
+    uint32_t parameterSlot = 0;
+    uint32_t textureBinding = 0;
+    std::string textureGuid;
+    std::shared_ptr<InxTexture> texture;
+};
+
 struct GpuParticleVectorFieldLayoutProgram
 {
     uint32_t metadataBinding = 0;
     uint32_t interfaceStrideWords = 32;
     std::vector<GpuParticleVectorFieldProgram> vectorFields;
+    std::vector<GpuParticleTexture2DParameterProgram> textureParameters;
 };
 
 using GpuParticleVectorFieldTextureResolver =
@@ -130,6 +120,7 @@ struct GpuParticleEmitterProgram
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     uint32_t eventOutputStageMask = 0;
+    std::vector<uint32_t> parameterWords;
     bool preserveState = false;
     struct StateMigration
     {
@@ -141,17 +132,24 @@ struct GpuParticleEmitterProgram
     std::optional<StateMigration> migration;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuKernelStage::Count)> kernels;
     std::vector<uint32_t> eventInitKernel;
-    GpuParticlePointCacheLayoutProgram pointCaches;
+    uint32_t continuationCapacity = 0;
+    uint32_t continuationRecordStride = 0;
+    std::array<std::vector<uint32_t>, static_cast<size_t>(GpuParticleContinuationKernelStage::Count)>
+        continuationKernels;
     std::optional<GpuParticleMeshShapeProgram> meshShape;
     GpuParticleVectorFieldLayoutProgram vectorFields;
     std::vector<uint32_t> billboardVertexShader;
     std::vector<uint32_t> billboardFragmentShader;
     std::vector<uint32_t> billboardForwardPlusFragmentShader;
     std::vector<uint32_t> billboardPickingFragmentShader;
+    std::vector<uint32_t> billboardMotionVertexShader;
+    std::vector<uint32_t> billboardMotionFragmentShader;
     std::vector<uint32_t> meshVertexShader;
     std::vector<uint32_t> meshFragmentShader;
     std::vector<uint32_t> meshForwardPlusFragmentShader;
     std::vector<uint32_t> meshPickingFragmentShader;
+    std::vector<uint32_t> meshMotionVertexShader;
+    std::vector<uint32_t> meshMotionFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;
 };
 
@@ -184,12 +182,26 @@ struct GpuParticleTelemetrySnapshot
     size_t simulatingSystemCount = 0;
     size_t renderingSystemCount = 0;
     uint64_t requestedSpawnCount = 0;
+    size_t continuationSystemCount = 0;
+    uint64_t totalContinuationCapacity = 0;
+    uint32_t maximumContinuationProgramGeneration = 0;
+    uint64_t continuationPrepareRecordCalls = 0;
+    uint64_t continuationClassifyRecordCalls = 0;
+    uint64_t continuationDispatchRecordCalls = 0;
+    size_t continuationResetPendingCount = 0;
+    uint64_t collisionSceneRevision = 0;
+    uint32_t collisionSceneColliderCount = 0;
+    uint64_t collisionSceneTopologyRevision = 0;
+    uint32_t collisionSceneMeshVertexCount = 0;
+    uint32_t collisionSceneMeshIndexCount = 0;
+    uint32_t collisionSceneMeshBvhNodeCount = 0;
 };
 
 enum class GpuParticleDiagnosticStatus : uint8_t
 {
     Pending,
     Completed,
+    Inactive,
     Failed,
     Unknown,
 };
@@ -203,6 +215,10 @@ struct GpuParticleEmitterDiagnostic
     uint32_t aliveCount = 0;
     uint32_t visibleCount = 0;
     uint32_t droppedCount = 0;
+    GpuParticleBoundsMode boundsMode = GpuParticleBoundsMode::Automatic;
+    bool boundsValid = false;
+    std::array<float, 3> boundsLower{};
+    std::array<float, 3> boundsUpper{};
 };
 
 struct GpuParticleEventDiagnostic
@@ -248,20 +264,34 @@ class ParticleGpuSystemManager
 
     [[nodiscard]] bool Initialize(
         vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
-        FrameDeletionQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+        GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
         GpuBillboardTextureResolver textureResolver = {},
-        GpuBillboardTextureVersionResolver textureVersionResolver = {},
         GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
         const GpuParticleSortProgram &sortProgram = {}, const GpuParticleCullProgram &cullProgram = {},
         const GpuParticleBoundsProgram &boundsProgram = {}, const GpuParticleMigrationProgram &migrationProgram = {},
         const GpuParticleEventProgram &eventProgram = {}, const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-        const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
+        const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, uint32_t framesInFlight = 2);
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph
     /// remains untouched when any runtime, renderer, event ABI, or RenderGraph
     /// compilation step fails.
     [[nodiscard]] bool ApplyGraph(const GpuParticleGraphProgram &program, std::string *error = nullptr);
+    /// Update graph-instance parameters in place. No shader, pipeline, or
+    /// particle-state resource is rebuilt.
+    [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords,
+                                             std::string *error = nullptr);
+    /// Queue ABI-packed gameplay events for a graph route. Records are copied
+    /// into the next GPU event page at the simulation boundary.
+    [[nodiscard]] bool QueueExternalEvents(uint64_t graphInstanceId, uint32_t channelIndex,
+                                           const std::vector<uint32_t> &recordWords, uint32_t recordCount,
+                                           std::string *error = nullptr);
+    /// Publish a scene-owned collider snapshot. No GPU work is recorded until
+    /// the next particle simulation boundary.
+    [[nodiscard]] bool PublishCollisionScene(const GpuParticleCollisionSceneSnapshot &snapshot,
+                                             std::string *error = nullptr);
+    [[nodiscard]] uint64_t CollisionSceneRevision() const noexcept;
+    [[nodiscard]] uint32_t CollisionSceneColliderCount() const noexcept;
     /// Replace only render resources that reference this live material. The
     /// simulation runtime and all surviving particles remain untouched.
     [[nodiscard]] bool RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
@@ -277,6 +307,15 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool BeginFrameBatch(uint64_t graphInstanceId, const std::vector<GpuParticleBatchFrameItem> &items);
     [[nodiscard]] bool Reset(uint64_t id);
     void Execute(VkCommandBuffer commandBuffer);
+    /// Record the pre-export simulation phase on an independent Compute queue.
+    [[nodiscard]] bool RecordAsyncSimulation(VkCommandBuffer commandBuffer);
+    /// Record Rendering/Bounds after the current Graphics frame has consumed
+    /// the previous exported particle output.
+    [[nodiscard]] bool RecordAsyncExport(VkCommandBuffer commandBuffer);
+    [[nodiscard]] bool CanExecuteAsync() const noexcept;
+    /// Changes whenever a simulation graph is published. Frame scheduling
+    /// uses this to synchronously prime newly exported render data once.
+    [[nodiscard]] uint64_t AsyncExecutionGeneration() const noexcept;
 
     [[nodiscard]] bool Contains(uint64_t id) const;
     [[nodiscard]] size_t Size() const;
@@ -284,7 +323,6 @@ class ParticleGpuSystemManager
     [[nodiscard]] uint64_t ActiveArtifactRevision(uint64_t id) const;
     [[nodiscard]] bool ActiveStateWasPreserved(uint64_t id) const;
     [[nodiscard]] size_t ActiveOutputCount(uint64_t id) const;
-    [[nodiscard]] uint64_t ActivePointCacheGeneration(uint64_t id, uint32_t interfaceIndex) const;
     [[nodiscard]] uint64_t ActiveVectorFieldGeneration(uint64_t id, uint32_t interfaceIndex) const;
     [[nodiscard]] int32_t ActiveOutputRenderQueue(uint64_t emitterId, uint64_t outputId) const;
     [[nodiscard]] std::optional<ParticleOutputSemantics> ActiveOutputSemantics(uint64_t emitterId,
@@ -292,8 +330,8 @@ class ParticleGpuSystemManager
     [[nodiscard]] uint64_t ActiveEventAbiHash(uint64_t graphInstanceId) const;
     [[nodiscard]] uint64_t ActiveEventDomainSerial(uint64_t graphInstanceId) const;
     [[nodiscard]] uint32_t ActiveEventPageCount(uint64_t graphInstanceId) const;
-    /// Arm one counter snapshot. No transfer or readback resource exists
-    /// until this method is called, and completion never stalls the renderer.
+    /// Arm one counter-and-bounds snapshot. No transfer or readback resource
+    /// exists until this method is called, and completion never stalls the renderer.
     [[nodiscard]] uint64_t RequestDiagnostics(uint64_t graphInstanceId);
     [[nodiscard]] GpuParticleDiagnosticSnapshot QueryDiagnostics(uint64_t requestId) const;
 

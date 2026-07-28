@@ -1,6 +1,7 @@
 #include <function/renderer/RendererList.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
+#include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
@@ -189,6 +190,7 @@ bool VerifyRhiBufferUpload(TestResources &resources)
                  "Published RHI buffer resource is invalid"))
         return false;
     const auto handle = resident->GetBuffer();
+    std::weak_ptr<infernux::rhi::BufferResource> weakResident = resident;
     if (!Require(resources.context.GetRhiDevice().Resolve(handle) == ticket->GetBuffer()->GetBuffer(),
                  "Published RHI buffer does not resolve to the uploaded Vulkan allocation"))
         return false;
@@ -200,9 +202,9 @@ bool VerifyRhiBufferUpload(TestResources &resources)
         return false;
 
     resident.reset();
-    ticket.reset();
-    return Require(resources.context.GetRhiDevice().Resolve(handle) == VK_NULL_HANDLE,
-                   "Released RHI buffer registration remained visible");
+    const bool resourceExpired = weakResident.expired();
+    const bool handleReleased = resources.context.GetRhiDevice().Resolve(handle) == VK_NULL_HANDLE;
+    return Require(resourceExpired && handleReleased, "Released public RHI buffer registration remained visible");
 }
 
 bool VerifyGpuParticleMigration(TestResources &resources,
@@ -771,11 +773,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         {cullCode[1].data(), cullCode[1].size()},
         {cullCode[2].data(), cullCode[2].size()},
     };
-    const std::array<std::string_view, 2> boundsSources = {
+    const std::array<std::string_view, 3> boundsSources = {
+        infernux::particle::GpuParticleBoundsShaderSources::Prepare(),
         infernux::particle::GpuParticleBoundsShaderSources::Reset(),
         infernux::particle::GpuParticleBoundsShaderSources::Reduce(),
     };
-    std::array<std::vector<uint32_t>, 2> boundsCode;
+    std::array<std::vector<uint32_t>, 3> boundsCode;
     for (size_t index = 0; index < boundsSources.size(); ++index) {
         boundsCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
             std::string(boundsSources[index]), "Tests/ParticleBounds" + std::to_string(index) + ".comp"));
@@ -785,6 +788,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const infernux::particle::GpuParticleBoundsProgram boundsProgram = {
         {boundsCode[0].data(), boundsCode[0].size()},
         {boundsCode[1].data(), boundsCode[1].size()},
+        {boundsCode[2].data(), boundsCode[2].size()},
     };
     const std::array<std::string_view, 2> migrationSources = {
         infernux::particle::GpuParticleMigrationShaderSources::Reset(),
@@ -822,15 +826,21 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     initialLinkedParticleForward.vertexSpirv = SpirvBytes(particleVertexCode);
     initialLinkedParticleForward.fragmentSpirv = SpirvBytes(particleFragmentCode);
     initialLinkedParticleProgram->variants.push_back(std::move(initialLinkedParticleForward));
+    infernux::ShaderProgramArtifact::PassVariant initialLinkedParticleMotion;
+    initialLinkedParticleMotion.target = infernux::ShaderCompileTarget::Motion;
+    initialLinkedParticleMotion.compatibilitySignature = initialLinkedParticleProgram->compatibilitySignature;
+    initialLinkedParticleMotion.vertexSpirv = SpirvBytes(particleVertexCode);
+    initialLinkedParticleMotion.fragmentSpirv = SpirvBytes(particleFragmentCode);
+    initialLinkedParticleProgram->variants.push_back(std::move(initialLinkedParticleMotion));
     if (!Require(initialLinkedParticleProgram->IsValid(), "Initial linked particle test artifact is invalid"))
         return false;
 
-    infernux::FrameDeletionQueue particleDeletionQueue;
-    particleDeletionQueue.Initialize(2);
+    infernux::GpuRetirementQueue particleDeletionQueue;
+    particleDeletionQueue.BindSerialSource([] { return infernux::rhi::SubmissionSerial{1}; });
     infernux::particle::ParticleGpuDrawRegistry particleDrawRegistry;
     infernux::particle::ParticleGpuSystemManager particleSystems;
     if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, resources.resources,
-                                            particleDeletionQueue, particleDrawRegistry, {}, {}, {}, sortProgram,
+                                            particleDeletionQueue, particleDrawRegistry, {}, {}, sortProgram,
                                             cullProgram, boundsProgram, migrationProgram, eventProgram),
                  "GPU particle system manager initialization failed"))
         return false;
@@ -848,36 +858,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedProgram.eventInitKernel = particleComputeCode;
     managedProgram.billboardVertexShader = particleVertexCode;
     managedProgram.billboardFragmentShader = particleFragmentCode;
-    auto pointCacheData = std::make_shared<infernux::PointCacheCpuData>();
-    pointCacheData->stableId = "managed-points";
-    pointCacheData->name = "Managed Points";
-    pointCacheData->bakeBasis = "right_handed_y_up";
-    pointCacheData->pointCount = 2;
-    pointCacheData->channels = {
-        {"position", infernux::PointCacheChannelType::Float3, infernux::PointCacheChannelSemantic::Position, 0, 12},
-        {"id", infernux::PointCacheChannelType::UInt, infernux::PointCacheChannelSemantic::Id, 32, 4},
-    };
-    pointCacheData->bytes.resize(40);
-    const std::array<float, 6> managedPointPositions = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
-    const std::array<uint32_t, 2> managedPointIds = {7, 42};
-    std::memcpy(pointCacheData->bytes.data(), managedPointPositions.data(), sizeof(managedPointPositions));
-    std::memcpy(pointCacheData->bytes.data() + 32, managedPointIds.data(), sizeof(managedPointIds));
-    pointCacheData->RebuildIdLookup();
-    auto managedPointCache = std::make_shared<infernux::InxPointCache>();
-    managedPointCache->SetGuid("managed-point-cache-guid");
-    managedPointCache->SetCpuData(pointCacheData);
-    infernux::particle::GpuParticlePointCacheProgram pointCacheProgram;
-    pointCacheProgram.stableId = "managed-point-cache";
-    pointCacheProgram.interfaceIndex = 0;
-    pointCacheProgram.dataBinding = 1;
-    pointCacheProgram.lookupBinding = 2;
-    pointCacheProgram.cacheToSpace = {
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    pointCacheProgram.cache = managedPointCache;
-    pointCacheProgram.samples.push_back({0, "position", infernux::PointCacheChannelType::Float3, false});
-    managedProgram.pointCaches.sampleCount = 1;
-    managedProgram.pointCaches.pointCaches.push_back(std::move(pointCacheProgram));
     infernux::particle::GpuParticleOutputProgram primaryOutput;
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
@@ -899,14 +879,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         graphProgram.removeEmitterIds = std::move(removeIds);
         return particleSystems.ApplyGraph(graphProgram, &managedError);
     };
-    const uint64_t pointCacheUploadsBeforeCreate = resources.resources.GetBufferUploadSubmissionCount();
-    if (!Require(publishManagedGraph({managedProgram}), managedError.c_str()) ||
+    const bool initialPublicationSucceeded = publishManagedGraph({managedProgram});
+    if (!Require(initialPublicationSucceeded, managedError.c_str()) ||
         !Require(particleSystems.Size() == 1 && particleSystems.Contains(managedProgram.id) &&
-                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 &&
-                     particleDrawRegistry.Size() == 1 &&
-                     particleSystems.ActivePointCacheGeneration(managedProgram.id, 0) ==
-                         managedPointCache->GetGeneration() &&
-                     resources.resources.GetBufferUploadSubmissionCount() == pointCacheUploadsBeforeCreate + 2,
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 && particleDrawRegistry.Size() == 1,
                  "GPU particle system was not published atomically"))
         return false;
     const auto residentParticleTelemetry = particleSystems.TelemetrySnapshot();
@@ -955,11 +931,18 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     linkedParticleForward.vertexSpirv = SpirvBytes(particleVertexCode);
     linkedParticleForward.fragmentSpirv = SpirvBytes(particleFragmentCode);
     linkedParticleProgram->variants.push_back(std::move(linkedParticleForward));
+    infernux::ShaderProgramArtifact::PassVariant linkedParticleMotion;
+    linkedParticleMotion.target = infernux::ShaderCompileTarget::Motion;
+    linkedParticleMotion.compatibilitySignature = linkedParticleProgram->compatibilitySignature;
+    linkedParticleMotion.vertexSpirv = SpirvBytes(particleVertexCode);
+    linkedParticleMotion.fragmentSpirv = SpirvBytes(particleFragmentCode);
+    linkedParticleProgram->variants.push_back(std::move(linkedParticleMotion));
     if (!Require(linkedParticleProgram->IsValid(), "Linked particle test artifact is invalid"))
         return false;
     const uint64_t drawRevisionBeforeMaterialRefresh = particleDrawRegistry.Revision();
-    if (!Require(particleSystems.RefreshMaterialProgram(primaryOutput.material, linkedParticleProgram, &managedError),
-                 managedError.c_str()) ||
+    const bool materialRefreshSucceeded =
+        particleSystems.RefreshMaterialProgram(primaryOutput.material, linkedParticleProgram, &managedError);
+    if (!Require(materialRefreshSucceeded, managedError.c_str()) ||
         !Require(particleSystems.ActiveArtifactRevision(managedProgram.id) == 1 &&
                      particleDrawRegistry.Revision() == drawRevisionBeforeMaterialRefresh + 1 &&
                      particleDeletionQueue.PendingCount() == 1,
@@ -977,11 +960,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             "Invalid GPU particle material disturbed the last-known-good renderer")) {
         return false;
     }
-    particleDeletionQueue.Tick();
-    particleDeletionQueue.Tick();
-    particleDeletionQueue.Tick();
+    (void)particleDeletionQueue.Collect(1);
     if (!Require(particleDeletionQueue.PendingCount() == 0,
-                 "GPU particle material retirement did not complete after deferred frames"))
+                 "GPU particle material retirement did not complete after its submission"))
         return false;
 
     auto invalidManagedProgram = managedProgram;
@@ -1022,7 +1003,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     const auto preservedManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
     if (!Require(preservedManagedEntries.size() == 2 &&
-                     resources.resources.GetBufferUploadSubmissionCount() == pointCacheUploadsBeforeCreate + 2 &&
                      preservedManagedEntries[0].instances == initialManagedInstances &&
                      preservedManagedEntries[1].instances == initialManagedInstances &&
                      preservedManagedEntries[0].indirectArguments == initialManagedIndirect &&
@@ -1217,6 +1197,22 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::GpuEmitterDesc particleDesc;
     particleDesc.capacity = 32;
     particleDesc.stateStride = 16;
+    const auto particleCollisionHeader = rhi.CreateBuffer(
+        {sizeof(infernux::particle::GpuParticleCollisionSceneHeader), infernux::rhi::BufferUsageFlags::Storage});
+    const auto particleCollisionRecords = rhi.CreateBuffer(
+        {sizeof(infernux::particle::GpuParticleColliderRecord), infernux::rhi::BufferUsageFlags::Storage});
+    const auto particleCollisionGridOffsets = rhi.CreateBuffer({64, infernux::rhi::BufferUsageFlags::Storage});
+    const auto particleCollisionGridIndices = rhi.CreateBuffer({64, infernux::rhi::BufferUsageFlags::Storage});
+    const auto particleCollisionMeshVertices = rhi.CreateBuffer({64, infernux::rhi::BufferUsageFlags::Storage});
+    const auto particleCollisionMeshIndices = rhi.CreateBuffer({64, infernux::rhi::BufferUsageFlags::Storage});
+    const auto particleCollisionMeshBvhNodes = rhi.CreateBuffer({64, infernux::rhi::BufferUsageFlags::Storage});
+    particleDesc.collisionSceneHeader = particleCollisionHeader;
+    particleDesc.collisionSceneColliders = particleCollisionRecords;
+    particleDesc.collisionSceneGridOffsets = particleCollisionGridOffsets;
+    particleDesc.collisionSceneGridColliderIndices = particleCollisionGridIndices;
+    particleDesc.collisionSceneMeshVertices = particleCollisionMeshVertices;
+    particleDesc.collisionSceneMeshIndices = particleCollisionMeshIndices;
+    particleDesc.collisionSceneMeshBvhNodes = particleCollisionMeshBvhNodes;
     for (auto &kernel : particleDesc.kernels)
         kernel = {particleComputeCode.data(), particleComputeCode.size()};
     particleDesc.eventInitKernel = {particleComputeCode.data(), particleComputeCode.size()};
@@ -1227,7 +1223,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::GpuParticleBoundsDesc particleBoundsDesc;
     particleBoundsDesc.capacity = particleRuntime.Capacity();
     particleBoundsDesc.instances = particleRuntime.InstanceBuffer();
+    particleBoundsDesc.sourceIndices = particleRuntime.RenderIndexBuffer();
     particleBoundsDesc.sourceIndirectArguments = particleRuntime.IndirectBuffer();
+    particleBoundsDesc.simulationControl = particleRuntime.SimulationControlBuffer();
     particleBoundsDesc.program = boundsProgram;
     if (!Require(particleBounds.Create(rhi, particleBoundsDesc), "Particle GPU bounds creation failed"))
         return false;
@@ -1237,7 +1235,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedCullerDesc.vertexCount = 6;
     managedCullerDesc.instances = managedEntry.instances;
     managedCullerDesc.sourceIndirectArguments = managedEntry.indirectArguments;
+    managedCullerDesc.sourceIndices = particleRuntime.RenderIndexBuffer();
     managedCullerDesc.bounds = managedEntry.bounds;
+    managedCullerDesc.simulationControl = particleRuntime.SimulationControlBuffer();
     managedCullerDesc.program = cullProgram;
     if (!Require(managedViewCuller.Create(rhi, managedCullerDesc), "Managed particle view culler creation failed"))
         return false;
@@ -1267,13 +1267,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     ResourceHandle copiedIndirectArguments;
     ResourceHandle managedInstances;
     ResourceHandle managedSourceIndirectArguments;
+    ResourceHandle managedSourceIndices;
     ResourceHandle managedBounds;
+    ResourceHandle managedSimulationControl;
     ResourceHandle managedVisibleIndices;
     ResourceHandle managedIndirectArguments;
     ResourceHandle managedSortDispatchArguments;
     ResourceHandle offscreenInstances;
     ResourceHandle offscreenSourceIndirectArguments;
+    ResourceHandle offscreenSourceIndices;
     ResourceHandle offscreenBounds;
+    ResourceHandle offscreenSimulationControl;
     ResourceHandle offscreenVisibleIndices;
     ResourceHandle offscreenIndirectArguments;
     ResourceHandle offscreenSortDispatchArguments;
@@ -1350,21 +1354,33 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                                     infernux::particle::ParticleGpuRuntime::RenderInstanceStride);
         managedSourceIndirectArguments =
             builder.ImportBuffer("ManagedParticleSourceIndirect", managedEntry.indirectArguments, 16);
+        managedSourceIndices =
+            builder.ImportBuffer("ManagedParticleSourceIndices", particleRuntime.RenderIndexBuffer(), elementBytes);
         managedBounds = builder.ImportBuffer("ManagedParticleBounds", managedEntry.bounds,
                                              infernux::particle::ParticleGpuBounds::BoundsBufferBytes);
+        managedSimulationControl =
+            builder.ImportBuffer("ManagedParticleSimulationControl", particleRuntime.SimulationControlBuffer(),
+                                 sizeof(infernux::particle::GpuParticleSimulationControl));
         managedVisibleIndices =
             builder.ImportBuffer("ManagedParticleVisibleIndices", managedViewCuller.VisibleIndexBuffer(), elementBytes);
         managedIndirectArguments =
             builder.ImportBuffer("ManagedParticleViewIndirect", managedViewCuller.DrawIndirectBuffer(), 16);
         managedSortDispatchArguments =
-            builder.ImportBuffer("ManagedParticleSortDispatch", managedViewCuller.SortDispatchBuffer(), 12);
+            builder.ImportBuffer("ManagedParticleSortDispatch", managedViewCuller.SortDispatchBuffer(),
+                                 sizeof(infernux::particle::GpuParticleCullDispatchState));
         resources.graph.SetResourceInitialState(managedInstances, infernux::rhi::TextureLayout::Undefined,
                                                 infernux::rhi::Access::ShaderWrite,
                                                 infernux::rhi::PipelineStage::ComputeShader);
         resources.graph.SetResourceInitialState(managedSourceIndirectArguments, infernux::rhi::TextureLayout::Undefined,
                                                 infernux::rhi::Access::ShaderWrite,
                                                 infernux::rhi::PipelineStage::ComputeShader);
+        resources.graph.SetResourceInitialState(managedSourceIndices, infernux::rhi::TextureLayout::Undefined,
+                                                infernux::rhi::Access::ShaderWrite,
+                                                infernux::rhi::PipelineStage::ComputeShader);
         resources.graph.SetResourceInitialState(managedBounds, infernux::rhi::TextureLayout::Undefined,
+                                                infernux::rhi::Access::ShaderWrite,
+                                                infernux::rhi::PipelineStage::ComputeShader);
+        resources.graph.SetResourceInitialState(managedSimulationControl, infernux::rhi::TextureLayout::Undefined,
                                                 infernux::rhi::Access::ShaderWrite,
                                                 infernux::rhi::PipelineStage::ComputeShader);
         resources.graph.SetResourceInitialState(managedVisibleIndices, infernux::rhi::TextureLayout::Undefined,
@@ -1378,6 +1394,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                                 infernux::rhi::PipelineStage::ComputeShader);
         builder.ReadStorageBuffer(managedSourceIndirectArguments);
         builder.ReadStorageBuffer(managedBounds);
+        managedSimulationControl =
+            builder.ReadWrite(managedSimulationControl, infernux::rhi::PipelineStage::ComputeShader);
         managedIndirectArguments = builder.WriteStorageBuffer(managedIndirectArguments);
         managedSortDispatchArguments = builder.WriteStorageBuffer(managedSortDispatchArguments);
         return [&](RenderContext &context) {
@@ -1387,6 +1405,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     resources.graph.AddComputePass("ManagedParticleCull/Cull", [&](PassBuilder &builder) {
         builder.ReadStorageBuffer(managedInstances);
         builder.ReadStorageBuffer(managedSourceIndirectArguments);
+        builder.ReadStorageBuffer(managedSourceIndices);
         builder.ReadIndirectBuffer(managedSortDispatchArguments);
         managedVisibleIndices = builder.WriteStorageBuffer(managedVisibleIndices);
         managedIndirectArguments =
@@ -1408,15 +1427,22 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                                       infernux::particle::ParticleGpuRuntime::RenderInstanceStride);
         offscreenSourceIndirectArguments =
             builder.ImportBuffer("OffscreenParticleSourceIndirect", managedEntry.indirectArguments, 16);
+        offscreenSourceIndices =
+            builder.ImportBuffer("OffscreenParticleSourceIndices", particleRuntime.RenderIndexBuffer(), elementBytes);
         offscreenBounds = builder.ImportBuffer("OffscreenParticleBounds", managedEntry.bounds,
                                                infernux::particle::ParticleGpuBounds::BoundsBufferBytes);
+        offscreenSimulationControl =
+            builder.ImportBuffer("OffscreenParticleSimulationControl", particleRuntime.SimulationControlBuffer(),
+                                 sizeof(infernux::particle::GpuParticleSimulationControl));
         offscreenVisibleIndices = builder.ImportBuffer("OffscreenParticleVisibleIndices",
                                                        offscreenViewCuller.VisibleIndexBuffer(), elementBytes);
         offscreenIndirectArguments =
             builder.ImportBuffer("OffscreenParticleViewIndirect", offscreenViewCuller.DrawIndirectBuffer(), 16);
         offscreenSortDispatchArguments =
-            builder.ImportBuffer("OffscreenParticleSortDispatch", offscreenViewCuller.SortDispatchBuffer(), 12);
-        for (const auto handle : {offscreenInstances, offscreenSourceIndirectArguments, offscreenBounds})
+            builder.ImportBuffer("OffscreenParticleSortDispatch", offscreenViewCuller.SortDispatchBuffer(),
+                                 sizeof(infernux::particle::GpuParticleCullDispatchState));
+        for (const auto handle : {offscreenInstances, offscreenSourceIndirectArguments, offscreenSourceIndices,
+                                  offscreenBounds, offscreenSimulationControl})
             resources.graph.SetResourceInitialState(handle, infernux::rhi::TextureLayout::Undefined,
                                                     infernux::rhi::Access::ShaderWrite,
                                                     infernux::rhi::PipelineStage::ComputeShader);
@@ -1426,6 +1452,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                                     infernux::rhi::PipelineStage::ComputeShader);
         builder.ReadStorageBuffer(offscreenSourceIndirectArguments);
         builder.ReadStorageBuffer(offscreenBounds);
+        offscreenSimulationControl =
+            builder.ReadWrite(offscreenSimulationControl, infernux::rhi::PipelineStage::ComputeShader);
         offscreenIndirectArguments = builder.WriteStorageBuffer(offscreenIndirectArguments);
         offscreenSortDispatchArguments = builder.WriteStorageBuffer(offscreenSortDispatchArguments);
         return [&](RenderContext &context) {
@@ -1435,6 +1463,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     resources.graph.AddComputePass("OffscreenParticleCull/Cull", [&](PassBuilder &builder) {
         builder.ReadStorageBuffer(offscreenInstances);
         builder.ReadStorageBuffer(offscreenSourceIndirectArguments);
+        builder.ReadStorageBuffer(offscreenSourceIndices);
         builder.ReadIndirectBuffer(offscreenSortDispatchArguments);
         offscreenVisibleIndices = builder.WriteStorageBuffer(offscreenVisibleIndices);
         offscreenIndirectArguments =
@@ -1621,24 +1650,33 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     const auto executionNames = resources.graph.GetExecutionPassNames();
-    if (!Require(
-            executionNames.size() == 43 && executionNames[0] == "BuildIndirectArguments" &&
-                executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "Particle/TestEmitter/Bootstrap" &&
-                executionNames[3] == "Particle/TestEmitter/Init" &&
-                executionNames[4] == "Particle/TestEmitter/Update" &&
-                executionNames[5] == "Particle/TestEmitter/RenderReset" &&
-                executionNames[6] == "Particle/TestEmitter/Rendering" &&
-                executionNames[7] == "Particle/TestEmitter/BoundsReset" &&
-                executionNames[8] == "Particle/TestEmitter/BoundsReduce" &&
-                executionNames[9] == "ManagedParticleCull/Reset" && executionNames[10] == "ManagedParticleCull/Cull" &&
-                executionNames[11] == "ManagedParticleCull/Finalize" &&
-                executionNames[12] == "OffscreenParticleCull/Reset" &&
-                executionNames[13] == "OffscreenParticleCull/Cull" &&
-                executionNames[14] == "ManagedParticleSort/Generate" &&
-                executionNames[38] == "ManagedParticleSort/Radix7/Scatter" && executionNames[39] == "ParticleTexture" &&
-                executionNames[40] == "IndirectDraw" && executionNames[41] == "SkipEmptyRendererList" &&
-                executionNames[42] == "RunPopulatedRendererList",
-            "Versioned cull/sort broke the compute-to-indirect draw dependency"))
+    constexpr size_t sortGenerateIndex = 15;
+    constexpr size_t sortTailIndex = sortGenerateIndex + infernux::particle::ParticleGpuSorter::PassCount * 3;
+    constexpr size_t expectedExecutionCount = sortTailIndex + 5;
+    const auto finalRadixScatter =
+        "ManagedParticleSort/Radix" + std::to_string(infernux::particle::ParticleGpuSorter::PassCount - 1) + "/Scatter";
+    const bool executionOrderValid =
+        executionNames.size() == expectedExecutionCount && executionNames[0] == "BuildIndirectArguments" &&
+        executionNames[1] == "CopyIndirectArguments" && executionNames[2] == "Particle/TestEmitter/Bootstrap" &&
+        executionNames[3] == "Particle/TestEmitter/VisibilityPrepare" &&
+        executionNames[4] == "Particle/TestEmitter/Init" && executionNames[5] == "Particle/TestEmitter/Update" &&
+        executionNames[6] == "Particle/TestEmitter/RenderReset" &&
+        executionNames[7] == "Particle/TestEmitter/Rendering" &&
+        executionNames[8] == "Particle/TestEmitter/BoundsReset" &&
+        executionNames[9] == "Particle/TestEmitter/BoundsReduce" && executionNames[10] == "ManagedParticleCull/Reset" &&
+        executionNames[11] == "ManagedParticleCull/Cull" && executionNames[12] == "ManagedParticleCull/Finalize" &&
+        executionNames[13] == "OffscreenParticleCull/Reset" && executionNames[14] == "OffscreenParticleCull/Cull" &&
+        executionNames[sortGenerateIndex] == "ManagedParticleSort/Generate" &&
+        executionNames[sortTailIndex] == finalRadixScatter && executionNames[sortTailIndex + 1] == "ParticleTexture" &&
+        executionNames[sortTailIndex + 2] == "IndirectDraw" &&
+        executionNames[sortTailIndex + 3] == "SkipEmptyRendererList" &&
+        executionNames[sortTailIndex + 4] == "RunPopulatedRendererList";
+    if (!executionOrderValid) {
+        std::cerr << "RenderGraph execution order (" << executionNames.size() << " passes):\n";
+        for (size_t index = 0; index < executionNames.size(); ++index)
+            std::cerr << "  [" << index << "] " << executionNames[index] << '\n';
+    }
+    if (!Require(executionOrderValid, "Versioned cull/sort broke the compute-to-indirect draw dependency"))
         return false;
     if (!Require(resources.graph.ResolveRendererList(emptyRendererListHandle) == &emptyRendererList &&
                      resources.graph.ResolveRendererList(populatedRendererListHandle) == &populatedRendererList,
@@ -1781,6 +1819,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::GpuBillboardRendererDesc billboardDesc;
     billboardDesc.vertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
     billboardDesc.fragmentShader = {particleTexturedFragmentCode.data(), particleTexturedFragmentCode.size()};
+    billboardDesc.motionVertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
+    billboardDesc.motionFragmentShader = {particleTexturedFragmentCode.data(), particleTexturedFragmentCode.size()};
     billboardDesc.instances = particleRuntime.InstanceBuffer();
     billboardDesc.renderIndices = particleRuntime.RenderIndexBuffer();
     billboardDesc.fallbackMaterial.blendEnabled = false;
@@ -1789,10 +1829,19 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             return infernux::particle::GpuBillboardTextureLease{};
         const auto texture = rhi.RegisterTextureView(resources.graph.ResolveTextureView(particleTexture));
         const auto sampler = rhi.RegisterSampler(resources.sampledTextureSampler);
-        return infernux::particle::GpuBillboardTextureLease{infernux::particle::GpuBillboardTextureStatus::Ready,
-                                                            texture, sampler, std::make_shared<uint32_t>(1), true};
+        auto owner = std::shared_ptr<const void>(new uint32_t(1), [&rhi, texture, sampler](const void *value) {
+            rhi.Release(texture);
+            rhi.Release(sampler);
+            delete static_cast<const uint32_t *>(value);
+        });
+        auto publication = std::make_shared<const infernux::rhi::TextureGpuView>(
+            "compute-indirect-fixture", 1, infernux::rhi::TextureHandle{}, texture, sampler, 1, std::move(owner));
+        auto slot = std::make_shared<infernux::rhi::TextureGpuViewSlot>("compute-indirect-fixture");
+        (void)slot->Publish(publication);
+        return infernux::particle::GpuBillboardTextureLease{
+            infernux::particle::GpuBillboardTextureStatus::Ready, texture, sampler, std::move(slot),
+            std::move(publication)};
     };
-    billboardDesc.textureVersionResolver = [](const std::string &) { return uint64_t{1}; };
     billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
     billboardView.viewProjection[0] = 1.0f;
@@ -2022,6 +2071,18 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                          initialEventDomainSerial,
                  "Compatible GPU particle hot reload replaced its event domain"))
         return false;
+    const std::vector<uint32_t> externalEventRecord = {
+        0u, 0u, 0xffffffffu, 0u, 0x3f800000u, 0x40000000u, 0x40400000u,
+    };
+    if (!Require(particleSystems.QueueExternalEvents(managedProgram.graphInstanceId, 0, externalEventRecord, 1,
+                                                     &managedError) &&
+                     managedError.empty(),
+                 "GPU particle manager rejected a valid external event record") ||
+        !Require(!particleSystems.QueueExternalEvents(managedProgram.graphInstanceId, 1, externalEventRecord, 1,
+                                                      &managedError) &&
+                     !managedError.empty(),
+                 "GPU particle manager accepted an invalid external event channel"))
+        return false;
     auto eventFrame = postMigrationFrame;
     eventFrame.frameIndex = 46;
     auto pausedCompanionFrame = eventFrame;
@@ -2079,6 +2140,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedViewCuller.Destroy();
     particleBounds.Destroy();
     particleRuntime.Destroy();
+    rhi.Release(particleCollisionHeader);
+    rhi.Release(particleCollisionRecords);
+    rhi.Release(particleCollisionGridOffsets);
+    rhi.Release(particleCollisionGridIndices);
+    rhi.Release(particleCollisionMeshVertices);
+    rhi.Release(particleCollisionMeshIndices);
+    rhi.Release(particleCollisionMeshBvhNodes);
 
     RenderGraph rootGraph;
     rootGraph.Initialize(&resources.context, &resources.pipelines);
@@ -2118,6 +2186,27 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(rootGraph.GetStructuralCacheHitCount() == 1 && rootGraph.GetStructuralCacheMissCount() == 1 &&
                      rootGraph.GetExecutionPassNames() == rootExecution,
                  "Identical graph rebuild did not reuse structural dependency analysis"))
+        return false;
+
+    RenderGraph motionCullingGraph;
+    motionCullingGraph.Initialize(&resources.context, &resources.pipelines);
+    const auto sceneColor = motionCullingGraph.RegisterTransientTexture("SceneColor", 4, 4, VK_FORMAT_R8G8B8A8_UNORM);
+    const auto motionTexture = motionCullingGraph.RegisterTransientTexture("Motion", 4, 4, VK_FORMAT_R16G16_SFLOAT);
+    ResourceHandle sceneColorVersion;
+    motionCullingGraph.AddPass("SceneColorPass", [&](PassBuilder &builder) {
+        sceneColorVersion = builder.WriteColor(sceneColor);
+        builder.SetRenderArea(4, 4);
+        return [](RenderContext &) {};
+    });
+    motionCullingGraph.AddPass("UnusedMotionPass", [&](PassBuilder &builder) {
+        builder.WriteColor(motionTexture);
+        builder.SetRenderArea(4, 4);
+        return [](RenderContext &) {};
+    });
+    motionCullingGraph.SetOutput(sceneColorVersion);
+    if (!Require(motionCullingGraph.Compile(), "Unused motion graph failed to compile") ||
+        !Require(motionCullingGraph.GetExecutionPassNames() == std::vector<std::string>{"SceneColorPass"},
+                 "Unconsumed motion output was not culled"))
         return false;
 
     rootGraph.Reset();
@@ -2216,8 +2305,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Non-overlapping transient buffers did not reuse one allocation"))
         return false;
 
-    infernux::FrameDeletionQueue graphDeletionQueue;
-    graphDeletionQueue.Initialize(2);
+    infernux::GpuRetirementQueue graphDeletionQueue;
+    graphDeletionQueue.BindSerialSource([] { return infernux::rhi::SubmissionSerial{1}; });
     RenderGraph deferredReleaseGraph;
     deferredReleaseGraph.Initialize(&resources.context, &resources.pipelines, &graphDeletionQueue);
     const auto deferredBuffer =
@@ -2259,6 +2348,49 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(presentInfos.size() == 2 && presentInfos[1].type == infernux::vk::PassType::Present &&
                      presentInfos[1].reason == PassCullReason::SideEffect,
                  "Present pass did not report its typed side-effect root"))
+        return false;
+
+    RenderGraph outlineGraph;
+    outlineGraph.Initialize(&resources.context, &resources.pipelines);
+    auto outlineScene = outlineGraph.RegisterTransientTexture("OutlineScene", 32, 32, VK_FORMAT_R16G16B16A16_SFLOAT);
+    auto outlineMask = outlineGraph.RegisterTransientTexture("OutlineMask", 32, 32, VK_FORMAT_R8G8B8A8_UNORM);
+    ResourceHandle outlinedScene;
+    ResourceHandle writtenMask;
+    outlineGraph.AddPass("Scene", [&](PassBuilder &builder) {
+        outlineScene = builder.WriteColor(outlineScene);
+        builder.SetClearColor(0.1f, 0.2f, 0.3f, 1.0f);
+        builder.SetRenderArea(32, 32);
+        return [](RenderContext &) {};
+    });
+    outlineGraph.AddPass("__EditorOutlineMask", [&](PassBuilder &builder) {
+        writtenMask = builder.WriteColor(outlineMask);
+        builder.SetClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        builder.SetDepthTest(false);
+        builder.SetRenderArea(32, 32);
+        return [](RenderContext &) {};
+    });
+    outlineGraph.AddPass("__EditorOutlineComposite", [&](PassBuilder &builder) {
+        builder.Read(writtenMask, infernux::rhi::PipelineStage::FragmentShader);
+        outlinedScene = builder.WriteColor(outlineScene);
+        builder.SetDepthTest(false);
+        builder.SetRenderArea(32, 32);
+        return [](RenderContext &) {};
+    });
+    outlineGraph.AddPresentPass("__SceneOutputExport", [&](PassBuilder &builder) {
+        builder.PresentRead(outlinedScene);
+        return [](RenderContext &) {};
+    });
+    outlineGraph.SetOutput(outlinedScene);
+    if (!Require(outlineGraph.Compile(), "Graph-owned outline topology failed to compile"))
+        return false;
+    if (!Require(outlineGraph.GetExecutionPassNames() == std::vector<std::string>{"Scene", "__EditorOutlineMask",
+                                                                                  "__EditorOutlineComposite",
+                                                                                  "__SceneOutputExport"},
+                 "Graph-owned outline mask/composite/export ordering is incorrect"))
+        return false;
+    if (!Require(outlineGraph.GetPassRenderPass("__EditorOutlineMask") != VK_NULL_HANDLE &&
+                     outlineGraph.GetPassRenderPass("__EditorOutlineComposite") != VK_NULL_HANDLE,
+                 "Graph-owned outline passes did not publish compatible render-pass layouts"))
         return false;
 
     RenderGraph sampledDepthGraph;
@@ -2322,6 +2454,67 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resolvedDepthGraph.GetExecutionPassNames() ==
                      std::vector<std::string>{"WriteMultisampledDepth", "ResolveDepth", "SampleResolvedDepth"},
                  "Resolved scene-depth dependency did not retain its compute producer"))
+        return false;
+
+    const auto compileQueueOwnershipFixture = [&](const infernux::vk::NativeQueueBinding &computeBinding,
+                                                  const infernux::vk::NativeQueueBinding &graphicsBinding,
+                                                  RenderGraph &graph) {
+        std::array<infernux::vk::NativeQueueBinding, static_cast<size_t>(infernux::rhi::QueueRole::Count)> topology{};
+        topology[static_cast<size_t>(infernux::rhi::QueueRole::Graphics)] = graphicsBinding;
+        topology[static_cast<size_t>(infernux::rhi::QueueRole::Compute)] = computeBinding;
+        topology[static_cast<size_t>(infernux::rhi::QueueRole::Transfer)] = {2, 2};
+        topology[static_cast<size_t>(infernux::rhi::QueueRole::Present)] = graphicsBinding;
+
+        graph.Initialize(&resources.context, &resources.pipelines);
+        graph.SetQueueTopology(topology);
+        const auto storage = graph.RegisterTransientBuffer(
+            "QueueOwnershipStorage", 64,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        ResourceHandle produced;
+        graph.AddComputePass("QueueOwnershipProducer", [&](PassBuilder &builder) {
+            produced = builder.WriteStorageBuffer(storage);
+            return [](RenderContext &) {};
+        });
+        graph.AddPresentPass("QueueOwnershipGraphicsConsumer", [&](PassBuilder &builder) {
+            builder.ReadStorageBuffer(produced, infernux::rhi::PipelineStage::FragmentShader);
+            builder.SetSideEffect();
+            return [](RenderContext &) {};
+        });
+        return graph.Compile();
+    };
+
+    RenderGraph sameLaneGraph;
+    if (!Require(compileQueueOwnershipFixture({0, 0}, {0, 0}, sameLaneGraph),
+                 "Same-lane queue ownership fixture failed to compile") ||
+        !Require(sameLaneGraph.GetSubmissionPlan().batches.size() == 2,
+                 "Logical Compute/Graphics work did not remain explicit batches") ||
+        !Require(sameLaneGraph.GetQueueOwnershipTransfers().empty(),
+                 "Aliased native queue lanes incorrectly emitted an ownership transfer"))
+        return false;
+
+    RenderGraph sameFamilyGraph;
+    if (!Require(compileQueueOwnershipFixture({0, 1}, {0, 0}, sameFamilyGraph),
+                 "Same-family queue ownership fixture failed to compile") ||
+        !Require(sameFamilyGraph.GetQueueOwnershipTransfers().empty(),
+                 "Queues in one family incorrectly emitted an ownership transfer") ||
+        !Require(!sameFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.empty() &&
+                     sameFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().sourceBatch == 0,
+                 "Same-family independent lanes lost their timeline dependency"))
+        return false;
+
+    RenderGraph crossFamilyGraph;
+    if (!Require(compileQueueOwnershipFixture({1, 1}, {0, 0}, crossFamilyGraph),
+                 "Cross-family queue ownership fixture failed to compile") ||
+        !Require(crossFamilyGraph.GetQueueOwnershipTransfers().size() == 1,
+                 "Cross-family resource use did not compile one ownership transfer"))
+        return false;
+    const auto &queueTransfer = crossFamilyGraph.GetQueueOwnershipTransfers().front();
+    if (!Require(queueTransfer.sourceBatch == 0 && queueTransfer.targetBatch == 1 && queueTransfer.sourceFamily == 1 &&
+                     queueTransfer.targetFamily == 0,
+                 "Cross-family ownership transfer metadata is incomplete") ||
+        !Require(!crossFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.empty() &&
+                     crossFamilyGraph.GetSubmissionPlan().batches[1].waitsFor.front().sourceBatch == 0,
+                 "Cross-family ownership transfer lost its timeline dependency"))
         return false;
 
     // Two logical versions share one physical image. A final pass cannot read

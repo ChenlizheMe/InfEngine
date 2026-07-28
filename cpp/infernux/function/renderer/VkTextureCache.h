@@ -50,15 +50,18 @@ class VkTextureCache
     // ── Cache Operations ───────────────────────────────────────────────────
 
     /// Insert a pre-loaded texture into the cache (thread-safe, shares ownership).
-    [[nodiscard]] std::shared_ptr<rhi::TextureResource> Insert(const std::string &key,
-                                                               std::shared_ptr<rhi::TextureResource> texture,
-                                                               uint64_t lastUsedFrame, bool permanentlyPinned,
-                                                               std::string assetGuid, uint64_t runtimeVersion);
+    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot>
+    Insert(const std::string &key, std::shared_ptr<rhi::TextureResource> texture, uint64_t lastUsedFrame,
+           bool permanentlyPinned, std::string assetGuid, uint64_t runtimeVersion);
 
     /// Look up and lease a cached texture; returns nullptr if not found.
-    [[nodiscard]] std::shared_ptr<rhi::TextureResource> Find(const std::string &key, uint64_t frame = 0);
-    [[nodiscard]] std::shared_ptr<rhi::TextureResource> FindAsset(const std::string &key, const std::string &assetGuid,
-                                                                  uint64_t runtimeVersion, uint64_t frame);
+    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot> Find(const std::string &key, uint64_t frame = 0);
+    [[nodiscard]] std::shared_ptr<rhi::TextureGpuViewSlot>
+    FindAsset(const std::string &key, const std::string &assetGuid, uint64_t runtimeVersion, uint64_t frame);
+
+    /// Mark every resident variant of an asset as awaiting a newer runtime
+    /// revision while preserving its last-known-good publication.
+    [[nodiscard]] size_t RequestAssetRevision(const std::string &assetGuid, uint64_t runtimeVersion);
 
     /// Remove all cache entries whose key starts with @p prefix (thread-safe).
     /// Returns the number of entries removed.
@@ -87,7 +90,7 @@ class VkTextureCache
   private:
     struct Entry
     {
-        std::shared_ptr<rhi::TextureResource> texture;
+        std::shared_ptr<rhi::TextureGpuViewSlot> slot;
         uint64_t residentBytes = 0;
         uint64_t lastUsedFrame = 0;
         bool permanentlyPinned = false;
@@ -97,11 +100,12 @@ class VkTextureCache
 
     struct RetiredLease
     {
-        std::weak_ptr<rhi::TextureResource> texture;
+        std::weak_ptr<const rhi::TextureGpuView> publication;
         uint64_t residentBytes = 0;
     };
 
     void RetireEntryLocked(Entry entry);
+    void RetirePublicationLocked(std::shared_ptr<const rhi::TextureGpuView> publication, uint64_t residentBytes);
     void SweepRetiredLeasesLocked() const;
 
     std::unordered_map<std::string, Entry> m_textures;

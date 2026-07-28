@@ -8,6 +8,7 @@
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
 #include "ScenePickingService.h"
+#include "particle/ParticleGpuViewDiagnostics.h"
 #include <array>
 #include <chrono>
 #include <core/log/InxLog.h>           // LogLevel enum (used in SetLogLevel)
@@ -45,6 +46,7 @@ class InxView;
 class OutlineRenderer;
 class RenderPipelineCallback;
 class ResourcePreviewManager;
+class Scene;
 class SceneRenderGraph;
 class SceneRenderTarget;
 class TransientResourcePool;
@@ -93,6 +95,12 @@ struct RendererFrameTelemetrySnapshot
     size_t gpuParticleSimulatingSystemCount = 0;
     size_t gpuParticleRenderingSystemCount = 0;
     uint64_t gpuParticleRequestedSpawnCount = 0;
+    uint64_t gpuParticleCollisionSceneRevision = 0;
+    uint32_t gpuParticleCollisionSceneColliderCount = 0;
+    uint64_t gpuParticleCollisionSceneTopologyRevision = 0;
+    uint32_t gpuParticleCollisionSceneMeshVertexCount = 0;
+    uint32_t gpuParticleCollisionSceneMeshIndexCount = 0;
+    uint32_t gpuParticleCollisionSceneMeshBvhNodeCount = 0;
     std::string sceneRenderGraphName;
     std::string gameRenderGraphName;
     uint64_t sceneRenderGraphExecutionCount = 0;
@@ -103,6 +111,18 @@ struct RendererFrameTelemetrySnapshot
     std::vector<std::string> gameRenderGraphPassNames;
     std::string sceneRenderGraphDebug;
     std::string gameRenderGraphDebug;
+    uint64_t submissionGeneration = 0;
+    bool submissionComposed = false;
+    bool submissionComputeQueueIndependent = false;
+    bool submissionTransferQueueIndependent = false;
+    bool submissionAsyncComputeActive = false;
+    bool submissionParallelComputeGraphics = false;
+    uint32_t submissionBatchCount = 0;
+    uint32_t submissionGraphicsBatchCount = 0;
+    uint32_t submissionComputeBatchCount = 0;
+    uint32_t submissionTransferBatchCount = 0;
+    uint32_t submissionCrossQueueDependencyCount = 0;
+    uint32_t submissionUnorderedComputeGraphicsPairCount = 0;
     double gameRenderMs = 0.0;
     double gameOnlyFrameMs = 0.0;
     double sceneUpdateMs = 0.0;
@@ -207,7 +227,13 @@ class InxRenderer
     void SetMeshGpuBudgetBytes(uint64_t bytes);
     [[nodiscard]] size_t TrimMeshGpuBudget();
     [[nodiscard]] GpuResidencySnapshot GetGpuResidencySnapshot() const;
+    /// Non-blocking completion poll for headless/tool loops that are not
+    /// currently advancing DrawFrame(). Never waits for a queue or device.
+    void PollGpuCompletions();
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
+    [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId);
+    [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot QueryGpuParticleViewDiagnostics(bool gameView,
+                                                                                              uint64_t requestId) const;
     [[nodiscard]] RendererUIPerformanceSnapshot GetUIPerformanceSnapshot(size_t maxSamples = 240) const;
     [[nodiscard]] uint64_t GetGpuResidencyBudgetBytes() const;
     void SetGpuResidencyBudgetBytes(uint64_t bytes);
@@ -319,18 +345,8 @@ class InxRenderer
     }
 
     /// @brief Set the selected object ID for outline tracking
-    void SetSelectedObjectId(uint64_t objectId)
-    {
-        m_selectedObjectId = objectId;
-        m_selectedOutlineObjectIds.clear();
-        if (objectId != 0)
-            m_selectedOutlineObjectIds.push_back(objectId);
-    }
-    void SetSelectedObjectIds(const std::vector<uint64_t> &objectIds)
-    {
-        m_selectedOutlineObjectIds = objectIds;
-        m_selectedObjectId = objectIds.empty() ? 0 : objectIds.back();
-    }
+    void SetSelectedObjectId(uint64_t objectId);
+    void SetSelectedObjectIds(const std::vector<uint64_t> &objectIds);
     [[nodiscard]] uint64_t GetSelectedObjectId() const
     {
         return m_selectedObjectId;
@@ -527,6 +543,8 @@ class InxRenderer
     void RequestFullSpeedFrame();
 
   private:
+    void UpdateParticleCollisionScene();
+
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;
 
@@ -555,6 +573,7 @@ class InxRenderer
     {
         uint64_t id = 0;
         CaptureSource source = CaptureSource::Game;
+        uint64_t sourceGeneration = 0;
     };
     [[nodiscard]] bool HasPendingCapture(CaptureSource source) const;
     void SubmitPendingCaptureReadbacks();
@@ -566,6 +585,18 @@ class InxRenderer
     std::unique_ptr<GizmosDrawCallBuffer> m_componentGizmos;
     std::unique_ptr<particle::ParticleGpuDrawRegistry> m_particleGpuDrawRegistry;
     std::unique_ptr<particle::ParticleGpuSystemManager> m_particleGpuSystemManager;
+    const Scene *m_particleCollisionSourceScene = nullptr;
+    uint64_t m_particleCollisionSourceRevision = 0;
+    uint64_t m_particleCollisionPublishedRevision = 1;
+    uint64_t m_particleCollisionTopologyFingerprint = 0;
+    uint64_t m_particleCollisionTopologyRevision = 1;
+    struct ParticleCollisionPublishedState
+    {
+        std::array<float, 12> worldToCollider{};
+        std::array<float, 4> worldAabbMin{};
+        std::array<float, 4> worldAabbMax{};
+    };
+    std::unordered_map<uint64_t, ParticleCollisionPublishedState> m_particleCollisionPublishedState;
     std::unique_ptr<OutlineRenderer> m_outlineRenderer;
     std::unique_ptr<TransientResourcePool> m_transientResourcePool;
     uint64_t m_gpuResidencyBudgetBytes = 0;
@@ -664,7 +695,7 @@ class InxRenderer
 
     /// @brief Check scene & game render graph MSAA requests; apply if changed.
     /// @return true if MSAA change was triggered and DrawFrame should return early.
-    bool CheckAndApplyMsaaRequest();
+    bool CheckAndApplyMsaaRequest(bool finalFrameCheck, bool sceneViewActive, bool gameViewActive);
 
     [[nodiscard]] uint32_t GetSupportedMsaaSampleMask() const;
     [[nodiscard]] bool ApplyMsaaSamples(int samples, const char *source);

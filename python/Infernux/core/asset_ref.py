@@ -375,7 +375,7 @@ def _ensure_registry():
         "AudioClip": {
             "ref_class":  AudioClipRef,
             "drag_type":  "AUDIO_FILE",
-            "extensions": ("*.wav", "*.mp3", "*.ogg"),
+            "extensions": ("*.wav", "*.ogg"),
             "display":    "AudioClip",
             "prefix":     "aud",
         },

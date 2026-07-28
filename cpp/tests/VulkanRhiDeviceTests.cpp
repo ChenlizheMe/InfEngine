@@ -33,6 +33,10 @@ int main()
     static_assert(rhi::ToVkFormat(rhi::PixelFormat::RGBA16UNorm) == VK_FORMAT_R16G16B16A16_UNORM);
 
     vk::VulkanRhiDevice device;
+    vk::VulkanRhiDevice secondDevice;
+    assert(device.GetDeviceId() != rhi::InvalidDeviceId);
+    assert(secondDevice.GetDeviceId() != rhi::InvalidDeviceId);
+    assert(device.GetDeviceId() != secondDevice.GetDeviceId());
     assert(!device.CreateGraphicsPipeline({}).IsValid());
     assert(!device.CreateComputePipeline({}).IsValid());
     rhi::TextureDesc nullTextureDesc;
@@ -61,6 +65,10 @@ int main()
     const VkImage nativeTexture = FakeHandle<VkImage>(0x91);
     const auto texture = device.RegisterTexture(nativeTexture);
     assert(texture.IsValid());
+    assert(texture.Device() == device.GetDeviceId());
+    assert(device.Resolve(texture) == nativeTexture);
+    assert(secondDevice.Resolve(texture) == VK_NULL_HANDLE);
+    secondDevice.Release(texture);
     assert(device.Resolve(texture) == nativeTexture);
     device.Release(texture);
     assert(device.Resolve(texture) == VK_NULL_HANDLE);

@@ -20,6 +20,14 @@ class PortKind(str, Enum):
     EVENT = "event"
 
 
+class PortDimensionPolicy(str, Enum):
+    """How one value input participates in numeric shape resolution."""
+
+    EXACT = "exact"
+    FIXED = "fixed"
+    PROMOTE = "promote"
+
+
 @dataclass(frozen=True)
 class PortDef:
     id: str
@@ -30,10 +38,17 @@ class PortDef:
     required: bool = True
     default: Any = None
     display_name: str = ""
+    dimension_policy: PortDimensionPolicy = PortDimensionPolicy.EXACT
+    type_property: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "direction", PortDirection(self.direction))
         object.__setattr__(self, "kind", PortKind(self.kind))
+        object.__setattr__(
+            self,
+            "dimension_policy",
+            PortDimensionPolicy(self.dimension_policy),
+        )
         if not self.id:
             raise ValueError("graph port id cannot be empty")
         if type(self.display_name) is not str:
@@ -42,6 +57,20 @@ class PortDef:
             raise ValueError("value ports require a concrete type or type variable")
         if self.kind is not PortKind.VALUE and (self.value_type is not None or self.type_variable):
             raise ValueError("stream and event ports cannot carry a value type")
+        if self.kind is not PortKind.VALUE and self.dimension_policy is not PortDimensionPolicy.EXACT:
+            raise ValueError("only value ports may define a dimension policy")
+        if self.dimension_policy is PortDimensionPolicy.FIXED and self.value_type is None:
+            raise ValueError("fixed-dimension ports require a concrete value type")
+        if self.dimension_policy is PortDimensionPolicy.PROMOTE and not self.type_variable:
+            raise ValueError("promoted ports require a shared type variable")
+        if self.type_property and (
+            self.kind is not PortKind.VALUE
+            or self.direction is not PortDirection.OUTPUT
+            or self.value_type is not None
+        ):
+            raise ValueError(
+                "property-typed ports must be value outputs without a concrete type"
+            )
 
 
 @dataclass(frozen=True)
@@ -68,6 +97,12 @@ class NodeDef:
         property_ids = [item.id for item in self.properties]
         if len(property_ids) != len(set(property_ids)):
             raise ValueError(f"node {self.type_id!r} contains duplicate property ids")
+        for port in self.ports:
+            if port.type_property and port.type_property not in property_ids:
+                raise ValueError(
+                    f"node {self.type_id!r} port {port.id!r} references unknown "
+                    f"type property {port.type_property!r}"
+                )
 
     def port(self, port_id: str) -> PortDef | None:
         return next((port for port in self.ports if port.id == port_id), None)
@@ -102,6 +137,7 @@ __all__ = [
     "NodeDef",
     "NodeDefinitionRegistry",
     "PortDef",
+    "PortDimensionPolicy",
     "PortDirection",
     "PortKind",
     "PropertyDef",

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -32,6 +33,19 @@ void RequireCompiles(infernux::InxShaderLoader &compiler, const std::string &sou
     if (!compiled || compiled->empty()) {
         std::cerr << "Structured shader compilation failed for " << path << '\n';
         assert(false && "structured shader failed to compile");
+    }
+}
+
+void RequireLinkedProgramCompiles(infernux::InxShaderLoader &compiler, const std::string &vertexPath,
+                                  const std::string &fragmentPath)
+{
+    const auto compiled =
+        compiler.CompileLinkedForward(ReadText(vertexPath), vertexPath, ReadText(fragmentPath), fragmentPath);
+    if (!compiled.IsValid()) {
+        std::cerr << "Structured shader program compilation failed for " << vertexPath << " + " << fragmentPath << '\n';
+        for (const auto &error : compiled.errors)
+            std::cerr << "  " << error << '\n';
+        assert(false && "structured shader program failed to compile");
     }
 }
 } // namespace
@@ -103,37 +117,86 @@ void surface (out SurfaceData surface) { }
     assert(!entries.main);
     assert(!entries.vertex);
 
-    const std::string legacySurfaceSource = R"(
-#version 450
-// @shader_id: Legacy Surface
-// @shading_model: Unlit
-// @property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-void surface(out SurfaceData s)
-{
-    s = InitSurfaceData();
-}
-)";
-    const infernux::ShaderEntryPointSet legacyEntries = infernux::DetectShaderEntryPoints(legacySurfaceSource);
-    assert(legacyEntries.surface);
-    assert(!legacyEntries.main);
-    assert(!legacyEntries.vertex);
-
     auto compiler = MakeCompiler();
     infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
 
-    const std::string legacyCapabilitySource = R"(
+    const std::string standalonePassSource = R"(
 #version 450
-@shader_id: Editor Raw
-@cast_shadows: off
-@capability: ForwardOnly
-@capabilities: NoDepthPass, NoPicking, NoMotionVectors
-void main() { }
+ShaderInfo {
+    Name "Tests/StandalonePass"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D sourceTexture
+    }
+    PushConstants settings {
+        Float intensity
+        Float4 tint
+    }
+    Inputs {
+        Float2 inputUv
+    }
+    Outputs {
+        Float4 outputColor
+    }
+}
+void main() {
+    outputColor = texture(sourceTexture, inputUv) * settings.tint * settings.intensity;
+}
 )";
-    const infernux::ShaderDescriptor legacyCapabilityDescriptor =
-        compiler.ParseShaderSource(legacyCapabilitySource, "EditorRaw.frag");
-    assert(!legacyCapabilityDescriptor.surfaceOptions.castShadows);
-    assert(legacyCapabilityDescriptor.capabilities ==
-           std::vector<std::string>({"ForwardOnly", "NoDepthPass", "NoPicking", "NoMotionVectors"}));
+    const auto standaloneInfo = infernux::ParseShaderInfo(standalonePassSource);
+    assert(standaloneInfo.IsValid());
+    assert(standaloneInfo.resources.size() == 1);
+    assert(standaloneInfo.pushConstants.has_value());
+    assert(standaloneInfo.pushConstants->fields.size() == 2);
+    assert(!infernux::FindShaderLayoutDeclaration(standalonePassSource).has_value());
+    RequireCompiles(compiler, standalonePassSource, "StandalonePass.frag");
+
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(INFERNUX_TEST_SHADER_ROOT)) {
+        if (!entry.is_regular_file() || entry.path().string().find("_templates") != std::string::npos)
+            continue;
+        const std::string extension = entry.path().extension().string();
+        if (extension != ".vert" && extension != ".frag" && extension != ".glsl" && extension != ".shadingmodel")
+            continue;
+        const std::string path = entry.path().string();
+        const std::string source = ReadText(path);
+        const auto builtinInfo = infernux::ParseShaderInfo(source);
+        if (!builtinInfo.IsValid()) {
+            std::cerr << "Invalid built-in ShaderInfo: " << path << '\n';
+            for (const auto &diagnostic : builtinInfo.diagnostics)
+                std::cerr << "  " << diagnostic.location.line << ':' << diagnostic.location.column << ' '
+                          << diagnostic.message << '\n';
+        }
+        assert(builtinInfo.IsValid());
+        assert(!infernux::FindShaderLayoutDeclaration(source).has_value());
+        const auto builtinEntries =
+            infernux::DetectShaderEntryPoints(infernux::StripShaderInfoDeclaration(source, builtinInfo));
+        if ((extension == ".vert" || extension == ".frag") && builtinEntries.main) {
+            const auto hasCapability = [&](std::string_view capability) {
+                return std::find(builtinInfo.capabilities.begin(), builtinInfo.capabilities.end(), capability) !=
+                       builtinInfo.capabilities.end();
+            };
+            assert((hasCapability("Fullscreen") || hasCapability("Standalone")) &&
+                   "explicit main() stages must declare their direct compilation domain");
+        }
+        const std::string filename = entry.path().filename().string();
+        const bool linkedParticleStage = filename == "particle_unlit.frag" ||
+                                         filename == "particle_six_way_smoke.frag" ||
+                                         filename == "particle_sprite.vert";
+        if ((extension == ".vert" || extension == ".frag") && !linkedParticleStage)
+            RequireCompiles(compiler, source, path);
+    }
+
+    const std::string shaderRoot = INFERNUX_TEST_SHADER_ROOT;
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert", shaderRoot + "/particle_unlit.frag");
+    RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert",
+                                 shaderRoot + "/particle_six_way_smoke.frag");
+
+    const std::string removedAnnotationSource =
+        "#version 450\n" + std::string(1, '@') + "shader_id: Removed\nvoid main() { }\n";
+    const infernux::ShaderDescriptor removedAnnotationDescriptor =
+        compiler.ParseShaderSource(removedAnnotationSource, "Removed.frag");
+    assert(!removedAnnotationDescriptor.errors.empty());
 
     const infernux::ShaderDescriptor gridDescriptor =
         compiler.ParseShaderSource(ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/grid.frag"), "grid.frag");
@@ -158,7 +221,6 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     assert(rewrittenVertex.find("VertexOutput inxVertexEntry(inout VertexInput value)") != std::string::npos);
 
     const infernux::ShaderDescriptor descriptor = compiler.ParseShaderSource(richSource, "WaveSurface.frag");
-    assert(descriptor.usesStructuredInfo);
     assert(descriptor.shaderId == "Tests/WaveSurface");
     assert(descriptor.shadingModel == "PBR");
     assert(descriptor.hasSurfaceFunc);
@@ -211,28 +273,6 @@ void surface(out SurfaceData s) {
 )";
     RequireCompiles(compiler, fragmentSource, "StructuredUnlit.frag");
 
-    const std::string legacySource = R"(
-@shader_id: Legacy/Test
-@property: amount, Float, 0.5
-@property: glow, Color, [0.1, 0.2, 0.3, 1.0], HDR
-// void main() { }
-void vertex(inout VertexInput v) { v.position.x += amount; }
-)";
-    const auto legacy = compiler.ParseShaderSource(legacySource, "Legacy.vert");
-    assert(!legacy.usesStructuredInfo);
-    assert(legacy.shaderId == "Legacy/Test");
-    assert(legacy.properties.size() == 2);
-    assert(legacy.properties[1].defaultValue == "[0.1, 0.2, 0.3, 1.0]");
-    assert(legacy.properties[1].hdr);
-    assert(legacy.hasVertexFunc);
-    assert(!legacy.hasMainFunc);
-
-    infernux::InxResourceMeta legacyMetadata;
-    compiler.CreateMeta(legacySource.data(), legacySource.size(), "Legacy.vert", legacyMetadata);
-    const nlohmann::json legacyProperties = nlohmann::json::parse(legacyMetadata.GetDataAs<std::string>("properties"));
-    assert(legacyProperties[1]["default"] == nlohmann::json::array({0.1, 0.2, 0.3, 1.0}));
-    assert(legacyProperties[1]["hdr"] == true);
-
     const auto invalid =
         infernux::ParseShaderInfo("ShaderInfo { Version 2 Properties { Float x = 1.0 Float x = 2.0 } }");
     assert(!invalid.IsValid());
@@ -249,7 +289,7 @@ void vertex(inout VertexInput v) { v.position.x += amount; }
     assert(!vectorRange.IsValid());
 
     const std::string forbiddenLayout = R"(
-ShaderInfo { Version 1 Name "Tests/NoLayout" }
+ShaderInfo { Name "Tests/NoLayout" }
 // layout(location = 3) in vec2 ignoredComment;
 layout(location = 0) out vec4 outColor;
 void main() { outColor = vec4(1.0); }
@@ -260,9 +300,10 @@ void main() { outColor = vec4(1.0); }
     const auto layoutDescriptor = compiler.ParseShaderSource(forbiddenLayout, "NoLayout.frag");
     assert(!layoutDescriptor.errors.empty());
 
-    const auto mixedDescriptor = compiler.ParseShaderSource(
-        "ShaderInfo { Version 1 Name \"Tests/Mixed\" }\n@queue: 2100\nvoid surface(out SurfaceData s) {}\n",
-        "Mixed.frag");
+    const auto mixedDescriptor =
+        compiler.ParseShaderSource("ShaderInfo { Name \"Tests/Mixed\" }\n" + std::string(1, '@') +
+                                       "queue: 2100\nvoid surface(out SurfaceData s) {}\n",
+                                   "Mixed.frag");
     assert(!mixedDescriptor.errors.empty());
 
     std::cout << "ShaderInfo schema tests passed\n";

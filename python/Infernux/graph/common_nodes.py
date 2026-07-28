@@ -6,6 +6,7 @@ from .registry import (
     COMMON_NODE_REGISTRY,
     NodeDef,
     PortDef,
+    PortDimensionPolicy,
     PortDirection,
     PropertyDef,
 )
@@ -20,6 +21,8 @@ def _input(
     variable="",
     default=None,
     required=False,
+    dimension_policy=PortDimensionPolicy.EXACT,
+    display_name="",
 ) -> PortDef:
     return PortDef(
         port_id,
@@ -28,6 +31,8 @@ def _input(
         type_variable=variable,
         required=required,
         default=default,
+        dimension_policy=dimension_policy,
+        display_name=display_name,
     )
 
 
@@ -41,6 +46,20 @@ def _output(port_id: str, value_type=None, *, variable="") -> PortDef:
 
 
 COMMON_NODE_DEFINITIONS = (
+    NodeDef(
+        "common.constant.bool",
+        "Boolean",
+        (_output("value", TypeRef(ValueType.BOOL)),),
+        (PropertyDef("value", TypeRef(ValueType.BOOL), False),),
+        {"expression": "constant"},
+    ),
+    NodeDef(
+        "common.constant.i32",
+        "Integer",
+        (_output("value", TypeRef(ValueType.I32)),),
+        (PropertyDef("value", TypeRef(ValueType.I32), 0),),
+        {"expression": "constant"},
+    ),
     NodeDef(
         "common.constant.f32",
         "Float",
@@ -56,8 +75,15 @@ COMMON_NODE_DEFINITIONS = (
         {"expression": "constant"},
     ),
     NodeDef(
+        "common.constant.vec2",
+        "Vector 2 Constant",
+        (_output("value", TypeRef(ValueType.VEC2)),),
+        (PropertyDef("value", TypeRef(ValueType.VEC2), [0.0, 0.0]),),
+        {"expression": "constant"},
+    ),
+    NodeDef(
         "common.constant.vec3",
-        "Vector 3",
+        "Vector 3 Constant",
         (_output("value", TypeRef(ValueType.VEC3)),),
         (PropertyDef("value", TypeRef(ValueType.VEC3), [0.0, 0.0, 0.0]),),
         {"expression": "constant"},
@@ -73,8 +99,8 @@ COMMON_NODE_DEFINITIONS = (
         "common.math.add",
         "Add",
         (
-            _input("a", variable="T", default=0.0),
-            _input("b", variable="T", default=0.0),
+            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input("b", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "add"},
@@ -83,8 +109,8 @@ COMMON_NODE_DEFINITIONS = (
         "common.math.subtract",
         "Subtract",
         (
-            _input("a", variable="T", default=0.0),
-            _input("b", variable="T", default=0.0),
+            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input("b", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "subtract"},
@@ -93,8 +119,8 @@ COMMON_NODE_DEFINITIONS = (
         "common.math.multiply",
         "Multiply",
         (
-            _input("a", variable="T", default=0.0),
-            _input("b", variable="T", default=0.0),
+            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input("b", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "multiply"},
@@ -103,8 +129,8 @@ COMMON_NODE_DEFINITIONS = (
         "common.math.divide",
         "Divide",
         (
-            _input("a", variable="T", default=0.0),
-            _input("b", variable="T", default=1.0),
+            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input("b", variable="T", default=1.0, dimension_policy=PortDimensionPolicy.PROMOTE),
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "divide"},
@@ -113,12 +139,19 @@ COMMON_NODE_DEFINITIONS = (
         "common.math.lerp",
         "Lerp",
         (
-            _input("a", variable="T", default=0.0),
-            _input("b", variable="T", default=1.0),
+            _input("a", variable="T", default=0.0, dimension_policy=PortDimensionPolicy.PROMOTE),
+            _input("b", variable="T", default=1.0, dimension_policy=PortDimensionPolicy.PROMOTE),
             _input("t", TypeRef(ValueType.F32), default=0.5),
             _output("result", variable="T"),
         ),
         target_opcodes={"expression": "lerp"},
+    ),
+    NodeDef(
+        "common.constant.vec4",
+        "Vector 4 Constant",
+        (_output("value", TypeRef(ValueType.VEC4)),),
+        (PropertyDef("value", TypeRef(ValueType.VEC4), [0.0, 0.0, 0.0, 0.0]),),
+        {"expression": "constant"},
     ),
     NodeDef(
         "common.compare.less_than",
@@ -161,6 +194,46 @@ COMMON_NODE_DEFINITIONS = (
         target_opcodes={"expression": "greater_equal"},
     ),
     NodeDef(
+        "common.compare.equal",
+        "Equal",
+        (
+            _input("a", TypeRef(ValueType.F32), default=0.0),
+            _input("b", TypeRef(ValueType.F32), default=0.0),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "equal"},
+    ),
+    NodeDef(
+        "common.compare.not_equal",
+        "Not Equal",
+        (
+            _input("a", TypeRef(ValueType.F32), default=0.0),
+            _input("b", TypeRef(ValueType.F32), default=0.0),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "not_equal"},
+    ),
+    NodeDef(
+        "common.logic.and",
+        "And",
+        (
+            _input("a", TypeRef(ValueType.BOOL), default=False),
+            _input("b", TypeRef(ValueType.BOOL), default=False),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "logical_and"},
+    ),
+    NodeDef(
+        "common.logic.or",
+        "Or",
+        (
+            _input("a", TypeRef(ValueType.BOOL), default=False),
+            _input("b", TypeRef(ValueType.BOOL), default=False),
+            _output("result", TypeRef(ValueType.BOOL)),
+        ),
+        target_opcodes={"expression": "logical_or"},
+    ),
+    NodeDef(
         "common.logic.not",
         "Not",
         (
@@ -173,10 +246,95 @@ COMMON_NODE_DEFINITIONS = (
         "common.vector.normalize",
         "Normalize",
         (
-            _input("value", TypeRef(ValueType.VEC3), default=[0.0, 0.0, 0.0]),
+            _input(
+                "value",
+                TypeRef(ValueType.VEC3),
+                default=[0.0, 0.0, 0.0],
+            ),
             _output("result", TypeRef(ValueType.VEC3)),
         ),
         target_opcodes={"expression": "normalize"},
+    ),
+    NodeDef(
+        "common.vector.compose2",
+        "Vector 2",
+        (
+            _input("x", TypeRef(ValueType.F32), default=0.0, display_name="X"),
+            _input("y", TypeRef(ValueType.F32), default=0.0, display_name="Y"),
+            _output("value", TypeRef(ValueType.VEC2)),
+        ),
+        target_opcodes={"expression": "compose_vec2"},
+    ),
+    NodeDef(
+        "common.vector.compose3",
+        "Vector 3",
+        (
+            _input("x", TypeRef(ValueType.F32), default=0.0, display_name="X"),
+            _input("y", TypeRef(ValueType.F32), default=0.0, display_name="Y"),
+            _input("z", TypeRef(ValueType.F32), default=0.0, display_name="Z"),
+            _output("value", TypeRef(ValueType.VEC3)),
+        ),
+        target_opcodes={"expression": "compose_vec3"},
+    ),
+    NodeDef(
+        "common.vector.compose4",
+        "Vector 4",
+        (
+            _input("x", TypeRef(ValueType.F32), default=0.0, display_name="X"),
+            _input("y", TypeRef(ValueType.F32), default=0.0, display_name="Y"),
+            _input("z", TypeRef(ValueType.F32), default=0.0, display_name="Z"),
+            _input("w", TypeRef(ValueType.F32), default=0.0, display_name="W"),
+            _output("value", TypeRef(ValueType.VEC4)),
+        ),
+        target_opcodes={"expression": "compose_vec4"},
+    ),
+    NodeDef(
+        "common.vector.split2",
+        "Split Vector 2",
+        (
+            _input(
+                "value",
+                TypeRef(ValueType.VEC2),
+                required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
+            ),
+            _output("x", TypeRef(ValueType.F32)),
+            _output("y", TypeRef(ValueType.F32)),
+        ),
+        target_opcodes={"expression": "split_component"},
+    ),
+    NodeDef(
+        "common.vector.split3",
+        "Split Vector 3",
+        (
+            _input(
+                "value",
+                TypeRef(ValueType.VEC3),
+                required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
+            ),
+            _output("x", TypeRef(ValueType.F32)),
+            _output("y", TypeRef(ValueType.F32)),
+            _output("z", TypeRef(ValueType.F32)),
+        ),
+        target_opcodes={"expression": "split_component"},
+    ),
+    NodeDef(
+        "common.vector.split4",
+        "Split Vector 4",
+        (
+            _input(
+                "value",
+                TypeRef(ValueType.VEC4),
+                required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
+            ),
+            _output("x", TypeRef(ValueType.F32)),
+            _output("y", TypeRef(ValueType.F32)),
+            _output("z", TypeRef(ValueType.F32)),
+            _output("w", TypeRef(ValueType.F32)),
+        ),
+        target_opcodes={"expression": "split_component"},
     ),
     NodeDef(
         "common.random.f32",
@@ -193,7 +351,13 @@ COMMON_NODE_DEFINITIONS = (
         "common.noise.value3d",
         "Value Noise 3D",
         (
-            _input("position", variable="P", required=True),
+            _input(
+                "position",
+                TypeRef(ValueType.VEC3),
+                variable="P",
+                required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
+            ),
             _input("frequency", TypeRef(ValueType.F32), default=1.0),
             _input("seed", TypeRef(ValueType.U32), default=0),
             _output("value", TypeRef(ValueType.F32)),
@@ -204,7 +368,13 @@ COMMON_NODE_DEFINITIONS = (
         "common.noise.vector3d",
         "Vector Noise 3D",
         (
-            _input("position", variable="P", required=True),
+            _input(
+                "position",
+                TypeRef(ValueType.VEC3),
+                variable="P",
+                required=True,
+                dimension_policy=PortDimensionPolicy.FIXED,
+            ),
             _input("frequency", TypeRef(ValueType.F32), default=1.0),
             _input("seed", TypeRef(ValueType.U32), default=0),
             _output("value", variable="P"),
@@ -230,6 +400,16 @@ COMMON_NODE_DEFINITIONS = (
         ),
         (PropertyDef("gradient", TypeRef(ValueType.GRADIENT), Gradient().to_dict()),),
         {"expression": "sample_gradient"},
+    ),
+    NodeDef(
+        "common.texture.sample2d",
+        "Sample Texture 2D",
+        (
+            _input("texture", TypeRef(ValueType.TEXTURE2D), required=True),
+            _input("uv", TypeRef(ValueType.VEC2), default=[0.0, 0.0]),
+            _output("color", TypeRef(ValueType.COLOR)),
+        ),
+        target_opcodes={"expression": "sample_texture2d"},
     ),
 )
 

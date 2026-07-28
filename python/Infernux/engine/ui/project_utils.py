@@ -875,6 +875,7 @@ def get_file_type(filename: str) -> str:
     """Return a short type tag string (e.g. ``[PY]``, ``[IMG]``) based on extension."""
     _, ext = os.path.splitext(filename)
     ext = ext.lower()
+    from Infernux.core.asset_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, MESH_EXTENSIONS
     types = {
         '.png': '[IMG]', '.jpg': '[IMG]', '.jpeg': '[IMG]', '.bmp': '[IMG]',
         '.tga': '[IMG]', '.gif': '[IMG]', '.psd': '[IMG]', '.hdr': '[IMG]',
@@ -884,11 +885,16 @@ def get_file_type(filename: str) -> str:
         '.vert': '[VERT]', '.frag': '[FRAG]', '.glsl': '[GLSL]', '.hlsl': '[HLSL]',
         '.mat': '[MAT]',
         '.fbx': '[3D]', '.obj': '[3D]', '.gltf': '[3D]', '.glb': '[3D]',
-        '.wav': '[SND]',
         '.json': '[JSON]', '.yaml': '[CFG]', '.yml': '[CFG]', '.xml': '[XML]',
         '.txt': '[TXT]', '.md': '[MD]',
         '.ttf': '[FNT]', '.otf': '[FNT]',
     }
+    if ext in IMAGE_EXTENSIONS:
+        return '[IMG]'
+    if ext in MESH_EXTENSIONS:
+        return '[3D]'
+    if ext in AUDIO_EXTENSIONS:
+        return '[SND]'
     return types.get(ext, '[FILE]')
 
 

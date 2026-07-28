@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <function/renderer/rhi/RenderViewContext.h>
 #include <memory>
 #include <string>
 
@@ -33,6 +34,7 @@ struct CaptureSnapshot
     CaptureSource source = CaptureSource::Game;
     CaptureStatus status = CaptureStatus::Failed;
     uint64_t sourceGeneration = 0;
+    rhi::RenderViewContext view;
     uint64_t engineFrame = 0;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -56,8 +58,8 @@ class CaptureService
 
     /// Register a capture before the renderer produces the source frame.
     /// The renderer attaches the readback ticket after that frame is submitted.
-    [[nodiscard]] uint64_t Request(CaptureSource source, uint64_t sourceGeneration, uint64_t engineFrame,
-                                   std::string outputPath);
+    [[nodiscard]] uint64_t Request(CaptureSource source, const rhi::RenderViewContext &view, uint64_t sourceGeneration,
+                                   uint64_t engineFrame, std::string outputPath);
     /// Attach a readback produced by the requested render frame. The captured
     /// frame replaces the request-time frame in the returned metadata.
     [[nodiscard]] bool AttachReadback(uint64_t captureId, std::shared_ptr<vk::ImageReadbackTicket> ticket,

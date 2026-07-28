@@ -1,5 +1,6 @@
 layout(push_constant) uniform ParticleViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;

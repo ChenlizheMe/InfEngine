@@ -479,8 +479,7 @@ class RenderPassBuilder:
         """Configure this pass to draw a fullscreen triangle with a named shader.
 
         The vertex shader is always ``fullscreen_triangle``; the fragment
-        shader is looked up by *shader* (which must have a matching
-        ``@shader_id``).
+        shader is looked up by its matching ``ShaderInfo Name``.
 
         Use ``set_param()`` to pass push constants and ``set_input()``
         to bind input textures before calling this method.
@@ -1059,10 +1058,6 @@ class RenderGraph:
         self._topology.append(("pass", pass_name))
         return builder
 
-    def add_compute_pass(self, name: str) -> RenderPassBuilder:
-        """Add a compute-domain pass for typed storage-buffer accesses."""
-        return self._add_typed_pass(name, "compute")
-
     def add_copy_pass(self, name: str) -> RenderPassBuilder:
         """Add a transfer-domain texture or buffer copy pass."""
         return self._add_typed_pass(name, "copy")
@@ -1183,7 +1178,6 @@ class RenderGraph:
         }
         allowed_actions = {
             "raster": raster_actions,
-            "compute": {"none"},
             "copy": {"copy_texture", "copy_buffer"},
             "present": {"present"},
         }
@@ -1195,14 +1189,10 @@ class RenderGraph:
             p._write_colors or p._write_depth is not None
             or p._resolve_color is not None
             or p._clear_color is not None or p._clear_depth is not None
-            or (p._pass_type != "compute" and p._reads)
+            or p._reads
         ):
             raise ValueError(
                 f"Pass '{p._name}' uses raster texture attachments in a {p._pass_type} pass"
-            )
-        if p._pass_type == "compute" and not p._buffer_accesses and not p._side_effect:
-            raise ValueError(
-                f"Compute pass '{p._name}' must declare buffer access or a side effect"
             )
         if p._action == "draw_shadow_casters" and p._write_colors:
             raise ValueError(
@@ -1234,6 +1224,19 @@ class RenderGraph:
                 ):
                     raise ValueError(
                         f"Picking pass '{p._name}' requires RG32_UINT color[0] and a depth output"
+                    )
+            elif p._material_pass == "motion":
+                colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
+                depth_reads = [texture_map[name] for name in p._reads if texture_map[name].is_depth]
+                if (
+                    len(colors) != 1
+                    or colors[0].format != Format.RG16_SFLOAT
+                    or len(depth_reads) != 1
+                    or p._write_depth is not None
+                ):
+                    raise ValueError(
+                        f"Motion pass '{p._name}' requires one RG16_SFLOAT color output, "
+                        "one readable depth texture, and no depth write"
                     )
             elif not p._write_colors:
                 raise ValueError(
@@ -1481,7 +1484,6 @@ class RenderGraph:
         }
         _pass_type_map = {
             "raster": GraphPassType.RASTER,
-            "compute": GraphPassType.COMPUTE,
             "copy": GraphPassType.COPY,
             "present": GraphPassType.PRESENT,
         }

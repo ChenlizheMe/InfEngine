@@ -264,6 +264,11 @@ class ShaderProgram
     bool ValidateStageInterface() const;
 };
 
+/// Immutable, revision-carrying GPU shader publication. ShaderProgram is
+/// mutable only while Create() builds a complete candidate; every cache and
+/// renderer consumer receives this const shared owner after publication.
+using ShaderProgramPublication = std::shared_ptr<const ShaderProgram>;
+
 /**
  * @brief ShaderProgramCache - Cache for shader programs
  *
@@ -292,16 +297,18 @@ class ShaderProgramCache
     /**
      * @brief Get or create a shader program
      */
-    ShaderProgram *GetOrCreateProgram(const ShaderProgramKey &programKey, const std::vector<char> &vertSpirv,
-                                      const std::vector<char> &fragSpirv);
-    ShaderProgram *GetOrCreateProgram(const ShaderProgramVariantKey &variantKey, const std::vector<char> &vertSpirv,
-                                      const std::vector<char> &fragSpirv);
+    ShaderProgramPublication GetOrCreateProgram(const ShaderProgramKey &programKey,
+                                                const std::vector<char> &vertSpirv,
+                                                const std::vector<char> &fragSpirv);
+    ShaderProgramPublication GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
+                                                const std::vector<char> &vertSpirv,
+                                                const std::vector<char> &fragSpirv);
 
     /**
      * @brief Get existing program
      */
-    ShaderProgram *GetProgram(const ShaderProgramKey &programKey);
-    ShaderProgram *GetProgram(const ShaderProgramVariantKey &variantKey);
+    ShaderProgramPublication GetProgram(const ShaderProgramKey &programKey) const;
+    ShaderProgramPublication GetProgram(const ShaderProgramVariantKey &variantKey) const;
 
     /**
      * @brief Check if program exists
@@ -309,19 +316,18 @@ class ShaderProgramCache
     bool HasProgram(const ShaderProgramKey &programKey) const;
     bool HasProgram(const ShaderProgramVariantKey &variantKey) const;
 
-    [[nodiscard]] std::unique_ptr<ShaderProgram> TakeProgram(const ShaderProgramKey &programKey);
-    [[nodiscard]] std::unique_ptr<ShaderProgram> TakeProgram(const ShaderProgramVariantKey &variantKey);
+    [[nodiscard]] ShaderProgramPublication TakeProgram(const ShaderProgramKey &programKey);
+    [[nodiscard]] ShaderProgramPublication TakeProgram(const ShaderProgramVariantKey &variantKey);
 
     /// Transfer every semantic pass program belonging to one artifact revision.
-    [[nodiscard]] std::vector<std::unique_ptr<ShaderProgram>> TakePrograms(const ShaderProgramKey &programKey);
+    [[nodiscard]] std::vector<ShaderProgramPublication> TakePrograms(const ShaderProgramKey &programKey);
 
     /**
      * @brief Transfer ownership of all programs using the specified shader.
      * @param shaderName Simple
      * shader name (e.g., "123", not full path)
      */
-    [[nodiscard]] std::vector<std::unique_ptr<ShaderProgram>>
-    TakeProgramsContainingShader(const std::string &shaderName);
+    [[nodiscard]] std::vector<ShaderProgramPublication> TakeProgramsContainingShader(const std::string &shaderName);
 
     /**
      * @brief Clear all cached programs
@@ -330,7 +336,7 @@ class ShaderProgramCache
 
   private:
     VkDevice m_device = VK_NULL_HANDLE;
-    std::unordered_map<ShaderProgramVariantKey, std::unique_ptr<ShaderProgram>, ShaderProgramVariantKeyHash> m_programs;
+    std::unordered_map<ShaderProgramVariantKey, ShaderProgramPublication, ShaderProgramVariantKeyHash> m_programs;
     std::unordered_set<ShaderProgramVariantKey, ShaderProgramVariantKeyHash> m_failedPrograms;
 };
 

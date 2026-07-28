@@ -53,6 +53,10 @@ class FullscreenRenderer
 
     const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
 
+    /// Retire every cached pipeline compiled from @p shaderName. The next
+    /// record resolves the newly published module and builds a fresh pipeline.
+    void InvalidateShader(const std::string &shaderName);
+
     rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const rhi::TextureViewHandle *inputViews,
                                            uint32_t inputViewCount, const bool *depthInputs,
                                            rhi::SamplerHandle colorSampler);

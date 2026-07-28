@@ -339,7 +339,7 @@ VkDeviceSize GrowBufferSize(VkDeviceSize requiredSize)
     return requiredSize + (requiredSize >> 1);
 }
 
-void DestroyBufferWithQueue(VmaAllocator allocator, FrameDeletionQueue *deletionQueue, VkBuffer &buffer,
+void DestroyBufferWithQueue(VmaAllocator allocator, GpuRetirementQueue *deletionQueue, VkBuffer &buffer,
                             VmaAllocation &allocation, VkDeviceSize &bufferSize)
 {
     if (buffer == VK_NULL_HANDLE) {
@@ -351,7 +351,7 @@ void DestroyBufferWithQueue(VmaAllocator allocator, FrameDeletionQueue *deletion
     if (deletionQueue != nullptr) {
         const VkBuffer oldBuffer = buffer;
         const VmaAllocation oldAllocation = allocation;
-        deletionQueue->Push(
+        deletionQueue->Retire(
             [allocator, oldBuffer, oldAllocation]() { vmaDestroyBuffer(allocator, oldBuffer, oldAllocation); });
     } else {
         vmaDestroyBuffer(allocator, buffer, allocation);
@@ -362,7 +362,7 @@ void DestroyBufferWithQueue(VmaAllocator allocator, FrameDeletionQueue *deletion
     bufferSize = 0;
 }
 
-bool EnsureHostVisibleBuffer(VmaAllocator allocator, FrameDeletionQueue *deletionQueue, VkBufferUsageFlags usage,
+bool EnsureHostVisibleBuffer(VmaAllocator allocator, GpuRetirementQueue *deletionQueue, VkBufferUsageFlags usage,
                              VkBuffer &buffer, VmaAllocation &allocation, VkDeviceSize &bufferSize,
                              VkDeviceSize requiredSize)
 {

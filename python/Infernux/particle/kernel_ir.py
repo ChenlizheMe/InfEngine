@@ -21,7 +21,6 @@ from .hir import (
 )
 from .data_interface import (
     ParticleDataInterface,
-    PointCache,
     SdfVolume,
     VectorField,
     particle_data_interface_from_dict,
@@ -286,7 +285,7 @@ class ParticleEmitterKernelIR:
         if len({stable_id for stable_id, _type, _default in self.attributes}) != len(self.attributes):
             raise KernelCompileError("kernel emitter attribute stable ids must be unique")
         if not all(
-            isinstance(interface, (VectorField, SdfVolume, PointCache))
+            isinstance(interface, (VectorField, SdfVolume))
             for interface in interfaces
         ):
             raise KernelCompileError("kernel emitter data interfaces are invalid")
@@ -315,7 +314,6 @@ class ParticleEmitterKernelIR:
         interfaces = {interface.stable_id: interface for interface in self.data_interfaces}
         for instruction in function.instructions:
             if instruction.opcode not in {
-                "sample_point_cache",
                 "sample_vector_field",
                 "collide_sdf_position",
                 "collide_sdf_velocity",
@@ -328,9 +326,7 @@ class ParticleEmitterKernelIR:
                     f"kernel references unknown data interface {stable_id!r}"
                 )
             expected_type = (
-                PointCache
-                if instruction.opcode == "sample_point_cache"
-                else VectorField
+                VectorField
                 if instruction.opcode == "sample_vector_field"
                 else SdfVolume
             )
@@ -344,6 +340,19 @@ class ParticleEmitterKernelIR:
         reads: set[str] = set()
         writes: set[str] = set()
         for instruction in function.instructions:
+            if instruction.opcode == "collide_scene":
+                immediate = instruction.immediate_dict()
+                writes.update(
+                    stable_id
+                    for stable_id in (
+                        immediate["position_attribute"],
+                        immediate["velocity_attribute"],
+                        immediate["hit_attribute"],
+                        immediate["normal_attribute"],
+                    )
+                    if stable_id
+                )
+                continue
             if instruction.opcode not in {
                 "load_attribute",
                 "store_attribute",
@@ -652,9 +661,57 @@ class KernelEventABI:
 
 
 @dataclass(frozen=True)
+class KernelParameter:
+    stable_id: str
+    name: str
+    value_type: TypeRef
+    default: Any
+    exposed: bool
+    slot: int
+
+    def __post_init__(self) -> None:
+        if type(self.stable_id) is not str or not self.stable_id:
+            raise KernelCompileError("kernel parameter stable_id cannot be empty")
+        if type(self.name) is not str or not self.name:
+            raise KernelCompileError("kernel parameter name cannot be empty")
+        if not isinstance(self.value_type, TypeRef):
+            raise KernelCompileError("kernel parameter type is invalid")
+        if type(self.exposed) is not bool or type(self.slot) is not int or self.slot < 0:
+            raise KernelCompileError("kernel parameter runtime metadata is invalid")
+        _finite_json(self.default)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stable_id": self.stable_id,
+            "name": self.name,
+            "type": self.value_type.to_dict(),
+            "default": self.default,
+            "exposed": self.exposed,
+            "slot": self.slot,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelParameter":
+        _exact_dict(
+            value,
+            {"stable_id", "name", "type", "default", "exposed", "slot"},
+            "kernel parameter",
+        )
+        return cls(
+            value["stable_id"],
+            value["name"],
+            TypeRef.from_dict(value["type"]),
+            value["default"],
+            value["exposed"],
+            value["slot"],
+        )
+
+
+@dataclass(frozen=True)
 class ParticleKernelProgram:
     source_behavior_hash: str
     kernel_hash: str
+    parameters: tuple[KernelParameter, ...]
     emitters: tuple[ParticleEmitterKernelIR, ...]
     events: KernelEventABI
     contract: KernelRuntimeContract = KernelRuntimeContract()
@@ -670,15 +727,40 @@ class ParticleKernelProgram:
                 raise KernelCompileError(f"particle kernel {label} must be a lowercase SHA-256")
         if not all(isinstance(emitter, ParticleEmitterKernelIR) for emitter in self.emitters):
             raise KernelCompileError("particle kernel emitters are invalid")
+        if not all(isinstance(parameter, KernelParameter) for parameter in self.parameters):
+            raise KernelCompileError("particle kernel parameters are invalid")
+        if tuple(parameter.slot for parameter in self.parameters) != tuple(range(len(self.parameters))):
+            raise KernelCompileError("particle kernel parameter slots must be dense and ordered")
+        if len({parameter.stable_id for parameter in self.parameters}) != len(self.parameters):
+            raise KernelCompileError("particle kernel parameter ids must be unique")
         if len({emitter.stable_id for emitter in self.emitters}) != len(self.emitters):
             raise KernelCompileError("particle kernel emitter stable ids must be unique")
         if not isinstance(self.events, KernelEventABI):
             raise KernelCompileError("particle kernel event ABI is invalid")
         if not isinstance(self.contract, KernelRuntimeContract):
             raise KernelCompileError("particle kernel runtime contract is invalid")
+        self._validate_parameter_access()
         self._validate_event_access()
-        if self.kernel_hash != _kernel_semantic_hash(self.emitters, self.events, self.contract):
+        if self.kernel_hash != _kernel_semantic_hash(
+            self.parameters, self.emitters, self.events, self.contract
+        ):
             raise KernelCompileError("particle kernel hash does not match its semantic payload")
+
+    def _validate_parameter_access(self) -> None:
+        parameters = {
+            parameter.stable_id: parameter.value_type
+            for parameter in self.parameters
+        }
+        for emitter in self.emitters:
+            for function in (emitter.init, emitter.update, emitter.rendering):
+                for instruction in function.instructions:
+                    if instruction.opcode != "load_parameter":
+                        continue
+                    stable_id = instruction.immediate_dict()["parameter"]
+                    if parameters.get(stable_id) != instruction.result_type:
+                        raise KernelCompileError(
+                            f"kernel references unknown or mismatched parameter {stable_id!r}"
+                        )
 
     def _validate_event_access(self) -> None:
         for route in self.events.routes:
@@ -752,6 +834,7 @@ class ParticleKernelProgram:
             "$schema": KERNEL_IR_SCHEMA,
             "source_behavior_hash": self.source_behavior_hash,
             "kernel_hash": self.kernel_hash,
+            "parameters": [parameter.to_dict() for parameter in self.parameters],
             "contract": self.contract.to_dict(),
             "events": self.events.to_dict(),
             "emitters": [
@@ -768,6 +851,7 @@ class ParticleKernelProgram:
                 "$schema",
                 "source_behavior_hash",
                 "kernel_hash",
+                "parameters",
                 "contract",
                 "events",
                 "emitters",
@@ -776,8 +860,8 @@ class ParticleKernelProgram:
         )
         if value["$schema"] != KERNEL_IR_SCHEMA:
             raise KernelCompileError("particle kernel schema is unsupported")
-        if type(value["emitters"]) is not list:
-            raise KernelCompileError("particle kernel emitters must be an array")
+        if type(value["emitters"]) is not list or type(value["parameters"]) is not list:
+            raise KernelCompileError("particle kernel collections must be arrays")
         try:
             contract = KernelRuntimeContract.from_dict(value["contract"])
         except KernelSemanticError as exc:
@@ -785,6 +869,7 @@ class ParticleKernelProgram:
         return cls(
             value["source_behavior_hash"],
             value["kernel_hash"],
+            tuple(KernelParameter.from_dict(item) for item in value["parameters"]),
             tuple(ParticleEmitterKernelIR.from_dict(item) for item in value["emitters"]),
             KernelEventABI.from_dict(value["events"]),
             contract,
@@ -795,6 +880,21 @@ class ParticleKernelLowerer:
     """Lower Particle Program HIR into backend-neutral executable kernels."""
 
     def lower(self, program: ParticleProgramHIR) -> ParticleKernelProgram:
+        parameters = tuple(
+            KernelParameter(
+                parameter.stable_id,
+                parameter.name,
+                parameter.value_type,
+                parameter.default,
+                parameter.exposed,
+                parameter.slot,
+            )
+            for parameter in program.parameters
+        )
+        parameter_types = {
+            parameter.stable_id: parameter.value_type
+            for parameter in parameters
+        }
         routes = {
             route.stable_id: (index, route)
             for index, route in enumerate(program.events.routes)
@@ -804,14 +904,15 @@ class ParticleKernelLowerer:
             for event_type in program.events.event_types
         }
         emitters = tuple(
-            self._lower_emitter(emitter, routes, event_types)
+            self._lower_emitter(emitter, routes, event_types, parameter_types)
             for emitter in program.emitters
         )
         events = _lower_event_abi(program.events)
         contract = KernelRuntimeContract()
         return ParticleKernelProgram(
             program.behavior_hash,
-            _kernel_semantic_hash(emitters, events, contract),
+            _kernel_semantic_hash(parameters, emitters, events, contract),
+            parameters,
             emitters,
             events,
             contract,
@@ -822,6 +923,7 @@ class ParticleKernelLowerer:
         emitter: ParticleEmitterHIR,
         routes: Mapping[str, tuple[int, ParticleEventRouteHIR]],
         event_types: Mapping[int, ParticleEventTypeHIR],
+        parameter_types: Mapping[str, TypeRef],
     ) -> ParticleEmitterKernelIR:
         schema = tuple(
             (attribute.stable_id, attribute.value_type, attribute.default)
@@ -833,11 +935,326 @@ class ParticleKernelLowerer:
             emitter.stable_id,
             emitter.settings.seed,
             schema,
-            self._lower_init(emitter, types, defaults, routes, event_types),
-            self._lower_update(emitter, types, routes, event_types),
-            self._lower_rendering(emitter, types, routes, event_types),
+            self._lower_init(emitter, types, defaults, routes, event_types, parameter_types),
+            self._lower_update(emitter, types, routes, event_types, parameter_types),
+            self._lower_rendering(emitter, types, routes, event_types, parameter_types),
             emitter.data_interfaces,
         )
+
+    @staticmethod
+    def _lower_operation_expressions(builder, stage, operation) -> dict[str, str]:
+        required_outputs = {
+            result_id
+            for _property_id, result_id in operation.value_bindings
+        }
+        required_outputs.update(
+            predicate.value_id
+            for predicate in operation.execution_predicates
+            if predicate.value_id
+        )
+        return builder.lower_expressions(stage, required_outputs)
+
+    @staticmethod
+    def _integrate_update_position(builder, attribute_types, delta_time) -> None:
+        source = KernelSourceRef(operation="update.integrate_position")
+        position = builder.load("builtin.position", source)
+        velocity = builder.load("builtin.velocity", source)
+        displacement = builder.emit(
+            "multiply",
+            attribute_types["builtin.position"],
+            (velocity, delta_time),
+            {},
+            source,
+        )
+        position = builder.emit(
+            "add",
+            attribute_types["builtin.position"],
+            (position, displacement),
+            {},
+            source,
+        )
+        builder.store("builtin.position", position, source)
+
+    @staticmethod
+    def _lower_update_collision(
+        builder,
+        operation,
+        expression_values,
+        attribute_types,
+        source,
+    ) -> None:
+        parameters = operation.parameter_dict()
+        bindings = dict(operation.value_bindings)
+        position = builder.load("builtin.position", source)
+        velocity = builder.load("builtin.velocity", source)
+        if operation.opcode == "collision.scene":
+            particle_radius = builder.operation_value(
+                "particle_radius",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            layer_mask = builder.operation_value(
+                "layer_mask",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.U32),
+                source,
+            )
+            include_triggers = builder.operation_value(
+                "include_triggers",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.BOOL),
+                source,
+            )
+            restitution_scale = builder.operation_value(
+                "restitution_scale",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            friction_scale = builder.operation_value(
+                "friction_scale",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            builder.emit_void(
+                "collide_scene",
+                (
+                    position,
+                    velocity,
+                    particle_radius,
+                    layer_mask,
+                    include_triggers,
+                    restitution_scale,
+                    friction_scale,
+                ),
+                {
+                    "position_attribute": "builtin.position",
+                    "velocity_attribute": "builtin.velocity",
+                    "hit_attribute": (
+                        "builtin.collision_hit"
+                        if "builtin.collision_hit" in attribute_types
+                        else ""
+                    ),
+                    "normal_attribute": (
+                        "builtin.collision_normal"
+                        if "builtin.collision_normal" in attribute_types
+                        else ""
+                    ),
+                },
+                source,
+            )
+            builder.written_attributes.update(
+                {"builtin.position", "builtin.velocity"}
+            )
+            return
+        if operation.opcode == "collision.plane":
+            point = builder.operation_value(
+                "point",
+                bindings,
+                expression_values,
+                parameters,
+                attribute_types["builtin.position"],
+                source,
+            )
+            normal = builder.operation_value(
+                "normal",
+                bindings,
+                expression_values,
+                parameters,
+                attribute_types["builtin.position"],
+                source,
+            )
+            radius = builder.operation_value(
+                "radius",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            collision_operands = (position, velocity, point, normal, radius)
+        elif operation.opcode == "collision.sphere":
+            center = builder.operation_value(
+                "center",
+                bindings,
+                expression_values,
+                parameters,
+                attribute_types["builtin.position"],
+                source,
+            )
+            sphere_radius = builder.operation_value(
+                "sphere_radius",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            particle_radius = builder.operation_value(
+                "particle_radius",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            collision_operands = (
+                position,
+                velocity,
+                center,
+                sphere_radius,
+                particle_radius,
+            )
+        elif operation.opcode == "collision.sdf":
+            particle_radius = builder.operation_value(
+                "particle_radius",
+                bindings,
+                expression_values,
+                parameters,
+                TypeRef(ValueType.F32),
+                source,
+            )
+            collision_operands = (position, velocity, particle_radius)
+        else:
+            raise KernelCompileError(
+                f"unsupported Update collision operation {operation.opcode!r}"
+            )
+        restitution = builder.operation_value(
+            "restitution",
+            bindings,
+            expression_values,
+            parameters,
+            TypeRef(ValueType.F32),
+            source,
+        )
+        friction = builder.operation_value(
+            "friction",
+            bindings,
+            expression_values,
+            parameters,
+            TypeRef(ValueType.F32),
+            source,
+        )
+        collision_operands += (restitution, friction)
+        opcode_prefix = operation.opcode.replace("collision.", "collide_")
+        immediates = (
+            {
+                "interface": parameters["interface"],
+                "inverted": parameters["inverted"],
+            }
+            if operation.opcode == "collision.sdf"
+            else {}
+        )
+        resolved_position = builder.emit(
+            f"{opcode_prefix}_position",
+            attribute_types["builtin.position"],
+            collision_operands,
+            immediates,
+            source,
+        )
+        resolved_velocity = builder.emit(
+            f"{opcode_prefix}_velocity",
+            attribute_types["builtin.velocity"],
+            collision_operands,
+            immediates,
+            source,
+        )
+        builder.store("builtin.position", resolved_position, source)
+        builder.store("builtin.velocity", resolved_velocity, source)
+
+    @staticmethod
+    def _prepare_collision_lifecycle(builder, attribute_types) -> None:
+        source = KernelSourceRef(operation="update.collision_lifecycle")
+        previous_active = builder.load("builtin.collision_active", source)
+        position = builder.load("builtin.position", source)
+        velocity = builder.load("builtin.velocity", source)
+        size = builder.load("builtin.size", source)
+        half = builder.constant(TypeRef(ValueType.F32), 0.5, source)
+        radius = builder.emit(
+            "multiply", TypeRef(ValueType.F32), (size, half), {}, source
+        )
+        layer_mask = builder.constant(TypeRef(ValueType.U32), 0xFFFFFFFF, source)
+        include_triggers = builder.constant(TypeRef(ValueType.BOOL), False, source)
+        one = builder.constant(TypeRef(ValueType.F32), 1.0, source)
+        builder.emit_void(
+            "collide_scene",
+            (
+                position,
+                velocity,
+                radius,
+                layer_mask,
+                include_triggers,
+                one,
+                one,
+            ),
+            {
+                "position_attribute": "builtin.position",
+                "velocity_attribute": "builtin.velocity",
+                "hit_attribute": "builtin.collision_hit",
+                "normal_attribute": "builtin.collision_normal",
+            },
+            source,
+        )
+        builder.written_attributes.update(
+            {
+                "builtin.position",
+                "builtin.velocity",
+                "builtin.collision_hit",
+                "builtin.collision_normal",
+            }
+        )
+        current_active = builder.load("builtin.collision_hit", source)
+        not_previous = builder.emit(
+            "logical_not",
+            TypeRef(ValueType.BOOL),
+            (previous_active,),
+            {},
+            source,
+        )
+        entered = builder.emit(
+            "logical_and",
+            TypeRef(ValueType.BOOL),
+            (current_active, not_previous),
+            {},
+            source,
+        )
+        stayed = builder.emit(
+            "logical_and",
+            TypeRef(ValueType.BOOL),
+            (current_active, previous_active),
+            {},
+            source,
+        )
+        not_current = builder.emit(
+            "logical_not",
+            TypeRef(ValueType.BOOL),
+            (current_active,),
+            {},
+            source,
+        )
+        exited = builder.emit(
+            "logical_and",
+            TypeRef(ValueType.BOOL),
+            (not_current, previous_active),
+            {},
+            source,
+        )
+        builder.set_runtime_predicate("collision_enter", entered)
+        builder.set_runtime_predicate("collision_stay", stayed)
+        builder.set_runtime_predicate("collision_exit", exited)
+        builder.store("builtin.collision_active", current_active, source)
 
     def _lower_init(
         self,
@@ -846,8 +1263,9 @@ class ParticleKernelLowerer:
         defaults,
         routes,
         event_types,
+        parameter_types,
     ) -> ParticleKernelFunction:
-        builder = _KernelBuilder(KernelStage.INIT, attribute_types)
+        builder = _KernelBuilder(KernelStage.INIT, attribute_types, parameter_types)
         for stable_id in sorted(defaults):
             if stable_id == "builtin.id":
                 continue
@@ -858,11 +1276,18 @@ class ParticleKernelLowerer:
             )
             builder.store(stable_id, value, KernelSourceRef(operation="attribute.default"))
 
-        expression_values = builder.lower_expressions(emitter.init)
         for operation in emitter.init.operations:
             source = KernelSourceRef(operation.source_node_uid, operation=f"init.{operation.opcode}")
+            expression_values = self._lower_operation_expressions(
+                builder, emitter.init, operation
+            )
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
+            if operation.opcode in {"control.if", "control.join_all"}:
+                continue
+            guard = builder.execution_guard(operation, expression_values, source)
+            if operation.opcode != "event.emit":
+                builder.begin_guard(guard, source)
             if operation.opcode == "emitter.sample_shape":
                 shape_parameters = {
                     "shape": parameters["shape"],
@@ -982,6 +1407,8 @@ class ParticleKernelLowerer:
                 )
             else:
                 raise KernelCompileError(f"unsupported Init operation {operation.opcode!r}")
+            if operation.opcode != "event.emit":
+                builder.end_guard(guard, source)
         return builder.finish()
 
     def _lower_update(
@@ -990,8 +1417,9 @@ class ParticleKernelLowerer:
         attribute_types,
         routes,
         event_types,
+        parameter_types,
     ) -> ParticleKernelFunction:
-        builder = _KernelBuilder(KernelStage.UPDATE, attribute_types)
+        builder = _KernelBuilder(KernelStage.UPDATE, attribute_types, parameter_types)
         delta_time = builder.emit(
             "load_uniform",
             TypeRef(ValueType.F32),
@@ -1004,12 +1432,76 @@ class ParticleKernelLowerer:
             "add", TypeRef(ValueType.F32), (age, delta_time), {}, KernelSourceRef(operation="update.age")
         )
         builder.store("builtin.age", new_age, KernelSourceRef(operation="update.age"))
-        expression_values = builder.lower_expressions(emitter.update)
+        if "builtin.collision_hit" in attribute_types:
+            builder.store(
+                "builtin.collision_hit",
+                builder.constant(
+                    TypeRef(ValueType.BOOL),
+                    False,
+                    KernelSourceRef(operation="update.reset_collision"),
+                ),
+                KernelSourceRef(operation="update.reset_collision"),
+            )
+        if "builtin.collision_normal" in attribute_types:
+            builder.store(
+                "builtin.collision_normal",
+                builder.constant(
+                    attribute_types["builtin.collision_normal"],
+                    [0.0, 0.0, 0.0],
+                    KernelSourceRef(operation="update.reset_collision"),
+                ),
+                KernelSourceRef(operation="update.reset_collision"),
+            )
+        collision_opcodes = {
+            "collision.plane",
+            "collision.sphere",
+            "collision.sdf",
+            "collision.scene",
+        }
+        operation_stream = tuple(
+            (emitter.update, operation)
+            for operation in emitter.update.operations
+        ) + tuple(
+            (lifecycle, operation)
+            for lifecycle in (
+                emitter.collision_enter,
+                emitter.collision_stay,
+                emitter.collision_exit,
+            )
+            if lifecycle is not None
+            for operation in lifecycle.operations
+        )
+        position_integrated = False
+        collision_lifecycle_ready = False
 
-        for operation in emitter.update.operations:
-            source = KernelSourceRef(operation.source_node_uid, operation=f"update.{operation.opcode}")
+        for stage_hir, operation in operation_stream:
+            if operation.opcode in collision_opcodes and not position_integrated:
+                self._integrate_update_position(builder, attribute_types, delta_time)
+                position_integrated = True
+            uses_collision_lifecycle = any(
+                predicate.runtime_condition.startswith("collision_")
+                for predicate in operation.execution_predicates
+            )
+            if uses_collision_lifecycle and not collision_lifecycle_ready:
+                if not position_integrated:
+                    self._integrate_update_position(builder, attribute_types, delta_time)
+                    position_integrated = True
+                self._prepare_collision_lifecycle(builder, attribute_types)
+                collision_lifecycle_ready = True
+            source = KernelSourceRef(
+                operation.source_node_uid,
+                operation=f"{stage_hir.stage.value}.{operation.opcode}",
+            )
+            expression_values = self._lower_operation_expressions(
+                builder, stage_hir, operation
+            )
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
+            if operation.opcode in {"control.if", "control.join_all"}:
+                continue
+            guard = builder.execution_guard(operation, expression_values, source)
+            if operation.opcode != "event.emit":
+                builder.begin_guard(guard, source)
             if operation.opcode in {
                 "attribute.set_position",
                 "attribute.set_velocity",
@@ -1184,132 +1676,27 @@ class ParticleKernelLowerer:
                     event_types,
                     source,
                 )
-            elif operation.opcode in {"collision.plane", "collision.sphere", "collision.sdf"}:
-                # Collisions are lowered after the implicit position integration below.
-                continue
+            elif operation.opcode in collision_opcodes:
+                self._lower_update_collision(
+                    builder,
+                    operation,
+                    expression_values,
+                    attribute_types,
+                    source,
+                )
             else:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
+            if operation.opcode != "event.emit":
+                builder.end_guard(guard, source)
 
-        position = builder.load("builtin.position", KernelSourceRef(operation="update.integrate_position"))
-        velocity = builder.load("builtin.velocity", KernelSourceRef(operation="update.integrate_position"))
-        displacement = builder.emit(
-            "multiply",
-            attribute_types["builtin.position"],
-            (velocity, delta_time),
-            {},
-            KernelSourceRef(operation="update.integrate_position"),
-        )
-        position = builder.emit(
-            "add",
-            attribute_types["builtin.position"],
-            (position, displacement),
-            {},
-            KernelSourceRef(operation="update.integrate_position"),
-        )
-        builder.store("builtin.position", position, KernelSourceRef(operation="update.integrate_position"))
-        for operation in emitter.update.operations:
-            if operation.opcode not in {"collision.plane", "collision.sphere", "collision.sdf"}:
-                continue
-            source = KernelSourceRef(
-                operation.source_node_uid,
-                operation=f"update.{operation.opcode}",
-            )
-            parameters = operation.parameter_dict()
-            bindings = dict(operation.value_bindings)
-            position = builder.load("builtin.position", source)
-            velocity = builder.load("builtin.velocity", source)
-            if operation.opcode == "collision.plane":
-                point = builder.operation_value(
-                    "point", bindings, expression_values, parameters,
-                    attribute_types["builtin.position"], source,
-                )
-                normal = builder.operation_value(
-                    "normal", bindings, expression_values, parameters,
-                    attribute_types["builtin.position"], source,
-                )
-                radius = builder.operation_value(
-                    "radius", bindings, expression_values, parameters,
-                    TypeRef(ValueType.F32), source,
-                )
-                collision_operands = (
-                    position,
-                    velocity,
-                    point,
-                    normal,
-                    radius,
-                )
-            elif operation.opcode == "collision.sphere":
-                center = builder.operation_value(
-                    "center", bindings, expression_values, parameters,
-                    attribute_types["builtin.position"], source,
-                )
-                sphere_radius = builder.operation_value(
-                    "sphere_radius", bindings, expression_values, parameters,
-                    TypeRef(ValueType.F32), source,
-                )
-                particle_radius = builder.operation_value(
-                    "particle_radius", bindings, expression_values, parameters,
-                    TypeRef(ValueType.F32), source,
-                )
-                collision_operands = (
-                    position,
-                    velocity,
-                    center,
-                    sphere_radius,
-                    particle_radius,
-                )
-            else:
-                particle_radius = builder.operation_value(
-                    "particle_radius", bindings, expression_values, parameters,
-                    TypeRef(ValueType.F32), source,
-                )
-                collision_operands = (
-                    position,
-                    velocity,
-                    particle_radius,
-                )
-            restitution = builder.operation_value(
-                "restitution",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.F32),
-                source,
-            )
-            friction = builder.operation_value(
-                "friction",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.F32),
-                source,
-            )
-            collision_operands += (restitution, friction)
-            opcode_prefix = operation.opcode.replace("collision.", "collide_")
-            immediates = (
-                {
-                    "interface": parameters["interface"],
-                    "inverted": parameters["inverted"],
-                }
-                if operation.opcode == "collision.sdf"
-                else {}
-            )
-            resolved_position = builder.emit(
-                f"{opcode_prefix}_position",
-                attribute_types["builtin.position"],
-                collision_operands,
-                immediates,
-                source,
-            )
-            resolved_velocity = builder.emit(
-                f"{opcode_prefix}_velocity",
-                attribute_types["builtin.velocity"],
-                collision_operands,
-                immediates,
-                source,
-            )
-            builder.store("builtin.position", resolved_position, source)
-            builder.store("builtin.velocity", resolved_velocity, source)
+        if emitter.settings.collision_enabled and not collision_lifecycle_ready:
+            if not position_integrated:
+                self._integrate_update_position(builder, attribute_types, delta_time)
+                position_integrated = True
+            self._prepare_collision_lifecycle(builder, attribute_types)
+            collision_lifecycle_ready = True
+        if not position_integrated:
+            self._integrate_update_position(builder, attribute_types, delta_time)
         lifetime = builder.load("builtin.lifetime", KernelSourceRef(operation="update.kill_expired"))
         alive = builder.emit(
             "less_than",
@@ -1339,14 +1726,19 @@ class ParticleKernelLowerer:
         attribute_types,
         routes,
         event_types,
+        parameter_types,
     ) -> ParticleKernelFunction:
-        builder = _KernelBuilder(KernelStage.RENDERING, attribute_types)
-        expression_values = builder.lower_expressions(emitter.rendering)
+        builder = _KernelBuilder(KernelStage.RENDERING, attribute_types, parameter_types)
         for operation in emitter.rendering.operations:
             source = KernelSourceRef(
                 operation.source_node_uid,
                 operation=f"rendering.{operation.opcode}",
             )
+            expression_values = self._lower_operation_expressions(
+                builder, emitter.rendering, operation
+            )
+            if operation.opcode in {"control.if", "control.join_all"}:
+                continue
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             attribute_targets = {
@@ -1365,6 +1757,8 @@ class ParticleKernelLowerer:
             }
             target = attribute_targets.get(operation.opcode)
             if target is not None:
+                guard = builder.execution_guard(operation, expression_values, source)
+                builder.begin_guard(guard, source)
                 stable_id, property_name = target
                 value = builder.operation_value(
                     property_name,
@@ -1388,6 +1782,7 @@ class ParticleKernelLowerer:
                         source,
                     )
                 builder.store(stable_id, value, source)
+                builder.end_guard(guard, source)
             elif operation.opcode == "event.emit":
                 self._lower_event_output(
                     builder,
@@ -1451,6 +1846,15 @@ class ParticleKernelLowerer:
             TypeRef(ValueType.BOOL),
             source,
         )
+        guard = builder.execution_guard(operation, expression_values, source)
+        if guard:
+            condition = builder.emit(
+                "logical_and",
+                TypeRef(ValueType.BOOL),
+                (condition, guard),
+                {},
+                source,
+            )
         payload_values = []
         payload_layout = []
         for field in event_type.fields:
@@ -1485,14 +1889,28 @@ class ParticleKernelLowerer:
 
 
 class _KernelBuilder:
-    def __init__(self, stage: KernelStage, attribute_types: Mapping[str, TypeRef]) -> None:
+    def __init__(
+        self,
+        stage: KernelStage,
+        attribute_types: Mapping[str, TypeRef],
+        parameter_types: Mapping[str, TypeRef],
+    ) -> None:
         self.stage = stage
         self.attribute_types = dict(attribute_types)
+        self.parameter_types = dict(parameter_types)
         self.instructions: list[KernelInstruction] = []
         self.read_attributes: set[str] = set()
         self.written_attributes: set[str] = set()
         self._value_types: dict[str, TypeRef] = {}
+        self._runtime_predicates: dict[str, str] = {}
         self._random_slot = 0
+
+    def set_runtime_predicate(self, name: str, value: str) -> None:
+        if self._value_types.get(value) != TypeRef(ValueType.BOOL):
+            raise KernelCompileError(
+                f"runtime predicate {name!r} must reference a bool value"
+            )
+        self._runtime_predicates[str(name)] = value
 
     def emit(
         self,
@@ -1580,9 +1998,100 @@ class _KernelBuilder:
     def next_random_slots(self, count: int) -> tuple[int, ...]:
         return tuple(self.next_random_slot() for _index in range(count))
 
-    def lower_expressions(self, stage: ParticleStageHIR) -> dict[str, str]:
+    def execution_guard(
+        self,
+        operation,
+        expression_values: Mapping[str, str],
+        source: KernelSourceRef,
+    ) -> str:
+        values = []
+        for predicate in operation.execution_predicates:
+            if predicate.runtime_condition:
+                try:
+                    value = self._runtime_predicates[predicate.runtime_condition]
+                except KeyError as exc:
+                    raise KernelCompileError(
+                        f"runtime execution predicate {predicate.runtime_condition!r} "
+                        "is unavailable"
+                    ) from exc
+            elif predicate.value_id:
+                try:
+                    value = expression_values[predicate.value_id]
+                except KeyError as exc:
+                    raise KernelCompileError(
+                        f"execution predicate {predicate.value_id!r} is unavailable"
+                    ) from exc
+            else:
+                value = self.constant(
+                    TypeRef(ValueType.BOOL), predicate.literal, source
+                )
+            if self._value_types[value] != TypeRef(ValueType.BOOL):
+                raise KernelCompileError("particle execution predicate must be bool")
+            if not predicate.expected:
+                value = self.emit(
+                    "logical_not",
+                    TypeRef(ValueType.BOOL),
+                    (value,),
+                    {},
+                    source,
+                )
+            values.append(value)
+        if not values:
+            return ""
+        result = values[0]
+        for value in values[1:]:
+            result = self.emit(
+                "logical_and",
+                TypeRef(ValueType.BOOL),
+                (result, value),
+                {},
+                source,
+            )
+        return result
+
+    def begin_guard(self, guard: str, source: KernelSourceRef) -> None:
+        if guard:
+            self.emit_void("begin_if", (guard,), {}, source)
+
+    def end_guard(self, guard: str, source: KernelSourceRef) -> None:
+        if guard:
+            self.emit_void("end_if", (), {}, source)
+
+    def lower_expressions(
+        self,
+        stage: ParticleStageHIR,
+        required_outputs: set[str] | None = None,
+    ) -> dict[str, str]:
+        instructions = stage.expressions.instructions
+        if required_outputs is not None:
+            by_result = {
+                instruction.result_id: instruction
+                for instruction in instructions
+            }
+            required = set()
+
+            def include(result_id: str) -> None:
+                if result_id in required:
+                    return
+                instruction = by_result.get(result_id)
+                if instruction is None:
+                    raise KernelCompileError(
+                        f"expression output {result_id!r} is unavailable"
+                    )
+                required.add(result_id)
+                for operand in instruction.operands:
+                    if operand.value_id:
+                        include(operand.value_id)
+
+            for result_id in required_outputs:
+                include(result_id)
+            instructions = tuple(
+                instruction
+                for instruction in instructions
+                if instruction.result_id in required
+            )
         lowered: dict[str, str] = {}
-        for instruction in stage.expressions.instructions:
+        for instruction in instructions:
             source = KernelSourceRef(
                 instruction.source_node_uid,
                 instruction.source_port_id,
@@ -1597,6 +2106,20 @@ class _KernelBuilder:
                         f"expression attribute type mismatch for "
                         f"{instruction.immediate_dict()['attribute']!r}"
                     )
+            elif instruction.opcode == "load_parameter":
+                stable_id = str(instruction.immediate_dict()["parameter"])
+                value_type = self.parameter_types.get(stable_id)
+                if value_type is None or value_type != instruction.result_type:
+                    raise KernelCompileError(
+                        f"expression parameter type mismatch for {stable_id!r}"
+                    )
+                value = self.emit(
+                    "load_parameter",
+                    value_type,
+                    (),
+                    {"parameter": stable_id},
+                    source,
+                )
             elif instruction.opcode == "normalized_age":
                 if instruction.operands or instruction.immediate_dict():
                     raise KernelCompileError(
@@ -1732,12 +2255,21 @@ def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
 
 
 def _kernel_semantic_hash(
+    parameters: tuple[KernelParameter, ...],
     emitters: tuple[ParticleEmitterKernelIR, ...],
     events: KernelEventABI,
     contract: KernelRuntimeContract,
 ) -> str:
     semantic = {
         "$schema": KERNEL_IR_SCHEMA,
+        "parameters": [
+            {
+                "stable_id": parameter.stable_id,
+                "type": parameter.value_type.to_dict(),
+                "slot": parameter.slot,
+            }
+            for parameter in parameters
+        ],
         "contract": contract.to_dict(),
         "events": events.to_dict(),
         "emitters": [emitter.to_dict(include_source=False) for emitter in emitters],
@@ -1756,6 +2288,7 @@ __all__ = [
     "KernelEventRoute",
     "KernelEventType",
     "KernelOperand",
+    "KernelParameter",
     "KernelSourceRef",
     "KernelStage",
     "ParticleEmitterKernelIR",

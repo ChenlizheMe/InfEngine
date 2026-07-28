@@ -13,8 +13,9 @@ namespace
 
 bool IsValidEntry(const GpuParticleDrawEntry &entry)
 {
-    return entry.id != 0 && entry.capacity != 0 && entry.instances.IsValid() && entry.renderIndices.IsValid() &&
-           entry.indirectArguments.IsValid() && entry.bounds.IsValid() && entry.renderer && entry.renderer->IsValid() &&
+    return entry.id != 0 && entry.emitterId != 0 && entry.graphInstanceId != 0 && entry.capacity != 0 &&
+           entry.instances.IsValid() && entry.renderIndices.IsValid() && entry.indirectArguments.IsValid() &&
+           entry.bounds.IsValid() && entry.simulationControl.IsValid() && entry.renderer && entry.renderer->IsValid() &&
            entry.renderer->VertexCount() > 0 && entry.renderer->InstanceBuffer() == entry.instances &&
            entry.renderer->RenderIndexBuffer() == entry.renderIndices &&
            (!entry.cullProgram || entry.cullProgram->IsValid()) &&

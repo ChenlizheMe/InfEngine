@@ -374,7 +374,7 @@ void ShaderProgram::ExtractMaterialUBOLayout()
     }
 
     // Also look for a vertex-stage MaterialProperties UBO at binding 14
-    // (used when the vertex shader declares @property fields)
+    // (used when the vertex ShaderInfo declares Properties)
     for (const auto &ubo : m_vertReflection.GetUniformBuffers()) {
         if ((ubo.name == "MaterialProperties" || ubo.name == "Material" || ubo.name == "MaterialUBO") &&
             ubo.binding == 14 && ubo.set == 0) {
@@ -426,10 +426,9 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 
     // Create a layout for each set.
     //
-    // For the material set (set 0) we opt into VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
-    // on every binding when the device supports descriptor indexing. This is what
-    // lets MaterialDescriptorManager rewrite a sampler/UBO binding while the GPU is
-    // sampling the descriptor set, eliminating the per-edit vkDeviceWaitIdle stall.
+    // For the material set (set 0) we retain UPDATE_AFTER_BIND compatibility when
+    // supported. MaterialDescriptorManager now publishes immutable replacement sets,
+    // so live-update correctness no longer depends on mutating an in-flight set.
     //
     // Sets 1, 2 (per-view, globals) keep the legacy layout — they are written once
     // per frame on the CPU before any submission and have no live-update concern.
@@ -606,21 +605,21 @@ void ShaderProgramCache::Shutdown()
     m_device = VK_NULL_HANDLE;
 }
 
-ShaderProgram *ShaderProgramCache::GetOrCreateProgram(const ShaderProgramKey &programKey,
-                                                      const std::vector<char> &vertSpirv,
-                                                      const std::vector<char> &fragSpirv)
+ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProgramKey &programKey,
+                                                                const std::vector<char> &vertSpirv,
+                                                                const std::vector<char> &fragSpirv)
 {
     return GetOrCreateProgram({programKey, ShaderCompileTarget::Forward}, vertSpirv, fragSpirv);
 }
 
-ShaderProgram *ShaderProgramCache::GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
-                                                      const std::vector<char> &vertSpirv,
-                                                      const std::vector<char> &fragSpirv)
+ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
+                                                                const std::vector<char> &vertSpirv,
+                                                                const std::vector<char> &fragSpirv)
 {
     // Check cache first
     auto it = m_programs.find(variantKey);
     if (it != m_programs.end()) {
-        return it->second.get();
+        return it->second;
     }
 
     // Check if this program previously failed creation (don't retry every frame)
@@ -629,27 +628,27 @@ ShaderProgram *ShaderProgramCache::GetOrCreateProgram(const ShaderProgramVariant
     }
 
     // Create new program
-    auto program = std::make_unique<ShaderProgram>();
+    auto program = std::make_shared<ShaderProgram>();
     if (!program->Create(m_device, vertSpirv, fragSpirv, variantKey)) {
         INXLOG_ERROR("Failed to create shader program: ", variantKey.ToString());
         m_failedPrograms.insert(variantKey);
         return nullptr;
     }
 
-    ShaderProgram *result = program.get();
-    m_programs[variantKey] = std::move(program);
-    return result;
+    ShaderProgramPublication publication = std::move(program);
+    m_programs[variantKey] = publication;
+    return publication;
 }
 
-ShaderProgram *ShaderProgramCache::GetProgram(const ShaderProgramKey &programKey)
+ShaderProgramPublication ShaderProgramCache::GetProgram(const ShaderProgramKey &programKey) const
 {
     return GetProgram({programKey, ShaderCompileTarget::Forward});
 }
 
-ShaderProgram *ShaderProgramCache::GetProgram(const ShaderProgramVariantKey &variantKey)
+ShaderProgramPublication ShaderProgramCache::GetProgram(const ShaderProgramVariantKey &variantKey) const
 {
     auto it = m_programs.find(variantKey);
-    return it != m_programs.end() ? it->second.get() : nullptr;
+    return it != m_programs.end() ? it->second : nullptr;
 }
 
 bool ShaderProgramCache::HasProgram(const ShaderProgramKey &programKey) const
@@ -662,12 +661,12 @@ bool ShaderProgramCache::HasProgram(const ShaderProgramVariantKey &variantKey) c
     return m_programs.find(variantKey) != m_programs.end();
 }
 
-std::unique_ptr<ShaderProgram> ShaderProgramCache::TakeProgram(const ShaderProgramKey &programKey)
+ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramKey &programKey)
 {
     return TakeProgram({programKey, ShaderCompileTarget::Forward});
 }
 
-std::unique_ptr<ShaderProgram> ShaderProgramCache::TakeProgram(const ShaderProgramVariantKey &variantKey)
+ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramVariantKey &variantKey)
 {
     auto found = m_programs.find(variantKey);
     if (found == m_programs.end()) {
@@ -680,7 +679,7 @@ std::unique_ptr<ShaderProgram> ShaderProgramCache::TakeProgram(const ShaderProgr
     return program;
 }
 
-std::vector<std::unique_ptr<ShaderProgram>> ShaderProgramCache::TakePrograms(const ShaderProgramKey &programKey)
+std::vector<ShaderProgramPublication> ShaderProgramCache::TakePrograms(const ShaderProgramKey &programKey)
 {
     std::vector<ShaderProgramVariantKey> keys;
     for (const auto &[key, program] : m_programs) {
@@ -695,15 +694,14 @@ std::vector<std::unique_ptr<ShaderProgram>> ShaderProgramCache::TakePrograms(con
             ++it;
     }
 
-    std::vector<std::unique_ptr<ShaderProgram>> programs;
+    std::vector<ShaderProgramPublication> programs;
     programs.reserve(keys.size());
     for (const auto &key : keys)
         programs.push_back(TakeProgram(key));
     return programs;
 }
 
-std::vector<std::unique_ptr<ShaderProgram>>
-ShaderProgramCache::TakeProgramsContainingShader(const std::string &shaderName)
+std::vector<ShaderProgramPublication> ShaderProgramCache::TakeProgramsContainingShader(const std::string &shaderName)
 {
     if (shaderName.empty())
         throw std::invalid_argument("Shader program invalidation requires a non-empty shader identifier");
@@ -729,7 +727,7 @@ ShaderProgramCache::TakeProgramsContainingShader(const std::string &shaderName)
             ++it;
     }
 
-    std::vector<std::unique_ptr<ShaderProgram>> retired;
+    std::vector<ShaderProgramPublication> retired;
     retired.reserve(toRemove.size());
     for (const auto &key : toRemove) {
         retired.push_back(TakeProgram(key));

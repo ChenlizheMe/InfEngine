@@ -25,7 +25,7 @@ namespace vk
 class VkPipelineManager;
 }
 
-/// Shader render-state annotations parsed from @cull, @depth_write, etc.
+/// Render-state defaults parsed from the shader's ShaderInfo declaration.
 /// Keyed by shader_id (e.g. "lit", "unlit"). Applied to materials before
 /// pipeline creation so shader authors can control GPU state via annotations.
 struct ShaderRenderMeta
@@ -70,7 +70,7 @@ class VkShaderCache
     void LoadShader(const char *name, const std::vector<char> &spirvCode, const char *type, vk::VkPipelineManager &pm);
 
     /// Unload (destroy) a shader module and erase its cached code/meta.
-    void UnloadShader(const char *name, VkDevice device);
+    void UnloadShader(const char *name, vk::VkPipelineManager &pm);
 
     /// Check if a module exists for the given name and type ("vert"/"frag").
     [[nodiscard]] bool HasShader(const std::string &name, const std::string &type) const;
@@ -100,7 +100,8 @@ class VkShaderCache
     [[nodiscard]] const ShaderProgramArtifact *FindProgramArtifact(const ShaderStagePair &stages) const;
     /// Materialize one semantic pass on first use. Publishing an artifact only
     /// creates its mandatory Forward program.
-    [[nodiscard]] ShaderProgram *MaterializeProgramVariant(const ShaderStagePair &stages, ShaderCompileTarget target);
+    [[nodiscard]] ShaderProgramPublication MaterializeProgramVariant(const ShaderStagePair &stages,
+                                                                     ShaderCompileTarget target);
 
     // ── ShaderProgramCache Access ──────────────────────────────────────────
 

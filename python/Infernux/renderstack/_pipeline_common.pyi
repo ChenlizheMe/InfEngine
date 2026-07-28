@@ -8,6 +8,8 @@ if TYPE_CHECKING:
 COLOR_TEXTURE: str
 DEPTH_TEXTURE: str
 SHADOW_MAP_TEXTURE: str
+MOTION_TEXTURE: str
+MOTION_MSAA_TEXTURE: str
 BEFORE_POST_PROCESS_POINT: str
 AFTER_POST_PROCESS_POINT: str
 
@@ -29,7 +31,12 @@ DEFERRED_LIGHTING_SHADER: str
 def opaque_queue_range() -> tuple[int, int]: ...
 def transparent_queue_range() -> tuple[int, int]: ...
 def shadow_caster_queue_range() -> tuple[int, int]: ...
-def create_main_scene_targets(graph: RenderGraph, *, shadow_resolution: int) -> None: ...
+def create_main_scene_targets(
+    graph: RenderGraph,
+    *,
+    shadow_resolution: int,
+    msaa_samples: int = ...,
+) -> None: ...
 def create_deferred_gbuffer(graph: RenderGraph) -> None: ...
 def add_shadow_caster_pass(
     graph: RenderGraph,
@@ -37,7 +44,6 @@ def add_shadow_caster_pass(
     name: str = ...,
     queue_range: tuple[int, int] | None = ...,
     light_index: int = ...,
-    shadow_type: str = ...,
 ) -> None: ...
 def add_forward_opaque_pass(
     graph: RenderGraph,
@@ -45,6 +51,7 @@ def add_forward_opaque_pass(
     name: str = ...,
     clear_color: tuple[float, float, float, float] = ...,
     queue_range: tuple[int, int] | None = ...,
+    material_pass: str = ...,
 ) -> None: ...
 def add_skybox_pass(graph: RenderGraph, *, name: str = ...) -> None: ...
 def add_transparent_pass(
@@ -52,6 +59,16 @@ def add_transparent_pass(
     *,
     name: str = ...,
     queue_range: tuple[int, int] | None = ...,
+    material_pass: str = ...,
+) -> None: ...
+def add_motion_vector_pass(
+    graph: RenderGraph,
+    *,
+    name: str,
+    queue_range: tuple[int, int],
+    clear: bool = ...,
+    sort_mode: str = ...,
+    msaa_samples: int = ...,
 ) -> None: ...
 def add_standard_post_process_section(graph: RenderGraph, *, enable_screen_ui: bool) -> None: ...
 def ensure_standard_post_process_points(graph: RenderGraph) -> None: ...

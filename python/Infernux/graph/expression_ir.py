@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import math
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .document import GraphDocument, GraphLinkRecord, GraphNodeRecord
 from .registry import (
     COMMON_NODE_REGISTRY,
     NodeDefinitionRegistry,
     PortDef,
+    PortDimensionPolicy,
     PortDirection,
     PortKind,
 )
@@ -67,10 +68,12 @@ class ExpressionCompiler:
         registry: NodeDefinitionRegistry = COMMON_NODE_REGISTRY,
         type_system: TypeSystem = PORTABLE_TYPE_SYSTEM,
         definition_fingerprint: str = "",
+        property_type_resolver: Callable[[str, Any], TypeRef | None] | None = None,
     ) -> None:
         self._registry = registry
         self._types = type_system
         self._definition_fingerprint = str(definition_fingerprint)
+        self._property_type_resolver = property_type_resolver
 
     def compile(self, document: GraphDocument, outputs) -> ExpressionProgram:
         by_uid = {node.uid: node for node in document.nodes}
@@ -105,7 +108,7 @@ class ExpressionCompiler:
                     [ExpressionDiagnostic("missing_output", f"unknown output {node_uid}.{port_id}", node_uid)]
                 )
 
-            operands = []
+            raw_operands: list[tuple[PortDef, ExpressionOperand]] = []
             input_types: dict[str, TypeRef] = {}
             for port in definition.ports:
                 if port.direction is not PortDirection.INPUT or port.kind is not PortKind.VALUE:
@@ -113,20 +116,9 @@ class ExpressionCompiler:
                 link = incoming.get((node_uid, port.id))
                 if link is not None:
                     value_id, value_type = emit(link.source_node, link.source_port)
-                    if port.value_type is not None and not self._types.can_connect(
-                        value_type, port.value_type
-                    ):
-                        raise ExpressionCompileError(
-                            [
-                                ExpressionDiagnostic(
-                                    "type_mismatch",
-                                    f"cannot connect {value_type} to {port.value_type}",
-                                    node_uid,
-                                    link.uid,
-                                )
-                            ]
-                        )
-                    operands.append(ExpressionOperand(value_type, value_id=value_id))
+                    raw_operands.append(
+                        (port, ExpressionOperand(value_type, value_id=value_id))
+                    )
                 else:
                     if port.required:
                         raise ExpressionCompileError(
@@ -139,16 +131,40 @@ class ExpressionCompiler:
                             ]
                         )
                     value_type = port.value_type or TypeRef(ValueType.F32)
-                    operands.append(
-                        ExpressionOperand(
-                            value_type,
-                            literal=node.properties.get(port.id, port.default),
+                    raw_operands.append(
+                        (
+                            port,
+                            ExpressionOperand(
+                                value_type,
+                                literal=node.properties.get(port.id, port.default),
+                            ),
                         )
                     )
                 input_types[port.id] = value_type
 
             try:
-                result_type = self._resolve_output_type(definition.type_id, output, input_types)
+                input_targets = self._resolve_input_targets(definition.ports, input_types)
+                operands = []
+                for port, operand in raw_operands:
+                    target_type = input_targets[port.id]
+                    if operand.value_type != target_type:
+                        resize_id = f"{node_uid}.{port.id}.__numeric_resize"
+                        instructions.append(
+                            ExpressionInstruction(
+                                resize_id,
+                                "numeric_resize",
+                                target_type,
+                                (operand,),
+                                node_uid,
+                                port.id,
+                            )
+                        )
+                        operand = ExpressionOperand(target_type, value_id=resize_id)
+                    operands.append(operand)
+                    input_types[port.id] = target_type
+                result_type = self._resolve_output_type(
+                    definition, node, output, input_types
+                )
             except TypeError as exc:
                 raise ExpressionCompileError(
                     [ExpressionDiagnostic("type_mismatch", str(exc), node_uid)]
@@ -174,6 +190,20 @@ class ExpressionCompiler:
                         ]
                     )
                 immediates.append((prop.id, literal))
+            if opcode == "split_component":
+                try:
+                    component = "xyzw".index(port_id)
+                except ValueError as exc:
+                    raise ExpressionCompileError(
+                        [
+                            ExpressionDiagnostic(
+                                "invalid_component",
+                                f"{definition.type_id} has invalid component output {port_id!r}",
+                                node_uid,
+                            )
+                        ]
+                    ) from exc
+                immediates.append(("component", component))
             if opcode == "constant":
                 prop = definition.properties[0]
                 literal = node.properties.get(prop.id, prop.default)
@@ -256,12 +286,28 @@ class ExpressionCompiler:
 
     def _resolve_output_type(
         self,
-        type_id: str,
+        definition,
+        node: GraphNodeRecord,
         output: PortDef,
         inputs: Mapping[str, TypeRef],
     ) -> TypeRef:
+        type_id = definition.type_id
         if output.value_type is not None:
             return output.value_type
+        if output.type_property:
+            property_def = definition.property(output.type_property)
+            selected = node.properties.get(output.type_property, property_def.default)
+            resolved = (
+                self._property_type_resolver(output.type_property, selected)
+                if self._property_type_resolver is not None
+                else None
+            )
+            if not isinstance(resolved, TypeRef):
+                raise TypeError(
+                    f"{type_id}.{output.type_property} references unknown value "
+                    f"{selected!r}"
+                )
+            return resolved
         if type_id in {
             "common.math.add",
             "common.math.subtract",
@@ -271,11 +317,55 @@ class ExpressionCompiler:
         }:
             return self._types.unify_numeric(inputs["a"], inputs["b"])
         if type_id == "common.noise.vector3d":
-            position_type = inputs["position"]
-            if position_type.value_type is not ValueType.VEC3:
-                raise TypeError("Vector Noise 3D requires a vec3 position")
-            return position_type
+            input_type = inputs["position"]
+            if input_type.value_type is not ValueType.VEC3:
+                raise TypeError(f"{type_id} requires a vec3 input")
+            return input_type
         raise TypeError(f"cannot resolve type variable {output.type_variable!r} for {type_id}")
+
+    def _resolve_input_targets(
+        self,
+        ports: tuple[PortDef, ...],
+        inputs: Mapping[str, TypeRef],
+    ) -> dict[str, TypeRef]:
+        targets = dict(inputs)
+        promoted: dict[str, TypeRef] = {}
+        for port in ports:
+            if (
+                port.direction is not PortDirection.INPUT
+                or port.kind is not PortKind.VALUE
+            ):
+                continue
+            source = inputs[port.id]
+            if port.dimension_policy is PortDimensionPolicy.PROMOTE:
+                current = promoted.get(port.type_variable)
+                promoted[port.type_variable] = (
+                    source
+                    if current is None
+                    else self._types.unify_numeric(current, source)
+                )
+
+        for port in ports:
+            if (
+                port.direction is not PortDirection.INPUT
+                or port.kind is not PortKind.VALUE
+            ):
+                continue
+            source = inputs[port.id]
+            if port.dimension_policy is PortDimensionPolicy.PROMOTE:
+                target = promoted[port.type_variable]
+                if not self._types.can_resize_numeric(source, target):
+                    raise TypeError(f"cannot promote numeric input {source} to {target}")
+                targets[port.id] = target
+            elif port.dimension_policy is PortDimensionPolicy.FIXED:
+                targets[port.id] = self._types.fixed_numeric_target(
+                    source, port.value_type
+                )
+            elif port.value_type is not None:
+                if not self._types.can_connect(source, port.value_type):
+                    raise TypeError(f"cannot connect {source} to {port.value_type}")
+                targets[port.id] = port.value_type
+        return targets
 
     @staticmethod
     def _literal_error(value_type: TypeRef, value: Any) -> str:
@@ -292,7 +382,7 @@ class ExpressionCompiler:
                 return ""
             except (TypeError, ValueError) as exc:
                 return str(exc)
-        if kind is ValueType.ASSET_REF:
+        if kind in {ValueType.ASSET_REF, ValueType.TEXTURE2D}:
             try:
                 AssetReference.from_dict(value)
                 return ""

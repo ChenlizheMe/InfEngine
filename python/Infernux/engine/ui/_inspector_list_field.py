@@ -152,7 +152,8 @@ def _make_list_picker_providers(element_type, metadata):
     if element_type == FieldType.MATERIAL:
         return (None, lambda filt: _picker_assets(filt, "*.mat"))
     if element_type == FieldType.TEXTURE:
-        patterns = ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm")
+        from Infernux.core.asset_types import IMAGE_EXTENSIONS
+        patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
         return (None, lambda filt, _patterns=patterns: sum(
             (_picker_assets(filt, pattern, assets_only=True) for pattern in _patterns), []))
     if element_type == FieldType.SHADER:
@@ -166,7 +167,10 @@ def _make_list_picker_providers(element_type, metadata):
                 exts = cfg["extensions"]
                 return (None, lambda filt, _exts=exts: sum(
                     (_picker_assets(filt, e) for e in _exts), []))
-        return (None, lambda filt: _picker_assets(filt, "*.wav") + _picker_assets(filt, "*.mp3") + _picker_assets(filt, "*.ogg"))
+        from Infernux.core.asset_types import AUDIO_EXTENSIONS
+        patterns = tuple(f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS))
+        return (None, lambda filt, _patterns=patterns: sum(
+            (_picker_assets(filt, pattern) for pattern in _patterns), []))
     return (None, None)
 
 

@@ -8,9 +8,15 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <limits>
 #include <utility>
+
+extern "C" int stb_vorbis_decode_memory(const unsigned char *mem, int len, int *channels, int *sample_rate,
+                                         short **output);
 
 namespace infernux
 {
@@ -38,6 +44,50 @@ bool DecodeWaveFile(const std::string &filePath, SDL_AudioSpec &spec, std::vecto
     return true;
 }
 
+bool DecodeOggFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
+{
+    std::ifstream input(ToFsPath(filePath), std::ios::binary | std::ios::ate);
+    if (!input.is_open()) {
+        INXLOG_ERROR("Failed to open OGG file '", filePath, "'");
+        return false;
+    }
+
+    const std::streamsize byteCount = input.tellg();
+    if (byteCount <= 0 || byteCount > static_cast<std::streamsize>(std::numeric_limits<int>::max())) {
+        INXLOG_ERROR("OGG file is empty or too large to decode: ", filePath);
+        return false;
+    }
+    input.seekg(0, std::ios::beg);
+    std::vector<unsigned char> encoded(static_cast<size_t>(byteCount));
+    if (!input.read(reinterpret_cast<char *>(encoded.data()), byteCount)) {
+        INXLOG_ERROR("Failed to read OGG file '", filePath, "'");
+        return false;
+    }
+
+    int channels = 0;
+    int sampleRate = 0;
+    short *samples = nullptr;
+    const int sampleFrames = stb_vorbis_decode_memory(encoded.data(), static_cast<int>(encoded.size()), &channels,
+                                                      &sampleRate, &samples);
+    if (sampleFrames <= 0 || channels <= 0 || sampleRate <= 0 || !samples) {
+        INXLOG_ERROR("Failed to decode OGG/Vorbis file '", filePath, "'");
+        if (samples)
+            std::free(samples);
+        return false;
+    }
+
+    const size_t sampleBytes = static_cast<size_t>(sampleFrames) * static_cast<size_t>(channels) * sizeof(short);
+    data.resize(sampleBytes);
+    std::memcpy(data.data(), samples, sampleBytes);
+    std::free(samples);
+
+    spec = {};
+    spec.freq = sampleRate;
+    spec.channels = static_cast<Uint8>(channels);
+    spec.format = SDL_AUDIO_S16LE;
+    return true;
+}
+
 bool DecodeAudioFile(const std::string &filePath, SDL_AudioSpec &spec, std::vector<uint8_t> &data)
 {
     std::string extension = FromFsPath(ToFsPath(filePath).extension());
@@ -45,6 +95,9 @@ bool DecodeAudioFile(const std::string &filePath, SDL_AudioSpec &spec, std::vect
 
     if (extension == ".wav") {
         return DecodeWaveFile(filePath, spec, data);
+    }
+    if (extension == ".ogg") {
+        return DecodeOggFile(filePath, spec, data);
     }
 
     INXLOG_ERROR("Unsupported audio file format: ", filePath);

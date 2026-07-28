@@ -1,10 +1,12 @@
-@shader_id: Lib Normal Utils
+ShaderInfo {
+    Name "Lib Normal Utils"
+}
 
 // ============================================================================
 // lib/normal_utils.glsl — Normal mapping and tangent-space utilities
 //
 // Provides: height-to-normal, tangent-space transform, normal map sampling.
-// Usage: @import: Lib Normal Utils
+// Usage: ShaderInfo Imports: Lib Normal Utils
 //
 // Available varyings (from fragment_varyings.glsl):
 //   v_Normal    — interpolated world-space normal

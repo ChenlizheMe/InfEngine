@@ -19,7 +19,9 @@
  *     kernel allocations.
  *   * Submission goes to the transfer queue if HasDedicatedTransferQueue();
  *     otherwise it transparently falls back to the graphics queue so call
- *     sites never need to branch.
+ *     sites never need to branch. Runtime construction always supplies a
+ *     VulkanQueueManager; the raw queue fallback exists only for isolated
+ *     backend tests that do not construct the full renderer.
  *
  * Queue family ownership transfer is the caller's responsibility. The
  * recommended pattern is documented on Begin/End below: emit a release
@@ -35,6 +37,7 @@
 #include "VkTypes.h"
 #include <atomic>
 #include <cstdint>
+#include <function/renderer/rhi/RhiSubmission.h>
 #include <mutex>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -45,6 +48,7 @@ namespace vk
 {
 
 class VkDeviceContext;
+class VulkanQueueManager;
 
 /**
  * @brief Opaque handle returned from EndAsync() for caller-side completion polling.
@@ -87,7 +91,9 @@ class AsyncTransferContext
      * family (legacy fallback path).
      */
     bool Initialize(VkDevice device, uint32_t transferQueueFamily, VkQueue transferQueue,
-                    bool hasDedicatedTransferQueue, bool enableTimelineSemaphore = false);
+                    bool hasDedicatedTransferQueue, bool enableTimelineSemaphore = false,
+                    VulkanQueueManager *queueManager = nullptr,
+                    rhi::QueueRole submissionRole = rhi::QueueRole::Transfer);
 
     /**
      * @brief Tear down all pooled fences / command buffers.
@@ -175,6 +181,7 @@ class AsyncTransferContext
         uint64_t id = 0;
         VkFence fence = VK_NULL_HANDLE;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
+        rhi::SubmissionTicket ticket;
     };
 
     /// @brief Recycle (or lazily create) a fence ready for re-submission.
@@ -196,6 +203,8 @@ class AsyncTransferContext
     VkQueue m_queue = VK_NULL_HANDLE;
     uint32_t m_queueFamily = 0;
     bool m_hasDedicatedQueue = false;
+    VulkanQueueManager *m_queueManager = nullptr;
+    rhi::QueueRole m_submissionRole = rhi::QueueRole::Transfer;
     VkSemaphore m_timelineSemaphore = VK_NULL_HANDLE;
     std::atomic<uint64_t> m_nextTimelineValue{1};
 

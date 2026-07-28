@@ -30,7 +30,7 @@ ResourceType ParseResourceType(const nlohmann::json &value, const std::string &l
     if (!value.is_number_integer())
         throw std::invalid_argument(location + " must be an integer");
     const int raw = value.get<int>();
-    if (raw < static_cast<int>(ResourceType::Shader) || raw > static_cast<int>(ResourceType::PointCache))
+    if (raw < static_cast<int>(ResourceType::Shader) || raw > static_cast<int>(ResourceType::ParticleGraph))
         throw std::invalid_argument(location + " is not a current ResourceType");
     return static_cast<ResourceType>(raw);
 }

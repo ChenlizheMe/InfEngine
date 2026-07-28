@@ -271,9 +271,6 @@ class RenderGraph:
     def add_pass(self, name: str) -> RenderPassBuilder:
         """Add a new render pass to the graph."""
         ...
-    def add_compute_pass(self, name: str) -> RenderPassBuilder:
-        """Add a compute-domain pass with typed resource accesses."""
-        ...
     def add_copy_pass(self, name: str) -> RenderPassBuilder:
         """Add a transfer-domain texture or buffer copy pass."""
         ...

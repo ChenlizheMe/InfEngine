@@ -32,6 +32,7 @@ class _ImageAccumulator:
     current: object
     alternate: object
     depth: object
+    motion: object
     shadow_map: object | None
     composite_index: int = 0
 
@@ -70,7 +71,7 @@ class _ImageAccumulator:
         self.composite_index += 1
 
     def effect_resources(self) -> dict:
-        resources = {"color": self.current, "depth": self.depth}
+        resources = {"color": self.current, "depth": self.depth, "motion": self.motion}
         if self.shadow_map is not None:
             resources["shadow_map"] = self.shadow_map
         return resources
@@ -137,6 +138,14 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
     camera_color = graph.create_texture("color", format=color_format, camera_target=True)
     scene_scratch = graph.create_texture("_scene_composite", format=color_format)
     depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+    motion = graph.create_texture("motion", format=Format.RG16_SFLOAT, samples=1)
+    motion_draw = motion
+    if definition.frame.msaa > 1:
+        motion_draw = graph.create_texture(
+            "_motion_msaa",
+            format=Format.RG16_SFLOAT,
+            samples=definition.frame.msaa,
+        )
     shadow_map = None
     if definition.shadows is not None and definition.shadows.enabled:
         shadow_map = graph.create_texture(
@@ -150,6 +159,12 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
         render_pass.write_depth(depth)
         render_pass.set_clear(color=_CLEAR_SCENE, depth=1.0)
 
+    with graph.add_pass("MotionClear") as render_pass:
+        render_pass.write_color(motion_draw)
+        if motion_draw is not motion:
+            render_pass.write_resolve(motion)
+        render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
+
     if shadow_map is not None:
         with graph.add_pass("ShadowCasterPass") as render_pass:
             render_pass.write_depth(shadow_map)
@@ -162,6 +177,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
         camera_color,
         scene_scratch,
         depth,
+        motion,
         shadow_map,
     )
     pending_scene_overlays: list[tuple[str, _RouteContribution]] = []
@@ -184,6 +200,8 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
                 graph,
                 color_format,
                 depth,
+                motion,
+                motion_draw,
                 shadow_map,
                 stages,
                 definition.frame.msaa,
@@ -212,7 +230,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph) -> None:
         if operation == "screen_ui":
             _flush_route_contributions(scene, pending_scene_overlays)
             _commit_scene_to_camera(graph, scene, camera_color)
-            graph.screen_ui_section(resources={"color"})
+            graph.screen_ui_section(resources={"color", "depth", "motion"})
             continue
         raise ValueError(f"unknown pipeline operation: {operation!r}")
 
@@ -227,6 +245,8 @@ def _compile_domain(
     graph,
     color_format,
     depth,
+    motion,
+    motion_draw,
     shadow_map,
     stages: dict[str, EffectStageDefinition],
     msaa_samples: int,
@@ -249,6 +269,7 @@ def _compile_domain(
         f"domain/{domain.domain_id}",
         color_format,
         depth,
+        motion,
         shadow_map,
     )
     pending_overlays: list[tuple[str, _RouteContribution]] = []
@@ -263,6 +284,8 @@ def _compile_domain(
                 graph,
                 color_format,
                 depth,
+                motion,
+                motion_draw,
                 shadow_map,
                 stages,
                 inline_target=accumulator.current,
@@ -288,6 +311,8 @@ def _compile_domain(
                 graph,
                 color_format,
                 depth,
+                motion,
+                motion_draw,
                 shadow_map,
                 stages,
                 msaa_samples,
@@ -320,6 +345,8 @@ def _compile_layer(
     graph,
     color_format,
     depth,
+    motion,
+    motion_draw,
     shadow_map,
     stages: dict[str, EffectStageDefinition],
     msaa_samples: int,
@@ -330,6 +357,7 @@ def _compile_layer(
         f"layer/{layer.layer_id}",
         color_format,
         depth,
+        motion,
         shadow_map,
     )
     pending_overlays: list[tuple[str, _RouteContribution]] = []
@@ -341,6 +369,8 @@ def _compile_layer(
                 graph,
                 color_format,
                 depth,
+                motion,
+                motion_draw,
                 shadow_map,
                 stages,
                 inline_target=accumulator.current,
@@ -375,6 +405,8 @@ def _compile_route(
     graph,
     color_format,
     depth,
+    motion,
+    motion_draw,
     shadow_map,
     stages: dict[str, EffectStageDefinition],
     *,
@@ -401,9 +433,11 @@ def _compile_route(
             graph,
             inline_target,
             depth,
+            motion,
+            motion_draw,
             shadow_map,
         )
-        resources = _effect_resources(inline_target, depth, shadow_map)
+        resources = _effect_resources(inline_target, depth, motion, shadow_map)
         for stage in route_stages:
             _declare_effect(graph, stage, resources, policy=policy)
         return None
@@ -429,6 +463,8 @@ def _compile_route(
         graph,
         draw_color,
         depth,
+        motion,
+        motion_draw,
         shadow_map,
         resolve=route_color if draw_color is not route_color else None,
     )
@@ -442,7 +478,7 @@ def _compile_route(
                 render_pass.write_color(original_color)
                 render_pass.fullscreen_quad("Fullscreen Blit")
 
-    resources = _effect_resources(route_color, depth, shadow_map)
+    resources = _effect_resources(route_color, depth, motion, shadow_map)
     for stage in route_stages:
         _declare_effect(graph, stage, resources, policy=policy)
 
@@ -472,6 +508,8 @@ def _draw_route(
     graph,
     color,
     depth,
+    motion,
+    motion_draw,
     shadow_map,
     *,
     resolve=None,
@@ -499,6 +537,18 @@ def _draw_route(
                     queue_range=selector.as_tuple(),
                     sort_mode=sort_mode,
                     material_pass=route.path.value,
+                )
+            with graph.add_pass(
+                f"Motion_{index:02d}_{selector.minimum}_{selector.maximum}"
+            ) as motion_pass:
+                motion_pass.read(depth)
+                motion_pass.write_color(motion_draw)
+                if motion_draw is not motion:
+                    motion_pass.write_resolve(motion)
+                motion_pass.draw_renderers(
+                    queue_range=selector.as_tuple(),
+                    sort_mode=sort_mode,
+                    material_pass="motion",
                 )
 
 
@@ -529,8 +579,8 @@ def _compile_sky(
     scene.under(sky_resolved, label="sky")
 
 
-def _effect_resources(color, depth, shadow_map) -> dict:
-    resources = {"color": color, "depth": depth}
+def _effect_resources(color, depth, motion, shadow_map) -> dict:
+    resources = {"color": color, "depth": depth, "motion": motion}
     if shadow_map is not None:
         resources["shadow_map"] = shadow_map
     return resources
@@ -541,6 +591,7 @@ def _new_transparent_accumulator(
     stable_id: str,
     color_format,
     depth,
+    motion,
     shadow_map,
 ) -> _ImageAccumulator:
     with graph.name_scope(stable_id):
@@ -555,6 +606,7 @@ def _new_transparent_accumulator(
         current,
         alternate,
         depth,
+        motion,
         shadow_map,
     )
 

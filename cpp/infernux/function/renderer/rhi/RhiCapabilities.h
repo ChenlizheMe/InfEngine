@@ -124,10 +124,11 @@ struct DeviceFeatures
     bool wideLines = false;
     bool descriptorIndexing = false;
     bool timelineSemaphore = false;
+    bool independentComputeQueue = false;
     bool dedicatedTransferQueue = false;
 };
 
-struct DeviceCapabilities
+struct DeviceCaps
 {
     static constexpr size_t AdapterNameCapacity = 128;
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from Infernux.lib import AssetMutationResult, ProjectPanel
 from Infernux.engine.ui.project_file_ops import (
+    SCRIPT_TEMPLATE,
     create_material,
     create_physic_material,
     create_prefab_from_gameobject,
@@ -16,6 +17,10 @@ from Infernux.engine.ui.project_file_ops import (
 
 
 class TestProjectPanelCreation:
+
+    def test_script_template_imports_component_surface(self):
+        assert "from Infernux import *" in SCRIPT_TEMPLATE
+        assert "from Infernux.components import *" in SCRIPT_TEMPLATE
 
     def test_creation(self):
         pp = ProjectPanel()
@@ -296,6 +301,37 @@ class TestProjectPanelCallbacks:
         pp.do_rename = lambda old, new_name: f"/dir/{new_name}"
         result = pp.do_rename("/dir/old.txt", "new.txt")
         assert result == "/dir/new.txt"
+
+    def test_folder_rename_maps_nested_asset_paths(self, tmp_path, monkeypatch):
+        from Infernux.engine.ui import project_file_ops
+
+        source = tmp_path / "OldFolder"
+        nested = source / "Nested"
+        nested.mkdir(parents=True)
+        (source / "root.mat").write_text("{}", encoding="utf-8")
+        (nested / "child.png").write_bytes(b"png")
+
+        moved = []
+        monkeypatch.setattr(
+            project_file_ops,
+            "_notify_asset_moved",
+            lambda old, new, _database=None: moved.append((Path(old), Path(new))),
+        )
+
+        destination = project_file_ops.do_rename(str(source), "RenamedFolder")
+
+        expected = tmp_path / "RenamedFolder"
+        assert Path(destination) == expected.resolve()
+        assert not source.exists()
+        assert (expected / "root.mat").is_file()
+        assert (expected / "Nested" / "child.png").is_file()
+        assert set(moved) == {
+            (source.resolve() / "root.mat", expected.resolve() / "root.mat"),
+            (
+                source.resolve() / "Nested" / "child.png",
+                expected.resolve() / "Nested" / "child.png",
+            ),
+        }
 
     def test_project_asset_operations_publish_stable_semantics(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")

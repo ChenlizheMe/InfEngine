@@ -1,21 +1,25 @@
 #version 450
 
-@shader_id: Sprite Lit
-@shading_model: PBR
-@queue: 2000
-@cull: none
-@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-@property: metallic, Float, 0.0
-@property: smoothness, Float, 0.5
-@property: ambientOcclusion, Float, 1.0
-@property: emissionColor, Color, [0.0, 0.0, 0.0, 0.0], HDR
-@property: normalScale, Float, 1.0
-@property: specularHighlights, Float, 1.0
-@property: texSampler, Texture2D, white
-@property: normalMap, Texture2D, normal
-@alpha_clip: on
-@property: uvRect, Float4, [0.0, 0.0, 1.0, 1.0]
-@property: displayScale, Float4, [1.0, 1.0, 0.0, 0.0]
+ShaderInfo {
+    Name "Sprite Lit"
+    ShadingModel PBR
+    Queue 2000
+    Cull None
+    AlphaClip on
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Float metallic = 0.0
+        Float smoothness = 0.5
+        Float ambientOcclusion = 1.0
+        Color emissionColor = [0.0, 0.0, 0.0, 0.0] HDR
+        Float normalScale = 1.0
+        Float specularHighlights = 1.0
+        Texture2D texSampler = white
+        Texture2D normalMap = normal
+        Float4 uvRect = [0.0, 0.0, 1.0, 1.0]
+        Float4 displayScale = [1.0, 1.0, 0.0, 0.0]
+    }
+}
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();

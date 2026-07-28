@@ -54,7 +54,6 @@ void RegisterRenderGraphBindings(py::module_ &m)
 
     py::enum_<GraphPassType>(m, "GraphPassType", "Execution domain of a graph pass")
         .value("RASTER", GraphPassType::Raster)
-        .value("COMPUTE", GraphPassType::Compute)
         .value("COPY", GraphPassType::Copy)
         .value("PRESENT", GraphPassType::Present);
 

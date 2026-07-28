@@ -1,7 +1,9 @@
-@shader_id: SixWaySmoke
-@import: Lighting
+ShadingModelInfo {
+    Name "SixWaySmoke"
+    Imports ["Lighting"]
+    Entry Forward evaluateForward
+}
 
-@target: forward
 vec3 inxSixWayBasisWeights(vec3 lightDirection, out bvec3 positiveDirection) {
     vec3 rightAxis = normalize(v_Tangent.xyz);
     vec3 backAxis = normalize(v_Normal);
@@ -212,7 +214,7 @@ vec3 inxSixWayDirectLighting(vec3 shadowNormal, float alpha) {
     return directLighting;
 }
 
-void evaluate(in SurfaceData s, out vec4 color) {
+void evaluateForward(in SurfaceData s, out vec4 color) {
     vec3 shadowNormal = gl_FrontFacing ? normalize(v_Normal) : -normalize(v_Normal);
     // Zero ambient is a strict opt-out: do not sample sky/probes at all. Even
     // when enabled, ambient is deliberately capped as a weak fill so it can

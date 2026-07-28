@@ -75,6 +75,26 @@ struct ShaderInfoEntry
     ShaderSourceRange source;
 };
 
+struct ShaderInfoResource
+{
+    std::string type;
+    std::string name;
+    ShaderSourceRange source;
+};
+
+struct ShaderInfoConstant
+{
+    std::string type;
+    std::string name;
+    ShaderSourceRange source;
+};
+
+struct ShaderInfoPushConstants
+{
+    std::string instanceName;
+    std::vector<ShaderInfoConstant> fields;
+};
+
 struct ShaderInfoDocument
 {
     bool foundDeclaration = false;
@@ -99,6 +119,8 @@ struct ShaderInfoDocument
     std::vector<std::string> imports;
     std::vector<std::string> capabilities;
     std::vector<ShaderInfoEntry> entries;
+    std::vector<ShaderInfoResource> resources;
+    std::optional<ShaderInfoPushConstants> pushConstants;
     ShaderSourceRange declaration;
     std::vector<ShaderInfoDiagnostic> diagnostics;
 

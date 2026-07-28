@@ -5,16 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import base64
 import hashlib
+import math
 import re
 import struct
 from typing import Any, Mapping
 import zlib
 
-from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.graph.ramp import Curve, Gradient
 
-from .data_interface import PointCache, SdfVolume, VectorField
+from .data_interface import SdfVolume, VectorField
 from .kernel_ir import (
+    KernelParameter,
     KernelCompileError,
     KernelInstruction,
     ParticleEmitterKernelIR,
@@ -39,6 +41,7 @@ struct ParticleInstance {
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer Instances {
@@ -50,6 +53,7 @@ layout(set = 0, binding = 1, std430) readonly buffer RenderIndices {
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
@@ -64,6 +68,9 @@ layout(location = 1) out vec2 out_uv;
 layout(location = 2) out vec3 out_world_position;
 layout(location = 3) out vec3 out_world_normal;
 layout(location = 4) out float out_view_depth;
+#ifdef INX_PARTICLE_MOTION_PASS
+layout(location = 15) out vec2 out_motion;
+#endif
 
 const vec2 corners[6] = vec2[](
     vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0),
@@ -134,6 +141,31 @@ void main() {
     out_world_position = world_position;
     out_world_normal = normalize(cross(billboard_right, billboard_up));
     out_view_depth = gl_Position.w;
+#ifdef INX_PARTICLE_MOTION_PASS
+    vec3 previous_world_position = instance.previous_position_history.xyz +
+        (world_position - instance.position_size.xyz);
+    vec4 previous_clip = view.previous_view_projection * vec4(previous_world_position, 1.0);
+    vec2 current_ndc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
+    vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
+    out_motion = (current_ndc - previous_ndc) * vec2(0.5, -0.5);
+#endif
+}
+"""
+
+
+def _motion_vertex_source(source: str) -> str:
+    return source.replace("#version 450\n", "#version 450\n#define INX_PARTICLE_MOTION_PASS 1\n", 1)
+
+
+_BILLBOARD_MOTION_FRAGMENT_GLSL = """#version 450
+layout(location = 0) in vec4 in_color;
+layout(location = 1) in vec2 in_uv;
+layout(location = 15) in vec2 in_motion;
+layout(location = 0) out vec2 out_motion;
+layout(set = 0, binding = 2) uniform sampler2D texSampler;
+void main() {
+    if ((texture(texSampler, in_uv) * in_color).a <= 0.0001) discard;
+    out_motion = in_motion;
 }
 """
 
@@ -148,6 +180,7 @@ layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
@@ -547,6 +580,7 @@ layout(set = 0, binding = 15) uniform sampler2D _InxParticleSceneDepth;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
@@ -589,6 +623,7 @@ layout(location = 0) out uvec2 out_object_id;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     uvec4 object_id;
@@ -608,6 +643,7 @@ struct ParticleInstance {
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 };
 
 struct ParticleMeshVertex {
@@ -633,6 +669,7 @@ layout(set = 0, binding = 3, std430) readonly buffer MeshIndices {
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
@@ -647,6 +684,9 @@ layout(location = 1) out vec3 out_normal;
 layout(location = 2) out vec2 out_uv;
 layout(location = 3) out vec3 out_world_position;
 layout(location = 4) out float out_view_depth;
+#ifdef INX_PARTICLE_MOTION_PASS
+layout(location = 15) out vec2 out_motion;
+#endif
 
 void main() {
     uint particle_index = render_indices[gl_InstanceIndex];
@@ -701,7 +741,21 @@ void main() {
     out_uv = vertex.uv.xy;
     out_world_position = world_position;
     out_view_depth = gl_Position.w;
+#ifdef INX_PARTICLE_MOTION_PASS
+    vec3 previous_world_position = instance.previous_position_history.xyz +
+        (world_position - instance.position_size.xyz);
+    vec4 previous_clip = view.previous_view_projection * vec4(previous_world_position, 1.0);
+    vec2 current_ndc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
+    vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
+    out_motion = (current_ndc - previous_ndc) * vec2(0.5, -0.5);
+#endif
 }
+"""
+
+_MESH_MOTION_FRAGMENT_GLSL = """#version 450
+layout(location = 15) in vec2 in_motion;
+layout(location = 0) out vec2 out_motion;
+void main() { out_motion = in_motion; }
 """
 
 _MESH_FRAGMENT_GLSL = """#version 450
@@ -713,6 +767,7 @@ layout(location = 0) out vec4 out_color;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
@@ -738,6 +793,7 @@ layout(location = 0) out vec4 out_color;
 
 layout(push_constant) uniform ViewConstants {
     mat4 view_projection;
+    mat4 previous_view_projection;
     vec4 camera_right;
     vec4 camera_up;
     vec4 material_tint;
@@ -810,12 +866,14 @@ class GpuParticleEmitterSource:
 @dataclass(frozen=True)
 class GpuParticleProgramSource:
     kernel_hash: str
+    parameters: tuple[KernelParameter, ...]
     emitters: tuple[GpuParticleEmitterSource, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "$schema": "infernux.particle_gpu_glsl",
             "kernel_hash": self.kernel_hash,
+            "parameters": [parameter.to_dict() for parameter in self.parameters],
             "emitters": [emitter.to_dict() for emitter in self.emitters],
         }
 
@@ -828,11 +886,13 @@ class GpuParticleGlslLowerer:
             raise TypeError("GPU particle lowering requires ParticleKernelProgram")
         return GpuParticleProgramSource(
             program.kernel_hash,
+            program.parameters,
             tuple(
                 self._lower_emitter(
                     program.kernel_hash,
                     emitter,
                     program.events,
+                    program.parameters,
                     emitter_index,
                 )
                 for emitter_index, emitter in enumerate(program.emitters)
@@ -844,12 +904,22 @@ class GpuParticleGlslLowerer:
         kernel_hash: str,
         emitter: ParticleEmitterKernelIR,
         events,
+        parameters: tuple[KernelParameter, ...],
         emitter_index: int,
     ) -> GpuParticleEmitterSource:
         fields = _attribute_fields(emitter)
         attribute_layout, state_stride = _std430_attribute_layout(fields)
-        data_interface_layout = _data_interface_layout(emitter)
-        prelude = _shader_prelude(fields, emitter.random_seed, data_interface_layout)
+        data_interface_layout = _data_interface_layout(emitter, parameters)
+        prelude = _shader_prelude(
+            fields,
+            emitter.random_seed,
+            data_interface_layout,
+            len(parameters),
+        )
+        parameter_slots = {
+            parameter.stable_id: (parameter.slot, parameter.value_type)
+            for parameter in parameters
+        }
         bootstrap = prelude + _bootstrap_main()
         init_body, _, init_events = _StageCompiler(
             emitter,
@@ -857,6 +927,7 @@ class GpuParticleGlslLowerer:
             data_interface_layout,
             events,
             emitter_index,
+            parameter_slots=parameter_slots,
         ).compile(emitter.init)
         event_init_body, _, event_init_events = _StageCompiler(
             emitter,
@@ -865,6 +936,7 @@ class GpuParticleGlslLowerer:
             events,
             emitter_index,
             event_input=True,
+            parameter_slots=parameter_slots,
         ).compile(emitter.init)
         update_body, _, update_events = _StageCompiler(
             emitter,
@@ -872,6 +944,7 @@ class GpuParticleGlslLowerer:
             data_interface_layout,
             events,
             emitter_index,
+            parameter_slots=parameter_slots,
         ).compile(emitter.update)
         rendering_body, exports, rendering_events = _StageCompiler(
             emitter,
@@ -879,6 +952,7 @@ class GpuParticleGlslLowerer:
             data_interface_layout,
             events,
             emitter_index,
+            parameter_slots=parameter_slots,
         ).compile(emitter.rendering)
         required = {"builtin.position", "builtin.size", "builtin.color", "builtin.rotation"}
         if not required.issubset(exports):
@@ -923,6 +997,46 @@ class GpuParticleGlslLowerer:
             tuple(interface.to_dict() for interface in emitter.data_interfaces),
             data_interface_layout,
         )
+
+
+def _compile_cached_graphics(
+    native,
+    sources: Mapping[str, str],
+    label: str,
+) -> dict[str, dict[str, Any]]:
+    keys = {
+        stage: hashlib.sha256(
+            (f"vulkan1.2-spirv1.5\0{stage}\0" + source).encode("utf-8")
+        ).hexdigest()
+        for stage, source in sources.items()
+    }
+    missing = {
+        stage: sources[stage]
+        for stage, key in keys.items()
+        if key not in _SPIRV_DESCRIPTOR_CACHE
+    }
+    compiled = native._compile_graphics_glsl_batch(missing, label) if missing else {}
+    if set(compiled) != set(missing):
+        raise GpuParticleCompileError(
+            f"engine graphics compiler returned incomplete stages for {label}"
+        )
+    result = {}
+    for stage, key in keys.items():
+        descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
+        if descriptor is None:
+            binary = bytes(compiled[stage])
+            if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
+                raise GpuParticleCompileError(
+                    f"engine graphics compiler returned invalid SPIR-V for {label}:{stage}"
+                )
+            descriptor = {
+                "byte_size": len(binary),
+                "sha256": hashlib.sha256(binary).hexdigest(),
+                "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
+            }
+            _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
+        result[stage] = dict(descriptor)
+    return result
 
 
 def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, Any]:
@@ -1065,6 +1179,16 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         }
         _SPIRV_DESCRIPTOR_CACHE[billboard_forward_plus_key] = billboard_forward_plus
     billboard["forward_plus_fragment"] = dict(billboard_forward_plus)
+    billboard_motion = _compile_cached_graphics(
+        native,
+        {
+            "vertex": _motion_vertex_source(_BILLBOARD_VERTEX_GLSL),
+            "fragment": _BILLBOARD_MOTION_FRAGMENT_GLSL,
+        },
+        "particle:builtin-billboard-motion",
+    )
+    billboard["motion_vertex"] = billboard_motion["vertex"]
+    billboard["motion_fragment"] = billboard_motion["fragment"]
 
     mesh_sources = {
         "vertex": _MESH_VERTEX_GLSL,
@@ -1131,11 +1255,23 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         }
         _SPIRV_DESCRIPTOR_CACHE[mesh_forward_plus_key] = mesh_forward_plus
     mesh["forward_plus_fragment"] = dict(mesh_forward_plus)
+    mesh_motion = _compile_cached_graphics(
+        native,
+        {
+            "vertex": _motion_vertex_source(_MESH_VERTEX_GLSL),
+            "fragment": _MESH_MOTION_FRAGMENT_GLSL,
+        },
+        "particle:builtin-mesh-motion",
+    )
+    mesh["motion_vertex"] = mesh_motion["vertex"]
+    mesh["motion_fragment"] = mesh_motion["fragment"]
 
     return {
         "$schema": "infernux.particle_gpu_spirv",
         "target": "vulkan1.2-spirv1.5",
         "kernel_hash": program.kernel_hash,
+        "parameters": [parameter.to_dict() for parameter in program.parameters],
+        "parameter_words": list(pack_gpu_particle_parameters(program.parameters)),
         "emitters": emitters,
         "billboard": billboard,
         "mesh": mesh,
@@ -1150,6 +1286,8 @@ def validate_gpu_particle_spirv(
         "$schema",
         "target",
         "kernel_hash",
+        "parameters",
+        "parameter_words",
         "emitters",
         "billboard",
         "mesh",
@@ -1160,18 +1298,22 @@ def validate_gpu_particle_spirv(
         value["$schema"] != "infernux.particle_gpu_spirv"
         or value["target"] != "vulkan1.2-spirv1.5"
         or value["kernel_hash"] != program.kernel_hash
+        or value["parameters"] != [parameter.to_dict() for parameter in program.parameters]
+        or value["parameter_words"] != list(pack_gpu_particle_parameters(program.parameters))
         or type(value["emitters"]) is not list
         or len(value["emitters"]) != len(program.emitters)
     ):
         raise GpuParticleCompileError("particle GPU SPIR-V header is incompatible")
     billboard = value["billboard"]
     if type(billboard) is not dict or set(billboard) != {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment",
+        "motion_vertex", "motion_fragment",
     }:
         raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
     mesh = value["mesh"]
     if type(mesh) is not dict or set(mesh) != {
-        "vertex", "fragment", "forward_plus_fragment", "picking_fragment"
+        "vertex", "fragment", "forward_plus_fragment", "picking_fragment",
+        "motion_vertex", "motion_fragment",
     }:
         raise GpuParticleCompileError("particle GPU mesh binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):
@@ -1226,6 +1368,8 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
     if type(emitter_index) is not int or emitter_index < 0:
         raise GpuParticleCompileError("particle GPU emitter index is invalid")
     emitters = value.get("emitters") if type(value) is dict else None
+    parameters = value.get("parameters") if type(value) is dict else None
+    parameter_words = value.get("parameter_words") if type(value) is dict else None
     billboard = value.get("billboard") if type(value) is dict else None
     mesh = value.get("mesh") if type(value) is dict else None
     if (
@@ -1235,6 +1379,9 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
         or type(emitters[emitter_index].get("stages")) is not dict
         or type(billboard) is not dict
         or type(mesh) is not dict
+        or type(parameters) is not list
+        or type(parameter_words) is not list
+        or any(type(word) is not int or not 0 <= word <= 0xFFFFFFFF for word in parameter_words)
     ):
         raise GpuParticleCompileError("particle GPU emitter payload is invalid")
 
@@ -1247,6 +1394,8 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
     emitter = emitters[emitter_index]
     return {
         "stable_id": emitter.get("stable_id", ""),
+        "parameters": parameters,
+        "parameter_words": parameter_words,
         "stages": {
             stage: decode(descriptor, stage)
             for stage, descriptor in emitter["stages"].items()
@@ -1272,6 +1421,7 @@ class _StageCompiler:
         emitter_index: int,
         *,
         event_input: bool = False,
+        parameter_slots: Mapping[str, tuple[int, TypeRef]] | None = None,
     ) -> None:
         self._emitter = emitter
         self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
@@ -1282,20 +1432,14 @@ class _StageCompiler:
         self._events = events
         self._emitter_index = int(emitter_index)
         self._event_input = bool(event_input)
-        self._point_cache_samples = {
-            (
-                sample["interface"],
-                sample["channel"],
-                sample["value_type"],
-                sample["lookup"],
-                sample["semantic"],
-            ): sample["sample_index"]
-            for interface in data_interface_layout.get("point_caches", ())
-            for sample in interface["samples"]
-        }
+        self._parameter_slots = dict(parameter_slots or {})
         self._volume_interfaces = {
             interface["stable_id"]: interface["interface_index"]
             for interface in data_interface_layout.get("volume_interfaces", ())
+        }
+        self._texture_parameters = {
+            parameter["stable_id"]: parameter
+            for parameter in data_interface_layout.get("texture2d_parameters", ())
         }
 
     def compile(self, function: ParticleKernelFunction) -> tuple[str, dict[str, str], str]:
@@ -1332,6 +1476,24 @@ class _StageCompiler:
                     f"GPU backend does not implement uniform {immediate['name']!r}"
                 )
             expression = "pc.delta_time"
+        elif opcode == "load_parameter":
+            stable_id = str(immediate["parameter"])
+            parameter = self._parameter_slots.get(stable_id)
+            if parameter is None or parameter[1] != result_type:
+                raise GpuParticleCompileError(
+                    f"GPU backend cannot resolve parameter {stable_id!r}"
+                )
+            if result_type.value_type is ValueType.TEXTURE2D:
+                resource = self._texture_parameters.get(stable_id)
+                if resource is None:
+                    raise GpuParticleCompileError(
+                        f"GPU backend cannot resolve Texture2D parameter {stable_id!r}"
+                    )
+                self._values[instruction.result_id] = (
+                    f"inx_parameter_texture_{int(resource['resource_index'])}"
+                )
+                return
+            expression = _parameter_load_glsl(parameter[0], result_type)
         elif opcode == "event_payload":
             channel_index = int(immediate["channel_index"])
             if not 0 <= channel_index < len(self._events.routes):
@@ -1357,6 +1519,14 @@ class _StageCompiler:
                 )
             else:
                 expression = default
+        elif opcode == "numeric_resize":
+            expression = _numeric_resize_glsl(
+                operands[0], instruction.operands[0].value_type, result_type
+            )
+        elif opcode in {"compose_vec2", "compose_vec3", "compose_vec4"}:
+            expression = f"{_glsl_type(result_type)}({', '.join(operands)})"
+        elif opcode == "split_component":
+            expression = f"({operands[0]}).{'xyzw'[int(immediate['component'])]}"
         elif opcode == "add":
             expression = f"({operands[0]} + {operands[1]})"
         elif opcode == "subtract":
@@ -1379,8 +1549,22 @@ class _StageCompiler:
             expression = f"({operands[0]} > {operands[1]})"
         elif opcode == "greater_equal":
             expression = f"({operands[0]} >= {operands[1]})"
+        elif opcode == "equal":
+            expression = f"({operands[0]} == {operands[1]})"
+        elif opcode == "not_equal":
+            expression = f"({operands[0]} != {operands[1]})"
+        elif opcode == "logical_and":
+            expression = f"({operands[0]} && {operands[1]})"
+        elif opcode == "logical_or":
+            expression = f"({operands[0]} || {operands[1]})"
         elif opcode == "logical_not":
             expression = f"!({operands[0]})"
+        elif opcode == "begin_if":
+            self._lines.append(f"if ({operands[0]}) {{")
+            return
+        elif opcode == "end_if":
+            self._lines.append("}")
+            return
         elif opcode == "normalize":
             expression = f"inx_safe_normalize({operands[0]})"
         elif opcode == "random_f32":
@@ -1405,6 +1589,8 @@ class _StageCompiler:
                 f"{_float_literal(gradient.keys[-1].time)});"
             )
             expression = _glsl_gradient_sample(sample_time, gradient)
+        elif opcode == "sample_texture2d":
+            expression = f"texture({operands[0]}, {operands[1]})"
         elif opcode == "value_noise_3d":
             expression = f"inx_value_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
         elif opcode == "vector_noise_3d":
@@ -1431,21 +1617,6 @@ class _StageCompiler:
                     f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
                     f"state.{self._field('builtin.id')[1]}, state.spawn_generation)"
                 )
-        elif opcode == "sample_point_cache":
-            key = (
-                immediate["interface"],
-                immediate["channel"],
-                result_type.value_type.value,
-                immediate["lookup"],
-                immediate["semantic"],
-            )
-            try:
-                sample_index = self._point_cache_samples[key]
-            except KeyError as exc:
-                raise GpuParticleCompileError(
-                    f"GPU point cache sample layout is missing {key!r}"
-                ) from exc
-            expression = f"inx_sample_point_cache_{sample_index}({operands[0]})"
         elif opcode == "sample_vector_field":
             stable_id = immediate["interface"]
             try:
@@ -1466,6 +1637,54 @@ class _StageCompiler:
             return
         elif opcode == "kill_if":
             self._lines.append(f"particle_alive = particle_alive && !({operands[0]});")
+            return
+        elif opcode == "collide_scene":
+            position_type, position_field = self._field(immediate["position_attribute"])
+            velocity_type, velocity_field = self._field(immediate["velocity_attribute"])
+            if (
+                position_type.value_type is not ValueType.VEC3
+                or velocity_type.value_type is not ValueType.VEC3
+            ):
+                raise GpuParticleCompileError(
+                    "Scene Collision requires vec3 position and velocity attributes"
+                )
+            suffix = len(self._lines)
+            position_name = f"inx_scene_position_{suffix}"
+            velocity_name = f"inx_scene_velocity_{suffix}"
+            normal_name = f"inx_scene_normal_{suffix}"
+            hit_name = f"inx_scene_hit_{suffix}"
+            self._lines.extend(
+                (
+                    f"vec3 {position_name} = {operands[0]};",
+                    f"vec3 {velocity_name} = {operands[1]};",
+                    f"vec3 {normal_name} = vec3(0.0);",
+                    f"bool {hit_name} = inx_collide_scene("
+                    f"{position_name}, {velocity_name}, {', '.join(operands[2:])}, "
+                    f"{normal_name});",
+                    f"state.{position_field} = {position_name};",
+                    f"state.{velocity_field} = {velocity_name};",
+                )
+            )
+            hit_attribute = immediate["hit_attribute"]
+            if hit_attribute:
+                hit_type, hit_field = self._field(hit_attribute)
+                if hit_type.value_type is not ValueType.BOOL:
+                    raise GpuParticleCompileError(
+                        "Scene Collision hit output requires a bool attribute"
+                    )
+                self._lines.append(
+                    f"state.{hit_field} = (state.{hit_field} != 0u || {hit_name}) ? 1u : 0u;"
+                )
+            normal_attribute = immediate["normal_attribute"]
+            if normal_attribute:
+                normal_type, normal_field = self._field(normal_attribute)
+                if normal_type != TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION):
+                    raise GpuParticleCompileError(
+                        "Scene Collision normal output requires a simulation-space vec3 attribute"
+                    )
+                self._lines.append(
+                    f"if ({hit_name}) state.{normal_field} = {normal_name};"
+                )
             return
         elif opcode == "event_append":
             channel_index = int(immediate["channel_index"])
@@ -1638,11 +1857,62 @@ def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
     return expression
 
 
-def _data_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
-    layout = _point_cache_layout(emitter)
+def _data_interface_layout(
+    emitter: ParticleEmitterKernelIR,
+    parameters: tuple[KernelParameter, ...],
+) -> dict[str, Any]:
+    layout = {
+        "version": 1,
+        "metadata_binding": 0,
+    }
     layout.update(_volume_interface_layout(emitter))
+    layout.update(_texture_parameter_layout(emitter, parameters, layout))
     layout["mesh_shape"] = _mesh_shape_layout(emitter, layout)
     return layout
+
+
+def _texture_parameter_layout(
+    emitter: ParticleEmitterKernelIR,
+    parameters: tuple[KernelParameter, ...],
+    layout: Mapping[str, Any],
+) -> dict[str, Any]:
+    by_id = {
+        parameter.stable_id: parameter
+        for parameter in parameters
+        if parameter.value_type.value_type is ValueType.TEXTURE2D
+    }
+    sampled = set()
+    for function in (emitter.init, emitter.update, emitter.rendering):
+        for instruction in function.instructions:
+            if (
+                instruction.opcode == "load_parameter"
+                and instruction.result_type is not None
+                and instruction.result_type.value_type is ValueType.TEXTURE2D
+            ):
+                stable_id = str(instruction.immediate_dict()["parameter"])
+                if stable_id not in by_id:
+                    raise GpuParticleCompileError(
+                        f"GPU kernel references unknown Texture2D parameter {stable_id!r}"
+                    )
+                sampled.add(stable_id)
+    volume_count = len(layout.get("volume_interfaces", ()))
+    if volume_count + len(sampled) > 15:
+        raise GpuParticleCompileError(
+            "GPU particle emitters support at most fifteen sampled Texture2D and volume resources"
+        )
+    return {
+        "texture2d_parameters": [
+            {
+                "stable_id": stable_id,
+                "name": by_id[stable_id].name,
+                "parameter_slot": by_id[stable_id].slot,
+                "resource_index": index,
+                "texture_binding": volume_count + index + 1,
+                "default": dict(by_id[stable_id].default),
+            }
+            for index, stable_id in enumerate(sorted(sampled))
+        ]
+    }
 
 
 def _mesh_shape_instruction(emitter: ParticleEmitterKernelIR):
@@ -1664,82 +1934,12 @@ def _mesh_shape_layout(
     if instruction is None:
         return None
     immediate = instruction.immediate_dict()
-    metadata_offset = (
-        len(layout["point_caches"]) * int(layout["interface_stride_words"])
-        + int(layout["sample_count"]) * int(layout["sample_stride_words"])
-    )
     return {
         "mesh": dict(immediate["mesh"]),
         "mode": immediate["mesh_mode"],
-        "metadata_offset": metadata_offset,
+        "metadata_offset": 0,
         "vertex_binding": 14,
         "triangle_binding": 15,
-    }
-
-
-def _point_cache_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]:
-    interfaces = {
-        interface.stable_id: interface
-        for interface in emitter.data_interfaces
-        if isinstance(interface, PointCache)
-    }
-    samples: dict[str, set[tuple[str, str, str, str]]] = {}
-    for function in (emitter.init, emitter.update, emitter.rendering):
-        for instruction in function.instructions:
-            if instruction.opcode != "sample_point_cache":
-                continue
-            immediate = instruction.immediate_dict()
-            stable_id = immediate["interface"]
-            if stable_id not in interfaces:
-                raise GpuParticleCompileError(
-                    f"GPU kernel references unknown point cache interface {stable_id!r}"
-                )
-            samples.setdefault(stable_id, set()).add(
-                (
-                    immediate["channel"],
-                    instruction.result_type.value_type.value,
-                    immediate["lookup"],
-                    immediate["semantic"],
-                )
-            )
-
-    max_point_caches = 6 if _mesh_shape_instruction(emitter) is not None else 7
-    if len(samples) > max_point_caches:
-        raise GpuParticleCompileError(
-            f"GPU particle emitter supports at most {max_point_caches} sampled PointCache interfaces with its current data bindings"
-        )
-    point_caches = []
-    sample_index = 0
-    for interface_index, stable_id in enumerate(sorted(samples)):
-        encoded_samples = []
-        for channel, value_type, lookup, semantic in sorted(samples[stable_id]):
-            encoded_samples.append(
-                {
-                    "sample_index": sample_index,
-                    "interface": stable_id,
-                    "channel": channel,
-                    "value_type": value_type,
-                    "lookup": lookup,
-                    "semantic": semantic,
-                }
-            )
-            sample_index += 1
-        point_caches.append(
-            {
-                "stable_id": stable_id,
-                "interface_index": interface_index,
-                "data_binding": 1 + interface_index * 2,
-                "lookup_binding": 2 + interface_index * 2,
-                "samples": encoded_samples,
-            }
-        )
-    return {
-        "version": 1,
-        "metadata_binding": 0,
-        "interface_stride_words": 32,
-        "sample_stride_words": 4,
-        "sample_count": sample_index,
-        "point_caches": point_caches,
     }
 
 
@@ -1809,7 +2009,11 @@ def _attribute_fields(
     used: set[str] = set()
     result = []
     for stable_id, value_type, _default in emitter.attributes:
-        if value_type.value_type in {ValueType.STRING, ValueType.ASSET_REF}:
+        if value_type.value_type in {
+            ValueType.STRING,
+            ValueType.ASSET_REF,
+            ValueType.TEXTURE2D,
+        }:
             raise GpuParticleCompileError(
                 f"attribute {stable_id!r} cannot be stored in a GPU particle buffer"
             )
@@ -2011,124 +2215,14 @@ def _pack_std430_default(
         )
 
 
-def _point_cache_glsl(layout: dict[str, Any]) -> str:
-    point_caches = layout.get("point_caches", ())
+def _mesh_shape_glsl(layout: dict[str, Any]) -> str:
     mesh_shape = layout.get("mesh_shape")
-    if not point_caches and mesh_shape is None:
+    if mesh_shape is None:
         return ""
-    interface_stride = int(layout["interface_stride_words"])
-    sample_stride = int(layout["sample_stride_words"])
-    sample_base = len(point_caches) * interface_stride
     lines = [
-        "layout(std430, set = 1, binding = 0) readonly buffer InxParticleDataMetadata { uint inx_pc_meta[]; };"
+        "layout(std430, set = 1, binding = 0) readonly buffer "
+        "InxParticleDataMetadata { uint inx_particle_data_meta[]; };"
     ]
-    for interface in point_caches:
-        interface_index = int(interface["interface_index"])
-        lines.extend(
-            (
-                f"layout(std430, set = 1, binding = {int(interface['data_binding'])}) "
-                f"readonly buffer InxPointCacheData{interface_index} {{ uint inx_pc_data_{interface_index}[]; }};",
-                f"layout(std430, set = 1, binding = {int(interface['lookup_binding'])}) "
-                f"readonly buffer InxPointCacheLookup{interface_index} {{ uvec2 inx_pc_lookup_{interface_index}[]; }};",
-            )
-        )
-        base = interface_index * interface_stride
-        lines.extend(
-            (
-                f"uint inx_pc_resolve_{interface_index}(uint key) {{",
-                f"    uint point_count = inx_pc_meta[{base + 28}u];",
-                f"    uint lookup_mode = inx_pc_meta[{base + 30}u];",
-                "    if (lookup_mode == 0u) return key < point_count ? key : 0xffffffffu;",
-                f"    uint mask = inx_pc_meta[{base + 29}u];",
-                "    uint slot = (key * 0x9e3779b1u) & mask;",
-                "    for (uint probe = 0u; probe <= mask; ++probe) {",
-                f"        uvec2 entry = inx_pc_lookup_{interface_index}[slot];",
-                "        if (entry.y == 0xffffffffu) return 0xffffffffu;",
-                "        if (entry.x == key) return entry.y;",
-                "        slot = (slot + 1u) & mask;",
-                "    }",
-                "    return 0xffffffffu;",
-                "}",
-                f"mat4 inx_pc_matrix_{interface_index}() {{",
-                "    return mat4(",
-                *(
-                    "        vec4("
-                    + ", ".join(
-                        f"uintBitsToFloat(inx_pc_meta[{base + column * 4 + row}u])"
-                        for row in range(4)
-                    )
-                    + (")," if column < 3 else ")")
-                    for column in range(4)
-                ),
-                "    );",
-                "}",
-                f"mat3 inx_pc_normal_matrix_{interface_index}() {{",
-                "    return mat3(",
-                *(
-                    "        vec3("
-                    + ", ".join(
-                        f"uintBitsToFloat(inx_pc_meta[{base + 16 + column * 4 + row}u])"
-                        for row in range(3)
-                    )
-                    + (")," if column < 2 else ")")
-                    for column in range(3)
-                ),
-                "    );",
-                "}",
-            )
-        )
-
-        for sample in interface["samples"]:
-            index = int(sample["sample_index"])
-            metadata = sample_base + index * sample_stride
-            kind = ValueType(sample["value_type"])
-            glsl_type = _glsl_type(TypeRef(kind))
-            zero = "0u" if kind is ValueType.U32 else f"{glsl_type}(0.0)"
-            word = f"inx_pc_meta[{metadata}u] + point_index * inx_pc_meta[{metadata + 1}u]"
-            if kind is ValueType.U32:
-                loaded = f"inx_pc_data_{interface_index}[word]"
-            elif kind is ValueType.F32:
-                loaded = f"uintBitsToFloat(inx_pc_data_{interface_index}[word])"
-            else:
-                components = {
-                    ValueType.VEC2: 2,
-                    ValueType.VEC3: 3,
-                    ValueType.VEC4: 4,
-                    ValueType.COLOR: 4,
-                }[kind]
-                loaded = (
-                    f"{glsl_type}("
-                    + ", ".join(
-                        f"uintBitsToFloat(inx_pc_data_{interface_index}[word + {component}u])"
-                        for component in range(components)
-                    )
-                    + ")"
-                )
-            resolve = (
-                f"(key < inx_pc_meta[{base + 28}u] ? key : 0xffffffffu)"
-                if sample["lookup"] == "index"
-                else f"inx_pc_resolve_{interface_index}(key)"
-            )
-            semantic = sample["semantic"]
-            if semantic == "position":
-                transformed = f"(inx_pc_matrix_{interface_index}() * vec4(value, 1.0)).xyz"
-            elif semantic in {"direction", "vector"}:
-                transformed = f"mat3(inx_pc_matrix_{interface_index}()) * value"
-            elif semantic == "normal":
-                transformed = f"inx_pc_normal_matrix_{interface_index}() * value"
-            else:
-                transformed = "value"
-            lines.extend(
-                (
-                    f"{glsl_type} inx_sample_point_cache_{index}(uint key) {{",
-                    f"    uint point_index = {resolve};",
-                    f"    if (point_index == 0xffffffffu) return {zero};",
-                    f"    uint word = {word};",
-                    f"    {glsl_type} value = {loaded};",
-                    f"    return {transformed};",
-                    "}",
-                )
-            )
     if mesh_shape is not None:
         metadata = int(mesh_shape["metadata_offset"])
         vertex_binding = int(mesh_shape["vertex_binding"])
@@ -2141,8 +2235,8 @@ def _point_cache_glsl(layout: dict[str, Any]) -> str:
                 f"layout(std430, set = 1, binding = {vertex_binding}) readonly buffer InxMeshShapeVertices {{ InxMeshShapeVertex inx_mesh_shape_vertices[]; }};",
                 f"layout(std430, set = 1, binding = {triangle_binding}) readonly buffer InxMeshShapeTriangles {{ uvec4 inx_mesh_shape_triangles[]; }};",
                 "vec3 inx_sample_mesh_shape_position(vec3 random_value) {",
-                f"    uint vertex_count = inx_pc_meta[{metadata}u];",
-                f"    uint triangle_count = inx_pc_meta[{metadata + 1}u];",
+                f"    uint vertex_count = inx_particle_data_meta[{metadata}u];",
+                f"    uint triangle_count = inx_particle_data_meta[{metadata + 1}u];",
             )
         )
         if mesh_shape["mode"] == "vertex":
@@ -2288,10 +2382,19 @@ def _volume_interface_glsl(layout: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _texture_parameter_glsl(layout: dict[str, Any]) -> str:
+    return "\n".join(
+        f"layout(set = 2, binding = {int(parameter['texture_binding'])}) "
+        f"uniform sampler2D inx_parameter_texture_{int(parameter['resource_index'])};"
+        for parameter in layout.get("texture2d_parameters", ())
+    )
+
+
 def _shader_prelude(
     fields: tuple[tuple[str, TypeRef, str], ...],
     emitter_seed: int,
     data_interface_layout: dict[str, Any],
+    parameter_count: int,
 ) -> str:
     state_fields = "\n".join(
         f"    {_storage_type(value_type)} {field};"
@@ -2300,10 +2403,17 @@ def _shader_prelude(
     data_interface_glsl = "\n".join(
         part
         for part in (
-            _point_cache_glsl(data_interface_layout),
+            _mesh_shape_glsl(data_interface_layout),
             _volume_interface_glsl(data_interface_layout),
+            _texture_parameter_glsl(data_interface_layout),
         )
         if part
+    )
+    parameter_glsl = (
+        "layout(std430, set = 0, binding = 7) readonly buffer "
+        "ParticleParameters { uvec4 parameter_words[]; };"
+        if parameter_count
+        else ""
     )
     return f"""#version 450
 
@@ -2322,6 +2432,7 @@ struct ParticleRenderInstance {{
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 }};
 
 layout(std430, set = 0, binding = 0) buffer ParticleStates {{ ParticleState states[]; }};
@@ -2346,6 +2457,65 @@ layout(std140, set = 0, binding = 5) uniform ParticleTransforms {{
     mat4 world_to_simulation;
 }} transforms;
 layout(std430, set = 0, binding = 6) buffer ParticleRenderIndices {{ uint render_indices[]; }};
+{parameter_glsl}
+struct InxParticleAffine {{
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+}};
+struct InxParticleCollider {{
+    InxParticleAffine collider_to_world;
+    InxParticleAffine world_to_collider;
+    InxParticleAffine previous_world_to_collider;
+    vec4 shape;
+    uvec4 geometry;
+    vec4 linear_velocity;
+    vec4 material;
+    vec4 world_aabb_min;
+    vec4 world_aabb_max;
+    vec4 previous_world_aabb_min;
+    vec4 previous_world_aabb_max;
+    uvec4 metadata;
+    uvec4 identity;
+}};
+struct InxParticleCollisionBvhNode {{
+    vec4 bounds_min;
+    vec4 bounds_max;
+    uvec4 metadata;
+}};
+layout(std430, set = 0, binding = 8) readonly buffer ParticleCollisionSceneHeader {{
+    uint collider_count;
+    uint static_collider_count;
+    uint collision_scene_revision_low;
+    uint collision_scene_revision_high;
+    vec4 grid_min_inv_cell_size;
+    uvec4 grid_dimensions;
+    uvec4 topology;
+}} inx_collision_scene;
+layout(std430, set = 0, binding = 9) readonly buffer ParticleCollisionSceneRecords {{
+    InxParticleCollider particle_colliders[];
+}};
+layout(std430, set = 0, binding = 10) readonly buffer ParticleCollisionGridOffsets {{
+    uint particle_collision_grid_offsets[];
+}};
+layout(std430, set = 0, binding = 11) readonly buffer ParticleCollisionGridColliderIndices {{
+    uint particle_collision_grid_collider_indices[];
+}};
+layout(std430, set = 0, binding = 12) readonly buffer ParticleCollisionMeshVertices {{
+    vec4 particle_collision_mesh_vertices[];
+}};
+layout(std430, set = 0, binding = 13) readonly buffer ParticleCollisionMeshIndices {{
+    uint particle_collision_mesh_indices[];
+}};
+layout(std430, set = 0, binding = 14) readonly buffer ParticleCollisionMeshBvh {{
+    InxParticleCollisionBvhNode particle_collision_mesh_bvh[];
+}};
+layout(std430, set = 0, binding = 15) readonly buffer ParticleSimulationControl {{
+    uint any_view_visible;
+    uint simulation_allowed;
+    uint offscreen_policy;
+    uint simulation_control_reserved;
+}} simulation_control;
 {data_interface_glsl}
 layout(push_constant) uniform ParticlePushConstants {{
     uint capacity;
@@ -2490,6 +2660,595 @@ vec3 inx_collide_sphere_velocity(vec3 position, vec3 velocity, vec3 center,
          - n * normal_speed * clamp(restitution, 0.0, 1.0);
 }}
 
+ivec3 inx_collision_grid_cell(vec3 world_position) {{
+    vec3 relative = (world_position - inx_collision_scene.grid_min_inv_cell_size.xyz)
+                  * inx_collision_scene.grid_min_inv_cell_size.w;
+    return clamp(ivec3(floor(relative)), ivec3(0),
+                 ivec3(inx_collision_scene.grid_dimensions.xyz) - ivec3(1));
+}}
+
+uint inx_collision_grid_index(ivec3 cell) {{
+    uvec3 dimensions = inx_collision_scene.grid_dimensions.xyz;
+    return uint(cell.x) + dimensions.x * (uint(cell.y) + dimensions.y * uint(cell.z));
+}}
+
+vec3 inx_particle_affine_point(InxParticleAffine transform_value, vec3 point_value) {{
+    vec4 homogeneous = vec4(point_value, 1.0);
+    return vec3(dot(transform_value.row0, homogeneous),
+                dot(transform_value.row1, homogeneous),
+                dot(transform_value.row2, homogeneous));
+}}
+
+mat3 inx_particle_affine_linear(InxParticleAffine transform_value) {{
+    return mat3(vec3(transform_value.row0.x, transform_value.row1.x, transform_value.row2.x),
+                vec3(transform_value.row0.y, transform_value.row1.y, transform_value.row2.y),
+                vec3(transform_value.row0.z, transform_value.row1.z, transform_value.row2.z));
+}}
+
+float inx_collision_local_radius(InxParticleAffine world_to_collider, float world_radius) {{
+    mat3 linear = inx_particle_affine_linear(world_to_collider);
+    float inverse_scale = max(length(linear[0]), max(length(linear[1]), length(linear[2])));
+    return max(world_radius, 0.0) * inverse_scale;
+}}
+
+vec3 inx_collision_world_normal(InxParticleCollider collider, vec3 local_normal) {{
+    return inx_safe_normalize(
+        transpose(inx_particle_affine_linear(collider.world_to_collider)) * local_normal);
+}}
+
+bool inx_sweep_sphere(vec3 start_position, vec3 end_position, float radius,
+                      out float hit_time, out vec3 hit_normal) {{
+    vec3 displacement = end_position - start_position;
+    float radius_squared = radius * radius;
+    float start_distance = dot(start_position, start_position) - radius_squared;
+    // Initial overlap is handled by the shape's penetration solver. Treating
+    // it as a time-zero sweep hit would choose an arbitrary inward normal.
+    if (start_distance <= 0.0) return false;
+    float displacement_squared = dot(displacement, displacement);
+    if (displacement_squared <= 1.0e-12) return false;
+    float projected = dot(start_position, displacement);
+    if (projected >= 0.0) return false;
+    float discriminant = projected * projected - displacement_squared * start_distance;
+    if (discriminant < 0.0) return false;
+    float candidate = (-projected - sqrt(discriminant)) / displacement_squared;
+    if (candidate < 0.0 || candidate > 1.0) return false;
+    vec3 point = start_position + displacement * candidate;
+    hit_time = candidate;
+    hit_normal = inx_safe_normalize(point);
+    return true;
+}}
+
+bool inx_sweep_box(vec3 start_position, vec3 end_position, vec3 half_extent,
+                   out float hit_time, out vec3 hit_normal) {{
+    if (all(lessThanEqual(abs(start_position), half_extent))) return false;
+    vec3 displacement = end_position - start_position;
+    float entry_time = 0.0;
+    float exit_time = 1.0;
+    vec3 entry_normal = vec3(0.0);
+    for (uint axis = 0u; axis < 3u; ++axis) {{
+        if (abs(displacement[axis]) <= 1.0e-7) {{
+            if (start_position[axis] < -half_extent[axis] ||
+                start_position[axis] > half_extent[axis])
+                return false;
+            continue;
+        }}
+        float inverse_direction = 1.0 / displacement[axis];
+        float near_time = (-half_extent[axis] - start_position[axis]) * inverse_direction;
+        float far_time = (half_extent[axis] - start_position[axis]) * inverse_direction;
+        float normal_sign = -1.0;
+        if (near_time > far_time) {{
+            float temporary = near_time;
+            near_time = far_time;
+            far_time = temporary;
+            normal_sign = 1.0;
+        }}
+        if (near_time > entry_time) {{
+            entry_time = near_time;
+            entry_normal = vec3(0.0);
+            entry_normal[axis] = normal_sign;
+        }}
+        exit_time = min(exit_time, far_time);
+        if (entry_time > exit_time) return false;
+    }}
+    if (entry_time < 0.0 || entry_time > 1.0 || dot(entry_normal, entry_normal) == 0.0)
+        return false;
+    hit_time = entry_time;
+    hit_normal = entry_normal;
+    return true;
+}}
+
+bool inx_sweep_capsule(vec3 start_position, vec3 end_position, uint axis,
+                       float half_segment, float radius,
+                       out float hit_time, out vec3 hit_normal) {{
+    vec3 segment_start = vec3(0.0);
+    vec3 segment_end = vec3(0.0);
+    segment_start[axis] = -half_segment;
+    segment_end[axis] = half_segment;
+    vec3 capsule_axis = segment_end - segment_start;
+    float axis_length_squared = dot(capsule_axis, capsule_axis);
+    if (axis_length_squared <= 1.0e-12)
+        return inx_sweep_sphere(start_position, end_position, radius, hit_time, hit_normal);
+
+    float start_axis_fraction = clamp(
+        dot(start_position - segment_start, capsule_axis) / axis_length_squared, 0.0, 1.0);
+    vec3 start_closest = segment_start + capsule_axis * start_axis_fraction;
+    if (dot(start_position - start_closest, start_position - start_closest) <= radius * radius)
+        return false;
+
+    vec3 displacement = end_position - start_position;
+    vec3 from_segment_start = start_position - segment_start;
+    float axis_dot_displacement = dot(capsule_axis, displacement);
+    float axis_dot_origin = dot(capsule_axis, from_segment_start);
+    float displacement_dot_origin = dot(displacement, from_segment_start);
+    float displacement_squared = dot(displacement, displacement);
+    float origin_squared = dot(from_segment_start, from_segment_start);
+    float cylinder_a = axis_length_squared * displacement_squared
+                     - axis_dot_displacement * axis_dot_displacement;
+    float cylinder_b = axis_length_squared * displacement_dot_origin
+                     - axis_dot_origin * axis_dot_displacement;
+    float cylinder_c = axis_length_squared * origin_squared
+                     - axis_dot_origin * axis_dot_origin
+                     - radius * radius * axis_length_squared;
+
+    bool found = false;
+    float earliest = 2.0;
+    vec3 earliest_normal = vec3(0.0);
+    float cylinder_discriminant = cylinder_b * cylinder_b - cylinder_a * cylinder_c;
+    if (abs(cylinder_a) > 1.0e-12 && cylinder_discriminant >= 0.0) {{
+        float candidate = (-cylinder_b - sqrt(cylinder_discriminant)) / cylinder_a;
+        float axis_position = axis_dot_origin + candidate * axis_dot_displacement;
+        if (candidate >= 0.0 && candidate <= 1.0 &&
+            axis_position > 0.0 && axis_position < axis_length_squared) {{
+            vec3 point = start_position + displacement * candidate;
+            vec3 axis_point = segment_start + capsule_axis * (axis_position / axis_length_squared);
+            earliest = candidate;
+            earliest_normal = inx_safe_normalize(point - axis_point);
+            found = true;
+        }}
+    }}
+
+    float cap_time = 0.0;
+    vec3 cap_normal = vec3(0.0);
+    if (inx_sweep_sphere(start_position - segment_start, end_position - segment_start,
+                         radius, cap_time, cap_normal) && cap_time < earliest) {{
+        earliest = cap_time;
+        earliest_normal = cap_normal;
+        found = true;
+    }}
+    if (inx_sweep_sphere(start_position - segment_end, end_position - segment_end,
+                         radius, cap_time, cap_normal) && cap_time < earliest) {{
+        earliest = cap_time;
+        earliest_normal = cap_normal;
+        found = true;
+    }}
+    if (!found) return false;
+    hit_time = earliest;
+    hit_normal = earliest_normal;
+    return true;
+}}
+
+vec3 inx_closest_point_triangle(vec3 point_value, vec3 a, vec3 b, vec3 c) {{
+    vec3 ab = b - a;
+    vec3 ac = c - a;
+    vec3 ap = point_value - a;
+    float d1 = dot(ab, ap);
+    float d2 = dot(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) return a;
+    vec3 bp = point_value - b;
+    float d3 = dot(ab, bp);
+    float d4 = dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) return b;
+    float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0)
+        return a + ab * (d1 / max(d1 - d3, 1.0e-12));
+    vec3 cp = point_value - c;
+    float d5 = dot(ab, cp);
+    float d6 = dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) return c;
+    float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0)
+        return a + ac * (d2 / max(d2 - d6, 1.0e-12));
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0)
+        return b + (c - b) * ((d4 - d3) / max((d4 - d3) + (d5 - d6), 1.0e-12));
+    float denominator = max(va + vb + vc, 1.0e-12);
+    return a + ab * (vb / denominator) + ac * (vc / denominator);
+}}
+
+bool inx_point_in_triangle(vec3 point_value, vec3 a, vec3 b, vec3 c, vec3 normal_value) {{
+    const float epsilon = -1.0e-5;
+    return dot(cross(b - a, point_value - a), normal_value) >= epsilon &&
+           dot(cross(c - b, point_value - b), normal_value) >= epsilon &&
+           dot(cross(a - c, point_value - c), normal_value) >= epsilon;
+}}
+
+bool inx_sweep_segment_capsule(vec3 start_position, vec3 end_position, vec3 segment_start,
+                               vec3 segment_end, float radius,
+                               out float hit_time, out vec3 hit_normal) {{
+    vec3 capsule_axis = segment_end - segment_start;
+    float axis_length_squared = dot(capsule_axis, capsule_axis);
+    if (axis_length_squared <= 1.0e-12)
+        return inx_sweep_sphere(start_position - segment_start, end_position - segment_start,
+                                radius, hit_time, hit_normal);
+    float start_fraction = clamp(dot(start_position - segment_start, capsule_axis) /
+                                 axis_length_squared, 0.0, 1.0);
+    vec3 start_closest = segment_start + capsule_axis * start_fraction;
+    if (dot(start_position - start_closest, start_position - start_closest) <= radius * radius)
+        return false;
+
+    vec3 displacement = end_position - start_position;
+    vec3 origin = start_position - segment_start;
+    float axis_dot_displacement = dot(capsule_axis, displacement);
+    float axis_dot_origin = dot(capsule_axis, origin);
+    float displacement_dot_origin = dot(displacement, origin);
+    float displacement_squared = dot(displacement, displacement);
+    float origin_squared = dot(origin, origin);
+    float qa = axis_length_squared * displacement_squared - axis_dot_displacement * axis_dot_displacement;
+    float qb = axis_length_squared * displacement_dot_origin - axis_dot_origin * axis_dot_displacement;
+    float qc = axis_length_squared * origin_squared - axis_dot_origin * axis_dot_origin
+             - radius * radius * axis_length_squared;
+    bool found = false;
+    float earliest = 2.0;
+    vec3 earliest_normal = vec3(0.0);
+    float discriminant = qb * qb - qa * qc;
+    if (abs(qa) > 1.0e-12 && discriminant >= 0.0) {{
+        float candidate = (-qb - sqrt(discriminant)) / qa;
+        float axis_position = axis_dot_origin + candidate * axis_dot_displacement;
+        if (candidate >= 0.0 && candidate <= 1.0 && axis_position > 0.0 &&
+            axis_position < axis_length_squared) {{
+            vec3 center = start_position + displacement * candidate;
+            vec3 edge_point = segment_start + capsule_axis * (axis_position / axis_length_squared);
+            earliest = candidate;
+            earliest_normal = inx_safe_normalize(center - edge_point);
+            found = true;
+        }}
+    }}
+    float candidate_time = 0.0;
+    vec3 candidate_normal = vec3(0.0);
+    if (inx_sweep_sphere(start_position - segment_start, end_position - segment_start,
+                         radius, candidate_time, candidate_normal) && candidate_time < earliest) {{
+        earliest = candidate_time;
+        earliest_normal = candidate_normal;
+        found = true;
+    }}
+    if (inx_sweep_sphere(start_position - segment_end, end_position - segment_end,
+                         radius, candidate_time, candidate_normal) && candidate_time < earliest) {{
+        earliest = candidate_time;
+        earliest_normal = candidate_normal;
+        found = true;
+    }}
+    if (!found) return false;
+    hit_time = earliest;
+    hit_normal = earliest_normal;
+    return true;
+}}
+
+bool inx_sweep_triangle(vec3 start_position, vec3 end_position, float radius,
+                        vec3 a, vec3 b, vec3 c,
+                        out float hit_time, out vec3 hit_normal) {{
+    vec3 raw_normal = cross(b - a, c - a);
+    float normal_length = length(raw_normal);
+    if (normal_length <= 1.0e-8) return false;
+    vec3 triangle_normal = raw_normal / normal_length;
+    vec3 displacement = end_position - start_position;
+    float start_distance = dot(start_position - a, triangle_normal);
+    float distance_delta = dot(displacement, triangle_normal);
+    bool found = false;
+    float earliest = 2.0;
+    vec3 earliest_normal = vec3(0.0);
+    if (abs(distance_delta) > 1.0e-12) {{
+        for (int side = -1; side <= 1; side += 2) {{
+            float signed_radius = float(side) * radius;
+            float candidate = (signed_radius - start_distance) / distance_delta;
+            if (candidate < 0.0 || candidate > 1.0 || candidate >= earliest) continue;
+            vec3 center = start_position + displacement * candidate;
+            vec3 contact = center - triangle_normal * signed_radius;
+            vec3 oriented_normal = triangle_normal * float(side);
+            if (inx_point_in_triangle(contact, a, b, c, triangle_normal) &&
+                dot(displacement, oriented_normal) < 0.0) {{
+                earliest = candidate;
+                earliest_normal = oriented_normal;
+                found = true;
+            }}
+        }}
+    }}
+    float edge_time = 0.0;
+    vec3 edge_normal = vec3(0.0);
+    if (inx_sweep_segment_capsule(start_position, end_position, a, b, radius,
+                                  edge_time, edge_normal) && edge_time < earliest) {{
+        earliest = edge_time; earliest_normal = edge_normal; found = true;
+    }}
+    if (inx_sweep_segment_capsule(start_position, end_position, b, c, radius,
+                                  edge_time, edge_normal) && edge_time < earliest) {{
+        earliest = edge_time; earliest_normal = edge_normal; found = true;
+    }}
+    if (inx_sweep_segment_capsule(start_position, end_position, c, a, radius,
+                                  edge_time, edge_normal) && edge_time < earliest) {{
+        earliest = edge_time; earliest_normal = edge_normal; found = true;
+    }}
+    if (!found) return false;
+    hit_time = earliest;
+    hit_normal = earliest_normal;
+    return true;
+}}
+
+bool inx_mesh_node_overlaps_sweep(InxParticleCollisionBvhNode node, vec3 start_position,
+                                  vec3 end_position, float radius) {{
+    vec3 swept_min = min(start_position, end_position) - vec3(radius);
+    vec3 swept_max = max(start_position, end_position) + vec3(radius);
+    return !any(lessThan(swept_max, node.bounds_min.xyz)) &&
+           !any(greaterThan(swept_min, node.bounds_max.xyz));
+}}
+
+bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_position,
+                        vec3 world_position, float world_radius,
+                        out vec3 corrected_world_position, out vec3 world_normal) {{
+    if (collider.geometry.w == 0u || collider.geometry.z >= inx_collision_scene.topology.z)
+        return false;
+    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    vec3 local_previous =
+        inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
+    float local_radius = inx_collision_local_radius(collider.world_to_collider, world_radius);
+    uint stack[64];
+    uint stack_size = 1u;
+    stack[0] = collider.geometry.z;
+    bool found_sweep = false;
+    float earliest = 2.0;
+    vec3 earliest_normal = vec3(0.0);
+    bool found_overlap = false;
+    float closest_distance_squared = local_radius * local_radius;
+    vec3 closest_normal = vec3(0.0);
+    vec3 closest_surface = vec3(0.0);
+    while (stack_size > 0u) {{
+        uint node_index = stack[--stack_size];
+        if (node_index >= inx_collision_scene.topology.z) continue;
+        InxParticleCollisionBvhNode node = particle_collision_mesh_bvh[node_index];
+        if (!inx_mesh_node_overlaps_sweep(node, local_previous, local_position, local_radius)) continue;
+        if (node.metadata.w == 0u) {{
+            if (stack_size + 2u > 64u) continue;
+            stack[stack_size++] = node.metadata.x;
+            stack[stack_size++] = node.metadata.y;
+            continue;
+        }}
+        for (uint triangle = 0u; triangle < node.metadata.w; ++triangle) {{
+            uint first_index = node.metadata.z + triangle * 3u;
+            if (first_index + 2u >= inx_collision_scene.topology.y) continue;
+            uint ia = particle_collision_mesh_indices[first_index];
+            uint ib = particle_collision_mesh_indices[first_index + 1u];
+            uint ic = particle_collision_mesh_indices[first_index + 2u];
+            if (ia >= inx_collision_scene.topology.x || ib >= inx_collision_scene.topology.x ||
+                ic >= inx_collision_scene.topology.x) continue;
+            vec3 a = particle_collision_mesh_vertices[ia].xyz;
+            vec3 b = particle_collision_mesh_vertices[ib].xyz;
+            vec3 c = particle_collision_mesh_vertices[ic].xyz;
+            float candidate_time = 0.0;
+            vec3 candidate_normal = vec3(0.0);
+            if (inx_sweep_triangle(local_previous, local_position, local_radius, a, b, c,
+                                   candidate_time, candidate_normal) && candidate_time < earliest) {{
+                earliest = candidate_time;
+                earliest_normal = candidate_normal;
+                found_sweep = true;
+            }}
+            vec3 surface = inx_closest_point_triangle(local_position, a, b, c);
+            vec3 delta = local_position - surface;
+            float distance_squared = dot(delta, delta);
+            if (distance_squared < closest_distance_squared) {{
+                closest_distance_squared = distance_squared;
+                closest_surface = surface;
+                closest_normal = distance_squared > 1.0e-12
+                                     ? delta / sqrt(distance_squared)
+                                     : inx_safe_normalize(cross(b - a, c - a));
+                found_overlap = true;
+            }}
+        }}
+    }}
+    vec3 local_normal = vec3(0.0);
+    if (found_sweep) {{
+        local_position = mix(local_previous, local_position, earliest);
+        local_normal = earliest_normal;
+    }} else if (found_overlap) {{
+        local_normal = dot(closest_normal, closest_normal) > 0.0
+                         ? closest_normal : vec3(0.0, 1.0, 0.0);
+        local_position = closest_surface + local_normal * local_radius;
+    }} else {{
+        return false;
+    }}
+    corrected_world_position = inx_particle_affine_point(collider.collider_to_world, local_position);
+    world_normal = inx_collision_world_normal(collider, local_normal);
+    return true;
+}}
+
+bool inx_collision_box(InxParticleCollider collider, vec3 previous_world_position,
+                       vec3 world_position, float world_radius,
+                       out vec3 corrected_world_position, out vec3 world_normal) {{
+    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    vec3 local_previous =
+        inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
+    float local_radius = inx_collision_local_radius(collider.world_to_collider, world_radius);
+    vec3 half_extent = max(collider.shape.xyz * 0.5, vec3(0.0)) + vec3(local_radius);
+    vec3 local_normal = vec3(0.0);
+    float hit_time = 0.0;
+    bool start_inside = all(lessThanEqual(abs(local_previous), half_extent));
+    if (!start_inside &&
+        inx_sweep_box(local_previous, local_position, half_extent, hit_time, local_normal)) {{
+        local_position = mix(local_previous, local_position, hit_time);
+    }} else if (all(lessThanEqual(abs(local_position), half_extent))) {{
+        vec3 face_distance = half_extent - abs(local_position);
+        uint axis = face_distance.x <= face_distance.y && face_distance.x <= face_distance.z
+                        ? 0u : (face_distance.y <= face_distance.z ? 1u : 2u);
+        local_normal[axis] = local_position[axis] < 0.0 ? -1.0 : 1.0;
+        local_position[axis] = local_normal[axis] * half_extent[axis];
+    }} else {{
+        return false;
+    }}
+    corrected_world_position = inx_particle_affine_point(collider.collider_to_world, local_position);
+    world_normal = inx_collision_world_normal(collider, local_normal);
+    return true;
+}}
+
+bool inx_collision_sphere(InxParticleCollider collider, vec3 previous_world_position,
+                          vec3 world_position, float world_radius,
+                          out vec3 corrected_world_position, out vec3 world_normal) {{
+    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    vec3 local_previous =
+        inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
+    float combined_radius = max(collider.shape.x, 0.0)
+                          + inx_collision_local_radius(collider.world_to_collider, world_radius);
+    float distance_value = length(local_position);
+    vec3 local_normal = vec3(0.0);
+    float hit_time = 0.0;
+    bool start_inside = dot(local_previous, local_previous) <= combined_radius * combined_radius;
+    if (!start_inside &&
+        inx_sweep_sphere(local_previous, local_position, combined_radius,
+                         hit_time, local_normal)) {{
+        local_position = mix(local_previous, local_position, hit_time);
+    }} else if (distance_value < combined_radius) {{
+        local_normal = distance_value > 1.0e-6
+                           ? local_position / distance_value
+                           : inx_safe_normalize(local_previous - local_position);
+        if (dot(local_normal, local_normal) == 0.0) local_normal = vec3(0.0, 1.0, 0.0);
+        local_position = local_normal * combined_radius;
+    }} else {{
+        return false;
+    }}
+    corrected_world_position = inx_particle_affine_point(collider.collider_to_world, local_position);
+    world_normal = inx_collision_world_normal(collider, local_normal);
+    return true;
+}}
+
+bool inx_collision_capsule(InxParticleCollider collider, vec3 previous_world_position,
+                           vec3 world_position, float world_radius,
+                           out vec3 corrected_world_position, out vec3 world_normal) {{
+    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    vec3 local_previous =
+        inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
+    uint axis = min(uint(max(collider.shape.z, 0.0)), 2u);
+    float radius = max(collider.shape.x, 0.0)
+                 + inx_collision_local_radius(collider.world_to_collider, world_radius);
+    float half_segment = max(collider.shape.y * 0.5 - collider.shape.x, 0.0);
+    vec3 closest = vec3(0.0);
+    closest[axis] = clamp(local_position[axis], -half_segment, half_segment);
+    vec3 delta = local_position - closest;
+    float distance_value = length(delta);
+    vec3 local_normal = vec3(0.0);
+    vec3 previous_closest = vec3(0.0);
+    previous_closest[axis] = clamp(local_previous[axis], -half_segment, half_segment);
+    bool start_inside = dot(local_previous - previous_closest,
+                            local_previous - previous_closest) <= radius * radius;
+    float hit_time = 0.0;
+    if (!start_inside &&
+        inx_sweep_capsule(local_previous, local_position, axis, half_segment, radius,
+                          hit_time, local_normal)) {{
+        local_position = mix(local_previous, local_position, hit_time);
+    }} else if (distance_value < radius) {{
+        local_normal = distance_value > 1.0e-6 ? delta / distance_value : vec3(0.0, 1.0, 0.0);
+        local_position = closest + local_normal * radius;
+    }} else {{
+        return false;
+    }}
+    corrected_world_position = inx_particle_affine_point(collider.collider_to_world, local_position);
+    world_normal = inx_collision_world_normal(collider, local_normal);
+    return true;
+}}
+
+bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_velocity,
+                       float particle_radius, uint layer_mask, bool include_triggers,
+                       float restitution_scale, float friction_scale,
+                       out vec3 simulation_collision_normal) {{
+    simulation_collision_normal = vec3(0.0);
+    if (inx_collision_scene.collider_count == 0u || layer_mask == 0u) return false;
+
+    vec3 world_position = (transforms.simulation_to_world * vec4(simulation_position, 1.0)).xyz;
+    vec3 world_velocity = (transforms.simulation_to_world * vec4(simulation_velocity, 0.0)).xyz;
+    bool any_hit = false;
+    vec3 last_world_normal = vec3(0.0);
+    float simulation_scale = max(length(transforms.simulation_to_world[0].xyz),
+                                 max(length(transforms.simulation_to_world[1].xyz),
+                                     length(transforms.simulation_to_world[2].xyz)));
+    float world_radius = max(particle_radius, 0.0) * simulation_scale;
+    vec3 previous_world_position = world_position - world_velocity * pc.delta_time;
+    ivec3 query_min = inx_collision_grid_cell(min(previous_world_position, world_position) - vec3(world_radius));
+    ivec3 query_max = inx_collision_grid_cell(max(previous_world_position, world_position) + vec3(world_radius));
+
+    for (int z = query_min.z; z <= query_max.z; ++z) {{
+        for (int y = query_min.y; y <= query_max.y; ++y) {{
+            for (int x = query_min.x; x <= query_max.x; ++x) {{
+                ivec3 cell = ivec3(x, y, z);
+                uint cell_index = inx_collision_grid_index(cell);
+                uint first = particle_collision_grid_offsets[cell_index];
+                uint last = particle_collision_grid_offsets[cell_index + 1u];
+                for (uint reference = first; reference < last; ++reference) {{
+                    uint collider_index = particle_collision_grid_collider_indices[reference];
+                    if (collider_index >= inx_collision_scene.collider_count) continue;
+                    InxParticleCollider collider = particle_colliders[collider_index];
+                    if ((collider.metadata.y & layer_mask) == 0u) continue;
+                    if (!include_triggers && (collider.metadata.z & 1u) != 0u) continue;
+
+                    vec3 collider_swept_min =
+                        min(collider.previous_world_aabb_min.xyz, collider.world_aabb_min.xyz);
+                    vec3 collider_swept_max =
+                        max(collider.previous_world_aabb_max.xyz, collider.world_aabb_max.xyz);
+                    ivec3 collider_min_cell = inx_collision_grid_cell(collider_swept_min);
+                    if (any(notEqual(cell, max(query_min, collider_min_cell)))) continue;
+                    vec3 particle_swept_min =
+                        min(previous_world_position, world_position) - vec3(world_radius);
+                    vec3 particle_swept_max =
+                        max(previous_world_position, world_position) + vec3(world_radius);
+                    if (any(lessThan(particle_swept_max, collider_swept_min)) ||
+                        any(greaterThan(particle_swept_min, collider_swept_max)))
+                        continue;
+
+                    vec3 corrected_world_position = world_position;
+                    vec3 world_normal = vec3(0.0, 1.0, 0.0);
+                    bool hit = collider.metadata.x == 0u
+                                   ? inx_collision_box(collider, previous_world_position,
+                                                       world_position, world_radius,
+                                                       corrected_world_position, world_normal)
+                               : collider.metadata.x == 1u
+                                   ? inx_collision_sphere(collider, previous_world_position,
+                                                          world_position, world_radius,
+                                                          corrected_world_position, world_normal)
+                               : collider.metadata.x == 2u
+                                   ? inx_collision_capsule(collider, previous_world_position,
+                                                           world_position, world_radius,
+                                                           corrected_world_position, world_normal)
+                               : collider.metadata.x == 3u
+                                   ? inx_collision_mesh(collider, previous_world_position,
+                                                        world_position, world_radius,
+                                                        corrected_world_position, world_normal)
+                                   : false;
+                    if (!hit) continue;
+
+                    any_hit = true;
+                    last_world_normal = world_normal;
+                    world_position = corrected_world_position;
+                    vec3 relative_velocity = world_velocity - collider.linear_velocity.xyz;
+                    float normal_speed = dot(relative_velocity, world_normal);
+                    if (normal_speed < 0.0) {{
+                        vec3 tangent_velocity = relative_velocity - world_normal * normal_speed;
+                        float friction = clamp(collider.material.x * max(friction_scale, 0.0), 0.0, 1.0);
+                        float restitution = clamp(collider.material.y * max(restitution_scale, 0.0), 0.0, 1.0);
+                        relative_velocity = tangent_velocity * (1.0 - friction)
+                                          - world_normal * normal_speed * restitution;
+                        world_velocity = relative_velocity + collider.linear_velocity.xyz;
+                    }}
+                }}
+            }}
+        }}
+    }}
+    simulation_position = (transforms.world_to_simulation * vec4(world_position, 1.0)).xyz;
+    simulation_velocity = (transforms.world_to_simulation * vec4(world_velocity, 0.0)).xyz;
+    if (any_hit) {{
+        vec3 transformed_normal =
+            transpose(mat3(transforms.simulation_to_world)) * last_world_normal;
+        float normal_length = length(transformed_normal);
+        simulation_collision_normal = normal_length > 1.0e-6
+                                          ? transformed_normal / normal_length
+                                          : vec3(0.0, 1.0, 0.0);
+    }}
+    return any_hit;
+}}
+
 vec3 inx_shape_random(uvec3 slots, uint particle_id, uint generation) {{
     return vec3(inx_random01(0u, slots.x, particle_id, generation),
                 inx_random01(0u, slots.y, particle_id, generation),
@@ -2561,6 +3320,7 @@ def _init_main(
     finite = _finite_state_check(emitter.init, fields)
     return f"""
 void main() {{
+    if (simulation_control.simulation_allowed == 0u) return;
     uint invocation = gl_GlobalInvocationID.x;
     if (invocation >= pc.invocation_count) return;
     uint particle_index = inx_pop_free();
@@ -2690,6 +3450,7 @@ def _update_main(
     finite = _finite_state_check(emitter.update, fields)
     return f"""
 void main() {{
+    if (simulation_control.simulation_allowed == 0u) return;
     uint particle_index = gl_GlobalInvocationID.x;
     if (particle_index >= pc.capacity || states[particle_index].alive == 0u) return;
     ParticleState state = states[particle_index];
@@ -2707,6 +3468,7 @@ void main() {{
 def _render_reset_main() -> str:
     return """
 void main() {
+    if (simulation_control.simulation_allowed == 0u) return;
     if (gl_GlobalInvocationID.x != 0u) return;
     counters.visible_count = 0u;
     indirect_args.vertex_count = 6u;
@@ -2752,6 +3514,7 @@ def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
     )
     return f"""
 void main() {{
+    if (simulation_control.simulation_allowed == 0u) return;
     uint particle_index = gl_GlobalInvocationID.x;
     if (particle_index >= pc.capacity || states[particle_index].alive == 0u) return;
     ParticleState state = states[particle_index];
@@ -2766,15 +3529,21 @@ void main() {{
 {event_body}
     uint output_index = atomicAdd(counters.visible_count, 1u);
     if (output_index >= pc.capacity) return;
-    instances[output_index].position_size = vec4({world_position}, {size});
-    instances[output_index].color = {color};
-    instances[output_index].rotation_custom = vec4({rotation}, {orientation});
+    ParticleRenderInstance previous_instance = instances[particle_index];
+    bool history_valid = previous_instance.ribbon_data.w == {particle_id} &&
+        floatBitsToUint(previous_instance.previous_position_history.w) == state.spawn_generation;
+    instances[particle_index].position_size = vec4({world_position}, {size});
+    instances[particle_index].color = {color};
+    instances[particle_index].rotation_custom = vec4({rotation}, {orientation});
     float normalized_age = clamp(({age}) / max(({lifetime}), 0.000001), 0.0, 1.0);
-    instances[output_index].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
-    instances[output_index].ribbon_data = uvec4(
+    instances[particle_index].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
+    instances[particle_index].ribbon_data = uvec4(
         {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
-    instances[output_index].custom_data = vec4({flipbook_frame}, {world_velocity});
-    render_indices[output_index] = output_index;
+    instances[particle_index].custom_data = vec4({flipbook_frame}, {world_velocity});
+    instances[particle_index].previous_position_history = vec4(
+        history_valid ? previous_instance.position_size.xyz : {world_position},
+        uintBitsToFloat(state.spawn_generation));
+    render_indices[output_index] = particle_index;
     atomicAdd(indirect_args.instance_count, 1u);
 }}
 """
@@ -2810,6 +3579,8 @@ def _space_conversion(expression: str, result_type: TypeRef | None, immediate: d
         raise GpuParticleCompileError("GPU space conversion currently requires vec3")
     source = CoordinateSpace(immediate["from"])
     target = CoordinateSpace(immediate["to"])
+    if source is CoordinateSpace.NONE or target is CoordinateSpace.NONE:
+        return expression
     supported = {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.SIMULATION, CoordinateSpace.WORLD}
     if source not in supported or target not in supported:
         raise GpuParticleCompileError(
@@ -2848,6 +3619,238 @@ def _glsl_type(value_type: TypeRef | None) -> str:
         raise GpuParticleCompileError(
             f"GPU backend does not support {value_type.value_type.value} values"
         ) from exc
+
+
+def _numeric_resize_glsl(
+    expression: str,
+    source_type: TypeRef,
+    target_type: TypeRef | None,
+) -> str:
+    if target_type is None:
+        raise GpuParticleCompileError("numeric resize is missing its result type")
+    dimensions = {
+        ValueType.I32: 1,
+        ValueType.U32: 1,
+        ValueType.F32: 1,
+        ValueType.VEC2: 2,
+        ValueType.VEC3: 3,
+        ValueType.VEC4: 4,
+        ValueType.COLOR: 4,
+    }
+    try:
+        source_dimension = dimensions[source_type.value_type]
+        target_dimension = dimensions[target_type.value_type]
+    except KeyError as exc:
+        raise GpuParticleCompileError(
+            "numeric resize only supports scalar and vector values"
+        ) from exc
+
+    if target_dimension == 1:
+        value = expression if source_dimension == 1 else f"({expression}).x"
+        if target_type.value_type is ValueType.F32 and source_type.value_type in {
+            ValueType.I32,
+            ValueType.U32,
+        }:
+            return f"float({value})"
+        return value
+
+    target_glsl = _glsl_type(target_type)
+    if source_dimension == 1:
+        scalar = expression
+        if source_type.value_type in {ValueType.I32, ValueType.U32}:
+            scalar = f"float({scalar})"
+        return f"{target_glsl}({scalar})"
+    if source_dimension == target_dimension:
+        return expression
+    if source_dimension > target_dimension:
+        return f"({expression}).{'xyzw'[:target_dimension]}"
+    zero_tail = ", ".join("0.0" for _ in range(target_dimension - source_dimension))
+    return f"{target_glsl}({expression}, {zero_tail})"
+
+
+def _parameter_load_glsl(slot: int, value_type: TypeRef | None) -> str:
+    if value_type is None:
+        raise GpuParticleCompileError("parameter load is missing its result type")
+    words = f"parameter_words[{int(slot)}]"
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        return f"({words}.x != 0u)"
+    if kind is ValueType.I32:
+        return f"int({words}.x)"
+    if kind is ValueType.U32:
+        return f"{words}.x"
+    if kind is ValueType.F32:
+        return f"uintBitsToFloat({words}.x)"
+    swizzles = {
+        ValueType.VEC2: "xy",
+        ValueType.VEC3: "xyz",
+        ValueType.VEC4: "xyzw",
+        ValueType.COLOR: "xyzw",
+    }
+    swizzle = swizzles.get(kind)
+    if swizzle is None:
+        raise GpuParticleCompileError(
+            f"GPU parameters do not support {kind.value!r}"
+        )
+    return f"uintBitsToFloat({words}.{swizzle})"
+
+
+def pack_gpu_particle_parameters(
+    parameters: tuple[KernelParameter, ...],
+    overrides: Mapping[str, Any] | None = None,
+) -> tuple[int, ...]:
+    """Pack one deterministic 16-byte slot per graph parameter."""
+    overrides = dict(overrides or {})
+    known = {parameter.stable_id for parameter in parameters}
+    unknown = set(overrides) - known
+    if unknown:
+        raise GpuParticleCompileError(
+            f"particle parameter overrides reference unknown ids: {sorted(unknown)}"
+        )
+    words: list[int] = []
+    for parameter in parameters:
+        value = overrides.get(parameter.stable_id, parameter.default)
+        kind = parameter.value_type.value_type
+        if kind is ValueType.TEXTURE2D:
+            try:
+                AssetReference.from_dict(value)
+            except (TypeError, ValueError) as exc:
+                raise GpuParticleCompileError(
+                    f"particle parameter {parameter.name!r} requires a Texture2D asset reference"
+                ) from exc
+            encoded = []
+        elif kind is ValueType.BOOL:
+            if type(value) is not bool:
+                raise GpuParticleCompileError(
+                    f"particle parameter {parameter.name!r} requires a bool"
+                )
+            encoded = [1 if value else 0]
+        elif kind in {ValueType.I32, ValueType.U32}:
+            if type(value) is not int:
+                raise GpuParticleCompileError(
+                    f"particle parameter {parameter.name!r} requires an integer"
+                )
+            encoded = [int(value) & 0xFFFFFFFF]
+        else:
+            dimension = {
+                ValueType.F32: 1,
+                ValueType.VEC2: 2,
+                ValueType.VEC3: 3,
+                ValueType.VEC4: 4,
+                ValueType.COLOR: 4,
+            }.get(kind)
+            values = [value] if dimension == 1 else value
+            if (
+                dimension is None
+                or not isinstance(values, (list, tuple))
+                or len(values) != dimension
+                or any(type(item) not in {int, float} for item in values)
+            ):
+                raise GpuParticleCompileError(
+                    f"particle parameter {parameter.name!r} has an invalid value"
+                )
+            encoded = [
+                struct.unpack("<I", struct.pack("<f", float(item)))[0]
+                for item in values
+            ]
+        words.extend(encoded)
+        words.extend([0] * (4 - len(encoded)))
+    return tuple(words)
+
+
+def pack_gpu_particle_event_payload(
+    event_type,
+    values: Mapping[str, Any] | None = None,
+) -> tuple[int, ...]:
+    """Pack one external event payload using the compiled GPU event ABI."""
+    values = dict(values or {})
+    fields = tuple(getattr(event_type, "fields", ()))
+    by_key: dict[str, Any] = {}
+    ambiguous: set[str] = set()
+    for field in fields:
+        for key in (field.stable_id, getattr(field, "name", "")):
+            if not key:
+                continue
+            if key in by_key and by_key[key] is not field:
+                ambiguous.add(key)
+            else:
+                by_key[key] = field
+    unknown = set(values) - set(by_key)
+    if unknown:
+        raise GpuParticleCompileError(
+            f"particle event payload references unknown fields: {sorted(unknown)}"
+        )
+    if ambiguous.intersection(values):
+        raise GpuParticleCompileError(
+            "particle event payload field names are ambiguous; use stable field ids"
+        )
+
+    supplied: dict[str, Any] = {}
+    for key, value in values.items():
+        stable_id = by_key[key].stable_id
+        if stable_id in supplied:
+            raise GpuParticleCompileError(
+                f"particle event field {stable_id!r} was supplied more than once"
+            )
+        supplied[stable_id] = value
+
+    words: list[int] = []
+    for field in fields:
+        value = supplied.get(field.stable_id, field.default)
+        encoded = _pack_gpu_particle_event_value(field.value_type, value)
+        if len(encoded) != field.word_count or len(words) != field.word_offset:
+            raise GpuParticleCompileError(
+                f"particle event field {field.stable_id!r} does not match its compiled ABI"
+            )
+        words.extend(encoded)
+    if len(words) != int(getattr(event_type, "payload_stride_words", -1)):
+        raise GpuParticleCompileError("particle event payload does not match its compiled stride")
+    return tuple(words)
+
+
+def _pack_gpu_particle_event_value(value_type: TypeRef, value: Any) -> list[int]:
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        if type(value) is not bool:
+            raise GpuParticleCompileError("particle event bool field requires a bool")
+        return [1 if value else 0]
+    if kind in {ValueType.I32, ValueType.U32}:
+        if type(value) is not int:
+            raise GpuParticleCompileError("particle event integer field requires an integer")
+        if kind is ValueType.U32 and not 0 <= value <= 0xFFFFFFFF:
+            raise GpuParticleCompileError("particle event uint field is out of range")
+        if kind is ValueType.I32 and not -(1 << 31) <= value < (1 << 31):
+            raise GpuParticleCompileError("particle event int field is out of range")
+        return [value & 0xFFFFFFFF]
+
+    dimensions = {
+        ValueType.F32: 1,
+        ValueType.VEC2: 2,
+        ValueType.VEC3: 3,
+        ValueType.VEC4: 4,
+        ValueType.COLOR: 4,
+        ValueType.MAT3: 9,
+        ValueType.MAT4: 16,
+    }
+    dimension = dimensions.get(kind)
+    source = [value] if dimension == 1 else value
+    if (
+        dimension is None
+        or not isinstance(source, (list, tuple))
+        or len(source) != dimension
+        or any(type(item) not in {int, float} or not math.isfinite(float(item)) for item in source)
+    ):
+        raise GpuParticleCompileError(
+            f"particle event {kind.value} field has an invalid value"
+        )
+    encoded = [struct.unpack("<I", struct.pack("<f", float(item)))[0] for item in source]
+    if kind is ValueType.MAT3:
+        encoded = [
+            word
+            for column in range(3)
+            for word in (*encoded[column * 3 : column * 3 + 3], 0)
+        ]
+    return encoded
 
 
 def _storage_type(value_type: TypeRef) -> str:
@@ -2992,5 +3995,7 @@ __all__ = [
     "build_gpu_particle_migration",
     "compile_gpu_particle_spirv",
     "decode_gpu_particle_spirv",
+    "pack_gpu_particle_event_payload",
+    "pack_gpu_particle_parameters",
     "validate_gpu_particle_spirv",
 ]

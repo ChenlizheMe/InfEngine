@@ -47,8 +47,8 @@ int main()
     infernux::InxResourceMeta metadata;
     compiler.CreateMeta(source.data(), source.size(), "Tests/CacheReset.vert", metadata);
     const std::string cachePath = metadata.GetDataAs<std::string>("file_path");
-    const auto compiled = compiler.Compile(source.data(), source.size(), metadata);
-    assert(compiled && !compiled->empty());
+    const auto compiled = compiler.CompileVertexGlsl(source, cachePath);
+    assert(!compiled.empty());
     assert(infernux::InxShaderLoader::TakeCompiledVariants(cachePath).empty());
     assert(infernux::InxShaderLoader::TakeCompiledVariants(cachePath).empty());
 

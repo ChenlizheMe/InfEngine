@@ -7,6 +7,7 @@ from .registry import (
     NodeDef,
     NodeDefinitionRegistry,
     PortDef,
+    PortDimensionPolicy,
     PortDirection,
     PortKind,
     PropertyDef,

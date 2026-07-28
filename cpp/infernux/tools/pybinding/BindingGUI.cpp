@@ -687,6 +687,9 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("type"), py::arg("data"), "Set drag-drop payload (string data)")
         .def("end_drag_drop_source", &InxGUIContext::EndDragDropSource, "End drag source")
         .def("begin_drag_drop_target", &InxGUIContext::BeginDragDropTarget, "Begin a drag-drop target on last item")
+        .def("begin_drag_drop_target_rect", &InxGUIContext::BeginDragDropTargetRect, py::arg("min_x"),
+             py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("target_id"),
+             "Begin a drag-drop target over an explicit screen-space rectangle")
         .def(
             "accept_drag_drop_payload",
             [](InxGUIContext &ctx, const std::string &type) -> py::

@@ -55,12 +55,12 @@ void TestCommitWritesAllTargetsAndInvalidatesDerivedIndex(const std::filesystem:
 void TestCommitCreatesMissingTargetDirectories(const std::filesystem::path &root)
 {
     const auto journal = root / "Library" / "Nested.transaction";
-    const auto target = root / "Library" / "Artifacts" / "PointCache" / "cache.inxpcache";
+    const auto target = root / "Library" / "Artifacts" / "Mesh" / "mesh.inxmesh";
     std::filesystem::remove_all(root / "Library" / "Artifacts");
 
-    DocumentTransaction::Commit(root.u8string(), journal.u8string(), {{target.u8string(), "point-cache"}}, {});
+    DocumentTransaction::Commit(root.u8string(), journal.u8string(), {{target.u8string(), "mesh-artifact"}}, {});
 
-    Require(ReadText(target) == "point-cache", "transaction did not write a target in a missing nested directory");
+    Require(ReadText(target) == "mesh-artifact", "transaction did not write a target in a missing nested directory");
     Require(!std::filesystem::exists(journal), "nested-directory transaction left its journal behind");
 }
 

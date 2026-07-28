@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -65,6 +67,7 @@ struct GpuParticleEventTargetDesc
     uint32_t capacity = 0;
     rhi::BufferHandle freeList;
     rhi::BufferHandle counters;
+    rhi::BufferHandle simulationControl;
     rhi::BindingLayoutHandle eventInputLayout;
 };
 
@@ -114,9 +117,9 @@ struct alignas(16) GpuParticleEventPrepareConstants
 struct alignas(16) GpuParticleEventAllocateConstants
 {
     uint32_t channelIndex = 0;
-    uint32_t reserved0 = 0;
-    uint32_t reserved1 = 0;
-    uint32_t reserved2 = 0;
+    uint32_t pauseWhenOffscreen = 0;
+    uint32_t forceSimulation = 0;
+    uint32_t reserved = 0;
 };
 
 struct GpuParticleEventPage
@@ -125,10 +128,13 @@ struct GpuParticleEventPage
     rhi::BufferHandle counters;
     rhi::BufferHandle indirectArguments;
     rhi::BufferHandle spawnIndices;
+    rhi::BufferHandle externalRecordUpload;
+    rhi::BufferHandle externalCounterUpload;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return records.IsValid() && counters.IsValid() && indirectArguments.IsValid() && spawnIndices.IsValid();
+        return records.IsValid() && counters.IsValid() && indirectArguments.IsValid() && spawnIndices.IsValid() &&
+               externalRecordUpload.IsValid() && externalCounterUpload.IsValid();
     }
 };
 
@@ -189,8 +195,16 @@ class ParticleGpuEventDomain
         return m_channelTable;
     }
     [[nodiscard]] const GpuParticleEventPage *Page(uint32_t pageIndex) const noexcept;
+    /// Queue already ABI-packed event records for the next simulated step.
+    /// This is a low-frequency control path; particle state remains GPU-owned.
+    [[nodiscard]] bool QueueExternalEvents(uint32_t channelIndex, const std::vector<uint32_t> &recordWords,
+                                           uint32_t recordCount, std::string *error = nullptr);
     void RecordPrepare(const rhi::ComputeCommandEncoder &encoder);
-    void RecordAllocate(const rhi::ComputeCommandEncoder &encoder, uint32_t channelIndex) const;
+    /// Seed the current output page after Prepare clears it and before GPU
+    /// event producers append. Returns false when no upload was recorded.
+    [[nodiscard]] bool RecordExternalInjection(const rhi::TransferCommandEncoder &encoder);
+    void RecordAllocate(const rhi::ComputeCommandEncoder &encoder, uint32_t channelIndex,
+                        bool pauseWhenOffscreen = false, bool forceSimulation = false) const;
     [[nodiscard]] bool HasPreparedInput() const noexcept
     {
         return m_hasInputForCurrentStep;
@@ -213,6 +227,7 @@ class ParticleGpuEventDomain
     {
         return m_nextPrepareEpoch;
     }
+    [[nodiscard]] uint32_t PendingExternalEventCount(uint32_t channelIndex) const noexcept;
 
   private:
     rhi::Device *m_device = nullptr;
@@ -241,6 +256,8 @@ class ParticleGpuEventDomain
     uint32_t m_currentReadPageIndex = 0;
     uint32_t m_currentWritePageIndex = 0;
     uint64_t m_nextPrepareEpoch = 0;
+    mutable std::mutex m_externalEventMutex;
+    std::vector<std::vector<uint32_t>> m_pendingExternalRecords;
 };
 
 static_assert(sizeof(GpuParticleEventChannelRecord) == 48);

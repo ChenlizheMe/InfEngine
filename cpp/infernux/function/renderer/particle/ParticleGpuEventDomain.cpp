@@ -29,6 +29,12 @@ bool IsShaderBytecodeValid(const uint32_t *words, size_t wordCount) noexcept
     return words && wordCount >= 5 && words[0] == 0x07230203u;
 }
 
+void SetError(std::string *error, std::string message)
+{
+    if (error)
+        *error = std::move(message);
+}
+
 } // namespace
 
 bool GpuParticleEventProgram::IsValid() const noexcept
@@ -135,11 +141,17 @@ layout(std430, set = 0, binding = 4) buffer TargetCounters {
     uint target_dropped_count;
     uint target_reserved_count;
 };
+layout(std430, set = 0, binding = 5) readonly buffer TargetSimulationControl {
+    uint target_any_view_visible;
+    uint target_simulation_allowed;
+    uint target_offscreen_policy;
+    uint target_simulation_control_reserved;
+};
 layout(push_constant) uniform EventAllocateConstants {
     uint channel_index;
-    uint reserved0;
-    uint reserved1;
-    uint reserved2;
+    uint pause_when_offscreen;
+    uint force_simulation;
+    uint reserved;
 } pc;
 
 const uint INX_INVALID_INDEX = 0xffffffffu;
@@ -165,6 +177,12 @@ void main() {
     uint total = input_counters[pc.channel_index].z * channel.spawn_count;
     if (invocation >= total) return;
     uint destination = channel.spawn_base_indices + invocation;
+    bool simulation_allowed = pc.force_simulation != 0u || pc.pause_when_offscreen == 0u ||
+                              target_any_view_visible != 0u;
+    if (!simulation_allowed) {
+        spawn_indices[destination] = INX_INVALID_INDEX;
+        return;
+    }
     uint particle_index = pop_target_free(channel.target_capacity);
     spawn_indices[destination] = particle_index;
     if (particle_index == INX_INVALID_INDEX)
@@ -194,7 +212,8 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
     targetsByIndex.reserve(targets.size());
     for (const auto &target : targets) {
         if (target.capacity == 0 || !target.freeList.IsValid() || !target.counters.IsValid() ||
-            !target.eventInputLayout.IsValid() || !targetsByIndex.emplace(target.emitterIndex, &target).second) {
+            !target.simulationControl.IsValid() || !target.eventInputLayout.IsValid() ||
+            !targetsByIndex.emplace(target.emitterIndex, &target).second) {
             return false;
         }
     }
@@ -253,6 +272,7 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
               [](const auto &lhs, const auto &rhs) { return lhs.emitterIndex < rhs.emitterIndex; });
     m_channels = records;
     m_channelDescs = desc.channels;
+    m_pendingExternalRecords.resize(records.size());
 
     rhi::BufferDesc tableDesc;
     tableDesc.byteSize = records.size() * sizeof(GpuParticleEventChannelRecord);
@@ -269,12 +289,18 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
     const uint32_t pageCount = std::max(desc.framesInFlight, MinimumPageCount);
     m_pages.resize(pageCount);
     for (auto &page : m_pages) {
-        page.records = device.CreateBuffer({recordBytes, rhi::BufferUsageFlags::Storage});
+        page.records = device.CreateBuffer(
+            {recordBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
         page.counters =
-            device.CreateBuffer({counterBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource});
+            device.CreateBuffer({counterBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource |
+                                                   rhi::BufferUsageFlags::TransferDestination});
         page.indirectArguments =
             device.CreateBuffer({dispatchBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect});
         page.spawnIndices = device.CreateBuffer({spawnIndexBytes, rhi::BufferUsageFlags::Storage});
+        page.externalRecordUpload =
+            device.CreateBuffer({recordBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
+        page.externalCounterUpload =
+            device.CreateBuffer({counterBytes, rhi::BufferUsageFlags::TransferSource, rhi::BufferMemory::Upload});
         if (!page.IsValid()) {
             Destroy();
             return false;
@@ -339,9 +365,9 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
     }
 
     rhi::BindingLayoutDesc allocateLayoutDesc;
-    for (uint32_t binding = 0; binding < 5; ++binding)
+    for (uint32_t binding = 0; binding < 6; ++binding)
         allocateLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    allocateLayoutDesc.entryCount = 5;
+    allocateLayoutDesc.entryCount = 6;
     m_allocateLayout = device.CreateBindingLayout(allocateLayoutDesc);
     if (!m_allocateLayout.IsValid()) {
         Destroy();
@@ -359,8 +385,9 @@ bool ParticleGpuEventDomain::Create(rhi::Device &device, const GpuParticleEventD
 
             rhi::BindGroupDesc allocateGroupDesc;
             allocateGroupDesc.layout = m_allocateLayout;
-            const std::array<rhi::BufferHandle, 5> allocateBuffers = {
-                m_channelTable, page.counters, page.spawnIndices, target->freeList, target->counters,
+            const std::array<rhi::BufferHandle, 6> allocateBuffers = {
+                m_channelTable,   page.counters,    page.spawnIndices,
+                target->freeList, target->counters, target->simulationControl,
             };
             for (uint32_t binding = 0; binding < allocateBuffers.size(); ++binding) {
                 allocateGroupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer,
@@ -444,6 +471,8 @@ void ParticleGpuEventDomain::Destroy() noexcept
             m_device->Release(group);
         m_device->Release(m_prepareLayout);
         for (auto &page : m_pages) {
+            m_device->Release(page.externalCounterUpload);
+            m_device->Release(page.externalRecordUpload);
             m_device->Release(page.spawnIndices);
             m_device->Release(page.indirectArguments);
             m_device->Release(page.counters);
@@ -470,6 +499,10 @@ void ParticleGpuEventDomain::Destroy() noexcept
     m_targets.clear();
     m_channels.clear();
     m_channelDescs.clear();
+    {
+        std::scoped_lock lock(m_externalEventMutex);
+        m_pendingExternalRecords.clear();
+    }
     m_channelCount = 0;
     m_recordBufferBytes = 0;
     m_spawnIndexBufferBytes = 0;
@@ -506,6 +539,41 @@ const GpuParticleEventPage *ParticleGpuEventDomain::Page(uint32_t pageIndex) con
     return &m_pages[pageIndex];
 }
 
+bool ParticleGpuEventDomain::QueueExternalEvents(uint32_t channelIndex, const std::vector<uint32_t> &recordWords,
+                                                 uint32_t recordCount, std::string *error)
+{
+    if (error)
+        error->clear();
+    if (!IsValid()) {
+        SetError(error, "GPU particle event domain is not active");
+        return false;
+    }
+    if (channelIndex >= m_channels.size()) {
+        SetError(error, "GPU particle event channel index is out of range");
+        return false;
+    }
+    if (recordCount == 0) {
+        SetError(error, "GPU particle external event count must be positive");
+        return false;
+    }
+    const auto &channel = m_channels[channelIndex];
+    const uint64_t expectedWords = static_cast<uint64_t>(recordCount) * channel.recordStrideWords;
+    if (expectedWords != recordWords.size()) {
+        SetError(error, "GPU particle external event records do not match the channel ABI stride");
+        return false;
+    }
+
+    std::scoped_lock lock(m_externalEventMutex);
+    auto &pending = m_pendingExternalRecords[channelIndex];
+    const uint64_t pendingCount = pending.size() / channel.recordStrideWords;
+    if (pendingCount + recordCount > channel.capacity) {
+        SetError(error, "GPU particle external event queue exceeds the route capacity for one simulation step");
+        return false;
+    }
+    pending.insert(pending.end(), recordWords.begin(), recordWords.end());
+    return true;
+}
+
 void ParticleGpuEventDomain::RecordPrepare(const rhi::ComputeCommandEncoder &encoder)
 {
     if (!IsValid() || !encoder.IsValid())
@@ -525,13 +593,54 @@ void ParticleGpuEventDomain::RecordPrepare(const rhi::ComputeCommandEncoder &enc
     ++m_nextPrepareEpoch;
 }
 
-void ParticleGpuEventDomain::RecordAllocate(const rhi::ComputeCommandEncoder &encoder, uint32_t channelIndex) const
+bool ParticleGpuEventDomain::RecordExternalInjection(const rhi::TransferCommandEncoder &encoder)
+{
+    if (!IsValid() || !encoder.IsValid() || !m_hasPreparedPage || !m_device ||
+        m_currentWritePageIndex >= m_pages.size()) {
+        return false;
+    }
+
+    std::scoped_lock lock(m_externalEventMutex);
+    if (std::none_of(m_pendingExternalRecords.begin(), m_pendingExternalRecords.end(),
+                     [](const auto &records) { return !records.empty(); })) {
+        return false;
+    }
+
+    auto &page = m_pages[m_currentWritePageIndex];
+    bool recorded = false;
+    for (uint32_t channelIndex = 0; channelIndex < m_channelCount; ++channelIndex) {
+        auto &pending = m_pendingExternalRecords[channelIndex];
+        if (pending.empty())
+            continue;
+        const auto &channel = m_channels[channelIndex];
+        const uint32_t recordCount = static_cast<uint32_t>(pending.size() / channel.recordStrideWords);
+        const uint64_t recordOffset = static_cast<uint64_t>(channel.recordBaseWords) * sizeof(uint32_t);
+        const uint64_t recordBytes = static_cast<uint64_t>(pending.size()) * sizeof(uint32_t);
+        GpuParticleEventCounter counter;
+        counter.writeCount = recordCount;
+        const uint64_t counterOffset = static_cast<uint64_t>(channelIndex) * sizeof(counter);
+        if (!m_device->WriteBuffer(page.externalRecordUpload, recordOffset, pending.data(), recordBytes) ||
+            !m_device->WriteBuffer(page.externalCounterUpload, counterOffset, &counter, sizeof(counter))) {
+            continue;
+        }
+        encoder.CopyBuffer(page.externalRecordUpload, page.records, {recordOffset, recordOffset, recordBytes});
+        encoder.CopyBuffer(page.externalCounterUpload, page.counters, {counterOffset, counterOffset, sizeof(counter)});
+        pending.clear();
+        recorded = true;
+    }
+    return recorded;
+}
+
+void ParticleGpuEventDomain::RecordAllocate(const rhi::ComputeCommandEncoder &encoder, uint32_t channelIndex,
+                                            bool pauseWhenOffscreen, bool forceSimulation) const
 {
     if (!IsValid() || !encoder.IsValid() || !m_hasInputForCurrentStep || channelIndex >= m_channelCount)
         return;
     const size_t groupIndex = static_cast<size_t>(m_currentReadPageIndex) * m_channelCount + channelIndex;
     GpuParticleEventAllocateConstants constants;
     constants.channelIndex = channelIndex;
+    constants.pauseWhenOffscreen = pauseWhenOffscreen ? 1u : 0u;
+    constants.forceSimulation = forceSimulation ? 1u : 0u;
     encoder.BindPipeline(m_allocatePipeline);
     encoder.BindGroup(m_allocatePipeline, 0, m_allocateGroups[groupIndex]);
     encoder.PushConstants(m_allocatePipeline, sizeof(constants), &constants);
@@ -572,7 +681,8 @@ bool ParticleGpuEventDomain::MatchesTargets(const std::vector<GpuParticleEventTa
         const auto &lhs = ordered[index];
         const auto &rhs = m_targets[index];
         if (lhs.emitterIndex != rhs.emitterIndex || lhs.capacity != rhs.capacity || lhs.freeList != rhs.freeList ||
-            lhs.counters != rhs.counters || lhs.eventInputLayout != rhs.eventInputLayout) {
+            lhs.counters != rhs.counters || lhs.simulationControl != rhs.simulationControl ||
+            lhs.eventInputLayout != rhs.eventInputLayout) {
             return false;
         }
     }
@@ -589,6 +699,15 @@ uint32_t ParticleGpuEventDomain::ChannelTargetEmitterIndex(uint32_t channelIndex
 const GpuParticleEventChannelDesc *ParticleGpuEventDomain::Channel(uint32_t channelIndex) const noexcept
 {
     return channelIndex < m_channelDescs.size() ? &m_channelDescs[channelIndex] : nullptr;
+}
+
+uint32_t ParticleGpuEventDomain::PendingExternalEventCount(uint32_t channelIndex) const noexcept
+{
+    std::scoped_lock lock(m_externalEventMutex);
+    if (channelIndex >= m_pendingExternalRecords.size() || channelIndex >= m_channels.size())
+        return 0;
+    const uint32_t stride = m_channels[channelIndex].recordStrideWords;
+    return stride > 0 ? static_cast<uint32_t>(m_pendingExternalRecords[channelIndex].size() / stride) : 0;
 }
 
 } // namespace infernux::particle

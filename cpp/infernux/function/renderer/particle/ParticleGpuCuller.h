@@ -28,6 +28,12 @@ struct GpuParticleCullProgramStorage
     [[nodiscard]] GpuParticleCullProgram View() const noexcept;
 };
 
+enum class GpuParticleCullMode : uint32_t
+{
+    Instances = 0,
+    RibbonSegments = 1,
+};
+
 struct GpuParticleCullShaderSources
 {
     [[nodiscard]] static std::string_view Reset() noexcept;
@@ -41,7 +47,10 @@ struct GpuParticleCullerDesc
     uint32_t vertexCount = 0;
     rhi::BufferHandle instances;
     rhi::BufferHandle sourceIndirectArguments;
+    rhi::BufferHandle sourceIndices;
     rhi::BufferHandle bounds;
+    rhi::BufferHandle simulationControl;
+    GpuParticleCullMode mode = GpuParticleCullMode::Instances;
     GpuParticleCullProgram program;
 };
 
@@ -50,8 +59,17 @@ struct alignas(16) GpuParticleCullConstants
     std::array<float, 24> frustumPlanes{};
     uint32_t capacity = 0;
     uint32_t vertexCount = 0;
-    uint32_t reserved1 = 0;
+    GpuParticleCullMode mode = GpuParticleCullMode::Instances;
     uint32_t reserved2 = 0;
+};
+
+struct GpuParticleCullDispatchState
+{
+    uint32_t groupCountX = 0;
+    uint32_t groupCountY = 1;
+    uint32_t groupCountZ = 1;
+    uint32_t sourceCount = 0;
+    uint32_t flags = 0;
 };
 
 /// Per-view visibility workspace. It never mutates simulation-owned instance
@@ -90,9 +108,21 @@ class ParticleGpuCuller
     {
         return m_sourceIndirectArguments;
     }
+    [[nodiscard]] rhi::BufferHandle SourceIndexBuffer() const noexcept
+    {
+        return m_sourceIndices;
+    }
+    [[nodiscard]] GpuParticleCullMode Mode() const noexcept
+    {
+        return m_mode;
+    }
     [[nodiscard]] rhi::BufferHandle BoundsBuffer() const noexcept
     {
         return m_bounds;
+    }
+    [[nodiscard]] rhi::BufferHandle SimulationControlBuffer() const noexcept
+    {
+        return m_simulationControl;
     }
     [[nodiscard]] rhi::BufferHandle VisibleIndexBuffer() const noexcept
     {
@@ -106,7 +136,6 @@ class ParticleGpuCuller
     {
         return m_sortDispatchArguments;
     }
-
     void RecordReset(const rhi::ComputeCommandEncoder &encoder,
                      const std::array<float, PlaneCount * 4> &frustumPlanes) const;
     void RecordCull(const rhi::ComputeCommandEncoder &encoder,
@@ -122,7 +151,10 @@ class ParticleGpuCuller
     uint32_t m_vertexCount = 0;
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_sourceIndirectArguments;
+    rhi::BufferHandle m_sourceIndices;
     rhi::BufferHandle m_bounds;
+    rhi::BufferHandle m_simulationControl;
+    GpuParticleCullMode m_mode = GpuParticleCullMode::Instances;
     rhi::BufferHandle m_visibleIndices;
     rhi::BufferHandle m_drawIndirectArguments;
     rhi::BufferHandle m_sortDispatchArguments;
@@ -134,5 +166,6 @@ class ParticleGpuCuller
 };
 
 static_assert(sizeof(GpuParticleCullConstants) == 112);
+static_assert(sizeof(GpuParticleCullDispatchState) == 20);
 
 } // namespace infernux::particle

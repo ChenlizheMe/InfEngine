@@ -1,9 +1,10 @@
 #include "AssetDatabase.h"
 
+#include <function/resources/AssetFormatRegistry.h>
+
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
-#include <function/resources/InxPointCache/PointCacheArtifact.h>
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
 
@@ -73,7 +74,7 @@ std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
                             ImportArtifact::RuntimeArtifactKind kind = ImportArtifact::RuntimeArtifactKind::Primary)
 {
-    if (type != ResourceType::Mesh && type != ResourceType::Texture && type != ResourceType::PointCache)
+    if (type != ResourceType::Mesh && type != ResourceType::Texture)
         return {};
     if (guid.empty() || !std::all_of(guid.begin(), guid.end(), [](unsigned char character) {
             return std::isalnum(character) != 0 || character == '-' || character == '_';
@@ -90,12 +91,12 @@ RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
         throw std::invalid_argument("non-Mesh assets only support a primary runtime artifact");
     if (type == ResourceType::Texture)
         return "Library/Artifacts/Texture/" + guid + ".inxtex";
-    return "Library/Artifacts/PointCache/" + guid + ".inxpcache";
+    return {};
 }
 
 bool RequiresRuntimeCpuArtifact(ResourceType type)
 {
-    return type == ResourceType::Mesh || type == ResourceType::Texture || type == ResourceType::PointCache;
+    return type == ResourceType::Mesh || type == ResourceType::Texture;
 }
 
 bool HasCurrentRuntimeArtifactHeader(const std::filesystem::path &path, ResourceType type,
@@ -109,8 +110,6 @@ bool HasCurrentRuntimeArtifactHeader(const std::filesystem::path &path, Resource
     const std::string_view header(buffer, static_cast<size_t>(stream.gcount()));
     if (type == ResourceType::Texture)
         return kind == ImportArtifact::RuntimeArtifactKind::Primary && TextureArtifact::HasCurrentHeader(header);
-    if (type == ResourceType::PointCache)
-        return kind == ImportArtifact::RuntimeArtifactKind::Primary && PointCacheArtifact::HasCurrentHeader(header);
     if (type == ResourceType::Mesh)
         return kind == ImportArtifact::RuntimeArtifactKind::Primary ? MeshArtifact::HasCurrentHeader(header)
                                                                     : SkinnedMeshArtifact::HasCurrentHeader(header);
@@ -422,7 +421,6 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_importerRegistry.Register(std::make_unique<PhysicMaterialImporter>());
     m_importerRegistry.Register(std::make_unique<RenderEffectImporter>());
     m_importerRegistry.Register(std::make_unique<ParticleGraphImporter>());
-    m_importerRegistry.Register(std::make_unique<PointCacheImporter>());
     m_importerRegistry.Register(std::make_unique<ScriptImporter>());
     m_importerRegistry.Register(std::make_unique<AudioImporter>());
     m_importerRegistry.Register(std::make_unique<ModelImporter>());
@@ -2134,28 +2132,19 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     if (ext == ".particlegraph") {
         return ResourceType::ParticleGraph;
     }
-    if (ext == ".pointcache") {
-        return ResourceType::PointCache;
-    }
     if (ext == ".meta") {
         return ResourceType::Meta;
     }
     if (ext == ".py") {
         return ResourceType::Script;
     }
-    static const std::unordered_set<std::string> textureExtensions = {".png", ".jpg", ".jpeg",      ".bmp",   ".tga",
-                                                                      ".gif", ".psd", ".hdr",       ".pic",   ".pnm",
-                                                                      ".pgm", ".ppm", ".inxvfield", ".inxsdf"};
-    if (textureExtensions.find(ext) != textureExtensions.end()) {
+    if (asset_formats::Contains(asset_formats::kTextureExtensions, ext)) {
         return ResourceType::Texture;
     }
-    static const std::unordered_set<std::string> audioExtensions = {".wav"};
-    if (audioExtensions.find(ext) != audioExtensions.end()) {
+    if (asset_formats::Contains(asset_formats::kAudioExtensions, ext)) {
         return ResourceType::Audio;
     }
-    static const std::unordered_set<std::string> meshExtensions = {".fbx", ".obj", ".gltf", ".glb",
-                                                                   ".dae", ".3ds", ".ply",  ".stl"};
-    if (meshExtensions.find(ext) != meshExtensions.end()) {
+    if (asset_formats::Contains(asset_formats::kMeshExtensions, ext)) {
         return ResourceType::Mesh;
     }
     static const std::unordered_set<std::string> textExtensions = {

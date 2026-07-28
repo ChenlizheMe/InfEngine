@@ -1,17 +1,25 @@
 #version 450
-@shader_id: Route Alpha Composite
-@hidden
+
+ShaderInfo {
+    Name "Route Alpha Composite"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _BaseTex
+        Texture2D _LayerTex
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 // Premultiplied-alpha composition for isolated queue, layer, and stage images.
 // Rendering into a transparent route target through normal GPU blending
 // produces premultiplied RGB. Keeping that representation across intermediate
 // accumulators avoids dark fringes and double-multiplication.
-
-layout(set = 0, binding = 0) uniform sampler2D _BaseTex;
-layout(set = 0, binding = 1) uniform sampler2D _LayerTex;
-
-layout(location = 0) in vec2 inUV;
-layout(location = 0) out vec4 outColor;
 
 void main() {
     vec4 base = texture(_BaseTex, inUV);

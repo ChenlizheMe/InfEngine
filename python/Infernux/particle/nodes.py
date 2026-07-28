@@ -42,6 +42,8 @@ def particle_event_payload_type_id(route_stable_id: str) -> str:
 @dataclass(frozen=True)
 class ParticleGraphNodeDefinitionSet:
     registry: NodeDefinitionRegistry
+    parameter_type_by_id: Mapping[str, TypeRef]
+    parameter_by_id: Mapping[str, object]
     event_route_by_type_id: Mapping[str, str]
     event_source_by_type_id: Mapping[str, tuple[str, str]]
     event_input_route_by_type_id: Mapping[str, str]
@@ -133,14 +135,37 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
                 )
             )
     abi_payload = {
+        "parameters": [
+            {
+                "stable_id": parameter.stable_id,
+                "type": parameter.value_type.to_dict(),
+            }
+            for parameter in asset.parameters
+        ],
         "event_types": [event_type.to_dict() for event_type in asset.event_types],
         "event_routes": [route.to_dict() for route in asset.event_routes],
+        "emitter_attributes": {
+            emitter.stable_id: [
+                attribute.to_dict()
+                for attribute in emitter.attributes
+            ]
+            for emitter in asset.emitters
+        },
     }
     encoded = json.dumps(
         abi_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return ParticleGraphNodeDefinitionSet(
         registry,
+        MappingProxyType(
+            {
+                parameter.stable_id: parameter.value_type
+                for parameter in asset.parameters
+            }
+        ),
+        MappingProxyType(
+            {parameter.stable_id: parameter for parameter in asset.parameters}
+        ),
         MappingProxyType(route_by_type_id),
         MappingProxyType(source_by_type_id),
         MappingProxyType(input_route_by_type_id),
@@ -178,37 +203,6 @@ def _operation(type_id: str, label: str, opcode: str, properties=()) -> NodeDef:
     )
 
 
-def _point_cache_sample(
-    type_id: str,
-    label: str,
-    result_type: TypeRef,
-    *,
-    channel: str,
-    semantic: str = "raw",
-) -> NodeDef:
-    return NodeDef(
-        type_id,
-        label,
-        (
-            PortDef(
-                "index",
-                PortDirection.INPUT,
-                value_type=TypeRef(ValueType.U32),
-                required=False,
-                default=0,
-            ),
-            PortDef("value", PortDirection.OUTPUT, value_type=result_type),
-        ),
-        (
-            PropertyDef("interface", TypeRef(ValueType.STRING), ""),
-            PropertyDef("channel", TypeRef(ValueType.STRING), channel),
-            PropertyDef("lookup", TypeRef(ValueType.STRING), "index"),
-            PropertyDef("semantic", TypeRef(ValueType.STRING), semantic),
-        ),
-        {"expression": "sample_point_cache"},
-    )
-
-
 def _vector_field_sample() -> NodeDef:
     return NodeDef(
         "particle.vector_field.sample",
@@ -231,13 +225,37 @@ def _vector_field_sample() -> NodeDef:
     )
 
 
-def _attribute_read(type_id: str, label: str, result_type: TypeRef, attribute: str) -> NodeDef:
+def _get_attribute() -> NodeDef:
     return NodeDef(
-        type_id,
-        label,
-        (PortDef("value", PortDirection.OUTPUT, value_type=result_type),),
-        (PropertyDef("attribute", TypeRef(ValueType.STRING), attribute),),
+        "particle.attribute.get",
+        "Get Attribute",
+        (
+            PortDef(
+                "value",
+                PortDirection.OUTPUT,
+                type_variable="AttributeType",
+                type_property="attribute",
+            ),
+        ),
+        (PropertyDef("attribute", TypeRef(ValueType.STRING), "builtin.position"),),
         {"expression": "load_attribute"},
+    )
+
+
+def _get_parameter() -> NodeDef:
+    return NodeDef(
+        "particle.parameter.get",
+        "Get Parameter",
+        (
+            PortDef(
+                "value",
+                PortDirection.OUTPUT,
+                type_variable="ParameterType",
+                type_property="parameter",
+            ),
+        ),
+        (PropertyDef("parameter", TypeRef(ValueType.STRING), ""),),
+        {"expression": "load_parameter"},
     )
 
 
@@ -260,6 +278,67 @@ PARTICLE_NODE_DEFINITIONS = (
         (_stream("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "stage.rendering"},
     ),
+    NodeDef(
+        "particle.root.collision_enter",
+        "Collision Enter",
+        (_stream("out", PortDirection.OUTPUT),),
+        target_opcodes={"particle_hir": "stage.collision_enter"},
+    ),
+    NodeDef(
+        "particle.root.collision_stay",
+        "Collision Stay",
+        (_stream("out", PortDirection.OUTPUT),),
+        target_opcodes={"particle_hir": "stage.collision_stay"},
+    ),
+    NodeDef(
+        "particle.root.collision_exit",
+        "Collision Exit",
+        (_stream("out", PortDirection.OUTPUT),),
+        target_opcodes={"particle_hir": "stage.collision_exit"},
+    ),
+    NodeDef(
+        "particle.control.if",
+        "If",
+        (
+            _stream("in", PortDirection.INPUT),
+            PortDef(
+                "condition",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.BOOL),
+                required=False,
+                default=False,
+                display_name="Condition",
+            ),
+            PortDef(
+                "true",
+                PortDirection.OUTPUT,
+                kind=PortKind.STREAM,
+                display_name="True",
+            ),
+            PortDef(
+                "false",
+                PortDirection.OUTPUT,
+                kind=PortKind.STREAM,
+                display_name="False",
+            ),
+        ),
+        target_opcodes={"particle_hir": "control.if"},
+    ),
+    NodeDef(
+        "particle.control.join_all",
+        "Join All",
+        tuple(
+            PortDef(
+                f"in{index}",
+                PortDirection.INPUT,
+                kind=PortKind.STREAM,
+                display_name=f"In {index + 1}",
+            )
+            for index in range(4)
+        )
+        + (_stream("out", PortDirection.OUTPUT),),
+        target_opcodes={"particle_hir": "control.join_all"},
+    ),
     _operation(
         "particle.attribute.set_position",
         "Set Position",
@@ -276,7 +355,13 @@ PARTICLE_NODE_DEFINITIONS = (
         "particle.attribute.set_velocity",
         "Set Velocity",
         "attribute.set_velocity",
-        (PropertyDef("value", TypeRef(ValueType.VEC3), [0.0, 1.0, 0.0]),),
+        (
+            PropertyDef(
+                "value",
+                TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+                [0.0, 1.0, 0.0],
+            ),
+        ),
     ),
     _operation(
         "particle.attribute.set_lifetime",
@@ -417,6 +502,18 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
     ),
     _operation(
+        "particle.update.collide_scene",
+        "Scene Collision",
+        "collision.scene",
+        (
+            PropertyDef("particle_radius", TypeRef(ValueType.F32), 0.0),
+            PropertyDef("layer_mask", TypeRef(ValueType.U32), 0xFFFFFFFF),
+            PropertyDef("include_triggers", TypeRef(ValueType.BOOL), False),
+            PropertyDef("restitution_scale", TypeRef(ValueType.F32), 1.0),
+            PropertyDef("friction_scale", TypeRef(ValueType.F32), 1.0),
+        ),
+    ),
+    _operation(
         "particle.update.kill_if",
         "Kill If",
         "lifecycle.kill_if",
@@ -470,70 +567,6 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
         {"particle_hir": "render.ribbon"},
     ),
-    _point_cache_sample(
-        "particle.point_cache.sample_f32",
-        "Sample Point Cache Float",
-        TypeRef(ValueType.F32),
-        channel="value",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_u32",
-        "Sample Point Cache UInt",
-        TypeRef(ValueType.U32),
-        channel="$id",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_vec2",
-        "Sample Point Cache Vector 2",
-        TypeRef(ValueType.VEC2),
-        channel="value",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_vec3_raw",
-        "Sample Point Cache Vector 3",
-        TypeRef(ValueType.VEC3),
-        channel="value",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_vec4",
-        "Sample Point Cache Vector 4",
-        TypeRef(ValueType.VEC4),
-        channel="value",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_color",
-        "Sample Point Cache Color",
-        TypeRef(ValueType.COLOR),
-        channel="$color",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_position",
-        "Sample Point Cache Position",
-        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-        channel="$position",
-        semantic="position",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_direction",
-        "Sample Point Cache Direction",
-        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-        channel="direction",
-        semantic="direction",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_normal",
-        "Sample Point Cache Normal",
-        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-        channel="$normal",
-        semantic="normal",
-    ),
-    _point_cache_sample(
-        "particle.point_cache.sample_vector",
-        "Sample Point Cache Vector",
-        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-        channel="velocity",
-        semantic="vector",
-    ),
     _vector_field_sample(),
     NodeDef(
         "particle.attribute.normalized_age",
@@ -541,36 +574,8 @@ PARTICLE_NODE_DEFINITIONS = (
         (PortDef("value", PortDirection.OUTPUT, value_type=TypeRef(ValueType.F32)),),
         target_opcodes={"expression": "normalized_age"},
     ),
-    _attribute_read(
-        "particle.attribute.read_f32",
-        "Read Float Attribute",
-        TypeRef(ValueType.F32),
-        "builtin.age",
-    ),
-    _attribute_read(
-        "particle.attribute.read_u32",
-        "Read UInt Attribute",
-        TypeRef(ValueType.U32),
-        "builtin.id",
-    ),
-    _attribute_read(
-        "particle.attribute.read_bool",
-        "Read Bool Attribute",
-        TypeRef(ValueType.BOOL),
-        "builtin.ribbon_break",
-    ),
-    _attribute_read(
-        "particle.attribute.read_vec3",
-        "Read Vector Attribute",
-        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-        "builtin.position",
-    ),
-    _attribute_read(
-        "particle.attribute.read_color",
-        "Read Color Attribute",
-        TypeRef(ValueType.COLOR),
-        "builtin.color",
-    ),
+    _get_attribute(),
+    _get_parameter(),
 )
 
 for _definition in PARTICLE_NODE_DEFINITIONS:

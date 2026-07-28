@@ -1,5 +1,7 @@
 #pragma once
 
+#include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkHandle.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
@@ -62,6 +64,11 @@ class GPUMeshPreview
         return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(m_displayDescriptorSet));
     }
 
+    [[nodiscard]] const rhi::RenderViewContext &GetRenderViewContext() const noexcept
+    {
+        return m_renderView;
+    }
+
   private:
     bool EnsureResources(int size);
     bool EnsureViewResources();
@@ -71,8 +78,11 @@ class GPUMeshPreview
     void CreateRenderPass();
     void CreateFramebuffer(int size);
     void DestroyFramebuffer();
+    void PublishRenderView();
+    void UnpublishRenderView();
 
     InxVkCoreModular *m_vkCore = nullptr;
+    rhi::RenderViewContext m_renderView;
     int m_currentSize = 0;
 
     VkRenderPass m_renderPass = VK_NULL_HANDLE;
@@ -84,6 +94,7 @@ class GPUMeshPreview
     VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
 
     VkDescriptorSet m_fallbackShadowDescSet = VK_NULL_HANDLE;
+    vk::DescriptorLease m_fallbackShadowDescLease;
 
     std::unique_ptr<vk::VkBufferHandle> m_previewSceneUbo;
     std::unique_ptr<vk::VkBufferHandle> m_previewLightingUbo;
@@ -92,8 +103,8 @@ class GPUMeshPreview
     std::unique_ptr<vk::VkBufferHandle> m_previewSkinInstanceBuffer;
     std::unique_ptr<vk::VkBufferHandle> m_previewSkinPaletteBuffer;
     std::unique_ptr<vk::VkBufferHandle> m_previewInstanceAuxBuffer;
-    VkDescriptorPool m_previewGlobalsPool = VK_NULL_HANDLE;
     VkDescriptorSet m_previewGlobalsSet = VK_NULL_HANDLE;
+    vk::DescriptorLease m_previewGlobalsLease;
     std::shared_ptr<vk::GraphicsSubmissionTicket> m_activeSubmission;
     std::shared_ptr<vk::ImageReadbackTicket> m_activeReadback;
 

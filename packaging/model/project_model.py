@@ -20,6 +20,34 @@ _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
 _COMPONENT_SCRIPT_NAMESPACE = uuid.UUID("594f85cc-9c3a-4ea9-93ed-65a26f77e3a4")
 _COMPONENT_TYPE_NAMESPACE = uuid.UUID("41934666-ab60-4a29-b7ae-c8e15faf83c2")
 
+_FALLBACK_PROJECT_GITIGNORE = """# Infernux generated state
+/Library/
+/Temp/
+/Logs/
+/Cache/
+/.runtime/
+/.venv/
+/Build/
+/Builds/
+/Dist/
+/Export/
+/Exports/
+/ProjectSettings/.infernux-engine-lock.json
+__pycache__/
+*.py[cod]
+*.meta.tmp
+*.tmp
+*.bak
+*.log
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+imgui.ini
+"""
+
 
 def _engine_component_type_id(module_name: str, qualified_name: str) -> str:
     """Return the stable scene identity used by engine-owned Python components."""
@@ -677,6 +705,11 @@ class ProjectModel:
                 project_name,
             )
 
+            self._copy_bundled_project_gitignore(
+                os.path.join(staging_dir, ".gitignore"),
+                engine_version,
+            )
+
             req_path = os.path.join(staging_dir, "ProjectSettings", "requirements.txt")
             self._copy_bundled_requirements(req_path, engine_version)
 
@@ -715,25 +748,28 @@ class ProjectModel:
     # Private helpers
     # -----------------------------------------------------------------
 
-    def _copy_bundled_requirements(self, dest_path: str, engine_version: str) -> None:
-        """Copy the default requirements.txt to *dest_path*.
-
-        Resolves the file from the source tree (dev mode) or extracts it
-        from the engine wheel, avoiding any ``import Infernux`` in the Hub
-        process (which doesn't have the engine package installed).
-        """
+    def _copy_bundled_support_file(
+        self,
+        source_name: str,
+        dest_path: str,
+        engine_version: str,
+    ) -> bool:
+        """Copy one support template from the source tree or selected wheel."""
         import zipfile
 
-        # 1) Dev mode: resolve from the source tree next to this repo
         engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        source_req = os.path.join(
-            engine_root, "python", "Infernux", "resources", "supports", "requirements.txt",
+        source_path = os.path.join(
+            engine_root,
+            "python",
+            "Infernux",
+            "resources",
+            "supports",
+            source_name,
         )
-        if os.path.isfile(source_req):
-            shutil.copy2(source_req, dest_path)
-            return
+        if os.path.isfile(source_path):
+            shutil.copy2(source_path, dest_path)
+            return True
 
-        # 2) Extract from the wheel (a zip file)
         wheel = ""
         if engine_version and self.version_manager is not None:
             wheel = self.version_manager.get_wheel_path(engine_version) or ""
@@ -742,14 +778,34 @@ class ProjectModel:
         if wheel and os.path.isfile(wheel):
             try:
                 with zipfile.ZipFile(wheel) as zf:
+                    archive_suffix = f"resources/supports/{source_name}"
                     for name in zf.namelist():
-                        if name.endswith("resources/supports/requirements.txt"):
+                        if name.endswith(archive_suffix):
                             with zf.open(name) as src, open(dest_path, "wb") as dst:
                                 shutil.copyfileobj(src, dst)
-                            return
-            except zipfile.BadZipFile as _exc:
-                logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
-                pass
+                            return True
+            except zipfile.BadZipFile as exc:
+                logging.getLogger(__name__).debug(
+                    "[Suppressed] %s: %s", type(exc).__name__, exc
+                )
+        return False
+
+    def _copy_bundled_project_gitignore(self, dest_path: str, engine_version: str) -> None:
+        if self._copy_bundled_support_file(
+            "project.gitignore.txt", dest_path, engine_version
+        ):
+            return
+        with open(dest_path, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(_FALLBACK_PROJECT_GITIGNORE)
+
+    def _copy_bundled_requirements(self, dest_path: str, engine_version: str) -> None:
+        """Copy the default requirements.txt to *dest_path*.
+
+        Resolves the file from the source tree (dev mode) or extracts it
+        from the engine wheel, avoiding any ``import Infernux`` in the Hub
+        process (which doesn't have the engine package installed).
+        """
+        self._copy_bundled_support_file("requirements.txt", dest_path, engine_version)
 
     @staticmethod
     def _get_project_python(project_dir: str) -> str:

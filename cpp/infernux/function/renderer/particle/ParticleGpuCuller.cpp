@@ -17,6 +17,7 @@ struct ParticleInstance {
     vec4 scale_custom;
     uvec4 ribbon_data;
     vec4 custom_data;
+    vec4 previous_position_history;
 };
 layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleInstance instances[]; };
 layout(std430, set = 0, binding = 1) readonly buffer SourceIndirectArguments {
@@ -36,6 +37,8 @@ layout(std430, set = 0, binding = 4) buffer SortDispatchArguments {
     uint sort_group_count_x;
     uint sort_group_count_y;
     uint sort_group_count_z;
+    uint stats_source_count;
+    uint stats_flags;
 };
 layout(std430, set = 0, binding = 5) readonly buffer Bounds {
     uint bounds_min_x;
@@ -47,11 +50,18 @@ layout(std430, set = 0, binding = 5) readonly buffer Bounds {
     uint bounds_valid;
     uint bounds_reserved;
 };
+layout(std430, set = 0, binding = 6) buffer SimulationControl {
+    uint any_view_visible;
+    uint simulation_allowed;
+    uint offscreen_policy;
+    uint simulation_control_reserved;
+};
+layout(std430, set = 0, binding = 7) readonly buffer SourceIndices { uint source_indices[]; };
 layout(push_constant) uniform CullConstants {
     vec4 frustum_planes[6];
     uint capacity;
     uint vertex_count;
-    uint reserved1;
+    uint mode;
     uint reserved2;
 } pc;
 )glsl";
@@ -78,13 +88,18 @@ std::string_view GpuParticleCullShaderSources::Reset() noexcept
 {
     static const std::string Source = BuildShader("layout(local_size_x = 1) in;\n", R"glsl(
 void main() {
-    draw_vertex_count = pc.vertex_count;
+    bool ribbon_segments = pc.mode == 1u;
+    draw_vertex_count = ribbon_segments ? 6u : pc.vertex_count;
     draw_instance_count = 0u;
     draw_first_vertex = source_first_vertex;
     draw_first_instance = source_first_instance;
-    uint source_count = min(source_instance_count, pc.capacity);
-    bool bounds_visible = bounds_valid != 0u;
-    if (bounds_visible) {
+    uint source_count = ribbon_segments
+        ? min(source_vertex_count / 6u, pc.capacity > 0u ? pc.capacity - 1u : 0u)
+        : min(source_instance_count, pc.capacity);
+    stats_source_count = source_count;
+    stats_flags = (bounds_valid != 0u ? 1u : 0u) | (ribbon_segments ? 4u : 0u);
+    bool bounds_visible = true;
+    if (bounds_valid != 0u) {
         uint ordered_min[3] = uint[3](bounds_min_x, bounds_min_y, bounds_min_z);
         uint ordered_max[3] = uint[3](bounds_max_x, bounds_max_y, bounds_max_z);
         vec3 lower;
@@ -108,6 +123,8 @@ void main() {
             }
         }
     }
+    if (bounds_valid == 0u || bounds_visible) stats_flags |= 2u;
+    if (bounds_valid == 0u || bounds_visible) atomicOr(any_view_visible, 1u);
     sort_group_count_x = bounds_visible ? (source_count + 255u) / 256u : 0u;
     sort_group_count_y = 1u;
     sort_group_count_z = 1u;
@@ -128,15 +145,35 @@ bool inx_visible_sphere(vec3 center, float radius) {
 }
 void main() {
     uint source_index = gl_GlobalInvocationID.x;
-    uint source_count = min(source_instance_count, pc.capacity);
+    bool ribbon_segments = pc.mode == 1u;
+    uint source_count = ribbon_segments
+        ? min(source_vertex_count / 6u, pc.capacity > 0u ? pc.capacity - 1u : 0u)
+        : min(source_instance_count, pc.capacity);
     if (source_index >= source_count) return;
-    ParticleInstance instance = instances[source_index];
-    float radius = abs(instance.position_size.w) *
-        max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)), abs(instance.scale_custom.z)) *
-        1.41421356237;
-    if (!inx_visible_sphere(instance.position_size.xyz, radius)) return;
+    if (ribbon_segments) {
+        uint first_index = source_indices[source_index];
+        uint second_index = source_indices[source_index + 1u];
+        if (first_index >= pc.capacity || second_index >= pc.capacity) return;
+        ParticleInstance first = instances[first_index];
+        ParticleInstance second = instances[second_index];
+        if (first.ribbon_data.x != second.ribbon_data.x || (second.ribbon_data.z & 1u) != 0u) return;
+        vec3 center = (first.position_size.xyz + second.position_size.xyz) * 0.5;
+        float half_length = length(second.position_size.xyz - first.position_size.xyz) * 0.5;
+        float half_width = max(abs(first.position_size.w), abs(second.position_size.w)) * 0.5;
+        if (!inx_visible_sphere(center, half_length + half_width)) return;
+    } else {
+        uint particle_index = source_indices[source_index];
+        if (particle_index >= pc.capacity) return;
+        ParticleInstance instance = instances[particle_index];
+        float radius = abs(instance.position_size.w) *
+            max(max(abs(instance.scale_custom.x), abs(instance.scale_custom.y)), abs(instance.scale_custom.z)) *
+            1.41421356237;
+        if (!inx_visible_sphere(instance.position_size.xyz, radius)) return;
+    }
     uint output_index = atomicAdd(draw_instance_count, 1u);
-    if (output_index < pc.capacity) visible_indices[output_index] = source_index;
+    if (output_index < pc.capacity) {
+        visible_indices[output_index] = ribbon_segments ? source_index : source_indices[source_index];
+    }
 }
 )glsl");
     return Source;
@@ -196,7 +233,8 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
 {
     Destroy();
     if (desc.capacity == 0 || desc.vertexCount == 0 || !desc.instances.IsValid() ||
-        !desc.sourceIndirectArguments.IsValid() || !desc.bounds.IsValid() || !desc.program.IsValid()) {
+        !desc.sourceIndirectArguments.IsValid() || !desc.sourceIndices.IsValid() || !desc.bounds.IsValid() ||
+        !desc.simulationControl.IsValid() || !desc.program.IsValid()) {
         return false;
     }
 
@@ -205,22 +243,26 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
     m_vertexCount = desc.vertexCount;
     m_instances = desc.instances;
     m_sourceIndirectArguments = desc.sourceIndirectArguments;
+    m_sourceIndices = desc.sourceIndices;
     m_bounds = desc.bounds;
+    m_simulationControl = desc.simulationControl;
+    m_mode = desc.mode;
     const auto storage = rhi::BufferUsageFlags::Storage;
     m_visibleIndices = device.CreateBuffer({static_cast<uint64_t>(desc.capacity) * sizeof(uint32_t), storage});
     m_drawIndirectArguments =
         device.CreateBuffer({16, storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource});
     m_sortDispatchArguments =
-        device.CreateBuffer({12, storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource});
+        device.CreateBuffer({sizeof(GpuParticleCullDispatchState),
+                             storage | rhi::BufferUsageFlags::Indirect | rhi::BufferUsageFlags::TransferSource});
     if (!m_visibleIndices.IsValid() || !m_drawIndirectArguments.IsValid() || !m_sortDispatchArguments.IsValid()) {
         Destroy();
         return false;
     }
 
     rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 6; ++binding)
+    for (uint32_t binding = 0; binding < 8; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 6;
+    layoutDesc.entryCount = 8;
     m_layout = device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid()) {
         Destroy();
@@ -229,9 +271,9 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
 
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 6> buffers = {
+    const std::array<rhi::BufferHandle, 8> buffers = {
         m_instances, m_sourceIndirectArguments, m_visibleIndices, m_drawIndirectArguments, m_sortDispatchArguments,
-        m_bounds,
+        m_bounds,    m_simulationControl,       m_sourceIndices,
     };
     for (uint32_t binding = 0; binding < buffers.size(); ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
@@ -282,7 +324,10 @@ void ParticleGpuCuller::Destroy() noexcept
     m_vertexCount = 0;
     m_instances = {};
     m_sourceIndirectArguments = {};
+    m_sourceIndices = {};
     m_bounds = {};
+    m_simulationControl = {};
+    m_mode = GpuParticleCullMode::Instances;
     m_visibleIndices = {};
     m_drawIndirectArguments = {};
     m_sortDispatchArguments = {};
@@ -296,9 +341,10 @@ void ParticleGpuCuller::Destroy() noexcept
 bool ParticleGpuCuller::IsValid() const noexcept
 {
     return m_device && m_capacity > 0 && m_vertexCount > 0 && m_instances.IsValid() &&
-           m_sourceIndirectArguments.IsValid() && m_bounds.IsValid() && m_visibleIndices.IsValid() &&
-           m_drawIndirectArguments.IsValid() && m_sortDispatchArguments.IsValid() && m_layout.IsValid() &&
-           m_group.IsValid() && m_resetPipeline.IsValid() && m_cullPipeline.IsValid() && m_finalizePipeline.IsValid();
+           m_sourceIndirectArguments.IsValid() && m_sourceIndices.IsValid() && m_bounds.IsValid() &&
+           m_simulationControl.IsValid() && m_visibleIndices.IsValid() && m_drawIndirectArguments.IsValid() &&
+           m_sortDispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_resetPipeline.IsValid() &&
+           m_cullPipeline.IsValid() && m_finalizePipeline.IsValid();
 }
 
 void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder,
@@ -308,6 +354,7 @@ void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder,
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
     constants.vertexCount = m_vertexCount;
+    constants.mode = m_mode;
     Record(encoder, m_resetPipeline, constants, 1);
 }
 
@@ -318,6 +365,7 @@ void ParticleGpuCuller::RecordCull(const rhi::ComputeCommandEncoder &encoder,
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
     constants.vertexCount = m_vertexCount;
+    constants.mode = m_mode;
     if (!IsValid() || !encoder.IsValid() || !m_cullPipeline.IsValid())
         return;
     encoder.BindPipeline(m_cullPipeline);
@@ -331,6 +379,7 @@ void ParticleGpuCuller::RecordFinalize(const rhi::ComputeCommandEncoder &encoder
     GpuParticleCullConstants constants;
     constants.capacity = m_capacity;
     constants.vertexCount = m_vertexCount;
+    constants.mode = m_mode;
     Record(encoder, m_finalizePipeline, constants, 1);
 }
 

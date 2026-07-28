@@ -95,7 +95,7 @@ def _call_field_did_change(instance: 'InxComponent', field_name: str, old_value:
 
 @dataclass(frozen=True)
 class Range:
-    """Numeric range constraint → slider (or bounded drag with slider=False)."""
+    """Numeric range constraint. Inspector shows a slider plus a separate input box."""
     lo: float
     hi: float
     slider: bool = True
@@ -1472,7 +1472,8 @@ def serialized_field(
         multiline: If True and the field is STRING, render a multiline
             text input widget instead of a single-line one.
         slider: When ``range`` is set, controls the widget style.
-            ``True`` (default) = slider, ``False`` = bounded drag.
+            ``True`` (default) = Unity-style slider + numeric input.
+            ``False`` = bounded drag field only.
         drag_speed: Override the default drag speed for numeric fields.
             ``None`` means use the type default (0.1 for float, 1.0 for int).
         required_component: For GAME_OBJECT fields only.  If set, only

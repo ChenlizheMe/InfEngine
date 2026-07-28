@@ -68,7 +68,9 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
             "particle shadow variants require the shared particle lighting contract");
         Add(plan, ShaderCompileTarget::Depth, false, "particle sprite depth variants are not published yet");
         Add(plan, ShaderCompileTarget::Picking, false, "particle outputs are not editor-pickable geometry");
-        Add(plan, ShaderCompileTarget::Motion, false, "particle motion-vector variants are not published yet");
+        Add(plan, ShaderCompileTarget::Motion, !noMotion,
+            noMotion ? "the particle shader explicitly disables motion vectors"
+                     : "particle sprite outputs publish a camera-specific Motion variant");
         return plan;
     }
 

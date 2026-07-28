@@ -13,6 +13,7 @@ namespace infernux::particle
 struct alignas(16) GpuParticleViewConstants
 {
     std::array<float, 16> viewProjection{};
+    std::array<float, 16> previousViewProjection{};
     // During a shadow pass these hold the current view's light vector and
     // bias data. Surface and picking passes keep their camera-space meaning.
     std::array<float, 4> cameraRight{};
@@ -80,6 +81,6 @@ class ParticleGpuOutputRenderer
                                                  rhi::BufferHandle renderIndices = {}) = 0;
 };
 
-static_assert(sizeof(GpuParticleViewConstants) == 176);
+static_assert(sizeof(GpuParticleViewConstants) == 240);
 
 } // namespace infernux::particle

@@ -4,6 +4,7 @@
 #include <core/log/InxLog.h>
 #include <function/renderer/InxRenderer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetImporter/AssetImporter.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
@@ -236,7 +237,7 @@ ImagePreviewer::~ImagePreviewer()
 
 std::vector<std::string> ImagePreviewer::GetSupportedExtensions() const
 {
-    return {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".hdr", ".gif", ".psd", ".pic", ".pnm", ".pgm", ".ppm"};
+    return asset_formats::ToVector(asset_formats::kTextureExtensions);
 }
 
 bool ImagePreviewer::Load(const std::string &filePath)

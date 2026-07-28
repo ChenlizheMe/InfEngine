@@ -1,4 +1,6 @@
-@shader_id: Lib Color
+ShaderInfo {
+    Name "Lib Color"
+}
 
 // ============================================================================
 // lib/color.glsl — Color space conversions and adjustments
@@ -7,7 +9,7 @@
 // Provides: sRGB/linear, HSV/HSL, brightness, contrast, saturation,
 // white balance, channel mixer, color mask, invert, replace color,
 // channel split/combine, tone mapping.
-// Usage: @import: Lib Color
+// Usage: ShaderInfo Imports: Lib Color
 // ============================================================================
 
 // ============================================================================

@@ -31,32 +31,40 @@ void VkShaderCache::LoadShader(const char *name, const std::vector<char> &spirvC
 
     std::string typeStr(type);
     if (typeStr == "vert" || typeStr == "vertex") {
+        const auto existing = m_vertModules.find(name);
+        const VkShaderModule replaced = existing == m_vertModules.end() ? VK_NULL_HANDLE : existing->second;
         m_vertModules[name] = module;
         m_vertCodes[name] = spirvCode;
+        if (replaced != VK_NULL_HANDLE)
+            pm.DestroyShaderModule(replaced);
     } else if (typeStr == "frag" || typeStr == "fragment") {
+        const auto existing = m_fragModules.find(name);
+        const VkShaderModule replaced = existing == m_fragModules.end() ? VK_NULL_HANDLE : existing->second;
         m_fragModules[name] = module;
         m_fragCodes[name] = spirvCode;
+        if (replaced != VK_NULL_HANDLE)
+            pm.DestroyShaderModule(replaced);
     } else {
         INXLOG_WARN("VkShaderCache: unknown shader type: ", type);
         pm.DestroyShaderModule(module);
     }
 }
 
-void VkShaderCache::UnloadShader(const char *name, VkDevice device)
+void VkShaderCache::UnloadShader(const char *name, vk::VkPipelineManager &pm)
 {
     std::string nameStr(name);
     m_renderMetas.erase(nameStr);
 
     auto vertIt = m_vertModules.find(nameStr);
     if (vertIt != m_vertModules.end()) {
-        vkDestroyShaderModule(device, vertIt->second, nullptr);
+        pm.DestroyShaderModule(vertIt->second);
         m_vertModules.erase(vertIt);
     }
     m_vertCodes.erase(nameStr);
 
     auto fragIt = m_fragModules.find(nameStr);
     if (fragIt != m_fragModules.end()) {
-        vkDestroyShaderModule(device, fragIt->second, nullptr);
+        pm.DestroyShaderModule(fragIt->second);
         m_fragModules.erase(fragIt);
     }
     m_fragCodes.erase(nameStr);
@@ -175,7 +183,7 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
     }
 
     const ShaderProgramVariantKey forwardKey{artifact.key, ShaderCompileTarget::Forward};
-    ShaderProgram *forwardProgram =
+    ShaderProgramPublication forwardProgram =
         m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv);
     if (!forwardProgram || !forwardProgram->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
@@ -203,7 +211,8 @@ const ShaderProgramArtifact *VkShaderCache::FindProgramArtifact(const ShaderStag
     return found != m_programArtifacts.end() ? &found->second : nullptr;
 }
 
-ShaderProgram *VkShaderCache::MaterializeProgramVariant(const ShaderStagePair &stages, ShaderCompileTarget target)
+ShaderProgramPublication VkShaderCache::MaterializeProgramVariant(const ShaderStagePair &stages,
+                                                                  ShaderCompileTarget target)
 {
     const auto artifact = m_programArtifacts.find(stages);
     if (artifact == m_programArtifacts.end())
@@ -214,7 +223,8 @@ ShaderProgram *VkShaderCache::MaterializeProgramVariant(const ShaderStagePair &s
         return nullptr;
 
     const ShaderProgramVariantKey key{artifact->second.key, target};
-    ShaderProgram *program = m_programCache.GetOrCreateProgram(key, variant->vertexSpirv, variant->fragmentSpirv);
+    ShaderProgramPublication program =
+        m_programCache.GetOrCreateProgram(key, variant->vertexSpirv, variant->fragmentSpirv);
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to lazily materialize shader program variant '", key.ToString(), "'");
         return nullptr;

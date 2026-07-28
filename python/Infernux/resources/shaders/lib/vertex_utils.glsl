@@ -1,11 +1,13 @@
-@shader_id: Lib Vertex Utils
+ShaderInfo {
+    Name "Lib Vertex Utils"
+}
 
 // ============================================================================
 // lib/vertex_utils.glsl — Vertex manipulation utilities
 //
 // Full-coverage vertex toolkit matching Unity ShaderGraph vertex-stage nodes.
 // Provides: billboard, wind, displacement, wave, morph, and animation helpers.
-// Usage: @import: Lib Vertex Utils
+// Usage: ShaderInfo Imports: Lib Vertex Utils
 // ============================================================================
 
 // ============================================================================

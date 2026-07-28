@@ -148,6 +148,7 @@ PhysicsECSStore::ColliderHandle PhysicsECSStore::AllocateCollider(Collider *owne
     ColliderECSData &data = m_colliderPool.Get(handle);
     data = ColliderECSData{};
     data.owner = owner;
+    NotifyCollisionSceneChanged();
     return handle;
 }
 
@@ -157,6 +158,7 @@ void PhysicsECSStore::ReleaseCollider(ColliderHandle handle)
         return;
     m_colliderPool.Get(handle).owner = nullptr;
     m_colliderPool.Free(handle);
+    NotifyCollisionSceneChanged();
 }
 
 bool PhysicsECSStore::IsValid(ColliderHandle handle) const
@@ -241,6 +243,7 @@ void PhysicsECSStore::MarkColliderDirty(ColliderHandle handle)
 {
     if (!m_colliderPool.IsAlive(handle))
         return;
+    NotifyCollisionSceneChanged();
     const ActorHandle actorHandle = m_colliderPool.Get(handle).actorHandle;
     if (!m_actorPool.IsAlive(actorHandle))
         return;
@@ -258,6 +261,7 @@ void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner)
     const auto found = m_actorByOwner.find(owner);
     if (found == m_actorByOwner.end() || !m_actorPool.IsAlive(found->second))
         return;
+    NotifyCollisionSceneChanged();
     auto &actor = m_actorPool.Get(found->second);
     if (actor.transformDirtyQueued)
         return;
@@ -282,8 +286,16 @@ const std::vector<PhysicsECSStore::ColliderHandle> &PhysicsECSStore::ConsumeDirt
     return m_dirtyColliderScratch;
 }
 
+void PhysicsECSStore::NotifyCollisionSceneChanged() noexcept
+{
+    ++m_collisionSceneRevision;
+    if (m_collisionSceneRevision == 0)
+        ++m_collisionSceneRevision;
+}
+
 void PhysicsECSStore::MarkAllCollidersDirty()
 {
+    NotifyCollisionSceneChanged();
     for (const ActorHandle actorHandle : m_dirtyActorList) {
         if (m_actorPool.IsAlive(actorHandle))
             m_actorPool.Get(actorHandle).transformDirtyQueued = false;

@@ -36,7 +36,6 @@
 #pragma once
 
 #include "EngineGlobals.h"
-#include "FrameDeletionQueue.h"
 #include "GpuResidency.h"
 #include "InxRenderStruct.h"
 #include "MaterialPipelineManager.h"
@@ -44,7 +43,10 @@
 #include "RenderInstanceHistory.h"
 #include "VkShaderCache.h"
 #include "VkTextureCache.h"
+#include "rhi/GpuRetirementQueue.h"
 #include "vk/VkCore.h"
+#include "vk/VulkanFrameSubmission.h"
+#include "vk/VulkanSubmissionExecutor.h"
 #if INFERNUX_FRAME_PROFILE
 #include "vk/GpuTimestampQueries.h"
 #endif
@@ -63,6 +65,22 @@ struct SDL_Window;
 
 namespace infernux
 {
+
+struct FrameSubmissionTelemetry
+{
+    uint64_t generation = 0;
+    bool composed = false;
+    bool computeQueueIndependent = false;
+    bool transferQueueIndependent = false;
+    bool asyncComputeActive = false;
+    bool parallelComputeGraphics = false;
+    uint32_t batchCount = 0;
+    uint32_t graphicsBatchCount = 0;
+    uint32_t computeBatchCount = 0;
+    uint32_t transferBatchCount = 0;
+    uint32_t crossQueueDependencyCount = 0;
+    uint32_t unorderedComputeGraphicsPairCount = 0;
+};
 
 class AssetLoadTicket;
 class EditorGizmos;
@@ -104,7 +122,7 @@ class InxVkCoreModular
     void SetShuttingDown(bool v)
     {
         m_shuttingDown = v;
-        m_deviceContext.SetShuttingDown(v);
+        m_backend.SetShuttingDown(v);
     }
     bool IsShuttingDown() const
     {
@@ -145,27 +163,12 @@ class InxVkCoreModular
 
     /// @brief Change the swapchain present mode and recreate the swapchain.
     /// 0 = IMMEDIATE, 1 = MAILBOX, 2 = FIFO, 3 = FIFO_RELAXED
-    void SetPresentMode(int mode)
-    {
-        static constexpr VkPresentModeKHR kModes[] = {
-            VK_PRESENT_MODE_IMMEDIATE_KHR,
-            VK_PRESENT_MODE_MAILBOX_KHR,
-            VK_PRESENT_MODE_FIFO_KHR,
-            VK_PRESENT_MODE_FIFO_RELAXED_KHR,
-        };
-        if (mode < 0 || mode > 3)
-            return;
-        m_swapchain.SetPreferredPresentMode(kModes[mode]);
-        m_deviceContext.WaitIdle();
-        DestroyGuiRenderGraphs();
-        m_swapchain.Recreate(m_deviceContext, m_windowWidth, m_windowHeight);
-        m_renderGraph.Initialize(&m_deviceContext, &m_pipelineManager);
-    }
+    void SetPresentMode(int mode);
 
     /// @brief Get current present mode preference (0=IMMEDIATE,1=MAILBOX,2=FIFO,3=FIFO_RELAXED)
     [[nodiscard]] int GetPresentMode() const
     {
-        switch (m_swapchain.GetPreferredPresentMode()) {
+        switch (m_backend.Presentation().GetPreferredPresentMode()) {
         case VK_PRESENT_MODE_IMMEDIATE_KHR:
             return 0;
         case VK_PRESENT_MODE_MAILBOX_KHR:
@@ -261,9 +264,9 @@ class InxVkCoreModular
      * @param sortMode "front_to_back", "back_to_front", or empty/none
      * @param overrideMaterial If non-empty, all objects use this material name
      */
-    void DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin, int queueMax,
-                           const std::string &sortMode = "", const std::string &overrideMaterial = "",
-                           const std::string &passTag = "",
+    void DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, rhi::BindGroupHandle perViewGroup,
+                           const glm::mat4 &viewMatrix, int queueMin, int queueMax, const std::string &sortMode = "",
+                           const std::string &overrideMaterial = "", const std::string &passTag = "",
                            const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr);
 
     /**
@@ -320,7 +323,7 @@ class InxVkCoreModular
     {
         if (m_globalsDescSets.empty())
             return VK_NULL_HANDLE;
-        uint32_t idx = GetSwapchain().GetCurrentFrame() % static_cast<uint32_t>(m_globalsDescSets.size());
+        uint32_t idx = GetCurrentFrameSlot() % static_cast<uint32_t>(m_globalsDescSets.size());
         return m_globalsDescSets[idx];
     }
 
@@ -336,6 +339,13 @@ class InxVkCoreModular
     [[nodiscard]] uint32_t GetMaxFramesInFlight() const
     {
         return m_maxFramesInFlight;
+    }
+
+    /// Renderer-owned frame slot. Presentation consumes this value but does
+    /// not own or advance it, so offscreen views do not depend on swapchain state.
+    [[nodiscard]] uint32_t GetCurrentFrameSlot() const noexcept
+    {
+        return m_maxFramesInFlight == 0 ? 0 : m_currentFrame % m_maxFramesInFlight;
     }
 
     /// @brief Update material UBO with current material properties (stub)
@@ -528,7 +538,7 @@ class InxVkCoreModular
                                                     ? m_materialPipelineManager.GetResidencySnapshot()
                                                     : MaterialGpuResidencySnapshot{};
         snapshot.shadowDescriptorSetCount = m_shadowMaterialBindingCache.size();
-        snapshot.shadowDescriptorPoolCount = m_shadowMaterialDescPools.size();
+        snapshot.shadowDescriptorPoolCount = 0; // Shadow no longer owns private pool pages.
         snapshot.shadowBindingCacheHits = m_shadowMaterialBindingCacheHits;
         snapshot.shadowBindingCacheMisses = m_shadowMaterialBindingCacheMisses;
         snapshot.shadowBindingRetirements = m_shadowMaterialBindingRetirements;
@@ -568,6 +578,33 @@ class InxVkCoreModular
     /// @brief Set the render graph execution callback (offscreen/pre-render)
     void SetRenderGraphExecutor(std::function<void(VkCommandBuffer cmdBuf)> executor);
 
+    /// Publish Scene/Game/Preview graph batches into the same frame submission
+    /// contract used by async particle compute and presentation.
+    using FrameSubmissionBuildCallback =
+        std::function<bool(vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem)>;
+    void SetFrameSubmissionBuilder(FrameSubmissionBuildCallback builder)
+    {
+        m_frameSubmissionBuilder = std::move(builder);
+    }
+
+    [[nodiscard]] const FrameSubmissionTelemetry &GetFrameSubmissionTelemetry() const noexcept
+    {
+        return m_frameSubmissionTelemetry;
+    }
+
+    /// Optional GPU work that precedes scene rendering. It is submitted as a
+    /// typed Compute batch when Compute aliases the Graphics native lane; the
+    /// callback falls back to the Graphics command buffer otherwise until
+    /// cross-graph queue-family ownership is fully published.
+    void SetFrameComputeExecutor(std::function<void(VkCommandBuffer cmdBuf)> executor);
+
+    /// Configure a pipelined async-compute frame: simulation overlaps the
+    /// current Graphics frame, export runs after Graphics and is consumed by
+    /// the next frame.
+    void SetFrameAsyncComputeExecutors(std::function<bool(VkCommandBuffer)> simulation,
+                                       std::function<bool(VkCommandBuffer)> exportPhase, std::function<bool()> ready,
+                                       std::function<uint64_t()> generation);
+
     /// @brief Set the GUI render callback using RenderGraph context
     /// @param callback Callback that receives RenderContext for drawing
     void SetGuiRenderCallback(std::function<void(vk::RenderContext &ctx)> callback);
@@ -581,16 +618,25 @@ class InxVkCoreModular
      */
     [[nodiscard]] vk::VkDeviceContext &GetDeviceContext()
     {
-        return m_deviceContext;
+        return m_backend.Device();
     }
     [[nodiscard]] const vk::VkDeviceContext &GetDeviceContext() const
     {
-        return m_deviceContext;
+        return m_backend.Device();
     }
 
-    [[nodiscard]] const rhi::DeviceCapabilities &GetRhiCapabilities() const noexcept
+    [[nodiscard]] const rhi::DeviceCaps &GetRhiCapabilities() const noexcept
     {
-        return m_deviceContext.GetCapabilities();
+        return m_backend.Device().GetCapabilities();
+    }
+
+    [[nodiscard]] vk::VulkanBackendContext &GetBackendContext() noexcept
+    {
+        return m_backend;
+    }
+    [[nodiscard]] const vk::VulkanBackendContext &GetBackendContext() const noexcept
+    {
+        return m_backend;
     }
 
     /**
@@ -598,11 +644,11 @@ class InxVkCoreModular
      */
     [[nodiscard]] vk::VkSwapchainManager &GetSwapchain()
     {
-        return m_swapchain;
+        return m_backend.Presentation();
     }
     [[nodiscard]] const vk::VkSwapchainManager &GetSwapchain() const
     {
-        return m_swapchain;
+        return m_backend.Presentation();
     }
 
     /**
@@ -672,27 +718,27 @@ class InxVkCoreModular
 
     [[nodiscard]] VkDevice GetDevice() const
     {
-        return m_deviceContext.GetDevice();
+        return m_backend.Device().GetDevice();
     }
     [[nodiscard]] VkPhysicalDevice GetPhysicalDevice() const
     {
-        return m_deviceContext.GetPhysicalDevice();
+        return m_backend.Device().GetPhysicalDevice();
     }
     [[nodiscard]] VkInstance GetInstance() const
     {
-        return m_deviceContext.GetInstance();
+        return m_backend.Device().GetInstance();
     }
     [[nodiscard]] VkQueue GetGraphicsQueue() const
     {
-        return m_deviceContext.GetGraphicsQueue();
+        return m_backend.Device().GetGraphicsQueue();
     }
     [[nodiscard]] VkQueue GetPresentQueue() const
     {
-        return m_deviceContext.GetPresentQueue();
+        return m_backend.Device().GetPresentQueue();
     }
     [[nodiscard]] uint32_t GetSwapchainImageCount() const
     {
-        return m_swapchain.GetImageCount();
+        return m_backend.Presentation().GetImageCount();
     }
     [[nodiscard]] VkCommandPool GetCommandPool() const
     {
@@ -700,11 +746,11 @@ class InxVkCoreModular
     }
     [[nodiscard]] VkFormat GetSwapchainFormat() const
     {
-        return m_swapchain.GetImageFormat();
+        return m_backend.Presentation().GetImageFormat();
     }
     [[nodiscard]] VkExtent2D GetSwapchainExtent() const
     {
-        return m_swapchain.GetExtent();
+        return m_backend.Presentation().GetExtent();
     }
 
     // ========================================================================
@@ -728,8 +774,7 @@ class InxVkCoreModular
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                  const std::string &fragShaderName);
     bool RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
-                                        const std::string &fragShaderName, VkBuffer sceneUbo, VkBuffer lightingUbo,
-                                        bool reportDomainMismatch = true);
+                                        const std::string &fragShaderName, bool reportDomainMismatch = true);
 
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket>
     BeginMaterialPreviewGPU(const std::shared_ptr<InxMaterial> &material, int size);
@@ -769,22 +814,10 @@ class InxVkCoreModular
     /// @brief Initialize material system (default material, pipelines)
     void InitializeMaterialSystem();
 
-    /// @brief Re-initialize the material pipeline manager with a new MSAA sample count.
-    /// Must be called after vkDeviceWaitIdle; destroys all cached pipelines.
-    void ReinitializeMaterialPipelines(VkSampleCountFlagBits newSampleCount);
-
-    // ========================================================================
-    // Pre/Post-Scene-Render Callbacks
-    // ========================================================================
-
-    using PostSceneRenderCallback = std::function<void(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls)>;
-
-    /// @brief Set callback invoked after scene rendering, before GUI.
-    /// Used by InxRenderer to inject OutlineRenderer commands.
-    void SetPostSceneRenderCallback(PostSceneRenderCallback callback)
-    {
-        m_postSceneRenderCallback = std::move(callback);
-    }
+    /// @brief Transactionally publish a new material-pipeline MSAA generation.
+    /// Shader programs and descriptors remain resident; replaced GPU objects
+    /// retire after the last reserved cross-queue completion epoch.
+    [[nodiscard]] bool CommitMaterialPipelineGeneration(VkSampleCountFlagBits newSampleCount);
 
     // ========================================================================
     // Buffer Accessors (for OutlineRenderer)
@@ -796,12 +829,8 @@ class InxVkCoreModular
     /// @brief Get per-object index buffer VkBuffer handle (VK_NULL_HANDLE if not found)
     [[nodiscard]] VkBuffer GetObjectIndexBuffer(uint64_t objectId) const;
 
-    /// @brief Get the scene (view/projection) UBO VkBuffer (single buffer; all
-    /// material descriptor sets bind it, updated in-command-buffer each frame).
-    [[nodiscard]] VkBuffer GetSceneUbo() const;
-
-    /// @brief Get the lighting UBO VkBuffer (single buffer, see GetSceneUbo).
-    [[nodiscard]] VkBuffer GetLightingUbo() const;
+    /// @brief Get the zero-initialized fallback material UBO.
+    [[nodiscard]] VkBuffer GetFallbackMaterialUbo() const;
 
     /// @brief Get instance SSBO VkBuffer at given index.
     [[nodiscard]] VkBuffer GetInstanceSSBO(size_t index) const;
@@ -826,9 +855,9 @@ class InxVkCoreModular
         return m_perViewDescSetLayout;
     }
 
-    /// @brief Allocate a per-view descriptor set from the shared pool.
-    /// Each SceneRenderGraph calls this once during initialization.
-    [[nodiscard]] VkDescriptorSet AllocatePerViewDescriptorSet();
+    /// Allocate a per-view descriptor lease. The owning RenderView retires the
+    /// lease when its generation is replaced or destroyed.
+    [[nodiscard]] vk::DescriptorLease AllocatePerViewDescriptorLease();
 
     /// @brief Update a per-view descriptor set with shadow map resources.
     void UpdatePerViewShadowMap(VkDescriptorSet perViewDescSet, VkImageView shadowView, VkSampler shadowSampler,
@@ -847,17 +876,8 @@ class InxVkCoreModular
     /// Bind the camera-local LightingUBO even when the pipeline does not use Forward+.
     void UpdatePerViewLightingBuffer(VkDescriptorSet perViewDescSet, VkBuffer lightingUbo, uint64_t lightingUboBytes);
 
-    /// @brief Set the active per-view descriptor set for subsequent draw calls.
-    void SetActiveShadowDescriptorSet(VkDescriptorSet descSet)
-    {
-        m_activeShadowDescSet = descSet;
-    }
-
-    /// @brief Get the active per-view descriptor set (set 1) for draw calls.
-    [[nodiscard]] VkDescriptorSet GetActiveShadowDescriptorSet() const
-    {
-        return m_activeShadowDescSet;
-    }
+    /// Bind the frame-local camera matrices owned by this RenderView.
+    void UpdatePerViewCameraBuffer(VkDescriptorSet perViewDescSet, VkBuffer cameraUbo, uint64_t cameraUboBytes);
 
     // ========================================================================
     // Lighting System
@@ -878,8 +898,8 @@ class InxVkCoreModular
     /// @brief Set ambient color (convenience method)
     void SetAmbientColor(const glm::vec3 &color, float intensity = 1.0f);
 
-    /// @brief Update lighting UBO for current frame
-    void UpdateLightingUBO(const glm::vec3 &cameraPosition);
+    /// @brief Rebuild scene lighting state and upload canonical lights.
+    void UpdateLightingState();
 
     [[nodiscard]] const lighting::CanonicalLightGpuFrame *GetCanonicalLightGpuFrame() const noexcept
     {
@@ -910,21 +930,21 @@ class InxVkCoreModular
     /// Flushes entries that are old enough (>= maxFramesInFlight frames)
     /// to guarantee no in-flight command buffer references them.
     /// Call once per frame AFTER WaitForCurrentFrame().
-    void TickDeletionQueue();
+    void CollectRetiredGpuResources();
 
     /// @brief Immediately flush all deferred deletions.
     ///
     /// Caller must ensure the device is idle before invoking this.
-    void FlushDeletionQueue();
+    void FlushRetiredGpuResources();
 
     /// @brief Enqueue a GPU resource for deferred deletion.
     ///
     /// The deleter lambda will be invoked after maxFramesInFlight frames,
     /// when all in-flight command buffers that might reference the resource
     /// have completed.
-    void DeferDeletion(std::function<void()> deleter);
+    void RetireGpuResource(std::function<void()> deleter);
 
-    [[nodiscard]] FrameDeletionQueue &GetDeletionQueue()
+    [[nodiscard]] GpuRetirementQueue &GetRetirementQueue()
     {
         return m_deletionQueue;
     }
@@ -954,26 +974,6 @@ class InxVkCoreModular
         return m_asyncReadbackContext;
     }
 
-    /// @brief Inline-update the lighting UBO in a command buffer.
-    ///
-    /// Uses vkCmdUpdateBuffer with proper pipeline barriers so that all
-    /// subsequent rendering commands see the updated lighting data.
-    /// Called from RecordCommandBuffer() instead of CPU-side memcpy.
-    void CmdUpdateLightingUBO(VkCommandBuffer cmdBuf);
-
-    /// @brief Inline-update ONLY the cameraPos field of the lighting UBO.
-    ///
-    /// Used to override the camera position for per-view rendering (e.g.
-    /// Game View uses the game camera while Scene View uses the editor camera)
-    /// without re-uploading the full 6 KB lighting UBO.
-    void CmdUpdateLightingCameraPos(VkCommandBuffer cmdBuf, const glm::vec3 &cameraPos);
-
-    /// @brief Cache the lighting UBO data for inline command-buffer update.
-    ///
-    /// Called on the CPU timeline (before DrawFrame). The cached data is
-    /// pushed to the GPU via CmdUpdateLightingUBO during command recording.
-    void StageLightingUBO(const glm::vec3 &cameraPosition);
-
   private:
     // ========================================================================
     // Internal Methods
@@ -984,14 +984,9 @@ class InxVkCoreModular
 
     void CreateUniformBuffers();
     vk::RenderGraph &GetGuiRenderGraph(uint32_t imageIndex);
+    [[nodiscard]] bool EnsureGuiRenderGraph(uint32_t imageIndex);
     void DestroyGuiRenderGraphs();
-    void RecordCommandBuffer(uint32_t imageIndex);
-    void UpdateUniformBuffer(uint32_t currentImage, const float *viewPos, const float *viewLookAt, const float *viewUp);
-
-    /// @brief Update the VP UBO inline in a command buffer (for multi-camera rendering).
-    /// Uses vkCmdUpdateBuffer with proper barriers so each render graph sees its own VP matrices.
-    void CmdUpdateUniformBuffer(VkCommandBuffer cmdBuf, const glm::mat4 &view, const glm::mat4 &proj,
-                                const glm::mat4 *previousViewProj = nullptr);
+    [[nodiscard]] bool RecordFrameCommands(VkCommandBuffer commandBuffer, uint32_t imageIndex);
 
     /// @brief Create a raw Vulkan buffer via VMA
     void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer,
@@ -1001,13 +996,15 @@ class InxVkCoreModular
     // New Modular Components
     // ========================================================================
 
-    vk::VkDeviceContext m_deviceContext;
-    vk::VkSwapchainManager m_swapchain;
+    vk::VulkanBackendContext m_backend;
     vk::VkPipelineManager m_pipelineManager;
     vk::VkResourceManager m_resourceManager;
     vk::AsyncTransferContext m_asyncTransferContext;
     vk::AsyncTransferContext m_asyncReadbackContext;
     vk::RenderGraph m_renderGraph;
+    vk::VulkanFrameSubmission m_frameSubmission;
+    vk::VulkanSubmissionExecutor m_submissionExecutor;
+    FrameSubmissionTelemetry m_frameSubmissionTelemetry;
     std::vector<std::unique_ptr<vk::RenderGraph>> m_additionalGuiRenderGraphs;
     std::vector<bool> m_guiRenderGraphReady;
 #if INFERNUX_FRAME_PROFILE
@@ -1025,7 +1022,7 @@ class InxVkCoreModular
 
     // DrawFrame sub-timing accumulators
     // [0] Acquire  [1] Record(total)  [2] Submit  [3] Present
-    // Record breakdown: [4] UBO  [5] SceneGraph  [6] PostScene  [7] GUIGraph
+    // Record breakdown: [4] UBO  [5] SceneGraph  [6] GUIGraph  [7] reserved
     // Scene draw breakdown: [8] FilteredTotal  [9] Filter  [10] Sort  [11] Draw
     // Shadow breakdown: [12] ShadowTotal  [13] ShadowFilter  [14] ShadowDraw
     // Shadow sub-breakdown: [15] Sort  [16] Cull  [17] Upload  [18] Batch
@@ -1114,23 +1111,9 @@ class InxVkCoreModular
     // Depth resources
     std::unique_ptr<vk::VkImageHandle> m_depthImage;
 
-    // Command buffers
-    std::vector<VkCommandBuffer> m_commandBuffers;
-
-    // Scene UBO (binding 0). Single buffer by design: every material
-    // descriptor set binds this one buffer, and per-frame updates happen
-    // inline in the command buffer via CmdUpdateUniformBuffer(), so
-    // per-frame-in-flight copies would never be read and only obscured the
-    // actual synchronization model.
-    std::unique_ptr<vk::VkBufferHandle> m_sceneUbo;
-
     // Default material UBO (binding 2) — single buffer, persistently mapped.
     std::unique_ptr<vk::VkBufferHandle> m_materialUbo;
     void *m_materialUboMapped = nullptr;
-
-    // Lighting UBO (binding 1) — single buffer, persistently mapped.
-    std::unique_ptr<vk::VkBufferHandle> m_lightingUbo;
-    void *m_lightingUboMapped = nullptr;
 
     // Scene light collector
     SceneLightCollector m_lightCollector;
@@ -1308,7 +1291,18 @@ class InxVkCoreModular
 
     // Render callbacks (RenderGraph-based)
     std::function<void(VkCommandBuffer cmdBuf)> m_renderGraphExecutor;
+    FrameSubmissionBuildCallback m_frameSubmissionBuilder;
+    std::function<void(VkCommandBuffer cmdBuf)> m_frameComputeExecutor;
+    std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncSimulationExecutor;
+    std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncExportExecutor;
+    std::function<bool()> m_frameAsyncComputeReady;
+    std::function<uint64_t()> m_frameAsyncComputeGeneration;
+    bool m_frameAsyncComputePrimed = false;
+    uint64_t m_frameAsyncComputePrimedGeneration = 0;
+    VkSemaphore m_frameAsyncPreviousExportTimeline = VK_NULL_HANDLE;
+    uint64_t m_frameAsyncPreviousExportTimelineValue = 0;
     std::function<void(vk::RenderContext &ctx)> m_guiRenderCallback;
+    rhi::RenderViewContext m_presentationView;
 
     // Unity-style draw calls for multi-material rendering (pointer to external storage, no copy)
     const std::vector<DrawCall> *m_drawCallsPtr = nullptr;
@@ -1360,9 +1354,6 @@ class InxVkCoreModular
     };
     std::unordered_map<const InxMaterial *, ResolvedShadowMaterial> m_resolvedShadowMaterialsScratch;
 
-    // Pre/Post scene render callbacks
-    PostSceneRenderCallback m_postSceneRenderCallback;
-
     // ========================================================================
     // Shadow Pipeline (lazy-initialized by DrawShadowCasters)
     // ========================================================================
@@ -1389,12 +1380,12 @@ class InxVkCoreModular
             std::unordered_map<const void *, GPUSkinInstanceData> skinPaletteCache;
         };
 
-        VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+        std::vector<vk::DescriptorLease> descriptorLeases;
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<VkBuffer> uniformBuffers;
         std::vector<VmaAllocation> allocations;
         std::vector<void *> mappedPointers;
-        VkDescriptorPool streamDescriptorPool = VK_NULL_HANDLE;
+        std::vector<vk::DescriptorLease> streamDescriptorLeases;
         std::vector<StreamFrame> streamFrames;
     };
     std::unordered_map<ShadowCameraResourceId, ShadowCameraResources> m_shadowCameraResources;
@@ -1409,8 +1400,6 @@ class InxVkCoreModular
     uint64_t m_shaderHotReloadRetirementCount = 0;
 
     static constexpr uint32_t kMaxShadowMaterialTextures = 8;
-    static constexpr uint32_t kShadowMaterialPoolPageSize = 256;
-
     struct ShadowMaterialBindingEntry
     {
         std::weak_ptr<InxMaterial> owner;
@@ -1419,17 +1408,17 @@ class InxVkCoreModular
         uint64_t artifactRevision = 0;
         size_t resourceSignature = 0;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        VkDescriptorPool ownerPool = VK_NULL_HANDLE;
-        std::vector<std::shared_ptr<rhi::TextureResource>> textureKeepAlive;
+        vk::DescriptorLease descriptorLease;
+        std::vector<std::shared_ptr<const rhi::TextureGpuView>> textureKeepAlive;
     };
 
     struct ShadowDescriptorAllocation
     {
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        VkDescriptorPool ownerPool = VK_NULL_HANDLE;
+        vk::DescriptorLease descriptorLease;
     };
 
-    std::vector<VkDescriptorPool> m_shadowMaterialDescPools;
+    vk::DescriptorLease m_shadowMaterialDummyLease;
     std::unordered_map<const InxMaterial *, ShadowMaterialBindingEntry> m_shadowMaterialBindingCache;
     uint64_t m_shadowMaterialBindingCacheHits = 0;
     uint64_t m_shadowMaterialBindingCacheMisses = 0;
@@ -1442,7 +1431,6 @@ class InxVkCoreModular
                                           size_t skinPaletteCount);
     void UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame, uint32_t frameIndex);
     void DestroyShadowCameraResources(ShadowCameraResources &resources) noexcept;
-    [[nodiscard]] VkDescriptorPool CreateShadowMaterialDescriptorPoolPage(uint32_t maxSets);
     [[nodiscard]] ShadowDescriptorAllocation AllocateShadowMaterialDescriptorSet();
     [[nodiscard]] VkDescriptorSet EnsureShadowMaterialBinding(const std::shared_ptr<InxMaterial> &material,
                                                               const MaterialDescriptorSet *forwardMaterialDesc,
@@ -1460,10 +1448,8 @@ class InxVkCoreModular
     // Per-View Descriptor Set (set 1) — multi-camera shadow isolation
     // ========================================================================
     VkDescriptorSetLayout m_perViewDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool m_perViewDescPool = VK_NULL_HANDLE;
     /// Valid dummy bindings for layout set 2 (never freed per material).
     VkDescriptorSet m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
-    VkDescriptorSet m_activeShadowDescSet = VK_NULL_HANDLE; ///< Currently active per-view desc for draw calls
 
     /// @brief Create per-view descriptor set layout and pool.
     bool CreatePerViewDescriptorResources();
@@ -1473,23 +1459,18 @@ class InxVkCoreModular
     // ========================================================================
     // Frame-safe deferred deletion queue
     // ========================================================================
-    FrameDeletionQueue m_deletionQueue;
+    GpuRetirementQueue m_deletionQueue;
 
     // ========================================================================
     // Staged UBO data (CPU-side cache → GPU via vkCmdUpdateBuffer)
     // ========================================================================
-    ShaderLightingUBO m_stagedLightingUBO{};
-    bool m_lightingUBODirty = false;
-
-    UniformBufferObject m_stagedUBO{};
-    bool m_uboDirty = false;
 
     // ========================================================================
     // Engine Globals UBO (set 2, binding 0) — per-frame time/screen/camera
     // ========================================================================
     std::vector<std::unique_ptr<vk::VkBufferHandle>> m_globalsBuffers;
     VkDescriptorSetLayout m_globalsDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool m_globalsDescPool = VK_NULL_HANDLE;
+    std::vector<vk::DescriptorLease> m_globalsDescriptorLeases;
     std::vector<VkDescriptorSet> m_globalsDescSets;
 
     EngineGlobalsUBO m_stagedGlobals{};

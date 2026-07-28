@@ -1,4 +1,7 @@
-@shader_id: PBR
+ShaderInfo {
+    Name "PBR"
+    Imports ["Math"]
+}
 
 // ============================================================================
 // pbr.glsl — Cook-Torrance GGX BRDF (HDRP-aligned)
@@ -17,7 +20,6 @@
 // Requires: math.glsl (PI, INV_PI, EPSILON, saturate)
 // ============================================================================
 
-@import: Math
 
 // ============================================================================
 // Fresnel (HDRP F_Schlick)

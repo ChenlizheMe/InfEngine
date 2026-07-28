@@ -266,6 +266,12 @@ class ProjectPanel : public EditorPanel
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_materialMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_textureMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_modelMtimeCache;
+    // FileManager must not enqueue a whole directory's previews in one frame.
+    // These are scheduling budgets, not display limits: ready thumbnails remain visible.
+    int m_texturePreviewRequestsThisFrame = 0;
+    int m_modelPreviewRequestsThisFrame = 0;
+    static constexpr int kTexturePreviewRequestBudget = 2;
+    static constexpr int kModelPreviewRequestBudget = 1;
     struct PrefabTypeCacheEntry
     {
         uint64_t mtimeNs = 0;

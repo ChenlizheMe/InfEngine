@@ -1,4 +1,6 @@
-@shader_id: Lib UV
+ShaderInfo {
+    Name "Lib UV"
+}
 
 // ============================================================================
 // lib/uv.glsl — UV manipulation utilities
@@ -6,7 +8,7 @@
 // Full-coverage UV toolkit matching Unity ShaderGraph UV category.
 // Provides: tiling, rotation, flipbook, parallax, triplanar, polar,
 // radial shear, spherize, twirl, and more.
-// Usage: @import: Lib UV
+// Usage: ShaderInfo Imports: Lib UV
 // ============================================================================
 
 // ============================================================================

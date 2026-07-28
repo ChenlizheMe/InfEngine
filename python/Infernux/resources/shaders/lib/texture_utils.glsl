@@ -1,4 +1,6 @@
-@shader_id: Lib Texture Utils
+ShaderInfo {
+    Name "Lib Texture Utils"
+}
 
 // ============================================================================
 // lib/texture_utils.glsl — Texture sampling utilities
@@ -6,7 +8,7 @@
 // Full-coverage texture toolkit matching Unity ShaderGraph Input/Texture category.
 // Provides: normal blending, detail texture, height blend, unpack, LOD sampling,
 // gradient sampling, cube reflection, texture bombing, channel packing, and more.
-// Usage: @import: Lib Texture Utils
+// Usage: ShaderInfo Imports: Lib Texture Utils
 // ============================================================================
 
 // ============================================================================

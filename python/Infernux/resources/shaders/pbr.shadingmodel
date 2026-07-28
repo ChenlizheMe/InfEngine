@@ -1,12 +1,18 @@
+ShadingModelInfo {
+    Name "PBR"
+    Imports ["Lighting", "PBR"]
+    Entry Forward evaluateForward
+}
+
 // ============================================================================
 // pbr.shadingmodel — Standard PBR (Cook-Torrance) Shading Model
 //
 // [Architectural Note: Pipeline Agnosticism & GBuffer Fallback]
-// This shading model intentionally only defines `@target: forward` for lighting.
+// This shading model intentionally only defines `ShadingModel Entry: forward` for lighting.
 // How does it work in a Deferred Pipeline? 
 // Because of the 'SurfaceData' abstraction layer, the engine knows how to extract
 // core material properties (albedo, normal, metallic, etc.). When compiling for
-// ShaderCompileTarget::GBuffer, if no `@target: gbuffer` block is found here, 
+// ShaderCompileTarget::GBuffer, if no `ShadingModel Entry: gbuffer` block is found here,
 // the engine automatically injects the built-in `default_gbuffer_evaluate.glsl` 
 // fallback template.
 // 
@@ -14,18 +20,14 @@
 // and the material logic (surface.frag) automatically survives switching between 
 // Forward and Deferred pipelines without changing a single line of shader code.
 //
-// Referenced by surface shaders via @shading_model: PBR
+// Referenced by surface shaders via ShaderInfo ShadingModel: PBR
 // ============================================================================
 
-@shader_id: PBR
-@import: Lighting
-@import: PBR
 
 // ============================================================================
-// @target: forward — Full PBR lighting evaluation + forward color output
+// ShadingModel Entry: forward — Full PBR lighting evaluation + forward color output
 // ============================================================================
-@target: forward
-void evaluate(in SurfaceData s, out vec4 color) {
+void evaluateForward(in SurfaceData s, out vec4 color) {
     vec3 albedo = clamp(s.albedo, 0.0, 1.0);
     float metallic = clamp(s.metallic, 0.0, 1.0);
     float perceptualRoughness = clamp(1.0 - s.smoothness, 0.045, 1.0);

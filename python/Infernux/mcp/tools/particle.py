@@ -7,6 +7,7 @@ import os
 from Infernux.engine.path_utils import relative_path, same_path
 from Infernux.mcp.tools.common import (
     find_game_object,
+    get_asset_database,
     main_thread,
     register_tool_metadata,
     resolve_asset_path,
@@ -124,6 +125,81 @@ def register_particle_tools(mcp, project_path: str) -> None:
             "particle_graph_add_node",
             _add,
             arguments={"stage": stage, "type_id": type_id, "x": x, "y": y},
+        )
+
+    @mcp.tool(name="particle_graph_add_parameter")
+    def particle_graph_add_parameter(
+        name: str,
+        value_type: str = "f32",
+        default=None,
+        exposed: bool = True,
+    ) -> dict:
+        """Add one typed Blackboard parameter through the visible editor."""
+
+        def _add():
+            panel = _require_particle_graph_panel()
+            parameter = panel.add_authoring_parameter(
+                name,
+                value_type,
+                default,
+                exposed=bool(exposed),
+            )
+            return {
+                "parameter": parameter,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_add_parameter",
+            _add,
+            arguments={
+                "name": name,
+                "value_type": value_type,
+                "default": default,
+                "exposed": exposed,
+            },
+        )
+
+    @mcp.tool(name="particle_graph_update_parameter")
+    def particle_graph_update_parameter(parameter_id: str, values: dict) -> dict:
+        """Patch a Blackboard parameter while preserving its stable identity."""
+
+        def _update():
+            panel = _require_particle_graph_panel()
+            parameter = panel.update_authoring_parameter(parameter_id, values)
+            return {
+                "parameter": parameter,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_update_parameter",
+            _update,
+            arguments={"parameter_id": parameter_id, "values": values},
+        )
+
+    @mcp.tool(name="particle_graph_remove_parameter")
+    def particle_graph_remove_parameter(parameter_id: str) -> dict:
+        """Remove a Blackboard parameter and its dependent Get Parameter nodes."""
+
+        def _remove():
+            panel = _require_particle_graph_panel()
+            parameter = panel.remove_authoring_parameter(parameter_id)
+            return {
+                "parameter": parameter,
+                "editor": _portable_snapshot(
+                    panel.authoring_snapshot(), project_path
+                ),
+            }
+
+        return main_thread(
+            "particle_graph_remove_parameter",
+            _remove,
+            arguments={"parameter_id": parameter_id},
         )
 
     @mcp.tool(name="particle_graph_set_node_property")
@@ -319,38 +395,6 @@ def register_particle_tools(mcp, project_path: str) -> None:
             "particle_graph_patch_emitter_settings",
             _patch,
             arguments={"emitter_id": emitter_id, "values": values},
-        )
-
-    @mcp.tool(name="particle_graph_set_emitter_lifecycle")
-    def particle_graph_set_emitter_lifecycle(
-        emitter_id: str,
-        enabled: bool,
-        play_on_start: bool,
-    ) -> dict:
-        """Set Enabled and Play On Start independently from emission settings."""
-
-        def _set():
-            panel = _require_particle_graph_panel()
-            result = panel.set_authoring_emitter_lifecycle(
-                emitter_id,
-                enabled=enabled,
-                play_on_start=play_on_start,
-            )
-            return {
-                **result,
-                "editor": _portable_snapshot(
-                    panel.authoring_snapshot(), project_path
-                ),
-            }
-
-        return main_thread(
-            "particle_graph_set_emitter_lifecycle",
-            _set,
-            arguments={
-                "emitter_id": emitter_id,
-                "enabled": enabled,
-                "play_on_start": play_on_start,
-            },
         )
 
     @mcp.tool(name="particle_graph_add_data_interface")
@@ -779,6 +823,159 @@ def register_particle_runtime_tools(mcp) -> None:
             arguments={"object_id": object_id, "ordinal": ordinal},
         )
 
+    @mcp.tool(name="particle_system_get_parameter")
+    def particle_system_get_parameter(
+        object_id: int, name: str, ordinal: int = 0
+    ) -> dict:
+        """Read one exposed ParticleGraph parameter from a live ParticleSystem."""
+
+        def _get():
+            obj = find_game_object(object_id)
+            component = _require_particle_system(obj, int(ordinal))
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "name": str(name),
+                "value": component.get_parameter(str(name)),
+            }
+
+        return main_thread(
+            "particle_system_get_parameter",
+            _get,
+            arguments={"object_id": object_id, "name": name, "ordinal": ordinal},
+        )
+
+    @mcp.tool(name="particle_system_set_parameter")
+    def particle_system_set_parameter(
+        object_id: int, name: str, value, ordinal: int = 0
+    ) -> dict:
+        """Set one exposed numeric, color, vector, or Texture2D parameter."""
+
+        def _set():
+            obj = find_game_object(object_id)
+            component = _require_particle_system(obj, int(ordinal))
+            component.set_parameter(str(name), value)
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "name": str(name),
+                "value": component.get_parameter(str(name)),
+                "runtime": component.runtime_diagnostics(),
+            }
+
+        return main_thread(
+            "particle_system_set_parameter",
+            _set,
+            arguments={
+                "object_id": object_id,
+                "name": name,
+                "value": value,
+                "ordinal": ordinal,
+            },
+        )
+
+    @mcp.tool(name="particle_system_set_emitter_options")
+    def particle_system_set_emitter_options(
+        object_id: int,
+        emitter: str,
+        enabled: bool,
+        play_on_start: bool,
+        ordinal: int = 0,
+    ) -> dict:
+        """Set one emitter's scene-instance playback policy."""
+
+        def _set():
+            obj = find_game_object(object_id)
+            component = _require_particle_system(obj, int(ordinal))
+            changed = component.set_emitter_options(
+                str(emitter),
+                enabled=enabled,
+                play_on_start=play_on_start,
+            )
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "emitter": str(emitter),
+                "changed": bool(changed),
+                "emitters": component.emitter_instance_schema(),
+            }
+
+        return main_thread(
+            "particle_system_set_emitter_options",
+            _set,
+            arguments={
+                "object_id": object_id,
+                "emitter": emitter,
+                "enabled": enabled,
+                "play_on_start": play_on_start,
+                "ordinal": ordinal,
+            },
+        )
+
+    @mcp.tool(name="particle_system_list_events")
+    def particle_system_list_events(
+        object_id: int, ordinal: int = 0
+    ) -> dict:
+        """List typed gameplay events accepted by a live ParticleSystem."""
+
+        def _list():
+            obj = find_game_object(object_id)
+            component = _require_particle_system(obj, int(ordinal))
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "events": component.runtime_event_schema(),
+            }
+
+        return main_thread(
+            "particle_system_list_events",
+            _list,
+            arguments={"object_id": object_id, "ordinal": ordinal},
+        )
+
+    @mcp.tool(name="particle_system_send_event")
+    def particle_system_send_event(
+        object_id: int,
+        event: str,
+        payload: dict | None = None,
+        count: int = 1,
+        target: str = "",
+        ordinal: int = 0,
+    ) -> dict:
+        """Queue a typed gameplay event for the next GPU simulation boundary."""
+
+        def _send():
+            obj = find_game_object(object_id)
+            component = _require_particle_system(obj, int(ordinal))
+            accepted = component.send_event(
+                str(event),
+                payload,
+                int(count),
+                target=(str(target) if target else None),
+            )
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "event": str(event),
+                "target": str(target),
+                "count": int(count),
+                "accepted": bool(accepted),
+                "runtime": component.runtime_diagnostics(),
+            }
+
+        return main_thread(
+            "particle_system_send_event",
+            _send,
+            arguments={
+                "object_id": object_id,
+                "event": event,
+                "payload": payload,
+                "count": count,
+                "target": target,
+                "ordinal": ordinal,
+            },
+        )
+
     def _control_emitter(
         operation: str,
         method_name: str,
@@ -904,6 +1101,69 @@ def register_particle_runtime_tools(mcp) -> None:
             },
         )
 
+    @mcp.tool(name="particle_system_request_gpu_view_diagnostics")
+    def particle_system_request_gpu_view_diagnostics(
+        object_id: int, view: str, ordinal: int = 0
+    ) -> dict:
+        """Request one asynchronous Scene/Game GPU cull-and-draw snapshot."""
+
+        def _request():
+            obj = find_game_object(object_id)
+            component = _find_particle_system(obj, int(ordinal))
+            if component is None:
+                raise FileNotFoundError(
+                    f"ParticleSystem {ordinal} was not found on GameObject {object_id}."
+                )
+            normalized_view = str(view).strip().lower()
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "view": normalized_view,
+                "request_id": component.request_gpu_view_diagnostics(
+                    normalized_view
+                ),
+                "status": "pending",
+            }
+
+        return main_thread(
+            "particle_system_request_gpu_view_diagnostics",
+            _request,
+            arguments={"object_id": object_id, "view": view, "ordinal": ordinal},
+        )
+
+    @mcp.tool(name="particle_system_poll_gpu_view_diagnostics")
+    def particle_system_poll_gpu_view_diagnostics(
+        object_id: int, view: str, request_id: int, ordinal: int = 0
+    ) -> dict:
+        """Poll a requested per-view GPU particle cull-and-draw snapshot."""
+
+        def _poll():
+            obj = find_game_object(object_id)
+            component = _find_particle_system(obj, int(ordinal))
+            if component is None:
+                raise FileNotFoundError(
+                    f"ParticleSystem {ordinal} was not found on GameObject {object_id}."
+                )
+            normalized_view = str(view).strip().lower()
+            return {
+                "object_id": int(obj.id),
+                "object_name": str(obj.name),
+                "diagnostics": component.poll_gpu_view_diagnostics(
+                    normalized_view, int(request_id)
+                ),
+            }
+
+        return main_thread(
+            "particle_system_poll_gpu_view_diagnostics",
+            _poll,
+            arguments={
+                "object_id": object_id,
+                "view": view,
+                "request_id": request_id,
+                "ordinal": ordinal,
+            },
+        )
+
 
 def _require_particle_graph_panel():
     from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
@@ -935,6 +1195,21 @@ def _find_particle_system(obj, ordinal: int):
     except (AttributeError, RuntimeError, TypeError):
         return None
     return matches[ordinal] if 0 <= ordinal < len(matches) else None
+
+
+def _require_particle_system(obj, ordinal: int):
+    component = _find_particle_system(obj, ordinal)
+    if component is None:
+        raise FileNotFoundError(
+            f"ParticleSystem {ordinal} was not found on GameObject {obj.id}."
+        )
+    return component
+
+
+def _notify_particle_component_modified() -> None:
+    from Infernux.engine.ui._inspector_undo import _notify_scene_modified
+
+    _notify_scene_modified()
 
 
 def _open_particle_graph_panel(file_path: str):
@@ -1045,6 +1320,54 @@ def _register_authoring_metadata() -> None:
         ],
     )
     register_tool_metadata(
+        "particle_graph_add_parameter",
+        summary="Add a typed field to the visible ParticleGraph Blackboard.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "parameter", "blackboard", "authoring"],
+        aliases=["add particle parameter", "添加粒子参数"],
+        preconditions=[
+            "A .particlegraph asset must be open.",
+            "value_type must be bool, i32, u32, f32, vec2, vec3, vec4, or color.",
+        ],
+        side_effects=[
+            "Records Undo, selects the new Blackboard field, and republishes the live draft."
+        ],
+        recovery=["Inspect the Blackboard and retry with a unique non-empty name."],
+        next_suggested_tools=[
+            "particle_graph_add_node",
+            "particle_graph_update_parameter",
+        ],
+    )
+    register_tool_metadata(
+        "particle_graph_update_parameter",
+        summary="Update a ParticleGraph Blackboard field while preserving its stable ID.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "parameter", "blackboard", "edit"],
+        aliases=["edit particle parameter", "修改粒子参数"],
+        preconditions=[
+            "parameter_id must identify a current Blackboard field.",
+            "values may contain name, type, default, exposed, category, or tooltip.",
+        ],
+        side_effects=[
+            "Records Undo and disconnects incompatible value links after a type change."
+        ],
+        recovery=["Inspect the editor and retry with the field's stable ID."],
+        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
+    )
+    register_tool_metadata(
+        "particle_graph_remove_parameter",
+        summary="Remove a ParticleGraph Blackboard field and dependent Get Parameter nodes.",
+        category="assets/particle_graph",
+        tags=["particle", "graph", "parameter", "blackboard", "remove"],
+        aliases=["remove particle parameter", "移除粒子参数"],
+        preconditions=["parameter_id must identify a current Blackboard field."],
+        side_effects=[
+            "Records Undo and removes every Get Parameter node referencing the field."
+        ],
+        recovery=["Inspect the editor and retry with a current parameter stable ID."],
+        next_suggested_tools=["particle_graph_inspect_editor", "editor_save_document"],
+    )
+    register_tool_metadata(
         "particle_graph_set_node_property",
         summary="Set a typed scalar/vector property through the live ParticleGraph editor.",
         category="assets/particle_graph",
@@ -1148,24 +1471,13 @@ def _register_authoring_metadata() -> None:
         next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
     )
     register_tool_metadata(
-        "particle_graph_set_emitter_lifecycle",
-        summary="Set Enabled and Play On Start for one ParticleGraph emitter.",
-        category="assets/particle_graph",
-        tags=["particle", "graph", "editor", "emitter", "lifecycle"],
-        aliases=["set particle emitter lifecycle", "设置粒子发射器生命周期"],
-        preconditions=["The emitter stable ID must exist in the open .particlegraph."],
-        side_effects=["Records one Undo transaction, marks the document dirty, and republishes the draft."],
-        recovery=["Use booleans for enabled and play_on_start."],
-        next_suggested_tools=["editor_save_document", "particle_graph_inspect_editor"],
-    )
-    register_tool_metadata(
         "particle_graph_add_data_interface",
         summary="Add a typed Data Interface to a ParticleGraph emitter.",
         category="assets/particle_graph",
         tags=["particle", "graph", "data interface", "sdf", "vector field"],
         aliases=["add particle data interface", "添加粒子数据接口"],
         preconditions=[
-            "kind must be sdf_volume, vector_field, or point_cache.",
+            "kind must be sdf_volume or vector_field.",
             "The emitter stable ID must exist in the open ParticleGraph.",
         ],
         side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
@@ -1179,7 +1491,7 @@ def _register_authoring_metadata() -> None:
         tags=["particle", "graph", "data interface", "asset"],
         aliases=["bind particle data asset", "绑定粒子数据资产"],
         preconditions=[
-            "SDF volumes require .inxsdf, vector fields require .inxvfield, and point caches require .pointcache.",
+            "SDF volumes require .inxsdf and vector fields require .inxvfield.",
             "The source asset must already be imported and have a GUID.",
         ],
         side_effects=["Records Undo, marks the document dirty, and republishes the draft."],
@@ -1390,6 +1702,83 @@ def _register_runtime_metadata() -> None:
         recovery=["Find the object and verify its component list before retrying."],
         next_suggested_tools=["runtime_read_errors", "capture_request"],
     )
+    register_tool_metadata(
+        "particle_system_get_parameter",
+        summary="Read one exposed ParticleGraph parameter from a live ParticleSystem.",
+        category="runtime/particles",
+        tags=["particle", "runtime", "parameter", "read"],
+        aliases=["get particle parameter", "读取粒子参数"],
+        preconditions=[
+            "object_id must own a live ParticleSystem component.",
+            "name must be an exposed parameter name or stable ID.",
+        ],
+        recovery=["Inspect the graph Blackboard and component assignment before retrying."],
+        next_suggested_tools=["particle_system_set_parameter"],
+    )
+    register_tool_metadata(
+        "particle_system_set_parameter",
+        summary="Set one exposed ParticleGraph value or Texture2D parameter.",
+        category="runtime/particles",
+        tags=["particle", "runtime", "parameter", "write", "gpu"],
+        aliases=["set particle parameter", "设置粒子参数"],
+        preconditions=[
+            "object_id must own a live ParticleSystem component.",
+            "The value shape and type must match the exposed parameter exactly.",
+            "Texture2D values use an AssetReference object with guid and path_hint.",
+        ],
+        side_effects=[
+            "Serializes the override; numeric values upload parameter words, while Texture2D values rebuild only the sampled-resource binding and preserve compatible resident state."
+        ],
+        recovery=["Read the parameter first and retry with a matching typed value."],
+        next_suggested_tools=["particle_system_get_parameter", "capture_request"],
+    )
+    register_tool_metadata(
+        "particle_system_set_emitter_options",
+        summary="Set Enabled and Play On Start on one ParticleSystem instance emitter.",
+        category="runtime/particles",
+        tags=["particle", "runtime", "emitter", "lifecycle", "scene"],
+        aliases=["set particle emitter options", "设置粒子发射器实例"],
+        preconditions=[
+            "object_id must own a ParticleSystem component.",
+            "emitter must be an authored emitter name or stable ID.",
+        ],
+        side_effects=[
+            "Records the scene-instance override without modifying the ParticleGraph asset."
+        ],
+        recovery=["Inspect the ParticleSystem runtime and retry with a listed emitter."],
+        next_suggested_tools=["particle_system_inspect_runtime", "capture_request"],
+    )
+    register_tool_metadata(
+        "particle_system_list_events",
+        summary="List typed gameplay-event routes accepted by one live GPU ParticleSystem.",
+        category="runtime/particles",
+        tags=["particle", "runtime", "event", "schema", "gpu"],
+        aliases=["list particle events", "列出粒子事件"],
+        preconditions=["object_id must own a live ParticleSystem with event routes."],
+        recovery=["Open the Particle Graph Event page and verify its saved routes."],
+        next_suggested_tools=["particle_system_send_event"],
+    )
+    register_tool_metadata(
+        "particle_system_send_event",
+        summary="Queue a typed gameplay event into the graph-owned GPU event ring.",
+        category="runtime/particles",
+        tags=["particle", "runtime", "event", "write", "gpu"],
+        aliases=["send particle event", "发送粒子事件"],
+        preconditions=[
+            "event must be a unique event type name/stable ID or a route stable ID.",
+            "Payload values must match the listed field schema.",
+        ],
+        side_effects=[
+            "Batches the event into the next simulated GPU page without CPU particle state or readback."
+        ],
+        recovery=[
+            "List events, specify target when a type has multiple routes, and keep count within route capacity."
+        ],
+        next_suggested_tools=[
+            "particle_system_request_gpu_diagnostics",
+            "capture_request",
+        ],
+    )
     for tool_name, verb in (
         ("particle_system_start_emitter", "start"),
         ("particle_system_pause_emitter", "pause"),
@@ -1426,5 +1815,33 @@ def _register_runtime_metadata() -> None:
         aliases=["poll particle counts", "轮询粒子计数"],
         preconditions=["request_id must come from the same ParticleSystem component."],
         recovery=["If status is pending, advance frames and poll again."],
+        next_suggested_tools=["runtime_read_errors", "capture_request"],
+    )
+    register_tool_metadata(
+        "particle_system_request_gpu_view_diagnostics",
+        summary="Request one asynchronous Scene or Game GPU particle cull-and-draw snapshot.",
+        category="runtime/particles",
+        tags=["particle", "gpu", "view", "culling", "diagnostics", "readback"],
+        aliases=["read particle view counts", "读取粒子视图计数"],
+        preconditions=[
+            "object_id must own a live GPU ParticleSystem component.",
+            "view must be scene or game and that view must continue rendering.",
+        ],
+        side_effects=[
+            "Records one explicit stats/indirect-buffer copy after the selected view's next submitted frame."
+        ],
+        recovery=["Keep the selected view rendering and poll the returned request_id."],
+        next_suggested_tools=["particle_system_poll_gpu_view_diagnostics"],
+    )
+    register_tool_metadata(
+        "particle_system_poll_gpu_view_diagnostics",
+        summary="Poll a requested per-view GPU particle cull-and-draw snapshot without stalling.",
+        category="runtime/particles",
+        tags=["particle", "gpu", "view", "culling", "diagnostics", "poll"],
+        aliases=["poll particle view counts", "轮询粒子视图计数"],
+        preconditions=[
+            "request_id and view must come from the same ParticleSystem request."
+        ],
+        recovery=["If status is pending, advance the selected view and poll again."],
         next_suggested_tools=["runtime_read_errors", "capture_request"],
     )

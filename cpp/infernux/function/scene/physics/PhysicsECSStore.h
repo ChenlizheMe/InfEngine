@@ -136,6 +136,10 @@ class PhysicsECSStore
     {
         return m_colliderPool.GetAliveHandles();
     }
+    [[nodiscard]] size_t GetAliveColliderCount() const
+    {
+        return m_colliderPool.AliveCount();
+    }
 
     /// Zero-allocation iteration over all alive colliders.
     /// @p func receives (ColliderECSData &data).
@@ -172,6 +176,15 @@ class PhysicsECSStore
 
     /// Mark all alive colliders dirty (used for force-sync scenarios).
     void MarkAllCollidersDirty();
+
+    /// Monotonic source revision for renderer-owned collision mirrors. This is
+    /// independent of ConsumeDirtyColliders(), which remains owned by PhysX/Jolt
+    /// synchronization and may only be consumed once.
+    void NotifyCollisionSceneChanged() noexcept;
+    [[nodiscard]] uint64_t GetCollisionSceneRevision() const noexcept
+    {
+        return m_collisionSceneRevision;
+    }
 
     // ---- Pending body creation queue (deferred from Collider::Awake) ----
 
@@ -261,6 +274,7 @@ class PhysicsECSStore
     // Dirty collider tracking — colliders whose Transform changed and need physics sync.
     std::vector<ActorHandle> m_dirtyActorList;
     std::vector<ColliderHandle> m_dirtyColliderScratch;
+    uint64_t m_collisionSceneRevision = 1;
 
     // Pending body creation queue — colliders that deferred RegisterBody.
     std::vector<ColliderHandle> m_pendingBodyCreationList;

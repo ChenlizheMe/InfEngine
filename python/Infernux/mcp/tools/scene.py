@@ -225,8 +225,20 @@ def register_scene_tools(mcp) -> None:
 
             if script_path:
                 from Infernux.components import load_and_create_component
-                from Infernux.mcp.tools.common import get_asset_database
-                comp = load_and_create_component(script_path, asset_database=get_asset_database(), type_name=component_type)
+                from Infernux.mcp import capabilities
+                from Infernux.mcp.tools.common import (
+                    get_asset_database,
+                    resolve_asset_path,
+                )
+
+                resolved_script_path = resolve_asset_path(
+                    capabilities.project_path(), script_path
+                )
+                comp = load_and_create_component(
+                    resolved_script_path,
+                    asset_database=get_asset_database(),
+                    type_name=component_type,
+                )
                 if comp is None:
                     raise RuntimeError(f"Script did not create component '{component_type}'.")
                 comp = obj.add_py_component(comp)
@@ -251,6 +263,74 @@ def register_scene_tools(mcp) -> None:
             }
 
         return main_thread("gameobject_add_component", _add, arguments={"object_id": object_id, "component_type": component_type, "knowledge_token": knowledge_token})
+
+    @mcp.tool(name="gameobject_create_from_model")
+    def gameobject_create_from_model(
+        model_path: str,
+        parent_id: int = 0,
+        name: str = "",
+        select: bool = True,
+    ) -> dict:
+        """Instantiate an imported model asset through the Editor's normal model path."""
+
+        def _create():
+            from Infernux.engine.project_context import get_project_root
+            from Infernux.engine.undo._trackers import HierarchyUndoTracker
+            from Infernux.mcp.tools.common import get_asset_database
+            from Infernux.lib import SceneManager
+
+            absolute_path = resolve_asset_path(get_project_root(), model_path)
+            asset_database = get_asset_database()
+            guid = str(asset_database.get_guid_from_path(absolute_path) or "")
+            if not guid:
+                raise FileNotFoundError(
+                    f"Imported model asset was not found in AssetDatabase: {model_path}"
+                )
+
+            scene = SceneManager.instance().get_active_scene()
+            if not scene:
+                raise RuntimeError("No active scene.")
+            obj = scene.create_from_model(guid)
+            if obj is None:
+                raise RuntimeError(f"Failed to instantiate model asset: {model_path}")
+
+            if parent_id:
+                parent = scene.find_by_id(int(parent_id))
+                if parent is None:
+                    scene.destroy_game_object(obj)
+                    raise FileNotFoundError(f"Parent GameObject {parent_id} was not found.")
+                obj.set_parent(parent)
+            if name:
+                obj.name = str(name)
+
+            HierarchyUndoTracker().record_create(
+                int(obj.id), "MCP Create GameObject From Model"
+            )
+            if select:
+                from Infernux.engine.ui.selection_manager import SelectionManager
+
+                SelectionManager.instance().select(int(obj.id))
+
+            value = _serialize_object(
+                obj,
+                depth=2,
+                include_components=True,
+                include_inactive=True,
+            )
+            value["model_path"] = _project_rel(absolute_path)
+            value["model_guid"] = guid
+            return value
+
+        return main_thread(
+            "gameobject_create_from_model",
+            _create,
+            arguments={
+                "model_path": model_path,
+                "parent_id": parent_id,
+                "name": name,
+                "select": select,
+            },
+        )
 
     @mcp.tool(name="gameobject_get")
     def gameobject_get(object_id: int, depth: int = 1, include_components: bool = True) -> dict:

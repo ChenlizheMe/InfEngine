@@ -45,6 +45,7 @@ struct GpuParticleRibbonDesc
     rhi::BufferHandle instances;
     rhi::BufferHandle sourceIndices;
     rhi::BufferHandle sourceIndirectArguments;
+    rhi::BufferHandle simulationControl;
     GpuParticleRibbonProgram program;
 };
 
@@ -98,6 +99,10 @@ class ParticleGpuRibbonTopology
     {
         return m_sourceIndirectArguments;
     }
+    [[nodiscard]] rhi::BufferHandle SimulationControlBuffer() const noexcept
+    {
+        return m_simulationControl;
+    }
     [[nodiscard]] rhi::BufferHandle SortedIndexBuffer() const noexcept
     {
         return m_indices[0];
@@ -146,6 +151,7 @@ class ParticleGpuRibbonTopology
     rhi::BufferHandle m_instances;
     rhi::BufferHandle m_sourceIndices;
     rhi::BufferHandle m_sourceIndirectArguments;
+    rhi::BufferHandle m_simulationControl;
     std::array<rhi::BufferHandle, 2> m_indices{};
     rhi::BufferHandle m_drawIndirectArguments;
     rhi::BufferHandle m_dispatchArguments;

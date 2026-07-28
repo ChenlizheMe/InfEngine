@@ -100,8 +100,13 @@ class NodeInlineFieldDef:
     default: Any = None
     asset_type: str = ""
     enum_values: tuple[str, ...] = ()
+    enum_labels: tuple[str, ...] = ()
     visible_when_field: str = ""
     visible_when_value: Any = None
+
+    def __post_init__(self) -> None:
+        if self.enum_labels and len(self.enum_labels) != len(self.enum_values):
+            raise ValueError("inline enum labels must match enum values")
 
 
 @dataclass
@@ -274,6 +279,10 @@ class NodeGraph:
     def get_type(self, type_id: str) -> Optional[NodeTypeDef]:
         return self._type_registry.get(type_id)
 
+    def get_node_type(self, node: GraphNode) -> Optional[NodeTypeDef]:
+        """Resolve a node instance's effective type definition."""
+        return self.get_type(node.type_id)
+
     def registered_types(self) -> List[NodeTypeDef]:
         return list(self._type_registry.values())
 
@@ -417,7 +426,7 @@ class NodeGraph:
         return LinkValidationResult(True)
 
     def _find_pin_def(self, node: GraphNode, pin_id: str) -> Optional[PinDef]:
-        typedef = self.get_type(node.type_id)
+        typedef = self.get_node_type(node)
         if typedef is None:
             return None
         return next((pin for pin in typedef.pins if pin.id == pin_id), None)

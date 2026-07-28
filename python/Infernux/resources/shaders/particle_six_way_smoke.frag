@@ -2,6 +2,7 @@
 
 ShaderInfo {
     Name "Particle Six-Way Smoke"
+    Capabilities [ParticleSprite]
     ShadingModel "SixWaySmoke"
     Surface Transparent
     Queue 3000

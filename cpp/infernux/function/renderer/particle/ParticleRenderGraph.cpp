@@ -53,6 +53,14 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle renderIndices;
     vk::ResourceHandle indirect;
     vk::ResourceHandle transforms;
+    vk::ResourceHandle simulationControl;
+    vk::ResourceHandle continuationRecords;
+    vk::ResourceHandle continuationFreeList;
+    vk::ResourceHandle continuationReadyQueue;
+    vk::ResourceHandle continuationDelayedQueue;
+    vk::ResourceHandle continuationCounters;
+    vk::ResourceHandle continuationClassifyIndirect;
+    vk::ResourceHandle continuationDispatchIndirect;
     vk::ResourceHandle boundsBuffer;
     vk::ResourceHandle boundsDispatch;
     vk::ResourceHandle migrationSourceStates;
@@ -83,6 +91,30 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             builder.ImportBuffer(StageName(namePrefix, "Indirect"), runtime.IndirectBuffer(), IndirectBufferBytes);
         transforms = builder.ImportBuffer(StageName(namePrefix, "Transforms"), runtime.TransformBuffer(),
                                           sizeof(GpuParticleTransforms));
+        simulationControl =
+            builder.ImportBuffer(StageName(namePrefix, "SimulationControl"), runtime.SimulationControlBuffer(),
+                                 sizeof(GpuParticleSimulationControl));
+        if (runtime.HasContinuations()) {
+            const auto &continuation = runtime.ContinuationResources();
+            const auto telemetry = runtime.ContinuationTelemetry();
+            continuationRecords = builder.ImportBuffer(StageName(namePrefix, "ContinuationRecords"),
+                                                       continuation.records, telemetry.recordBytes);
+            continuationFreeList = builder.ImportBuffer(StageName(namePrefix, "ContinuationFreeList"),
+                                                        continuation.freeList, telemetry.queueBytes);
+            continuationReadyQueue = builder.ImportBuffer(StageName(namePrefix, "ContinuationReadyQueue"),
+                                                          continuation.readyQueue, telemetry.queueBytes);
+            continuationDelayedQueue = builder.ImportBuffer(StageName(namePrefix, "ContinuationDelayedQueue"),
+                                                            continuation.delayedQueue, telemetry.queueBytes);
+            continuationCounters = builder.ImportBuffer(StageName(namePrefix, "ContinuationCounters"),
+                                                        continuation.counters,
+                                                        sizeof(GpuParticleContinuationCounters));
+            continuationClassifyIndirect = builder.ImportBuffer(
+                StageName(namePrefix, "ContinuationClassifyIndirect"), continuation.classifyIndirectArguments,
+                ParticleGpuContinuationRuntime::IndirectBufferBytes);
+            continuationDispatchIndirect = builder.ImportBuffer(
+                StageName(namePrefix, "ContinuationDispatchIndirect"), continuation.dispatchIndirectArguments,
+                ParticleGpuContinuationRuntime::IndirectBufferBytes);
+        }
         boundsBuffer = builder.ImportBuffer(StageName(namePrefix, "Bounds"), bounds.BoundsBuffer(),
                                             ParticleGpuBounds::BoundsBufferBytes);
         boundsDispatch = builder.ImportBuffer(StageName(namePrefix, "BoundsDispatch"), bounds.DispatchBuffer(),
@@ -103,8 +135,14 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             }
         }
         if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
-            !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !boundsBuffer.IsValid() ||
-            !boundsDispatch.IsValid())
+            !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !simulationControl.IsValid() ||
+            !boundsBuffer.IsValid() || !boundsDispatch.IsValid())
+            return vk::PassExecuteCallback{};
+        if (runtime.HasContinuations() &&
+            (!continuationRecords.IsValid() || !continuationFreeList.IsValid() ||
+             !continuationReadyQueue.IsValid() || !continuationDelayedQueue.IsValid() ||
+             !continuationCounters.IsValid() || !continuationClassifyIndirect.IsValid() ||
+             !continuationDispatchIndirect.IsValid()))
             return vk::PassExecuteCallback{};
 
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
@@ -120,8 +158,13 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     });
 
     if (!states.IsValid() || !freeList.IsValid() || !counters.IsValid() || !instances.IsValid() ||
-        !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !boundsBuffer.IsValid() ||
-        !boundsDispatch.IsValid() ||
+        !renderIndices.IsValid() || !indirect.IsValid() || !transforms.IsValid() || !simulationControl.IsValid() ||
+        !boundsBuffer.IsValid() || !boundsDispatch.IsValid() ||
+        (runtime.HasContinuations() &&
+         (!continuationRecords.IsValid() || !continuationFreeList.IsValid() ||
+          !continuationReadyQueue.IsValid() || !continuationDelayedQueue.IsValid() ||
+          !continuationCounters.IsValid() || !continuationClassifyIndirect.IsValid() ||
+          !continuationDispatchIndirect.IsValid())) ||
         std::any_of(eventRecords.begin(), eventRecords.end(), [](const auto &handle) { return !handle.IsValid(); }) ||
         std::any_of(eventCounters.begin(), eventCounters.end(), [](const auto &handle) { return !handle.IsValid(); })) {
         m_runtime = nullptr;
@@ -183,11 +226,22 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         });
     }
 
+    graph.AddComputePass(StageName(namePrefix, "VisibilityPrepare"), [&](vk::PassBuilder &builder) {
+        simulationControl = builder.ReadWrite(simulationControl, rhi::PipelineStage::ComputeShader);
+        return [this](vk::RenderContext &context) {
+            if (!m_framePending || !m_bounds)
+                return;
+            m_bounds->RecordPrepare(context.GetComputeCommandEncoder(), m_request.offscreenPolicy,
+                                    m_request.forceSimulation);
+        };
+    });
+
     graph.AddComputePass(StageName(namePrefix, "Init"), [&](vk::PassBuilder &builder) {
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
         freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
         counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
+        builder.ReadStorageBuffer(simulationControl);
         if (runtime.HasEventOutput(GpuKernelStage::Init)) {
             for (auto &handle : eventRecords)
                 handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
@@ -204,11 +258,69 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         };
     });
 
+    if (runtime.HasContinuations()) {
+        graph.AddComputePass(StageName(namePrefix, "ContinuationPrepare"), [&](vk::PassBuilder &builder) {
+            continuationRecords = builder.ReadWrite(continuationRecords, rhi::PipelineStage::ComputeShader);
+            continuationFreeList = builder.ReadWrite(continuationFreeList, rhi::PipelineStage::ComputeShader);
+            continuationReadyQueue = builder.ReadWrite(continuationReadyQueue, rhi::PipelineStage::ComputeShader);
+            continuationDelayedQueue = builder.ReadWrite(continuationDelayedQueue, rhi::PipelineStage::ComputeShader);
+            continuationCounters = builder.ReadWrite(continuationCounters, rhi::PipelineStage::ComputeShader);
+            continuationClassifyIndirect = builder.WriteStorageBuffer(continuationClassifyIndirect);
+            continuationDispatchIndirect = builder.WriteStorageBuffer(continuationDispatchIndirect);
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_runtime)
+                    return;
+                (void)m_runtime->RecordContinuationPrepare(context.GetComputeCommandEncoder(),
+                                                           m_request.simulationStep,
+                                                           m_request.continuationTimeTicks);
+            };
+        });
+
+        graph.AddComputePass(StageName(namePrefix, "ContinuationClassify"), [&](vk::PassBuilder &builder) {
+            builder.ReadStorageBuffer(continuationRecords);
+            continuationFreeList = builder.ReadWrite(continuationFreeList, rhi::PipelineStage::ComputeShader);
+            continuationReadyQueue = builder.ReadWrite(continuationReadyQueue, rhi::PipelineStage::ComputeShader);
+            continuationDelayedQueue = builder.ReadWrite(continuationDelayedQueue, rhi::PipelineStage::ComputeShader);
+            continuationCounters = builder.ReadWrite(continuationCounters, rhi::PipelineStage::ComputeShader);
+            builder.ReadIndirectBuffer(continuationClassifyIndirect);
+            continuationDispatchIndirect = builder.WriteStorageBuffer(continuationDispatchIndirect);
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_request.simulate || !m_runtime)
+                    return;
+                (void)m_runtime->RecordContinuationClassify(context.GetComputeCommandEncoder(),
+                                                            m_request.simulationStep,
+                                                            m_request.continuationTimeTicks);
+            };
+        });
+
+        graph.AddComputePass(StageName(namePrefix, "ContinuationDispatch"), [&](vk::PassBuilder &builder) {
+            states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
+            freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
+            counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+            builder.ReadUniformBuffer(transforms);
+            builder.ReadStorageBuffer(simulationControl);
+            continuationRecords = builder.ReadWrite(continuationRecords, rhi::PipelineStage::ComputeShader);
+            continuationFreeList = builder.ReadWrite(continuationFreeList, rhi::PipelineStage::ComputeShader);
+            continuationReadyQueue = builder.ReadWrite(continuationReadyQueue, rhi::PipelineStage::ComputeShader);
+            continuationDelayedQueue = builder.ReadWrite(continuationDelayedQueue, rhi::PipelineStage::ComputeShader);
+            continuationCounters = builder.ReadWrite(continuationCounters, rhi::PipelineStage::ComputeShader);
+            builder.ReadIndirectBuffer(continuationDispatchIndirect);
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_request.simulate || !m_runtime)
+                    return;
+                (void)m_runtime->RecordContinuationDispatch(context.GetComputeCommandEncoder(),
+                                                            m_request.simulationStep,
+                                                            m_request.continuationTimeTicks);
+            };
+        });
+    }
+
     graph.AddComputePass(StageName(namePrefix, "Update"), [&](vk::PassBuilder &builder) {
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
         freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
         counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
+        builder.ReadStorageBuffer(simulationControl);
         if (runtime.HasEventOutput(GpuKernelStage::Update)) {
             for (auto &handle : eventRecords)
                 handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
@@ -224,15 +336,19 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         };
     });
 
-    graph.AddComputePass(StageName(namePrefix, "RenderReset"), [&](vk::PassBuilder &builder) {
-        counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
-        indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
-        return [this](vk::RenderContext &context) {
-            if (!m_framePending || !m_runtime)
-                return;
-            m_runtime->RecordRenderReset(context.GetComputeCommandEncoder());
-        };
-    });
+    const auto renderExportBoundary =
+        graph.AddComputePass(StageName(namePrefix, "RenderReset"), [&](vk::PassBuilder &builder) {
+            counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
+            indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
+            builder.ReadStorageBuffer(simulationControl);
+            return [this](vk::RenderContext &context) {
+                if (!m_framePending || !m_runtime)
+                    return;
+                m_runtime->RecordRenderReset(context.GetComputeCommandEncoder());
+            };
+        });
+    m_renderExportPassId = renderExportBoundary.id;
+    graph.SetSubmissionBoundaryBefore(renderExportBoundary);
 
     graph.AddComputePass(StageName(namePrefix, "Rendering"), [&](vk::PassBuilder &builder) {
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
@@ -242,6 +358,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         renderIndices = builder.ReadWrite(renderIndices, rhi::PipelineStage::ComputeShader);
         indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
+        builder.ReadStorageBuffer(simulationControl);
         if (runtime.HasEventOutput(GpuKernelStage::Rendering)) {
             for (auto &handle : eventRecords)
                 handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);
@@ -288,6 +405,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
                 return vk::PassExecuteCallback{};
             }
             builder.ReadStorageBuffer(indirect);
+            builder.ReadStorageBuffer(simulationControl);
             ribbonIndirect = builder.WriteStorageBuffer(ribbonIndirect);
             ribbonDispatch = builder.WriteStorageBuffer(ribbonDispatch);
             return vk::PassExecuteCallback{[this](vk::RenderContext &context) {
@@ -299,6 +417,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         graph.AddComputePass(StageName(namePrefix, "RibbonInitialize"), [&](vk::PassBuilder &builder) {
             builder.ReadStorageBuffer(renderIndices);
             builder.ReadStorageBuffer(indirect);
+            builder.ReadStorageBuffer(simulationControl);
             builder.ReadIndirectBuffer(ribbonDispatch);
             ribbonIndices[0] = builder.WriteStorageBuffer(ribbonIndices[0]);
             return vk::PassExecuteCallback{[this](vk::RenderContext &context) {
@@ -314,6 +433,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             graph.AddComputePass(passPrefix + "/Histogram", [&, passIndex, input](vk::PassBuilder &builder) {
                 builder.ReadStorageBuffer(instances);
                 builder.ReadStorageBuffer(indirect);
+                builder.ReadStorageBuffer(simulationControl);
                 builder.ReadStorageBuffer(ribbonIndices[input]);
                 builder.ReadIndirectBuffer(ribbonDispatch);
                 ribbonHistograms = builder.WriteStorageBuffer(ribbonHistograms);
@@ -324,6 +444,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             });
             graph.AddComputePass(passPrefix + "/Scan", [&, passIndex](vk::PassBuilder &builder) {
                 builder.ReadStorageBuffer(ribbonHistograms);
+                builder.ReadStorageBuffer(simulationControl);
                 ribbonBlockOffsets = builder.WriteStorageBuffer(ribbonBlockOffsets);
                 ribbonGlobalOffsets = builder.WriteStorageBuffer(ribbonGlobalOffsets);
                 return vk::PassExecuteCallback{[this, passIndex](vk::RenderContext &context) {
@@ -334,6 +455,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             graph.AddComputePass(passPrefix + "/Scatter", [&, passIndex, input, output](vk::PassBuilder &builder) {
                 builder.ReadStorageBuffer(instances);
                 builder.ReadStorageBuffer(indirect);
+                builder.ReadStorageBuffer(simulationControl);
                 builder.ReadStorageBuffer(ribbonIndices[input]);
                 builder.ReadStorageBuffer(ribbonHistograms);
                 builder.ReadStorageBuffer(ribbonBlockOffsets);
@@ -350,19 +472,24 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     graph.AddComputePass(StageName(namePrefix, "BoundsReset"), [&](vk::PassBuilder &builder) {
         builder.ReadStorageBuffer(instances);
+        builder.ReadStorageBuffer(renderIndices);
         builder.ReadStorageBuffer(indirect);
+        builder.ReadStorageBuffer(simulationControl);
         boundsBuffer = builder.WriteStorageBuffer(boundsBuffer);
         boundsDispatch = builder.WriteStorageBuffer(boundsDispatch);
         return [this](vk::RenderContext &context) {
             if (!m_framePending || !m_bounds)
                 return;
-            m_bounds->RecordReset(context.GetComputeCommandEncoder());
+            m_bounds->RecordReset(context.GetComputeCommandEncoder(), m_request.boundsMode, m_request.manualBoundsLower,
+                                  m_request.manualBoundsUpper);
         };
     });
 
     graph.AddComputePass(StageName(namePrefix, "BoundsReduce"), [&](vk::PassBuilder &builder) {
         builder.ReadStorageBuffer(instances);
+        builder.ReadStorageBuffer(renderIndices);
         builder.ReadStorageBuffer(indirect);
+        builder.ReadStorageBuffer(simulationControl);
         boundsBuffer = builder.ReadWrite(boundsBuffer, rhi::PipelineStage::ComputeShader);
         builder.ReadIndirectBuffer(boundsDispatch);
         return [this](vk::RenderContext &context) {
@@ -373,6 +500,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             m_lastConsumedFrame = m_request.frameIndex;
             m_hasConsumedFrame = true;
             m_framePending = false;
+            m_resetPending = false;
         };
     });
 
@@ -383,9 +511,21 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 bool ParticleRenderGraph::CanBeginFrame(const GpuParticleFrameRequest &request) const noexcept
 {
     if (!IsAttached() || !m_runtime->IsValid() || !std::isfinite(request.deltaTime) || request.deltaTime < 0.0f ||
-        (m_framePending && request.frameIndex == m_request.frameIndex) ||
+        (m_framePending && !m_resetPending && request.frameIndex == m_request.frameIndex) ||
         (m_hasConsumedFrame && request.frameIndex == m_lastConsumedFrame))
         return false;
+    if (request.boundsMode != GpuParticleBoundsMode::Automatic && request.boundsMode != GpuParticleBoundsMode::Manual)
+        return false;
+    if (request.offscreenPolicy != GpuParticleOffscreenPolicy::AlwaysSimulate &&
+        request.offscreenPolicy != GpuParticleOffscreenPolicy::PauseWhenOffscreen)
+        return false;
+    if (request.boundsMode == GpuParticleBoundsMode::Manual) {
+        for (size_t axis = 0; axis < request.manualBoundsLower.size(); ++axis) {
+            if (!std::isfinite(request.manualBoundsLower[axis]) || !std::isfinite(request.manualBoundsUpper[axis]) ||
+                request.manualBoundsLower[axis] > request.manualBoundsUpper[axis])
+                return false;
+        }
+    }
     return true;
 }
 
@@ -395,6 +535,7 @@ bool ParticleRenderGraph::BeginFrame(const GpuParticleFrameRequest &request) noe
         return false;
     m_request = request;
     m_framePending = true;
+    m_resetPending = false;
     return true;
 }
 
@@ -406,8 +547,18 @@ void ParticleRenderGraph::Reset() noexcept
     }
     if (m_runtime)
         m_runtime->RequestBootstrap();
+    if (m_runtime)
+        m_runtime->RequestContinuationReset();
     m_bootstrapPending = true;
-    m_framePending = false;
+    // Reset is also the Stop contract. Arm a render-graph execution so the
+    // bootstrap pass clears resident counters and indirect draws even when
+    // the caller will no longer submit simulation frames after stopping.
+    m_request.spawnCount = 0;
+    m_request.deltaTime = 0.0f;
+    m_request.simulate = false;
+    m_request.render = false;
+    m_framePending = m_runtime != nullptr;
+    m_resetPending = m_framePending;
     m_hasConsumedFrame = false;
     m_lastConsumedFrame = 0;
 }

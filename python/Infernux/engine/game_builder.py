@@ -1036,7 +1036,6 @@ finally:
                         for stage_name in ("init", "update", "rendering"):
                             for instruction in emitter[stage_name]["instructions"]:
                                 if instruction.get("opcode") not in {
-                                    "sample_point_cache",
                                     "sample_vector_field",
                                     "collide_sdf_position",
                                     "collide_sdf_velocity",
@@ -1050,10 +1049,7 @@ finally:
                                 raise RuntimeError(
                                     f"Particle artifact {filename!r} references missing Data Interface {stable_id!r}"
                                 )
-                            if interface.get("kind") == "point_cache":
-                                reference = interface.get("cache")
-                                kind, extension = "PointCache", ".inxpcache"
-                            elif interface.get("kind") == "vector_field":
+                            if interface.get("kind") == "vector_field":
                                 reference = interface.get("texture")
                                 kind, extension = "Texture", ".inxtex"
                             elif interface.get("kind") == "sdf_volume":

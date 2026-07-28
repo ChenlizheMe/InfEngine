@@ -7,7 +7,7 @@
  * - Backend-neutral RHI texture uploads
  * - Depth buffer management
  * - Command pool and command buffer management
- * - Descriptor pool and set management
+ * - Queue-manager-backed uploads and readbacks
  *
  * Architecture Notes:
  * - Resources are reference counted or managed via unique ownership
@@ -16,13 +16,15 @@
  *
  * Usage:
  *   VkResourceManager resources;
- *   resources.Initialize(deviceContext);
+ *   resources.Initialize(deviceContext, &queueManager);
  *
  *   // Create a vertex buffer
  *   auto vertexBuffer = resources.CreateVertexBuffer(vertices.data(), vertices.size() * sizeof(Vertex));
  */
 
 #pragma once
+
+#include <function/renderer/rhi/RhiSubmission.h>
 
 #include "../rhi/RhiBuffer.h"
 #include "../rhi/RhiTexture.h"
@@ -46,6 +48,7 @@ namespace vk
 
 // Forward declarations
 class VkDeviceContext;
+class VulkanQueueManager;
 class VkResourceManager;
 class GraphicsSubmissionTicket;
 class GraphicsImageReadbackRecorder;
@@ -71,14 +74,17 @@ class BufferUploadTicket final
         return m_size;
     }
     [[nodiscard]] const std::shared_ptr<VkBufferHandle> &GetBuffer() const;
-    [[nodiscard]] const std::shared_ptr<rhi::BufferResource> &GetRhiBuffer() const;
+    [[nodiscard]] std::shared_ptr<rhi::BufferResource> GetRhiBuffer() const;
 
   private:
     friend class VkResourceManager;
     VkResourceManager *m_manager = nullptr;
     std::shared_ptr<VkBufferHandle> m_staging;
     std::shared_ptr<VkBufferHandle> m_destination;
-    std::shared_ptr<rhi::BufferResource> m_rhiBuffer;
+    // Publication must not make the upload queue an owner of the public RHI
+    // resource. m_destination independently keeps the Vulkan allocation alive
+    // until transfer completion.
+    std::weak_ptr<rhi::BufferResource> m_rhiBuffer;
     AsyncSubmissionHandle m_upload;
     VkDeviceSize m_size = 0;
     bool m_complete = false;
@@ -193,6 +199,8 @@ class GraphicsSubmissionTicket final
     friend class VkResourceManager;
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkFence m_fence = VK_NULL_HANDLE;
+    rhi::SubmissionTicket m_submission;
+    rhi::SubmissionSerial m_completionEpoch = rhi::InvalidSubmissionSerial;
     std::function<void()> m_releaseResources;
     std::atomic<bool> m_complete{false};
 };
@@ -272,7 +280,7 @@ class VkResourceManager
      * @param context Device context for Vulkan access
      * @return true if initialization succeeded
      */
-    bool Initialize(VkDeviceContext &context);
+    bool Initialize(VkDeviceContext &context, VulkanQueueManager *queueManager = nullptr);
 
     /**
      * @brief Cleanup all managed resources
@@ -312,7 +320,7 @@ class VkResourceManager
 
     [[nodiscard]] std::shared_ptr<BufferUploadTicket> BeginBufferUpload(const rhi::BufferUploadRequest &request);
     [[nodiscard]] bool TryPublishBufferUpload(const std::shared_ptr<BufferUploadTicket> &ticket);
-    [[nodiscard]] const std::shared_ptr<rhi::BufferResource> &
+    [[nodiscard]] std::shared_ptr<rhi::BufferResource>
     GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicket> &ticket);
     void DrainBufferUploads() noexcept;
 
@@ -506,59 +514,6 @@ class VkResourceManager
     }
 
     // ========================================================================
-    // Descriptor Management
-    // ========================================================================
-
-    /**
-     * @brief Create a descriptor pool
-     *
-     * @param poolSizes Pool sizes for each descriptor type
-     * @param maxSets Maximum number of sets
-     * @return Descriptor pool handle
-     */
-    [[nodiscard]] VkDescriptorPool CreateDescriptorPool(const std::vector<VkDescriptorPoolSize> &poolSizes,
-                                                        uint32_t maxSets);
-
-    /**
-     * @brief Allocate descriptor sets
-     *
-     * @param pool Descriptor pool
-     * @param layouts Layouts to allocate
-     * @return Vector of allocated descriptor sets
-     */
-    [[nodiscard]] std::vector<VkDescriptorSet>
-    AllocateDescriptorSets(VkDescriptorPool pool, const std::vector<VkDescriptorSetLayout> &layouts);
-
-    /**
-     * @brief Update a descriptor set with a uniform buffer
-     *
-     * @param set Descriptor set
-     * @param binding Binding index
-     * @param buffer Buffer handle
-     * @param offset Offset in buffer
-     * @param range Range in buffer (VK_WHOLE_SIZE for entire buffer)
-     */
-    void UpdateDescriptorSet(VkDescriptorSet set, uint32_t binding, VkBuffer buffer, VkDeviceSize offset = 0,
-                             VkDeviceSize range = VK_WHOLE_SIZE);
-
-    /**
-     * @brief Update a descriptor set with a texture
-     *
-     * @param set Descriptor set
-     * @param binding Binding index
-     * @param imageView Image view
-     * @param sampler Sampler
-     * @param layout Image layout
-     */
-    void UpdateDescriptorSet(VkDescriptorSet set, uint32_t binding, VkImageView imageView, VkSampler sampler,
-                             VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    /**
-     * @brief Destroy a descriptor pool
-     */
-    void DestroyDescriptorPool(VkDescriptorPool pool);
-
-    // ========================================================================
     // Sampler Management
     // ========================================================================
 
@@ -646,6 +601,7 @@ class VkResourceManager
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     VulkanRhiDevice *m_rhiDevice = nullptr;
+    VulkanQueueManager *m_queueManager = nullptr;
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
     std::thread::id m_ownerThread;
 
@@ -672,9 +628,6 @@ class VkResourceManager
     VkSampler m_linearSampler = VK_NULL_HANDLE;
     VkSampler m_nearestSampler = VK_NULL_HANDLE;
 
-    // Tracked descriptor pools for cleanup
-    std::vector<VkDescriptorPool> m_descriptorPools;
-
     // ────────────────────────────────────────────────────────────────────
     // Single-time-command pools.
     //
@@ -696,6 +649,7 @@ class VkResourceManager
     std::vector<VkFence> m_freeSingleTimeFences;
     std::vector<VkFence> m_allSingleTimeFences;             // owned, destroyed in Destroy()
     std::vector<VkCommandBuffer> m_allSingleTimeCmdBuffers; // owned via m_commandPool
+    std::unordered_map<VkCommandBuffer, rhi::SubmissionSerial> m_singleTimeCompletionEpochs;
     std::vector<std::shared_ptr<GraphicsSubmissionTicket>> m_pendingAsyncGraphicsSubmissions;
     uint64_t m_asyncGraphicsSubmissionCount = 0;
     std::mutex m_singleTimeMutex;

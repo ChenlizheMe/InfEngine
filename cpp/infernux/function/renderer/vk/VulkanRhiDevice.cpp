@@ -247,22 +247,40 @@ const rhi::ComputeCommandEncoder::DispatchTable VulkanRhiDevice::s_computeDispat
 const rhi::TransferCommandEncoder::DispatchTable VulkanRhiDevice::s_transferDispatch = {
     &VulkanRhiDevice::CopyBuffer,
     &VulkanRhiDevice::CopyTexture,
+    &VulkanRhiDevice::ResolveTexture,
 };
+
+VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
+{
+}
+
+VulkanRhiDevice::VulkanRhiDevice(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
+                                 uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
+                                 uint32_t transferQueueFamily) noexcept
+    : m_deviceId(rhi::AllocateDeviceId()), m_device(device), m_allocator(allocator), m_capabilities(capabilities),
+      m_graphicsQueueFamily(graphicsQueueFamily), m_computeQueueFamily(computeQueueFamily),
+      m_transferQueueFamily(transferQueueFamily), m_descriptorManager(device, m_deviceId)
+{
+}
 
 VulkanRhiDevice::~VulkanRhiDevice()
 {
     DestroyOwnedResources();
 }
 
-void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCapabilities &capabilities,
-                            uint32_t graphicsQueueFamily, uint32_t transferQueueFamily) noexcept
+void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
+                            uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
+                            uint32_t transferQueueFamily) noexcept
 {
     DestroyOwnedResources();
     m_device = device;
     m_allocator = allocator;
     m_capabilities = capabilities;
     m_graphicsQueueFamily = graphicsQueueFamily;
+    m_computeQueueFamily = computeQueueFamily;
     m_transferQueueFamily = transferQueueFamily;
+    m_descriptorManager.Reset(device, m_deviceId);
+    m_recordingSubmissionSerial = rhi::InvalidSubmissionSerial;
     ResetSlots(m_buffers, m_freeBuffer);
     ResetSlots(m_textures, m_freeTexture);
     ResetSlots(m_textureViews, m_freeTextureView);
@@ -281,7 +299,7 @@ rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byte
                ? rhi::BufferHandle{}
                : Register<rhi::BufferHandle>(
                      m_buffers, m_freeBuffer,
-                     BufferPayload{buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal});
+                     BufferPayload{buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal, false});
 }
 
 rhi::TextureHandle VulkanRhiDevice::RegisterTexture(VkImage image)
@@ -300,22 +318,22 @@ HandleType VulkanRhiDevice::Register(std::vector<Slot<Payload>> &slots, uint32_t
         slot.nextFree = UINT32_MAX;
         slot.payload = payload;
         slot.occupied = true;
-        return {index, slot.generation};
+        return {index, rhi::ComposeHandleGeneration(m_deviceId, slot.generation)};
     }
 
     const uint32_t index = static_cast<uint32_t>(slots.size());
     slots.push_back({payload, 1, UINT32_MAX, true});
-    return {index, 1};
+    return {index, rhi::ComposeHandleGeneration(m_deviceId, 1)};
 }
 
 template <typename HandleType, typename Payload>
 void VulkanRhiDevice::Release(std::vector<Slot<Payload>> &slots, uint32_t &freeHead, HandleType handle) noexcept
 {
-    if (!handle.IsValid() || handle.index >= slots.size())
+    if (!handle.IsValid() || handle.Device() != m_deviceId || handle.index >= slots.size())
         return;
 
     auto &slot = slots[handle.index];
-    if (!slot.occupied || slot.generation != handle.generation)
+    if (!slot.occupied || slot.generation != handle.Version())
         return;
 
     slot.payload = {};
@@ -344,12 +362,12 @@ void VulkanRhiDevice::ResetSlots(std::vector<Slot<Payload>> &slots, uint32_t &fr
 }
 
 template <typename HandleType, typename Payload>
-const Payload *VulkanRhiDevice::Resolve(const std::vector<Slot<Payload>> &slots, HandleType handle) noexcept
+const Payload *VulkanRhiDevice::Resolve(const std::vector<Slot<Payload>> &slots, HandleType handle) const noexcept
 {
-    if (!handle.IsValid() || handle.index >= slots.size())
+    if (!handle.IsValid() || handle.Device() != m_deviceId || handle.index >= slots.size())
         return nullptr;
     const auto &slot = slots[handle.index];
-    return slot.occupied && slot.generation == handle.generation ? &slot.payload : nullptr;
+    return slot.occupied && slot.generation == handle.Version() ? &slot.payload : nullptr;
 }
 
 rhi::TextureViewHandle VulkanRhiDevice::RegisterTextureView(VkImageView view)
@@ -381,8 +399,11 @@ rhi::BindingLayoutHandle VulkanRhiDevice::RegisterBindingLayout(VkDescriptorSetL
 
 rhi::BindGroupHandle VulkanRhiDevice::RegisterBindGroup(VkDescriptorSet set)
 {
-    return set == VK_NULL_HANDLE ? rhi::BindGroupHandle{}
-                                 : Register<rhi::BindGroupHandle>(m_bindGroups, m_freeBindGroup, BindGroupPayload{set});
+    return set == VK_NULL_HANDLE
+               ? rhi::BindGroupHandle{}
+               : Register<rhi::BindGroupHandle>(m_bindGroups, m_freeBindGroup,
+                                                BindGroupPayload{{0, m_deviceId, DescriptorArena::Persistent, 0, 0, set,
+                                                                  VK_NULL_HANDLE, VK_NULL_HANDLE}});
 }
 
 rhi::BufferHandle VulkanRhiDevice::CreateBuffer(const rhi::BufferDesc &desc)
@@ -397,7 +418,23 @@ rhi::BufferHandle VulkanRhiDevice::CreateBuffer(const rhi::BufferDesc &desc)
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = desc.byteSize;
     bufferInfo.usage = usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    std::array<uint32_t, 3> requestedFamilies{};
+    uint32_t requestedFamilyCount = 0;
+    const auto appendFamily = [&](uint32_t family) {
+        if (std::find(requestedFamilies.begin(), requestedFamilies.begin() + requestedFamilyCount, family) ==
+            requestedFamilies.begin() + requestedFamilyCount) {
+            requestedFamilies[requestedFamilyCount++] = family;
+        }
+    };
+    if (rhi::HasQueueAccess(desc.queueAccess, rhi::QueueAccessFlags::Graphics))
+        appendFamily(m_graphicsQueueFamily);
+    if (rhi::HasQueueAccess(desc.queueAccess, rhi::QueueAccessFlags::Compute))
+        appendFamily(m_computeQueueFamily);
+    if (rhi::HasQueueAccess(desc.queueAccess, rhi::QueueAccessFlags::Transfer))
+        appendFamily(m_transferQueueFamily);
+    bufferInfo.sharingMode = requestedFamilyCount > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
+    bufferInfo.queueFamilyIndexCount = requestedFamilyCount > 1 ? requestedFamilyCount : 0;
+    bufferInfo.pQueueFamilyIndices = requestedFamilyCount > 1 ? requestedFamilies.data() : nullptr;
 
     VmaAllocationCreateInfo allocationInfo{};
     switch (desc.memory) {
@@ -430,9 +467,9 @@ rhi::BufferHandle VulkanRhiDevice::CreateBuffer(const rhi::BufferDesc &desc)
         vmaFlushAllocation(m_allocator, allocation, 0, desc.initialDataBytes);
     }
 
-    return Register<rhi::BufferHandle>(
-        m_buffers, m_freeBuffer,
-        BufferPayload{buffer, allocation, resultInfo.pMappedData, desc.byteSize, true, desc.memory});
+    return Register<rhi::BufferHandle>(m_buffers, m_freeBuffer,
+                                       BufferPayload{buffer, allocation, resultInfo.pMappedData, desc.byteSize, true,
+                                                     desc.memory, requestedFamilyCount > 1});
 }
 
 bool VulkanRhiDevice::ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize)
@@ -642,9 +679,14 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
     const VkDescriptorSetLayout layout = Resolve(desc.layout);
     if (layout == VK_NULL_HANDLE)
         return {};
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    const VkDescriptorSet set = AllocateDescriptorSet(layout, pool);
-    if (set == VK_NULL_HANDLE)
+    DescriptorArena arena = DescriptorArena::Persistent;
+    if (desc.lifetime == rhi::BindGroupLifetime::FrameTransient)
+        arena = DescriptorArena::FrameTransient;
+    else if (desc.lifetime == rhi::BindGroupLifetime::ViewPersistent)
+        arena = DescriptorArena::ViewPersistent;
+    const auto lease = m_descriptorManager.Allocate(layout, arena);
+    const VkDescriptorSet set = lease.set;
+    if (!lease.IsValid())
         return {};
 
     std::array<VkDescriptorBufferInfo, rhi::BindGroupDesc::MaxBufferBindings> infos{};
@@ -654,7 +696,7 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
     for (uint32_t index = 0; index < desc.bufferCount; ++index) {
         const auto &binding = desc.buffers[index];
         if (binding.type != rhi::BindingType::StorageBuffer && binding.type != rhi::BindingType::UniformBuffer) {
-            vkFreeDescriptorSets(m_device, pool, 1, &set);
+            m_descriptorManager.Retire(lease);
             return {};
         }
         const auto *buffer = Resolve(m_buffers, binding.buffer);
@@ -662,7 +704,7 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
             (buffer->byteSize > 0 &&
              (binding.offset >= buffer->byteSize ||
               (binding.byteSize > 0 && binding.byteSize > buffer->byteSize - binding.offset)))) {
-            vkFreeDescriptorSets(m_device, pool, 1, &set);
+            m_descriptorManager.Retire(lease);
             return {};
         }
         infos[index] = {buffer->buffer, binding.offset, binding.byteSize > 0 ? binding.byteSize : VK_WHOLE_SIZE};
@@ -677,7 +719,7 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
         const auto &binding = desc.textures[index];
         if (binding.type != rhi::BindingType::SampledTexture && binding.type != rhi::BindingType::StorageTexture &&
             binding.type != rhi::BindingType::Sampler && binding.type != rhi::BindingType::CombinedTextureSampler) {
-            vkFreeDescriptorSets(m_device, pool, 1, &set);
+            m_descriptorManager.Retire(lease);
             return {};
         }
         const bool needsTexture = binding.type != rhi::BindingType::Sampler;
@@ -686,7 +728,7 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
         const VkImageView texture = needsTexture ? Resolve(binding.texture) : VK_NULL_HANDLE;
         const VkSampler sampler = needsSampler ? Resolve(binding.sampler) : VK_NULL_HANDLE;
         if ((needsTexture && texture == VK_NULL_HANDLE) || (needsSampler && sampler == VK_NULL_HANDLE)) {
-            vkFreeDescriptorSets(m_device, pool, 1, &set);
+            m_descriptorManager.Retire(lease);
             return {};
         }
         auto &imageInfo = imageInfos[index];
@@ -707,7 +749,7 @@ rhi::BindGroupHandle VulkanRhiDevice::CreateBindGroup(const rhi::BindGroupDesc &
     const uint32_t writeCount = desc.bufferCount + desc.textureCount;
     if (writeCount > 0)
         vkUpdateDescriptorSets(m_device, writeCount, writes.data(), 0, nullptr);
-    return Register<rhi::BindGroupHandle>(m_bindGroups, m_freeBindGroup, BindGroupPayload{set, pool, true});
+    return Register<rhi::BindGroupHandle>(m_bindGroups, m_freeBindGroup, BindGroupPayload{lease, true});
 }
 
 bool VulkanRhiDevice::WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize)
@@ -971,9 +1013,8 @@ void VulkanRhiDevice::Release(rhi::BindingLayoutHandle handle) noexcept
 void VulkanRhiDevice::Release(rhi::BindGroupHandle handle) noexcept
 {
     const auto *payload = Resolve(m_bindGroups, handle);
-    if (payload && payload->owned && m_device != VK_NULL_HANDLE && payload->set != VK_NULL_HANDLE &&
-        payload->pool != VK_NULL_HANDLE)
-        vkFreeDescriptorSets(m_device, payload->pool, 1, &payload->set);
+    if (payload && payload->owned && m_device != VK_NULL_HANDLE)
+        m_descriptorManager.Retire(payload->lease, m_recordingSubmissionSerial);
     Release(m_bindGroups, m_freeBindGroup, handle);
 }
 void VulkanRhiDevice::Release(rhi::GraphicsPipelineHandle handle) noexcept
@@ -1014,6 +1055,12 @@ VkBuffer VulkanRhiDevice::Resolve(rhi::BufferHandle handle) const noexcept
     return payload ? payload->buffer : VK_NULL_HANDLE;
 }
 
+bool VulkanRhiDevice::UsesConcurrentQueueSharing(rhi::BufferHandle handle) const noexcept
+{
+    const auto *payload = Resolve(m_buffers, handle);
+    return payload && payload->concurrentQueueSharing;
+}
+
 VkImage VulkanRhiDevice::Resolve(rhi::TextureHandle handle) const noexcept
 {
     const auto *payload = Resolve(m_textures, handle);
@@ -1037,7 +1084,7 @@ VkDescriptorSetLayout VulkanRhiDevice::Resolve(rhi::BindingLayoutHandle handle) 
 VkDescriptorSet VulkanRhiDevice::Resolve(rhi::BindGroupHandle handle) const noexcept
 {
     const auto *payload = Resolve(m_bindGroups, handle);
-    return payload ? payload->set : VK_NULL_HANDLE;
+    return payload ? payload->lease.set : VK_NULL_HANDLE;
 }
 VkRenderPass VulkanRhiDevice::Resolve(rhi::RenderTargetLayoutHandle handle) const noexcept
 {
@@ -1055,54 +1102,6 @@ const VulkanRhiDevice::GraphicsPipelinePayload *
 VulkanRhiDevice::ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept
 {
     return Resolve(m_computePipelines, handle);
-}
-
-VkDescriptorPool VulkanRhiDevice::CreateDescriptorPool()
-{
-    if (m_device == VK_NULL_HANDLE)
-        return VK_NULL_HANDLE;
-    const std::array<VkDescriptorPoolSize, 6> sizes = {
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1024},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, 1024},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096},
-    };
-    VkDescriptorPoolCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    createInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    createInfo.maxSets = 512;
-    createInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
-    createInfo.pPoolSizes = sizes.data();
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    return vkCreateDescriptorPool(m_device, &createInfo, nullptr, &pool) == VK_SUCCESS ? pool : VK_NULL_HANDLE;
-}
-
-VkDescriptorSet VulkanRhiDevice::AllocateDescriptorSet(VkDescriptorSetLayout layout, VkDescriptorPool &pool)
-{
-    VkDescriptorSetAllocateInfo allocateInfo{};
-    allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocateInfo.descriptorSetCount = 1;
-    allocateInfo.pSetLayouts = &layout;
-    for (VkDescriptorPool candidate : m_ownedDescriptorPools) {
-        allocateInfo.descriptorPool = candidate;
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        if (vkAllocateDescriptorSets(m_device, &allocateInfo, &set) == VK_SUCCESS) {
-            pool = candidate;
-            return set;
-        }
-    }
-    const VkDescriptorPool created = CreateDescriptorPool();
-    if (created == VK_NULL_HANDLE)
-        return VK_NULL_HANDLE;
-    m_ownedDescriptorPools.push_back(created);
-    allocateInfo.descriptorPool = created;
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(m_device, &allocateInfo, &set) != VK_SUCCESS)
-        return VK_NULL_HANDLE;
-    pool = created;
-    return set;
 }
 
 void VulkanRhiDevice::DestroyOwnedResources() noexcept
@@ -1140,9 +1139,8 @@ void VulkanRhiDevice::DestroyOwnedResources() noexcept
         slot.payload.ownsLayout = false;
     }
     for (auto &slot : m_bindGroups) {
-        if (slot.occupied && slot.payload.owned && slot.payload.set != VK_NULL_HANDLE &&
-            slot.payload.pool != VK_NULL_HANDLE)
-            vkFreeDescriptorSets(m_device, slot.payload.pool, 1, &slot.payload.set);
+        if (slot.occupied && slot.payload.owned && slot.payload.lease.IsValid())
+            m_descriptorManager.Retire(slot.payload.lease, m_recordingSubmissionSerial);
         slot.payload.owned = false;
     }
     for (auto &slot : m_bindingLayouts) {
@@ -1167,11 +1165,7 @@ void VulkanRhiDevice::DestroyOwnedResources() noexcept
             slot.payload.owned = false;
         }
     }
-    for (VkDescriptorPool pool : m_ownedDescriptorPools) {
-        if (pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(m_device, pool, nullptr);
-    }
-    m_ownedDescriptorPools.clear();
+    m_descriptorManager.Destroy();
 }
 
 rhi::GraphicsCommandEncoder VulkanRhiDevice::MakeGraphicsCommandEncoder(VulkanGraphicsCommandContext &context,
@@ -1221,6 +1215,9 @@ void VulkanRhiDevice::BindGroup(void *context, rhi::GraphicsPipelineHandle pipel
         vkdebug::CmdBindDescriptorSetsTracked("RHI.GraphicsCommandEncoder.BindGroup", command.commandBuffer,
                                               VK_PIPELINE_BIND_POINT_GRAPHICS, nativePipeline->layout, setIndex, 1,
                                               &nativeGroup, 0, nullptr);
+        const auto *payload = command.device->Resolve(command.device->m_bindGroups, group);
+        if (payload)
+            command.device->m_descriptorManager.MarkUsed(payload->lease, command.device->m_recordingSubmissionSerial);
     }
 }
 
@@ -1275,6 +1272,9 @@ void VulkanRhiDevice::BindComputeGroup(void *context, rhi::ComputePipelineHandle
         vkdebug::CmdBindDescriptorSetsTracked("RHI.ComputeCommandEncoder.BindGroup", command.commandBuffer,
                                               VK_PIPELINE_BIND_POINT_COMPUTE, nativePipeline->layout, setIndex, 1,
                                               &nativeGroup, 0, nullptr);
+        const auto *payload = command.device->Resolve(command.device->m_bindGroups, group);
+        if (payload)
+            command.device->m_descriptorManager.MarkUsed(payload->lease, command.device->m_recordingSubmissionSerial);
     }
 }
 
@@ -1347,6 +1347,40 @@ void VulkanRhiDevice::CopyTexture(void *context, rhi::TextureHandle source, rhi:
     copy.extent = {region.width, region.height, region.depth};
     vkCmdCopyImage(command.commandBuffer, nativeSource, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, nativeDestination,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+}
+
+void VulkanRhiDevice::ResolveTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
+                                     const rhi::TextureResolveRegion &region)
+{
+    auto &command = *static_cast<VulkanTransferCommandContext *>(context);
+    const VkImage nativeSource = command.device ? command.device->Resolve(source) : VK_NULL_HANDLE;
+    const VkImage nativeDestination = command.device ? command.device->Resolve(destination) : VK_NULL_HANDLE;
+    if (command.commandBuffer == VK_NULL_HANDLE || nativeSource == VK_NULL_HANDLE ||
+        nativeDestination == VK_NULL_HANDLE || nativeSource == nativeDestination || region.width == 0 ||
+        region.height == 0 || region.depth == 0)
+        return;
+
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    switch (region.aspect) {
+    case rhi::TextureAspect::Color:
+        break;
+    case rhi::TextureAspect::Depth:
+        aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        break;
+    case rhi::TextureAspect::Stencil:
+        aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+        break;
+    case rhi::TextureAspect::DepthStencil:
+        aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        break;
+    }
+
+    VkImageResolve resolve{};
+    resolve.srcSubresource = {aspect, region.sourceMip, region.sourceLayer, 1};
+    resolve.dstSubresource = {aspect, region.destinationMip, region.destinationLayer, 1};
+    resolve.extent = {region.width, region.height, region.depth};
+    vkCmdResolveImage(command.commandBuffer, nativeSource, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, nativeDestination,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &resolve);
 }
 
 } // namespace infernux::vk

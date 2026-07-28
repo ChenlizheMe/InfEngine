@@ -7,6 +7,8 @@ struct ParticleInstance
     vec4 rotationCustom;
     vec4 scaleCustom;
     uvec4 ribbonData;
+    vec4 customData;
+    vec4 previousPositionHistory;
 };
 
 layout(set = 0, binding = 0, std430) readonly buffer Instances { ParticleInstance instances[]; };
@@ -14,8 +16,14 @@ layout(set = 0, binding = 0, std430) readonly buffer Instances { ParticleInstanc
 layout(push_constant) uniform ViewConstants
 {
     mat4 viewProjection;
+    mat4 previousViewProjection;
     vec4 cameraRight;
     vec4 cameraUp;
+    vec4 materialTint;
+    vec4 depthReconstruct;
+    vec4 lightingControl;
+    vec4 renderingControl;
+    vec4 alignmentReference;
 } view;
 
 layout(location = 0) out vec4 outColor;

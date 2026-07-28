@@ -1,4 +1,6 @@
-@shader_id: Lib Depth
+ShaderInfo {
+    Name "Lib Depth"
+}
 
 // ============================================================================
 // lib/depth.glsl — Depth buffer utilities
@@ -6,7 +8,7 @@
 // Full-coverage depth toolkit matching Unity ShaderGraph Scene Depth,
 // Depth Fade, and fog nodes.
 // Requires: InfGlobals UBO (auto-injected by engine at set 2, binding 0)
-// Usage: @import: Lib Depth
+// Usage: ShaderInfo Imports: Lib Depth
 // ============================================================================
 
 // ============================================================================

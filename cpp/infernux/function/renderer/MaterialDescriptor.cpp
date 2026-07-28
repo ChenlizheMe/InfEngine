@@ -1,28 +1,15 @@
 #include "MaterialDescriptor.h"
 #include <algorithm>
-#include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
 #include <core/types/ColorSpace.h>
 #include <cstring>
+#include <limits>
 
 namespace infernux
 {
 
 namespace
 {
-
-constexpr std::string_view kSceneUBOName = "UniformBufferObject";
-constexpr std::string_view kLightingUBOName = "LightingUBO";
-
-bool IsSceneUBOBinding(const MergedDescriptorBinding &binding)
-{
-    return binding.set == 0 && (binding.name == kSceneUBOName || binding.binding == 0);
-}
-
-bool IsLightingUBOBinding(const MergedDescriptorBinding &binding)
-{
-    return binding.set == 0 && (binding.name == kLightingUBOName || binding.binding == 1);
-}
 
 void AppendBufferWrite(std::vector<VkWriteDescriptorSet> &writes, std::vector<VkDescriptorBufferInfo> &bufferInfos,
                        VkDescriptorSet dstSet, uint32_t binding, VkDescriptorType descriptorType,
@@ -258,70 +245,38 @@ MaterialDescriptorManager::~MaterialDescriptorManager()
 }
 
 void MaterialDescriptorManager::Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
-                                           uint32_t maxMaterials)
+                                           vk::VkDescriptorManager *descriptorManager)
 {
     m_vmaAllocator = allocator;
     m_device = device;
     m_physicalDevice = physicalDevice;
-    m_poolPageSize = maxMaterials;
-
-    if (CreateDescriptorPool(maxMaterials) == VK_NULL_HANDLE) {
-        INXLOG_ERROR("Failed to create material descriptor pool");
-    }
+    m_descriptorManager = descriptorManager;
+    if (!m_descriptorManager)
+        INXLOG_ERROR("MaterialDescriptorManager requires the Vulkan descriptor manager");
 }
 
 void MaterialDescriptorManager::Shutdown()
 {
     Clear();
 
-    if (m_device != VK_NULL_HANDLE) {
-        for (auto pool : m_descriptorPools) {
-            if (pool != VK_NULL_HANDLE) {
-                vkDestroyDescriptorPool(m_device, pool, nullptr);
-            }
-        }
-    }
-    m_descriptorPools.clear();
+    // Default bindings participate in the same revisioned texture publication
+    // ownership as material bindings. Release them explicitly while the RHI
+    // device is still alive; relying on member destruction would keep the
+    // TextureResource alive until after InxVkCoreModular destroys its device.
+    m_defaultGpuView.reset();
+    m_defaultNormalGpuView.reset();
+    m_defaultImageView = VK_NULL_HANDLE;
+    m_defaultSampler = VK_NULL_HANDLE;
+    m_defaultNormalImageView = VK_NULL_HANDLE;
+    m_defaultNormalSampler = VK_NULL_HANDLE;
+
+    if (m_descriptorManager)
+        (void)m_descriptorManager->Collect((std::numeric_limits<rhi::SubmissionSerial>::max)());
 
     m_device = VK_NULL_HANDLE;
     m_physicalDevice = VK_NULL_HANDLE;
+    m_descriptorManager = nullptr;
     m_liveDescriptorHandles.clear();
-}
-
-VkDescriptorPool MaterialDescriptorManager::CreateDescriptorPool(uint32_t maxMaterials)
-{
-    const EngineConfig &config = EngineConfig::Get();
-    const uint32_t uboDescriptorsPerMaterial = std::max(1u, config.uboDescriptorsPerMaterial);
-    const uint32_t samplerDescriptorsPerMaterial = std::max(1u, config.samplerDescriptorsPerMaterial);
-
-    std::vector<VkDescriptorPoolSize> poolSizes = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, maxMaterials * uboDescriptorsPerMaterial},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, maxMaterials * samplerDescriptorsPerMaterial},
-    };
-
-    VkDescriptorPoolCreateFlags poolFlags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    if (m_updateAfterBindEnabled) {
-        // Required when any layout allocated from this pool carries
-        // VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT
-        // (see ShaderProgram::CreateDescriptorSetLayouts).
-        poolFlags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    }
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = poolFlags;
-    poolInfo.maxSets = maxMaterials;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-
-    VkDescriptorPool pool = VK_NULL_HANDLE;
-    if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create material descriptor pool");
-        return VK_NULL_HANDLE;
-    }
-
-    m_descriptorPools.push_back(pool);
-    return pool;
 }
 
 bool MaterialDescriptorManager::IsPlaceholderTexturePath(std::string_view texturePath) const
@@ -339,12 +294,12 @@ bool MaterialDescriptorManager::TryGetDefaultTextureBinding(std::string_view bin
 {
     if (IsNormalBindingName(bindingName) && m_defaultNormalImageView != VK_NULL_HANDLE &&
         m_defaultNormalSampler != VK_NULL_HANDLE) {
-        outBinding = {m_defaultNormalImageView, m_defaultNormalSampler};
+        outBinding = {m_defaultNormalImageView, m_defaultNormalSampler, {}, m_defaultNormalGpuView};
         return true;
     }
 
     if (m_defaultImageView != VK_NULL_HANDLE && m_defaultSampler != VK_NULL_HANDLE) {
-        outBinding = {m_defaultImageView, m_defaultSampler};
+        outBinding = {m_defaultImageView, m_defaultSampler, {}, m_defaultGpuView};
         return true;
     }
 
@@ -367,7 +322,8 @@ MaterialDescriptorManager::ResolveExplicitTextureBinding(const std::string &text
     }
 
     outBinding = std::move(result.binding);
-    if (outBinding.imageView == VK_NULL_HANDLE || outBinding.sampler == VK_NULL_HANDLE || !outBinding.keepAlive) {
+    if (outBinding.imageView == VK_NULL_HANDLE || outBinding.sampler == VK_NULL_HANDLE || !outBinding.gpuView ||
+        !outBinding.gpuView->IsValid()) {
         outBinding = {};
         INXLOG_ERROR("Texture resolver returned Ready without a complete GPU binding for texture '", texturePath,
                      "' (binding='", bindingName, "')");
@@ -377,10 +333,7 @@ MaterialDescriptorManager::ResolveExplicitTextureBinding(const std::string &text
 }
 
 MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const InxMaterial &material,
-                                                                           const ShaderProgram &program,
-                                                                           VkBuffer sceneUBO, VkDeviceSize sceneUBOSize,
-                                                                           VkBuffer lightingUBO,
-                                                                           VkDeviceSize lightingUBOSize)
+                                                                           const ShaderProgram &program)
 {
     const std::string materialName = material.GetMaterialKey();
 
@@ -419,39 +372,22 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     // Create new descriptor set
     auto matDescSet = std::make_unique<MaterialDescriptorSet>();
     matDescSet->layout = requiredLayout; // Track which layout we're using
+    matDescSet->bindings = program.GetDescriptorBindings();
 
-    // Allocate descriptor set from the most recent pool; grow if exhausted.
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &requiredLayout;
-
-    VkDescriptorPool activePool = m_descriptorPools.empty() ? VK_NULL_HANDLE : m_descriptorPools.back();
-    allocInfo.descriptorPool = activePool;
-
-    VkResult allocResult = (activePool != VK_NULL_HANDLE)
-                               ? vkAllocateDescriptorSets(m_device, &allocInfo, &matDescSet->descriptorSet)
-                               : VK_ERROR_OUT_OF_POOL_MEMORY;
-
-    if (allocResult != VK_SUCCESS) {
-        // Pool exhausted — allocate a new pool page and retry
-        INXLOG_WARN("Descriptor pool exhausted, growing pool chain (page ", m_descriptorPools.size(), ")");
-        activePool = CreateDescriptorPool(m_poolPageSize);
-        if (activePool == VK_NULL_HANDLE) {
-            INXLOG_ERROR("Failed to grow descriptor pool for material: ", materialName);
-            return nullptr;
-        }
-        allocInfo.descriptorPool = activePool;
-        allocResult = vkAllocateDescriptorSets(m_device, &allocInfo, &matDescSet->descriptorSet);
-        if (allocResult != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to allocate descriptor set even after pool growth for material: ", materialName);
-            return nullptr;
-        }
+    if (!m_descriptorManager) {
+        INXLOG_ERROR("Material descriptor manager is unavailable for material: ", materialName);
+        return nullptr;
     }
-    matDescSet->ownerPool = activePool;
+    const auto arena =
+        m_updateAfterBindEnabled ? vk::DescriptorArena::UpdateAfterBind : vk::DescriptorArena::Persistent;
+    matDescSet->descriptorLease = m_descriptorManager->Allocate(requiredLayout, arena);
+    if (!matDescSet->descriptorLease.IsValid()) {
+        INXLOG_ERROR("Failed to allocate descriptor set for material: ", materialName);
+        return nullptr;
+    }
+    matDescSet->descriptorSet = matDescSet->descriptorLease.set;
 
     // Track this handle so callers can verify it's still live before binding.
-    m_allocatedHandles.insert(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
     m_liveDescriptorHandles.insert(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
 
     // Create material UBO if shader has one
@@ -466,7 +402,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         }
     }
 
-    // Create vertex-stage material UBO if the vertex shader declares @property fields (binding 14)
+    // Create the vertex-stage material UBO when ShaderInfo declares Properties (binding 14).
     const MaterialUBOLayout *vertUboLayout = program.GetVertexMaterialUBOLayout();
     if (vertUboLayout != nullptr && vertUboLayout->size > 0) {
         matDescSet->vertexMaterialUBO = std::make_unique<MaterialUBO>();
@@ -478,7 +414,11 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     }
 
     // Update descriptor bindings
-    UpdateDescriptorBindings(*matDescSet, program, sceneUBO, sceneUBOSize, lightingUBO, lightingUBOSize);
+    if (!UpdateDescriptorBindings(*matDescSet, program)) {
+        m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+        RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
+        return nullptr;
+    }
 
     // Resolve material Texture2D properties → actual GPU textures
     if (m_textureResolver) {
@@ -561,11 +501,10 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     return result;
 }
 
-void MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &matDescSet,
-                                                         const ShaderProgram &program, VkBuffer sceneUBO,
-                                                         VkDeviceSize sceneUBOSize, VkBuffer lightingUBO,
-                                                         VkDeviceSize lightingUBOSize)
+bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &matDescSet,
+                                                         const ShaderProgram &program)
 {
+    matDescSet.bufferBindings.clear();
     std::vector<VkWriteDescriptorSet> writes;
     std::vector<VkDescriptorBufferInfo> bufferInfos;
     std::vector<VkDescriptorImageInfo> imageInfos;
@@ -575,9 +514,7 @@ void MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
     bufferInfos.reserve(bindings.size());
     imageInfos.reserve(bindings.size());
 
-    INXLOG_DEBUG("UpdateDescriptorBindings: ", bindings.size(),
-                 " bindings, lightingUBO=", (lightingUBO != VK_NULL_HANDLE ? "valid" : "null"),
-                 ", lightingUBOSize=", lightingUBOSize);
+    INXLOG_DEBUG("UpdateDescriptorBindings: ", bindings.size(), " reflected bindings");
 
     for (const auto &binding : bindings) {
         // Only write set 0 bindings into the material descriptor set.
@@ -591,9 +528,8 @@ void MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
 
             INXLOG_DEBUG("  Binding ", binding.binding, ": UBO");
 
-            // Use shader reflection to distinguish material UBO from scene/lighting UBOs.
-            // The material UBO binding varies per shader type (e.g. binding 1 for unlit,
-            // binding 3 for lit), so we must check reflection rather than hardcoding.
+            // Set 0 is exclusively material-owned. Camera and lighting data
+            // belong to the active RenderView descriptor set (set 1).
             const MaterialUBOLayout *matLayout = program.GetMaterialUBOLayout();
             bool isMaterialUBOBinding = matLayout && matLayout->size > 0 && binding.binding == matLayout->binding;
 
@@ -611,28 +547,17 @@ void MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
                 bufferInfo.buffer = matDescSet.materialUBO->GetBuffer();
                 bufferInfo.offset = 0;
                 bufferInfo.range = matDescSet.materialUBO->GetSize();
-            } else if (IsSceneUBOBinding(binding)) {
-                bufferInfo.buffer = sceneUBO;
-                bufferInfo.offset = 0;
-                bufferInfo.range = sceneUBOSize;
-            } else if (IsLightingUBOBinding(binding) && lightingUBO != VK_NULL_HANDLE) {
-                // Lighting UBO is identified by reflected name first and only
-                // falls back to binding=1 for legacy/generated shader layouts.
-                INXLOG_DEBUG("    -> Binding LightingUBO, size=", lightingUBOSize);
-                bufferInfo.buffer = lightingUBO;
-                bufferInfo.offset = 0;
-                bufferInfo.range = lightingUBOSize;
-            } else if (matDescSet.materialUBO && matDescSet.materialUBO->IsValid()) {
-                // Fallback: any remaining UBO binding -> material UBO
-                bufferInfo.buffer = matDescSet.materialUBO->GetBuffer();
-                bufferInfo.offset = 0;
-                bufferInfo.range = matDescSet.materialUBO->GetSize();
             } else {
-                continue; // Skip if no valid buffer
+                INXLOG_ERROR("Material shader ABI violation: set 0 uniform buffer '", binding.name,
+                             "' at binding ", binding.binding,
+                             " is not a reflected material Properties block. Camera and lighting uniforms must use "
+                             "the engine-owned RenderView set 1 contract.");
+                return false;
             }
 
             AppendBufferWrite(writes, bufferInfos, matDescSet.descriptorSet, binding.binding, binding.type, bufferInfo,
                               binding.descriptorCount);
+            matDescSet.bufferBindings[binding.binding] = bufferInfo;
         } else if (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
             // Check if we have a texture bound for this slot
             auto texIt = matDescSet.textureBindings.find(binding.binding);
@@ -651,6 +576,95 @@ void MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
     if (!writes.empty()) {
         vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
+    return true;
+}
+
+bool MaterialDescriptorManager::PublishDescriptorReplacement(
+    MaterialDescriptorSet &descriptorSet,
+    const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings)
+{
+    if (!m_descriptorManager || descriptorSet.layout == VK_NULL_HANDLE)
+        return false;
+
+    const auto arena =
+        m_updateAfterBindEnabled ? vk::DescriptorArena::UpdateAfterBind : vk::DescriptorArena::Persistent;
+    const vk::DescriptorLease replacement = m_descriptorManager->Allocate(descriptorSet.layout, arena);
+    if (!replacement.IsValid()) {
+        INXLOG_ERROR("Failed to allocate copy-on-write material descriptor set");
+        return false;
+    }
+
+    std::vector<VkWriteDescriptorSet> writes;
+    std::vector<VkDescriptorBufferInfo> bufferInfos;
+    std::vector<VkDescriptorImageInfo> imageInfos;
+    writes.reserve(descriptorSet.bindings.size());
+    bufferInfos.reserve(descriptorSet.bindings.size());
+    imageInfos.reserve(descriptorSet.bindings.size());
+
+    for (const auto &binding : descriptorSet.bindings) {
+        if (binding.set != 0)
+            continue;
+        if (binding.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+            const auto buffer = descriptorSet.bufferBindings.find(binding.binding);
+            if (buffer == descriptorSet.bufferBindings.end()) {
+                INXLOG_ERROR("Cannot publish material descriptor replacement: uniform binding ", binding.binding,
+                             " has no buffer snapshot");
+                m_descriptorManager->Retire(replacement);
+                return false;
+            }
+            AppendBufferWrite(writes, bufferInfos, replacement.set, binding.binding, binding.type, buffer->second,
+                              binding.descriptorCount);
+            continue;
+        }
+        if (binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+            INXLOG_ERROR("Cannot publish material descriptor replacement: unsupported set-0 descriptor type ",
+                         static_cast<int>(binding.type), " at binding ", binding.binding);
+            m_descriptorManager->Retire(replacement);
+            return false;
+        }
+
+        MaterialDescriptorSet::TextureBinding textureBinding{};
+        const auto texture = textureBindings.find(binding.binding);
+        if (texture != textureBindings.end()) {
+            textureBinding = texture->second;
+        } else if (!TryGetDefaultTextureBinding(binding.name, textureBinding)) {
+            INXLOG_ERROR("Cannot publish material descriptor replacement: image binding ", binding.binding, " ('",
+                         binding.name, "') has neither an explicit texture nor a default");
+            m_descriptorManager->Retire(replacement);
+            return false;
+        }
+        if (textureBinding.imageView == VK_NULL_HANDLE || textureBinding.sampler == VK_NULL_HANDLE) {
+            INXLOG_ERROR("Cannot publish material descriptor replacement: image binding ", binding.binding, " ('",
+                         binding.name, "') resolves to a null image or sampler");
+            m_descriptorManager->Retire(replacement);
+            return false;
+        }
+        AppendImageWrite(writes, imageInfos, replacement.set, binding.binding, textureBinding.imageView,
+                         textureBinding.sampler);
+    }
+
+    if (!writes.empty())
+        vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    if (!m_deletionQueue && !descriptorSet.textureBindings.empty()) {
+        INXLOG_ERROR("Cannot publish material descriptor replacement without a GPU retirement queue");
+        m_descriptorManager->Retire(replacement);
+        return false;
+    }
+
+    const vk::DescriptorLease retiredLease = descriptorSet.descriptorLease;
+    const VkDescriptorSet retiredSet = descriptorSet.descriptorSet;
+    auto retiredTextureBindings = std::move(descriptorSet.textureBindings);
+    descriptorSet.descriptorLease = replacement;
+    descriptorSet.descriptorSet = replacement.set;
+    descriptorSet.textureBindings = textureBindings;
+    m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(retiredSet));
+    m_liveDescriptorHandles.insert(reinterpret_cast<uint64_t>(replacement.set));
+    m_descriptorManager->Retire(retiredLease);
+    if (m_deletionQueue && !retiredTextureBindings.empty()) {
+        m_deletionQueue->Retire([bindings = std::move(retiredTextureBindings)]() mutable { bindings.clear(); });
+    }
+    return true;
 }
 
 void MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material)
@@ -679,14 +693,10 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
     }
 
     auto &matDescSet = *it->second;
-    matDescSet.hasPendingTextures = false;
+    auto candidateBindings = matDescSet.textureBindings;
+    bool candidateHasPendingTextures = false;
+    bool bindingsChanged = false;
     const auto &properties = material.GetAllProperties();
-
-    // Collect all descriptor writes into a single batch
-    std::vector<VkWriteDescriptorSet> writes;
-    std::vector<VkDescriptorImageInfo> imageInfos;
-    writes.reserve(properties.size());
-    imageInfos.reserve(properties.size());
 
     for (const auto &[propName, prop] : properties) {
         if (prop.type != MaterialPropertyType::Texture2D) {
@@ -704,11 +714,10 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
 
                 if (!texturePath || texturePath->empty()) {
                     if (TryGetDefaultTextureBinding(binding.name, resolvedBinding)) {
-                        matDescSet.textureBindings[binding.binding] = resolvedBinding;
-                        AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding,
-                                         resolvedBinding.imageView, resolvedBinding.sampler);
-                    } else {
-                        matDescSet.textureBindings.erase(binding.binding);
+                        const auto previous = candidateBindings.find(binding.binding);
+                        bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
+                                          !HasSameGpuBinding(previous->second, resolvedBinding);
+                        candidateBindings[binding.binding] = resolvedBinding;
                     }
                     INXLOG_DEBUG("Cleared texture binding ", binding.binding, " for material '", materialName,
                                  "' property '", propName, "' -> rebound default texture");
@@ -720,21 +729,23 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                     isPlaceholder ? TextureResolveStatus::Pending
                                   : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding);
                 const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
-                const bool hasBinding = resolvedExplicit || TryGetDefaultTextureBinding(binding.name, resolvedBinding);
 
                 if (!isPlaceholder && resolveStatus == TextureResolveStatus::Pending) {
-                    matDescSet.hasPendingTextures = true;
+                    candidateHasPendingTextures = true;
+                    const auto previous = candidateBindings.find(binding.binding);
+                    if (previous != candidateBindings.end() && previous->second.gpuView &&
+                        previous->second.gpuView->IsValid()) {
+                        break;
+                    }
                 }
 
+                const bool hasBinding = resolvedExplicit || TryGetDefaultTextureBinding(binding.name, resolvedBinding);
+
                 if (hasBinding) {
-                    const auto previous = matDescSet.textureBindings.find(binding.binding);
-                    const bool bindingChanged = previous == matDescSet.textureBindings.end() ||
-                                                !HasSameGpuBinding(previous->second, resolvedBinding);
-                    matDescSet.textureBindings[binding.binding] = resolvedBinding;
-                    if (bindingChanged) {
-                        AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding,
-                                         resolvedBinding.imageView, resolvedBinding.sampler);
-                    }
+                    const auto previous = candidateBindings.find(binding.binding);
+                    bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
+                                      !HasSameGpuBinding(previous->second, resolvedBinding);
+                    candidateBindings[binding.binding] = resolvedBinding;
                     if (resolvedExplicit) {
                         INXLOG_DEBUG("Re-bound texture '", *texturePath, "' to binding ", binding.binding,
                                      " for material '", materialName, "'");
@@ -744,16 +755,21 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                         INXLOG_WARN("Failed to resolve texture '", *texturePath, "' for material '", materialName,
                                     "' property '", propName, "' — binding default texture");
                     }
-                    matDescSet.textureBindings.erase(binding.binding);
                 }
                 break;
             }
         }
     }
 
-    if (!writes.empty()) {
-        WaitForGpuIdleBeforeSharedDescriptorWrite();
-        vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    const bool previousHasPendingTextures = matDescSet.hasPendingTextures;
+    matDescSet.hasPendingTextures = candidateHasPendingTextures;
+    if (!bindingsChanged)
+        return;
+
+    if (!PublishDescriptorReplacement(matDescSet, candidateBindings)) {
+        matDescSet.hasPendingTextures = previousHasPendingTextures;
+        INXLOG_ERROR("Material texture publication failed for '", materialName,
+                     "'; the previous complete descriptor set remains active");
     }
 }
 
@@ -770,41 +786,23 @@ void MaterialDescriptorManager::BindTexture(const std::string &materialName, uin
     if (it == m_descriptorSets.end())
         return;
 
-    it->second->textureBindings[binding] = {imageView, sampler};
-
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = imageView;
-    imageInfo.sampler = sampler;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = it->second->descriptorSet;
-    write.dstBinding = binding;
-    write.dstArrayElement = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &imageInfo;
-
-    WaitForGpuIdleBeforeSharedDescriptorWrite();
-    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
-}
-
-void MaterialDescriptorManager::WaitForGpuIdleBeforeSharedDescriptorWrite()
-{
-    // Fast path: when descriptor indexing UPDATE_AFTER_BIND is enabled,
-    // the driver tracks descriptor liveness internally and lets us rewrite
-    // bindings that are currently in command buffers in flight. No drain
-    // is required and the editor texture-edit hot path becomes truly free.
-    if (m_updateAfterBindEnabled) {
+    if (imageView == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE) {
+        INXLOG_ERROR("Cannot bind a null texture descriptor to material '", materialName, "' at binding ", binding);
         return;
     }
 
-    // Legacy fallback: layouts/pools were created without the descriptor-
-    // indexing flags (older GPU or feature unsupported), so we still have
-    // to drain the device before mutating a shared descriptor set.
-    if (m_device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(m_device);
+    auto &descriptorSet = *it->second;
+    const auto previousBinding = descriptorSet.textureBindings.find(binding);
+    if (previousBinding != descriptorSet.textureBindings.end() &&
+        HasSameGpuBinding(previousBinding->second, {imageView, sampler})) {
+        return;
+    }
+
+    auto candidateBindings = descriptorSet.textureBindings;
+    candidateBindings[binding] = {imageView, sampler};
+    if (!PublishDescriptorReplacement(descriptorSet, candidateBindings)) {
+        INXLOG_ERROR("Texture binding publication failed for material '", materialName,
+                     "'; the previous complete descriptor set remains active");
     }
 }
 
@@ -816,7 +814,6 @@ void MaterialDescriptorManager::RemoveDescriptorSet(const std::string &materialN
         if (retiredEntry && retiredEntry->descriptorSet != VK_NULL_HANDLE) {
             const uint64_t handle = reinterpret_cast<uint64_t>(retiredEntry->descriptorSet);
             m_liveDescriptorHandles.erase(handle);
-            m_allocatedHandles.erase(handle);
         }
         m_descriptorSets.erase(it);
         RetireDescriptorSet(std::move(retiredEntry));
@@ -828,54 +825,55 @@ void MaterialDescriptorManager::RetireDescriptorSet(std::shared_ptr<MaterialDesc
     if (!descriptorSet)
         throw std::invalid_argument("Cannot retire an empty material descriptor set");
 
-    const VkDevice device = m_device;
-    const VkDescriptorPool ownerPool = descriptorSet->ownerPool;
-    const VkDescriptorSet handle = descriptorSet->descriptorSet;
+    const vk::DescriptorLease lease = descriptorSet->descriptorLease;
     auto pending = m_pendingDescriptorSetReleases;
+    if (m_descriptorManager)
+        m_descriptorManager->Retire(lease);
 
     if (m_deletionQueue) {
         pending->fetch_add(1, std::memory_order_relaxed);
-        m_deletionQueue->Push([device, ownerPool, handle, descriptorSet = std::move(descriptorSet),
-                               pending = std::move(pending)]() mutable {
-            vkFreeDescriptorSets(device, ownerPool, 1, &handle);
+        m_deletionQueue->Retire([descriptorSet = std::move(descriptorSet), pending = std::move(pending)]() mutable {
             descriptorSet->descriptorSet = VK_NULL_HANDLE;
+            descriptorSet->descriptorLease = {};
             descriptorSet.reset();
             pending->fetch_sub(1, std::memory_order_relaxed);
         });
         return;
     }
 
-    vkDeviceWaitIdle(device);
-    vkFreeDescriptorSets(device, ownerPool, 1, &handle);
+    vkDeviceWaitIdle(m_device);
+    if (m_descriptorManager)
+        (void)m_descriptorManager->Collect((std::numeric_limits<rhi::SubmissionSerial>::max)());
     descriptorSet->descriptorSet = VK_NULL_HANDLE;
+    descriptorSet->descriptorLease = {};
 }
 
 void MaterialDescriptorManager::Clear()
 {
-    // Reset all pool pages (more efficient than freeing one by one)
-    if (m_device != VK_NULL_HANDLE) {
-        for (auto pool : m_descriptorPools) {
-            if (pool != VK_NULL_HANDLE) {
-                vkResetDescriptorPool(m_device, pool, 0);
-            }
-        }
+    for (auto &[name, descriptorSet] : m_descriptorSets) {
+        (void)name;
+        if (descriptorSet && m_descriptorManager)
+            m_descriptorManager->Retire(descriptorSet->descriptorLease);
     }
     m_descriptorSets.clear();
     // All handles are now invalid — clear the live-handle tracking set.
-    m_allocatedHandles.clear();
     m_liveDescriptorHandles.clear();
 }
 
-void MaterialDescriptorManager::SetDefaultTexture(VkImageView imageView, VkSampler sampler)
+void MaterialDescriptorManager::SetDefaultTexture(VkImageView imageView, VkSampler sampler,
+                                                   std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_defaultImageView = imageView;
     m_defaultSampler = sampler;
+    m_defaultGpuView = std::move(gpuView);
 }
 
-void MaterialDescriptorManager::SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler)
+void MaterialDescriptorManager::SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler,
+                                                         std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_defaultNormalImageView = imageView;
     m_defaultNormalSampler = sampler;
+    m_defaultNormalGpuView = std::move(gpuView);
 }
 
 } // namespace infernux

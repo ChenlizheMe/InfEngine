@@ -16,6 +16,8 @@ std::vector<uint32_t> QueueFamilyIndices::GetUniqueIndices() const
     std::set<uint32_t> uniqueSet;
     if (graphicsFamily.has_value())
         uniqueSet.insert(graphicsFamily.value());
+    if (computeFamily.has_value())
+        uniqueSet.insert(computeFamily.value());
     if (presentFamily.has_value())
         uniqueSet.insert(presentFamily.value());
     if (transferFamily.has_value())

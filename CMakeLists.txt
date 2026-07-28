@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(Infernux LANGUAGES CXX)
+project(Infernux LANGUAGES C CXX)
 
 #------------------------------------------------------------------------------
 # Linux: force -fPIC for all static libraries (fixes imgui linking error)
@@ -15,12 +15,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ------------------------------------------------------------------------------
 # Paths and Directories
 # ------------------------------------------------------------------------------
-set(PYTHON_TARGET_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/lib")
+set(INFERNUX_PYTHON_SYNC_DIR "${CMAKE_SOURCE_DIR}/python/Infernux/lib" CACHE PATH
+    "Directory that receives a development copy of the native Python runtime")
+set(PYTHON_TARGET_DIR "${INFERNUX_PYTHON_SYNC_DIR}")
 
 # ------------------------------------------------------------------------------
 # Source Files
 # ------------------------------------------------------------------------------
 file(GLOB_RECURSE INFERNUX_RUNTIME_SOURCES CONFIGURE_DEPENDS cpp/*.cpp cpp/*.h)
+list(APPEND INFERNUX_RUNTIME_SOURCES "${CMAKE_SOURCE_DIR}/external/stb/stb_vorbis.c")
 # Runtime implementation and Python bindings are separate binary layers. This
 # keeps pybind template churn out of the engine DLL and prevents a binding-only
 # edit from relinking every renderer, scene, and resource object.
@@ -44,8 +47,9 @@ list(APPEND INFERNUX_FOUNDATION_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxTexture/StbImage.cpp"
 )
 set(INFERNUX_PARTICLE_RUNTIME_SOURCES
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxPointCache/PointCacheArtifact.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuCollisionScene.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuCuller.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/particle/ParticleGpuEventDomain.cpp"
@@ -63,6 +67,16 @@ set(INFERNUX_SHADER_COMPILER_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderPassVariantPlanner.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderStageLinker.cpp"
 )
+file(GLOB_RECURSE INFERNUX_RENDER_CORE_SOURCES CONFIGURE_DEPENDS
+    cpp/infernux/function/renderer/rhi/*.cpp
+    cpp/infernux/function/renderer/rhi/*.h
+)
+set(INFERNUX_RENDERER_RUNTIME_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/scene/SceneRenderer.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/scene/SceneRenderer.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/Frustum.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/RenderWorld.h"
+)
 file(GLOB_RECURSE INFERNUX_VULKAN_BACKEND_SOURCES CONFIGURE_DEPENDS
     cpp/infernux/function/renderer/vk/*.cpp
     cpp/infernux/function/renderer/vk/*.h
@@ -71,6 +85,8 @@ list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES
     ${INFERNUX_FOUNDATION_SOURCES}
     ${INFERNUX_PARTICLE_RUNTIME_SOURCES}
     ${INFERNUX_SHADER_COMPILER_SOURCES}
+    ${INFERNUX_RENDER_CORE_SOURCES}
+    ${INFERNUX_RENDERER_RUNTIME_SOURCES}
     ${INFERNUX_VULKAN_BACKEND_SOURCES}
 )
 
@@ -115,6 +131,8 @@ endif()
 add_library(InfernuxFoundation SHARED ${INFERNUX_FOUNDATION_SOURCES})
 add_library(InfernuxParticleRuntime SHARED ${INFERNUX_PARTICLE_RUNTIME_SOURCES})
 add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
+add_library(InfernuxRenderCore SHARED ${INFERNUX_RENDER_CORE_SOURCES})
+add_library(InfernuxRendererRuntime SHARED ${INFERNUX_RENDERER_RUNTIME_SOURCES})
 add_library(InfernuxVulkanBackend SHARED ${INFERNUX_VULKAN_BACKEND_SOURCES})
 add_library(InfernuxRuntime SHARED ${INFERNUX_RUNTIME_SOURCES})
 pybind11_add_module(_Infernux MODULE NO_EXTRAS ${BINDING_SOURCES})
@@ -152,6 +170,8 @@ set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxFoundation
     InfernuxParticleRuntime
     InfernuxShaderCompiler
+    InfernuxRenderCore
+    InfernuxRendererRuntime
     InfernuxVulkanBackend
     InfernuxRuntime
 )
@@ -167,6 +187,8 @@ set(INFERNUX_NATIVE_TARGETS
     InfernuxFoundation
     InfernuxParticleRuntime
     InfernuxShaderCompiler
+    InfernuxRenderCore
+    InfernuxRendererRuntime
     InfernuxVulkanBackend
     InfernuxRuntime
     _Infernux
@@ -181,11 +203,15 @@ endforeach()
 
 target_link_libraries(InfernuxParticleRuntime PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxShaderCompiler PUBLIC InfernuxFoundation)
-target_link_libraries(InfernuxVulkanBackend PUBLIC InfernuxFoundation)
+target_link_libraries(InfernuxRenderCore PUBLIC InfernuxFoundation)
+target_link_libraries(InfernuxRendererRuntime PUBLIC InfernuxFoundation)
+target_link_libraries(InfernuxVulkanBackend PUBLIC InfernuxRenderCore)
 target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxFoundation
     InfernuxParticleRuntime
     InfernuxShaderCompiler
+    InfernuxRenderCore
+    InfernuxRendererRuntime
     InfernuxVulkanBackend
 )
 target_link_libraries(InfernuxRuntime PRIVATE pybind11::embed)
@@ -340,6 +366,8 @@ target_link_libraries(InfernuxFoundation PUBLIC
     stb
     Vulkan::Vulkan
 )
+target_link_libraries(InfernuxRenderCore PUBLIC glm::glm)
+target_link_libraries(InfernuxRendererRuntime PUBLIC glm::glm)
 target_link_libraries(InfernuxParticleRuntime PUBLIC glm::glm)
 target_link_libraries(InfernuxShaderCompiler PUBLIC Vulkan::Vulkan)
 target_link_libraries(InfernuxVulkanBackend PUBLIC
@@ -401,16 +429,17 @@ if(INFERNUX_BUILD_TESTS)
     add_test(NAME infernux.job_system COMMAND infernux_job_system_tests)
     set_tests_properties(infernux.job_system PROPERTIES TIMEOUT 30)
 
-    add_executable(infernux_frame_deletion_queue_tests
-        cpp/tests/FrameDeletionQueueTests.cpp
+    add_executable(infernux_gpu_retirement_queue_tests
+        cpp/tests/GpuRetirementQueueTests.cpp
     )
-    target_include_directories(infernux_frame_deletion_queue_tests PRIVATE
+    target_include_directories(infernux_gpu_retirement_queue_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
     if(MSVC)
-        target_compile_options(infernux_frame_deletion_queue_tests PRIVATE /utf-8)
+        target_compile_options(infernux_gpu_retirement_queue_tests PRIVATE /utf-8)
     endif()
-    add_test(NAME infernux.frame_deletion_queue COMMAND infernux_frame_deletion_queue_tests)
+    target_link_libraries(infernux_gpu_retirement_queue_tests PRIVATE InfernuxRenderCore)
+    add_test(NAME infernux.gpu_retirement_queue COMMAND infernux_gpu_retirement_queue_tests)
 
     add_executable(infernux_editor_gui_frame_scheduler_tests
         cpp/tests/EditorGuiFrameSchedulerTests.cpp
@@ -613,15 +642,21 @@ if(INFERNUX_BUILD_TESTS)
     target_include_directories(infernux_rhi_contracts_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
+    target_link_libraries(infernux_rhi_contracts_tests PRIVATE InfernuxRenderCore)
     if(MSVC)
-        target_compile_options(infernux_rhi_contracts_tests PRIVATE /utf-8)
+        target_compile_options(infernux_rhi_contracts_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_rhi_contracts_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.rhi_contracts COMMAND infernux_rhi_contracts_tests)
 
     add_executable(infernux_vulkan_rhi_device_tests
         cpp/tests/VulkanRhiDeviceTests.cpp
         cpp/infernux/core/log/InxLog.cpp
+        cpp/infernux/function/renderer/rhi/RhiDeviceIdentity.cpp
+        cpp/infernux/function/renderer/vk/DescriptorBindTrace.cpp
         cpp/infernux/function/renderer/vk/VmaContext.cpp
+        cpp/infernux/function/renderer/vk/VkDescriptorManager.cpp
         cpp/infernux/function/renderer/vk/VulkanRhiDevice.cpp
     )
     target_include_directories(infernux_vulkan_rhi_device_tests PRIVATE
@@ -635,6 +670,20 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_vulkan_rhi_device_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.vulkan_rhi_device COMMAND infernux_vulkan_rhi_device_tests)
+
+    add_executable(infernux_vulkan_submission_executor_tests
+        cpp/tests/VulkanSubmissionExecutorTests.cpp
+    )
+    target_include_directories(infernux_vulkan_submission_executor_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_vulkan_submission_executor_tests PRIVATE InfernuxVulkanBackend)
+    if(MSVC)
+        target_compile_options(infernux_vulkan_submission_executor_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_vulkan_submission_executor_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.vulkan_submission_executor COMMAND infernux_vulkan_submission_executor_tests)
 
     add_executable(infernux_scene_render_graph_validation_tests
         cpp/tests/SceneRenderGraphValidationTests.cpp
@@ -653,6 +702,8 @@ if(INFERNUX_BUILD_TESTS)
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuMeshRenderer.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBounds.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuContinuationRuntime.cpp
+        cpp/infernux/function/renderer/particle/ParticleGpuCollisionScene.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuDrawRegistry.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuEventDomain.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuMigrator.cpp
@@ -913,18 +964,6 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_vector_field_importer_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.vector_field_importer COMMAND infernux_vector_field_importer_tests)
-
-    add_executable(infernux_point_cache_artifact_tests
-        cpp/tests/PointCacheArtifactTests.cpp
-        cpp/infernux/function/resources/InxPointCache/PointCacheArtifact.cpp
-    )
-    target_include_directories(infernux_point_cache_artifact_tests PRIVATE
-        ${CMAKE_SOURCE_DIR}/cpp/infernux
-    )
-    if(MSVC)
-        target_compile_options(infernux_point_cache_artifact_tests PRIVATE /utf-8)
-    endif()
-    add_test(NAME infernux.point_cache_artifact COMMAND infernux_point_cache_artifact_tests)
 
     add_executable(infernux_shader_asset_tests
         cpp/tests/ShaderAssetTests.cpp

@@ -1,6 +1,7 @@
-@shader_id: Math
-
-@import: Lib Common
+ShaderInfo {
+    Name "Math"
+    Imports ["Lib Common"]
+}
 
 // ============================================================================
 // math.glsl — Shared math constants and utility functions

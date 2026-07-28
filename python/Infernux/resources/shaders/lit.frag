@@ -1,20 +1,24 @@
 #version 450
 
-@shader_id: Lit
-@shading_model: PBR
-@queue: 2000
-@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-@property: metallic, Float, 0.0
-@property: smoothness, Float, 0.5
-@property: ambientOcclusion, Float, 1.0
-@property: emissionColor, Color, [0.0, 0.0, 0.0, 0.0], HDR
-@property: normalScale, Float, 1.0
-@property: specularHighlights, Float, 1.0
-@property: texSampler, Texture2D, white
-@property: metallicMap, Texture2D, white
-@property: smoothnessMap, Texture2D, white
-@property: aoMap, Texture2D, white
-@property: normalMap, Texture2D, normal
+ShaderInfo {
+    Name "Lit"
+    ShadingModel PBR
+    Queue 2000
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Float metallic = 0.0
+        Float smoothness = 0.5
+        Float ambientOcclusion = 1.0
+        Color emissionColor = [0.0, 0.0, 0.0, 0.0] HDR
+        Float normalScale = 1.0
+        Float specularHighlights = 1.0
+        Texture2D texSampler = white
+        Texture2D metallicMap = white
+        Texture2D smoothnessMap = white
+        Texture2D aoMap = white
+        Texture2D normalMap = normal
+    }
+}
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();

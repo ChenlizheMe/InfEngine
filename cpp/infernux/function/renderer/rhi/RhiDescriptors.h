@@ -159,6 +159,24 @@ enum class BufferMemory : uint8_t
     Readback,
 };
 
+enum class QueueAccessFlags : uint8_t
+{
+    None = 0,
+    Graphics = 1u << 0,
+    Compute = 1u << 1,
+    Transfer = 1u << 2,
+};
+
+[[nodiscard]] constexpr QueueAccessFlags operator|(QueueAccessFlags lhs, QueueAccessFlags rhs) noexcept
+{
+    return static_cast<QueueAccessFlags>(static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+}
+
+[[nodiscard]] constexpr bool HasQueueAccess(QueueAccessFlags available, QueueAccessFlags required) noexcept
+{
+    return (static_cast<uint8_t>(available) & static_cast<uint8_t>(required)) == static_cast<uint8_t>(required);
+}
+
 struct BufferDesc
 {
     uint64_t byteSize = 0;
@@ -166,6 +184,7 @@ struct BufferDesc
     BufferMemory memory = BufferMemory::DeviceLocal;
     const void *initialData = nullptr;
     uint64_t initialDataBytes = 0;
+    QueueAccessFlags queueAccess = QueueAccessFlags::Graphics;
 };
 
 struct TextureDesc
@@ -247,12 +266,20 @@ struct BindingLayoutDesc
     uint32_t entryCount = 0;
 };
 
+enum class BindGroupLifetime : uint8_t
+{
+    Persistent,
+    FrameTransient,
+    ViewPersistent,
+};
+
 struct BindGroupDesc
 {
     static constexpr size_t MaxBufferBindings = 16;
     static constexpr size_t MaxTextureBindings = 16;
 
     BindingLayoutHandle layout;
+    BindGroupLifetime lifetime = BindGroupLifetime::Persistent;
     std::array<BufferBinding, MaxBufferBindings> buffers{};
     uint32_t bufferCount = 0;
     std::array<TextureBinding, MaxTextureBindings> textures{};

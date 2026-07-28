@@ -3,18 +3,17 @@
  * @brief Post-process selection outline renderer (Blender/Unity style)
  *
  * Extracted from InxVkCoreModular during editor/renderer separation.
- * This class owns all Vulkan resources
- * related to the screen-space selection outline:
- *   - Mask render pass / framebuffer / pipeline  (renders selected object as white silhouette)
- *   - Composite render pass / framebuffer / pipeline (edge detection + alpha blend on scene color)
- *
- * Lifecycle is managed by InxRenderer; the actual Vulkan command recording
- * is injected into the frame via InxVkCoreModular::SetPostSceneRenderCallback().
+ * This class owns the pipelines and descriptor resources used by the
+ * screen-space selection outline. RenderGraph
+ * owns both render passes,
+ * framebuffers, image layouts and ordering.
  */
 
 #pragma once
 
 #include "InxRenderStruct.h"
+#include "rhi/RhiHandles.h"
+#include "vk/VkDescriptorManager.h"
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
@@ -46,9 +45,13 @@ class ShaderReflection;
  * Usage:
  *   1. Initialize() after InxVkCoreModular + SceneRenderTarget are ready
  *   2. SetOutlineObjectId() each frame from InxRenderer
- *   3. RecordCommands() is called inside the post-scene-render callback
- *   4. OnResize() whenever the scene render target is resized
- *   5. Cleanup() or destructor releases all Vulkan resources
+ *   3. EnsureGraphPipelines() is called after the graph compiles
+ *   4. RecordMaskDraws()/RecordCompositeDraw() are
+ * called by graph passes
+ *   5. Recreate the owner for a newly published SceneRenderTarget generation
+ *   6.
+ * Cleanup() or destructor
+ * releases all Vulkan resources
  */
 class OutlineRenderer
 {
@@ -71,11 +74,10 @@ class OutlineRenderer
     bool Initialize(InxVkCoreModular *core, SceneRenderTarget *sceneTarget);
 
     /// @brief Release all Vulkan resources.
-    void Cleanup();
+    /// @param waitForIdle Wait for pending GPU work before destroying resources.
+    void Cleanup(bool waitForIdle = true);
 
-    /// @brief Recreate framebuffers after scene render target resize.
-    void OnResize(uint32_t width, uint32_t height);
-
+    /// @brief Refresh target-dependent descriptors after a resize.
     /// @brief Check if outline resources are ready for rendering.
     [[nodiscard]] bool IsReady() const
     {
@@ -146,35 +148,25 @@ class OutlineRenderer
     // Rendering
     // ========================================================================
 
-    /// @brief Record outline mask + composite commands into the given command buffer.
-    ///
-    /// This renders the full outline pipeline:
-    ///   1. Mask pass — renders selected object as white silhouette
-    ///   2. Composite pass — edge detection on mask, alpha-blend onto scene color
-    ///
-    /// If no outline is active (objectId == 0) or resources aren't ready, this is a no-op.
-    ///
-    /// @param cmdBuf Active Vulkan command buffer
-    /// @param drawCalls Current frame's draw calls (to find the selected object)
-    /// @return true if commands were actually recorded, false if skipped (resources not ready)
-    bool RecordCommands(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls);
+    /// @brief Build pipelines against the graph-owned compatible render passes.
+    bool EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass);
 
-    /// @brief Finalize scene-color state when outline is inactive.
-    ///
-    /// The scene render graph already leaves the sampled scene color in
-    /// SHADER_READ_ONLY_OPTIMAL, so this is intentionally a no-op.
-    void RecordNoOutlineBarrier(VkCommandBuffer cmdBuf);
+    /// @brief Record selected-object draws inside the active graph mask pass.
+    void RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls,
+                         rhi::BindGroupHandle perViewGroup);
+
+    /// @brief Record the fullscreen edge composite inside the active graph pass.
+    void RecordCompositeDraw(VkCommandBuffer cmdBuf);
 
   private:
     // ========================================================================
     // Internal Vulkan Resource Creation
     // ========================================================================
 
-    void CreateOutlineMaskRenderPass();
-    void CreateOutlineCompositeRenderPass();
-    void CreateOutlineFramebuffers();
     void CreateOutlineDescriptorResources();
-    void CreateOutlinePipelines();
+    void CreateOutlinePipelineLayouts();
+    bool CreateOutlinePipelines();
+    void DestroyOutlinePipelines();
 
     // ========================================================================
     // Per-material outline pipeline support
@@ -191,16 +183,10 @@ class OutlineRenderer
     // Internal Rendering
     // ========================================================================
 
-    void RenderOutlineMask(VkCommandBuffer cmdBuf, const std::vector<DrawCall> &drawCalls);
-    void RenderOutlineComposite(VkCommandBuffer cmdBuf);
     [[nodiscard]] bool IsOutlinedObject(uint64_t objectId) const
     {
         return objectId != 0 && m_outlineObjectIdSet.count(objectId) != 0;
     }
-
-    /// Begin a render pass with a full-viewport and scissor covering the scene target.
-    void BeginRenderPassWithFullViewport(VkCommandBuffer cmdBuf, VkRenderPass rp, VkFramebuffer fb,
-                                         const VkClearValue &clearVal);
 
     // ========================================================================
     // References (non-owning)
@@ -213,38 +199,30 @@ class OutlineRenderer
     // Vulkan Resources (owned)
     // ========================================================================
 
-    // Render passes
+    // Non-owning graph render-pass compatibility handles.
     VkRenderPass m_outlineMaskRenderPass = VK_NULL_HANDLE;
     VkRenderPass m_outlineCompositeRenderPass = VK_NULL_HANDLE;
-
-    // Framebuffers
-    VkFramebuffer m_outlineMaskFramebuffer = VK_NULL_HANDLE;
-    VkFramebuffer m_outlineCompositeFramebuffer = VK_NULL_HANDLE;
 
     // Mask pipeline (renders selected object as white silhouette)
     VkPipeline m_outlineMaskPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_outlineMaskPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_outlineMaskDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet m_outlineMaskDescSet = VK_NULL_HANDLE;
 
     // Composite pipeline (fullscreen edge detection + blend)
     VkPipeline m_outlineCompositePipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_outlineCompositePipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_outlineCompositeDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet m_outlineCompositeDescSet = VK_NULL_HANDLE;
-
-    // Shared descriptor pool for outline
-    VkDescriptorPool m_outlineDescPool = VK_NULL_HANDLE;
+    vk::DescriptorLease m_outlineCompositeDescLease;
 
     // ========================================================================
     // Per-material outline mask pipeline resources
     // ========================================================================
 
-    // Pipeline layout: set 0 (scene UBO + vert mat UBO), set 1 (active camera view),
+    // Pipeline layout: set 0 (vertex material properties), set 1 (active camera view),
     // set 2 (globals + instance SSBO)
     VkPipelineLayout m_outlineMtlPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_outlineMtlSet0Layout = VK_NULL_HANDLE;
-    VkDescriptorPool m_outlineMtlDescPool = VK_NULL_HANDLE;
 
     // Per-frame single-instance buffer (1 mat4, for outline object transform)
     struct OutlineInstanceBuf
@@ -270,12 +248,14 @@ class OutlineRenderer
     // binding 2 = one selected skin instance, binding 3 = selected skin palette,
     // binding 4 = selected instance identity/layer data)
     std::vector<VkDescriptorSet> m_outlineGlobalsDescSets;
+    std::vector<vk::DescriptorLease> m_outlineGlobalsDescLeases;
 
     // Cached per-material outline mask pipelines (key = material name)
     std::unordered_map<std::string, VkPipeline> m_perMtlOutlinePipelines;
 
     // Cached per-material set 0 descriptor sets (scene UBO + vertex material UBO)
     std::unordered_map<std::string, VkDescriptorSet> m_perMtlOutlineDescSets;
+    std::unordered_map<std::string, vk::DescriptorLease> m_perMtlOutlineDescLeases;
 
     // ========================================================================
     // Outline Parameters

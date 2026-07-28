@@ -87,8 +87,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "Vertex and fragment stages remain separate assets. Materials may set vert_shader_name and frag_shader_name independently.",
             "Users do not write Vulkan layout, descriptor set, binding, or location declarations for the normal ShaderInfo path.",
             "The native importer emits the canonical property/interface schema consumed by the Inspector and MCP catalog; do not parse ShaderInfo again in Python scripts.",
-            "Legacy @shader_id/@property files remain readable during migration but are not the preferred authoring format.",
-            "ShadingModelInfo and automatic stage-interface lowering are being migrated; existing .shadingmodel and custom varying behavior keeps its current compatibility rules until that phase lands.",
+            "ShaderInfo and ShadingModelInfo are the only authored formats; old annotation syntax is rejected.",
             "Surface shaders implement void surface(out SurfaceData s). Start with s = InitSurfaceData().",
             "Common built-in varyings include v_TexCoord, v_Color, v_WorldPos, and normal/tangent data supplied by the standard vertex path.",
             "RenderGraph fullscreen effects use fullscreen_triangle.vert automatically and bind fragment shader IDs through p.fullscreen_quad(shader_id).",
@@ -112,7 +111,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
             "file_kinds": {
                 ".frag": "Surface fragment shader. Uses ShaderInfo Name, optional ShadingModel/render state, and a typed Properties block.",
                 ".vert": "Vertex shader. Uses ShaderInfo Name and optional Properties/Outputs. Use for custom vertex deformation or varyings.",
-                ".shadingmodel": "Lighting/evaluation model. Existing assets still use the legacy format until ShadingModelInfo lowering lands; do not assign one directly to Material.",
+                ".shadingmodel": "Lighting/evaluation model declared with ShadingModelInfo and Entry roles; do not assign one directly to Material.",
                 ".glsl": "Shared GLSL library code. New ShaderInfo assets name libraries through Imports; do not assign one directly to Material.",
             },
             "shader_info": {
@@ -123,7 +122,6 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
                 "Inputs/Outputs": "Typed stage interfaces reserved for the stage-linker migration; built-in varyings continue to work now.",
                 "Surface/Queue/Cull/DepthWrite": "Material render-state defaults compiled into importer metadata.",
                 "Capabilities": "Declared pass/backend capabilities consumed by the upcoming variant planner.",
-                "legacy_adapter": "@shader_id, @property, @import, and related annotations remain accepted only for existing assets during migration.",
             },
             "entry_points": {
                 "surface": "Preferred fragment workflow: void surface(out SurfaceData s). If no main() exists, engine injects templates, varyings, outputs, and shading-model evaluate().",
@@ -152,7 +150,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         "symbols": ["Shader", "Material", "shader_catalog", "shader_describe", "shader_guide"],
     },
     "audio": {
-        "summary": "Audio uses AudioListener for the ears, AudioSource for multi-track playback, and AudioClip for WAV assets.",
+        "summary": "Audio uses AudioListener for the ears, AudioSource for multi-track playback, and AudioClip for WAV/OGG assets.",
         "concepts": [
             "AudioListener should usually be attached to the main camera. Only one listener is active at a time.",
             "AudioSource is multi-track: set track_count, assign clips per track, then play(track_index).",
@@ -161,7 +159,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         ],
         "workflow": [
             "Ensure a GameObject has AudioSource and the camera has AudioListener.",
-            "Load WAV assets with AudioClip.load('Assets/Audio/name.wav').",
+            "Load WAV or OGG assets with AudioClip.load('Assets/Audio/name.wav').",
             "Assign clips with source.set_track_clip(index, clip) or set_track_clip_by_guid(index, guid).",
             "Use source.volume/pitch/mute/loop/play_on_awake for source-level behavior.",
             "Use source.set_track_volume(index, value), play(index), pause(index), stop(index), stop_all().",
@@ -169,7 +167,7 @@ SUBSYSTEM_GUIDES: dict[str, dict[str, Any]] = {
         "common_mistakes": [
             "Do not use source.clip = clip; this engine exposes per-track clips instead.",
             "Track indices are zero-based and must be below source.track_count.",
-            "AudioClip.load currently documents WAV loading; avoid assuming MP3/OGG unless the asset importer says so.",
+            "AudioClip currently decodes WAV and OGG/Vorbis; MP3 and FLAC are not registered audio formats.",
             "Attach one AudioListener to the main camera instead of adding listeners to many objects.",
         ],
         "symbols": ["AudioSource", "AudioListener", "AudioClip", "audio_guide"],
@@ -840,29 +838,24 @@ def _parse_shader_annotations(path: str) -> dict[str, Any]:
             "schema_format": str(metadata.get("shader_schema_format") or ""),
         }
 
-    # Migration fallback for source files that have not been imported yet.
-    annotations: dict[str, Any] = {"imports": [], "targets": []}
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for i, line in enumerate(f):
-                if i > 120:
-                    break
-                stripped = line.strip().lstrip("/ ")
-                if stripped == "@hidden":
-                    annotations["hidden"] = True
-                elif stripped.startswith("@shader_id:"):
-                    annotations["shader_id"] = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("@import:"):
-                    annotations.setdefault("imports", []).append(stripped.split(":", 1)[1].strip())
-                elif stripped.startswith("@target:"):
-                    annotations.setdefault("targets", []).append(stripped.split(":", 1)[1].strip())
-                elif stripped.startswith("@shading_model:"):
-                    annotations["shading_model"] = stripped.split(":", 1)[1].strip()
-                elif stripped.startswith("@queue:"):
-                    annotations["queue"] = stripped.split(":", 1)[1].strip()
-    except OSError:
-        pass
-    return annotations
+    # Structured source fallback for assets that have not been imported yet.
+    from Infernux.engine.ui.inspector_shader_utils import _read_source_shader_metadata
+
+    source = _read_source_shader_metadata(path)
+    entries = source.get("entries", {})
+    return {
+        "shader_id": source.get("shader_id", ""),
+        "hidden": bool(source.get("shader_hidden", False)),
+        "imports": source.get("imports", []),
+        "targets": list(entries) if isinstance(entries, dict) else [],
+        "entries": entries if isinstance(entries, dict) else {},
+        "capabilities": source.get("capabilities", []),
+        "inputs": [],
+        "outputs": [],
+        "shading_model": source.get("shading_model", ""),
+        "queue": source.get("queue", ""),
+        "schema_format": "ShaderInfo" if source else "",
+    }
 
 
 def _shader_usage(candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -888,7 +881,6 @@ def _shader_examples() -> dict[str, str]:
         "surface_fragment": (
             "#version 450\n\n"
             "ShaderInfo {\n"
-            "    Version 1\n"
             "    Name \"my_unlit\"\n"
             "    ShadingModel \"unlit\"\n"
             "    Surface Opaque\n"
@@ -912,11 +904,13 @@ def _shader_examples() -> dict[str, str]:
             "mat.frag_shader_name = 'my_unlit'\n"
             "mat.set_color('baseColor', 1.0, 0.8, 0.4, 1.0)\n"
         ),
-        "legacy_shading_model_until_migration": (
-            "@shader_id: my_lighting\n"
-            "@import: lighting\n\n"
-            "@target: forward\n"
-            "void evaluate(in SurfaceData s, out vec4 color) {\n"
+        "shading_model": (
+            "ShadingModelInfo {\n"
+            "    Name \"my_lighting\"\n"
+            "    Imports [\"Lighting\"]\n"
+            "    Entry Forward evaluateForward\n"
+            "}\n\n"
+            "void evaluateForward(in SurfaceData s, out vec4 color) {\n"
             "    color = vec4(s.albedo + s.emission, s.alpha);\n"
             "}\n"
         ),

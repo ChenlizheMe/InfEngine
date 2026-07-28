@@ -8,7 +8,7 @@ import Infernux.lib as native
 from Infernux.lib import (
     CommandBuffer,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
-    GraphBufferAccessType, GraphBufferUsage, GraphCommandType,
+    GraphBufferUsage, GraphCommandType,
     GraphPassType,
     MaterialPassType, PixelFormat, SampleCount,
 )
@@ -121,24 +121,10 @@ class TestTypedResourcePasses:
         assert handle.usage & int(GraphBufferUsage.INDIRECT)
         assert handle.usage & int(GraphBufferUsage.TRANSFER_SOURCE)
 
-    def test_compute_pass_serializes_typed_buffer_accesses(self):
+    def test_python_pipeline_does_not_expose_noop_compute_passes(self):
         graph = _make_graph()
-        graph.create_buffer("particles", 4096)
-        self._add_camera_output(graph)
-        with graph.add_compute_pass("Simulate") as p:
-            p.read_buffer("particles")
-            p.write_buffer("particles")
-            p.set_side_effect()
-
-        description = graph.build()
-        compute = next(p for p in description.passes if p.name == "Simulate")
-        assert compute.type == GraphPassType.COMPUTE
-        assert compute.commands == []
-        assert compute.side_effect
-        assert [a.type for a in compute.buffer_accesses] == [
-            GraphBufferAccessType.STORAGE_READ,
-            GraphBufferAccessType.STORAGE_WRITE,
-        ]
+        assert not hasattr(graph, "add_compute_pass")
+        assert not hasattr(GraphPassType, "COMPUTE")
 
     def test_buffer_copy_serializes_and_adds_transfer_usage(self):
         graph = _make_graph()
@@ -194,15 +180,6 @@ class TestTypedResourcePasses:
         assert present.type == GraphPassType.PRESENT
         assert present.commands[0].type == GraphCommandType.PRESENT
         assert present.commands[0].source_resource == "color"
-
-    def test_compute_access_requires_declared_usage(self):
-        graph = _make_graph()
-        graph.create_buffer("particles", 1024, indirect=False)
-        self._add_camera_output(graph)
-        with graph.add_compute_pass("BadIndirectRead") as p:
-            p.read_buffer("particles", usage="indirect")
-        with pytest.raises(ValueError, match="does not declare"):
-            graph.build()
 
     def test_copy_rejects_same_resource(self):
         graph = _make_graph()

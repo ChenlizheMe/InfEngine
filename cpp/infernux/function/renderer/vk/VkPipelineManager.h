@@ -253,6 +253,14 @@ class VkPipelineManager
      */
     void DestroyRenderPass(VkRenderPass renderPass);
 
+    /**
+     * @brief Transfer a render pass out of this manager without destroying it
+     *
+     * The caller owns the detached Vulkan object and must retire it safely.
+     * RenderGraph uses this to coordinate cache lifetime with its deletion queue.
+     */
+    [[nodiscard]] bool DetachRenderPass(VkRenderPass renderPass) noexcept;
+
     // ========================================================================
     // Pipeline Layout Management
     // ========================================================================

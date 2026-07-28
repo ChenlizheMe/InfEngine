@@ -1,5 +1,6 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
+#include <function/renderer/particle/ParticleGpuEventDomain.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
@@ -55,6 +56,7 @@ std::string ReadText(const std::string &path)
     text << input.rdbuf();
     return text.str();
 }
+
 } // namespace
 
 int main()
@@ -251,18 +253,18 @@ void surface(out SurfaceData s)
             std::cerr << error << '\n';
     }
     assert(completeCompilation.IsValid());
-    assert(completeCompilation.compiledVariants.size() == 6);
-    assert(completeCompilation.pendingTargets.size() == 1);
-    assert(completeCompilation.pendingTargets[0] == infernux::ShaderCompileTarget::Motion);
+    assert(completeCompilation.compiledVariants.size() == 7);
+    assert(completeCompilation.pendingTargets.empty());
     const auto completeArtifact = completeCompilation.CreateRuntimeArtifact();
     assert(completeArtifact.IsValid());
-    assert(completeArtifact.variants.size() == 6);
+    assert(completeArtifact.variants.size() == 7);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Depth) != nullptr);
     assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Picking) != nullptr);
+    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Motion) != nullptr);
     assert(completeArtifact.key.revision != runtimeArtifact.key.revision);
     const auto shadowCompilation =
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
@@ -307,8 +309,10 @@ void surface(out SurfaceData s)
     const auto motionCompilation =
         std::find_if(completeCompilation.compiledVariants.begin(), completeCompilation.compiledVariants.end(),
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Motion; });
-    assert(motionCompilation == completeCompilation.compiledVariants.end());
-    assert(completeArtifact.FindVariant(infernux::ShaderCompileTarget::Motion) == nullptr);
+    assert(motionCompilation != completeCompilation.compiledVariants.end());
+    assert(motionCompilation->generatedVertexSource.find("set = 2, binding = 4") != std::string::npos);
+    assert(motionCompilation->generatedVertexSource.find("previousViewProj * aux.previousModel") != std::string::npos);
+    assert(motionCompilation->generatedFragmentSource.find("outMotion = _inx_MotionVector;") != std::string::npos);
 
     auto reorderedArtifact = completeArtifact;
     std::reverse(reorderedArtifact.variants.begin(), reorderedArtifact.variants.end());
@@ -434,9 +438,9 @@ void surface(out SurfaceData surface)
     assert(particlePlan.IsValid());
     assert(particlePlan.Find(infernux::ShaderCompileTarget::Forward)->enabled);
     assert(particlePlan.Find(infernux::ShaderCompileTarget::ForwardPlus)->enabled);
+    assert(particlePlan.Find(infernux::ShaderCompileTarget::Motion)->enabled);
     for (const auto target : {infernux::ShaderCompileTarget::GBuffer, infernux::ShaderCompileTarget::Shadow,
-                              infernux::ShaderCompileTarget::Depth, infernux::ShaderCompileTarget::Picking,
-                              infernux::ShaderCompileTarget::Motion}) {
+                              infernux::ShaderCompileTarget::Depth, infernux::ShaderCompileTarget::Picking}) {
         assert(!particlePlan.Find(target)->enabled);
     }
     const auto particleCompilation = compiler.CompileLinkedProgramArtifact(particleVertex, "ParticleSprite.vert",
@@ -446,7 +450,7 @@ void surface(out SurfaceData surface)
             std::cerr << error << '\n';
     }
     assert(particleCompilation.IsValid());
-    assert(particleCompilation.compiledVariants.size() == 2);
+    assert(particleCompilation.compiledVariants.size() == 3);
     assert(particleCompilation.pendingTargets.empty());
     const auto &particleForward = particleCompilation.compiledVariants.front();
     assert(particleForward.generatedVertexSource.find("readonly buffer ParticleInstances") != std::string::npos);
@@ -484,8 +488,9 @@ void surface(out SurfaceData surface)
     assert(particleArtifact.IsValid());
     assert(particleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
     assert(particleArtifact.usesParticleSceneDepthBinding);
-    assert(particleArtifact.variants.size() == 2);
+    assert(particleArtifact.variants.size() == 3);
     assert(particleArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
+    assert(particleArtifact.FindVariant(infernux::ShaderCompileTarget::Motion) != nullptr);
 
     const std::string litParticleFragment = R"(
 ShaderInfo
@@ -513,7 +518,7 @@ void surface(out SurfaceData surface)
             std::cerr << error << '\n';
     }
     assert(litParticleCompilation.IsValid());
-    assert(litParticleCompilation.compiledVariants.size() == 2);
+    assert(litParticleCompilation.compiledVariants.size() == 3);
     const auto litParticleArtifact = litParticleCompilation.CreateRuntimeArtifact();
     assert(litParticleArtifact.IsValid());
     const auto *litParticleForwardPlus = litParticleArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus);
@@ -560,7 +565,7 @@ void surface(out SurfaceData surface)
     assert(defaultParticleArtifact.IsValid());
     assert(defaultParticleArtifact.key.stages.fragmentShaderId == "Particle Unlit");
     assert(defaultParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
-    assert(defaultParticleCompilation.compiledVariants.size() == 2);
+    assert(defaultParticleCompilation.compiledVariants.size() == 3);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") !=
            std::string::npos);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
@@ -685,11 +690,11 @@ void surface(out SurfaceData surface)
     assert(unconsumedOutputsProgram.generatedVertexSource.find("VertexOutput _inx_output = inxVertexEntry(v);") !=
            std::string::npos);
 
-    const std::string legacyStandardVertex = R"(
+    const std::string standardVertex = R"(
 #version 450
-@shader_id: Standard
+ShaderInfo { Name "Standard" }
 )";
-    const auto migrationProgram = compiler.CompileLinkedForward(legacyStandardVertex, "standard.vert",
+    const auto migrationProgram = compiler.CompileLinkedForward(standardVertex, "standard.vert",
                                                                 fragmentWithoutCustomInputs, "PlainSurface.frag");
     assert(migrationProgram.IsValid());
     assert(migrationProgram.CreateRuntimeArtifact().IsValid());
@@ -718,7 +723,7 @@ void surface(out SurfaceData surface)
 }
 )";
     const auto migrationMaterialProgram = compiler.CompileLinkedForward(
-        legacyStandardVertex, "standard.vert", migrationMaterialFragment, "MigrationMaterial.frag");
+        standardVertex, "standard.vert", migrationMaterialFragment, "MigrationMaterial.frag");
     if (!migrationMaterialProgram.IsValid()) {
         for (const auto &error : migrationMaterialProgram.errors)
             std::cerr << error << '\n';
@@ -841,7 +846,7 @@ void main() { }
     const auto particleSortGenerate = infernux::particle::GpuParticleSortShaderSources::Generate();
     assert(particleSortGenerate.find("inx_particle_sort_key(view_position.z") != std::string_view::npos);
     assert(particleSortGenerate.find("instances[particle_index].ribbon_data.w") != std::string_view::npos);
-    assert(particleSortGenerate.find("depth_key & 0xfffff000u") != std::string_view::npos);
+    assert(particleSortGenerate.find("return uvec2(depth_key, particle_id)") != std::string_view::npos);
     assert(particleSortGenerate.find("-view_position.z") == std::string_view::npos);
     for (const auto &[source, name] : particleSortShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
@@ -856,7 +861,25 @@ void main() { }
         {infernux::particle::GpuParticleCullShaderSources::Cull(), "ParticleCull.comp"},
         {infernux::particle::GpuParticleCullShaderSources::Finalize(), "ParticleCullFinalize.comp"},
     }};
+    assert(infernux::particle::GpuParticleCullShaderSources::Cull().find("visible_segments") == std::string_view::npos);
+    assert(infernux::particle::GpuParticleCullShaderSources::Cull().find("ribbon_segments") != std::string_view::npos);
     for (const auto &[source, name] : particleCullShaders) {
+        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
+        assert(spirv.size() >= 5 * sizeof(uint32_t));
+        uint32_t magic = 0;
+        std::memcpy(&magic, spirv.data(), sizeof(magic));
+        assert(magic == 0x07230203u);
+    }
+
+    const std::array<std::pair<std::string_view, const char *>, 2> particleEventShaders = {{
+        {infernux::particle::GpuParticleEventShaderSource::Prepare(), "ParticleEventPrepare.comp"},
+        {infernux::particle::GpuParticleEventShaderSource::Allocate(), "ParticleEventAllocate.comp"},
+    }};
+    const auto eventAllocateSource = infernux::particle::GpuParticleEventShaderSource::Allocate();
+    assert(eventAllocateSource.find("TargetSimulationControl") != std::string_view::npos);
+    assert(eventAllocateSource.find("pause_when_offscreen") != std::string_view::npos);
+    assert(eventAllocateSource.find("spawn_indices[destination] = INX_INVALID_INDEX") != std::string_view::npos);
+    for (const auto &[source, name] : particleEventShaders) {
         const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
         assert(spirv.size() >= 5 * sizeof(uint32_t));
         uint32_t magic = 0;
@@ -912,9 +935,19 @@ void main() { }
     const auto ribbonPicking = compiler.CompileFragmentGlsl(
         std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::PickingFragment()),
         "ParticleRibbonPicking.frag");
+    const auto ribbonMotionVertex = compiler.CompileVertexGlsl(
+        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::MotionVertex()),
+        "ParticleRibbonMotion.vert");
+    const auto ribbonMotionFragment = compiler.CompileFragmentGlsl(
+        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::MotionFragment()),
+        "ParticleRibbonMotion.frag");
     assert(ribbonVertex.size() >= 5 * sizeof(uint32_t));
+    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("visible_segments") !=
+           std::string_view::npos);
     assert(ribbonFragment.size() >= 5 * sizeof(uint32_t));
     assert(ribbonPicking.size() >= 5 * sizeof(uint32_t));
+    assert(ribbonMotionVertex.size() >= 5 * sizeof(uint32_t));
+    assert(ribbonMotionFragment.size() >= 5 * sizeof(uint32_t));
 
     std::cout << "Shader stage linker tests passed\n";
     return 0;

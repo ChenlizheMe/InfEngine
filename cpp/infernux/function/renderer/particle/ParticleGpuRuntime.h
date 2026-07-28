@@ -1,8 +1,10 @@
 #pragma once
 
+#include "ParticleGpuContinuationRuntime.h"
+#include "ParticleRenderInstance.h"
+
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
-#include <function/resources/InxPointCache/PointCacheArtifact.h>
 
 #include <array>
 #include <cstddef>
@@ -25,43 +27,24 @@ enum class GpuKernelStage : uint8_t
     Count,
 };
 
+enum class GpuParticleOffscreenPolicy : uint32_t
+{
+    AlwaysSimulate = 0,
+    PauseWhenOffscreen = 1,
+};
+
+struct alignas(16) GpuParticleSimulationControl
+{
+    uint32_t anyViewVisible = 1;
+    uint32_t simulationAllowed = 1;
+    GpuParticleOffscreenPolicy policy = GpuParticleOffscreenPolicy::AlwaysSimulate;
+    uint32_t reserved = 0;
+};
+
 struct ShaderBytecode
 {
     const uint32_t *words = nullptr;
     size_t wordCount = 0;
-};
-
-struct GpuPointCacheSampleDesc
-{
-    uint32_t sampleIndex = 0;
-    std::string channel;
-    PointCacheChannelType expectedType = PointCacheChannelType::Float;
-    bool requiresNormalTransform = false;
-};
-
-struct GpuPointCacheDesc
-{
-    uint32_t interfaceIndex = 0;
-    uint32_t dataBinding = 0;
-    uint32_t lookupBinding = 0;
-    bool worldSpace = true;
-    std::array<float, 16> cacheToSpace = {
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    std::shared_ptr<const PointCacheCpuData> data;
-    rhi::BufferHandle dataBuffer;
-    rhi::BufferHandle lookupBuffer;
-    std::shared_ptr<void> keepAlive;
-    std::vector<GpuPointCacheSampleDesc> samples;
-};
-
-struct GpuPointCacheLayoutDesc
-{
-    uint32_t metadataBinding = 0;
-    uint32_t interfaceStrideWords = 32;
-    uint32_t sampleStrideWords = 4;
-    uint32_t sampleCount = 0;
-    std::vector<GpuPointCacheDesc> pointCaches;
 };
 
 struct GpuMeshShapeDesc
@@ -73,7 +56,7 @@ struct GpuMeshShapeDesc
     uint32_t triangleCount = 0;
     rhi::BufferHandle vertices;
     rhi::BufferHandle triangles;
-    std::shared_ptr<void> keepAlive;
+    std::shared_ptr<const void> keepAlive;
 };
 
 struct GpuVectorFieldDesc
@@ -94,7 +77,17 @@ struct GpuVectorFieldDesc
     float vectorScale = 1.0f;
     rhi::TextureViewHandle texture;
     rhi::SamplerHandle sampler;
-    std::shared_ptr<void> keepAlive;
+    std::shared_ptr<const void> keepAlive;
+};
+
+struct GpuTexture2DParameterDesc
+{
+    uint32_t resourceIndex = 0;
+    uint32_t parameterSlot = 0;
+    uint32_t textureBinding = 0;
+    rhi::TextureViewHandle texture;
+    rhi::SamplerHandle sampler;
+    std::shared_ptr<const void> keepAlive;
 };
 
 struct GpuVectorFieldLayoutDesc
@@ -102,6 +95,7 @@ struct GpuVectorFieldLayoutDesc
     uint32_t metadataBinding = 0;
     uint32_t interfaceStrideWords = 32;
     std::vector<GpuVectorFieldDesc> vectorFields;
+    std::vector<GpuTexture2DParameterDesc> textureParameters;
 };
 
 struct GpuEmitterDesc
@@ -109,11 +103,21 @@ struct GpuEmitterDesc
     uint32_t capacity = 0;
     uint32_t stateStride = 0;
     uint32_t eventOutputStageMask = 0;
+    std::vector<uint32_t> parameterWords;
     std::array<ShaderBytecode, static_cast<size_t>(GpuKernelStage::Count)> kernels{};
     ShaderBytecode eventInitKernel;
-    GpuPointCacheLayoutDesc pointCaches;
     std::optional<GpuMeshShapeDesc> meshShape;
     GpuVectorFieldLayoutDesc vectorFields;
+    rhi::BufferHandle collisionSceneHeader;
+    rhi::BufferHandle collisionSceneColliders;
+    rhi::BufferHandle collisionSceneGridOffsets;
+    rhi::BufferHandle collisionSceneGridColliderIndices;
+    rhi::BufferHandle collisionSceneMeshVertices;
+    rhi::BufferHandle collisionSceneMeshIndices;
+    rhi::BufferHandle collisionSceneMeshBvhNodes;
+    /// Zero capacity means that the compiled emitter contains no suspension
+    /// points and therefore pays no continuation resource cost.
+    GpuParticleContinuationDesc continuation;
 };
 
 struct alignas(16) GpuParticleTransforms
@@ -140,7 +144,7 @@ class ParticleGpuRuntime
 {
   public:
     static constexpr uint32_t WorkgroupSize = 256;
-    static constexpr uint32_t RenderInstanceStride = 96;
+    static constexpr uint32_t RenderInstanceStride = sizeof(GpuParticleRenderInstance);
 
     ParticleGpuRuntime();
     ~ParticleGpuRuntime();
@@ -168,6 +172,7 @@ class ParticleGpuRuntime
     void RequestBootstrap() noexcept;
     void MarkStateInitialized() noexcept;
     [[nodiscard]] bool UpdateTransforms(const GpuParticleTransforms &transforms);
+    [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
 
     void RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed);
     void RecordInit(const rhi::ComputeCommandEncoder &encoder, uint32_t spawnCount, uint32_t spawnBaseId,
@@ -183,6 +188,17 @@ class ParticleGpuRuntime
     void RecordRendering(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed, uint32_t simulationStep,
                          rhi::BindGroupHandle eventOutput = {}, bool emitEvents = true) const;
     [[nodiscard]] bool HasEventOutput(GpuKernelStage stage) const noexcept;
+    [[nodiscard]] bool HasContinuations() const noexcept;
+    [[nodiscard]] const GpuParticleContinuationResources &ContinuationResources() const noexcept;
+    [[nodiscard]] GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept;
+    [[nodiscard]] bool SharesContinuationStateWith(const ParticleGpuRuntime &other) const noexcept;
+    void RequestContinuationReset() noexcept;
+    [[nodiscard]] bool RecordContinuationPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                                                 uint64_t elapsedTimeTicks);
+    [[nodiscard]] bool RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder,
+                                                  uint32_t simulationStep, uint64_t elapsedTimeTicks) const;
+    [[nodiscard]] bool RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder,
+                                                  uint32_t simulationStep, uint64_t elapsedTimeTicks) const;
 
     [[nodiscard]] uint32_t Capacity() const noexcept
     {
@@ -199,6 +215,11 @@ class ParticleGpuRuntime
     [[nodiscard]] rhi::BufferHandle IndirectBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle RenderIndexBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle TransformBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle SimulationControlBuffer() const noexcept;
+    [[nodiscard]] rhi::BufferHandle ParameterBuffer() const noexcept
+    {
+        return m_parameterBuffer;
+    }
     [[nodiscard]] rhi::BindingLayoutHandle EventInputLayout() const noexcept
     {
         return m_eventInputLayout;
@@ -210,8 +231,8 @@ class ParticleGpuRuntime
     struct VectorFieldState;
 
     [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
-                                      std::shared_ptr<ResidentState> residentState);
-    [[nodiscard]] bool UpdatePointCacheMetadata(const GpuParticleTransforms &transforms);
+                                      std::shared_ptr<ResidentState> residentState,
+                                      const ParticleGpuContinuationRuntime *previousContinuation);
     [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
     void Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
@@ -225,17 +246,21 @@ class ParticleGpuRuntime
     std::shared_ptr<ResidentState> m_residentState;
     std::unique_ptr<DataInterfaceState> m_dataInterfaces;
     std::unique_ptr<VectorFieldState> m_vectorFields;
+    std::unique_ptr<ParticleGpuContinuationRuntime> m_continuation;
     rhi::BindingLayoutHandle m_emptyDataInterfaceLayout;
     rhi::BindGroupHandle m_emptyDataInterfaceGroup;
     rhi::BindingLayoutHandle m_eventInputLayout;
     rhi::BindingLayoutHandle m_eventOutputLayout;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
+    rhi::BufferHandle m_parameterBuffer;
+    uint32_t m_parameterWordCount = 0;
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
     rhi::ComputePipelineHandle m_eventInitPipeline;
 };
 
 static_assert(sizeof(GpuParticleTransforms) == 256);
 static_assert(sizeof(GpuParticlePushConstants) == 32);
+static_assert(sizeof(GpuParticleSimulationControl) == 16);
 
 } // namespace infernux::particle

@@ -1,10 +1,14 @@
 #version 450
 
-@shader_id: Unlit
-@shading_model: Unlit
-@queue: 2000
-@property: baseColor, Color, [1.0, 1.0, 1.0, 1.0]
-@property: texSampler, Texture2D, white
+ShaderInfo {
+    Name "Unlit"
+    ShadingModel Unlit
+    Queue 2000
+    Properties {
+        Color baseColor = [1.0, 1.0, 1.0, 1.0]
+        Texture2D texSampler = white
+    }
+}
 
 void surface(out SurfaceData s) {
     s = InitSurfaceData();

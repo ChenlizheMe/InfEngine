@@ -1,11 +1,13 @@
-@shader_id: Lib Common
+ShaderInfo {
+    Name "Lib Common"
+}
 
 // ============================================================================
 // lib/common.glsl — Common utility functions
 //
 // Full-coverage math, logic, range, and wave helpers matching Unity
 // ShaderGraph node library. Context-free — no UBO or varying dependencies.
-// Usage: @import: Lib Common
+// Usage: ShaderInfo Imports: Lib Common
 // ============================================================================
 
 // ============================================================================

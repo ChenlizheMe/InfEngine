@@ -395,6 +395,7 @@ def _register_builtin_features() -> None:
     from Infernux.renderstack.chromatic_aberration_effect import ChromaticAberrationEffect
     from Infernux.renderstack.color_adjustments_effect import ColorAdjustmentsEffect
     from Infernux.renderstack.film_grain_effect import FilmGrainEffect
+    from Infernux.renderstack.motion_blur_effect import MotionBlurEffect
     from Infernux.renderstack.pixelation_effect import PixelationEffect
     from Infernux.renderstack.sharpen_effect import SharpenEffect
     from Infernux.renderstack.tonemapping_effect import ToneMappingEffect
@@ -425,6 +426,11 @@ def _register_builtin_features() -> None:
     register_render_effect_feature(
         "infernux.post.film_grain",
         FilmGrainEffect,
+        route_policy=RoutePolicy.MASK_AND_MODIFY,
+    )
+    register_render_effect_feature(
+        "infernux.post.motion_blur",
+        MotionBlurEffect,
         route_policy=RoutePolicy.MASK_AND_MODIFY,
     )
     register_render_effect_feature(
@@ -589,13 +595,14 @@ def _compile_effect(
 
 
 def _record_feature_passes(source: RenderEffect, feature: RenderEffectFeature):
-    from Infernux.rendergraph.graph import RenderGraph
+    from Infernux.rendergraph.graph import Format, RenderGraph
     from Infernux.renderstack.resource_bus import ResourceBus
 
     graph = RenderGraph("RenderEffectParameterProbe")
     color = graph.create_texture("color", camera_target=True)
-    bus = ResourceBus()
-    bus.set("color", color)
+    depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+    motion = graph.create_texture("motion", format=Format.RG16_SFLOAT, samples=1)
+    bus = ResourceBus({"color": color, "depth": depth, "motion": motion})
     feature.instantiate(source).setup_passes(graph, bus)
     return graph._passes
 

@@ -212,8 +212,10 @@ VkDeviceContext::~VkDeviceContext()
 VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
     : m_instance(other.m_instance), m_debugMessenger(other.m_debugMessenger), m_surface(other.m_surface),
       m_physicalDevice(other.m_physicalDevice), m_device(other.m_device), m_vmaAllocator(other.m_vmaAllocator),
-      m_graphicsQueue(other.m_graphicsQueue), m_presentQueue(other.m_presentQueue),
+      m_graphicsQueue(other.m_graphicsQueue), m_computeQueue(other.m_computeQueue),
+      m_presentQueue(other.m_presentQueue),
       m_transferQueue(other.m_transferQueue), m_hasDedicatedTransferQueue(other.m_hasDedicatedTransferQueue),
+      m_hasIndependentComputeQueue(other.m_hasIndependentComputeQueue),
       m_queueIndices(other.m_queueIndices), m_deviceProperties(other.m_deviceProperties),
       m_deviceFeatures(other.m_deviceFeatures), m_capabilities(other.m_capabilities),
       m_rhiDevice(std::move(other.m_rhiDevice)), m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
@@ -227,9 +229,11 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
     other.m_device = VK_NULL_HANDLE;
     other.m_vmaAllocator = VK_NULL_HANDLE;
     other.m_graphicsQueue = VK_NULL_HANDLE;
+    other.m_computeQueue = VK_NULL_HANDLE;
     other.m_presentQueue = VK_NULL_HANDLE;
     other.m_transferQueue = VK_NULL_HANDLE;
     other.m_hasDedicatedTransferQueue = false;
+    other.m_hasIndependentComputeQueue = false;
     other.m_capabilities = {};
     other.m_descriptorIndexingEnabled = false;
     other.m_timelineSemaphoreEnabled = false;
@@ -249,9 +253,11 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         m_device = other.m_device;
         m_vmaAllocator = other.m_vmaAllocator;
         m_graphicsQueue = other.m_graphicsQueue;
+        m_computeQueue = other.m_computeQueue;
         m_presentQueue = other.m_presentQueue;
         m_transferQueue = other.m_transferQueue;
         m_hasDedicatedTransferQueue = other.m_hasDedicatedTransferQueue;
+        m_hasIndependentComputeQueue = other.m_hasIndependentComputeQueue;
         m_queueIndices = other.m_queueIndices;
         m_deviceProperties = other.m_deviceProperties;
         m_deviceFeatures = other.m_deviceFeatures;
@@ -270,9 +276,11 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         other.m_device = VK_NULL_HANDLE;
         other.m_vmaAllocator = VK_NULL_HANDLE;
         other.m_graphicsQueue = VK_NULL_HANDLE;
+        other.m_computeQueue = VK_NULL_HANDLE;
         other.m_presentQueue = VK_NULL_HANDLE;
         other.m_transferQueue = VK_NULL_HANDLE;
         other.m_hasDedicatedTransferQueue = false;
+        other.m_hasIndependentComputeQueue = false;
         other.m_capabilities = {};
         other.m_descriptorIndexingEnabled = false;
         other.m_timelineSemaphoreEnabled = false;
@@ -329,7 +337,8 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
     }
     m_rhiDevice =
         std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator, m_capabilities,
-                                          m_queueIndices.graphicsFamily.value(), m_queueIndices.transferFamily.value());
+                                          m_queueIndices.graphicsFamily.value(), m_queueIndices.computeFamily.value(),
+                                          m_queueIndices.transferFamily.value());
 
     INXLOG_INFO("Vulkan device context initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -397,7 +406,8 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
     }
     m_rhiDevice =
         std::make_unique<VulkanRhiDevice>(m_device, m_vmaAllocator, m_capabilities,
-                                          m_queueIndices.graphicsFamily.value(), m_queueIndices.transferFamily.value());
+                                          m_queueIndices.graphicsFamily.value(), m_queueIndices.computeFamily.value(),
+                                          m_queueIndices.transferFamily.value());
 
     INXLOG_INFO("Vulkan device initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -413,6 +423,11 @@ void VkDeviceContext::WaitIdle() const
         ++m_waitIdleCount;
         vkDeviceWaitIdle(m_device);
     }
+}
+
+rhi::DeviceId VkDeviceContext::GetDeviceId() const noexcept
+{
+    return m_rhiDevice ? m_rhiDevice->GetDeviceId() : rhi::InvalidDeviceId;
 }
 
 void VkDeviceContext::Destroy() noexcept
@@ -434,7 +449,11 @@ void VkDeviceContext::Destroy() noexcept
         vkDestroyDevice(m_device, nullptr);
         m_device = VK_NULL_HANDLE;
         m_graphicsQueue = VK_NULL_HANDLE;
+        m_computeQueue = VK_NULL_HANDLE;
         m_presentQueue = VK_NULL_HANDLE;
+        m_transferQueue = VK_NULL_HANDLE;
+        m_hasIndependentComputeQueue = false;
+        m_hasDedicatedTransferQueue = false;
     }
 
     m_physicalDevice = VK_NULL_HANDLE;
@@ -676,14 +695,16 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
 
     // Create queue create infos
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    float queuePriority = 1.0f;
+    std::vector<std::array<float, 2>> queuePriorities(uniqueQueueFamilies.size(), {1.0f, 1.0f});
 
-    for (uint32_t queueFamily : uniqueQueueFamilies) {
+    for (size_t familyIndex = 0; familyIndex < uniqueQueueFamilies.size(); ++familyIndex) {
+        const uint32_t queueFamily = uniqueQueueFamilies[familyIndex];
         VkDeviceQueueCreateInfo queueCreateInfo{};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = queueFamily;
-        queueCreateInfo.queueCount = 1;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        queueCreateInfo.queueCount =
+            queueFamily == m_queueIndices.computeFamily.value() ? m_queueIndices.computeQueueIndex + 1u : 1u;
+        queueCreateInfo.pQueuePriorities = queuePriorities[familyIndex].data();
         queueCreateInfos.push_back(queueCreateInfo);
     }
 
@@ -770,7 +791,14 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
 
     // Get queue handles
     vkGetDeviceQueue(m_device, m_queueIndices.graphicsFamily.value(), 0, &m_graphicsQueue);
+    vkGetDeviceQueue(m_device, m_queueIndices.computeFamily.value(), m_queueIndices.computeQueueIndex,
+                     &m_computeQueue);
     vkGetDeviceQueue(m_device, m_queueIndices.presentFamily.value(), 0, &m_presentQueue);
+    m_hasIndependentComputeQueue = m_computeQueue != VK_NULL_HANDLE && m_computeQueue != m_graphicsQueue;
+    if (m_hasIndependentComputeQueue) {
+        INXLOG_INFO("Async compute queue enabled (family ", m_queueIndices.computeFamily.value(), ", queue ",
+                    m_queueIndices.computeQueueIndex, ")");
+    }
 
     // Transfer queue: if the GPU advertised a dedicated transfer-only family
     // (FindQueueFamilies's second pass), grab that queue handle so async
@@ -828,6 +856,7 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.features.wideLines = m_deviceFeatures.wideLines == VK_TRUE;
     capabilities.features.descriptorIndexing = m_descriptorIndexingEnabled;
     capabilities.features.timelineSemaphore = m_timelineSemaphoreEnabled;
+    capabilities.features.independentComputeQueue = m_hasIndependentComputeQueue;
     capabilities.features.dedicatedTransferQueue = m_hasDedicatedTransferQueue;
 
     uint32_t queueFamilyCount = 0;
@@ -907,6 +936,8 @@ QueueFamilyIndices VkDeviceContext::FindQueueFamilies(VkPhysicalDevice device) c
             // FindQueueFamilies always returns a complete set even on devices
             // that expose only a single queue family.
             indices.transferFamily = i;
+            if ((flags & VK_QUEUE_COMPUTE_BIT) != 0)
+                indices.computeFamily = i;
         }
 
         VkBool32 presentSupport = VK_FALSE;
@@ -914,6 +945,21 @@ QueueFamilyIndices VkDeviceContext::FindQueueFamilies(VkPhysicalDevice device) c
         if (presentSupport && !indices.presentFamily.has_value()) {
             indices.presentFamily = i;
         }
+    }
+
+    // Prefer a compute-only family. If none exists, reserve a second queue
+    // from the graphics family when the adapter exposes one.
+    for (uint32_t i = 0; i < queueFamilyCount; ++i) {
+        const auto flags = queueFamilies[i].queueFlags;
+        if ((flags & VK_QUEUE_COMPUTE_BIT) != 0 && (flags & VK_QUEUE_GRAPHICS_BIT) == 0) {
+            indices.computeFamily = i;
+            indices.computeQueueIndex = 0;
+            break;
+        }
+    }
+    if (indices.computeFamily == indices.graphicsFamily && indices.graphicsFamily.has_value() &&
+        queueFamilies[indices.graphicsFamily.value()].queueCount > 1) {
+        indices.computeQueueIndex = 1;
     }
 
     // Second pass: prefer a DEDICATED transfer-only family if one exists.

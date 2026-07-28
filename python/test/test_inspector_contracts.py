@@ -52,6 +52,68 @@ class _FakeVectorContext(_FakeSemanticContext):
         return x, y
 
 
+class _StableFieldIdContext:
+    def __init__(self):
+        self.id_stack = []
+        self.vector_calls = []
+
+    def push_id_str(self, value):
+        self.id_stack.append(value)
+
+    def pop_id(self):
+        self.id_stack.pop()
+
+    def vector2(self, label, x, y, *_args):
+        self.vector_calls.append((tuple(self.id_stack), label))
+        return x, y
+
+
+def test_serialized_bool_and_vector_fields_keep_stable_widget_ids(monkeypatch):
+    from Infernux.components.serialized_field import FieldMetadata, FieldType
+
+    checkbox_calls = []
+    monkeypatch.setattr(
+        inspector_utils,
+        "render_inspector_checkbox",
+        lambda fake_ctx, label, value: checkbox_calls.append(
+            (tuple(fake_ctx.id_stack), label)
+        ) or value,
+    )
+
+    ctx = _StableFieldIdContext()
+    bool_metadata = FieldMetadata(
+        name="enabled",
+        field_type=FieldType.BOOL,
+        default=False,
+    )
+    inspector_utils.render_serialized_field(
+        ctx,
+        "##stable_enabled",
+        "Enabled",
+        bool_metadata,
+        False,
+        80.0,
+    )
+
+    vector_metadata = FieldMetadata(
+        name="direction",
+        field_type=FieldType.VEC2,
+        default=None,
+    )
+    inspector_utils.render_serialized_field(
+        ctx,
+        "##stable_direction",
+        "Direction",
+        vector_metadata,
+        SimpleNamespace(x=1.0, y=2.0),
+        80.0,
+    )
+
+    assert checkbox_calls == [(('##stable_enabled',), "Enabled")]
+    assert ctx.vector_calls == [(('##stable_direction',), "Direction")]
+    assert ctx.id_stack == []
+
+
 class _FakeObjectFieldContext(_FakeSemanticContext):
     def __init__(self):
         super().__init__()
@@ -370,6 +432,7 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch):
 
 def test_inline_material_state_and_preview_query_are_reused(monkeypatch):
     import Infernux.engine.ui.inspector_material as module
+    from Infernux.engine.ui import asset_resource_preview
 
     class NativeMaterial:
         file_path = "C:/project/Assets/Test.mat"
@@ -391,10 +454,18 @@ def test_inline_material_state_and_preview_query_are_reused(monkeypatch):
     assert second_state.exec_layer is first_state.exec_layer
 
     queries = []
+    preview_native = SimpleNamespace(
+        get_material_preview_texture_id=lambda key: 73 if key == "material-key" else 0
+    )
+    monkeypatch.setattr(
+        asset_resource_preview,
+        "_resolve_native_engine",
+        lambda _panel: preview_native,
+    )
     monkeypatch.setattr(
         module,
         "_query_material_preview_tex",
-        lambda *_args: queries.append(True) or 73,
+        lambda *_args: queries.append(True) or (73, "material-key"),
     )
     monkeypatch.setattr(module, "_is_material_preview_ready", lambda *_args: True)
     assert module._get_cached_material_preview_tex(
@@ -410,8 +481,8 @@ def test_material_preview_does_not_cache_stale_generation(monkeypatch):
     import Infernux.engine.ui.inspector_material as module
 
     state = SimpleNamespace(extra={})
-    queries = iter((41, 42, 42))
-    ready = iter((False, True))
+    queries = iter(((41, "material-key"), (42, "material-key"), (42, "material-key")))
+    ready = iter((False, True, True))
     monkeypatch.setattr(module, "_query_material_preview_tex", lambda *_args: next(queries))
     monkeypatch.setattr(module, "_is_material_preview_ready", lambda *_args: next(ready))
 
@@ -427,7 +498,7 @@ def test_shader_reference_recovers_from_stale_path_hint(monkeypatch, tmp_path):
     from Infernux.engine.ui import inspector_shader_utils as shader_utils
 
     shader_path = tmp_path / "Recovered.frag"
-    shader_path.write_text("@shader_id: Recovered\n", encoding="utf-8")
+    shader_path.write_text('ShaderInfo { Name "Recovered" }\n', encoding="utf-8")
     monkeypatch.setattr(
         shader_utils,
         "_get_shader_catalog",
@@ -475,7 +546,7 @@ def test_initial_material_preview_uses_the_in_memory_document(monkeypatch, tmp_p
         SimpleNamespace(extra={"cached_json": json.dumps(document)}), "", str(path),
     )
 
-    assert tex == 17
+    assert tex == (17, f"mat|{path}")
     assert calls == [(native, str(path), {
         "material_json": json.dumps(document),
         "file_mtime_hint": 0,
@@ -609,6 +680,248 @@ def test_audio_track_renderer_exposes_picker_callbacks_and_semantic(monkeypatch)
     assert callable(captured["on_pick"])
     assert callable(captured["on_clear"])
     assert captured["semantic_id"] == "inspector.object.11.component.186.track_0.clip"
+
+
+def test_particle_parameter_renderer_adapts_vector_storage(monkeypatch):
+    import Infernux.engine.ui._inspector_extra_renderers as module
+    from Infernux.lib import Vector3
+
+    captured = {}
+    monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
+    monkeypatch.setattr(module, "render_compact_section_header", lambda *_args, **_kwargs: True)
+
+    def _render(_ctx, _wid, _label, _metadata, current, _label_width):
+        captured["current"] = current
+        return Vector3(4.0, 5.0, 6.0)
+
+    monkeypatch.setattr(module, "render_serialized_field", _render)
+    monkeypatch.setattr(module, "_record_generic_component", lambda *_args: None)
+    monkeypatch.setattr(module, "_notify_scene_modified", lambda: None)
+    updates = []
+    comp = SimpleNamespace(
+        exposed_parameter_schema=lambda: [{
+            "stable_id": "wind-id",
+            "name": "Wind",
+            "type": "vec3",
+            "default": [1.0, 2.0, 3.0],
+            "value": [1.0, 2.0, 3.0],
+            "category": "",
+            "tooltip": "",
+        }],
+        set_parameter=lambda stable_id, value: updates.append((stable_id, value)),
+    )
+    ctx = SimpleNamespace(separator=lambda: None, is_item_hovered=lambda: False)
+
+    module._render_particle_system_parameters(ctx, comp)
+
+    assert (captured["current"].x, captured["current"].y, captured["current"].z) == (1.0, 2.0, 3.0)
+    assert updates == [("wind-id", [4.0, 5.0, 6.0])]
+
+
+def test_particle_texture_parameter_renders_in_the_parameter_section(monkeypatch):
+    import Infernux.engine.ui._inspector_extra_renderers as module
+    import Infernux.lib as lib
+
+    class _AssetDatabase:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "smoke-guid" if str(path).endswith("Smoke.png") else ""
+
+    class _Registry:
+        @staticmethod
+        def get_asset_database():
+            return _AssetDatabase()
+
+    class _AssetRegistry:
+        @staticmethod
+        def instance():
+            return _Registry()
+
+    class _ParticleSystem:
+        def __init__(self):
+            self.path = "Assets/VFX/Default.png"
+
+        def exposed_parameter_schema(self):
+            return [{
+                "stable_id": "smoke-texture",
+                "name": "Smoke Texture",
+                "type": "texture2d",
+                "category": "Smoke",
+                "tooltip": "",
+                "default": {"guid": "default-guid", "path_hint": self.path},
+                "value": {"guid": "default-guid", "path_hint": self.path},
+            }]
+
+        def set_parameter(self, stable_id, value):
+            assert stable_id == "smoke-texture"
+            assert value["guid"] == "smoke-guid"
+            self.path = value["path_hint"]
+
+        def reset_parameter(self, stable_id):
+            assert stable_id == "smoke-texture"
+            self.path = ""
+            return True
+
+    captured = {}
+    monkeypatch.setattr(lib, "AssetRegistry", _AssetRegistry)
+    monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
+    monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        module, "render_compact_section_header", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        module, "render_compact_section_title", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        module,
+        "render_object_field",
+        lambda _ctx, _field_id, _name, _label, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(module, "_notify_scene_modified", lambda: None)
+    monkeypatch.setattr(
+        module, "_portable_asset_path_hint", lambda path: str(path).replace("\\", "/")
+    )
+    component = _ParticleSystem()
+    ctx = SimpleNamespace(separator=lambda: None)
+
+    module._render_particle_system_parameters(ctx, component)
+    captured["on_pick"]("Assets/VFX/Smoke.png")
+    captured["on_clear"]()
+
+    assert captured["accept_drag_type"] == (
+        "TEXTURE_GUID",
+        "TEXTURE_FILE",
+        "ASSET_FILE",
+    )
+    assert callable(captured["picker_asset_items"])
+    assert component.path == ""
+
+
+def test_particle_instance_sections_are_real_collapsible_groups(monkeypatch):
+    import Infernux.engine.ui._inspector_extra_renderers as module
+
+    rendered = []
+    monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
+    monkeypatch.setattr(
+        module,
+        "render_compact_section_header",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        module,
+        "render_serialized_field",
+        lambda *_args, **_kwargs: rendered.append(True),
+    )
+    component = SimpleNamespace(
+        component_id=9,
+        emitter_instance_schema=lambda: [
+            {
+                "stable_id": "smoke",
+                "name": "Smoke",
+                "enabled": True,
+                "play_on_start": True,
+            }
+        ],
+        exposed_parameter_schema=lambda: [
+            {
+                "stable_id": "density",
+                "name": "Density",
+                "type": "f32",
+                "default": 1.0,
+                "value": 1.0,
+                "category": "",
+                "tooltip": "",
+            }
+        ],
+    )
+
+    module._render_particle_system_parameters(
+        SimpleNamespace(separator=lambda: None), component
+    )
+
+    assert rendered == []
+
+
+def test_particle_emitter_playback_controls_edit_the_component_instance(monkeypatch):
+    import Infernux.engine.ui._inspector_extra_renderers as module
+
+    updates = []
+    monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
+    monkeypatch.setattr(
+        module, "render_compact_section_header", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        module, "render_compact_section_title", lambda *_args, **_kwargs: None
+    )
+
+    def _render(_ctx, widget_id, _label, _metadata, current, _label_width):
+        return not current if widget_id.endswith("_enabled") else current
+
+    monkeypatch.setattr(module, "render_serialized_field", _render)
+    component = SimpleNamespace(
+        component_id=12,
+        emitter_instance_schema=lambda: [
+            {
+                "stable_id": "smoke",
+                "name": "Smoke",
+                "enabled": True,
+                "play_on_start": True,
+            }
+        ],
+        exposed_parameter_schema=lambda: [],
+        set_emitter_options=lambda stable_id, **options: updates.append(
+            (stable_id, options)
+        ),
+    )
+
+    module._render_particle_system_parameters(
+        SimpleNamespace(separator=lambda: None), component
+    )
+
+    assert updates == [("smoke", {"enabled": False})]
+
+
+def test_particle_emitter_playback_controls_have_stable_unique_imgui_ids(monkeypatch):
+    import Infernux.engine.ui._inspector_extra_renderers as module
+
+    labels = []
+    monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
+    monkeypatch.setattr(
+        module, "render_compact_section_header", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(
+        module, "render_compact_section_title", lambda *_args, **_kwargs: None
+    )
+
+    def _render(_ctx, _widget_id, label, _metadata, current, _label_width):
+        labels.append(label)
+        return current
+
+    monkeypatch.setattr(module, "render_serialized_field", _render)
+    component = SimpleNamespace(
+        component_id=12,
+        emitter_instance_schema=lambda: [
+            {
+                "stable_id": stable_id,
+                "name": name,
+                "enabled": True,
+                "play_on_start": True,
+            }
+            for stable_id, name in (("smoke", "Smoke"), ("sparks", "Sparks"))
+        ],
+        exposed_parameter_schema=lambda: [],
+        set_emitter_options=lambda *_args, **_kwargs: None,
+    )
+
+    module._render_particle_system_parameters(
+        SimpleNamespace(separator=lambda: None), component
+    )
+
+    assert len(labels) == 4
+    assert len(set(labels)) == 4
+    visible_labels = [label.split("##", 1)[0] for label in labels]
+    assert visible_labels[:2] == visible_labels[2:]
+    assert visible_labels[0] != visible_labels[1]
 
 
 def test_audio_track_picker_assigns_and_clears_registered_guid(monkeypatch):

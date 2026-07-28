@@ -3,6 +3,7 @@
 #include "Infernux.h"
 
 #include <function/editor/EditorThemeRegistry.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
 #include <platform/filesystem/InxPath.h>
@@ -204,13 +205,21 @@ constexpr float kModelExpandIconSrcPx = 32.0f;
 // Static extension sets
 // ════════════════════════════════════════════════════════════════════
 
-static const std::unordered_set<std::string> sImageExtensions = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif",
-                                                                 ".psd", ".hdr", ".pic",  ".pnm", ".pgm", ".ppm"};
+static const std::unordered_set<std::string> sImageExtensions = [] {
+    std::unordered_set<std::string> result;
+    for (const auto extension : asset_formats::kTextureExtensions)
+        result.emplace(extension);
+    return result;
+}();
 
 static const std::unordered_set<std::string> sMaterialExtensions = {".mat"};
 
-static const std::unordered_set<std::string> sModelExtensions = {".fbx", ".obj", ".gltf", ".glb",
-                                                                 ".dae", ".3ds", ".ply",  ".stl"};
+static const std::unordered_set<std::string> sModelExtensions = [] {
+    std::unordered_set<std::string> result;
+    for (const auto extension : asset_formats::kMeshExtensions)
+        result.emplace(extension);
+    return result;
+}();
 
 static const std::unordered_set<std::string> sHiddenExtensions = {".meta", ".pyc", ".pyo", ".tmp"};
 
@@ -235,34 +244,43 @@ bool ProjectPanel::IsModelExt(const std::string &ext)
 
 const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 {
-    static const std::unordered_map<std::string, std::string> map = {
+    static const std::unordered_map<std::string, std::string> map = [] {
+        std::unordered_map<std::string, std::string> result = {
         {"__dir__", "folder"},
         {".py", "script_py"},
         {".vert", "shader_vert"},
         {".frag", "shader_frag"},
         {".hlsl", "shader_hlsl"},
-        {".fbx", "model_3d"},
-        {".obj", "model_3d"},
-        {".gltf", "model_3d"},
-        {".glb", "model_3d"},
+        {".glsl", "shader_glsl"},
+        {".shadingmodel", "shadingmodel"},
         {".wav", "audio"},
         {".ttf", "font"},
         {".otf", "font"},
         {".txt", "text"},
         {".md", "readme"},
-        {".mat", "file"},
+        {".mat", "material"},
         {".physicmaterial", "physic_material"},
         {".scene", "scene"},
-        // .prefab intentionally omitted — scene prefabs use the mesh-preview pipeline
-        // (same as models); UI-only prefabs fall back to model_3d.png via explicit logic.
+        // Scene prefabs still use the mesh-preview pipeline when possible;
+        // this named icon is only the explicit fallback for missing previews.
         {".animclip2d", "animclip2d"},
         {".animclip3d", "animclip3d"},
         {".animfsm", "animfsm"},
-        {".particlegraph", "file"},
-        {".pointcache", "file"},
-        {".effect", "file"},
-        {".effectgroup", "file"},
-    };
+        {".animtimeline", "timeline"},
+        {".timelinefsm", "timeline_fsm"},
+        {".particlegraph", "particle_graph"},
+        {".effect", "render_effect"},
+        {".effectgroup", "render_effect_group"},
+        {".prefab", "prefab"},
+        };
+        for (const auto extension : asset_formats::kTextureExtensions)
+            result.emplace(std::string(extension), "texture");
+        for (const auto extension : asset_formats::kMeshExtensions)
+            result.emplace(std::string(extension), "model_3d");
+        for (const auto extension : asset_formats::kAudioExtensions)
+            result.emplace(std::string(extension), "audio");
+        return result;
+    }();
     return map;
 }
 
@@ -272,7 +290,8 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
 
 const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel::GetDragDropMap()
 {
-    static const std::unordered_map<std::string, DragDropInfo> map = {
+    static const std::unordered_map<std::string, DragDropInfo> map = [] {
+        std::unordered_map<std::string, DragDropInfo> result = {
         {".py", {"SCRIPT_FILE", "Script"}},
         {".mat", {"MATERIAL_FILE", "Material"}},
         {".physicmaterial", {"PHYSIC_MATERIAL_FILE", "PhysicMaterial"}},
@@ -280,18 +299,6 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
         {".frag", {"SHADER_FILE", "Shader"}},
         {".glsl", {"SHADER_FILE", "Shader"}},
         {".hlsl", {"SHADER_FILE", "Shader"}},
-        {".png", {"TEXTURE_FILE", "Texture"}},
-        {".jpg", {"TEXTURE_FILE", "Texture"}},
-        {".jpeg", {"TEXTURE_FILE", "Texture"}},
-        {".bmp", {"TEXTURE_FILE", "Texture"}},
-        {".tga", {"TEXTURE_FILE", "Texture"}},
-        {".gif", {"TEXTURE_FILE", "Texture"}},
-        {".psd", {"TEXTURE_FILE", "Texture"}},
-        {".hdr", {"TEXTURE_FILE", "Texture"}},
-        {".pic", {"TEXTURE_FILE", "Texture"}},
-        {".pnm", {"TEXTURE_FILE", "Texture"}},
-        {".pgm", {"TEXTURE_FILE", "Texture"}},
-        {".ppm", {"TEXTURE_FILE", "Texture"}},
         {".wav", {"AUDIO_FILE", "Audio"}},
         {".ttf", {"FONT_FILE", "Font"}},
         {".otf", {"FONT_FILE", "Font"}},
@@ -300,25 +307,33 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
         {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
         {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
         {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
-        {".pointcache", {"POINT_CACHE_FILE", "Point Cache"}},
         {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
         // Effect assets and groups occupy the same RenderStack slot type.
         {".effectgroup", {"RENDER_EFFECT_FILE", "Render Effect Group"}},
         {".animtimeline", {"ANIMTIMELINE_FILE", "Timeline"}},
         {".timelinefsm", {"TIMELINEFSM_FILE", "TimelineFSM"}},
-    };
+        };
+        for (const auto extension : asset_formats::kTextureExtensions)
+            result.emplace(std::string(extension), DragDropInfo{"TEXTURE_FILE", "Texture"});
+        for (const auto extension : asset_formats::kMeshExtensions)
+            result.emplace(std::string(extension), DragDropInfo{"MODEL_FILE", "Model"});
+        for (const auto extension : asset_formats::kAudioExtensions)
+            result.emplace(std::string(extension), DragDropInfo{"AUDIO_FILE", "Audio"});
+        return result;
+    }();
     return map;
 }
 
 const std::unordered_map<std::string, ProjectPanel::GuidDragDropInfo> &ProjectPanel::GetGuidDragDropMap()
 {
-    static const std::unordered_map<std::string, GuidDragDropInfo> map = {
-        {".prefab", {"PREFAB_GUID", "PREFAB_FILE", "Prefab"}}, {".fbx", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".obj", {"MODEL_GUID", "MODEL_FILE", "Model"}},       {".gltf", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".glb", {"MODEL_GUID", "MODEL_FILE", "Model"}},       {".dae", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".3ds", {"MODEL_GUID", "MODEL_FILE", "Model"}},       {".ply", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-        {".stl", {"MODEL_GUID", "MODEL_FILE", "Model"}},
-    };
+    static const std::unordered_map<std::string, GuidDragDropInfo> map = [] {
+        std::unordered_map<std::string, GuidDragDropInfo> result = {
+            {".prefab", {"PREFAB_GUID", "PREFAB_FILE", "Prefab"}},
+        };
+        for (const auto extension : asset_formats::kMeshExtensions)
+            result.emplace(std::string(extension), GuidDragDropInfo{"MODEL_GUID", "MODEL_FILE", "Model"});
+        return result;
+    }();
     return map;
 }
 
@@ -359,6 +374,8 @@ const char *ProjectPanel::GetFileTypeTag(const std::string &filename)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (ext == ".py" || ext == ".lua" || ext == ".cs")
         return "[PY]";
+    if (asset_formats::Contains(asset_formats::kAudioExtensions, ext))
+        return "[AUD]";
     if (ext == ".mat")
         return "[MAT]";
     if (ext == ".physicmaterial")
@@ -383,7 +400,7 @@ const char *ProjectPanel::GetFileTypeTag(const std::string &filename)
         return "[Timeline]";
     if (ext == ".timelinefsm")
         return "[TLFSM]";
-    if (ext == ".wav")
+    if (asset_formats::Contains(asset_formats::kAudioExtensions, ext))
         return "[AUD]";
     if (ext == ".ttf" || ext == ".otf")
         return "[FNT]";
@@ -1201,6 +1218,12 @@ uint64_t ProjectPanel::GetThumbnail(const std::string &filePath, uint64_t cached
     texMtime ^= srgb ? UINT64_C(0xc2b2ae3d27d4eb4f) : 0;
 
     const std::string resourceKey = std::string("tex|") + filePath;
+    const uint64_t readyTexture = m_engine->GetTexturePreviewTextureId(resourceKey);
+    if (readyTexture != 0)
+        return readyTexture;
+    if (m_texturePreviewRequestsThisFrame >= kTexturePreviewRequestBudget)
+        return 0;
+    ++m_texturePreviewRequestsThisFrame;
     // pump=false: PreRender already pumped once this frame.
     auto [texId, w, h] = m_engine->QueryOrScheduleTexturePreview(resourceKey, filePath, texMtime, nearest, srgb,
                                                                  maxSize, textureFormat, textureType, false, false);
@@ -1268,6 +1291,12 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
         return 0;
 
     const std::string resourceKey = std::string("mesh|") + filePath;
+    const uint64_t readyTexture = m_engine->GetMeshPreviewTextureId(resourceKey);
+    if (readyTexture != 0)
+        return readyTexture;
+    if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
+        return 0;
+    ++m_modelPreviewRequestsThisFrame;
     return m_engine->QueryOrScheduleMeshPreview(resourceKey, filePath, mtimeNs);
 }
 
@@ -2173,6 +2202,8 @@ void ProjectPanel::VisiblePreRender(InxGUIContext *ctx)
     const auto iconsStart = std::chrono::steady_clock::now();
     EnsureTypeIconsLoaded();
     const auto previewStart = std::chrono::steady_clock::now();
+    m_texturePreviewRequestsThisFrame = 0;
+    m_modelPreviewRequestsThisFrame = 0;
     ProcessPendingThumbnails();
     const auto otherStart = std::chrono::steady_clock::now();
     GetGridTextLineHeight(ctx);
@@ -3097,6 +3128,7 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
             effectItem("project.effect_chromatic_aberration", "NewChromaticAberration",
                        "infernux.post.chromatic_aberration");
             effectItem("project.effect_film_grain", "NewFilmGrain", "infernux.post.film_grain");
+            effectItem("project.effect_motion_blur", "NewMotionBlur", "infernux.post.motion_blur");
             effectItem("project.effect_sharpen", "NewSharpen", "infernux.post.sharpen");
             effectItem("project.effect_vignette", "NewVignette", "infernux.post.vignette");
             effectItem("project.effect_white_balance", "NewWhiteBalance", "infernux.post.white_balance");

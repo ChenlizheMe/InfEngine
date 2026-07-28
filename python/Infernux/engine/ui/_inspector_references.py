@@ -330,17 +330,20 @@ def _get_asset_ref_config():
     global _ASSET_REF_CONFIG
     if _ASSET_REF_CONFIG is None:
         from Infernux.components.serialized_field import FieldType
+        from Infernux.core.asset_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS
+        texture_patterns = tuple(f"*{extension}" for extension in sorted(IMAGE_EXTENSIONS))
+        audio_patterns = tuple(f"*{extension}" for extension in sorted(AUDIO_EXTENSIONS))
         _ASSET_REF_CONFIG = {
             FieldType.MATERIAL: ("Material",  "MATERIAL_FILE", ("*.mat",),            "mat"),
             FieldType.TEXTURE:  (
                 "Texture",
                 "TEXTURE_FILE",
-                ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tga", "*.gif", "*.psd", "*.hdr", "*.pic", "*.pnm", "*.pgm", "*.ppm"),
+                texture_patterns,
                 "tex",
             ),
             FieldType.SHADER:   ("Shader",    "SHADER_FILE",   ("*.vert", "*.frag"),   "shd"),
             # ASSET is kept as a fallback; _resolve_asset_config overrides it.
-            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    ("*.wav", "*.mp3", "*.ogg"), "aud"),
+            FieldType.ASSET:    ("AudioClip", "AUDIO_FILE",    audio_patterns, "aud"),
         }
     return _ASSET_REF_CONFIG
 
@@ -754,6 +757,7 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
                         accept_drag_type: str = None, on_drop_callback=None,
                         picker_scene_items=None, picker_asset_items=None,
                         on_pick=None, on_clear=None, on_ping=None,
+                        ping_path=None,
                         semantic_id: str = "") -> bool:
     """Render a Unity-style object field (selectable box showing an object reference)."""
     from .igui import IGUI
@@ -764,5 +768,6 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
         picker_scene_items=picker_scene_items,
         picker_asset_items=picker_asset_items,
         on_pick=on_pick, on_clear=on_clear, on_ping=on_ping,
+        ping_path=ping_path,
         semantic_id=semantic_id,
     )

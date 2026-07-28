@@ -263,6 +263,11 @@ bool IsPropertyType(std::string_view value)
     return Types.find(std::string(value)) != Types.end();
 }
 
+bool IsValueType(std::string_view value)
+{
+    return IsPropertyType(value) && value != "Texture2D";
+}
+
 bool IsInterpolation(std::string_view value)
 {
     return value == "Smooth" || value == "Flat" || value == "NoPerspective" || value == "Centroid";
@@ -423,6 +428,10 @@ class Parser final
                 ParseList(m_document.imports, "Imports");
             } else if (key.text == "Capabilities") {
                 ParseList(m_document.capabilities, "Capabilities");
+            } else if (key.text == "Resources") {
+                ParseResources();
+            } else if (key.text == "PushConstants") {
+                ParsePushConstants();
             } else if (key.text == "Entry") {
                 ParseEntry(key);
             } else {
@@ -433,6 +442,87 @@ class Parser final
                 Advance();
         }
         Consume(TokenKind::RightBrace, "unterminated ShaderInfo declaration");
+    }
+
+    void ParseResources()
+    {
+        if (!Consume(TokenKind::LeftBrace, "expected '{' after Resources"))
+            return;
+        std::unordered_set<std::string> names;
+        while (m_current.kind != TokenKind::RightBrace && m_current.kind != TokenKind::End) {
+            const Token begin = m_current;
+            if (m_current.kind != TokenKind::Identifier || m_current.text != "Texture2D") {
+                Error(m_current, "Resources currently supports Texture2D declarations");
+                SkipToPropertyBoundary();
+                continue;
+            }
+            ShaderInfoResource resource;
+            resource.type = m_current.text;
+            Advance();
+            if (m_current.kind != TokenKind::Identifier) {
+                Error(m_current, "expected a resource name");
+                SkipToPropertyBoundary();
+                continue;
+            }
+            resource.name = m_current.text;
+            const Token nameToken = m_current;
+            Advance();
+            if (!names.insert(resource.name).second)
+                Error(nameToken, "duplicate resource '" + resource.name + "'");
+            resource.source = {begin.begin, m_previous.end};
+            m_document.resources.push_back(std::move(resource));
+            if (m_current.kind == TokenKind::Semicolon)
+                Advance();
+        }
+        Consume(TokenKind::RightBrace, "unterminated Resources block");
+    }
+
+    void ParsePushConstants()
+    {
+        if (m_document.pushConstants) {
+            Error(m_current, "ShaderInfo may declare PushConstants only once");
+            SkipUnknownValue();
+            return;
+        }
+        ShaderInfoPushConstants constants;
+        if (m_current.kind != TokenKind::Identifier) {
+            Error(m_current, "PushConstants requires an instance name");
+            return;
+        }
+        constants.instanceName = m_current.text;
+        Advance();
+        if (!Consume(TokenKind::LeftBrace, "expected '{' after PushConstants instance name"))
+            return;
+        std::unordered_set<std::string> names;
+        while (m_current.kind != TokenKind::RightBrace && m_current.kind != TokenKind::End) {
+            const Token begin = m_current;
+            if (m_current.kind != TokenKind::Identifier || !IsValueType(m_current.text)) {
+                Error(m_current, "expected a supported PushConstants value type");
+                SkipToPropertyBoundary();
+                continue;
+            }
+            ShaderInfoConstant field;
+            field.type = m_current.text;
+            Advance();
+            if (m_current.kind != TokenKind::Identifier) {
+                Error(m_current, "expected a PushConstants field name");
+                SkipToPropertyBoundary();
+                continue;
+            }
+            field.name = m_current.text;
+            const Token nameToken = m_current;
+            Advance();
+            if (!names.insert(field.name).second)
+                Error(nameToken, "duplicate PushConstants field '" + field.name + "'");
+            field.source = {begin.begin, m_previous.end};
+            constants.fields.push_back(std::move(field));
+            if (m_current.kind == TokenKind::Semicolon)
+                Advance();
+        }
+        Consume(TokenKind::RightBrace, "unterminated PushConstants block");
+        if (constants.fields.empty())
+            Error(m_previous, "PushConstants requires at least one field");
+        m_document.pushConstants = std::move(constants);
     }
 
     void ParseQueue()

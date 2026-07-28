@@ -1,12 +1,20 @@
 #version 450
-@shader_id: Route Additive Composite
-@hidden
 
-layout(set = 0, binding = 0) uniform sampler2D _BaseTex;
-layout(set = 0, binding = 1) uniform sampler2D _AdditiveTex;
-
-layout(location = 0) in vec2 inUV;
-layout(location = 0) out vec4 outColor;
+ShaderInfo {
+    Name "Route Additive Composite"
+    Hidden On
+    Capabilities [Fullscreen]
+    Resources {
+        Texture2D _BaseTex
+        Texture2D _AdditiveTex
+    }
+    Inputs {
+        Float2 inUV
+    }
+    Outputs {
+        Float4 outColor
+    }
+}
 
 void main() {
     vec4 base = texture(_BaseTex, inUV);

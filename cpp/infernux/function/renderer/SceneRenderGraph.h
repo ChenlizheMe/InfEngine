@@ -24,13 +24,16 @@
 #include "SceneDepthResolver.h"
 #include "lighting/CanonicalLightGpuBuffer.h"
 #include "lighting/ForwardPlusLightGrid.h"
+#include "particle/ParticleGpuViewDiagnostics.h"
 #include "vk/RenderGraph.h"
+#include "vk/VkDescriptorManager.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
 #include <array>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,6 +44,7 @@ namespace infernux
 class InxVkCoreModular;
 class InxMaterial;
 class InxScreenUIRenderer;
+class OutlineRenderer;
 class SceneRenderTarget;
 class Camera;
 class Scene;
@@ -135,7 +139,8 @@ class SceneRenderGraph
      * @param sceneTarget Scene render target for external resources
      * @return true if successful
      */
-    bool Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *sceneTarget);
+    bool Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *sceneTarget,
+                    rhi::RenderViewKind viewKind = rhi::RenderViewKind::Scene);
 
     /**
      * @brief Cleanup resources
@@ -143,6 +148,22 @@ class SceneRenderGraph
     void Destroy();
 
     [[nodiscard]] uint64_t GetTransientResidentBytes() const;
+
+    /**
+     * @brief Retire framebuffer objects that reference the current scene target.
+     *
+     * Call this with
+     * the last submission epoch that can reference the current
+     * target before ReplaceSceneTarget(). The graph
+     * becomes non-executable
+     * immediately while Vulkan framebuffer destruction remains deferred.
+     */
+    void RetireFramebuffersBeforeTargetReplacement(rhi::SubmissionSerial retirementSerial);
+
+    [[nodiscard]] const rhi::RenderViewContext &GetRenderViewContext() const noexcept
+    {
+        return m_renderView;
+    }
 
     // ========================================================================
     // RenderGraph topology defined from Python
@@ -180,6 +201,10 @@ class SceneRenderGraph
         m_screenUIRenderer = renderer;
     }
 
+    /// Attach the Scene-only editor outline renderer. The graph topology only
+    /// changes when outline rendering transitions between inactive and active.
+    void SetOutlineRenderer(OutlineRenderer *renderer);
+
     void SetParticleGpuDrawRegistry(particle::ParticleGpuDrawRegistry *registry)
     {
         if (m_particleDrawRegistry == registry)
@@ -188,6 +213,9 @@ class SceneRenderGraph
         m_particleDrawRegistryRevision = 0;
         m_needsRebuild = true;
     }
+
+    [[nodiscard]] uint64_t RequestParticleViewDiagnostics(uint64_t graphInstanceId);
+    [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot QueryParticleViewDiagnostics(uint64_t requestId) const;
 
     /**
      * @brief Check if a custom graph topology has been applied
@@ -272,6 +300,24 @@ class SceneRenderGraph
      */
     void Execute(VkCommandBuffer commandBuffer);
 
+    /// Prepare mutable per-frame state before the backend records the
+    /// compiler-produced submission batches on their native queues.
+    [[nodiscard]] bool PrepareSubmissionExecution();
+
+    /// Complete diagnostics and publish the offscreen output after every
+    /// compiler-produced batch has been recorded.
+    [[nodiscard]] bool CompleteSubmissionExecution(VkCommandBuffer commandBuffer);
+
+    [[nodiscard]] vk::RenderGraph *GetCompiledRenderGraph() noexcept
+    {
+        return m_graphBuilt ? m_renderGraph.get() : nullptr;
+    }
+
+    [[nodiscard]] const vk::RenderGraph *GetCompiledRenderGraph() const noexcept
+    {
+        return m_graphBuilt ? m_renderGraph.get() : nullptr;
+    }
+
     /**
      * @brief Rebuild and compile the render graph if needed (pre-record phase).
      *
@@ -297,14 +343,20 @@ class SceneRenderGraph
     /**
      * @brief Called when scene render target is resized
      */
-    void OnResize(uint32_t width, uint32_t height);
-
     /**
      * @brief Force rebuild of the render graph on next frame
      */
     void MarkDirty()
     {
         m_needsRebuild = true;
+    }
+
+    /// Drop cached fullscreen pipelines compiled from a replaced shader
+    /// module. Graph commands keep their stable shader identifier and resolve
+    /// the newly published pipeline on the next record.
+    void InvalidateFullscreenShader(const std::string &shaderName)
+    {
+        m_fullscreenRenderer.InvalidateShader(shaderName);
     }
 
     void UpdateMainPassClearSettings(CameraClearFlags clearFlags, const glm::vec4 &bgColor);
@@ -418,12 +470,11 @@ class SceneRenderGraph
     // ========================================================================
 
     /// @brief Cache camera VP matrices (called by SubmitCulling)
-    void SetCachedCameraVP(const glm::mat4 &view, const glm::mat4 &proj)
-    {
-        m_cachedView = view;
-        m_cachedProj = proj;
-        m_hasCachedCameraVP = true;
-    }
+    void SetCachedCameraVP(const glm::mat4 &view, const glm::mat4 &proj);
+
+    /// Upload this view's camera constants into its current frame-local buffer.
+    /// This is host-side preparation and must happen before graph recording.
+    bool StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj, const glm::mat4 *previousViewProj = nullptr);
 
     /// @brief Check if this graph has cached camera VP matrices
     [[nodiscard]] bool HasCachedCameraVP() const
@@ -483,6 +534,11 @@ class SceneRenderGraph
         return m_cachedView;
     }
 
+    void SetDrawViewMatrix(const glm::mat4 &view)
+    {
+        m_drawView = view;
+    }
+
     /// @brief Get cached projection matrix
     [[nodiscard]] const glm::mat4 &GetCachedProj() const
     {
@@ -504,6 +560,7 @@ class SceneRenderGraph
 
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
     [[nodiscard]] VkDescriptorSet GetPerViewDescriptorSet() const;
+    [[nodiscard]] rhi::BindGroupHandle GetPerViewBindGroup() const;
 
     /// Build immutable lighting and shadow state owned by this camera graph.
     void StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
@@ -529,15 +586,19 @@ class SceneRenderGraph
         return m_shadowCameraResourceId;
     }
 
-    /**
-     * @brief Explicit MSAA resolve from 4x MSAA color to 1x color target
-     *
-     * Called after all render graph passes finish, so every draw call
-     * (scene objects, gizmos, grid) benefits from MSAA.
-     */
-    void ResolveSceneMsaa(VkCommandBuffer commandBuffer);
-
   private:
+    struct PendingParticleViewDiagnostic
+    {
+        uint64_t requestId = 0;
+        uint64_t graphInstanceId = 0;
+    };
+
+    struct ParticleViewDiagnosticState
+    {
+        mutable std::mutex mutex;
+        std::unordered_map<uint64_t, particle::GpuParticleViewDiagnosticSnapshot> snapshots;
+    };
+
     /**
      * @brief Build the vk::RenderGraph from configured passes
      */
@@ -561,6 +622,7 @@ class SceneRenderGraph
      * @brief Set the graph output handle for dead-pass culling.
      */
     void FinalizeGraphOutput(const std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
+    vk::ResourceHandle AppendEditorOutline(vk::ResourceHandle displayTarget);
 
     /**
      * @brief Import scene target resources into RenderGraph
@@ -573,10 +635,15 @@ class SceneRenderGraph
     void RefreshForwardPlusParticleRequirement();
     [[nodiscard]] bool PrepareForwardPlusFrame();
     void RetireForwardPlusResources();
+    void RecordParticleViewDiagnostics(VkCommandBuffer commandBuffer);
 
     InxVkCoreModular *m_vkCore = nullptr;
     SceneRenderTarget *m_sceneTarget = nullptr;
+    rhi::RenderViewContext m_renderView;
     InxScreenUIRenderer *m_screenUIRenderer = nullptr;
+    OutlineRenderer *m_outlineRenderer = nullptr;
+    bool m_outlinePassesEnabled = false;
+    bool m_outlinePipelineFailureReported = false;
 
     // Build state
     bool m_needsRebuild = true;
@@ -615,6 +682,9 @@ class SceneRenderGraph
     uint64_t m_particleDrawRegistryRevision = 0;
     std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuCuller>> m_particleCullers;
     std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuSorter>> m_particleSorters;
+    std::shared_ptr<ParticleViewDiagnosticState> m_particleViewDiagnosticState;
+    std::vector<PendingParticleViewDiagnostic> m_pendingParticleViewDiagnostics;
+    uint64_t m_nextParticleViewDiagnosticRequestId = 1;
 
     // The underlying render graph (now fully utilized)
     std::unique_ptr<vk::RenderGraph> m_renderGraph;
@@ -662,6 +732,7 @@ class SceneRenderGraph
     glm::mat4 m_cachedProj{1.0f};
     std::array<float, 24> m_particleFrustumPlanes{};
     bool m_hasCachedCameraVP = false;
+    glm::mat4 m_drawView{1.0f};
     glm::mat4 m_previousViewProj{1.0f};
     bool m_cameraHistoryValid = false;
 
@@ -669,15 +740,6 @@ class SceneRenderGraph
     // One set per frame-in-flight to prevent host-side vkUpdateDescriptorSets
     // from stomping a set the GPU is still sampling in the previous frame.
     static constexpr uint32_t kMaxFramesInFlight = 2;
-    VkDescriptorSet m_perViewDescSets[kMaxFramesInFlight] = {};
-    VkDescriptorSet m_particlePerViewDescSets[kMaxFramesInFlight] = {};
-    rhi::BindingLayoutHandle m_particlePerViewLayout;
-    rhi::BindGroupHandle m_particlePerViewGroups[kMaxFramesInFlight] = {};
-    rhi::BufferHandle m_cameraLightingBuffers[kMaxFramesInFlight] = {};
-    lighting::CanonicalLightGpuBuffer m_cameraCanonicalLights;
-    SceneLightCollector m_cameraLightCollector;
-    uint64_t m_shadowCameraResourceId = 0;
-
     struct PerViewBufferBindingState
     {
         VkBuffer canonicalLights = VK_NULL_HANDLE;
@@ -689,9 +751,6 @@ class SceneRenderGraph
         uint64_t tileLightMaskBytes = 0;
         bool initialized = false;
     };
-    PerViewBufferBindingState m_geometryBindingState[kMaxFramesInFlight] = {};
-    PerViewBufferBindingState m_particleBindingState[kMaxFramesInFlight] = {};
-
     struct PerViewShadowBindingState
     {
         VkImageView imageView = VK_NULL_HANDLE;
@@ -699,7 +758,35 @@ class SceneRenderGraph
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         bool fallback = true;
     };
-    PerViewShadowBindingState m_shadowBindingState[kMaxFramesInFlight] = {};
+
+    struct PerViewFrameState
+    {
+        vk::DescriptorLease geometryDescriptor;
+        vk::DescriptorLease particleDescriptor;
+        rhi::BindGroupHandle geometryGroup;
+        rhi::BindGroupHandle particleGroup;
+        rhi::BufferHandle cameraMatrix;
+        rhi::BufferHandle lighting;
+        PerViewBufferBindingState geometryBindings;
+        PerViewBufferBindingState particleBindings;
+        PerViewShadowBindingState shadowBinding;
+
+        [[nodiscard]] VkDescriptorSet GeometrySet() const noexcept
+        {
+            return geometryDescriptor.set;
+        }
+
+        [[nodiscard]] VkDescriptorSet ParticleSet() const noexcept
+        {
+            return particleDescriptor.set;
+        }
+    };
+
+    std::array<PerViewFrameState, kMaxFramesInFlight> m_perViewFrames{};
+    rhi::BindingLayoutHandle m_perViewLayout;
+    lighting::CanonicalLightGpuBuffer m_cameraCanonicalLights;
+    SceneLightCollector m_cameraLightCollector;
+    uint64_t m_shadowCameraResourceId = 0;
 
     // Resource handle bound to the graph's "shadowMap" sampler input.
     // Resolved after Compile() so the per-view descriptor can be updated

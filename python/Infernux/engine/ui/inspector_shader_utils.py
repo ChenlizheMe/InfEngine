@@ -5,7 +5,9 @@ All functions are stateless except for an optional *cache* dict parameter
 that callers can provide for per-session caching.
 """
 
+import json
 import os
+import re
 from Infernux.engine.path_utils import path_key, portable_path
 
 
@@ -49,6 +51,160 @@ def _read_compiled_shader_metadata(filepath: str) -> dict | None:
     if not metadata or not isinstance(metadata.get("shader_id"), str):
         return None
     return metadata
+
+
+def _strip_glsl_comments(source: str) -> str:
+    """Remove GLSL comments while preserving quoted ShaderInfo values."""
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(source):
+        char = source[index]
+        following = source[index + 1] if index + 1 < len(source) else ""
+        if in_string:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            output.append(char)
+            index += 1
+            continue
+        if char == "/" and following == "/":
+            index += 2
+            while index < len(source) and source[index] not in "\r\n":
+                index += 1
+            continue
+        if char == "/" and following == "*":
+            index += 2
+            while index + 1 < len(source) and source[index:index + 2] != "*/":
+                index += 1
+            index = min(len(source), index + 2)
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
+    """Read catalog fields from a source-level ``ShaderInfo`` declaration."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as handle:
+            source = _strip_glsl_comments(handle.read())
+    except OSError:
+        return {}
+
+    declaration = re.search(r"\b(?:ShaderInfo|ShadingModelInfo)\s*\{", source)
+    if declaration is None:
+        return {}
+    body_start = declaration.end()
+    depth = 1
+    cursor = body_start
+    in_string = False
+    escaped = False
+    while cursor < len(source) and depth:
+        char = source[cursor]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        cursor += 1
+    if depth:
+        return {}
+    body = source[body_start:cursor - 1]
+    name_match = re.search(r'\bName\s+("(?:\\.|[^"\\])*")', body)
+    if name_match is None:
+        return {}
+    try:
+        shader_id = json.loads(name_match.group(1))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(shader_id, str) or not shader_id.strip():
+        return {}
+
+    result: dict[str, object] = {"shader_id": shader_id.strip()}
+    hidden_match = re.search(r"\bHidden\s+(On|Off|True|False)\b", body, re.IGNORECASE)
+    if hidden_match is not None:
+        result["shader_hidden"] = hidden_match.group(1).casefold() in {"on", "true"}
+    shading_model_match = re.search(r'\bShadingModel\s+("(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*)', body)
+    if shading_model_match is not None:
+        encoded = shading_model_match.group(1)
+        result["shading_model"] = json.loads(encoded) if encoded.startswith('"') else encoded
+    queue_match = re.search(r"\bQueue\s+(-?\d+)\b", body)
+    if queue_match is not None:
+        result["queue"] = int(queue_match.group(1))
+    for field in ("Imports", "Capabilities"):
+        list_match = re.search(rf"\b{field}\s*\[([^\]]*)\]", body)
+        if list_match is None:
+            continue
+        values = re.findall(r'"((?:\\.|[^"\\])*)"|([A-Za-z_][A-Za-z0-9_]*)', list_match.group(1))
+        result[field.casefold()] = [json.loads(f'"{quoted}"') if quoted else bare for quoted, bare in values]
+    entries = {
+        role: function
+        for role, function in re.findall(
+            r"\bEntry\s+([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            body,
+        )
+    }
+    if entries:
+        result["entries"] = entries
+
+    properties_match = re.search(r"\bProperties\s*\{", body)
+    if properties_match is not None:
+        property_start = properties_match.end()
+        property_end = body.find("}", property_start)
+        if property_end >= 0:
+            properties: list[dict[str, object]] = []
+            declaration_pattern = re.compile(
+                r"^\s*(Float|Float2|Float3|Float4|Color|Int|Mat4|Texture2D)\s+"
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+                r"(\[[^\]]*\]|\"(?:\\.|[^\"\\])*\"|[^\s]+)"
+                r"(?:\s+Range\(\s*([^,]+)\s*,\s*([^\)]+)\s*\))?"
+                r"(?:\s+(HDR))?\s*$",
+                re.IGNORECASE,
+            )
+            for line in body[property_start:property_end].splitlines():
+                match = declaration_pattern.match(line)
+                if match is None:
+                    continue
+                prop_type, name, encoded_default, minimum, maximum, hdr = match.groups()
+                if prop_type == "Texture2D":
+                    default: object = encoded_default.strip('"')
+                else:
+                    try:
+                        default = json.loads(encoded_default)
+                    except (json.JSONDecodeError, TypeError):
+                        default = encoded_default
+                item: dict[str, object] = {
+                    "name": name,
+                    "type": prop_type,
+                    "default": default,
+                    "hdr": bool(hdr),
+                }
+                if minimum is not None and maximum is not None:
+                    try:
+                        item["range"] = [float(minimum), float(maximum)]
+                    except ValueError:
+                        pass
+                properties.append(item)
+            result["properties"] = properties
+    return result
 
 # Global generation counter, bumped on every successful shader hot-reload.
 # Inspector sync keys include this so that property lists refresh automatically.
@@ -136,7 +292,7 @@ def _get_shader_catalog(ext: str) -> dict[str, object]:
 
 
 def _get_shader_properties_cached(shader_id: str, ext: str) -> list:
-    """Return cached @property metadata for a shader id."""
+    """Return cached ShaderInfo property metadata for a shader id."""
     if not shader_id:
         return []
 
@@ -155,28 +311,24 @@ def _get_shader_properties_cached(shader_id: str, ext: str) -> list:
 
 
 def parse_shader_id(filepath: str) -> str:
-    """Return the canonical imported shader id, with legacy source fallback."""
+    """Return the canonical imported ShaderInfo name."""
     metadata = _read_compiled_shader_metadata(filepath)
     if metadata is not None:
         shader_id = metadata.get("shader_id", "").strip()
         if shader_id:
             return shader_id
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for i, line in enumerate(f):
-            if i > 20:
-                break
-            line = line.strip()
-            if line.startswith('@shader_id:'):
-                return line[11:].strip()
+    source_metadata = _read_source_shader_metadata(filepath)
+    shader_id = source_metadata.get("shader_id", "")
+    if isinstance(shader_id, str) and shader_id:
+        return shader_id
     return None
 
 
 def parse_shader_properties(filepath: str) -> list:
-    """Read the native importer property schema, with legacy source fallback.
+    """Read the native importer schema, with a structured source fallback.
 
     Returns list of dicts: [{'name': str, 'type': str, 'default': any, 'hdr': bool}, ...]
 
-    Format: ``@property: name, Type, default[, HDR]``
     """
     import json
     metadata = _read_compiled_shader_metadata(filepath)
@@ -194,64 +346,18 @@ def parse_shader_properties(filepath: str) -> list:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    properties = []
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for i, line in enumerate(f):
-            if i > 50:
-                break
-            line = line.strip()
-            if line.startswith('@property:'):
-                prop_str = line[10:].strip()
-                parts = prop_str.split(',', 2)
-                if len(parts) >= 3:
-                    name = parts[0].strip()
-                    prop_type = parts[1].strip()
-                    rest = parts[2].strip()
-                    # rest = "default[, HDR]"
-                    # For array defaults like [1.0, 0.0, 0.0, 1.0], find the
-                    # closing ']' first, then check for trailing flags.
-                    hdr = False
-                    if prop_type == 'Texture2D':
-                        # e.g. "white" or "white, HDR" (unlikely but safe)
-                        tail_parts = rest.rsplit(',', 1)
-                        default_val = tail_parts[0].strip()
-                        if len(tail_parts) > 1 and tail_parts[1].strip().upper() == 'HDR':
-                            hdr = True
-                    elif rest.startswith('['):
-                        bracket_end = rest.index(']') + 1
-                        default_val = json.loads(rest[:bracket_end])
-                        trailer = rest[bracket_end:].strip()
-                        if trailer.startswith(','):
-                            trailer = trailer[1:].strip()
-                        if trailer.upper() == 'HDR':
-                            hdr = True
-                    else:
-                        # Scalar: "0.5" or "0.5, HDR"
-                        tail_parts = rest.split(',', 1)
-                        default_val = json.loads(tail_parts[0].strip())
-                        if len(tail_parts) > 1 and tail_parts[1].strip().upper() == 'HDR':
-                            hdr = True
-                    properties.append({
-                        'name': name,
-                        'type': prop_type,
-                        'default': default_val,
-                        'hdr': hdr,
-                    })
-    return properties
+    source_properties = _read_source_shader_metadata(filepath).get("properties", [])
+    return source_properties if isinstance(source_properties, list) else []
 
 
 def is_shader_hidden(filepath: str) -> bool:
-    """Check imported visibility, with legacy annotation fallback."""
+    """Check imported visibility, with a ShaderInfo source fallback."""
     metadata = _read_compiled_shader_metadata(filepath)
     if metadata is not None and isinstance(metadata.get("shader_hidden"), bool):
         return metadata["shader_hidden"]
-    with open(filepath, 'r', encoding='utf-8') as f:
-        for i, line in enumerate(f):
-            if i > 20:
-                break
-            stripped = line.strip().lstrip('/ ')
-            if stripped == '@hidden':
-                return True
+    source_metadata = _read_source_shader_metadata(filepath)
+    if isinstance(source_metadata.get("shader_hidden"), bool):
+        return source_metadata["shader_hidden"]
     return False
 
 
@@ -338,7 +444,7 @@ def shader_display_from_value(value, items):
 
 def get_shader_candidates(ext: str, cache: dict = None):
     """Collect shader files from project and built-in shader folders.
-    Only shaders with @shader_id annotations are listed.
+    Only shaders with valid ShaderInfo names are listed.
     Each unique shader_id appears only once in the list.
     
     If *cache* is provided and already contains entries for *ext*, the
@@ -485,7 +591,7 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
 
 def sync_properties_from_shader(mat_data: dict, shader_id: str, ext: str,
                                 remove_unknown: bool = False):
-    """Sync material properties from shader's @property annotations.
+    """Sync material properties from ShaderInfo declarations.
     Adds new properties from shader, keeps existing values if property exists.
     If *remove_unknown* is True, removes properties not defined in shader.
     """
@@ -502,7 +608,7 @@ def sync_all_shader_properties(mat_data: dict, vert_shader_id: str, frag_shader_
                                remove_unknown: bool = False):
     """Sync material properties from both vertex and fragment shader annotations.
 
-    Merges @property annotations from both shaders.  Vertex properties appear
+    Merges properties from both shader stages. Vertex properties appear
     first in the display order, followed by fragment properties.
     If *remove_unknown* is True, removes properties not defined in either shader.
     """

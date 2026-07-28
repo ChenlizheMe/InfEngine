@@ -113,6 +113,12 @@ def test_runtime_renderer_state_combines_frame_submission_and_gpu_residency(monk
             "game_render_graph_execution_count": 42,
             "game_render_graph_current_executed": True,
             "game_render_graph_pass_names": ["OpaquePass", "Bloom_Composite"],
+            "gpu_particle_collision_scene_revision": 17,
+            "gpu_particle_collision_scene_collider_count": 3,
+            "gpu_particle_collision_scene_topology_revision": 5,
+            "gpu_particle_collision_scene_mesh_vertex_count": 128,
+            "gpu_particle_collision_scene_mesh_index_count": 384,
+            "gpu_particle_collision_scene_mesh_bvh_node_count": 63,
             "ui_panel_times_ms": {"project": 0.42, "console": 0.03},
             "ui_panel_sub_times_ms": {"project": {"folderTree": 0.19}},
         }
@@ -157,6 +163,12 @@ def test_runtime_renderer_state_combines_frame_submission_and_gpu_residency(monk
     assert state["frame"]["game_render_graph_current_executed"] is True
     assert state["frame"]["game_render_graph_execution_count"] == 42
     assert "Bloom_Composite" in state["frame"]["game_render_graph_pass_names"]
+    assert state["frame"]["gpu_particle_collision_scene_revision"] == 17
+    assert state["frame"]["gpu_particle_collision_scene_collider_count"] == 3
+    assert state["frame"]["gpu_particle_collision_scene_topology_revision"] == 5
+    assert state["frame"]["gpu_particle_collision_scene_mesh_vertex_count"] == 128
+    assert state["frame"]["gpu_particle_collision_scene_mesh_index_count"] == 384
+    assert state["frame"]["gpu_particle_collision_scene_mesh_bvh_node_count"] == 63
     assert state["frame"]["ui_panel_times_ms"]["project"] == pytest.approx(0.42)
     assert state["frame"]["ui_panel_sub_times_ms"]["project"]["folderTree"] == pytest.approx(0.19)
     assert state["gpu_residency"]["tracked_bytes"] == 4096

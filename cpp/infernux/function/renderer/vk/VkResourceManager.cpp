@@ -5,8 +5,10 @@
 
 #include "VkResourceManager.h"
 #include "AsyncTransferContext.h"
+#include "DescriptorBindTrace.h"
 #include "RhiVulkanTypes.h"
 #include "VkDeviceContext.h"
+#include "VulkanQueueManager.h"
 #include "VulkanRhiDevice.h"
 #include <SDL3/SDL.h>
 #include <core/error/InxError.h>
@@ -143,11 +145,12 @@ const std::shared_ptr<VkBufferHandle> &BufferUploadTicket::GetBuffer() const
     return m_destination;
 }
 
-const std::shared_ptr<rhi::BufferResource> &BufferUploadTicket::GetRhiBuffer() const
+std::shared_ptr<rhi::BufferResource> BufferUploadTicket::GetRhiBuffer() const
 {
-    if (!m_published || !m_rhiBuffer)
+    auto resource = m_rhiBuffer.lock();
+    if (!m_published || !resource)
         throw std::logic_error("RHI buffer upload has not been published");
-    return m_rhiBuffer;
+    return resource;
 }
 
 const std::shared_ptr<rhi::TextureResource> &TextureUploadTicket::GetTexture() const
@@ -215,7 +218,7 @@ void GraphicsImageReadbackRecorder::Reset() noexcept
 // Initialization
 // ============================================================================
 
-bool VkResourceManager::Initialize(VkDeviceContext &context)
+bool VkResourceManager::Initialize(VkDeviceContext &context, VulkanQueueManager *queueManager)
 {
     m_ownerThread = std::this_thread::get_id();
     m_device = context.GetDevice();
@@ -223,6 +226,7 @@ bool VkResourceManager::Initialize(VkDeviceContext &context)
     m_vmaAllocator = context.GetVmaAllocator();
     m_graphicsQueue = context.GetGraphicsQueue();
     m_rhiDevice = &context.GetRhiDevice();
+    m_queueManager = queueManager;
 
     // Create command pool
     VkCommandPoolCreateInfo poolInfo{};
@@ -265,17 +269,18 @@ void VkResourceManager::Destroy() noexcept
         m_nearestSampler = VK_NULL_HANDLE;
     }
 
-    // Destroy descriptor pools
-    for (auto pool : m_descriptorPools) {
-        vkDestroyDescriptorPool(m_device, pool, nullptr);
-    }
-    m_descriptorPools.clear();
-
     // Tear down the single-time-command pools.
     // m_allSingleTimeCmdBuffers is owned by m_commandPool — destroying the
     // pool below frees them implicitly, so we only need to clear the lists.
+    std::vector<rhi::SubmissionSerial> abandonedCompletionEpochs;
     {
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+        abandonedCompletionEpochs.reserve(m_singleTimeCompletionEpochs.size());
+        for (const auto &[commandBuffer, epoch] : m_singleTimeCompletionEpochs) {
+            (void)commandBuffer;
+            abandonedCompletionEpochs.push_back(epoch);
+        }
+        m_singleTimeCompletionEpochs.clear();
         for (VkFence fence : m_allSingleTimeFences) {
             if (fence != VK_NULL_HANDLE) {
                 vkDestroyFence(m_device, fence, nullptr);
@@ -286,6 +291,12 @@ void VkResourceManager::Destroy() noexcept
         m_allSingleTimeCmdBuffers.clear();
         m_freeSingleTimeCmdBuffers.clear();
     }
+    for (const auto epoch : abandonedCompletionEpochs) {
+        if (m_queueManager)
+            m_queueManager->CompleteCompletionEpoch(epoch);
+    }
+    if (!abandonedCompletionEpochs.empty())
+        vkdebug::ClearDescriptorRecordingContext();
 
     // Destroy command pool
     if (m_commandPool != VK_NULL_HANDLE) {
@@ -297,6 +308,7 @@ void VkResourceManager::Destroy() noexcept
     m_physicalDevice = VK_NULL_HANDLE;
     m_graphicsQueue = VK_NULL_HANDLE;
     m_rhiDevice = nullptr;
+    m_queueManager = nullptr;
     m_asyncTransfer = nullptr;
     m_asyncReadback = nullptr;
 }
@@ -438,23 +450,24 @@ bool VkResourceManager::TryPublishBufferUpload(const std::shared_ptr<BufferUploa
     return true;
 }
 
-const std::shared_ptr<rhi::BufferResource> &
+std::shared_ptr<rhi::BufferResource>
 VkResourceManager::GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicket> &ticket)
 {
     if (!ticket || ticket->m_manager != this)
         throw std::invalid_argument("GPU buffer upload ticket belongs to another resource manager");
     if (!ticket->m_published || !ticket->m_destination)
         throw std::logic_error("GPU buffer upload has not been published");
-    if (!ticket->m_rhiBuffer) {
+    auto resource = ticket->m_rhiBuffer.lock();
+    if (!resource) {
         if (!m_rhiDevice)
             throw std::logic_error("GPU buffer upload has no RHI device");
         const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size);
         if (!handle.IsValid())
             throw std::runtime_error("failed to register uploaded GPU buffer with the RHI device");
-        ticket->m_rhiBuffer =
-            std::make_shared<rhi::BufferResource>(*m_rhiDevice, handle, ticket->m_size, ticket->m_destination);
+        resource = std::make_shared<rhi::BufferResource>(*m_rhiDevice, handle, ticket->m_size, ticket->m_destination);
+        ticket->m_rhiBuffer = resource;
     }
-    return ticket->m_rhiBuffer;
+    return resource;
 }
 
 void VkResourceManager::DrainBufferUploads() noexcept
@@ -835,6 +848,20 @@ void VkResourceManager::AbandonGraphicsImageReadback(GraphicsImageReadbackRecord
     recorder.m_commandBuffer = VK_NULL_HANDLE;
 
     if (commandBuffer != VK_NULL_HANDLE) {
+        rhi::SubmissionSerial completionEpoch = rhi::InvalidSubmissionSerial;
+        {
+            std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+            const auto found = m_singleTimeCompletionEpochs.find(commandBuffer);
+            if (found != m_singleTimeCompletionEpochs.end()) {
+                completionEpoch = found->second;
+                m_singleTimeCompletionEpochs.erase(found);
+            }
+        }
+        if (completionEpoch != rhi::InvalidSubmissionSerial) {
+            vkdebug::PopDescriptorRecordingContext();
+            if (m_queueManager)
+                m_queueManager->CompleteCompletionEpoch(completionEpoch);
+        }
         vkResetCommandBuffer(commandBuffer, 0);
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
         m_freeSingleTimeCmdBuffers.push_back(commandBuffer);
@@ -1232,27 +1259,68 @@ VkCommandBuffer VkResourceManager::BeginSingleTimeCommands()
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocInfo.commandPool = m_commandPool;
         allocInfo.commandBufferCount = 1;
-        vkAllocateCommandBuffers(m_device, &allocInfo, &cmdBuffer);
+        if (vkAllocateCommandBuffers(m_device, &allocInfo, &cmdBuffer) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
 
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
         m_allSingleTimeCmdBuffers.push_back(cmdBuffer);
     } else {
         // Recycled buffer carries left-over recording state — reset before reuse.
-        vkResetCommandBuffer(cmdBuffer, 0);
+        if (vkResetCommandBuffer(cmdBuffer, 0) != VK_SUCCESS)
+            return VK_NULL_HANDLE;
     }
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    vkBeginCommandBuffer(cmdBuffer, &beginInfo);
+    if (vkBeginCommandBuffer(cmdBuffer, &beginInfo) != VK_SUCCESS) {
+        std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+        m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
+        return VK_NULL_HANDLE;
+    }
+
+    if (m_queueManager) {
+        const auto epoch = m_queueManager->ReserveCompletionEpoch();
+        if (epoch == rhi::InvalidSubmissionSerial) {
+            (void)vkEndCommandBuffer(cmdBuffer);
+            std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+            m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
+            return VK_NULL_HANDLE;
+        }
+        {
+            std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+            m_singleTimeCompletionEpochs[cmdBuffer] = epoch;
+        }
+        vkdebug::PushDescriptorRecordingContext(&m_rhiDevice->GetDescriptorManager(), epoch);
+    }
 
     return cmdBuffer;
 }
 
 void VkResourceManager::EndSingleTimeCommands(VkCommandBuffer cmdBuffer)
 {
-    vkEndCommandBuffer(cmdBuffer);
+    rhi::SubmissionSerial completionEpoch = rhi::InvalidSubmissionSerial;
+    {
+        std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+        const auto found = m_singleTimeCompletionEpochs.find(cmdBuffer);
+        if (found != m_singleTimeCompletionEpochs.end()) {
+            completionEpoch = found->second;
+            m_singleTimeCompletionEpochs.erase(found);
+        }
+    }
+    if (completionEpoch != rhi::InvalidSubmissionSerial)
+        vkdebug::PopDescriptorRecordingContext();
+    const auto finishEpoch = [&] {
+        if (m_queueManager && completionEpoch != rhi::InvalidSubmissionSerial)
+            m_queueManager->CompleteCompletionEpoch(completionEpoch);
+    };
+    if (vkEndCommandBuffer(cmdBuffer) != VK_SUCCESS) {
+        finishEpoch();
+        std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+        m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
+        return;
+    }
 
     // Acquire (or lazily create) a recycled fence.
     VkFence submitFence = VK_NULL_HANDLE;
@@ -1268,6 +1336,9 @@ void VkResourceManager::EndSingleTimeCommands(VkCommandBuffer cmdBuffer)
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         if (vkCreateFence(m_device, &fenceInfo, nullptr, &submitFence) != VK_SUCCESS) {
             INXLOG_ERROR("VkResourceManager::EndSingleTimeCommands: vkCreateFence failed");
+            finishEpoch();
+            std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+            m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
             return;
         }
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
@@ -1295,8 +1366,25 @@ void VkResourceManager::EndSingleTimeCommands(VkCommandBuffer cmdBuffer)
         submitInfo.pWaitDstStageMask = &uploadWaitStage;
     }
 
-    vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, submitFence);
+    const auto submission =
+        m_queueManager ? m_queueManager->Reserve(rhi::QueueRole::Graphics) : rhi::SubmissionTicket{};
+    const VkResult submitResult = m_queueManager ? m_queueManager->SubmitReserved(submission, submitInfo, submitFence)
+                                                 : vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, submitFence);
+    if (submitResult != VK_SUCCESS) {
+        INXLOG_ERROR("VkResourceManager::EndSingleTimeCommands: graphics submit failed with VkResult ",
+                     static_cast<int>(submitResult));
+        {
+            std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+            m_freeSingleTimeFences.push_back(submitFence);
+            m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
+        }
+        finishEpoch();
+        return;
+    }
     WaitForFencePumpingEvents(m_device, submitFence);
+    if (m_queueManager && submission.IsValid())
+        m_queueManager->MarkCompleted(submission);
+    finishEpoch();
 
     // Return both objects to the free list — the fence is reusable after
     // vkResetFences (above) and the command buffer is reusable after the
@@ -1315,11 +1403,26 @@ VkResourceManager::EndSingleTimeCommandsAsync(VkCommandBuffer cmdBuffer, std::fu
     if (cmdBuffer == VK_NULL_HANDLE)
         throw std::invalid_argument("Asynchronous graphics submission requires a live command buffer");
 
-    auto recycleUnsubmitted = [&](VkFence fence = VK_NULL_HANDLE) {
+    rhi::SubmissionSerial completionEpoch = rhi::InvalidSubmissionSerial;
+    {
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
-        if (fence != VK_NULL_HANDLE)
-            m_freeSingleTimeFences.push_back(fence);
-        m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
+        const auto found = m_singleTimeCompletionEpochs.find(cmdBuffer);
+        if (found != m_singleTimeCompletionEpochs.end()) {
+            completionEpoch = found->second;
+            m_singleTimeCompletionEpochs.erase(found);
+        }
+    }
+    if (completionEpoch != rhi::InvalidSubmissionSerial)
+        vkdebug::PopDescriptorRecordingContext();
+    auto recycleUnsubmitted = [&](VkFence fence = VK_NULL_HANDLE) {
+        {
+            std::lock_guard<std::mutex> guard(m_singleTimeMutex);
+            if (fence != VK_NULL_HANDLE)
+                m_freeSingleTimeFences.push_back(fence);
+            m_freeSingleTimeCmdBuffers.push_back(cmdBuffer);
+        }
+        if (m_queueManager && completionEpoch != rhi::InvalidSubmissionSerial)
+            m_queueManager->CompleteCompletionEpoch(completionEpoch);
     };
     if (vkEndCommandBuffer(cmdBuffer) != VK_SUCCESS) {
         recycleUnsubmitted();
@@ -1367,14 +1470,19 @@ VkResourceManager::EndSingleTimeCommandsAsync(VkCommandBuffer cmdBuffer, std::fu
         submitInfo.pWaitDstStageMask = &uploadWaitStage;
     }
 
-    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
+    const auto submission =
+        m_queueManager ? m_queueManager->Reserve(rhi::QueueRole::Graphics) : rhi::SubmissionTicket{};
+    const VkResult submitResult = m_queueManager ? m_queueManager->SubmitReserved(submission, submitInfo, submitFence)
+                                                 : vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, submitFence);
+    if (submitResult != VK_SUCCESS) {
         recycleUnsubmitted(submitFence);
         throw std::runtime_error("Failed to submit asynchronous graphics command buffer");
     }
-
     auto ticket = std::make_shared<GraphicsSubmissionTicket>();
     ticket->m_commandBuffer = cmdBuffer;
     ticket->m_fence = submitFence;
+    ticket->m_submission = submission;
+    ticket->m_completionEpoch = completionEpoch;
     ticket->m_releaseResources = std::move(releaseResources);
     {
         std::lock_guard<std::mutex> guard(m_singleTimeMutex);
@@ -1412,6 +1520,10 @@ void VkResourceManager::PollAsyncGraphicsSubmissions()
     }
 
     for (const auto &submission : completed) {
+        if (m_queueManager && submission->m_submission.IsValid())
+            m_queueManager->MarkCompleted(submission->m_submission);
+        if (m_queueManager && submission->m_completionEpoch != rhi::InvalidSubmissionSerial)
+            m_queueManager->CompleteCompletionEpoch(submission->m_completionEpoch);
         try {
             if (submission->m_releaseResources)
                 submission->m_releaseResources();
@@ -1444,6 +1556,10 @@ void VkResourceManager::DrainAsyncGraphicsSubmissions() noexcept
     }
 
     for (const auto &submission : completed) {
+        if (m_queueManager && submission->m_submission.IsValid())
+            m_queueManager->MarkCompleted(submission->m_submission);
+        if (m_queueManager && submission->m_completionEpoch != rhi::InvalidSubmissionSerial)
+            m_queueManager->CompleteCompletionEpoch(submission->m_completionEpoch);
         try {
             if (submission->m_releaseResources)
                 submission->m_releaseResources();
@@ -1453,102 +1569,6 @@ void VkResourceManager::DrainAsyncGraphicsSubmissions() noexcept
         submission->m_releaseResources = {};
         submission->m_complete.store(true, std::memory_order_release);
     }
-}
-
-// ============================================================================
-// Descriptor Management
-// ============================================================================
-
-VkDescriptorPool VkResourceManager::CreateDescriptorPool(const std::vector<VkDescriptorPoolSize> &poolSizes,
-                                                         uint32_t maxSets)
-{
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = maxSets;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-
-    VkDescriptorPool pool;
-    if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &pool) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to create descriptor pool");
-        return VK_NULL_HANDLE;
-    }
-
-    m_descriptorPools.push_back(pool);
-    return pool;
-}
-
-std::vector<VkDescriptorSet>
-VkResourceManager::AllocateDescriptorSets(VkDescriptorPool pool, const std::vector<VkDescriptorSetLayout> &layouts)
-{
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = pool;
-    allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-    allocInfo.pSetLayouts = layouts.data();
-
-    std::vector<VkDescriptorSet> sets(layouts.size());
-    if (vkAllocateDescriptorSets(m_device, &allocInfo, sets.data()) != VK_SUCCESS) {
-        INXLOG_ERROR("Failed to allocate descriptor sets");
-        return {};
-    }
-
-    return sets;
-}
-
-void VkResourceManager::UpdateDescriptorSet(VkDescriptorSet set, uint32_t binding, VkBuffer buffer, VkDeviceSize offset,
-                                            VkDeviceSize range)
-{
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = buffer;
-    bufferInfo.offset = offset;
-    bufferInfo.range = range;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = set;
-    write.dstBinding = binding;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.descriptorCount = 1;
-    write.pBufferInfo = &bufferInfo;
-
-    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
-}
-
-void VkResourceManager::UpdateDescriptorSet(VkDescriptorSet set, uint32_t binding, VkImageView imageView,
-                                            VkSampler sampler, VkImageLayout layout)
-{
-    VkDescriptorImageInfo imageInfo{};
-    imageInfo.imageLayout = layout;
-    imageInfo.imageView = imageView;
-    imageInfo.sampler = sampler;
-
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = set;
-    write.dstBinding = binding;
-    write.dstArrayElement = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.descriptorCount = 1;
-    write.pImageInfo = &imageInfo;
-
-    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
-}
-
-void VkResourceManager::DestroyDescriptorPool(VkDescriptorPool pool)
-{
-    if (pool == VK_NULL_HANDLE) {
-        return;
-    }
-
-    auto it = std::find(m_descriptorPools.begin(), m_descriptorPools.end(), pool);
-    if (it != m_descriptorPools.end()) {
-        m_descriptorPools.erase(it);
-    }
-
-    vkDestroyDescriptorPool(m_device, pool, nullptr);
 }
 
 // ============================================================================

@@ -22,9 +22,17 @@ struct GpuParticleFrameRequest
     uint32_t spawnGeneration = 0;
     uint32_t systemSeed = 0;
     uint32_t simulationStep = 0;
+    /// Monotonic engine-owned continuation clock ticks. The runtime treats the
+    /// value as opaque; generated Wait-for-seconds code defines the tick rate.
+    uint64_t continuationTimeTicks = 0;
     float deltaTime = 0.0f;
     bool simulate = true;
     bool render = true;
+    GpuParticleOffscreenPolicy offscreenPolicy = GpuParticleOffscreenPolicy::AlwaysSimulate;
+    bool forceSimulation = false;
+    GpuParticleBoundsMode boundsMode = GpuParticleBoundsMode::Automatic;
+    std::array<float, 3> manualBoundsLower{};
+    std::array<float, 3> manualBoundsUpper{};
 };
 
 struct GpuParticleGraphOutputs
@@ -68,6 +76,10 @@ class ParticleRenderGraph
         return m_migrationCompleted;
     }
     [[nodiscard]] bool ConsumeMigrationCompletion() noexcept;
+    [[nodiscard]] GpuParticleContinuationTelemetry ContinuationTelemetry() const noexcept
+    {
+        return m_runtime ? m_runtime->ContinuationTelemetry() : GpuParticleContinuationTelemetry{};
+    }
 
     [[nodiscard]] bool IsAttached() const noexcept
     {
@@ -85,6 +97,10 @@ class ParticleRenderGraph
     {
         return m_outputs;
     }
+    [[nodiscard]] uint32_t RenderExportPassId() const noexcept
+    {
+        return m_renderExportPassId;
+    }
 
   private:
     ParticleGpuRuntime *m_runtime = nullptr;
@@ -98,8 +114,10 @@ class ParticleRenderGraph
     bool m_migrationPending = false;
     bool m_migrationCompleted = false;
     bool m_framePending = false;
+    bool m_resetPending = false;
     bool m_hasConsumedFrame = false;
     uint64_t m_lastConsumedFrame = 0;
+    uint32_t m_renderExportPassId = UINT32_MAX;
 };
 
 } // namespace infernux::particle

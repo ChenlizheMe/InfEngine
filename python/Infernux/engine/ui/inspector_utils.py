@@ -336,30 +336,37 @@ def _render_vec_sf(ctx, wid, current_value, lw, has_visible_label, vector_label,
     """Render a VEC2, VEC3, or VEC4 inspector field."""
     from Infernux.components.serialized_field import FieldType
     vec_lw = lw if has_visible_label else 1.0
-    if ft == FieldType.VEC2:
-        x, y = (float(current_value.x), float(current_value.y)) if current_value is not None else (0.0, 0.0)
-        nx, ny = ctx.vector2(vector_label, x, y, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y)]):
-            from Infernux.lib import Vector2
-            return Vector2(nx, ny)
-    elif ft == FieldType.VEC3:
-        if current_value is not None:
-            x, y, z = float(current_value.x), float(current_value.y), float(current_value.z)
-        else:
-            x, y, z = 0.0, 0.0, 0.0
-        nx, ny, nz = ctx.vector3(vector_label, x, y, z, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z)]):
-            from Infernux.lib import Vector3
-            return Vector3(nx, ny, nz)
-    elif ft == FieldType.VEC4:
-        if current_value is not None:
-            x, y, z, w = float(current_value.x), float(current_value.y), float(current_value.z), float(current_value.w)
-        else:
-            x, y, z, w = 0.0, 0.0, 0.0, 0.0
-        nx, ny, nz, nw = ctx.vector4(vector_label, x, y, z, w, DRAG_SPEED_DEFAULT, vec_lw)
-        if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z), (nw, w)]):
-            from Infernux.lib import vec4f
-            return vec4f(nx, ny, nz, nw)
+    # The native VectorN helpers use their visible label as the aggregate
+    # widget ID. Scope them with the serialized field ID so repeated/localized
+    # display names never alias another visible field in the same Inspector.
+    ctx.push_id_str(str(wid))
+    try:
+        if ft == FieldType.VEC2:
+            x, y = (float(current_value.x), float(current_value.y)) if current_value is not None else (0.0, 0.0)
+            nx, ny = ctx.vector2(vector_label, x, y, DRAG_SPEED_DEFAULT, vec_lw)
+            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y)]):
+                from Infernux.lib import Vector2
+                return Vector2(nx, ny)
+        elif ft == FieldType.VEC3:
+            if current_value is not None:
+                x, y, z = float(current_value.x), float(current_value.y), float(current_value.z)
+            else:
+                x, y, z = 0.0, 0.0, 0.0
+            nx, ny, nz = ctx.vector3(vector_label, x, y, z, DRAG_SPEED_DEFAULT, vec_lw)
+            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z)]):
+                from Infernux.lib import Vector3
+                return Vector3(nx, ny, nz)
+        elif ft == FieldType.VEC4:
+            if current_value is not None:
+                x, y, z, w = float(current_value.x), float(current_value.y), float(current_value.z), float(current_value.w)
+            else:
+                x, y, z, w = 0.0, 0.0, 0.0, 0.0
+            nx, ny, nz, nw = ctx.vector4(vector_label, x, y, z, w, DRAG_SPEED_DEFAULT, vec_lw)
+            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z), (nw, w)]):
+                from Infernux.lib import vec4f
+                return vec4f(nx, ny, nz, nw)
+    finally:
+        ctx.pop_id()
     return current_value
 
 
@@ -429,7 +436,12 @@ def render_serialized_field(
     if ft == FieldType.INT:
         return _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, False)
     if ft == FieldType.BOOL:
-        return render_inspector_checkbox(ctx, display_name if has_visible_label else wid, bool(current_value))
+        ctx.push_id_str(str(wid))
+        try:
+            checkbox_label = display_name if has_visible_label else "##value"
+            return render_inspector_checkbox(ctx, checkbox_label, bool(current_value))
+        finally:
+            ctx.pop_id()
     if ft == FieldType.STRING:
         _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
         multiline = getattr(metadata, "multiline", False)

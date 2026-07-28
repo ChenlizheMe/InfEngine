@@ -1,7 +1,7 @@
 import pytest
 
 from Infernux.core.asset_ref import RenderEffectRef
-from Infernux.rendergraph.graph import RenderGraph
+from Infernux.rendergraph.graph import Format, RenderGraph
 from Infernux.renderstack.effect_stage import EffectScope
 from Infernux.renderstack.pipeline_dsl import Path, PipelineBuilder, Queue
 from Infernux.renderstack.pipeline_compiler import compile_pipeline_definition
@@ -81,6 +81,7 @@ def test_compiler_partitions_otherwise_without_drawing_explicit_queues_twice():
         for render_pass in graph._passes
         if render_pass._action == "draw_renderers"
         and "route/opaque" in render_pass.name
+        and render_pass._material_pass != "motion"
     ]
     assert sorted(queue_ranges) == [(0, 0), (1, 100), (101, 200), (201, 2500)]
 
@@ -129,7 +130,7 @@ def test_msaa_pipeline_resolves_isolated_routes_and_sky_before_effects():
     )
     assert frame_clear.clear_color_a == 0.0
     assert sky.clear_color_a == 1.0
-    assert sky_under.commands[0].shader_name == "route_alpha_composite"
+    assert sky_under.commands[0].shader_name == "Route Alpha Composite"
     assert sky_under.commands[0].input_bindings[0] == ("_BaseTex", "sky/color")
 
 
@@ -161,7 +162,7 @@ def test_opaque_route_effect_overflow_is_composited_after_ordinary_background():
         index
         for index, render_pass in enumerate(description.passes)
         if any(
-            command.shader_name == "route_alpha_composite"
+                command.shader_name == "Route Alpha Composite"
             and dict(command.input_bindings).get("_LayerTex", "").endswith(
                 "route/opaque.route_1/color"
             )
@@ -206,7 +207,7 @@ def test_msaa_inline_background_is_not_deferred_over_effect_overflow():
         index
         for index, render_pass in enumerate(passes)
         if any(
-            command.shader_name == "route_alpha_composite"
+                command.shader_name == "Route Alpha Composite"
             and dict(command.input_bindings).get("_LayerTex", "").endswith(
                 "route/opaque.route_2/color"
             )
@@ -217,7 +218,7 @@ def test_msaa_inline_background_is_not_deferred_over_effect_overflow():
         index
         for index, render_pass in enumerate(passes)
         if any(
-            command.shader_name == "route_alpha_composite"
+            command.shader_name == "Route Alpha Composite"
             and dict(command.input_bindings).get("_LayerTex", "").endswith(
                 "route/opaque.route_1/color"
             )
@@ -245,6 +246,7 @@ def test_compiler_lowers_forward_plus_without_silently_substituting_forward():
         render_pass
         for render_pass in graph._passes
         if render_pass._action == "draw_renderers"
+        and render_pass._material_pass != "motion"
     ]
     assert draw_passes
     assert all(render_pass._material_pass == "forward_plus" for render_pass in draw_passes)
@@ -261,6 +263,7 @@ def test_compiler_preserves_transparent_forward_plus_sorting():
         render_pass
         for render_pass in graph._passes
         if render_pass._action == "draw_renderers"
+        and render_pass._material_pass != "motion"
     ]
     assert draw_passes
     assert all(render_pass._material_pass == "forward_plus" for render_pass in draw_passes)
@@ -291,6 +294,39 @@ def test_compiler_accepts_clustered_lighting_with_forward_plus_routes():
         for render_pass in graph._passes
         if render_pass._action == "draw_renderers"
     )
+
+
+def test_custom_pipeline_exposes_accumulated_motion_at_effect_stages():
+    pipeline = PipelineBuilder()
+    pipeline.frame(msaa=4)
+    with pipeline.opaque() as opaque:
+        opaque.forward(Queue(1, 100))
+        opaque.effects("opaque_motion_consumer")
+    pipeline.transparent().forward_plus()
+    pipeline.effects("final_motion_consumer")
+
+    graph = RenderGraph("Motion Resources")
+    compile_pipeline_definition(pipeline.build(), graph)
+
+    assert graph.get_texture("motion").format == Format.RG16_SFLOAT
+    assert graph.get_texture("motion").samples == 1
+    assert graph.get_texture("_motion_msaa").samples == 4
+    motion_passes = [
+        render_pass
+        for render_pass in graph._passes
+        if render_pass._material_pass == "motion"
+    ]
+    assert len(motion_passes) == 2
+    assert all(render_pass._reads == ["depth"] for render_pass in motion_passes)
+    assert all(
+        render_pass._write_colors == {0: "_motion_msaa"}
+        for render_pass in motion_passes
+    )
+    assert all(render_pass._resolve_color == "motion" for render_pass in motion_passes)
+    stages = {stage.stable_id: stage for stage in graph.effect_stages}
+    assert "motion" in stages["opaque_motion_consumer"].contract.inputs
+    assert "motion" in stages["final_motion_consumer"].contract.inputs
+    graph.build()
 
 
 def test_screen_ui_must_be_the_final_author_operation():
@@ -381,6 +417,7 @@ def _effect(feature_type: str, **parameters) -> RenderEffect:
 def test_builtin_route_effects_declare_their_image_ownership_policy():
     assert get_render_effect_feature("infernux.post.bloom").route_policy is RoutePolicy.ADDITIVE_EXTRACT
     assert get_render_effect_feature("infernux.route.pixelation").route_policy is RoutePolicy.ISOLATE_AND_COMPOSITE
+    assert get_render_effect_feature("infernux.post.motion_blur").route_policy is RoutePolicy.MASK_AND_MODIFY
 
 
 def test_route_policy_merge_rejects_additive_and_replacement_effects():
@@ -411,7 +448,7 @@ def test_empty_route_effect_stage_draws_inline_without_an_isolation_target():
 
     assert "route/opaque.route_1/Clear" not in names
     assert not any(
-        command.shader_name == "route_alpha_composite"
+        command.shader_name == "Route Alpha Composite"
         and dict(command.input_bindings).get("_LayerTex", "").endswith(
             "route/opaque.route_1/color"
         )
@@ -440,13 +477,13 @@ def test_pixelation_route_uses_isolation_and_alpha_composite():
     constants = dict(command.push_constants)
 
     assert bindings["_SourceTex"].startswith("route/opaque.route_1/")
-    assert command.shader_name == "pixelation"
+    assert command.shader_name == "Pixelation"
     assert constants["pixelSize"] == 24.0
     assert constants["pixelAspect"] == 1.5
     assert constants["samplingMode"] == 2.0
     assert constants["preserveAlphaCoverage"] == 1.0
     assert any(
-        command.shader_name == "route_alpha_composite"
+            command.shader_name == "Route Alpha Composite"
         for render_pass in description.passes
         for command in render_pass.commands
     )
@@ -496,7 +533,7 @@ def test_bloom_route_extracts_only_additive_energy_and_handles_one_mip():
     assert "route/opaque.route_1/PreserveOriginal" in names
     assert "route/opaque.route_1/ExtractAdditiveDelta" in names
     assert any(
-        command.shader_name == "route_additive_composite"
+            command.shader_name == "Route Additive Composite"
         for render_pass in description.passes
         for command in render_pass.commands
     )

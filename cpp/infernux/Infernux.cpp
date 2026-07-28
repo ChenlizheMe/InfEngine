@@ -34,7 +34,6 @@
 #include <function/resources/InxMaterial/MaterialLoader.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshLoader.h>
-#include <function/resources/InxPointCache/PointCacheLoader.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/PhysicMaterial/PhysicMaterialLoader.h>
@@ -44,7 +43,6 @@
 #include <function/scene/Component.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
-#include <function/scene/SceneRenderer.h>
 #include <function/scene/physics/PhysicsWorld.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -71,6 +69,17 @@ namespace
 {
 
 using json = nlohmann::json;
+
+bool IsDirectStructuredStage(const ShaderDescriptor &descriptor)
+{
+    return std::any_of(
+        descriptor.capabilities.begin(), descriptor.capabilities.end(), [](const std::string &capability) {
+            std::string normalized = capability;
+            std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                           [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+            return normalized == "fullscreen" || normalized == "standalone";
+        });
+}
 
 void RegisterPhysicMaterialAssetCallback()
 {
@@ -1634,15 +1643,83 @@ void Infernux::PumpPreviewTasks()
 
         bool renderBusy = false;
         MeshPreviewRequest request;
+        std::shared_ptr<AssetLoadTicket> completedLoad;
+        std::string completedLoadKey;
+        std::string completedLoadGuid;
+        uint64_t completedLoadGeneration = 0;
         {
             std::lock_guard<std::mutex> lock(m_previewResultMutex);
             renderBusy = std::any_of(m_meshPreviewStates.begin(), m_meshPreviewStates.end(),
                                      [](const auto &entry) { return static_cast<bool>(entry.second.renderTicket); });
-            if (renderBusy)
+            if (renderBusy) {
                 m_hasPreviewPumpWork.store(true, std::memory_order_release);
-            if (!renderBusy && !m_meshPreviewRequestQueue.empty()) {
-                request = std::move(m_meshPreviewRequestQueue.front());
-                m_meshPreviewRequestQueue.pop();
+            } else {
+                for (const auto &[key, state] : m_meshPreviewStates) {
+                    if (state.loadTicket && state.loadTicket->IsComplete()) {
+                        completedLoad = state.loadTicket;
+                        completedLoadKey = key;
+                        completedLoadGuid = state.loadGuid;
+                        completedLoadGeneration = state.loadGeneration;
+                        break;
+                    }
+                }
+                if (!completedLoad && !m_meshPreviewRequestQueue.empty()) {
+                    request = std::move(m_meshPreviewRequestQueue.front());
+                    m_meshPreviewRequestQueue.pop();
+                }
+            }
+        }
+
+        auto markMeshPreviewFailed = [this](const std::string &key) {
+            std::lock_guard<std::mutex> lock(m_previewResultMutex);
+            auto it = m_meshPreviewStates.find(key);
+            if (it != m_meshPreviewStates.end()) {
+                it->second.loadTicket.reset();
+                it->second.loadGuid.clear();
+                it->second.loadGeneration = 0;
+                it->second.failedGeneration = it->second.generation;
+                it->second.inFlight = false;
+            }
+        };
+
+        // Complete an Assimp import on the owner thread only after the worker
+        // has finished.  The old path used LoadAssetByPath here, which made
+        // opening a directory of FBX files block the ImGui/render thread.
+        if (!renderBusy && completedLoad) {
+            std::shared_ptr<InxMesh> mesh;
+            try {
+                if (AssetRegistry::Instance().TryCommitAssetLoad(completedLoad, true))
+                    mesh = AssetRegistry::Instance().GetAsset<InxMesh>(completedLoadGuid);
+            } catch (const std::exception &error) {
+                // A second consumer may have loaded/reimported this model while
+                // the preview worker was decoding it. In that case the worker
+                // ticket is stale by design, but the newer registry object is
+                // exactly what the preview should render. Treating this as a
+                // permanent preview failure made thumbnails depend on clicking
+                // the model in the Inspector first.
+                mesh = AssetRegistry::Instance().GetAsset<InxMesh>(completedLoadGuid);
+                if (mesh) {
+                    INXLOG_DEBUG("Mesh preview adopted newer registry asset '", completedLoadGuid,
+                                 "' after its worker ticket became stale");
+                } else {
+                    INXLOG_ERROR("Mesh preview import failed for '", completedLoadGuid, "': ", error.what());
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_previewResultMutex);
+                auto it = m_meshPreviewStates.find(completedLoadKey);
+                if (it != m_meshPreviewStates.end() && it->second.loadTicket == completedLoad)
+                    it->second.loadTicket.reset();
+            }
+
+            if (!mesh) {
+                markMeshPreviewFailed(completedLoadKey);
+            } else {
+                auto *database = AssetRegistry::Instance().GetAssetDatabase();
+                request = {completedLoadKey, database ? database->GetPathFromGuid(completedLoadGuid) : std::string(),
+                           completedLoadGeneration};
+                request.meshFilePath = request.meshFilePath.empty() ? completedLoadGuid : request.meshFilePath;
             }
         }
 
@@ -1651,22 +1728,47 @@ void Infernux::PumpPreviewTasks()
             std::vector<std::shared_ptr<InxMaterial>> materials;
             if (IsPrefabPreviewPath(request.meshFilePath)) {
                 if (!BuildPrefabPreviewMesh(request.meshFilePath, mesh, materials)) {
-                    std::lock_guard<std::mutex> lock(m_previewResultMutex);
-                    auto it = m_meshPreviewStates.find(request.resourceKey);
-                    if (it != m_meshPreviewStates.end())
-                        it->second.inFlight = false;
+                    markMeshPreviewFailed(request.resourceKey);
+                }
+            } else if (!completedLoad) {
+                auto *database = AssetRegistry::Instance().GetAssetDatabase();
+                const std::string guid = database ? database->GetGuidFromPath(request.meshFilePath) : std::string();
+                if (guid.empty()) {
+                    markMeshPreviewFailed(request.resourceKey);
+                } else {
+                    try {
+                        auto loadTicket = AssetRegistry::Instance().BeginLoadAsset(guid, ResourceType::Mesh);
+                        if (!loadTicket->IsCommitted()) {
+                            std::lock_guard<std::mutex> lock(m_previewResultMutex);
+                            auto it = m_meshPreviewStates.find(request.resourceKey);
+                            if (it != m_meshPreviewStates.end()) {
+                                it->second.loadTicket = std::move(loadTicket);
+                                it->second.loadGuid = guid;
+                                it->second.loadGeneration = request.generation;
+                            }
+                            m_hasPreviewPumpWork.store(true, std::memory_order_release);
+                            // The worker owns the expensive importer now.  Clear
+                            // the local request so the render path below does not
+                            // mistake "waiting" for a failed load.
+                            request.resourceKey.clear();
+                        }
+                        mesh = AssetRegistry::Instance().GetAsset<InxMesh>(guid);
+                    } catch (const std::exception &error) {
+                        INXLOG_ERROR("Mesh preview load rejected for '", request.meshFilePath, "': ", error.what());
+                    }
                 }
             } else {
-                mesh = AssetRegistry::Instance().LoadAssetByPath<InxMesh>(request.meshFilePath, ResourceType::Mesh);
-                if (mesh)
-                    materials = BuildDefaultPreviewMaterialsForMesh(*mesh);
+                auto *database = AssetRegistry::Instance().GetAssetDatabase();
+                const std::string guid = database ? database->GetGuidFromPath(request.meshFilePath) : std::string();
+                if (!guid.empty())
+                    mesh = AssetRegistry::Instance().GetAsset<InxMesh>(guid);
             }
 
+            if (mesh && !IsPrefabPreviewPath(request.meshFilePath))
+                materials = BuildDefaultPreviewMaterialsForMesh(*mesh);
+
             if (!mesh) {
-                std::lock_guard<std::mutex> lock(m_previewResultMutex);
-                auto it = m_meshPreviewStates.find(request.resourceKey);
-                if (it != m_meshPreviewStates.end())
-                    it->second.inFlight = false;
+                markMeshPreviewFailed(request.resourceKey);
             } else {
                 auto ticket = m_renderer->BeginMeshPreviewGPU(*mesh, materials, kMeshPreviewSize);
                 if (!ticket) {
@@ -1687,6 +1789,12 @@ void Infernux::PumpPreviewTasks()
     }
 
     PumpTimelineCubePreviewIfDirty();
+}
+
+void Infernux::PollGpuCompletions()
+{
+    if (m_renderer)
+        m_renderer->PollGpuCompletions();
 }
 
 uint64_t Infernux::GetMaterialPreviewTextureId(const std::string &resourceKey) const
@@ -1817,6 +1925,15 @@ uint64_t Infernux::GetTexturePreviewTextureId(const std::string &resourceKey) co
     std::lock_guard<std::mutex> lock(m_previewResultMutex);
     auto it = m_texturePreviewStates.find(CanonicalizePreviewKey(resourceKey));
     if (it == m_texturePreviewStates.end())
+        return 0;
+    return LiveImGuiTextureId(m_renderer.get(), it->second.textureName);
+}
+
+uint64_t Infernux::GetMeshPreviewTextureId(const std::string &resourceKey) const
+{
+    std::lock_guard<std::mutex> lock(m_previewResultMutex);
+    auto it = m_meshPreviewStates.find(CanonicalizePreviewKey(resourceKey));
+    if (it == m_meshPreviewStates.end())
         return 0;
     return LiveImGuiTextureId(m_renderer.get(), it->second.textureName);
 }
@@ -2090,6 +2207,8 @@ uint64_t Infernux::QueryOrScheduleMeshPreview(const std::string &resourceKey, co
     // ── Already up-to-date? ─────────────────────────────────────
     state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
     if (state.readyGeneration == state.generation && state.textureId != 0)
+        return state.textureId;
+    if (state.failedGeneration == state.generation)
         return state.textureId;
     if (state.readyGeneration == state.generation && state.pendingUploadVersion == 0)
         state.readyGeneration = 0;
@@ -2389,7 +2508,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     std::string defaultShaderPath = JoinPath({builtinResourcePath, "shaders"});
     std::string assetsPath = JoinPath({projectPath, "Assets"});
     if (m_assetDatabase) {
-        // Register the builtin shader search path for @import resolution
+        // Register the built-in shader search path for ShaderInfo imports.
         InxShaderLoader::AddShaderSearchPath(defaultShaderPath);
 
         m_assetDatabase->Initialize(projectPath);
@@ -2411,7 +2530,6 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
                                 std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
         registry.RegisterLoader(ResourceType::ParticleGraph,
                                 std::make_unique<InxDefaultTextLoader>(ResourceType::ParticleGraph));
-        registry.RegisterLoader(ResourceType::PointCache, std::make_unique<PointCacheLoader>());
         registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
 
         // Populate AssetDatabase's meta-loader table from registered loaders
@@ -2470,14 +2588,9 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             }
 
             if (event == AssetEvent::Deleted || event == AssetEvent::Modified) {
-                if (m_renderer) {
-                    std::string matName = mat->GetMaterialKey();
-                    if (matName.empty())
-                        matName = mat->GetName();
-                    m_renderer->RemoveMaterialPipeline(matName);
-                    mat->MarkPropertiesDirty();
-                    INXLOG_INFO("AssetGraph: invalidated pipeline for material '", matName, "' (texture changed)");
-                }
+                mat->MarkPropertiesDirty();
+                INXLOG_INFO("AssetGraph: queued descriptor refresh for material '", mat->GetMaterialKey(),
+                            "' (texture changed)");
             }
         });
 
@@ -2624,7 +2737,6 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
                             std::make_unique<InxDefaultTextLoader>(ResourceType::RenderEffect));
     registry.RegisterLoader(ResourceType::ParticleGraph,
                             std::make_unique<InxDefaultTextLoader>(ResourceType::ParticleGraph));
-    registry.RegisterLoader(ResourceType::PointCache, std::make_unique<PointCacheLoader>());
     registry.RegisterLoader(ResourceType::DefaultBinary, std::make_unique<InxDefaultBinaryLoader>());
     registry.PopulateAssetDatabaseLoaders();
     if (!builtinResourcePath.empty()) {
@@ -2947,11 +3059,27 @@ void Infernux::LoadAndRegisterShaders(const std::string &dir, bool recursive)
 
         loadedShaderKeys.insert(shaderKey);
 
-        // ShaderInfo stages are compiled as material-selected vertex/fragment
-        // programs. Registering a separately generated stage would bypass the
-        // linker-owned varying and material ABI.
+        bool directStructuredStage = false;
+        if (meta && meta->HasKey("shader_capabilities")) {
+            try {
+                const auto capabilities = json::parse(meta->GetDataAs<std::string>("shader_capabilities"));
+                directStructuredStage = capabilities.is_array() &&
+                                        std::any_of(capabilities.begin(), capabilities.end(), [](const json &value) {
+                                            return value.is_string() && (value.get<std::string>() == "Fullscreen" ||
+                                                                         value.get<std::string>() == "Standalone");
+                                        });
+            } catch (const json::exception &) {
+                directStructuredStage = false;
+            }
+        }
+
+        // Project ShaderInfo stages are material programs and are linked as a
+        // vertex/fragment pair. Engine-owned stages are also registered here:
+        // fullscreen, outline, shadow, and fallback renderers consume some of
+        // them directly without constructing a material artifact.
         if (meta && meta->HasKey("shader_schema_format") &&
-            meta->GetDataAs<std::string>("shader_schema_format") == "ShaderInfo") {
+            meta->GetDataAs<std::string>("shader_schema_format") == "ShaderInfo" && recursive &&
+            !directStructuredStage) {
             return;
         }
 
@@ -3119,6 +3247,13 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
     const ShaderDescriptor vertexDescriptor = compiler.ParseShaderSource(vertexSource, vertexPath);
     const ShaderDescriptor fragmentDescriptor = compiler.ParseShaderSource(fragmentSource, fragmentPath);
 
+    if (IsDirectStructuredStage(vertexDescriptor) || IsDirectStructuredStage(fragmentDescriptor)) {
+        // Explicit main() stages are independently compiled and registered.
+        // They must never leave a failed material-artifact cache entry behind.
+        m_linkedShaderProgramCache.erase(stages);
+        return {};
+    }
+
     result.usesLinkedArtifact = true;
     if (vertexDescriptor.shaderId != stages.vertexShaderId || fragmentDescriptor.shaderId != stages.fragmentShaderId) {
         result.success = false;
@@ -3265,47 +3400,35 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
 
     InxShaderLoader sourceParser(true, false, false, false, false, true, false, false, false, false);
     const ShaderDescriptor changedDescriptor = sourceParser.ParseShaderSource(source, shaderPath);
-    if (!changedDescriptor.usesStructuredInfo && !changedDescriptor.shaderId.empty()) {
-        std::vector<ShaderStagePair> affectedLinkedPairs;
-        for (auto &[stages, cacheEntry] : m_linkedShaderProgramCache) {
-            if (!stages.UsesShader(changedDescriptor.shaderId))
-                continue;
-            affectedLinkedPairs.push_back(stages);
-            cacheEntry.sourceStamp = 0;
-            cacheEntry.failedSourceStamp = 0;
-            cacheEntry.lastError.clear();
-        }
-
-        if (!affectedLinkedPairs.empty()) {
-            std::unordered_set<ShaderStagePair, ShaderStagePairHash> preparedPairs;
-            std::string firstLinkedError;
-            for (const auto &stages : affectedLinkedPairs) {
-                const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(stages);
-                preparedPairs.insert(stages);
-                if (!prepared.success && firstLinkedError.empty())
-                    firstLinkedError = prepared.error;
-            }
-            for (auto &material : registry.GetAllMaterials()) {
-                if (!material)
-                    continue;
-                const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-                if (preparedPairs.find(stages) != preparedPairs.end())
-                    m_renderer->RefreshMaterialPipeline(material);
-            }
-            if (!firstLinkedError.empty()) {
-                INXLOG_ERROR("Infernux::ReloadShaderRuntime: dependent linked program compile failed; keeping "
-                             "last-known-good: ",
-                             firstLinkedError);
-            }
-        }
+    if (!changedDescriptor.errors.empty()) {
+        std::ostringstream diagnostics;
+        diagnostics << "ShaderInfo validation failed:";
+        for (const auto &error : changedDescriptor.errors)
+            diagnostics << '\n' << error;
+        return diagnostics.str();
     }
-    if (changedDescriptor.usesStructuredInfo) {
+
+    {
         const std::string changedShaderId = changedDescriptor.shaderId;
         if (changedShaderId.empty())
             return "ShaderInfo Name is required for runtime reload";
         if (!previousShaderId.empty() && changedShaderId != previousShaderId) {
             return "Changing ShaderInfo Name during hot reload requires an asset reimport before materials can be "
                    "migrated";
+        }
+
+        if (IsDirectStructuredStage(changedDescriptor)) {
+            registry.InvalidateAsset(guid);
+            auto shaderAsset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+            if (!shaderAsset || !shaderAsset->HasVariant(ShaderCompileTarget::Forward)) {
+                const std::string compileError = InxShaderLoader::GetLastCompileError();
+                return compileError.empty() ? "Standalone ShaderInfo stage compilation failed" : compileError;
+            }
+            m_renderer->InvalidateShaderCache(changedShaderId);
+            RegisterShaderToRenderer(*shaderAsset);
+            m_renderer->RefreshMaterialsUsingShader(changedShaderId);
+            INXLOG_INFO("Infernux::ReloadShaderRuntime: reloaded standalone ShaderInfo stage '", changedShaderId, "'");
+            return "";
         }
 
         std::vector<ShaderStagePair> affectedPairs;
@@ -3356,69 +3479,6 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                     "' (material pairs=", preparedPairs.size(), ", referenced=", foundMaterial ? "yes" : "no", ")");
         return "";
     }
-
-    // Invalidate the AssetRegistry cache so the shader gets recompiled
-    registry.InvalidateAsset(guid);
-
-    // Reload via AssetRegistry → ShaderLoader
-    auto shaderAsset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-    if (!shaderAsset || !shaderAsset->HasVariant(ShaderCompileTarget::Forward)) {
-        INXLOG_ERROR("Infernux::ReloadShaderRuntime: compilation failed for: ", shaderPath);
-        std::string compileErr = InxShaderLoader::s_lastCompileError;
-        if (!compileErr.empty())
-            return compileErr;
-        return "Shader compilation failed (no compiled data)";
-    }
-
-    // Invalidate renderer caches BEFORE loading new shader code
-    m_renderer->InvalidateShaderCache(shaderAsset->shaderId);
-    if (!previousShaderId.empty() && previousShaderId != shaderAsset->shaderId) {
-        m_renderer->InvalidateShaderCache(previousShaderId);
-        INXLOG_INFO("Infernux::ReloadShaderRuntime: shader_id changed from '", previousShaderId, "' to '",
-                    shaderAsset->shaderId, "'");
-    }
-
-    // Also invalidate variant caches
-    m_renderer->InvalidateShaderCache(shaderAsset->shaderId + "/shadow");
-    m_renderer->InvalidateShaderCache(shaderAsset->shaderId + "/gbuffer");
-
-    // Register all SPIR-V variants with the renderer
-    RegisterShaderToRenderer(*shaderAsset);
-
-    INXLOG_INFO("Infernux::ReloadShaderRuntime: reloaded shader '", shaderAsset->shaderId, "' from ", shaderPath);
-
-    // Refresh all materials using this shader
-    m_renderer->RefreshMaterialsUsingShader(shaderAsset->shaderId);
-
-    // If shader_id changed, update materials that referenced the old name
-    if (!previousShaderId.empty() && previousShaderId != shaderAsset->shaderId) {
-        auto materials = registry.GetAllMaterials();
-        for (auto &material : materials) {
-            if (!material)
-                continue;
-            if (material->GetFragShaderName() == previousShaderId) {
-                auto reference = material->GetFragShaderReference();
-                reference.guid = guid;
-                reference.shaderId = shaderAsset->shaderId;
-                reference.pathHint = shaderPath;
-                material->SetFragShaderReference(std::move(reference));
-                INXLOG_INFO("Infernux::ReloadShaderRuntime: updated material '", material->GetName(),
-                            "' frag shader from '", previousShaderId, "' to '", shaderAsset->shaderId, "'");
-            }
-            if (material->GetVertShaderName() == previousShaderId) {
-                auto reference = material->GetVertShaderReference();
-                reference.guid = guid;
-                reference.shaderId = shaderAsset->shaderId;
-                reference.pathHint = shaderPath;
-                material->SetVertShaderReference(std::move(reference));
-                INXLOG_INFO("Infernux::ReloadShaderRuntime: updated material '", material->GetName(),
-                            "' vert shader from '", previousShaderId, "' to '", shaderAsset->shaderId, "'");
-            }
-        }
-        m_renderer->RefreshMaterialsUsingShader(shaderAsset->shaderId);
-    }
-
-    return ""; // success
 }
 
 void Infernux::ReloadTexture(const std::string &texturePath)
