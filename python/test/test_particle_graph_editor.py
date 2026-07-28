@@ -72,6 +72,14 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     assert all(link.kind.value == "stream" for link in restored.links)
 
 
+def test_particle_wait_nodes_stay_hidden_until_gpu_resume_is_available():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    visible_types = {definition.type_id for definition in model.registered_types()}
+
+    assert "particle.control.wait_frames" not in visible_types
+    assert "particle.control.wait_seconds" not in visible_types
+
+
 def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage():
     emitter = ParticleGraphAsset().emitters[0]
     init_types = {

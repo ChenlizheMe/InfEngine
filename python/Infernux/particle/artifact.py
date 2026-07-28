@@ -344,8 +344,8 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                             "source_node_uid": predicate.source_node_uid,
                             "value_id": predicate.value_id,
                             "literal": predicate.literal,
-                        "expected": predicate.expected,
-                        "runtime_condition": predicate.runtime_condition,
+                            "expected": predicate.expected,
+                            "runtime_condition": predicate.runtime_condition,
                         }
                         for predicate in operation.execution_predicates
                     ],
@@ -394,6 +394,20 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "output_lane_index": join.output_lane_index,
                     }
                     for join in value.flow.joins
+                ],
+                "suspensions": [
+                    {
+                        "node_uid": suspension.node_uid,
+                        "kind": suspension.kind.value,
+                        "lane_index": suspension.lane_index,
+                        "lane_stable_id": suspension.lane_stable_id,
+                        "resume_program_counter": suspension.resume_program_counter,
+                        "resume_node_uid": suspension.resume_node_uid,
+                        "resume_operation_index": suspension.resume_operation_index,
+                        "value_id": suspension.value_id,
+                        "literal": suspension.literal,
+                    }
+                    for suspension in value.flow.suspensions
                 ],
             },
         }

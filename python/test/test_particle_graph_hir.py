@@ -350,6 +350,155 @@ def test_particle_if_activates_only_the_selected_exec_branch():
     assert "logical_not" in opcodes
 
 
+def test_particle_waits_emit_stable_suspension_resume_descriptors():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("frame-count", "common.constant.i32", properties={"value": 3}),
+            GraphNodeRecord("seconds", "common.constant.f32", properties={"value": 0.25}),
+            GraphNodeRecord("wait.frames", "particle.control.wait_frames"),
+            GraphNodeRecord("wait.seconds", "particle.control.wait_seconds"),
+            GraphNodeRecord("tail", "particle.attribute.set_size"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-wait-frames",
+                "root.update",
+                "out",
+                "wait.frames",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "frames-value",
+                "frame-count",
+                "value",
+                "wait.frames",
+                "frames",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "wait-frames-seconds",
+                "wait.frames",
+                "out",
+                "wait.seconds",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "seconds-value",
+                "seconds",
+                "value",
+                "wait.seconds",
+                "seconds",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "wait-seconds-tail",
+                "wait.seconds",
+                "out",
+                "tail",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+
+    stage = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    ).emitters[0].update
+
+    assert [item.kind.value for item in stage.flow.suspensions] == [
+        "frames",
+        "seconds",
+    ]
+    frame_wait, second_wait = stage.flow.suspensions
+    assert frame_wait.resume_program_counter == 1
+    assert frame_wait.resume_node_uid == "wait.seconds"
+    assert frame_wait.value_id
+    assert frame_wait.literal == 1
+    assert second_wait.resume_program_counter == 2
+    assert second_wait.resume_node_uid == "tail"
+    assert second_wait.value_id
+    assert second_wait.literal == pytest.approx(0.1)
+    assert frame_wait.lane_stable_id == stage.flow.lanes[frame_wait.lane_index].stable_id
+    assert second_wait.lane_stable_id == stage.flow.lanes[second_wait.lane_index].stable_id
+
+    from Infernux.particle.artifact import _program_to_dict
+
+    serialized = _program_to_dict(
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+    )
+    suspension_payload = serialized["emitters"][0]["update"]["flow"]["suspensions"]
+    assert [item["resume_program_counter"] for item in suspension_payload] == [1, 2]
+    assert [item["resume_node_uid"] for item in suspension_payload] == [
+        "wait.seconds",
+        "tail",
+    ]
+
+
+def test_particle_wait_requires_exactly_one_continuation_and_rejects_rendering():
+    no_continuation = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("wait", "particle.control.wait_frames"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-wait",
+                "root.update",
+                "out",
+                "wait",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+    with pytest.raises(ParticleCompileError, match="requires exactly one Exec output"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(
+                emitters=(ParticleEmitterAsset(update=no_continuation),)
+            )
+        )
+
+    rendering = GraphDocument(
+        "particle.rendering",
+        nodes=(
+            GraphNodeRecord("root.rendering", "particle.root.rendering"),
+            GraphNodeRecord("wait", "particle.control.wait_seconds"),
+            GraphNodeRecord("output", "particle.output.sprite"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-wait",
+                "root.rendering",
+                "out",
+                "wait",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "wait-output",
+                "wait",
+                "out",
+                "output",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+    with pytest.raises(ParticleCompileError, match="Rendering cannot contain Wait"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(
+                emitters=(ParticleEmitterAsset(rendering=rendering),)
+            )
+        )
+
+
 def _collision_lifecycle_graph(stage: str, size: float):
     operation_uid = f"{stage.removeprefix('collision_')}.size"
     return GraphDocument(

@@ -100,6 +100,24 @@ class ParticleJoinDescriptor:
     output_lane_index: int
 
 
+class ParticleSuspensionKind(str, Enum):
+    FRAMES = "frames"
+    SECONDS = "seconds"
+
+
+@dataclass(frozen=True)
+class ParticleSuspensionPoint:
+    node_uid: str
+    kind: ParticleSuspensionKind
+    lane_index: int
+    lane_stable_id: str
+    resume_program_counter: int
+    resume_node_uid: str
+    resume_operation_index: int
+    value_id: str = ""
+    literal: int | float = 0
+
+
 @dataclass(frozen=True)
 class ParticleFlowProgram:
     entry_node_uid: str
@@ -108,6 +126,7 @@ class ParticleFlowProgram:
     operation_schedule: tuple[int, ...]
     lanes: tuple[ParticleExecutionLane, ...] = ()
     joins: tuple[ParticleJoinDescriptor, ...] = ()
+    suspensions: tuple[ParticleSuspensionPoint, ...] = ()
 
     def __post_init__(self) -> None:
         block_ids = {block.node_uid for block in self.blocks}
@@ -152,6 +171,27 @@ class ParticleFlowProgram:
                 raise ParticleCompileError("particle Join All references an unknown input lane")
             if not 0 <= join.output_lane_index < len(self.lanes):
                 raise ParticleCompileError("particle Join All output lane is invalid")
+        suspension_nodes = set()
+        resume_program_counters = set()
+        for suspension in self.suspensions:
+            if (
+                suspension.node_uid in suspension_nodes
+                or suspension.node_uid not in block_ids
+                or suspension.resume_node_uid not in block_ids
+            ):
+                raise ParticleCompileError("particle suspension descriptor is invalid")
+            suspension_nodes.add(suspension.node_uid)
+            if (
+                suspension.resume_program_counter <= 0
+                or suspension.resume_program_counter in resume_program_counters
+                or suspension.resume_operation_index < 0
+            ):
+                raise ParticleCompileError("particle suspension resume target is invalid")
+            resume_program_counters.add(suspension.resume_program_counter)
+            if not 0 <= suspension.lane_index < len(self.lanes):
+                raise ParticleCompileError("particle suspension lane is invalid")
+            if self.lanes[suspension.lane_index].stable_id != suspension.lane_stable_id:
+                raise ParticleCompileError("particle suspension lane identity is inconsistent")
 
 
 @dataclass(frozen=True)
@@ -428,6 +468,22 @@ class ParticleGraphCompiler:
                         "output": join.output_lane_index,
                     }
                     for join in stage_hir.flow.joins
+                ],
+                "suspensions": [
+                    {
+                        "node": flow_node(suspension.node_uid),
+                        "kind": suspension.kind.value,
+                        "lane": suspension.lane_index,
+                        "lane_stable_id": suspension.lane_stable_id,
+                        "resume_pc": suspension.resume_program_counter,
+                        "resume_node": flow_node(suspension.resume_node_uid),
+                        "resume_operation": suspension.resume_operation_index,
+                        "value": canonical_ids.get(
+                            suspension.value_id, suspension.value_id
+                        ),
+                        "literal": suspension.literal,
+                    }
+                    for suspension in stage_hir.flow.suspensions
                 ],
             }
 
@@ -1130,6 +1186,7 @@ class ParticleGraphCompiler:
         }
         settings_operations = tuple(self._settings_operations(stage, settings))
         graph_operations, flow = self._graph_operations(
+            stage,
             document,
             root.uid,
             value_bindings,
@@ -1221,6 +1278,7 @@ class ParticleGraphCompiler:
 
     def _graph_operations(
         self,
+        stage: ParticleStage,
         document,
         root_uid: str,
         value_bindings,
@@ -1535,6 +1593,54 @@ class ParticleGraphCompiler:
                 for index, uid in enumerate(operation_uids)
             }
         )
+        suspensions = []
+        wait_operations = [
+            operation
+            for operation in result
+            if operation.opcode in {"control.wait_frames", "control.wait_seconds"}
+        ]
+        if wait_operations and stage is ParticleStage.RENDERING:
+            raise ParticleCompileError(
+                "Rendering cannot contain Wait For Frames/Seconds because render export cannot resume across frames"
+            )
+        for resume_program_counter, operation in enumerate(wait_operations, start=1):
+            outgoing_edges = tuple(
+                edge
+                for edge in reachable_links
+                if edge.source_node_uid == operation.source_node_uid
+            )
+            if len(outgoing_edges) != 1:
+                raise ParticleCompileError(
+                    f"Wait node {operation.source_node_uid!r} requires exactly one Exec output"
+                )
+            edge = outgoing_edges[0]
+            parameter_name = (
+                "frames" if operation.opcode == "control.wait_frames" else "seconds"
+            )
+            literal = operation.parameter_dict()[parameter_name]
+            if float(literal) < 0.0:
+                raise ParticleCompileError(
+                    f"Wait node {operation.source_node_uid!r} duration cannot be negative"
+                )
+            value_id = dict(operation.value_bindings).get(parameter_name, "")
+            lane_index = block_lanes[operation.source_node_uid]
+            suspensions.append(
+                ParticleSuspensionPoint(
+                    operation.source_node_uid,
+                    (
+                        ParticleSuspensionKind.FRAMES
+                        if operation.opcode == "control.wait_frames"
+                        else ParticleSuspensionKind.SECONDS
+                    ),
+                    lane_index,
+                    lanes[lane_index].stable_id,
+                    resume_program_counter,
+                    edge.target_node_uid,
+                    block_operation_index[edge.target_node_uid],
+                    value_id,
+                    literal,
+                )
+            )
         flow = ParticleFlowProgram(
             root_uid,
             tuple(
@@ -1559,6 +1665,7 @@ class ParticleGraphCompiler:
             tuple(block_operation_index[uid] for uid in operation_uids),
             lanes,
             joins,
+            tuple(suspensions),
         )
         return tuple(result), flow
 
@@ -1807,5 +1914,7 @@ __all__ = [
     "ParticleRenderPlan",
     "ParticleStage",
     "ParticleStageHIR",
+    "ParticleSuspensionKind",
+    "ParticleSuspensionPoint",
     "ParticleSystemSchedule",
 ]
