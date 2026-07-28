@@ -2051,6 +2051,16 @@ class _StageCompiler:
         )
 
     def _compile_instruction(self, instruction: KernelInstruction) -> None:
+        try:
+            self._compile_instruction_impl(instruction)
+        except GpuParticleCompileError as exc:
+            location = instruction.source.describe()
+            message = str(exc)
+            if location and not message.startswith(location):
+                raise GpuParticleCompileError(f"{location}: {message}") from exc
+            raise
+
+    def _compile_instruction_impl(self, instruction: KernelInstruction) -> None:
         opcode = instruction.opcode
         immediate = instruction.immediate_dict()
         try:
@@ -2065,6 +2075,8 @@ class _StageCompiler:
         source = instruction.source
         if source.node_uid or source.operation:
             label = source.node_uid or source.operation
+            if source.source_name or source.line:
+                label += f" @ {source.describe()}"
             self._lines.append(f"// {label}")
 
         expression = ""

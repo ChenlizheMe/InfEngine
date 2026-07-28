@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
+from Infernux.graph import (
+    GraphDocument,
+    GraphLinkRecord,
+    GraphNodeRecord,
+    GraphSourceLocation,
+    PortKind,
+)
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
 
@@ -664,6 +670,9 @@ class ParticleScriptCompiler:
         root = default_stage_graph(stage)
         nodes = [root.nodes[0]]
         links = []
+        source_locations = {
+            root.nodes[0].uid: self._source_location(source_name, method)
+        }
         operation_index = 0
         expression_index = 0
 
@@ -706,11 +715,18 @@ class ParticleScriptCompiler:
                         nodes=nodes,
                         links=links,
                         event_context=event_context,
+                        source_locations=source_locations,
                     )
                 else:
                     properties[positional_property] = self._value(argument)
                 uid = f"{stage}.{index}.{call.func.attr}"
-                nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
+                self._append_source_node(
+                    nodes,
+                    source_locations,
+                    GraphNodeRecord(uid, type_id, properties=properties),
+                    source_name,
+                    call,
+                )
                 if value_source is not None:
                     links.append(
                         GraphLinkRecord(
@@ -738,8 +754,15 @@ class ParticleScriptCompiler:
                     nodes=nodes,
                     links=links,
                     event_context=event_context,
+                    source_locations=source_locations,
                 )
-                nodes.append(event_node)
+                self._append_source_node(
+                    nodes,
+                    source_locations,
+                    event_node,
+                    source_name,
+                    call,
+                )
                 links.extend(event_links)
                 operation_index += 1
                 return event_node.uid, index
@@ -770,6 +793,7 @@ class ParticleScriptCompiler:
                         nodes=nodes,
                         links=links,
                         event_context=event_context,
+                        source_locations=source_locations,
                     )
                 else:
                     properties[positional_property] = self._value(argument)
@@ -780,7 +804,13 @@ class ParticleScriptCompiler:
                     raise self._error(source_name, keyword, "invalid or duplicate particle operation argument")
                 properties[keyword.arg] = self._value(keyword.value)
             uid = f"{stage}.{index}.{call.func.attr}"
-            nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
+            self._append_source_node(
+                nodes,
+                source_locations,
+                GraphNodeRecord(uid, type_id, properties=properties),
+                source_name,
+                call,
+            )
             if value_source is not None:
                 source_uid, source_port = value_source
                 links.append(
@@ -817,10 +847,17 @@ class ParticleScriptCompiler:
                         nodes=nodes,
                         links=links,
                         event_context=event_context,
+                        source_locations=source_locations,
                     )
                     index = operation_index
                     uid = f"{stage}.{index}.if"
-                    nodes.append(GraphNodeRecord(uid, "particle.control.if"))
+                    self._append_source_node(
+                        nodes,
+                        source_locations,
+                        GraphNodeRecord(uid, "particle.control.if"),
+                        source_name,
+                        statement,
+                    )
                     links.extend(
                         (
                             GraphLinkRecord(
@@ -881,7 +918,12 @@ class ParticleScriptCompiler:
         compile_statements(list(method.body), root.nodes[0].uid, "out")
         if stage == "rendering" and not any(node.type_id.startswith("particle.output.") for node in nodes):
             raise self._error(source_name, method, "rendering requires at least one output operation")
-        return GraphDocument(root.domain, tuple(nodes), tuple(links))
+        return GraphDocument(
+            root.domain,
+            tuple(nodes),
+            tuple(links),
+            source_locations=source_locations,
+        )
 
     def _parse_event_output_call(
         self,
@@ -896,6 +938,7 @@ class ParticleScriptCompiler:
         nodes: list[GraphNodeRecord],
         links: list[GraphLinkRecord],
         event_context: _EventParseContext,
+        source_locations: dict[str, GraphSourceLocation],
     ) -> tuple[GraphNodeRecord, list[GraphLinkRecord], int]:
         if call.args:
             raise self._error(
@@ -953,6 +996,7 @@ class ParticleScriptCompiler:
                     nodes=nodes,
                     links=links,
                     event_context=event_context,
+                    source_locations=source_locations,
                 )
                 value_links.append(
                     GraphLinkRecord(
@@ -1006,6 +1050,7 @@ class ParticleScriptCompiler:
                         nodes=nodes,
                         links=links,
                         event_context=event_context,
+                        source_locations=source_locations,
                     )
                     value_links.append(
                         GraphLinkRecord(
@@ -1050,6 +1095,32 @@ class ParticleScriptCompiler:
             and node.func.value.id == context_name
         )
 
+    @staticmethod
+    def _source_location(source_name: str, node: ast.AST) -> GraphSourceLocation:
+        line = int(getattr(node, "lineno", 0) or 0)
+        end_line = int(getattr(node, "end_lineno", 0) or 0)
+        return GraphSourceLocation(
+            source_name=source_name,
+            line=line,
+            column=(int(getattr(node, "col_offset", 0)) + 1) if line else 0,
+            end_line=end_line,
+            end_column=(int(getattr(node, "end_col_offset", 0)) + 1)
+            if end_line
+            else 0,
+        )
+
+    @classmethod
+    def _append_source_node(
+        cls,
+        nodes: list[GraphNodeRecord],
+        source_locations: dict[str, GraphSourceLocation],
+        record: GraphNodeRecord,
+        source_name: str,
+        source_node: ast.AST,
+    ) -> None:
+        nodes.append(record)
+        source_locations[record.uid] = cls._source_location(source_name, source_node)
+
     def _parse_expression(
         self,
         node: ast.AST,
@@ -1062,10 +1133,20 @@ class ParticleScriptCompiler:
         nodes: list[GraphNodeRecord],
         links: list[GraphLinkRecord],
         event_context: _EventParseContext,
+        source_locations: dict[str, GraphSourceLocation],
     ) -> tuple[tuple[str, str], int]:
+        def append_source(record: GraphNodeRecord, origin: ast.AST = node) -> None:
+            self._append_source_node(
+                nodes,
+                source_locations,
+                record,
+                source_name,
+                origin,
+            )
+
         if isinstance(node, ast.Constant) and type(node.value) is bool:
             uid = f"{stage}.expr.{expression_index}.bool"
-            nodes.append(
+            append_source(
                 GraphNodeRecord(
                     uid,
                     "common.constant.bool",
@@ -1076,7 +1157,7 @@ class ParticleScriptCompiler:
 
         if isinstance(node, ast.Constant) and type(node.value) in {int, float}:
             uid = f"{stage}.expr.{expression_index}.constant"
-            nodes.append(
+            append_source(
                 GraphNodeRecord(
                     uid,
                     "common.constant.f32",
@@ -1099,7 +1180,7 @@ class ParticleScriptCompiler:
                 )
             width = len(literal)
             uid = f"{stage}.expr.{expression_index}.vec{width}"
-            nodes.append(
+            append_source(
                 GraphNodeRecord(
                     uid,
                     f"common.constant.vec{width}",
@@ -1121,6 +1202,7 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             right, expression_index = self._parse_expression(
                 node.right,
@@ -1132,6 +1214,7 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             operation = {
                 ast.Add: ("add", "common.math.add"),
@@ -1140,7 +1223,7 @@ class ParticleScriptCompiler:
                 ast.Div: ("divide", "common.math.divide"),
             }[type(node.op)]
             uid = f"{stage}.expr.{expression_index}.{operation[0]}"
-            nodes.append(GraphNodeRecord(uid, operation[1]))
+            append_source(GraphNodeRecord(uid, operation[1]))
             links.extend(
                 (
                     GraphLinkRecord(
@@ -1170,6 +1253,7 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             operation = (
                 ("and", "common.logic.and")
@@ -1187,9 +1271,10 @@ class ParticleScriptCompiler:
                     nodes=nodes,
                     links=links,
                     event_context=event_context,
+                    source_locations=source_locations,
                 )
                 uid = f"{stage}.expr.{expression_index}.{operation[0]}"
-                nodes.append(GraphNodeRecord(uid, operation[1]))
+                append_source(GraphNodeRecord(uid, operation[1]), value_node)
                 links.extend(
                     (
                         GraphLinkRecord(
@@ -1217,9 +1302,10 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             uid = f"{stage}.expr.{expression_index}.not"
-            nodes.append(GraphNodeRecord(uid, "common.logic.not"))
+            append_source(GraphNodeRecord(uid, "common.logic.not"))
             links.append(
                 GraphLinkRecord(
                     f"{stage}.expr.link.{expression_index}.value",
@@ -1255,6 +1341,7 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             right, expression_index = self._parse_expression(
                 node.comparators[0],
@@ -1266,9 +1353,10 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             uid = f"{stage}.expr.{expression_index}.{comparison[0]}"
-            nodes.append(GraphNodeRecord(uid, comparison[1]))
+            append_source(GraphNodeRecord(uid, comparison[1]))
             links.extend(
                 (
                     GraphLinkRecord(
@@ -1301,7 +1389,7 @@ class ParticleScriptCompiler:
                         "Delta Time is only valid in Update and Collision lifecycle stages",
                     )
                 uid = f"{stage}.expr.{expression_index}.delta_time"
-                nodes.append(
+                append_source(
                     GraphNodeRecord(uid, "particle.context.delta_time")
                 )
                 return (uid, "value"), expression_index + 1
@@ -1318,7 +1406,9 @@ class ParticleScriptCompiler:
         ):
             if node.attr == "normalized_age":
                 uid = f"{stage}.expr.{expression_index}.normalized_age"
-                nodes.append(GraphNodeRecord(uid, "particle.attribute.normalized_age"))
+                append_source(
+                    GraphNodeRecord(uid, "particle.attribute.normalized_age")
+                )
                 return (uid, "value"), expression_index + 1
             attributes = {
                 "id": "builtin.id",
@@ -1339,7 +1429,7 @@ class ParticleScriptCompiler:
                 raise self._error(source_name, node, f"unsupported particle attribute {node.attr!r}")
             attribute = attributes[node.attr]
             uid = f"{stage}.expr.{expression_index}.{node.attr}"
-            nodes.append(
+            append_source(
                 GraphNodeRecord(
                     uid,
                     "particle.attribute.get",
@@ -1377,7 +1467,7 @@ class ParticleScriptCompiler:
                     source_name, node.args[0], f"unknown particle parameter {lookup!r}"
                 )
             uid = f"{stage}.expr.{expression_index}.parameter"
-            nodes.append(
+            append_source(
                 GraphNodeRecord(
                     uid,
                     "particle.parameter.get",
@@ -1431,7 +1521,7 @@ class ParticleScriptCompiler:
                     f"unknown event payload field {field_id!r}",
                 )
             uid = f"{stage}.expr.{expression_index}.event_payload"
-            nodes.append(
+            append_source(
                 GraphNodeRecord(uid, particle_event_payload_type_id(route_id))
             )
             return (
@@ -1455,6 +1545,7 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             uv_source, expression_index = self._parse_expression(
                 node.args[1],
@@ -1466,9 +1557,10 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             uid = f"{stage}.expr.{expression_index}.sample_texture2d"
-            nodes.append(GraphNodeRecord(uid, "common.texture.sample2d"))
+            append_source(GraphNodeRecord(uid, "common.texture.sample2d"))
             links.extend(
                 (
                     GraphLinkRecord(
@@ -1515,6 +1607,7 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             uid = f"{stage}.expr.{expression_index}.{node.func.attr}"
             node_type = (
@@ -1524,7 +1617,7 @@ class ParticleScriptCompiler:
             )
             output_port = "value" if node.func.attr == "sample_curve" else "color"
             property_name = "curve" if node.func.attr == "sample_curve" else "gradient"
-            nodes.append(
+            append_source(
                 GraphNodeRecord(
                     uid,
                     node_type,
@@ -1564,6 +1657,7 @@ class ParticleScriptCompiler:
                 nodes=nodes,
                 links=links,
                 event_context=event_context,
+                source_locations=source_locations,
             )
             uid = f"{stage}.expr.{expression_index}.{node.func.attr}"
             type_id = (
@@ -1571,7 +1665,7 @@ class ParticleScriptCompiler:
                 if node.func.attr == "value_noise_3d"
                 else "common.noise.vector3d"
             )
-            nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
+            append_source(GraphNodeRecord(uid, type_id, properties=properties))
             links.append(
                 GraphLinkRecord(
                     f"{stage}.expr.link.{expression_index}",
@@ -1605,9 +1699,10 @@ class ParticleScriptCompiler:
             nodes=nodes,
             links=links,
             event_context=event_context,
+            source_locations=source_locations,
         )
         uid = f"{stage}.expr.{expression_index}.sample_vector_field"
-        nodes.append(
+        append_source(
             GraphNodeRecord(
                 uid,
                 "particle.vector_field.sample",

@@ -19,6 +19,7 @@ from .document import (
     GraphDocumentError,
     GraphLinkRecord,
     GraphNodeRecord,
+    GraphSourceLocation,
 )
 from .expression_ir import (
     ExpressionCompileError,

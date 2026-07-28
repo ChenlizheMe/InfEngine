@@ -82,12 +82,16 @@ def test_particle_update_palette_exposes_explicit_delta_time_value():
 
 def test_particle_wait_nodes_are_exposed_after_gpu_resume_is_available():
     model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
-    visible_types = {definition.type_id for definition in model.registered_types()}
+    registered = model.registered_types()
+    visible_types = {definition.type_id for definition in registered}
 
     assert "particle.control.wait_frames" in visible_types
     assert "particle.control.wait_seconds" in visible_types
     assert "particle.control.until_frames" in visible_types
     assert "particle.control.until_seconds" in visible_types
+    assert not any("per_second" in type_id for type_id in visible_types)
+    assert not any("per second" in definition.label.lower() for definition in registered)
+    assert "particle.update.acceleration" not in visible_types
 
     model.set_authoring_stage("update")
     model.prepare_node_creation("update")

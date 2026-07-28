@@ -11,6 +11,7 @@ from Infernux.graph import (
     GraphDocumentError,
     GraphLinkRecord,
     GraphNodeRecord,
+    GraphSourceLocation,
     PortKind,
     TypeRef,
     TypeSystem,
@@ -47,6 +48,34 @@ def test_graph_document_round_trip_is_canonical_and_strict():
     invalid["future"] = True
     with pytest.raises(GraphDocumentError, match="keys mismatch"):
         GraphDocument.from_dict(invalid)
+
+
+def test_graph_source_locations_are_ephemeral_and_non_semantic():
+    document = _expression_document()
+    located = GraphDocument(
+        document.domain,
+        document.nodes,
+        document.links,
+        document.metadata,
+        {
+            "add": GraphSourceLocation(
+                "Smoke.particle.py",
+                line=12,
+                column=9,
+                end_line=12,
+                end_column=28,
+            )
+        },
+    )
+
+    assert located == document
+    assert located.semantic_hash() == document.semantic_hash()
+    assert located.canonical_json() == document.canonical_json()
+    assert "source_locations" not in located.to_dict()
+    assert located.source_location("add").describe("add", "a") == (
+        "Smoke.particle.py:12:9 [add.a]"
+    )
+    assert GraphDocument.from_json(located.canonical_json()).source_locations == {}
 
 
 def test_graph_document_uses_exec_as_the_only_control_link_kind():

@@ -48,24 +48,85 @@ class KernelSourceRef:
     node_uid: str = ""
     port_id: str = ""
     operation: str = ""
+    source_name: str = ""
+    line: int = 0
+    column: int = 0
+    end_line: int = 0
+    end_column: int = 0
 
     def __post_init__(self) -> None:
-        if not all(type(value) is str for value in (self.node_uid, self.port_id, self.operation)):
+        if not all(
+            type(value) is str
+            for value in (
+                self.node_uid,
+                self.port_id,
+                self.operation,
+                self.source_name,
+            )
+        ):
             raise KernelCompileError("kernel source fields must be strings")
+        coordinates = (self.line, self.column, self.end_line, self.end_column)
+        if any(type(value) is not int or value < 0 for value in coordinates):
+            raise KernelCompileError(
+                "kernel source coordinates must be non-negative integers"
+            )
+        if self.line == 0 and any(coordinates[1:]):
+            raise KernelCompileError("kernel source coordinates require a start line")
 
-    def to_dict(self) -> dict[str, str]:
+    def describe(self) -> str:
+        location = self.source_name
+        if self.line:
+            location = f"{location or '<particle-source>'}:{self.line}"
+            if self.column:
+                location += f":{self.column}"
+        identity = self.node_uid + (f".{self.port_id}" if self.port_id else "")
+        if identity:
+            location += f"{' ' if location else ''}[{identity}]"
+        return location
+
+    def to_dict(self) -> dict[str, Any]:
         return {
             "node_uid": self.node_uid,
             "port_id": self.port_id,
             "operation": self.operation,
+            "source_name": self.source_name,
+            "line": self.line,
+            "column": self.column,
+            "end_line": self.end_line,
+            "end_column": self.end_column,
         }
 
     @classmethod
     def from_dict(cls, value: Any) -> "KernelSourceRef":
-        _exact_dict(value, {"node_uid", "port_id", "operation"}, "kernel source")
-        if not all(type(value[name]) is str for name in value):
+        _exact_dict(
+            value,
+            {
+                "node_uid",
+                "port_id",
+                "operation",
+                "source_name",
+                "line",
+                "column",
+                "end_line",
+                "end_column",
+            },
+            "kernel source",
+        )
+        if not all(
+            type(value[name]) is str
+            for name in ("node_uid", "port_id", "operation", "source_name")
+        ):
             raise KernelCompileError("kernel source fields must be strings")
-        return cls(value["node_uid"], value["port_id"], value["operation"])
+        return cls(
+            value["node_uid"],
+            value["port_id"],
+            value["operation"],
+            value["source_name"],
+            value["line"],
+            value["column"],
+            value["end_line"],
+            value["end_column"],
+        )
 
 
 @dataclass(frozen=True)
@@ -1363,6 +1424,25 @@ class ParticleKernelProgram:
         )
 
 
+def _authored_source_ref(
+    stage: ParticleStageHIR,
+    node_uid: str,
+    port_id: str = "",
+    operation: str = "",
+) -> KernelSourceRef:
+    location = stage.source_location(node_uid)
+    return KernelSourceRef(
+        node_uid,
+        port_id,
+        operation,
+        location.source_name,
+        location.line,
+        location.column,
+        location.end_line,
+        location.end_column,
+    )
+
+
 class ParticleKernelLowerer:
     """Lower Particle Program HIR into backend-neutral executable kernels."""
 
@@ -2046,7 +2126,11 @@ class ParticleKernelLowerer:
 
         for operation in emitter.init.flow.iter_operations():
             instruction_begin = len(builder.instructions)
-            source = KernelSourceRef(operation.source_node_uid, operation=f"init.{operation.opcode}")
+            source = _authored_source_ref(
+                emitter.init,
+                operation.source_node_uid,
+                operation=f"init.{operation.opcode}",
+            )
             expression_values = self._lower_operation_expressions(
                 builder, emitter.init, operation
             )
@@ -2213,7 +2297,8 @@ class ParticleKernelLowerer:
                 self._prepare_collision_lifecycle(builder, attribute_types)
                 collision_lifecycle_ready = True
             instruction_begin = len(builder.instructions)
-            source = KernelSourceRef(
+            source = _authored_source_ref(
+                stage_hir,
                 operation.source_node_uid,
                 operation=f"{stage_hir.stage.value}.{operation.opcode}",
             )
@@ -2330,7 +2415,8 @@ class ParticleKernelLowerer:
         builder = _KernelBuilder(KernelStage.RENDERING, attribute_types, parameter_types)
         for operation in emitter.rendering.flow.iter_operations():
             instruction_begin = len(builder.instructions)
-            source = KernelSourceRef(
+            source = _authored_source_ref(
+                emitter.rendering,
                 operation.source_node_uid,
                 operation=f"rendering.{operation.opcode}",
             )
@@ -2665,7 +2751,8 @@ class _KernelBuilder:
             )
         lowered: dict[str, str] = {}
         for instruction in instructions:
-            source = KernelSourceRef(
+            source = _authored_source_ref(
+                stage,
                 instruction.source_node_uid,
                 instruction.source_port_id,
                 f"expression.{instruction.opcode}",

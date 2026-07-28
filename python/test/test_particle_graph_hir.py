@@ -2428,6 +2428,89 @@ class TimedMotion(ParticleScript):
     ]
 
 
+def test_particle_script_source_locations_reach_hir_and_kernel_without_changing_hashes():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class Located(ParticleScript):
+    stable_id = "located"
+
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(4.0)
+
+        def update(self, ctx, particles):
+            particles.add_velocity((0.0, -1.0, 0.0))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    first_asset = compiler.parse(source, source_name="Located.particle.py")
+    moved_asset = compiler.parse(source, source_name="Moved.particle.py")
+    program = ParticleGraphCompiler().compile(first_asset)
+    update = program.emitters[0].update
+    source_uid = "update.0.add_velocity"
+    expected_line = source.splitlines().index(
+        "            particles.add_velocity((0.0, -1.0, 0.0))"
+    ) + 1
+
+    location = update.source_location(source_uid)
+    assert (location.source_name, location.line, location.column) == (
+        "Located.particle.py",
+        expected_line,
+        13,
+    )
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    authored = next(
+        instruction
+        for instruction in kernel.instructions
+        if instruction.source.node_uid == source_uid
+    )
+    assert authored.source.describe() == (
+        f"Located.particle.py:{expected_line}:13 [{source_uid}]"
+    )
+    assert first_asset.semantic_hash() == moved_asset.semantic_hash()
+    assert program.behavior_hash == ParticleGraphCompiler().compile(moved_asset).behavior_hash
+
+
+def test_particle_graph_expression_error_names_source_file_and_node():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("sample", "common.texture.sample2d"),
+            GraphNodeRecord("size", "particle.attribute.size"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "sample-size",
+                "sample",
+                "color",
+                "size",
+                "value",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "root-size", "root.update", "out", "size", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    with pytest.raises(
+        ParticleCompileError,
+        match=r"Broken\.particlegraph \[sample\].*required input",
+    ):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(
+                emitters=(ParticleEmitterAsset(update=update),)
+            ),
+            source_name="Broken.particlegraph",
+        )
+
+
 def test_particle_script_exposes_delta_time_as_a_pure_common_graph_value():
     source = '''\
 from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings

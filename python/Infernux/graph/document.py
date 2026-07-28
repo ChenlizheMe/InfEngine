@@ -26,6 +26,39 @@ def _finite_json(value: Any) -> Any:
 
 
 @dataclass(frozen=True)
+class GraphSourceLocation:
+    """Non-semantic authoring location attached to an in-memory graph node."""
+
+    source_name: str = ""
+    line: int = 0
+    column: int = 0
+    end_line: int = 0
+    end_column: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.source_name) is not str:
+            raise GraphDocumentError("graph source name must be a string")
+        values = (self.line, self.column, self.end_line, self.end_column)
+        if any(type(value) is not int or value < 0 for value in values):
+            raise GraphDocumentError("graph source coordinates must be non-negative integers")
+        if self.line == 0 and any(values[1:]):
+            raise GraphDocumentError("graph source coordinates require a start line")
+        if self.end_line and self.end_line < self.line:
+            raise GraphDocumentError("graph source end precedes its start")
+
+    def describe(self, node_uid: str = "", port_id: str = "") -> str:
+        location = self.source_name
+        if self.line:
+            location = f"{location or '<particle-source>'}:{self.line}"
+            if self.column:
+                location += f":{self.column}"
+        identity = node_uid + (f".{port_id}" if port_id else "")
+        if identity:
+            return f"{location + ' ' if location else ''}[{identity}]"
+        return location
+
+
+@dataclass(frozen=True)
 class GraphNodeRecord:
     uid: str
     type_id: str
@@ -87,6 +120,11 @@ class GraphDocument:
     nodes: tuple[GraphNodeRecord, ...] = ()
     links: tuple[GraphLinkRecord, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    source_locations: Mapping[str, GraphSourceLocation] = field(
+        default_factory=dict,
+        compare=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if type(self.domain) is not str or not self.domain:
@@ -99,6 +137,18 @@ class GraphDocument:
         if any(link.source_node not in node_ids or link.target_node not in node_ids for link in self.links):
             raise GraphDocumentError("graph links must reference existing nodes")
         object.__setattr__(self, "metadata", _finite_json(dict(self.metadata)))
+        source_locations = dict(self.source_locations)
+        if any(
+            type(node_uid) is not str
+            or node_uid not in node_ids
+            or not isinstance(location, GraphSourceLocation)
+            for node_uid, location in source_locations.items()
+        ):
+            raise GraphDocumentError("graph source locations must reference existing nodes")
+        object.__setattr__(self, "source_locations", source_locations)
+
+    def source_location(self, node_uid: str) -> GraphSourceLocation:
+        return self.source_locations.get(node_uid, GraphSourceLocation())
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -199,4 +249,5 @@ __all__ = [
     "GraphDocumentError",
     "GraphLinkRecord",
     "GraphNodeRecord",
+    "GraphSourceLocation",
 ]

@@ -97,7 +97,7 @@ class ParticleArtifactRegistry:
             return existing
 
         try:
-            program = ParticleGraphCompiler().compile(asset)
+            program = ParticleGraphCompiler().compile(asset, source_name=source_path)
             hir = _program_to_dict(program)
             kernel_program = ParticleKernelLowerer().lower(program)
             kernel_ir = kernel_program.to_dict()
@@ -170,7 +170,10 @@ class ParticleArtifactRegistry:
             program = (
                 ParticleScriptCompiler().compile(source, source_name=source_path)
                 if source_kind == "script"
-                else ParticleGraphCompiler().compile(ParticleGraphAsset.from_json(source))
+                else ParticleGraphCompiler().compile(
+                    ParticleGraphAsset.from_json(source),
+                    source_name=source_path,
+                )
             )
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ParticleArtifactError(f"particle AOT compile failed: {exc}") from exc

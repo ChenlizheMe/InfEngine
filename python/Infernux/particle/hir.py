@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
 import json
@@ -16,6 +16,7 @@ from Infernux.graph.expression_ir import (
     ExpressionInstruction,
     ExpressionProgram,
 )
+from Infernux.graph.document import GraphSourceLocation
 from Infernux.graph.types import AssetReference, TypeRef, ValueType
 
 from .asset import (
@@ -228,6 +229,14 @@ class ParticleStageHIR:
     root_uid: str
     expressions: ExpressionProgram
     flow: ParticleFlowProgram
+    source_locations: Mapping[str, GraphSourceLocation] = field(
+        default_factory=dict,
+        compare=False,
+        repr=False,
+    )
+
+    def source_location(self, node_uid: str) -> GraphSourceLocation:
+        return self.source_locations.get(node_uid, GraphSourceLocation())
 
 
 @dataclass(frozen=True)
@@ -383,7 +392,12 @@ class ParticleProgramHIR:
 class ParticleGraphCompiler:
     """Lower strict ParticleGraph assets into backend-independent HIR."""
 
-    def compile(self, asset: ParticleGraphAsset) -> ParticleProgramHIR:
+    def compile(
+        self,
+        asset: ParticleGraphAsset,
+        *,
+        source_name: str = "",
+    ) -> ParticleProgramHIR:
         events = self._compile_events(asset)
         definitions = particle_graph_node_definitions(asset)
         parameters = tuple(
@@ -393,7 +407,7 @@ class ParticleGraphCompiler:
             )
         )
         emitters = tuple(
-            self._compile_emitter(emitter, events, definitions)
+            self._compile_emitter(emitter, events, definitions, source_name)
             for emitter in asset.emitters
         )
         return ParticleProgramHIR(
@@ -723,6 +737,7 @@ class ParticleGraphCompiler:
         emitter,
         events: ParticleEventSchedule,
         definitions,
+        source_name: str,
     ) -> ParticleEmitterHIR:
         init = self._compile_stage(
             ParticleStage.INIT,
@@ -731,6 +746,7 @@ class ParticleGraphCompiler:
             definitions,
             events,
             emitter,
+            source_name=source_name,
         )
         update = self._compile_stage(
             ParticleStage.UPDATE,
@@ -739,6 +755,7 @@ class ParticleGraphCompiler:
             definitions,
             events,
             emitter,
+            source_name=source_name,
         )
         def compile_collision_lifecycle(stage: ParticleStage) -> ParticleStageHIR | None:
             document = getattr(emitter, stage.value)
@@ -752,6 +769,7 @@ class ParticleGraphCompiler:
                 events,
                 emitter,
                 entry_condition=stage.value,
+                source_name=source_name,
             )
 
         collision_enter = compile_collision_lifecycle(ParticleStage.COLLISION_ENTER)
@@ -764,6 +782,7 @@ class ParticleGraphCompiler:
             definitions,
             events,
             emitter,
+            source_name=source_name,
         )
         routes_by_id = {route.stable_id: route for route in events.routes}
         event_source_stages = (
@@ -1167,6 +1186,7 @@ class ParticleGraphCompiler:
         emitter,
         *,
         entry_condition: str = "",
+        source_name: str = "",
     ) -> ParticleStageHIR:
         registry = definitions.registry
         root_type = f"particle.root.{stage.value}"
@@ -1196,6 +1216,18 @@ class ParticleGraphCompiler:
                 return definitions.parameter_type_by_id.get(str(selected))
             return None
 
+        def _source_location(node_uid: str) -> GraphSourceLocation:
+            location = document.source_location(node_uid)
+            if location.source_name or not source_name:
+                return location
+            return GraphSourceLocation(
+                source_name=source_name,
+                line=location.line,
+                column=location.column,
+                end_line=location.end_line,
+                end_column=location.end_column,
+            )
+
         try:
             expressions = ExpressionCompiler(
                 registry,
@@ -1205,7 +1237,19 @@ class ParticleGraphCompiler:
                 document, expression_outputs
             )
         except ExpressionCompileError as exc:
-            raise ParticleCompileError(str(exc)) from exc
+            diagnostics = []
+            links_by_uid = {link.uid: link for link in document.links}
+            for diagnostic in exc.diagnostics:
+                node_uid = diagnostic.node_uid
+                if not node_uid and diagnostic.link_uid:
+                    link = links_by_uid.get(diagnostic.link_uid)
+                    node_uid = link.target_node if link is not None else ""
+                location = _source_location(node_uid)
+                prefix = location.describe(node_uid)
+                diagnostics.append(
+                    f"{prefix + ': ' if prefix else ''}{diagnostic.message}"
+                )
+            raise ParticleCompileError("; ".join(diagnostics)) from exc
         expressions = self._resolve_event_payload_expressions(
             expressions,
             document,
@@ -1246,6 +1290,7 @@ class ParticleGraphCompiler:
             root.uid,
             expressions,
             flow,
+            {node.uid: _source_location(node.uid) for node in document.nodes},
         )
 
     @staticmethod
