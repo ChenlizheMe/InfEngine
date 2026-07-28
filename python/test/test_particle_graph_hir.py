@@ -37,7 +37,10 @@ from Infernux.particle import (
     decode_particle_runtime_metadata,
 )
 from Infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.particle.nodes import particle_event_output_type_id
+from Infernux.particle.nodes import (
+    particle_event_output_type_id,
+    particle_graph_node_definitions,
+)
 from Infernux.particle.asset import (
     particle_attribute_cache_id,
     particle_attribute_capture_id,
@@ -1624,95 +1627,9 @@ def test_particle_event_output_requires_a_matching_source_route(route, match):
         ParticleGraphCompiler().compile(asset)
 
 
-def test_collision_and_event_nodes_preserve_authored_exec_order():
-    update = GraphDocument(
-        "particle.update",
-        nodes=(
-            GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("collision.first", "particle.update.collide_scene"),
-            GraphNodeRecord(
-                "event.output",
-                particle_event_output_type_id("route", "update"),
-                properties={"condition": True},
-            ),
-            GraphNodeRecord(
-                "size.after.collision",
-                "particle.attribute.size",
-                properties={"value": 2.0},
-            ),
-            GraphNodeRecord("collision.second", "particle.update.collide_scene"),
-        ),
-        links=(
-            GraphLinkRecord(
-                "first",
-                "root.update",
-                "out",
-                "collision.first",
-                "in",
-                PortKind.EXEC,
-            ),
-            GraphLinkRecord(
-                "event",
-                "collision.first",
-                "out",
-                "event.output",
-                "in",
-                PortKind.EXEC,
-            ),
-            GraphLinkRecord(
-                "second",
-                "event.output",
-                "out",
-                "size.after.collision",
-                "in",
-                PortKind.EXEC,
-            ),
-            GraphLinkRecord(
-                "third",
-                "size.after.collision",
-                "out",
-                "collision.second",
-                "in",
-                PortKind.EXEC,
-            ),
-        ),
-    )
-    source = ParticleEmitterAsset(stable_id="source", update=update)
-    target = ParticleEmitterAsset(stable_id="target")
-    asset = ParticleGraphAsset(
-        emitters=(source, target),
-        event_types=(ParticleEventType("event", "Event", 16),),
-        event_routes=(
-            ParticleEventRoute("route", "event", "source", "update", "target"),
-        ),
-    )
-
-    hir = ParticleGraphCompiler().compile(asset)
-    assert [
-        operation.opcode
-        for operation in hir.emitters[0].update.flow.iter_operations()
-    ] == [
-        "collision.scene",
-        "event.emit",
-        "attribute.modify_size",
-        "collision.scene",
-    ]
-    kernel = ParticleKernelLowerer().lower(hir)
-    opcodes = [
-        instruction.opcode
-        for instruction in kernel.emitters[0].update.instructions
-    ]
-    first_collision = opcodes.index("collide_scene")
-    event = opcodes.index("event_append")
-    size_write = next(
-        index
-        for index, instruction in enumerate(kernel.emitters[0].update.instructions)
-        if instruction.opcode == "store_attribute"
-        and instruction.immediate_dict()["attribute"] == "builtin.size"
-        and instruction.source.node_uid == "size.after.collision"
-    )
-    second_collision = opcodes.index("collide_scene", first_collision + 1)
-    assert first_collision < event < size_write < second_collision
+def test_scene_collision_is_not_a_public_authoring_node():
+    definitions = particle_graph_node_definitions(ParticleGraphAsset())
+    assert definitions.registry.get("particle.update.collide_scene") is None
 
 
 def test_particle_event_schema_fingerprint_invalidates_stage_expression_programs():
@@ -3618,38 +3535,49 @@ from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
         stable_id = "sparks"
-        settings = EmitterSettings(capacity=1024)
+        settings = EmitterSettings(capacity=1024, collision_enabled=True)
 
         def init(self, ctx, particles):
             particles.set_velocity((0.0, 0.0, 0.0))
 
         def update(self, ctx, particles):
-            particles.collide_scene(
-                particle_radius=0.15,
-                layer_mask=5,
-                include_triggers=True,
-                restitution_scale=0.8,
-                friction_scale=0.6,
-            )
+            pass
 
         def rendering(self, ctx, particles):
             particles.sprite()
 '''
     compiler = ParticleScriptCompiler()
-    asset = compiler.parse(source, source_name="SceneCollision.particle.py")
-    emitter = compiler.compile(
+    script_hir = compiler.compile(
         source, source_name="SceneCollision.particle.py"
-    ).emitters[0]
+    )
+    graph_hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            emitters=(
+                ParticleEmitterAsset(
+                    stable_id="sparks",
+                    settings=EmitterSettings(capacity=1024, collision_enabled=True),
+                ),
+            ),
+        )
+    )
 
-    assert _operations(emitter.update)[-1].opcode == "collision.scene"
-    assert _operations(emitter.update)[-1].parameter_dict() == {
-        "friction_scale": 0.6,
-        "include_triggers": True,
-        "layer_mask": 5,
-        "particle_radius": 0.15,
-        "restitution_scale": 0.8,
-    }
-    assert emitter == ParticleGraphCompiler().compile(asset).emitters[0]
+    assert not any(
+        operation.opcode == "collision.scene"
+        for program in (script_hir, graph_hir)
+        for operation in program.emitters[0].update.flow.iter_operations()
+    )
+    collision_instructions = []
+    for program in (script_hir, graph_hir):
+        instructions = ParticleKernelLowerer().lower(program).emitters[0].update.instructions
+        collisions = [item for item in instructions if item.opcode == "collide_scene"]
+        assert len(collisions) == 1
+        collision_instructions.append(collisions[0])
+    assert [operand.value_type for operand in collision_instructions[0].operands] == [
+        operand.value_type for operand in collision_instructions[1].operands
+    ]
+    assert collision_instructions[0].immediate_dict() == (
+        collision_instructions[1].immediate_dict()
+    )
 
 
 def test_particle_script_scene_collision_events_read_current_hit_and_normal():
@@ -3678,20 +3606,22 @@ class CollisionEvents(ParticleScript):
             stable_id="impact-route",
             event_type_id="impact",
             source_emitter_id="source",
-            source_stage="update",
+            source_stage="collision_enter",
             target_emitter_id="target",
         ),
     )
 
     class Source(ParticleEmitter):
         stable_id = "source"
-        settings = EmitterSettings(capacity=1024)
+        settings = EmitterSettings(capacity=1024, collision_enabled=True)
 
         def init(self, ctx, particles):
             pass
 
         def update(self, ctx, particles):
-            particles.collide_scene()
+            pass
+
+        def collision_enter(self, ctx, particles):
             particles.emit_event(
                 route="impact-route",
                 condition=particles.collision_hit,
@@ -3719,11 +3649,8 @@ class CollisionEvents(ParticleScript):
     )
     assert [
         operation.opcode
-        for operation in program.emitters[0].update.flow.iter_operations()
-    ] == [
-        "collision.scene",
-        "event.emit",
-    ]
+        for operation in program.emitters[0].collision_enter.flow.iter_operations()
+    ] == ["event.emit"]
 
     kernel = ParticleKernelLowerer().lower(program)
     instructions = kernel.emitters[0].update.instructions
@@ -3752,36 +3679,27 @@ class CollisionEvents(ParticleScript):
     )
 
 
-@pytest.mark.parametrize(
-    "properties, message",
-    [
-        ({"particle_radius": -0.1}, "particle_radius must be non-negative"),
-        ({"layer_mask": -1}, "layer_mask must be non-negative"),
-        ({"include_triggers": 1}, "include_triggers must be a bool"),
-        ({"restitution_scale": -0.1}, "restitution_scale must be finite and non-negative"),
-        ({"friction_scale": -0.1}, "friction_scale must be finite and non-negative"),
-    ],
-)
-def test_scene_collision_rejects_invalid_static_parameters(properties, message):
-    update = GraphDocument(
-        "particle.update",
-        nodes=(
-            GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord(
-                "collision",
-                "particle.update.collide_scene",
-                properties=properties,
-            ),
-        ),
-        links=(
-            GraphLinkRecord(
-                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
-            ),
-        ),
-    )
-    with pytest.raises(ParticleCompileError, match=message):
-        ParticleGraphCompiler().compile(
-            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+def test_particle_script_rejects_removed_scene_collision_operation():
+    source = '''
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class RemovedCollisionNode(ParticleScript):
+    class Sparks(ParticleEmitter):
+        stable_id = "sparks"
+        settings = EmitterSettings(collision_enabled=True)
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            particles.collide_scene()
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    with pytest.raises(ParticleScriptError, match="collide_scene"):
+        ParticleScriptCompiler().compile(
+            source, source_name="RemovedCollisionNode.particle.py"
         )
 
 

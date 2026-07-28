@@ -1845,78 +1845,6 @@ class ParticleKernelLowerer:
         bindings = dict(operation.value_bindings)
         position = builder.load("builtin.position", source)
         velocity = builder.load("builtin.velocity", source)
-        if operation.opcode == "collision.scene":
-            particle_radius = builder.operation_value(
-                "particle_radius",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.F32),
-                source,
-            )
-            layer_mask = builder.operation_value(
-                "layer_mask",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.U32),
-                source,
-            )
-            include_triggers = builder.operation_value(
-                "include_triggers",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.BOOL),
-                source,
-            )
-            restitution_scale = builder.operation_value(
-                "restitution_scale",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.F32),
-                source,
-            )
-            friction_scale = builder.operation_value(
-                "friction_scale",
-                bindings,
-                expression_values,
-                parameters,
-                TypeRef(ValueType.F32),
-                source,
-            )
-            builder.emit_void(
-                "collide_scene",
-                (
-                    position,
-                    velocity,
-                    particle_radius,
-                    layer_mask,
-                    include_triggers,
-                    restitution_scale,
-                    friction_scale,
-                ),
-                {
-                    "position_attribute": "builtin.position",
-                    "velocity_attribute": "builtin.velocity",
-                    "hit_attribute": (
-                        "builtin.collision_hit"
-                        if "builtin.collision_hit" in attribute_types
-                        else ""
-                    ),
-                    "normal_attribute": (
-                        "builtin.collision_normal"
-                        if "builtin.collision_normal" in attribute_types
-                        else ""
-                    ),
-                },
-                source,
-            )
-            builder.written_attributes.update(
-                {"builtin.position", "builtin.velocity"}
-            )
-            return
         if operation.opcode == "collision.plane":
             point = builder.operation_value(
                 "point",
@@ -2278,7 +2206,6 @@ class ParticleKernelLowerer:
             "collision.plane",
             "collision.sphere",
             "collision.sdf",
-            "collision.scene",
         }
         operation_stream = tuple(
             (emitter.update, operation)
@@ -2935,6 +2862,14 @@ def _exact_dict(value: Any, expected: set[str], label: str) -> None:
 
 
 def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
+    kernel_stage_by_particle_stage = {
+        ParticleStage.INIT: KernelStage.INIT,
+        ParticleStage.UPDATE: KernelStage.UPDATE,
+        ParticleStage.COLLISION_ENTER: KernelStage.UPDATE,
+        ParticleStage.COLLISION_STAY: KernelStage.UPDATE,
+        ParticleStage.COLLISION_EXIT: KernelStage.UPDATE,
+        ParticleStage.RENDERING: KernelStage.RENDERING,
+    }
     return KernelEventABI(
         events.event_abi_hash,
         tuple(
@@ -2962,7 +2897,7 @@ def _lower_event_abi(events: ParticleEventSchedule) -> KernelEventABI:
                 route.stable_id,
                 route.event_type_index,
                 route.source_emitter_index,
-                route.source_stage.value,
+                kernel_stage_by_particle_stage[route.source_stage],
                 route.target_emitter_index,
                 route.spawn_count,
             )

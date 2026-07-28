@@ -657,18 +657,6 @@ PARTICLE_NODE_DEFINITIONS = (
         ),
     ),
     _operation(
-        "particle.update.collide_scene",
-        "Scene Collision",
-        "collision.scene",
-        (
-            PropertyDef("particle_radius", TypeRef(ValueType.F32), 0.0),
-            PropertyDef("layer_mask", TypeRef(ValueType.U32), 0xFFFFFFFF),
-            PropertyDef("include_triggers", TypeRef(ValueType.BOOL), False),
-            PropertyDef("restitution_scale", TypeRef(ValueType.F32), 1.0),
-            PropertyDef("friction_scale", TypeRef(ValueType.F32), 1.0),
-        ),
-    ),
-    _operation(
         "particle.update.kill_if",
         "Kill If",
         "lifecycle.kill_if",

@@ -267,36 +267,13 @@ class ConditionalMotion(ParticleScript):
 
 
 def _scene_collision_asset():
-    update = GraphDocument(
-        "particle.update",
-        nodes=(
-            GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord(
-                "scene-collision",
-                "particle.update.collide_scene",
-                properties={
-                    "particle_radius": 0.125,
-                    "layer_mask": 5,
-                    "include_triggers": True,
-                    "restitution_scale": 0.75,
-                    "friction_scale": 0.5,
-                },
-            ),
-        ),
-        links=(
-            GraphLinkRecord(
-                "stream",
-                "root.update",
-                "out",
-                "scene-collision",
-                "in",
-                PortKind.EXEC,
-            ),
-        ),
-    )
     return ParticleGraphAsset(
         stable_id="scene-collision-gpu",
-        emitters=(ParticleEmitterAsset(update=update),),
+        emitters=(
+            ParticleEmitterAsset(
+                settings=EmitterSettings(collision_enabled=True),
+            ),
+        ),
     )
 
 
@@ -1091,22 +1068,18 @@ def test_collision_lifecycle_root_lowers_to_gpu_mask_and_valid_spirv():
 
 def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     hir = ParticleGraphCompiler().compile(_scene_collision_asset())
-    operation = tuple(hir.emitters[0].update.flow.iter_operations())[-1]
-    assert operation.opcode == "collision.scene"
-    assert operation.parameter_dict() == {
-        "friction_scale": 0.5,
-        "include_triggers": True,
-        "layer_mask": 5,
-        "particle_radius": 0.125,
-        "restitution_scale": 0.75,
-    }
+    assert not any(
+        operation.opcode == "collision.scene"
+        for operation in hir.emitters[0].update.flow.iter_operations()
+    )
 
     kernel = ParticleKernelLowerer().lower(hir)
-    instruction = next(
-        value
-        for value in kernel.emitters[0].update.instructions
+    collision_instructions = [
+        value for value in kernel.emitters[0].update.instructions
         if value.opcode == "collide_scene"
-    )
+    ]
+    assert len(collision_instructions) == 1
+    instruction = collision_instructions[0]
     assert instruction.result_id == ""
     assert [operand.value_type.value_type for operand in instruction.operands] == [
         ValueType.VEC3,
@@ -1118,8 +1091,8 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         ValueType.F32,
     ]
     assert instruction.immediate_dict() == {
-        "hit_attribute": "",
-        "normal_attribute": "",
+        "hit_attribute": "builtin.collision_hit",
+        "normal_attribute": "builtin.collision_normal",
         "position_attribute": "builtin.position",
         "velocity_attribute": "builtin.velocity",
     }
@@ -1179,11 +1152,12 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
 
 
 def test_scene_collision_event_payload_reads_post_collision_state():
-    update = GraphDocument(
-        "particle.update",
+    collision_enter = GraphDocument(
+        "particle.collision_enter",
         nodes=(
-            GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("collision", "particle.update.collide_scene"),
+            GraphNodeRecord(
+                "root.collision_enter", "particle.root.collision_enter"
+            ),
             GraphNodeRecord(
                 "position",
                 "particle.attribute.get",
@@ -1201,22 +1175,14 @@ def test_scene_collision_event_payload_reads_post_collision_state():
             ),
             GraphNodeRecord(
                 "impact.output",
-                particle_event_output_type_id("impact-route", "update"),
+                particle_event_output_type_id("impact-route", "collision_enter"),
                 properties={"condition": True},
             ),
         ),
         links=(
             GraphLinkRecord(
-                "collision.stream",
-                "root.update",
-                "out",
-                "collision",
-                "in",
-                PortKind.EXEC,
-            ),
-            GraphLinkRecord(
                 "event.stream",
-                "collision",
+                "root.collision_enter",
                 "out",
                 "impact.output",
                 "in",
@@ -1248,7 +1214,11 @@ def test_scene_collision_event_payload_reads_post_collision_state():
             ),
         ),
     )
-    source_emitter = ParticleEmitterAsset(stable_id="source", update=update)
+    source_emitter = ParticleEmitterAsset(
+        stable_id="source",
+        settings=EmitterSettings(collision_enabled=True),
+        collision_enter=collision_enter,
+    )
     target_emitter = ParticleEmitterAsset(stable_id="target")
     event_type = ParticleEventType(
         "impact",
@@ -1278,7 +1248,7 @@ def test_scene_collision_event_payload_reads_post_collision_state():
                 "impact-route",
                 "impact",
                 "source",
-                "update",
+                "collision_enter",
                 "target",
             ),
         ),
@@ -1287,11 +1257,8 @@ def test_scene_collision_event_payload_reads_post_collision_state():
     hir = ParticleGraphCompiler().compile(graph)
     assert [
         operation.opcode
-        for operation in hir.emitters[0].update.flow.iter_operations()
-    ] == [
-        "collision.scene",
-        "event.emit",
-    ]
+        for operation in hir.emitters[0].collision_enter.flow.iter_operations()
+    ] == ["event.emit"]
     kernel = ParticleKernelLowerer().lower(hir)
     attribute_ids = {attribute[0] for attribute in kernel.emitters[0].attributes}
     assert "builtin.collision_hit" in attribute_ids

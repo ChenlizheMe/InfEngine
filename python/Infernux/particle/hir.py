@@ -1003,7 +1003,6 @@ class ParticleGraphCompiler:
             "collision.plane",
             "collision.sphere",
             "collision.sdf",
-            "collision.scene",
         }
         collision_indices = [
             index
@@ -1018,7 +1017,6 @@ class ParticleGraphCompiler:
                 "collision.plane": "Plane Collision",
                 "collision.sphere": "Sphere Collision",
                 "collision.sdf": "SDF Collision",
-                "collision.scene": "Scene Collision",
             }[operation.opcode]
             if operation.opcode == "collision.plane":
                 normal = parameters["normal"]
@@ -1031,7 +1029,7 @@ class ParticleGraphCompiler:
                 radius_names = ("radius",)
             elif operation.opcode == "collision.sphere":
                 radius_names = ("sphere_radius", "particle_radius")
-            elif operation.opcode == "collision.sdf":
+            else:
                 interface_id = parameters["interface"]
                 interface = next(
                     (
@@ -1048,20 +1046,6 @@ class ParticleGraphCompiler:
                 if type(parameters["inverted"]) is not bool:
                     raise ParticleCompileError("SDF Collision inverted must be a boolean")
                 radius_names = ("particle_radius",)
-            else:
-                radius_names = ("particle_radius",)
-                if type(parameters["layer_mask"]) is not int or not 0 <= parameters["layer_mask"] <= 0xFFFFFFFF:
-                    raise ParticleCompileError("Scene Collision layer_mask must be a uint32")
-                if type(parameters["include_triggers"]) is not bool:
-                    raise ParticleCompileError("Scene Collision include_triggers must be a boolean")
-                for name in ("restitution_scale", "friction_scale"):
-                    if name in bindings:
-                        continue
-                    value = float(parameters[name])
-                    if not math.isfinite(value) or value < 0.0:
-                        raise ParticleCompileError(
-                            f"Scene Collision {name} must be finite and non-negative"
-                        )
             for name in (*radius_names, "restitution", "friction"):
                 if name not in parameters:
                     continue
@@ -2003,12 +1987,6 @@ class ParticleGraphCompiler:
                 "builtin.collision_hit",
                 "builtin.collision_normal",
             },
-            "collision.scene": {
-                "builtin.position",
-                "builtin.velocity",
-                "builtin.collision_hit",
-                "builtin.collision_normal",
-            },
         }
         if opcode in ATTRIBUTE_OPERATION_SPECS:
             return frozenset({ATTRIBUTE_OPERATION_SPECS[opcode][0]})
@@ -2040,7 +2018,6 @@ class ParticleGraphCompiler:
             "collision.plane": {"builtin.position", "builtin.velocity"},
             "collision.sphere": {"builtin.position", "builtin.velocity"},
             "collision.sdf": {"builtin.position", "builtin.velocity"},
-            "collision.scene": {"builtin.position", "builtin.velocity"},
         }
         result = set(reads.get(operation.opcode, ()))
         if (

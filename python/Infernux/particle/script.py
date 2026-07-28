@@ -225,15 +225,6 @@ class ParticleStream:
         friction: float = 0.1,
         inverted: bool = False,
     ) -> None: ...
-    def collide_scene(
-        self,
-        *,
-        particle_radius: float = 0.0,
-        layer_mask: int = 0xFFFFFFFF,
-        include_triggers: bool = False,
-        restitution_scale: float = 1.0,
-        friction_scale: float = 1.0,
-    ) -> None: ...
     def kill_if(self, condition: bool) -> None: ...
     def emit_event(
         self,
@@ -327,7 +318,6 @@ class ParticleScriptCompiler:
             "collide_plane": ("particle.update.collide_plane", ""),
             "collide_sphere": ("particle.update.collide_sphere", ""),
             "collide_sdf": ("particle.update.collide_sdf", ""),
-            "collide_scene": ("particle.update.collide_scene", ""),
             "kill_if": ("particle.update.kill_if", "condition"),
         },
         "rendering": {
