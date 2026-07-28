@@ -686,12 +686,6 @@ class ParticleScriptCompiler:
             )
             control = self._CONTROL_OPERATIONS.get(call.func.attr)
             if target_name == context_name and control is not None:
-                if stage == "rendering":
-                    raise self._error(
-                        source_name,
-                        call,
-                        "rendering cannot contain Wait/Until because it cannot resume",
-                    )
                 if len(call.args) != 1 or call.keywords:
                     raise self._error(
                         source_name,

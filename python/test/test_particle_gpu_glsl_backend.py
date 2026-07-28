@@ -91,6 +91,87 @@ class TimedMotion(ParticleScript):
     validate_gpu_particle_spirv(compiled, source)
 
 
+def test_rendering_wait_uses_an_independent_gpu_timeline_and_keeps_exporting():
+    source_text = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class RenderingTimeline(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+
+        def update(self, ctx, particles):
+            particles.add_velocity((0.0, 1.0, 0.0))
+
+        def rendering(self, ctx, particles):
+            particles.set_size(0.5)
+            ctx.until_seconds(1.0)
+            ctx.wait_frames(2)
+            particles.sprite()
+'''
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleScriptCompiler().compile(
+                source_text,
+                source_name="RenderingTimeline.particle.py",
+            )
+        )
+    )
+    emitter = source.emitters[0]
+
+    assert "inx_until_seconds(" in emitter.rendering
+    assert "inx_suspend_frames(" in emitter.rendering
+    assert "state.rendering_resume_step != pc.simulation_step" in emitter.rendering
+    assert "atomicAdd(counters.visible_count, 1u)" in emitter.rendering
+    assert emitter.continuation is not None
+    assert "state.rendering_resume_step = pc.simulation_step" in emitter.continuation.dispatch
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_init_wait_gates_update_and_rendering_until_all_init_lanes_finish():
+    source_text = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class DelayedBirth(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+            ctx.wait_frames(3)
+            particles.set_size(2.0)
+
+        def update(self, ctx, particles):
+            particles.add_velocity((0.0, 1.0, 0.0))
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleScriptCompiler().compile(
+                source_text,
+                source_name="DelayedBirth.particle.py",
+            )
+        )
+    )
+    emitter = source.emitters[0]
+
+    assert "state.lifecycle_flags = INX_PARTICLE_ALIVE" in emitter.init
+    assert "if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE" in emitter.init
+    assert "INX_PARTICLE_INIT_COMPLETE) == 0u" in emitter.update
+    assert "INX_PARTICLE_INIT_COMPLETE) == 0u" in emitter.rendering
+    assert emitter.continuation is not None
+    assert "state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE" in emitter.continuation.dispatch
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
 def test_particle_script_delta_time_compiles_to_explicit_gpu_uniform_math():
     source_text = '''\
 from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings

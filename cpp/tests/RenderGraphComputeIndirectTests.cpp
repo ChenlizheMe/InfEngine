@@ -412,8 +412,8 @@ bool VerifyGpuParticleMigration(TestResources &resources,
         return false;
 
     const std::array<uint32_t, destinationCapacity * destinationStrideWords> expectedStates = {
-        1, 11, 200,     0xBEEFu, 100, 101, 0x1234u, 0x5678u, 0,   0,   0xDEADu, 0xBEEFu,
-        0, 0,  0x1234u, 0x5678u, 1,   22,  220,     0xBEEFu, 120, 121, 0x1234u, 0x5678u,
+        3, 11, 200,     0xBEEFu, 100, 101, 0x1234u, 0x5678u, 0,   0,   0xDEADu, 0xBEEFu,
+        0, 0,  0x1234u, 0x5678u, 3,   22,  220,     0xBEEFu, 120, 121, 0x1234u, 0x5678u,
     };
     std::array<uint32_t, expectedStates.size()> migratedStates{};
     std::array<uint32_t, destinationCapacity> migratedFreeList{};
@@ -1838,9 +1838,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             "compute-indirect-fixture", 1, infernux::rhi::TextureHandle{}, texture, sampler, 1, std::move(owner));
         auto slot = std::make_shared<infernux::rhi::TextureGpuViewSlot>("compute-indirect-fixture");
         (void)slot->Publish(publication);
-        return infernux::particle::GpuBillboardTextureLease{
-            infernux::particle::GpuBillboardTextureStatus::Ready, texture, sampler, std::move(slot),
-            std::move(publication)};
+        return infernux::particle::GpuBillboardTextureLease{infernux::particle::GpuBillboardTextureStatus::Ready,
+                                                            texture, sampler, std::move(slot), std::move(publication)};
     };
     billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};

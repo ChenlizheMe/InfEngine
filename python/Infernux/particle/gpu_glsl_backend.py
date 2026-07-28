@@ -988,6 +988,11 @@ class GpuParticleGlslLowerer:
         update_flows = tuple(
             flow for flow in emitter.flows if flow.kernel_stage is KernelStage.UPDATE
         )
+        rendering_flows = tuple(
+            flow
+            for flow in emitter.flows
+            if flow.kernel_stage is KernelStage.RENDERING
+        )
         bootstrap = prelude + _bootstrap_main()
         init_body, _, init_events = _StageCompiler(
             emitter,
@@ -1019,6 +1024,7 @@ class GpuParticleGlslLowerer:
             parameter_slots=parameter_slots,
             continuation_lane_indices=continuation_lane_indices,
             continuation_join_indices=continuation_join_indices,
+            entry_guard="state.update_resume_step != pc.simulation_step",
         ).compile(emitter.update, update_flows)
         rendering_body, exports, rendering_events = _StageCompiler(
             emitter,
@@ -1027,7 +1033,10 @@ class GpuParticleGlslLowerer:
             events,
             emitter_index,
             parameter_slots=parameter_slots,
-        ).compile(emitter.rendering)
+            continuation_lane_indices=continuation_lane_indices,
+            continuation_join_indices=continuation_join_indices,
+            entry_guard="state.rendering_resume_step != pc.simulation_step",
+        ).compile(emitter.rendering, rendering_flows)
         required = {"builtin.position", "builtin.size", "builtin.color", "builtin.rotation"}
         if not required.issubset(exports):
             missing = ", ".join(sorted(required - set(exports)))
@@ -1082,6 +1091,7 @@ class GpuParticleGlslLowerer:
             + _update_main(update_body, update_events, emitter, fields),
             prelude + _render_reset_main(),
             prelude
+            + continuation_bindings
             + (_event_output_bindings(4) if rendering_events else "")
             + _rendering_main(rendering_body, rendering_events, exports),
             continuation,
@@ -1604,6 +1614,7 @@ class _StageCompiler:
         continuation_join_indices: Mapping[tuple[ParticleStage, str], int]
         | None = None,
         existing_continuation_lane: int | None = None,
+        entry_guard: str = "true",
     ) -> None:
         self._emitter = emitter
         self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
@@ -1618,6 +1629,7 @@ class _StageCompiler:
         self._continuation_lane_indices = dict(continuation_lane_indices or {})
         self._continuation_join_indices = dict(continuation_join_indices or {})
         self._existing_continuation_lane = existing_continuation_lane
+        self._entry_guard = str(entry_guard)
         self._active_lane_var: str | None = None
         self._suspension_join_contexts: dict[str, tuple[int, int]] = {}
         self._inline_events = False
@@ -1764,7 +1776,7 @@ class _StageCompiler:
         entries.sort(key=lambda item: (item[0], item[1], item[2]))
         for flow_index, flow in enumerate(flows):
             for lane in flow.lanes:
-                initial = "true" if lane.index == 0 else "false"
+                initial = self._entry_guard if lane.index == 0 else "false"
                 guards = []
                 for runtime_lane in sorted(
                     lane_waits.get((flow_index, lane.index), ())
@@ -2292,6 +2304,7 @@ class _StageCompiler:
                 f"{int(immediate['resume_program_counter'])}u, {operands[0]}, "
                 f"{join_index}u, {expected_mask}u, {existing_record})) {{"
             )
+            self._lines.append("    inx_stage_suspended = true;")
             self._lines.append(f"    {self._active_lane_var} = false;")
             if self._existing_continuation_lane == lane_index:
                 self._lines.append("    inx_continuation_resuspended = true;")
@@ -2708,7 +2721,8 @@ _STD430_STORAGE_LAYOUT = {
 def _std430_attribute_layout(
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> tuple[tuple[tuple[str, TypeRef, str, int, int], ...], int]:
-    offset = 8  # alive + spawn_generation
+    # Internal lifecycle flags, generation, and per-stage resume stamps.
+    offset = 16
     struct_alignment = 4
     result = []
     for stable_id, value_type, field in fields:
@@ -2765,6 +2779,7 @@ def build_gpu_particle_migration(
         raise GpuParticleCompileError("GPU particle migration layout does not match Kernel IR")
 
     defaults = bytearray(new_stride)
+    struct.pack_into("<II", defaults, 8, 0xFFFFFFFF, 0xFFFFFFFF)
     for stable_id, (value_type, default) in kernel_schema.items():
         _glsl_type_name, offset, _byte_size = next_fields[stable_id]
         _pack_std430_default(defaults, offset, value_type, default)
@@ -2823,7 +2838,7 @@ def _decode_attribute_layout(
             or stable_id in result
             or type(glsl_type) is not str
             or type(offset) is not int
-            or offset < 8
+            or offset < 16
             or offset % 4
             or type(byte_size) is not int
             or byte_size <= 0
@@ -3706,11 +3721,39 @@ def _continuation_dispatch_glsl(
             )
             body, event_body = compiler.compile_resume(function, flow, suspension)
         finite = _finite_state_check(function, fields)
+        if suspension.lifecycle_stage is ParticleStage.INIT:
+            other_init_lanes = sorted(
+                {
+                    continuation_lane_indices[item.lane_stable_id]
+                    for item in emitter.suspensions
+                    if item.lifecycle_stage is ParticleStage.INIT
+                    and continuation_lane_indices[item.lane_stable_id] != runtime_lane
+                }
+            )
+            pending_guard = "".join(
+                f" && !inx_continuation_lane_pending(particle_index, {index}u)"
+                for index in other_init_lanes
+            )
+            completion = (
+                "            if (!inx_continuation_resuspended"
+                f"{pending_guard}) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;"
+            )
+        elif suspension.lifecycle_stage is ParticleStage.RENDERING:
+            completion = (
+                "            if (!inx_continuation_resuspended) "
+                "state.rendering_resume_step = pc.simulation_step;"
+            )
+        else:
+            completion = (
+                "            if (!inx_continuation_resuspended) "
+                "state.update_resume_step = pc.simulation_step;"
+            )
         cases.append(
             f"""        case {suspension.resume_program_counter}u: {{
 {body}
 {event_body}
             particle_alive = particle_alive && ({finite});
+{completion}
             break;
         }}"""
         )
@@ -3759,7 +3802,7 @@ void main() {{
     if (record_program_generation != pc.continuation_program_generation
         || particle_index >= pc.capacity
         || lane_index >= pc.continuation_lane_count
-        || states[particle_index].alive == 0u
+        || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
         || states[particle_index].spawn_generation != particle_generation) {{
         atomicAdd(continuation_counters.stale_generation, 1u);
         inx_finish_continuation(
@@ -3770,6 +3813,7 @@ void main() {{
 
     ParticleState state = states[particle_index];
     bool particle_alive = true;
+    bool inx_stage_suspended = false;
     bool inx_continuation_resuspended = false;
     switch (resume_program_counter) {{
 {switch_cases}
@@ -3777,7 +3821,7 @@ void main() {{
             atomicAdd(continuation_counters.stale_generation, 1u);
             break;
     }}
-    state.alive = particle_alive ? 1u : 0u;
+    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
     if (!inx_continuation_resuspended) {{
@@ -3891,9 +3935,14 @@ def _shader_prelude(
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
+const uint INX_PARTICLE_ALIVE = 1u;
+const uint INX_PARTICLE_INIT_COMPLETE = 2u;
+
 struct ParticleState {{
-    uint alive;
+    uint lifecycle_flags;
     uint spawn_generation;
+    uint update_resume_step;
+    uint rendering_resume_step;
 {state_fields}
 }};
 
@@ -4756,8 +4805,10 @@ def _bootstrap_main() -> str:
 void main() {
     uint index = gl_GlobalInvocationID.x;
     if (index >= pc.capacity) return;
-    states[index].alive = 0u;
+    states[index].lifecycle_flags = 0u;
     states[index].spawn_generation = 0u;
+    states[index].update_resume_step = 0xffffffffu;
+    states[index].rendering_resume_step = 0xffffffffu;
     free_slots[index] = index;
     if (index == 0u) {
         counters.free_count = pc.capacity;
@@ -4789,14 +4840,18 @@ void main() {{
     uint particle_index = inx_pop_free();
     if (particle_index == INX_INVALID_INDEX) {{ atomicAdd(counters.dropped_count, 1u); return; }}
     ParticleState state = states[particle_index];
-    state.alive = 1u;
+    state.lifecycle_flags = INX_PARTICLE_ALIVE;
+    state.update_resume_step = 0xffffffffu;
+    state.rendering_resume_step = 0xffffffffu;
     uint particle_id = pc.spawn_base_id + invocation;
     state.{id_field} = particle_id;
     state.spawn_generation = pc.spawn_generation + uint(particle_id < pc.spawn_base_id);
     bool particle_alive = true;
+    bool inx_stage_suspended = false;
 {body}
     particle_alive = particle_alive && ({finite});
-    state.alive = particle_alive ? 1u : 0u;
+    if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
+    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
 {event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
@@ -4889,14 +4944,18 @@ void main() {{
                                      channel.target_emitter_index, channel.event_type_index);
     uint particle_id = inx_random_u32(route_seed, source_particle_id, source_generation, invocation);
     ParticleState state = states[particle_index];
-    state.alive = 1u;
+    state.lifecycle_flags = INX_PARTICLE_ALIVE;
+    state.update_resume_step = 0xffffffffu;
+    state.rendering_resume_step = 0xffffffffu;
     state.{id_field} = particle_id;
     state.spawn_generation = inx_random_u32(route_seed ^ 0x9e3779b9u, source_generation,
                                             source_particle_id, invocation);
     bool particle_alive = true;
+    bool inx_stage_suspended = false;
 {body}
     particle_alive = particle_alive && ({finite});
-    state.alive = particle_alive ? 1u : 0u;
+    if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
+    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
 {event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
@@ -4915,12 +4974,15 @@ def _update_main(
 void main() {{
     if (simulation_control.simulation_allowed == 0u) return;
     uint particle_index = gl_GlobalInvocationID.x;
-    if (particle_index >= pc.capacity || states[particle_index].alive == 0u) return;
+    if (particle_index >= pc.capacity
+        || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
+        || (states[particle_index].lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) == 0u) return;
     ParticleState state = states[particle_index];
     bool particle_alive = true;
+    bool inx_stage_suspended = false;
 {body}
     particle_alive = particle_alive && ({finite});
-    state.alive = particle_alive ? 1u : 0u;
+    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
 {event_body}
     states[particle_index] = state;
     if (!particle_alive) inx_push_free(particle_index);
@@ -4979,12 +5041,15 @@ def _rendering_main(body: str, event_body: str, exports: dict[str, str]) -> str:
 void main() {{
     if (simulation_control.simulation_allowed == 0u) return;
     uint particle_index = gl_GlobalInvocationID.x;
-    if (particle_index >= pc.capacity || states[particle_index].alive == 0u) return;
+    if (particle_index >= pc.capacity
+        || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
+        || (states[particle_index].lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) == 0u) return;
     ParticleState state = states[particle_index];
     bool particle_alive = true;
+    bool inx_stage_suspended = false;
 {body}
     if (!({finite})) {{
-        state.alive = 0u;
+        state.lifecycle_flags = 0u;
         states[particle_index] = state;
         inx_push_free(particle_index);
         return;

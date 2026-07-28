@@ -397,6 +397,15 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
         builder.ReadUniformBuffer(transforms);
         builder.ReadStorageBuffer(simulationControl);
+        if (runtime.HasContinuations()) {
+            continuationRecords = builder.ReadWrite(continuationRecords, rhi::PipelineStage::ComputeShader);
+            continuationFreeList = builder.ReadWrite(continuationFreeList, rhi::PipelineStage::ComputeShader);
+            continuationActiveQueueA = builder.ReadWrite(continuationActiveQueueA, rhi::PipelineStage::ComputeShader);
+            continuationActiveQueueB = builder.ReadWrite(continuationActiveQueueB, rhi::PipelineStage::ComputeShader);
+            continuationCounters = builder.ReadWrite(continuationCounters, rhi::PipelineStage::ComputeShader);
+            continuationLaneSlots = builder.ReadWrite(continuationLaneSlots, rhi::PipelineStage::ComputeShader);
+            continuationJoinStates = builder.ReadWrite(continuationJoinStates, rhi::PipelineStage::ComputeShader);
+        }
         if (runtime.HasEventOutput(GpuKernelStage::Rendering)) {
             for (auto &handle : eventRecords)
                 handle = builder.ReadWrite(handle, rhi::PipelineStage::ComputeShader);

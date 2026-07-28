@@ -677,7 +677,7 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
     assert restored_kernel == kernel_program
 
 
-def test_particle_wait_can_finish_a_lifecycle_continuation_and_rejects_rendering():
+def test_particle_wait_can_finish_update_and_rendering_lifecycle_continuations():
     no_continuation = GraphDocument(
         "particle.update",
         nodes=(
@@ -735,12 +735,17 @@ def test_particle_wait_can_finish_a_lifecycle_continuation_and_rejects_rendering
             ),
         ),
     )
-    with pytest.raises(ParticleCompileError, match="Rendering cannot contain Wait"):
-        ParticleGraphCompiler().compile(
-            ParticleGraphAsset(
-                emitters=(ParticleEmitterAsset(rendering=rendering),)
-            )
+    rendering_program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(
+            emitters=(ParticleEmitterAsset(rendering=rendering),)
         )
+    )
+    rendering_suspension = rendering_program.emitters[0].rendering.flow.suspensions[0]
+    assert rendering_suspension.resume_node_uid == "output"
+    rendering_kernel = ParticleKernelLowerer().lower(rendering_program)
+    kernel_suspension = rendering_kernel.emitters[0].suspensions[0]
+    assert kernel_suspension.lifecycle_stage is ParticleStage.RENDERING
+    assert kernel_suspension.resume_node_uid == "output"
 
 
 def test_particle_until_repeats_the_preceding_operation_and_keeps_wait_distinct():
@@ -2637,7 +2642,7 @@ class InvalidLoop(ParticleScript):
         )
 
 
-def test_particle_script_rejects_wait_and_until_in_rendering():
+def test_particle_script_allows_wait_and_until_in_rendering_timeline():
     source = '''\
 from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
@@ -2653,14 +2658,18 @@ class InvalidRenderingWait(ParticleScript):
             pass
 
         def rendering(self, ctx, particles):
-            ctx.wait_seconds(1.0)
+            particles.set_size(0.5)
+            ctx.until_seconds(1.0)
+            ctx.wait_frames(2)
             particles.sprite()
 '''
-    with pytest.raises(ParticleScriptError, match="rendering cannot contain Wait/Until"):
-        ParticleScriptCompiler().parse(
-            source,
-            source_name="InvalidRenderingWait.particle.py",
-        )
+    program = ParticleScriptCompiler().compile(
+        source,
+        source_name="RenderingTimeline.particle.py",
+    )
+    suspensions = program.emitters[0].rendering.flow.suspensions
+    assert [item.kind.value for item in suspensions] == ["until_seconds", "frames"]
+    assert suspensions[-1].resume_node_uid == "rendering.3.sprite"
 
 
 def test_particle_script_parameters_share_graph_hir_and_gpu_abi():

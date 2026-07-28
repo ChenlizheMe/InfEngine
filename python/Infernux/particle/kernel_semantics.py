@@ -52,7 +52,9 @@ _ALL_STAGES = frozenset(KernelStage)
 _INIT_ONLY = frozenset({KernelStage.INIT})
 _UPDATE_ONLY = frozenset({KernelStage.UPDATE})
 _RENDER_ONLY = frozenset({KernelStage.RENDERING})
-_SUSPEND_STAGES = frozenset({KernelStage.INIT, KernelStage.UPDATE})
+_SUSPEND_STAGES = frozenset(
+    {KernelStage.INIT, KernelStage.UPDATE, KernelStage.RENDERING}
+)
 _SHAPE_IMMEDIATES = frozenset(
     {
         "shape",
@@ -589,9 +591,14 @@ def _validate_opcode_types(
     elif opcode == "end_if":
         if operands:
             raise KernelSemanticError("kernel end_if cannot have operands")
-    elif opcode in {"suspend_frames", "suspend_seconds"}:
+    elif opcode in {
+        "suspend_frames",
+        "suspend_seconds",
+        "until_frames",
+        "until_seconds",
+    }:
         expected = TypeRef(
-            ValueType.I32 if opcode == "suspend_frames" else ValueType.F32
+            ValueType.I32 if opcode.endswith("frames") else ValueType.F32
         )
         if operands != (expected,):
             raise KernelSemanticError(
@@ -605,6 +612,7 @@ def _validate_opcode_types(
                 "collision_enter",
                 "collision_stay",
                 "collision_exit",
+                "rendering",
             }
             or type(immediates["lane_index"]) is not int
             or immediates["lane_index"] < 0

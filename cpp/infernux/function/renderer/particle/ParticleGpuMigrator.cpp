@@ -96,7 +96,9 @@ void main() {
         destination_states[destination_base + word] = default_state[word];
 
     if (source_alive) {
-        destination_states[destination_base] = source_states[source_base];
+        // Migrated particles have already completed Init. The lifecycle flag is
+        // also valid when migrating from the pre-gate alive-word layout.
+        destination_states[destination_base] = source_states[source_base] | 2u;
         destination_states[destination_base + 1u] = source_states[source_base + 1u];
         for (uint range_index = 0u; range_index < pc.copy_range_count; ++range_index) {
             uvec4 range = copy_ranges[range_index];

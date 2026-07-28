@@ -593,8 +593,6 @@ class KernelSuspensionPoint:
     def __post_init__(self) -> None:
         object.__setattr__(self, "lifecycle_stage", ParticleStage(self.lifecycle_stage))
         object.__setattr__(self, "kind", ParticleSuspensionKind(self.kind))
-        if self.lifecycle_stage is ParticleStage.RENDERING:
-            raise KernelCompileError("Rendering cannot own a kernel suspension point")
         terminal = (
             self.resume_instruction_index == -1
             and self.resume_node_uid == ""
@@ -771,6 +769,7 @@ class ParticleEmitterKernelIR:
             ParticleStage.COLLISION_ENTER: self.update,
             ParticleStage.COLLISION_STAY: self.update,
             ParticleStage.COLLISION_EXIT: self.update,
+            ParticleStage.RENDERING: self.rendering,
         }
         for suspension in suspensions:
             function = function_by_stage.get(suspension.lifecycle_stage)
@@ -1506,6 +1505,7 @@ class ParticleKernelLowerer:
                 emitter.collision_enter,
                 emitter.collision_stay,
                 emitter.collision_exit,
+                emitter.rendering,
             )
             if stage is not None
         )
@@ -1548,6 +1548,7 @@ class ParticleKernelLowerer:
             routes,
             event_types,
             parameter_types,
+            continuation_program_counters,
             operation_instruction_ranges,
         )
         flows = tuple(
@@ -1563,11 +1564,11 @@ class ParticleKernelLowerer:
                 }[stage.stage],
                 operation_instruction_ranges,
             )
-            for stage in (*lifecycle_stages, emitter.rendering)
+            for stage in lifecycle_stages
         )
         flow_by_stage = {flow.lifecycle_stage: flow for flow in flows}
         instruction_locations = {}
-        for function in (init, update):
+        for function in (init, update, rendering):
             for instruction_index, instruction in enumerate(function.instructions):
                 if instruction.opcode not in {
                     "suspend_frames",
@@ -2410,6 +2411,7 @@ class ParticleKernelLowerer:
         routes,
         event_types,
         parameter_types,
+        continuation_program_counters,
         operation_instruction_ranges,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.RENDERING, attribute_types, parameter_types)
@@ -2423,14 +2425,31 @@ class ParticleKernelLowerer:
             expression_values = self._lower_operation_expressions(
                 builder, emitter.rendering, operation
             )
-            if operation.opcode in {"control.if", "control.join_all"}:
+            if operation.opcode in {"control.if", "control.join_all"} or operation.opcode.startswith(
+                "render."
+            ):
                 operation_instruction_ranges[
                     (emitter.rendering.stage, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
                 continue
-            if operation.opcode in ATTRIBUTE_OPERATION_SPECS:
-                guard = builder.execution_guard(operation, expression_values, source)
+            guard = builder.execution_guard(operation, expression_values, source)
+            if operation.opcode != "event.emit":
                 builder.begin_guard(guard, source)
+            if operation.opcode in {
+                "control.wait_frames",
+                "control.wait_seconds",
+                "control.until_frames",
+                "control.until_seconds",
+            }:
+                self._lower_suspension(
+                    builder,
+                    emitter.rendering,
+                    operation,
+                    expression_values,
+                    source,
+                    continuation_program_counters,
+                )
+            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS:
                 self._lower_attribute_modification(
                     builder,
                     operation,
@@ -2438,7 +2457,6 @@ class ParticleKernelLowerer:
                     attribute_types,
                     source,
                 )
-                builder.end_guard(guard, source)
             elif operation.opcode == "event.emit":
                 self._lower_event_output(
                     builder,
@@ -2448,6 +2466,12 @@ class ParticleKernelLowerer:
                     event_types,
                     source,
                 )
+            else:
+                raise KernelCompileError(
+                    f"unsupported Rendering operation {operation.opcode!r}"
+                )
+            if operation.opcode != "event.emit":
+                builder.end_guard(guard, source)
             operation_instruction_ranges[
                 (emitter.rendering.stage, operation.source_node_uid)
             ] = (instruction_begin, len(builder.instructions))

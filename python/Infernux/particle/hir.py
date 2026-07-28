@@ -1702,10 +1702,6 @@ class ParticleGraphCompiler:
                 "control.until_seconds",
             }
         ]
-        if suspension_operations and stage is ParticleStage.RENDERING:
-            raise ParticleCompileError(
-                "Rendering cannot contain Wait/Until because render export cannot resume across frames"
-            )
         for resume_program_counter, operation in enumerate(
             suspension_operations, start=1
         ):
