@@ -1040,6 +1040,7 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     camera.proj = proj;
     camera.previousViewProj =
         previousViewProj ? *previousViewProj : (m_cameraHistoryValid ? m_previousViewProj : proj * view);
+    camera.inverseViewProj = glm::inverse(proj * view);
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     if (!rhiDevice.WriteBuffer(frame.cameraMatrix, 0, &camera, sizeof(camera))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local matrix UBO");
@@ -3084,8 +3085,13 @@ void SceneRenderGraph::BuildRenderGraph()
                 // the descriptor set layout.  Fall back to readTextures
                 // order when no inputBindings are declared (single-input
                 // effects that just call read()).
-                std::vector<vk::ResourceHandle> fsReadHandles;
-                std::vector<bool> fsIsDepthInputs;
+                struct FullscreenReadResource
+                {
+                    vk::ResourceHandle handle;
+                    rhi::PixelFormat format = rhi::PixelFormat::Undefined;
+                    bool depthRead = false;
+                };
+                std::vector<FullscreenReadResource> fsReadInputs;
                 if (!commandInputBindings.empty()) {
                     // Use inputBindings order for deterministic sampler→binding mapping
                     for (const auto &[samplerName, textureName] : commandInputBindings) {
@@ -3094,11 +3100,12 @@ void SceneRenderGraph::BuildRenderGraph()
                             continue;
                         if (texIt->second->isBackbuffer) {
                             if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
-                                fsReadHandles.push_back(m_importedResolveTarget);
+                                fsReadInputs.push_back(
+                                    {m_importedResolveTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
                             } else {
-                                fsReadHandles.push_back(m_importedColorTarget);
+                                fsReadInputs.push_back(
+                                    {m_importedColorTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
                             }
-                            fsIsDepthInputs.push_back(false);
                         } else {
                             // Allow both color and depth textures as sampler inputs
                             // for fullscreen effects (e.g. SSAO reads depth as sampler2D).
@@ -3108,25 +3115,32 @@ void SceneRenderGraph::BuildRenderGraph()
                             // combined-image-sampler descriptor, not as depth attachments.
                             auto rtIt = customRTHandles.find(textureName);
                             if (rtIt != customRTHandles.end()) {
-                                fsReadHandles.push_back(rtIt->second);
-                                fsIsDepthInputs.push_back(false);
+                                fsReadInputs.push_back(
+                                    {rtIt->second, texIt->second->format, texIt->second->isDepth});
                             }
                         }
                     }
                 } else {
                     // Default path: use readTextures order (colorReadHandles + backbuffer)
                     // for simple single-input effects that call read() without explicit inputBindings.
-                    fsReadHandles = colorReadHandles;
-                    fsIsDepthInputs.assign(fsReadHandles.size(), false);
+                    for (const auto &readTex : passDesc.readTextures) {
+                        const auto texIt = texDescMap.find(readTex);
+                        if (texIt == texDescMap.end() || texIt->second->isDepth || texIt->second->isBackbuffer)
+                            continue;
+                        const auto rtIt = customRTHandles.find(readTex);
+                        if (rtIt != customRTHandles.end())
+                            fsReadInputs.push_back({rtIt->second, texIt->second->format, false});
+                    }
                     for (const auto &readTex : passDesc.readTextures) {
                         auto texIt = texDescMap.find(readTex);
                         if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
                             if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
-                                fsReadHandles.push_back(m_importedResolveTarget);
+                                fsReadInputs.push_back(
+                                    {m_importedResolveTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
                             } else {
-                                fsReadHandles.push_back(m_importedColorTarget);
+                                fsReadInputs.push_back(
+                                    {m_importedColorTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
                             }
-                            fsIsDepthInputs.push_back(false);
                         }
                     }
                 }
@@ -3169,11 +3183,11 @@ void SceneRenderGraph::BuildRenderGraph()
 
                 m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion](vk::PassBuilder &builder) {
                     // Declare read dependencies for DAG edges + barriers
-                    for (size_t i = 0; i < fsReadHandles.size(); ++i) {
-                        if (i < fsIsDepthInputs.size() && fsIsDepthInputs[i]) {
-                            builder.ReadSampledDepth(fsReadHandles[i]);
+                    for (const auto &input : fsReadInputs) {
+                        if (input.depthRead) {
+                            builder.ReadSampledDepth(input.handle);
                         } else {
-                            builder.Read(fsReadHandles[i]);
+                            builder.Read(input.handle);
                         }
                     }
                     // Declare color output
@@ -3188,22 +3202,19 @@ void SceneRenderGraph::BuildRenderGraph()
                             return;
 
                         // Resolve input texture views using a stack path for the common case.
-                        rhi::TextureViewHandle inputViewsStack[8] = {};
-                        bool depthInputsStack[8] = {};
-                        std::vector<rhi::TextureViewHandle> inputViewsHeap;
-                        rhi::TextureViewHandle *inputViews = inputViewsStack;
-                        bool *depthInputs = depthInputsStack;
-                        if (fsReadHandles.size() > 8) {
-                            inputViewsHeap.resize(fsReadHandles.size());
-                            inputViews = inputViewsHeap.data();
+                        FullscreenTextureInput inputsStack[8] = {};
+                        std::vector<FullscreenTextureInput> inputsHeap;
+                        FullscreenTextureInput *inputs = inputsStack;
+                        if (fsReadInputs.size() > 8) {
+                            inputsHeap.resize(fsReadInputs.size());
+                            inputs = inputsHeap.data();
                         }
-                        for (size_t i = 0; i < std::min<size_t>(fsIsDepthInputs.size(), 8); ++i) {
-                            depthInputsStack[i] = fsIsDepthInputs[i];
-                        }
-                        const uint32_t inputViewCount = static_cast<uint32_t>(fsReadHandles.size());
-                        for (uint32_t i = 0; i < inputViewCount; ++i) {
-                            inputViews[i] = ctx.GetTextureView(fsReadHandles[i]);
-                            if (!inputViews[i].IsValid()) {
+                        const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
+                        for (uint32_t i = 0; i < inputCount; ++i) {
+                            inputs[i].view = ctx.GetTextureView(fsReadInputs[i].handle);
+                            inputs[i].format = fsReadInputs[i].format;
+                            inputs[i].depthRead = fsReadInputs[i].depthRead;
+                            if (!inputs[i].view.IsValid()) {
                                 INXLOG_ERROR("FullscreenQuad '", shaderName,
                                              "': input texture view is unavailable at binding ", i);
                                 return;
@@ -3216,25 +3227,15 @@ void SceneRenderGraph::BuildRenderGraph()
                         key.renderTargetLayout = cachedRenderTarget;
                         key.samples = fsSamples;
                         key.colorFormat = fsColorFormat;
-                        key.inputTextureCount = inputViewCount;
+                        key.inputTextureCount = inputCount;
 
                         const auto &entry = fsRenderer->EnsurePipeline(key);
                         if (!entry.pipeline.IsValid())
                             return;
 
                         // Allocate descriptor set for input textures
-                        std::unique_ptr<bool[]> depthInputsOwned;
-                        if (fsReadHandles.size() > 8) {
-                            depthInputsOwned = std::make_unique<bool[]>(fsReadHandles.size());
-                            depthInputs = depthInputsOwned.get();
-                            for (size_t i = 0; i < fsIsDepthInputs.size(); ++i) {
-                                depthInputs[i] = fsIsDepthInputs[i];
-                            }
-                        }
-
                         const auto bindGroup = fsRenderer->AllocateBindGroup(
-                            entry.inputLayout, inputViews, inputViewCount,
-                            fsIsDepthInputs.empty() ? nullptr : depthInputs, fsRenderer->GetLinearSampler());
+                            entry.inputLayout, inputs, inputCount, fsRenderer->GetLinearSampler());
                         if (!bindGroup.IsValid()) {
                             INXLOG_ERROR("FullscreenQuad '", shaderName, "': descriptor pool exhausted, skipping pass");
                             return;
@@ -3252,8 +3253,8 @@ void SceneRenderGraph::BuildRenderGraph()
                             }
                         }
 
-                        fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, drawPushConstants,
-                                         drawPushConstantSize);
+                        fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),
+                                         drawPushConstants, drawPushConstantSize);
                     };
                 });
                 publishResourceVersion(fsWrittenVersion);

@@ -236,6 +236,9 @@ int main()
     textureDesc.usage = textureUsage;
     assert(textureDesc.dimension == TextureDimension::Texture3D);
     assert(textureDesc.depthOrLayers == 8);
+    assert(!IsIntegerFormat(textureDesc.format));
+    assert(IsIntegerFormat(PixelFormat::RG32UInt));
+    assert(!IsIntegerFormat(PixelFormat::R32SFloat));
 
     TextureViewDesc viewDesc;
     viewDesc.texture = {19, 1};

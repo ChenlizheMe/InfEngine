@@ -131,8 +131,8 @@ VkRenderPass MaterialPipelineManager::BuildCompatibleRenderPass(const MaterialPa
 }
 
 void MaterialPipelineManager::SyncMaterialForwardPass(InxMaterial *material, VkPipeline pipeline,
-                                                       VkPipelineLayout layout, VkDescriptorSet descSet,
-                                                       ShaderProgramPublication program)
+                                                      VkPipelineLayout layout, VkDescriptorSet descSet,
+                                                      ShaderProgramPublication program)
 {
     material->SetPassPipeline(ShaderCompileTarget::Forward, pipeline);
     material->SetPassPipelineLayout(ShaderCompileTarget::Forward, layout);
@@ -401,10 +401,9 @@ bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampl
             continue;
 
         MaterialPassPipelineDescriptor pipeline = oldKey.pipeline;
-        const bool followsSceneSamples = pipeline.target == ShaderCompileTarget::Forward ||
-                                         pipeline.target == ShaderCompileTarget::ForwardPlus ||
-                                         pipeline.target == ShaderCompileTarget::GBuffer ||
-                                         pipeline.target == ShaderCompileTarget::Depth;
+        const bool followsSceneSamples =
+            pipeline.target == ShaderCompileTarget::Forward || pipeline.target == ShaderCompileTarget::ForwardPlus ||
+            pipeline.target == ShaderCompileTarget::GBuffer || pipeline.target == ShaderCompileTarget::Depth;
         if (followsSceneSamples && pipeline.samples == oldSamples)
             pipeline.samples = newSamples;
 
@@ -413,9 +412,8 @@ bool MaterialPipelineManager::ReconfigureSampleCount(VkSampleCountFlagBits sampl
         auto data = std::make_unique<MaterialPassRenderData>(*oldData);
         data->key = key;
         data->pipelineHash = FoldPassPipelineHash(data->material->GetPipelineHash(), pipeline, key.programKey);
-        data->pipeline =
-            createOrReusePipeline(data->pipelineHash, data->shaderProgram.get(), data->material->GetRenderState(),
-                                  pipeline);
+        data->pipeline = createOrReusePipeline(data->pipelineHash, data->shaderProgram.get(),
+                                               data->material->GetRenderState(), pipeline);
         if (data->pipeline == VK_NULL_HANDLE) {
             INXLOG_ERROR("MaterialPipelineManager: failed to prepare ", static_cast<int>(sampleCount),
                          "x semantic pass generation for material '", key.materialKey, "'");
@@ -543,8 +541,14 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBi
         break;
     case ShaderCompileTarget::Forward:
     case ShaderCompileTarget::ForwardPlus:
-    case ShaderCompileTarget::GBuffer:
         pipeline.colorFormats = {rhi::FromVkFormat(m_colorFormat)};
+        break;
+    case ShaderCompileTarget::GBuffer:
+        pipeline.colorFormats = {
+            rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA8UNorm,
+            rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RG32UInt,
+        };
+        pipeline.samples = rhi::SampleCount::One;
         break;
     case ShaderCompileTarget::Motion:
         pipeline.colorFormats = {rhi::PixelFormat::RG16SFloat};
@@ -1142,8 +1146,8 @@ uint32_t MaterialPipelineManager::RefreshMaterialsUsingTexture(const std::string
     }
 
     if (!materialsToRefresh.empty()) {
-        INXLOG_INFO("Refreshed ", materialsToRefresh.size(), " material texture publications for GUID '",
-                    textureGuid, "'");
+        INXLOG_INFO("Refreshed ", materialsToRefresh.size(), " material texture publications for GUID '", textureGuid,
+                    "'");
     }
 
     return static_cast<uint32_t>(materialsToRefresh.size());

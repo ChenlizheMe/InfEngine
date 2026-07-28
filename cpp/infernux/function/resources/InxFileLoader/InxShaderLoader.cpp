@@ -744,6 +744,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         DescriptorHasCapability(desc, "ParticleSprite") ||
         (linkedInterface && linkedInterface->domain == ShaderProgramDomain::ParticleSprite);
     const bool fullscreenDomain = hasCapability("Fullscreen");
+    const bool deferredLightingDomain = hasCapability("DeferredLighting");
     const bool requestsEngineGlobals = hasCapability("EngineGlobals");
     // Separate the version directive from the generated shader body.
     std::istringstream stream(resolvedSource);
@@ -787,7 +788,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     // Determine shading model capabilities
     // ================================================================
-    bool needsLightingUBO = false;
+    bool needsLightingUBO = deferredLightingDomain;
     bool hasGBufferTarget = false;
     // Shadow alpha-clip needs
     // texture samplers, MaterialProperties UBO, and user surface() code
@@ -826,6 +827,10 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         result << "#define INX_PICKING_PASS 1\n";
     else if (target == ShaderCompileTarget::Motion)
         result << "#define INX_MOTION_PASS 1\n";
+    if (deferredLightingDomain) {
+        result << "#define INX_DEFERRED_LIGHTING_PASS 1\n";
+        result << "#define INX_FORWARD_PLUS_PASS 1\n";
+    }
 
     // ================================================================
     // Inject engine globals UBO — always available except shadow
@@ -849,6 +854,12 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     // Inject remaining builtins (only when user has no layout declarations)
     // ================================================================
+    if (!userHasLayoutDecls && deferredLightingDomain && desc.isFragmentShader) {
+        result << "\n// Canonical per-view lighting resources for deferred evaluation\n";
+        result << LoadTemplate("lighting_ubo.glsl") << "\n";
+        result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
+        result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n";
+    }
     if (!userHasLayoutDecls && !fullscreenDomain) {
         if (desc.isVertexShader && target == ShaderCompileTarget::Shadow) {
             // Shadow vertex variant: use shadow-specific builtins (shadow UBO at set 0)
@@ -997,6 +1008,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             const auto &resource = desc.resources[index];
             if (resource.type == "Texture2D")
                 result << "layout(set = 0, binding = " << index << ") uniform sampler2D " << resource.name << ";\n";
+            else if (resource.type == "Texture2DUInt")
+                result << "layout(set = 0, binding = " << index << ") uniform usampler2D " << resource.name << ";\n";
         }
     }
 

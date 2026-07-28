@@ -36,7 +36,15 @@ struct FullscreenPipelineEntry
 {
     rhi::GraphicsPipelineHandle pipeline;
     rhi::BindingLayoutHandle inputLayout;
+    bool hasPerView = false;
     bool hasGlobals = false;
+};
+
+struct FullscreenTextureInput
+{
+    rhi::TextureViewHandle view;
+    rhi::PixelFormat format = rhi::PixelFormat::Undefined;
+    bool depthRead = false;
 };
 
 class FullscreenRenderer
@@ -57,12 +65,13 @@ class FullscreenRenderer
     /// record resolves the newly published module and builds a fresh pipeline.
     void InvalidateShader(const std::string &shaderName);
 
-    rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const rhi::TextureViewHandle *inputViews,
-                                           uint32_t inputViewCount, const bool *depthInputs,
+    rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const FullscreenTextureInput *inputs,
+                                           uint32_t inputCount,
                                            rhi::SamplerHandle colorSampler);
 
     void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
-              rhi::BindGroupHandle inputGroup, const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize);
+              rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,
+              const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize);
 
     void ResetPool();
 

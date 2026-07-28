@@ -174,16 +174,22 @@ struct FullscreenRenderer::Impl
         pushRange.size = sizeof(FullscreenPushConstants);
 
         std::vector<VkDescriptorSetLayout> setLayouts = {entry.inputLayout};
+        const VkDescriptorSetLayout perViewLayout = ShaderProgram::GetPerViewDescSetLayout();
         const VkDescriptorSetLayout globalsLayout = ShaderProgram::GetGlobalsDescSetLayout();
-        if (globalsLayout != VK_NULL_HANDLE) {
-            entry.emptyGapLayout = CreateDescriptorSetLayout(device, {});
-            if (entry.emptyGapLayout == VK_NULL_HANDLE) {
-                DestroyPipeline(entry);
-                return {};
+        if (perViewLayout != VK_NULL_HANDLE || globalsLayout != VK_NULL_HANDLE) {
+            if (perViewLayout != VK_NULL_HANDLE) {
+                setLayouts.push_back(perViewLayout);
+            } else {
+                entry.emptyGapLayout = CreateDescriptorSetLayout(device, {});
+                if (entry.emptyGapLayout == VK_NULL_HANDLE) {
+                    DestroyPipeline(entry);
+                    return {};
+                }
+                setLayouts.push_back(entry.emptyGapLayout);
             }
-            setLayouts.push_back(entry.emptyGapLayout);
-            setLayouts.push_back(globalsLayout);
         }
+        if (globalsLayout != VK_NULL_HANDLE)
+            setLayouts.push_back(globalsLayout);
 
         VkPipelineLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -255,6 +261,7 @@ struct FullscreenRenderer::Impl
 
         entry.rhi.pipeline = rhiDevice->RegisterGraphicsPipeline(entry.pipeline, entry.layout);
         entry.rhi.inputLayout = rhiDevice->RegisterBindingLayout(entry.inputLayout);
+        entry.rhi.hasPerView = perViewLayout != VK_NULL_HANDLE;
         entry.rhi.hasGlobals = globalsLayout != VK_NULL_HANDLE;
         return entry;
     }
@@ -350,8 +357,7 @@ void FullscreenRenderer::InvalidateShader(const std::string &shaderName)
 }
 
 rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHandle layout,
-                                                           const rhi::TextureViewHandle *inputViews,
-                                                           uint32_t inputViewCount, const bool *depthInputs,
+                                                           const FullscreenTextureInput *inputs, uint32_t inputCount,
                                                            rhi::SamplerHandle colorSampler)
 {
     if (!m_impl || m_impl->frameBindGroups.empty())
@@ -364,17 +370,18 @@ rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHan
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = layout;
     groupDesc.lifetime = rhi::BindGroupLifetime::FrameTransient;
-    groupDesc.textureCount = inputViewCount;
-    if (inputViewCount > groupDesc.textures.size())
+    groupDesc.textureCount = inputCount;
+    if (!inputs || inputCount > groupDesc.textures.size())
         return {};
-    for (uint32_t i = 0; i < inputViewCount; ++i) {
-        const bool depth = depthInputs && depthInputs[i];
+    for (uint32_t i = 0; i < inputCount; ++i) {
+        const auto &input = inputs[i];
+        const bool nearestSampling = input.depthRead || rhi::IsIntegerFormat(input.format);
         auto &texture = groupDesc.textures[i];
         texture.binding = i;
         texture.type = rhi::BindingType::CombinedTextureSampler;
-        texture.texture = inputViews[i];
-        texture.sampler = depth ? m_impl->nearestSamplerHandle : colorSampler;
-        texture.depthRead = depth;
+        texture.texture = input.view;
+        texture.sampler = nearestSampling ? m_impl->nearestSamplerHandle : colorSampler;
+        texture.depthRead = input.depthRead;
         if (!texture.texture.IsValid() || !texture.sampler.IsValid())
             return {};
     }
@@ -386,14 +393,16 @@ rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHan
 }
 
 void FullscreenRenderer::Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
-                              rhi::BindGroupHandle inputGroup, const FullscreenPushConstants &pushConstants,
-                              uint32_t pushConstantSize)
+                              rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,
+                              const FullscreenPushConstants &pushConstants, uint32_t pushConstantSize)
 {
     if (!m_impl || !entry.pipeline.IsValid())
         return;
     encoder.BindPipeline(entry.pipeline);
     if (inputGroup.IsValid())
         encoder.BindGroup(entry.pipeline, 0, inputGroup);
+    if (entry.hasPerView && perViewGroup.IsValid())
+        encoder.BindGroup(entry.pipeline, 1, perViewGroup);
 
     if (entry.hasGlobals) {
         const uint32_t frame = m_impl->CurrentFrame();

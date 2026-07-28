@@ -137,6 +137,11 @@ enum class TextureLayout : uint8_t
     return format == PixelFormat::D32SFloat || format == PixelFormat::D24UNormS8UInt;
 }
 
+[[nodiscard]] constexpr bool IsIntegerFormat(PixelFormat format) noexcept
+{
+    return format == PixelFormat::RG32UInt;
+}
+
 [[nodiscard]] constexpr bool IsValidPixelFormat(PixelFormat format) noexcept
 {
     return format > PixelFormat::Undefined && format < PixelFormat::Count;

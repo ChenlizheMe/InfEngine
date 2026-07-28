@@ -21,7 +21,8 @@ int main()
 
     const MaterialPassPipelineDescriptor gbuffer{
         ShaderCompileTarget::GBuffer,
-        {PixelFormat::RGBA8UNorm, PixelFormat::RGBA16SFloat, PixelFormat::RGBA8UNorm},
+        {PixelFormat::RGBA16SFloat, PixelFormat::RGBA16SFloat, PixelFormat::RGBA8UNorm, PixelFormat::RGBA16SFloat,
+         PixelFormat::RG32UInt},
         PixelFormat::D32SFloat,
         SampleCount::One,
     };

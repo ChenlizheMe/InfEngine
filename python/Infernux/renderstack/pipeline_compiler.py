@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from Infernux.renderstack.pipeline_dsl import (
@@ -16,6 +16,7 @@ from Infernux.renderstack.pipeline_dsl import (
     compile_queue_segments,
 )
 from Infernux.renderstack.route_policy import RoutePolicy
+from Infernux.renderstack._pipeline_common import DEFERRED_LIGHTING_SHADER
 
 
 _CLEAR_TRANSPARENT = (0.0, 0.0, 0.0, 0.0)
@@ -413,11 +414,27 @@ def _compile_route(
     inline_target,
     msaa_samples: int,
 ):
-    if route.path not in {Path.FORWARD, Path.FORWARD_PLUS}:
-        raise NotImplementedError(
-            f"{route.path.value} route {route.route_id!r} is not available until its "
-            "true lighting backend is implemented; ordinary Forward is not used as a silent fallback"
+    if route.path is Path.DEFERRED and msaa_samples > 1:
+        if route.fallback not in {Path.FORWARD, Path.FORWARD_PLUS}:
+            raise ValueError(
+                f"deferred route {route.route_id!r} cannot use {msaa_samples}x MSAA; "
+                "declare an explicit Forward or Forward+ fallback"
+            )
+        return _compile_route(
+            replace(route, path=route.fallback, fallback=None),
+            selectors,
+            graph,
+            color_format,
+            depth,
+            motion,
+            motion_draw,
+            shadow_map,
+            stages,
+            inline_target=inline_target,
+            msaa_samples=msaa_samples,
         )
+    if route.path not in {Path.FORWARD, Path.FORWARD_PLUS, Path.DEFERRED}:
+        raise ValueError(f"unsupported render path {route.path.value!r}")
 
     route_stages = tuple(stages[stage.stable_id] for stage in route.effects)
     policy = graph.resolve_effect_route_policy(route_stages)
@@ -425,6 +442,44 @@ def _compile_route(
         raise NotImplementedError(
             f"custom route policy for {route.route_id!r} requires a registered compiler"
         )
+
+    if route.path is Path.DEFERRED:
+        route_color = _draw_deferred_route(
+            route,
+            selectors,
+            graph,
+            color_format,
+            depth,
+            motion,
+            motion_draw,
+        )
+        original_color = None
+        if policy is RoutePolicy.ADDITIVE_EXTRACT:
+            with graph.name_scope(f"route/{route.route_id}"):
+                original_color = graph.create_texture("original", format=color_format)
+                with graph.add_pass("PreserveOriginal") as render_pass:
+                    render_pass.set_texture("_SourceTex", route_color)
+                    render_pass.write_color(original_color)
+                    render_pass.fullscreen_quad("Fullscreen Blit")
+
+        resources = _effect_resources(route_color, depth, motion, shadow_map)
+        for stage in route_stages:
+            _declare_effect(graph, stage, resources, policy=policy)
+
+        if policy is not RoutePolicy.ADDITIVE_EXTRACT:
+            return _RouteContribution(
+                color=route_color,
+                deferred_overlay=policy is not RoutePolicy.INLINE,
+            )
+
+        with graph.name_scope(f"route/{route.route_id}"):
+            additive = graph.create_texture("additive_delta", format=color_format)
+            with graph.add_pass("ExtractAdditiveDelta") as render_pass:
+                render_pass.set_texture("_OriginalTex", original_color)
+                render_pass.set_texture("_ProcessedTex", route_color)
+                render_pass.write_color(additive)
+                render_pass.fullscreen_quad("Route Additive Delta")
+        return _RouteContribution(color=original_color, additive=additive)
 
     if policy is RoutePolicy.INLINE and msaa_samples == 1:
         _draw_route(
@@ -500,6 +555,87 @@ def _compile_route(
             render_pass.write_color(additive)
             render_pass.fullscreen_quad("Route Additive Delta")
     return _RouteContribution(color=original_color, additive=additive)
+
+
+def _draw_deferred_route(
+    route: RouteDefinition,
+    selectors: Iterable[Queue],
+    graph,
+    color_format,
+    depth,
+    motion,
+    motion_draw,
+):
+    """Rasterize one opaque route into the canonical GBuffer and light it."""
+    from Infernux.rendergraph.graph import Format
+
+    if route.domain != "opaque":
+        raise ValueError(
+            f"deferred route {route.route_id!r} belongs to {route.domain!r}; "
+            "transparent geometry must use Forward or Forward+"
+        )
+
+    with graph.name_scope(f"route/{route.route_id}/deferred"):
+        albedo = graph.create_texture("albedo", format=Format.RGBA16_SFLOAT)
+        normal = graph.create_texture("normal", format=Format.RGBA16_SFLOAT)
+        material = graph.create_texture("material", format=Format.RGBA8_UNORM)
+        emission = graph.create_texture("emission", format=Format.RGBA16_SFLOAT)
+        object_data = graph.create_texture("object", format=Format.RG32_UINT)
+        lit = graph.create_texture("lit", format=color_format)
+
+        with graph.add_pass("Clear") as clear_pass:
+            clear_pass.write_color(albedo, slot=0)
+            clear_pass.write_color(normal, slot=1)
+            clear_pass.write_color(material, slot=2)
+            clear_pass.write_color(emission, slot=3)
+            clear_pass.write_color(object_data, slot=4)
+            clear_pass.set_clear(color=_CLEAR_TRANSPARENT)
+
+        for index, selector in enumerate(selectors):
+            with graph.add_pass(
+                f"Geometry_{index:02d}_{selector.minimum}_{selector.maximum}"
+            ) as geometry_pass:
+                geometry_pass.write_color(albedo, slot=0)
+                geometry_pass.write_color(normal, slot=1)
+                geometry_pass.write_color(material, slot=2)
+                geometry_pass.write_color(emission, slot=3)
+                geometry_pass.write_color(object_data, slot=4)
+                geometry_pass.write_depth(depth)
+                geometry_pass.draw_renderers(
+                    queue_range=selector.as_tuple(),
+                    sort_mode="front_to_back",
+                    material_pass="gbuffer",
+                )
+
+            with graph.add_pass(
+                f"Motion_{index:02d}_{selector.minimum}_{selector.maximum}"
+            ) as motion_pass:
+                motion_pass.read(depth)
+                motion_pass.write_color(motion_draw)
+                if motion_draw is not motion:
+                    motion_pass.write_resolve(motion)
+                motion_pass.draw_renderers(
+                    queue_range=selector.as_tuple(),
+                    sort_mode="front_to_back",
+                    material_pass="motion",
+                )
+
+        with graph.add_pass("Lighting") as lighting_pass:
+            lighting_pass.set_textures(
+                {
+                    "gAlbedo": albedo,
+                    "gNormal": normal,
+                    "gMaterial": material,
+                    "gEmission": emission,
+                    "gObject": object_data,
+                    "sceneDepth": depth,
+                }
+            )
+            lighting_pass.write_color(lit)
+            lighting_pass.set_clear(color=_CLEAR_TRANSPARENT)
+            lighting_pass.fullscreen_quad(DEFERRED_LIGHTING_SHADER)
+
+    return lit
 
 
 def _draw_route(

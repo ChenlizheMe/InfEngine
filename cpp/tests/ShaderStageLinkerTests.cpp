@@ -244,6 +244,11 @@ void surface(out SurfaceData s)
     assert(gbufferVariant->fragmentSpirv == gbufferProgram.fragmentSpirv);
     assert(gbufferArtifact.key.revision != runtimeArtifact.key.revision);
     assert(gbufferProgram.generatedFragmentSource.find("layout(location = 0) out vec4 outGBuf0;") != std::string::npos);
+    assert(gbufferProgram.generatedFragmentSource.find("layout(location = 4) out uvec2 outGBuf4;") !=
+           std::string::npos);
+    assert(gbufferProgram.generatedFragmentSource.find("gbuf4 = uvec2(_inx_ObjectLayerMask, 1u);") !=
+           std::string::npos);
+    assert(gbufferProgram.generatedFragmentSource.find("vec3 litColor =") == std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("fragmentInput.waveUV = _inx_v_waveUV;") != std::string::npos);
 
     const auto completeCompilation =

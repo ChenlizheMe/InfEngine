@@ -26,9 +26,11 @@ void evaluateForward(in SurfaceData s, out vec4 color) {
 // ============================================================================
 // ShadingModel Entry: gbuffer — Deferred G-Buffer packing (flat normal, no material)
 // ============================================================================
-void evaluateGBuffer(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1, out vec4 gbuf2, out vec4 gbuf3) {
-    gbuf0 = vec4(s.albedo + s.emission, s.alpha);
-    gbuf1 = vec4(0.5, 0.5, 1.0, 0.0);
-    gbuf2 = vec4(0.0, 0.0, 0.0, s.alpha);
-    gbuf3 = vec4(s.emission, 0.0);
+void evaluateGBuffer(in SurfaceData s, out vec4 gbuf0, out vec4 gbuf1, out vec4 gbuf2, out vec4 gbuf3,
+                     out uvec2 gbuf4) {
+    gbuf0 = vec4(s.albedo, s.alpha);
+    gbuf1 = vec4(normalize(s.normalWS) * 0.5 + 0.5, 0.0);
+    gbuf2 = vec4(0.0, 1.0, 0.0, 1.0);
+    gbuf3 = vec4(s.emission, 1.0);
+    gbuf4 = uvec2(_inx_ObjectLayerMask, 0u);
 }

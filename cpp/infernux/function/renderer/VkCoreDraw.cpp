@@ -672,9 +672,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
     const size_t totalEligible = m_eligibleScratch.size();
     const uint32_t writeBase = m_instanceWriteOffset;
-    const bool needsInstanceAuxiliary = activePass.target == ShaderCompileTarget::Picking ||
-                                        activePass.target == ShaderCompileTarget::Motion ||
-                                        activePass.target == ShaderCompileTarget::ForwardPlus;
+    const bool needsInstanceAuxiliary =
+        activePass.target == ShaderCompileTarget::Picking || activePass.target == ShaderCompileTarget::Motion ||
+        activePass.target == ShaderCompileTarget::ForwardPlus || activePass.target == ShaderCompileTarget::GBuffer;
     if (needsInstanceAuxiliary)
         PrepareInstanceAuxiliary(m_ensureFrameCounter, writeBase + totalEligible);
 

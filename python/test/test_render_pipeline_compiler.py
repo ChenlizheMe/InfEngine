@@ -272,13 +272,60 @@ def test_compiler_preserves_transparent_forward_plus_sorting():
     assert all(render_pass._write_depth is None for render_pass in draw_passes)
 
 
-def test_compiler_never_silently_substitutes_forward_for_deferred():
+def test_compiler_emits_true_deferred_geometry_and_lighting_passes():
     pipeline = PipelineBuilder()
     opaque = pipeline.opaque()
     opaque.deferred(fallback=Path.FORWARD_PLUS)
 
-    with pytest.raises(NotImplementedError, match="not available"):
-        compile_pipeline_definition(pipeline.build(), RenderGraph("Unsupported"))
+    graph = RenderGraph("Deferred")
+    compile_pipeline_definition(pipeline.build(), graph)
+
+    geometry = [
+        render_pass
+        for render_pass in graph._passes
+        if render_pass._action == "draw_renderers"
+        and render_pass._material_pass == "gbuffer"
+    ]
+    lighting = [
+        render_pass
+        for render_pass in graph._passes
+        if render_pass._action == "fullscreen_quad"
+        and render_pass._shader_name == "Deferred Lighting"
+    ]
+    assert geometry
+    assert lighting
+    assert len(geometry[0]._write_colors) == 5
+    assert set(lighting[0]._input_bindings) == {
+        "gAlbedo",
+        "gNormal",
+        "gMaterial",
+        "gEmission",
+        "gObject",
+        "sceneDepth",
+    }
+
+
+def test_deferred_msaa_requires_and_uses_explicit_forward_plus_fallback():
+    pipeline = PipelineBuilder()
+    pipeline.frame(msaa=4)
+    pipeline.opaque().deferred(fallback=Path.FORWARD_PLUS)
+    graph = RenderGraph("Deferred MSAA Fallback")
+    compile_pipeline_definition(pipeline.build(), graph)
+
+    material_passes = [
+        render_pass._material_pass
+        for render_pass in graph._passes
+        if render_pass._action == "draw_renderers"
+        and render_pass._material_pass != "motion"
+    ]
+    assert material_passes
+    assert set(material_passes) == {"forward_plus"}
+
+    unsupported = PipelineBuilder()
+    unsupported.frame(msaa=4)
+    unsupported.opaque().deferred()
+    with pytest.raises(ValueError, match="explicit Forward or Forward\\+ fallback"):
+        compile_pipeline_definition(unsupported.build(), RenderGraph("Unsupported MSAA"))
 
 
 def test_compiler_accepts_clustered_lighting_with_forward_plus_routes():

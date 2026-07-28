@@ -128,6 +128,7 @@ ShaderInfo {
     Capabilities [Fullscreen]
     Resources {
         Texture2D sourceTexture
+        Texture2DUInt objectMetadata
     }
     PushConstants settings {
         Float intensity
@@ -146,7 +147,8 @@ void main() {
 )";
     const auto standaloneInfo = infernux::ParseShaderInfo(standalonePassSource);
     assert(standaloneInfo.IsValid());
-    assert(standaloneInfo.resources.size() == 1);
+    assert(standaloneInfo.resources.size() == 2);
+    assert(standaloneInfo.resources[1].type == "Texture2DUInt");
     assert(standaloneInfo.pushConstants.has_value());
     assert(standaloneInfo.pushConstants->fields.size() == 2);
     assert(!infernux::FindShaderLayoutDeclaration(standalonePassSource).has_value());

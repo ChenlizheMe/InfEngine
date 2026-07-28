@@ -27,6 +27,7 @@ GBUFFER_ALBEDO_TEXTURE = "gbuffer_albedo"
 GBUFFER_NORMAL_TEXTURE = "gbuffer_normal"
 GBUFFER_MATERIAL_TEXTURE = "gbuffer_material"
 GBUFFER_EMISSION_TEXTURE = "gbuffer_emission"
+GBUFFER_OBJECT_TEXTURE = "gbuffer_object"
 
 SCENE_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE}
 POST_PROCESS_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE}
@@ -35,6 +36,7 @@ GBUFFER_RESOURCES = {
     GBUFFER_NORMAL_TEXTURE,
     GBUFFER_MATERIAL_TEXTURE,
     GBUFFER_EMISSION_TEXTURE,
+    GBUFFER_OBJECT_TEXTURE,
     DEPTH_TEXTURE,
     MOTION_TEXTURE,
 }
@@ -102,6 +104,7 @@ def create_deferred_gbuffer(graph: "RenderGraph") -> None:
     graph.create_texture(GBUFFER_NORMAL_TEXTURE, format=Format.RGBA16_SFLOAT)
     graph.create_texture(GBUFFER_MATERIAL_TEXTURE, format=Format.RGBA8_UNORM)
     graph.create_texture(GBUFFER_EMISSION_TEXTURE, format=Format.RGBA16_SFLOAT)
+    graph.create_texture(GBUFFER_OBJECT_TEXTURE, format=Format.RG32_UINT)
 
 
 def add_shadow_caster_pass(

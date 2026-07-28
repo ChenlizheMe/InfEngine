@@ -451,8 +451,9 @@ class Parser final
         std::unordered_set<std::string> names;
         while (m_current.kind != TokenKind::RightBrace && m_current.kind != TokenKind::End) {
             const Token begin = m_current;
-            if (m_current.kind != TokenKind::Identifier || m_current.text != "Texture2D") {
-                Error(m_current, "Resources currently supports Texture2D declarations");
+            if (m_current.kind != TokenKind::Identifier ||
+                (m_current.text != "Texture2D" && m_current.text != "Texture2DUInt")) {
+                Error(m_current, "Resources supports Texture2D and Texture2DUInt declarations");
                 SkipToPropertyBoundary();
                 continue;
             }

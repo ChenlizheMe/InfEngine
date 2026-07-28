@@ -64,7 +64,7 @@ def test_default_forward_pipeline_uses_forward_plus_for_opaque_and_transparent()
 
 
 def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
-    from Infernux.rendergraph.graph import RenderGraph
+    from Infernux.rendergraph.graph import Format, RenderGraph
 
     graph = RenderGraph("Default Deferred")
     DefaultDeferredPipeline().define_topology(graph)
@@ -76,6 +76,25 @@ def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
 
     assert transparent._material_pass == "forward_plus"
     assert transparent._sort_mode == "back_to_front"
+    gbuffer = next(
+        render_pass for render_pass in graph._passes if render_pass.name == "GBufferPass"
+    )
+    lighting = next(
+        render_pass
+        for render_pass in graph._passes
+        if render_pass.name == "DeferredLightingPass"
+    )
+    assert len(gbuffer._write_colors) == 5
+    assert graph.get_texture("gbuffer_object").format == Format.RG32_UINT
+    assert lighting._shader_name == "Deferred Lighting"
+    assert list(lighting._input_bindings) == [
+        "gAlbedo",
+        "gNormal",
+        "gMaterial",
+        "gEmission",
+        "gObject",
+        "sceneDepth",
+    ]
 
 
 def test_default_pipelines_publish_depth_tested_motion_for_both_queue_domains():

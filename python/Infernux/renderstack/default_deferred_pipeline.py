@@ -7,10 +7,11 @@ followed by a fullscreen lighting pass, then transparent forward pass.
 
 GBuffer layout (MRT)::
 
-    Slot 0 — Lit Scene Color    (RGBA8_UNORM)
+    Slot 0 — Base Color         (RGBA16_SFLOAT)
     Slot 1 — World Normals      (RGBA16_SFLOAT)
     Slot 2 — Material Params    (RGBA8_UNORM)
     Slot 3 — Emission           (RGBA16_SFLOAT)
+    Slot 4 — Object Metadata    (RG32_UINT)
     Depth  — Scene depth        (D32_SFLOAT)
 
 Topology::
@@ -32,9 +33,8 @@ Usage::
     - Depth buffer as shader input — now supported
     - Deferred lighting shader (``deferred_lighting.frag``)
 
-    The deferred lighting shader is NOT yet shipped with the engine.
-    Users must provide their own ``deferred_lighting`` shader, or this
-    pipeline will fall back to a placeholder that outputs albedo only.
+    Deferred lighting uses the same camera-local light, shadow, layer-mask,
+    and Forward+ tile data as the built-in Forward+ path.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ from Infernux.renderstack._pipeline_common import (
     GBUFFER_EMISSION_TEXTURE,
     GBUFFER_MATERIAL_TEXTURE,
     GBUFFER_NORMAL_TEXTURE,
+    GBUFFER_OBJECT_TEXTURE,
     GBUFFER_RESOURCES,
     POST_PROCESS_RESOURCES,
     SCENE_RESOURCES,
@@ -123,7 +124,7 @@ class DefaultDeferredPipeline(RenderPipeline):
     # ------------------------------------------------------------------
 
     def define_topology(self, graph: "RenderGraph") -> None:
-        """Define deferred rendering topology skeleton.
+        """Define the built-in deferred rendering topology.
 
         Topology::
 
@@ -153,6 +154,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             p.write_color(GBUFFER_NORMAL_TEXTURE, slot=1)
             p.write_color(GBUFFER_MATERIAL_TEXTURE, slot=2)
             p.write_color(GBUFFER_EMISSION_TEXTURE, slot=3)
+            p.write_color(GBUFFER_OBJECT_TEXTURE, slot=4)
             p.write_depth(DEPTH_TEXTURE)
             p.set_clear(
                 color=DEFERRED_GBUFFER_CLEAR_COLOR,
@@ -189,8 +191,8 @@ class DefaultDeferredPipeline(RenderPipeline):
                     "gNormal": GBUFFER_NORMAL_TEXTURE,
                     "gMaterial": GBUFFER_MATERIAL_TEXTURE,
                     "gEmission": GBUFFER_EMISSION_TEXTURE,
+                    "gObject": GBUFFER_OBJECT_TEXTURE,
                     "sceneDepth": DEPTH_TEXTURE,
-                    "shadowMap": SHADOW_MAP_TEXTURE,
                 }
             )
             p.write_color(COLOR_TEXTURE)
