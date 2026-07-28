@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
 import json
@@ -24,7 +24,10 @@ from .asset import (
     ParticleAttribute,
     ParticleGraphAsset,
     ParticleParameter,
+    particle_attribute_cache_id,
+    particle_attribute_capture_id,
     particle_attribute_catalog,
+    particle_attribute_zero,
 )
 from .data_interface import ParticleDataInterface, SdfVolume
 from .nodes import (
@@ -1098,6 +1101,30 @@ class ParticleGraphCompiler:
             attribute.stable_id: attribute
             for attribute in particle_attribute_catalog(emitter)
         }
+        for stage_hir in all_lifecycles:
+            for operation in stage_hir.flow.iter_operations():
+                if operation.opcode != "attribute.capture":
+                    continue
+                parameters = operation.parameter_dict()
+                source_id = str(parameters["attribute"])
+                source = catalog.get(source_id)
+                if source is None:
+                    raise ParticleCompileError(
+                        f"Get Attribute capture references unknown attribute {source_id!r}"
+                    )
+                snapshot_id = str(parameters["snapshot"])
+                snapshot = ParticleAttribute(
+                    snapshot_id,
+                    f"{operation.source_node_uid}_sample",
+                    source.value_type,
+                    particle_attribute_zero(source.value_type),
+                )
+                existing = catalog.get(snapshot_id)
+                if existing is not None and existing != snapshot:
+                    raise ParticleCompileError(
+                        f"Get Attribute capture identity collision for {snapshot_id!r}"
+                    )
+                catalog[snapshot_id] = snapshot
         for stage in all_lifecycles:
             for operation in stage.flow.iter_operations():
                 if operation.opcode != "attribute.modify_cache":
@@ -1105,8 +1132,15 @@ class ParticleGraphCompiler:
                 stable_id = str(operation.parameter_dict().get("attribute", ""))
                 if stable_id.startswith("builtin.") or stable_id not in catalog:
                     raise ParticleCompileError(
-                        "Attribute Cache nodes must reference a declared non-builtin "
-                        f"cache field, got {stable_id!r}"
+                        "Attribute Cache storage must be owned by its graph node, got "
+                        f"unknown slot {stable_id!r}"
+                    )
+                if (
+                    catalog[stable_id].value_type.value_type is ValueType.TEXTURE2D
+                    and operation.parameter_dict().get("composition", "set") != "set"
+                ):
+                    raise ParticleCompileError(
+                        "Texture2D Attribute Cache nodes only support Set composition"
                     )
         attributes = list(emitter.attributes)
         allocated = {attribute.stable_id for attribute in attributes}
@@ -1225,6 +1259,11 @@ class ParticleGraphCompiler:
         def _resolve_property_type(property_name: str, selected) -> TypeRef | None:
             if property_name == "attribute":
                 return attribute_types.get(str(selected))
+            if property_name == "value_type":
+                try:
+                    return TypeRef(ValueType(str(selected)))
+                except ValueError:
+                    return None
             if property_name == "parameter":
                 return definitions.parameter_type_by_id.get(str(selected))
             return None
@@ -1271,6 +1310,36 @@ class ParticleGraphCompiler:
             definitions,
             events,
         )
+        sampled_gets = {
+            link.target_node
+            for link in document.links
+            if link.kind is PortKind.EXEC
+            and link.target_port == "in"
+            and (node := next((item for item in document.nodes if item.uid == link.target_node), None))
+            is not None
+            and node.type_id == "particle.attribute.get"
+        }
+        if sampled_gets:
+            rewritten = []
+            for instruction in expressions.instructions:
+                if (
+                    instruction.opcode == "load_attribute"
+                    and instruction.source_node_uid in sampled_gets
+                ):
+                    rewritten.append(
+                        replace(
+                            instruction,
+                            immediates=((
+                                "attribute",
+                                particle_attribute_capture_id(
+                                    stage.value, instruction.source_node_uid
+                                ),
+                            ),),
+                        )
+                    )
+                else:
+                    rewritten.append(instruction)
+            expressions = replace(expressions, instructions=tuple(rewritten))
         if any(
             instruction.opcode == "delta_time"
             for instruction in expressions.instructions
@@ -1431,6 +1500,16 @@ class ParticleGraphCompiler:
                 raise ParticleCompileError(
                     f"particle Exec node {node_uid!r} has multiple inputs; use an explicit Join All node"
                 )
+        for node in document.nodes:
+            if (
+                node.type_id == "particle.attribute.get"
+                and outgoing.get(node.uid)
+                and not incoming.get(node.uid)
+            ):
+                raise ParticleCompileError(
+                    f"Get Attribute node {node.uid!r} cannot use its Exec output "
+                    "until its Exec input is connected"
+                )
 
         reachable = set()
         pending = [root_uid]
@@ -1491,6 +1570,12 @@ class ParticleGraphCompiler:
                     f"node {node.type_id!r} has unknown properties: {sorted(unknown)}"
                 )
             properties.update(node.properties)
+            if opcode == "attribute.modify_cache":
+                properties["attribute"] = particle_attribute_cache_id(
+                    stage.value, node.uid
+                )
+            if opcode == "attribute.capture":
+                properties["snapshot"] = particle_attribute_capture_id(stage.value, node.uid)
             if node.type_id in definitions.event_route_by_type_id:
                 properties["route"] = definitions.event_route_by_type_id[node.type_id]
             from Infernux.graph.expression_ir import ExpressionCompiler
@@ -1929,6 +2014,8 @@ class ParticleGraphCompiler:
             return frozenset({ATTRIBUTE_OPERATION_SPECS[opcode][0]})
         if opcode == "attribute.modify_cache":
             return frozenset({str(operation.parameter_dict()["attribute"])})
+        if opcode == "attribute.capture":
+            return frozenset({str(operation.parameter_dict()["snapshot"])})
         return frozenset(writes.get(opcode, ()))
 
     @staticmethod
@@ -1965,6 +2052,8 @@ class ParticleGraphCompiler:
             operation.opcode == "attribute.modify_cache"
             and operation.parameter_dict().get("composition", "set") != "set"
         ):
+            result.add(str(operation.parameter_dict()["attribute"]))
+        if operation.opcode == "attribute.capture":
             result.add(str(operation.parameter_dict()["attribute"]))
         for _property_id, value_id in operation.value_bindings:
             result.update(expression_reads.get(value_id, ()))

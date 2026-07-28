@@ -1060,7 +1060,7 @@ class GpuParticleGlslLowerer:
             emitter.stable_id,
             kernel_hash,
             tuple(
-                (stable_id, field, _glsl_type(value_type), offset, byte_size)
+                (stable_id, field, _storage_type(value_type), offset, byte_size)
                 for stable_id, value_type, field, offset, byte_size in attribute_layout
             ),
             state_stride,
@@ -2093,10 +2093,16 @@ class _StageCompiler:
 
         expression = ""
         if opcode == "constant":
+            if result_type.value_type is ValueType.TEXTURE2D:
+                self._values[instruction.result_id] = "0u"
+                return
             expression = _glsl_literal(immediate["value"], result_type)
         elif opcode == "load_attribute":
             value_type, field = self._field(immediate["attribute"])
             expression = f"state.{field}"
+            if value_type.value_type is ValueType.TEXTURE2D:
+                self._values[instruction.result_id] = expression
+                return
             if value_type.value_type is ValueType.BOOL:
                 expression = f"({expression} != 0u)"
         elif opcode == "load_uniform":
@@ -2119,7 +2125,7 @@ class _StageCompiler:
                         f"GPU backend cannot resolve Texture2D parameter {stable_id!r}"
                     )
                 self._values[instruction.result_id] = (
-                    f"inx_parameter_texture_{int(resource['resource_index'])}"
+                    f"{_texture_resource_handle(stable_id)}u"
                 )
                 return
             expression = _parameter_load_glsl(parameter[0], result_type)
@@ -2219,7 +2225,7 @@ class _StageCompiler:
             )
             expression = _glsl_gradient_sample(sample_time, gradient)
         elif opcode == "sample_texture2d":
-            expression = f"texture({operands[0]}, {operands[1]})"
+            expression = f"inx_sample_parameter_texture({operands[0]}, {operands[1]})"
         elif opcode == "value_noise_3d":
             expression = f"inx_value_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
         elif opcode == "vector_noise_3d":
@@ -2555,8 +2561,11 @@ def _texture_parameter_layout(
         if parameter.value_type.value_type is ValueType.TEXTURE2D
     }
     sampled = set()
+    texture_sampling = False
     for function in (emitter.init, emitter.update, emitter.rendering):
         for instruction in function.instructions:
+            if instruction.opcode == "sample_texture2d":
+                texture_sampling = True
             if (
                 instruction.opcode == "load_parameter"
                 and instruction.result_type is not None
@@ -2573,7 +2582,13 @@ def _texture_parameter_layout(
         raise GpuParticleCompileError(
             "GPU particle emitters support at most fifteen sampled Texture2D and volume resources"
         )
+    handles = [_texture_resource_handle(stable_id) for stable_id in sampled]
+    if len(handles) != len(set(handles)):
+        raise GpuParticleCompileError(
+            "GPU Texture2D parameter identities produced a resource-handle collision"
+        )
     return {
+        "texture2d_sampling": texture_sampling,
         "texture2d_parameters": [
             {
                 "stable_id": stable_id,
@@ -2685,7 +2700,6 @@ def _attribute_fields(
         if value_type.value_type in {
             ValueType.STRING,
             ValueType.ASSET_REF,
-            ValueType.TEXTURE2D,
         }:
             raise GpuParticleCompileError(
                 f"attribute {stable_id!r} cannot be stored in a GPU particle buffer"
@@ -2715,6 +2729,7 @@ _STD430_STORAGE_LAYOUT = {
     ValueType.COLOR: (16, 16),
     ValueType.MAT3: (16, 48),
     ValueType.MAT4: (16, 64),
+    ValueType.TEXTURE2D: (4, 4),
 }
 
 
@@ -2884,6 +2899,8 @@ def _pack_std430_default(
             )
     elif kind is ValueType.MAT4:
         struct.pack_into("<16f", destination, offset, *(float(item) for item in value))
+    elif kind is ValueType.TEXTURE2D:
+        struct.pack_into("<I", destination, offset, 0)
     else:
         raise GpuParticleCompileError(
             f"GPU particle default for {kind.value!r} has no std430 encoding"
@@ -3058,11 +3075,36 @@ def _volume_interface_glsl(layout: dict[str, Any]) -> str:
 
 
 def _texture_parameter_glsl(layout: dict[str, Any]) -> str:
-    return "\n".join(
+    parameters = tuple(layout.get("texture2d_parameters", ()))
+    declarations = [
         f"layout(set = 2, binding = {int(parameter['texture_binding'])}) "
         f"uniform sampler2D inx_parameter_texture_{int(parameter['resource_index'])};"
-        for parameter in layout.get("texture2d_parameters", ())
+        for parameter in parameters
+    ]
+    if not layout.get("texture2d_sampling", False):
+        return "\n".join(declarations)
+    cases = [
+        f"        case {_texture_resource_handle(str(parameter['stable_id']))}u: "
+        f"return texture(inx_parameter_texture_{int(parameter['resource_index'])}, uv);"
+        for parameter in parameters
+    ]
+    return "\n".join(
+        (
+            *declarations,
+            "vec4 inx_sample_parameter_texture(uint handle, vec2 uv) {",
+            "    switch (handle) {",
+            *cases,
+            "        default: return vec4(0.0);",
+            "    }",
+            "}",
+        )
     )
+
+
+def _texture_resource_handle(stable_id: str) -> int:
+    """Return a non-zero handle that survives descriptor-table reorderings."""
+    handle = zlib.crc32(str(stable_id).encode("utf-8")) & 0xFFFFFFFF
+    return handle or 1
 
 
 def _continuation_bindings_glsl(set_index: int) -> str:
@@ -5091,7 +5133,7 @@ def _finite_state_check(
 
 def _finite_expression(expression: str, value_type: TypeRef) -> str:
     kind = value_type.value_type
-    if kind in {ValueType.BOOL, ValueType.I32, ValueType.U32}:
+    if kind in {ValueType.BOOL, ValueType.I32, ValueType.U32, ValueType.TEXTURE2D}:
         return "true"
     if kind in {ValueType.F32, ValueType.VEC2, ValueType.VEC3, ValueType.VEC4, ValueType.COLOR}:
         return f"inx_finite({expression})"
@@ -5382,7 +5424,11 @@ def _pack_gpu_particle_event_value(value_type: TypeRef, value: Any) -> list[int]
 
 
 def _storage_type(value_type: TypeRef) -> str:
-    return "uint" if value_type.value_type is ValueType.BOOL else _glsl_type(value_type)
+    return (
+        "uint"
+        if value_type.value_type in {ValueType.BOOL, ValueType.TEXTURE2D}
+        else _glsl_type(value_type)
+    )
 
 
 def _value_name(value_id: str) -> str:

@@ -42,6 +42,7 @@ _PARTICLE_STORAGE_TYPES = frozenset(
         ValueType.COLOR,
         ValueType.MAT3,
         ValueType.MAT4,
+        ValueType.TEXTURE2D,
     }
 )
 
@@ -318,7 +319,7 @@ class ParticleAttribute:
             raise ParticleGraphSchemaError("particle attribute type must be a TypeRef")
         if self.value_type.value_type not in _PARTICLE_STORAGE_TYPES:
             raise ParticleGraphSchemaError(
-                f"particle attribute {self.name!r} must use a numeric storage type"
+                f"particle attribute {self.name!r} must use a GPU-storable type"
             )
         from Infernux.graph.expression_ir import ExpressionCompiler
 
@@ -603,6 +604,151 @@ def optional_particle_attributes() -> tuple[ParticleAttribute, ...]:
     )
 
 
+def particle_attribute_capture_id(stage: str, node_uid: str) -> str:
+    """Return the stable per-particle slot used by an Exec-bound Get Attribute."""
+    return f"capture.{str(stage)}.{str(node_uid)}"
+
+
+def particle_attribute_cache_id(stage: str, node_uid: str) -> str:
+    """Return the stable storage identity owned by one Attribute Cache node."""
+    return f"cache.{str(stage)}.{str(node_uid)}"
+
+
+def particle_attribute_zero(value_type: TypeRef):
+    kind = value_type.value_type
+    if kind is ValueType.BOOL:
+        return False
+    if kind in {ValueType.I32, ValueType.U32}:
+        return 0
+    if kind is ValueType.F32:
+        return 0.0
+    if kind is ValueType.TEXTURE2D:
+        return {"guid": "", "path_hint": ""}
+    width = {
+        ValueType.VEC2: 2,
+        ValueType.VEC3: 3,
+        ValueType.VEC4: 4,
+        ValueType.COLOR: 4,
+        ValueType.MAT3: 9,
+        ValueType.MAT4: 16,
+    }.get(kind)
+    if width is None:
+        raise ParticleGraphSchemaError(
+            f"particle capture cannot store {kind.value!r}"
+        )
+    return [0.0] * width
+
+
+def particle_cache_attributes(emitter) -> tuple[ParticleAttribute, ...]:
+    """Derive persistent per-particle storage directly from cache nodes."""
+    caches: list[ParticleAttribute] = []
+    known: dict[str, ParticleAttribute] = {}
+    for stage in (
+        "init",
+        "update",
+        "collision_enter",
+        "collision_stay",
+        "collision_exit",
+        "rendering",
+    ):
+        document = getattr(emitter, stage)
+        if document is None:
+            continue
+        for node in document.nodes:
+            if node.type_id != "particle.attribute.cache":
+                continue
+            try:
+                value_type = TypeRef(
+                    ValueType(str(node.properties.get("value_type", "f32"))),
+                    CoordinateSpace(str(node.properties.get("value_space", "none"))),
+                )
+                name = str(node.properties.get("name", "Attribute Cache")).strip()
+                attribute = ParticleAttribute(
+                    particle_attribute_cache_id(stage, node.uid),
+                    name or "Attribute Cache",
+                    value_type,
+                    particle_attribute_zero(value_type),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ParticleGraphSchemaError(
+                    f"invalid Attribute Cache node {node.uid!r} in {stage}: {exc}"
+                ) from exc
+            existing = known.get(attribute.stable_id)
+            if existing is not None and existing != attribute:
+                raise ParticleGraphSchemaError(
+                    f"particle cache identity collision for {attribute.stable_id!r}"
+                )
+            if existing is None:
+                known[attribute.stable_id] = attribute
+                caches.append(attribute)
+    return tuple(caches)
+
+
+def captured_particle_attributes(emitter) -> tuple[ParticleAttribute, ...]:
+    """Derive sample-and-hold slots from Exec-bound Get Attribute nodes."""
+    attributes = {
+        attribute.stable_id: attribute
+        for attribute in (
+            *emitter.attributes,
+            *optional_particle_attributes(),
+            *particle_cache_attributes(emitter),
+        )
+    }
+    captures: list[ParticleAttribute] = []
+    pending = []
+    for stage in (
+        "init",
+        "update",
+        "collision_enter",
+        "collision_stay",
+        "collision_exit",
+        "rendering",
+    ):
+        document = getattr(emitter, stage)
+        if document is None:
+            continue
+        sampled = {
+            link.target_node
+            for link in document.links
+            if link.kind is PortKind.EXEC and link.target_port == "in"
+        }
+        pending.extend(
+            (stage, node)
+            for node in document.nodes
+            if node.type_id == "particle.attribute.get" and node.uid in sampled
+        )
+
+    while pending:
+        progressed = False
+        deferred = []
+        for stage, node in pending:
+            source_id = str(node.properties.get("attribute", "builtin.position"))
+            source = attributes.get(source_id)
+            if source is None:
+                deferred.append((stage, node))
+                continue
+            stable_id = particle_attribute_capture_id(stage, node.uid)
+            capture = ParticleAttribute(
+                stable_id,
+                f"{node.uid}_sample",
+                source.value_type,
+                particle_attribute_zero(source.value_type),
+            )
+            existing = attributes.get(stable_id)
+            if existing is not None and existing != capture:
+                raise ParticleGraphSchemaError(
+                    f"particle capture identity collision for {stable_id!r}"
+                )
+            if existing is None:
+                attributes[stable_id] = capture
+                captures.append(capture)
+            progressed = True
+        if not progressed:
+            break
+        pending = deferred
+    return tuple(captures)
+
+
 def particle_attribute_catalog(emitter) -> tuple[ParticleAttribute, ...]:
     """Return every attribute an emitter graph may read, without allocating it."""
     attributes = list(emitter.attributes)
@@ -610,6 +756,18 @@ def particle_attribute_catalog(emitter) -> tuple[ParticleAttribute, ...]:
     attributes.extend(
         attribute
         for attribute in optional_particle_attributes()
+        if attribute.stable_id not in known
+    )
+    known.update(attribute.stable_id for attribute in attributes)
+    attributes.extend(
+        attribute
+        for attribute in particle_cache_attributes(emitter)
+        if attribute.stable_id not in known
+    )
+    known.update(attribute.stable_id for attribute in attributes)
+    attributes.extend(
+        attribute
+        for attribute in captured_particle_attributes(emitter)
         if attribute.stable_id not in known
     )
     return tuple(attributes)
@@ -678,21 +836,18 @@ class ParticleEmitterAsset:
         _validate_stage_root("rendering", self.rendering)
         if len({attribute.stable_id for attribute in self.attributes}) != len(self.attributes):
             raise ParticleGraphSchemaError("particle attribute stable ids must be unique")
-        builtins = tuple(
-            attribute for attribute in self.attributes if attribute.stable_id.startswith("builtin.")
-        )
         standards = standard_particle_attributes()
         if (
-            len(builtins) != len(standards)
-            or tuple(self.attributes[: len(standards)]) != builtins
+            len(self.attributes) != len(standards)
             or any(
                 (actual.stable_id, actual.name, actual.value_type)
                 != (expected.stable_id, expected.name, expected.value_type)
-                for actual, expected in zip(builtins, standards)
+                for actual, expected in zip(self.attributes, standards)
             )
         ):
             raise ParticleGraphSchemaError(
-                "particle emitter must use the complete current builtin attribute set"
+                "particle emitter attributes are fixed builtins; Attribute Cache storage "
+                "must be declared by graph nodes"
             )
         if len({interface.stable_id for interface in data_interfaces}) != len(data_interfaces):
             raise ParticleGraphSchemaError("particle data-interface stable ids must be unique")
@@ -714,11 +869,6 @@ class ParticleEmitterAsset:
                 if attribute.stable_id.startswith("builtin.")
                 and attribute.default != standard_defaults[attribute.stable_id]
             },
-            "attribute_cache": [
-                attribute.to_dict()
-                for attribute in self.attributes
-                if not attribute.stable_id.startswith("builtin.")
-            ],
             "data_interfaces": [interface.to_dict() for interface in self.data_interfaces],
             "stages": {
                 "init": self.init.to_dict(),
@@ -753,7 +903,6 @@ class ParticleEmitterAsset:
                 "play_on_start",
                 "settings",
                 "attribute_defaults",
-                "attribute_cache",
                 "data_interfaces",
                 "stages",
             },
@@ -773,11 +922,10 @@ class ParticleEmitterAsset:
         )
         if (
             type(value["attribute_defaults"]) is not dict
-            or type(value["attribute_cache"]) is not list
             or type(value["data_interfaces"]) is not list
         ):
             raise ParticleGraphSchemaError(
-                f"{location}.attribute_defaults must be an object; attribute_cache and data_interfaces must be arrays"
+                f"{location}.attribute_defaults must be an object and data_interfaces must be an array"
             )
         standards = standard_particle_attributes()
         standard_by_id = {attribute.stable_id: attribute for attribute in standards}
@@ -801,15 +949,7 @@ class ParticleEmitterAsset:
             enabled=value["enabled"],
             play_on_start=value["play_on_start"],
             settings=EmitterSettings.from_dict(value["settings"], f"{location}.settings"),
-            attributes=(
-                *builtin_attributes,
-                *(
-                    ParticleAttribute.from_dict(
-                        item, f"{location}.attribute_cache[{index}]"
-                    )
-                    for index, item in enumerate(value["attribute_cache"])
-                ),
-            ),
+            attributes=builtin_attributes,
             data_interfaces=tuple(
                 particle_data_interface_from_dict(
                     item, f"{location}.data_interfaces[{index}]"
@@ -1199,6 +1339,11 @@ __all__ = [
     "VectorField",
     "default_stage_graph",
     "optional_particle_attributes",
+    "captured_particle_attributes",
+    "particle_attribute_cache_id",
+    "particle_attribute_capture_id",
     "particle_attribute_catalog",
+    "particle_attribute_zero",
+    "particle_cache_attributes",
     "standard_particle_attributes",
 ]

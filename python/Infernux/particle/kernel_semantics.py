@@ -770,6 +770,12 @@ def _validate_literal(value_type: TypeRef | None, value: Any) -> None:
         valid = type(value) is int and (kind is not ValueType.U32 or value >= 0)
     elif kind is ValueType.F32:
         valid = not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
+    elif kind is ValueType.TEXTURE2D:
+        try:
+            AssetReference.from_dict(value)
+            valid = True
+        except (TypeError, ValueError):
+            valid = False
     else:
         count = {
             ValueType.VEC2: 2,

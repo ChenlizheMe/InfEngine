@@ -32,8 +32,7 @@ from Infernux.graph.registry import (
     PortDirection,
     PortKind,
 )
-from Infernux.graph.types import PORTABLE_TYPE_SYSTEM
-from Infernux.graph.types import ValueType
+from Infernux.graph.types import CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, ValueType
 
 
 _PIN_COLORS = {
@@ -86,12 +85,16 @@ def _canvas_definition(
     property_enum_entries=None,
     display_name_override: str = "",
     hidden_property_ids=(),
+    hidden_port_ids=(),
 ) -> NodeTypeDef:
     port_type_overrides = dict(port_type_overrides or {})
     property_enum_entries = dict(property_enum_entries or {})
     hidden_property_ids = frozenset(hidden_property_ids or ())
+    hidden_port_ids = frozenset(hidden_port_ids or ())
     pins = []
     for port in definition.ports:
+        if port.id in hidden_port_ids:
+            continue
         resolved_type = port_type_overrides.get(port.id)
         data_type = (
             resolved_type.value_type.value
@@ -165,11 +168,12 @@ def _canvas_definition(
             and not port.required
             and port.id not in property_by_id
         ):
+            resolved_type = port_type_overrides.get(port.id) or port.value_type
             inline_fields.append(
                 NodeInlineFieldDef(
                     port.id,
                     port.display_name or port.id.replace("_", " ").title(),
-                    port.value_type.value_type.value if port.value_type is not None else "f32",
+                    resolved_type.value_type.value if resolved_type is not None else "f32",
                     copy.deepcopy(port.default),
                 )
             )
@@ -405,22 +409,19 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         definition_set=None,
     ) -> None:
         super().__init__(graph_kind="particle.emitter")
-        from Infernux.particle.asset import particle_attribute_catalog
+        from Infernux.particle.asset import optional_particle_attributes
 
         if definition_set is not None:
             registry = definition_set.registry
         self._definitions = registry
         self._definition_set = definition_set
         self._collision_enabled = bool(emitter.settings.collision_enabled)
-        self._attribute_catalog = {
+        self._base_attribute_catalog = {
             attribute.stable_id: attribute
-            for attribute in particle_attribute_catalog(emitter)
+            for attribute in (*emitter.attributes, *optional_particle_attributes())
         }
-        self._attribute_cache = {
-            attribute.stable_id: attribute
-            for attribute in emitter.attributes
-            if not attribute.stable_id.startswith("builtin.")
-        }
+        self._attribute_catalog = dict(self._base_attribute_catalog)
+        self._attribute_catalog_dirty = True
         self._parameter_catalog = (
             dict(definition_set.parameter_by_id)
             if definition_set is not None
@@ -529,10 +530,95 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def set_collision_enabled(self, enabled: bool) -> None:
         self._collision_enabled = bool(enabled)
+        self._dynamic_type_cache.clear()
+
+    def _mark_attribute_catalog_dirty(self) -> None:
+        self._attribute_catalog_dirty = True
+        self._dynamic_type_cache.clear()
+
+    def _ensure_attribute_catalog(self) -> None:
+        if not self._attribute_catalog_dirty:
+            return
+        from Infernux.particle.asset import (
+            ParticleAttribute,
+            particle_attribute_cache_id,
+            particle_attribute_capture_id,
+            particle_attribute_zero,
+        )
+
+        attributes = dict(self._base_attribute_catalog)
+        for node in self.nodes:
+            if node.type_id != "particle.attribute.cache":
+                continue
+            stage = self.stage_for_uid(node.uid)
+            try:
+                value_type = TypeRef(
+                    ValueType(str(node.data.get("value_type", "f32"))),
+                    CoordinateSpace(str(node.data.get("value_space", "none"))),
+                )
+                name = str(node.data.get("name", "Attribute Cache")).strip()
+                attribute = ParticleAttribute(
+                    particle_attribute_cache_id(
+                        stage, self._document_uid(node.uid)
+                    ),
+                    name or "Attribute Cache",
+                    value_type,
+                    particle_attribute_zero(value_type),
+                )
+            except (TypeError, ValueError):
+                continue
+            attributes[attribute.stable_id] = attribute
+
+        pending = [
+            node
+            for node in self.nodes
+            if node.type_id == "particle.attribute.get"
+            and any(
+                link.target_node == node.uid and link.target_pin == "in"
+                for link in self.links
+            )
+        ]
+        while pending:
+            progressed = False
+            deferred = []
+            for node in pending:
+                source = attributes.get(
+                    str(node.data.get("attribute", "builtin.position"))
+                )
+                if source is None:
+                    deferred.append(node)
+                    continue
+                stage = self.stage_for_uid(node.uid)
+                capture = ParticleAttribute(
+                    particle_attribute_capture_id(
+                        stage, self._document_uid(node.uid)
+                    ),
+                    f"{self._document_uid(node.uid)}_sample",
+                    source.value_type,
+                    particle_attribute_zero(source.value_type),
+                )
+                attributes[capture.stable_id] = capture
+                progressed = True
+            if not progressed:
+                break
+            pending = deferred
+
+        self._attribute_catalog = attributes
+        self._attribute_catalog_dirty = False
+
+    def _cache_attribute_for_node(self, node):
+        if node is None or node.type_id != "particle.attribute.cache":
+            return None
+        from Infernux.particle.asset import particle_attribute_cache_id
+
+        self._ensure_attribute_catalog()
+        return self._attribute_catalog.get(
+            particle_attribute_cache_id(
+                self.stage_for_uid(node.uid), self._document_uid(node.uid)
+            )
+        )
 
     def node_creation_state(self, type_id: str) -> tuple[bool, str]:
-        if type_id == "particle.attribute.cache" and not self._attribute_cache:
-            return False, "Create an Attribute Cache field first"
         if type_id not in _PARTICLE_COLLISION_ROOT_TYPES:
             return True, ""
         if not self._collision_enabled:
@@ -555,15 +641,18 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         return self._definitions.get(type_id)
 
     def attribute_entries(self) -> tuple[tuple[str, str], ...]:
+        self._ensure_attribute_catalog()
         return tuple(
             (item.name.replace("_", " ").title(), item.stable_id)
             for item in self._attribute_catalog.values()
         )
 
     def attribute_cache_entries(self) -> tuple[tuple[str, str], ...]:
+        self._ensure_attribute_catalog()
         return tuple(
             (item.name.replace("_", " ").title(), item.stable_id)
-            for item in self._attribute_cache.values()
+            for item in self._attribute_catalog.values()
+            if item.stable_id.startswith("cache.")
         )
 
     def parameter_entries(self) -> tuple[tuple[str, str], ...]:
@@ -573,6 +662,22 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         )
 
     def get_node_type(self, node) -> NodeTypeDef | None:
+        self._ensure_attribute_catalog()
+
+        def with_lifecycle_state(value):
+            if value is None:
+                return None
+            if (
+                self.stage_for_uid(node.uid)
+                not in {"collision_enter", "collision_stay", "collision_exit"}
+                or self._collision_enabled
+            ):
+                return value
+            unavailable = copy.copy(value)
+            unavailable.label = f"{value.label} (Unavailable)"
+            unavailable.header_color = (0.62, 0.18, 0.16, 1.0)
+            return unavailable
+
         base = super().get_node_type(node)
         if base is None:
             return base
@@ -581,54 +686,72 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         attribute_name = ATTRIBUTE_NODE_NAMES.get(node.type_id)
         if attribute_name is not None:
             composition = str(node.data.get("composition", "set"))
-            selected_cache = (
-                self._attribute_cache.get(str(node.data.get("attribute", "")))
-                if node.type_id == "particle.attribute.cache"
-                else None
+            selected_cache = self._cache_attribute_for_node(node)
+            cache_value_connected = (
+                node.type_id == "particle.attribute.cache"
+                and any(
+                    link.target_node == node.uid and link.target_pin == "value"
+                    for link in self.links
+                )
             )
             cache_key = (
                 f"attribute-write:{node.type_id}:{composition}:"
-                f"{selected_cache.stable_id if selected_cache else ''}"
+                f"{selected_cache.stable_id if selected_cache else ''}:"
+                f"{selected_cache.name if selected_cache else ''}:"
+                f"{selected_cache.value_type if selected_cache else ''}:"
+                f"connected={int(cache_value_connected)}"
             )
             cached = self._dynamic_type_cache.get(cache_key)
             if cached is not None:
-                return cached
+                return with_lifecycle_state(cached)
             definition = self._definitions.get(node.type_id)
             if definition is None:
-                return base
+                return with_lifecycle_state(base)
             resolved = _canvas_definition(
                 definition,
                 port_type_overrides=(
                     {"value": selected_cache.value_type}
                     if selected_cache is not None
-                    else {}
-                ),
-                property_enum_entries=(
-                    {"attribute": self.attribute_cache_entries()}
-                    if node.type_id == "particle.attribute.cache"
+                    and (
+                        node.type_id != "particle.attribute.cache"
+                        or cache_value_connected
+                    )
                     else {}
                 ),
                 display_name_override=(
                     f"{composition.replace('_', ' ').title()} "
                     f"{selected_cache.name if selected_cache else attribute_name}"
                 ),
+                hidden_property_ids=(
+                    {"value_type", "value_space"}
+                    if node.type_id == "particle.attribute.cache"
+                    else ()
+                ),
             )
             self._dynamic_type_cache[cache_key] = resolved
-            return resolved
+            return with_lifecycle_state(resolved)
         if node.type_id not in {
             "particle.attribute.get",
             "particle.parameter.get",
         }:
-            return base
+            return with_lifecycle_state(base)
         is_parameter = node.type_id == "particle.parameter.get"
         property_id = "parameter" if is_parameter else "attribute"
         selected_id = str(
             node.data.get(property_id, "" if is_parameter else "builtin.position")
         )
-        cache_key = f"{property_id}:{selected_id}"
+        sampled = (
+            not is_parameter
+            and any(
+                link.target_node == node.uid
+                and link.target_pin == "in"
+                for link in self.links
+            )
+        )
+        cache_key = f"{property_id}:{selected_id}:sampled={int(sampled)}"
         cached = self._dynamic_type_cache.get(cache_key)
         if cached is not None:
-            return cached
+            return with_lifecycle_state(cached)
         selected = (
             self._parameter_catalog.get(selected_id)
             if is_parameter
@@ -636,7 +759,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         )
         definition = self._definitions.get(node.type_id)
         if selected is None or definition is None:
-            return base
+            return with_lifecycle_state(base)
         resolved = _canvas_definition(
             definition,
             port_type_overrides={"value": selected.value_type},
@@ -649,11 +772,13 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             },
             display_name_override=selected.name if is_parameter else "",
             hidden_property_ids={"parameter"} if is_parameter else (),
+            hidden_port_ids={"out"} if not is_parameter and not sampled else (),
         )
         self._dynamic_type_cache[cache_key] = resolved
-        return resolved
+        return with_lifecycle_state(resolved)
 
     def remove_invalid_links_for_node(self, node_uid: str) -> tuple[str, ...]:
+        self._mark_attribute_catalog_dirty()
         removed = []
         kept = []
         for link in self.links:
@@ -674,7 +799,23 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         return tuple(removed)
 
     def _stage_for_new_node(self, type_id: str, y: float) -> str:
-        allowed = self._allowed_stages.get(type_id, set())
+        allowed = set(self._allowed_stages.get(type_id, set()))
+        collision_stages = {"collision_enter", "collision_stay", "collision_exit"}
+        if type_id not in _PARTICLE_COLLISION_ROOT_TYPES:
+            allowed = {
+                stage
+                for stage in allowed
+                if stage not in collision_stages
+                or (
+                    self._collision_enabled
+                    and any(
+                        node.type_id == f"particle.root.{stage}"
+                        for node in self.nodes
+                    )
+                )
+            }
+        if not allowed:
+            raise ValueError(f"node type {type_id!r} has no available lifecycle flow")
         if len(allowed) == 1:
             return next(iter(allowed))
         if self._pending_creation_stage in allowed:
@@ -697,32 +838,38 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         if not enabled:
             raise ValueError(reason)
         stage = self._stage_for_new_node(type_id, float(y))
-        if (
-            stage in {"collision_enter", "collision_stay", "collision_exit"}
-            and type_id != f"particle.root.{stage}"
-            and not any(
-                node.type_id == f"particle.root.{stage}" for node in self.nodes
-            )
-        ):
-            raise ValueError(
-                f"Create the {stage.replace('_', ' ').title()} lifecycle root first"
-            )
         self._pending_creation_stage = ""
-        properties = _authoring_defaults(definition)
-        if type_id == "particle.attribute.cache" and self._attribute_cache:
-            selected = next(iter(self._attribute_cache.values()))
-            properties["attribute"] = selected.stable_id
-            properties["value"] = copy.deepcopy(selected.default)
-        if type_id == "particle.parameter.get" and self._parameter_catalog:
-            properties["parameter"] = next(iter(self._parameter_catalog))
-        properties.update(data)
         raw_uid = (
             f"root.{stage}"
             if type_id == f"particle.root.{stage}"
             else str(uid) if uid else uuid.uuid4().hex[:8]
         )
         canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
+        properties = _authoring_defaults(definition)
+        if type_id == "particle.attribute.cache":
+            existing_names = {
+                str(item.data.get("name", ""))
+                for item in self.nodes
+                if item.type_id == "particle.attribute.cache"
+            }
+            index = 1
+            cache_name = "Attribute Cache"
+            while cache_name in existing_names:
+                index += 1
+                cache_name = f"Attribute Cache {index}"
+            properties.update(
+                {
+                    "name": cache_name,
+                    "value_type": ValueType.F32.value,
+                    "value_space": CoordinateSpace.NONE.value,
+                    "value": 0.0,
+                }
+            )
+        if type_id == "particle.parameter.get" and self._parameter_catalog:
+            properties["parameter"] = next(iter(self._parameter_catalog))
+        properties.update(data)
         node = super().add_node(type_id, x, y, uid=canvas_uid, **properties)
+        self._mark_attribute_catalog_dirty()
         self._authoring_stage = stage
         return node
 
@@ -731,9 +878,25 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
         definition = self.get_type(node.type_id) if node is not None else None
         if definition is not None and not definition.deletable:
             return False
-        return super().remove_node(uid)
+        dependent_gets = []
+        if node is not None and node.type_id == "particle.attribute.cache":
+            attribute = self._cache_attribute_for_node(node)
+            if attribute is not None:
+                dependent_gets = [
+                    item.uid
+                    for item in self.nodes
+                    if item.type_id == "particle.attribute.get"
+                    and str(item.data.get("attribute", "")) == attribute.stable_id
+                ]
+        for dependent_uid in dependent_gets:
+            super().remove_node(dependent_uid)
+        removed = super().remove_node(uid)
+        if removed:
+            self._mark_attribute_catalog_dirty()
+        return removed
 
     def _effective_port_type(self, node, port):
+        self._ensure_attribute_catalog()
         if port is None or port.kind is not PortKind.VALUE:
             return None
         if port.value_type is not None:
@@ -748,6 +911,14 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 str(node.data.get("parameter", ""))
             )
             return parameter.value_type if parameter is not None else None
+        if port.type_property == "value_type":
+            try:
+                return TypeRef(
+                    ValueType(str(node.data.get("value_type", "f32"))),
+                    CoordinateSpace(str(node.data.get("value_space", "none"))),
+                )
+            except ValueError:
+                return None
         return None
 
     def validate_link(
@@ -786,6 +957,31 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return LinkValidationResult(False, "kind_mismatch", "Graph port kinds do not match")
         source_type = self._effective_port_type(source, source_port)
         target_type = self._effective_port_type(target, target_port)
+        cache_type_inference = (
+            target is not None
+            and target.type_id == "particle.attribute.cache"
+            and dst_pin == "value"
+        )
+        if cache_type_inference and source_type is not None:
+            if source_type.value_type not in {
+                ValueType.BOOL,
+                ValueType.I32,
+                ValueType.U32,
+                ValueType.F32,
+                ValueType.VEC2,
+                ValueType.VEC3,
+                ValueType.VEC4,
+                ValueType.COLOR,
+                ValueType.MAT3,
+                ValueType.MAT4,
+                ValueType.TEXTURE2D,
+            }:
+                return LinkValidationResult(
+                    False,
+                    "unsupported_cache_type",
+                    "Attribute Cache requires a GPU-storable value",
+                )
+            target_type = source_type
         if (
             source_port.kind is PortKind.VALUE
             and source_type is not None
@@ -795,13 +991,73 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return LinkValidationResult(False, "type_mismatch", "Graph value types do not match")
         return LinkValidationResult(True)
 
+    def _infer_cache_type(self, src_node: str, src_pin: str, dst_node: str, dst_pin: str) -> None:
+        target = self.find_node(dst_node)
+        if target is None or target.type_id != "particle.attribute.cache" or dst_pin != "value":
+            return
+        source = self.find_node(src_node)
+        definition = self._definitions.get(source.type_id) if source else None
+        port = definition.port(src_pin) if definition else None
+        value_type = self._effective_port_type(source, port)
+        if value_type is None:
+            return
+        from Infernux.particle.asset import particle_attribute_zero
+
+        target.data["value_type"] = value_type.value_type.value
+        target.data["value_space"] = value_type.space.value
+        target.data["value"] = copy.deepcopy(particle_attribute_zero(value_type))
+        if value_type.value_type is ValueType.TEXTURE2D:
+            target.data["composition"] = "set"
+        self._mark_attribute_catalog_dirty()
+
     def add_link(self, src_node, src_pin, dst_node, dst_pin, uid=None, **data):
         stage = self.stage_for_uid(src_node)
         raw_uid = str(uid) if uid else uuid.uuid4().hex[:8]
         canvas_uid = raw_uid if self.stage_for_uid(raw_uid) else self._canvas_uid(stage, raw_uid)
-        return super().add_link(
+        link = super().add_link(
             src_node, src_pin, dst_node, dst_pin, uid=canvas_uid, **data
         )
+        if link is not None:
+            self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
+            self._mark_attribute_catalog_dirty()
+        return link
+
+    def replace_link(self, link_uid, src_node, src_pin, dst_node, dst_pin):
+        target = self.find_node(dst_node)
+        previous = copy.deepcopy(target.data) if target is not None else None
+        self._infer_cache_type(src_node, src_pin, dst_node, dst_pin)
+        link = super().replace_link(
+            link_uid, src_node, src_pin, dst_node, dst_pin
+        )
+        if link is None and target is not None and previous is not None:
+            target.data = previous
+        self._mark_attribute_catalog_dirty()
+        return link
+
+    def remove_link(self, uid: str) -> bool:
+        link = self.find_link(uid)
+        if link is None:
+            return False
+        sampled_node_uid = (
+            link.target_node
+            if link.target_pin == "in"
+            and (node := self.find_node(link.target_node)) is not None
+            and node.type_id == "particle.attribute.get"
+            else ""
+        )
+        removed = super().remove_link(uid)
+        if removed and sampled_node_uid:
+            self.links = [
+                item
+                for item in self.links
+                if not (
+                    item.source_node == sampled_node_uid
+                    and item.source_pin == "out"
+                )
+            ]
+        if removed:
+            self._mark_attribute_catalog_dirty()
+        return removed
 
     def to_documents(self) -> dict[str, GraphDocument | None]:
         result = {}

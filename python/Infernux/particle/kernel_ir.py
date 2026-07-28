@@ -1807,6 +1807,12 @@ class ParticleKernelLowerer:
         builder.store(stable_id, value, source)
 
     @staticmethod
+    def _lower_attribute_capture(builder, operation, source) -> None:
+        parameters = operation.parameter_dict()
+        value = builder.load(str(parameters["attribute"]), source)
+        builder.store(str(parameters["snapshot"]), value, source)
+
+    @staticmethod
     def _integrate_update_position(builder, attribute_types, delta_time) -> None:
         source = KernelSourceRef(operation="update.integrate_position")
         position = builder.load("builtin.position", source)
@@ -2205,6 +2211,8 @@ class ParticleKernelLowerer:
                     attribute_types,
                     source,
                 )
+            elif operation.opcode == "attribute.capture":
+                self._lower_attribute_capture(builder, operation, source)
             elif operation.opcode == "event.emit":
                 self._lower_event_output(
                     builder,
@@ -2343,6 +2351,8 @@ class ParticleKernelLowerer:
                     attribute_types,
                     source,
                 )
+            elif operation.opcode == "attribute.capture":
+                self._lower_attribute_capture(builder, operation, source)
             elif operation.opcode == "lifecycle.kill_if":
                 condition = builder.operation_value(
                     "condition",
@@ -2462,6 +2472,8 @@ class ParticleKernelLowerer:
                     attribute_types,
                     source,
                 )
+            elif operation.opcode == "attribute.capture":
+                self._lower_attribute_capture(builder, operation, source)
             elif operation.opcode == "event.emit":
                 self._lower_event_output(
                     builder,

@@ -316,15 +316,13 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         const std::string emitterLocation = "emitters[" + std::to_string(emitterIndex) + "]";
         requireExactKeys(emitter,
                          {"stable_id", "name", "enabled", "play_on_start", "settings", "attribute_defaults",
-                          "attribute_cache", "data_interfaces", "stages"},
+                          "data_interfaces", "stages"},
                          emitterLocation);
         if (!emitter["enabled"].is_boolean() || !emitter["play_on_start"].is_boolean())
             throw std::runtime_error(emitterLocation + ".enabled and .play_on_start must be booleans");
-        if (!emitter["attribute_defaults"].is_object() || !emitter["attribute_cache"].is_array() ||
-            !emitter["data_interfaces"].is_array())
+        if (!emitter["attribute_defaults"].is_object() || !emitter["data_interfaces"].is_array())
             throw std::runtime_error(emitterLocation +
-                                     ".attribute_defaults must be an object; attribute_cache and data_interfaces "
-                                     "must be arrays");
+                                     ".attribute_defaults must be an object and data_interfaces must be an array");
         for (size_t interfaceIndex = 0; interfaceIndex < emitter["data_interfaces"].size(); ++interfaceIndex) {
             const auto &dataInterface = emitter["data_interfaces"][interfaceIndex];
             const std::string interfaceLocation =

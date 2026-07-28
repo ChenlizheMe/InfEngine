@@ -308,22 +308,27 @@ def _get_attribute() -> NodeDef:
         "particle.attribute.get",
         "Get Attribute",
         (
+            _exec("in", PortDirection.INPUT),
             PortDef(
                 "value",
                 PortDirection.OUTPUT,
                 type_variable="AttributeType",
                 type_property="attribute",
             ),
+            _exec("out", PortDirection.OUTPUT),
         ),
         (PropertyDef("attribute", TypeRef(ValueType.STRING), "builtin.position"),),
-        {"expression": "load_attribute"},
+        {
+            "expression": "load_attribute",
+            "particle_hir": "attribute.capture",
+        },
     )
 
 
 def _attribute_cache_operation() -> NodeDef:
     return NodeDef(
         "particle.attribute.cache",
-        "Set Attribute Cache",
+        "Attribute Cache",
         (
             _exec("in", PortDirection.INPUT),
             _exec("out", PortDirection.OUTPUT),
@@ -331,13 +336,15 @@ def _attribute_cache_operation() -> NodeDef:
                 "value",
                 PortDirection.INPUT,
                 type_variable="AttributeType",
-                type_property="attribute",
+                type_property="value_type",
                 required=False,
                 default=0.0,
             ),
         ),
         (
-            PropertyDef("attribute", TypeRef(ValueType.STRING), ""),
+            PropertyDef("name", TypeRef(ValueType.STRING), "Attribute Cache"),
+            PropertyDef("value_type", TypeRef(ValueType.STRING), "f32"),
+            PropertyDef("value_space", TypeRef(ValueType.STRING), "none"),
             PropertyDef(
                 "composition",
                 TypeRef(ValueType.STRING),

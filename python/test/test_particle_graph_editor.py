@@ -22,7 +22,7 @@ from Infernux.particle.asset import (
     ParticleEventType,
     ParticleGraphAsset,
     ParticleParameter,
-    ParticleAttribute,
+    particle_attribute_cache_id,
 )
 from Infernux.particle.nodes import (
     particle_event_output_type_id,
@@ -116,6 +116,32 @@ def test_particle_wait_nodes_are_exposed_after_gpu_resume_is_available():
     assert model.authoring_stage == "rendering"
 
 
+def test_optional_collision_lanes_never_capture_ordinary_node_creation():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.set_authoring_stage("update")
+    model.prepare_node_creation("collision_enter")
+
+    ordinary = model.add_node("particle.attribute.size", 240.0, 460.0)
+    assert model.stage_for_uid(ordinary.uid) == "update"
+
+    enabled, reason = model.node_creation_state("particle.root.collision_enter")
+    assert enabled is False
+    assert "Enable Collision" in reason
+
+    model.set_collision_enabled(True)
+    root = model.add_node("particle.root.collision_enter", 40.0, 460.0)
+    model.set_authoring_stage("collision_enter")
+    model.prepare_node_creation("collision_enter")
+    collision_node = model.add_node("particle.attribute.size", 260.0, 460.0)
+    assert model.stage_for_uid(root.uid) == "collision_enter"
+    assert model.stage_for_uid(collision_node.uid) == "collision_enter"
+
+    model.set_collision_enabled(False)
+    unavailable = model.get_node_type(root)
+    assert "Unavailable" in unavailable.label
+    assert unavailable.header_color[0] > unavailable.header_color[1]
+
+
 def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage():
     emitter = ParticleGraphAsset().emitters[0]
     init_types = {
@@ -148,33 +174,84 @@ def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage
     assert position.uid.startswith("update::")
 
 
-def test_attribute_cache_node_uses_declared_field_type_and_default():
-    cache = ParticleAttribute(
-        "cache.wind",
-        "wind",
-        TypeRef(ValueType.VEC3),
-        [1.0, 2.0, 3.0],
-    )
-    emitter = ParticleEmitterAsset(
-        attributes=(*ParticleEmitterAsset().attributes, cache)
-    )
-    model = ParticleEmitterGraphAuthoringModel(emitter)
+def test_get_attribute_exec_output_is_revealed_and_cleared_with_exec_input():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("update")
+    sample = model.add_node("particle.attribute.get", 240.0, 230.0)
+    tail = model.add_node("particle.attribute.size", 480.0, 230.0)
+
+    assert {pin.id for pin in model.get_node_type(sample).output_pins()} == {"value"}
+    incoming = model.add_link("update::root.update", "out", sample.uid, "in")
+    assert incoming is not None
+    assert {pin.id for pin in model.get_node_type(sample).output_pins()} == {
+        "value",
+        "out",
+    }
+    outgoing = model.add_link(sample.uid, "out", tail.uid, "in")
+    assert outgoing is not None
+
+    assert model.remove_link(incoming.uid) is True
+    assert model.find_link(outgoing.uid) is None
+    assert {pin.id for pin in model.get_node_type(sample).output_pins()} == {"value"}
+
+
+def test_attribute_cache_node_owns_storage_and_infers_its_input_type():
+    model = ParticleEmitterGraphAuthoringModel(ParticleEmitterAsset())
     model.set_authoring_stage("update")
     model.prepare_node_creation("update")
 
     node = model.add_node("particle.attribute.cache", 240.0, 250.0)
+    source = model.add_node(
+        "common.constant.vec3", 20.0, 250.0, value=[1.0, 2.0, 3.0]
+    )
+    assert model.add_link(source.uid, "value", node.uid, "value") is not None
     definition = model.get_node_type(node)
 
-    assert node.data["attribute"] == cache.stable_id
-    assert node.data["value"] == cache.default
+    assert node.data["name"] == "Attribute Cache"
+    assert node.data["value_type"] == "vec3"
+    assert node.data["value"] == [0.0, 0.0, 0.0]
     value_pin = next(pin for pin in definition.input_pins() if pin.id == "value")
-    assert value_pin.data_type == cache.value_type.value_type.value
+    assert value_pin.data_type == "vec3"
     assert model.stage_for_uid(node.uid) == "update"
+    expected_id = particle_attribute_cache_id(
+        "update", model._document_uid(node.uid)
+    )
+    assert expected_id in {value for _label, value in model.attribute_cache_entries()}
+    assert model.node_creation_state("particle.attribute.cache") == (True, "")
 
-    empty = ParticleEmitterGraphAuthoringModel(ParticleEmitterAsset())
-    enabled, reason = empty.node_creation_state("particle.attribute.cache")
-    assert enabled is False
-    assert "Attribute Cache" in reason
+
+def test_attribute_cache_infers_texture_handle_and_forces_set_composition():
+    asset = ParticleGraphAsset(
+        parameters=(
+            ParticleParameter(
+                "smoke-texture",
+                "Smoke Texture",
+                TypeRef(ValueType.TEXTURE2D),
+                {"guid": "texture-guid", "path_hint": "Assets/Smoke.png"},
+            ),
+        )
+    )
+    definitions = particle_graph_node_definitions(asset)
+    model = ParticleEmitterGraphAuthoringModel(
+        asset.emitters[0], definition_set=definitions
+    )
+    model.prepare_node_creation("init")
+    cache = model.add_node(
+        "particle.attribute.cache", 240.0, 250.0, composition="multiply"
+    )
+    model.prepare_node_creation("init")
+    parameter = model.add_node(
+        "particle.parameter.get",
+        20.0,
+        250.0,
+        parameter="smoke-texture",
+    )
+
+    assert model.add_link(parameter.uid, "value", cache.uid, "value") is not None
+
+    assert cache.data["value_type"] == "texture2d"
+    assert cache.data["value"] == {"guid": "", "path_hint": ""}
+    assert cache.data["composition"] == "set"
 
 
 def test_particle_attribute_node_title_tracks_composition_mode():
@@ -506,61 +583,44 @@ def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
     assert panel._model.get_node_type(canvas_node).label == "Wind"
 
 
-def test_particle_attribute_cache_api_is_emitter_local_and_removes_references():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-
-    panel = ParticleGraphEditorPanel()
-    panel._record = lambda *_args: None
-    attribute = panel.add_authoring_attribute_cache(
-        "Wind Memory", "vec3", [0.0, 1.0, 0.0]
+def test_removing_attribute_cache_node_removes_dependent_get_nodes():
+    model = ParticleEmitterGraphAuthoringModel(ParticleEmitterAsset())
+    model.prepare_node_creation("update")
+    owner = model.add_node("particle.attribute.cache", 240.0, 230.0)
+    cache_id = particle_attribute_cache_id(
+        "update", model._document_uid(owner.uid)
     )
-    get_node = panel.add_authoring_attribute_cache_node(
-        attribute["stable_id"], 320.0, 230.0, stage="update"
-    )
-    write_node = panel.add_authoring_node(
-        "update", "particle.attribute.cache", 560.0, 230.0
-    )
-    panel.set_node_property(
-        write_node["uid"], "attribute", attribute["stable_id"]
-    )
-    panel.set_node_property(write_node["uid"], "value", [2.0, 3.0, 4.0])
-
-    snapshot = panel.authoring_snapshot()
-    assert snapshot["emitters"][0]["attribute_cache"] == [attribute]
-    assert get_node["properties"]["attribute"] == attribute["stable_id"]
-    assert panel._model.find_node(write_node["uid"]).data["value"] == [
-        2.0,
-        3.0,
-        4.0,
-    ]
-
-    panel.remove_authoring_attribute_cache(attribute["stable_id"])
-    assert panel.authoring_snapshot()["emitters"][0]["attribute_cache"] == []
-    assert not any(
-        node.properties.get("attribute") == attribute["stable_id"]
-        for node in panel.asset.emitters[0].update.nodes
+    model.prepare_node_creation("rendering")
+    reader = model.add_node(
+        "particle.attribute.get", 320.0, 1150.0, attribute=cache_id
     )
 
+    assert model.find_node(reader.uid) is not None
+    assert model.remove_node(owner.uid) is True
+    assert model.find_node(reader.uid) is None
 
-def test_particle_attribute_cache_canvas_drop_creates_typed_get_node():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
-    panel = ParticleGraphEditorPanel()
-    panel._record = lambda *_args: None
-    attribute = panel.add_authoring_attribute_cache("Heat", "f32", 0.5)
-
-    panel._on_canvas_drop(
-        "PARTICLE_ATTRIBUTE_CACHE", attribute["stable_id"], 320.0, 230.0
+def test_get_attribute_dropdown_discovers_node_owned_cache_type():
+    model = ParticleEmitterGraphAuthoringModel(ParticleEmitterAsset())
+    model.prepare_node_creation("update")
+    owner = model.add_node(
+        "particle.attribute.cache",
+        240.0,
+        230.0,
+        name="Heat",
+        value_type="f32",
+    )
+    cache_id = particle_attribute_cache_id(
+        "update", model._document_uid(owner.uid)
+    )
+    model.prepare_node_creation("rendering")
+    reader = model.add_node(
+        "particle.attribute.get", 320.0, 1150.0, attribute=cache_id
     )
 
-    node = next(
-        item
-        for item in panel._model.nodes
-        if item.type_id == "particle.attribute.get"
-        and item.data["attribute"] == attribute["stable_id"]
-    )
+    assert ("Heat", cache_id) in model.attribute_cache_entries()
     value_pin = next(
-        pin for pin in panel._model.get_node_type(node).output_pins() if pin.id == "value"
+        pin for pin in model.get_node_type(reader).output_pins() if pin.id == "value"
     )
     assert value_pin.data_type == "f32"
 

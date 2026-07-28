@@ -38,6 +38,11 @@ from Infernux.particle import (
 )
 from Infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.particle.nodes import particle_event_output_type_id
+from Infernux.particle.asset import (
+    particle_attribute_cache_id,
+    particle_attribute_capture_id,
+    particle_cache_attributes,
+)
 
 
 def _operations(stage):
@@ -259,6 +264,235 @@ def test_particle_exec_parallel_read_write_dependency_requires_order_or_join():
     with pytest.raises(
         ParticleCompileError,
         match="unordered state dependency.*builtin.position",
+    ):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+
+
+def test_exec_bound_get_attribute_samples_before_later_attribute_writes():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "sample-lifetime",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.lifetime"},
+            ),
+            GraphNodeRecord(
+                "set-lifetime",
+                "particle.attribute.lifetime",
+                properties={"composition": "set", "value": 8.0},
+            ),
+            GraphNodeRecord(
+                "set-velocity",
+                "particle.attribute.velocity",
+                properties={"composition": "set", "value": [0.0, 0.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "two", "common.constant.vec3", properties={"value": [2.0, 2.0, 2.0]}
+            ),
+            GraphNodeRecord("double-lifetime", "common.math.multiply"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-sample", "root.update", "out", "sample-lifetime", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "sample-lifetime-write",
+                "sample-lifetime",
+                "out",
+                "set-lifetime",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "lifetime-velocity",
+                "set-lifetime",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "sample-value",
+                "sample-lifetime",
+                "value",
+                "double-lifetime",
+                "a",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "two-value",
+                "two",
+                "value",
+                "double-lifetime",
+                "b",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "velocity-value",
+                "double-lifetime",
+                "result",
+                "set-velocity",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    emitter = program.emitters[0]
+    capture_id = particle_attribute_capture_id("update", "sample-lifetime")
+
+    assert [operation.opcode for operation in _operations(emitter.update)] == [
+        "attribute.capture",
+        "attribute.modify_lifetime",
+        "attribute.modify_velocity",
+    ]
+    assert any(attribute.stable_id == capture_id for attribute in emitter.attributes)
+    sampled_load = next(
+        instruction
+        for instruction in emitter.update.expressions.instructions
+        if instruction.source_node_uid == "sample-lifetime"
+    )
+    assert sampled_load.immediate_dict()["attribute"] == capture_id
+
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    capture_store = next(
+        index
+        for index, instruction in enumerate(kernel.instructions)
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == capture_id
+    )
+    lifetime_store = next(
+        index
+        for index, instruction in enumerate(kernel.instructions)
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.lifetime"
+    )
+    sampled_read = next(
+        index
+        for index, instruction in enumerate(kernel.instructions)
+        if instruction.opcode == "load_attribute"
+        and instruction.immediate_dict()["attribute"] == capture_id
+    )
+    assert capture_store < lifetime_store < sampled_read
+
+
+def test_unbound_get_attribute_reads_live_at_its_consumer():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "set-lifetime",
+                "particle.attribute.lifetime",
+                properties={"composition": "set", "value": 8.0},
+            ),
+            GraphNodeRecord(
+                "live-lifetime",
+                "particle.attribute.get",
+                properties={"attribute": "builtin.lifetime"},
+            ),
+            GraphNodeRecord(
+                "set-velocity",
+                "particle.attribute.velocity",
+                properties={"composition": "set", "value": [0.0, 0.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "two", "common.constant.vec3", properties={"value": [2.0, 2.0, 2.0]}
+            ),
+            GraphNodeRecord("double-lifetime", "common.math.multiply"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-lifetime", "root.update", "out", "set-lifetime", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "lifetime-velocity",
+                "set-lifetime",
+                "out",
+                "set-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "live-value",
+                "live-lifetime",
+                "value",
+                "double-lifetime",
+                "a",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "two-value",
+                "two",
+                "value",
+                "double-lifetime",
+                "b",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "velocity-value",
+                "double-lifetime",
+                "result",
+                "set-velocity",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    emitter = program.emitters[0]
+    live_load = next(
+        instruction
+        for instruction in emitter.update.expressions.instructions
+        if instruction.source_node_uid == "live-lifetime"
+    )
+
+    assert live_load.immediate_dict()["attribute"] == "builtin.lifetime"
+    assert not any(
+        attribute.stable_id == particle_attribute_capture_id("update", "live-lifetime")
+        for attribute in emitter.attributes
+    )
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    lifetime_store = next(
+        index
+        for index, instruction in enumerate(kernel.instructions)
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.lifetime"
+    )
+    live_read = max(
+        index
+        for index, instruction in enumerate(kernel.instructions)
+        if instruction.opcode == "load_attribute"
+        and instruction.immediate_dict()["attribute"] == "builtin.lifetime"
+    )
+    assert lifetime_store < live_read
+
+
+def test_get_attribute_exec_output_requires_its_exec_input():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "sample", "particle.attribute.get", properties={"attribute": "builtin.lifetime"}
+            ),
+            GraphNodeRecord("tail", "particle.attribute.size"),
+        ),
+        links=(
+            GraphLinkRecord("sample-tail", "sample", "out", "tail", "in", PortKind.EXEC),
+        ),
+    )
+    with pytest.raises(
+        ParticleCompileError,
+        match="cannot use its Exec output until its Exec input is connected",
     ):
         ParticleGraphCompiler().compile(
             ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
@@ -1511,7 +1745,7 @@ def test_particle_event_schema_fingerprint_invalidates_stage_expression_programs
     )
 
 
-def test_particle_graph_persists_only_builtin_defaults_and_attribute_cache():
+def test_particle_graph_persists_builtin_defaults_and_node_owned_attribute_cache():
     attributes = list(ParticleEmitterAsset().attributes)
     color_index = next(
         index
@@ -1525,11 +1759,35 @@ def test_particle_graph_persists_only_builtin_defaults_and_attribute_cache():
         color.value_type,
         [1.0, 0.25, 0.1, 1.0],
     )
-    attributes.append(
-        ParticleAttribute("cache.temperature", "temperature", TypeRef(ValueType.F32), 3.5)
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "cache.temperature",
+                "particle.attribute.cache",
+                properties={
+                    "name": "Temperature",
+                    "value_type": "f32",
+                    "value_space": "none",
+                    "composition": "set",
+                    "value": 3.5,
+                },
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "init-cache",
+                "root.init",
+                "out",
+                "cache.temperature",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
     )
     asset = ParticleGraphAsset(
-        emitters=(ParticleEmitterAsset(attributes=tuple(attributes)),)
+        emitters=(ParticleEmitterAsset(attributes=tuple(attributes), init=init),)
     )
 
     document = asset.to_dict()
@@ -1538,37 +1796,33 @@ def test_particle_graph_persists_only_builtin_defaults_and_attribute_cache():
     assert emitter_document["attribute_defaults"] == {
         "builtin.color": [1.0, 0.25, 0.1, 1.0]
     }
-    assert [item["stable_id"] for item in emitter_document["attribute_cache"]] == [
-        "cache.temperature"
-    ]
+    assert "attribute_cache" not in emitter_document
+    cache_document = emitter_document["stages"]["init"]["nodes"][1]
+    assert cache_document["properties"]["name"] == "Temperature"
+    assert cache_document["properties"]["value_type"] == "f32"
     assert ParticleGraphAsset.from_dict(document) == asset
 
     stale = copy.deepcopy(document)
-    stale["emitters"][0]["custom_attributes"] = stale["emitters"][0].pop(
-        "attribute_cache"
-    )
+    stale["emitters"][0]["attribute_cache"] = []
     with pytest.raises(ParticleGraphSchemaError, match="keys mismatch"):
         ParticleGraphAsset.from_dict(stale)
 
 
 def test_attribute_cache_is_written_in_init_and_read_live_from_update():
-    cache = ParticleAttribute(
-        "cache.temperature",
-        "temperature",
-        TypeRef(ValueType.F32),
-        0.0,
-    )
+    cache_id = particle_attribute_cache_id("init", "cache.set")
     init = GraphDocument(
         "particle.init",
         nodes=(
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "cache.set",
-                "particle.attribute.cache",
-                properties={
-                    "attribute": cache.stable_id,
-                    "composition": "set",
-                    "value": 3.5,
+                    "particle.attribute.cache",
+                    properties={
+                        "name": "Temperature",
+                        "value_type": "f32",
+                        "value_space": "none",
+                        "composition": "set",
+                        "value": 3.5,
                 },
             ),
         ),
@@ -1590,7 +1844,7 @@ def test_attribute_cache_is_written_in_init_and_read_live_from_update():
             GraphNodeRecord(
                 "cache.get",
                 "particle.attribute.get",
-                properties={"attribute": cache.stable_id},
+                properties={"attribute": cache_id},
             ),
             GraphNodeRecord(
                 "size.set",
@@ -1617,11 +1871,7 @@ def test_attribute_cache_is_written_in_init_and_read_live_from_update():
             ),
         ),
     )
-    emitter = ParticleEmitterAsset(
-        attributes=(*ParticleEmitterAsset().attributes, cache),
-        init=init,
-        update=update,
-    )
+    emitter = ParticleEmitterAsset(init=init, update=update)
 
     program = ParticleGraphCompiler().compile(
         ParticleGraphAsset(emitters=(emitter,))
@@ -1632,39 +1882,34 @@ def test_attribute_cache_is_written_in_init_and_read_live_from_update():
         if operation.source_node_uid == "cache.set"
     )
     assert init_operation.opcode == "attribute.modify_cache"
-    assert init_operation.parameter_dict()["attribute"] == cache.stable_id
+    assert init_operation.parameter_dict()["attribute"] == cache_id
     kernel = ParticleKernelLowerer().lower(program).emitters[0]
-    assert cache.stable_id in kernel.init.written_attributes
-    assert cache.stable_id in kernel.update.read_attributes
+    assert cache_id in kernel.init.written_attributes
+    assert cache_id in kernel.update.read_attributes
     assert any(
         instruction.opcode == "store_attribute"
-        and instruction.immediate_dict()["attribute"] == cache.stable_id
+        and instruction.immediate_dict()["attribute"] == cache_id
         for instruction in kernel.init.instructions
     )
     assert any(
         instruction.opcode == "load_attribute"
-        and instruction.immediate_dict()["attribute"] == cache.stable_id
+        and instruction.immediate_dict()["attribute"] == cache_id
         for instruction in kernel.update.instructions
     )
 
 
 def test_particle_script_attribute_cache_uses_graph_nodes_and_shared_hir():
     source = '''\
-from Infernux.particle import AttributeCache, ParticleScript, ParticleEmitter, EmitterSettings
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class CachedMotion(ParticleScript):
     class Emitter(ParticleEmitter):
         stable_id = "emitter"
         settings = EmitterSettings()
-        attribute_cache = (
-            AttributeCache("cache.force", "Force", "vec3", (0.0, 0.0, 0.0)),
-        )
-
         def init(self, ctx, particles):
             particles.set_attribute("Force", (0.0, 1.0, 0.0))
 
         def update(self, ctx, particles):
-            particles.add_attribute("cache.force", (1.0, 0.0, 0.0))
             particles.add_velocity(particles.get_attribute("Force"))
 
         def rendering(self, ctx, particles):
@@ -1674,27 +1919,96 @@ class CachedMotion(ParticleScript):
     asset = compiler.parse(source, source_name="CachedMotion.particle.py")
     emitter = asset.emitters[0]
 
-    assert emitter.attributes[-1].stable_id == "cache.force"
-    assert emitter.attributes[-1].value_type == TypeRef(ValueType.VEC3)
+    cache = particle_cache_attributes(emitter)[0]
+    assert cache.value_type == TypeRef(ValueType.VEC3)
     assert emitter.init.nodes[1].type_id == "particle.attribute.cache"
     assert emitter.init.nodes[1].properties == {
-        "attribute": "cache.force",
+        "name": "Force",
+        "value_type": "vec3",
+        "value_space": "none",
         "composition": "set",
         "value": [0.0, 1.0, 0.0],
     }
-    assert emitter.update.nodes[1].properties["composition"] == "add"
     assert any(
         node.type_id == "particle.attribute.get"
-        and node.properties["attribute"] == "cache.force"
+        and node.properties["attribute"] == cache.stable_id
         for node in emitter.update.nodes
     )
 
     program = compiler.compile(source, source_name="CachedMotion.particle.py")
     update_operations = tuple(program.emitters[0].update.flow.iter_operations())
     assert [operation.opcode for operation in update_operations] == [
-        "attribute.modify_cache",
         "attribute.modify_velocity",
     ]
+
+
+def test_particle_script_cache_infers_expression_type_and_reads_zero_before_writer():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class DeferredCache(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_velocity(particles.get_attribute("Later Force"))
+
+        def update(self, ctx, particles):
+            particles.set_attribute("Later Force", particles.position * 2.0)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="DeferredCache.particle.py")
+    emitter = asset.emitters[0]
+    cache = particle_cache_attributes(emitter)[0]
+
+    assert cache.value_type == TypeRef(
+        ValueType.VEC3, CoordinateSpace.SIMULATION
+    )
+    assert cache.default == [0.0, 0.0, 0.0]
+
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(asset)
+    ).emitters[0]
+    init_load = next(
+        instruction
+        for instruction in kernel.init.instructions
+        if instruction.opcode == "load_attribute"
+        and instruction.immediate_dict()["attribute"] == cache.stable_id
+    )
+    default_store = next(
+        instruction
+        for instruction in kernel.init.instructions
+        if instruction.opcode == "store_attribute"
+        and instruction.immediate_dict()["attribute"] == cache.stable_id
+    )
+    assert kernel.init.instructions.index(default_store) < kernel.init.instructions.index(
+        init_load
+    )
+
+
+def test_particle_script_rejects_multiple_owners_for_one_attribute_cache():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class DuplicateCache(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+        def init(self, ctx, particles):
+            particles.set_attribute("Shared", 1.0)
+        def update(self, ctx, particles):
+            particles.set_attribute("Shared", 2.0)
+'''
+    with pytest.raises(
+        ParticleScriptError, match="already has an owning write node"
+    ):
+        ParticleScriptCompiler().parse(
+            source, source_name="DuplicateCache.particle.py"
+        )
 
 
 @pytest.mark.parametrize(
@@ -1727,7 +2041,7 @@ class CachedMotion(ParticleScript):
     ],
 )
 def test_particle_attributes_reject_property_only_types(value_type, default):
-    with pytest.raises(ParticleGraphSchemaError, match="numeric storage type"):
+    with pytest.raises(ParticleGraphSchemaError, match="GPU-storable type"):
         ParticleAttribute("custom.invalid", "invalid", TypeRef(value_type), default)
 
 

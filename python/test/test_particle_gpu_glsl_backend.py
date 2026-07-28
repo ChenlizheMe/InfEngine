@@ -45,6 +45,7 @@ from Infernux.particle.nodes import (
     particle_event_payload_port_id,
     particle_event_payload_type_id,
 )
+from Infernux.particle.asset import particle_attribute_cache_id
 
 
 def _gpu_source():
@@ -1431,7 +1432,111 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
         "layout(set = 2, binding = 1) uniform sampler2D inx_parameter_texture_0;"
         in emitter.update
     )
-    assert "texture(inx_parameter_texture_0," in emitter.update
+    texture_handle = gpu_backend._texture_resource_handle("smoke-texture")
+    assert f"inx_sample_parameter_texture({texture_handle}u," in emitter.update
+    payload = compile_gpu_particle_spirv(source)
+    assert validate_gpu_particle_spirv(payload, source) is payload
+
+
+def test_gpu_texture2d_attribute_cache_stores_a_resource_handle_across_flows():
+    cache_id = particle_attribute_cache_id("init", "cache.texture")
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "cache.texture",
+                "particle.attribute.cache",
+                properties={
+                    "name": "Cached Texture",
+                    "value_type": "texture2d",
+                    "value_space": "none",
+                    "composition": "set",
+                    "value": {"guid": "", "path_hint": ""},
+                },
+            ),
+            GraphNodeRecord(
+                "texture.parameter",
+                "particle.parameter.get",
+                properties={"parameter": "smoke-texture"},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-cache",
+                "root.init",
+                "out",
+                "cache.texture",
+                "in",
+                PortKind.EXEC,
+            ),
+            GraphLinkRecord(
+                "texture-cache",
+                "texture.parameter",
+                "value",
+                "cache.texture",
+                "value",
+                PortKind.VALUE,
+            ),
+        ),
+    )
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("set-color", "particle.attribute.color"),
+            GraphNodeRecord(
+                "cached-texture",
+                "particle.attribute.get",
+                properties={"attribute": cache_id},
+            ),
+            GraphNodeRecord(
+                "uv",
+                "common.constant.vec2",
+                properties={"value": [0.25, 0.75]},
+            ),
+            GraphNodeRecord("sample", "common.texture.sample2d"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-color", "root.update", "out", "set-color", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "cached-value",
+                "cached-texture",
+                "value",
+                "sample",
+                "texture",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord("uv-value", "uv", "value", "sample", "uv", PortKind.VALUE),
+            GraphLinkRecord(
+                "sample-color", "sample", "color", "set-color", "value", PortKind.VALUE
+            ),
+        ),
+    )
+    default = AssetReference("smoke-guid", "Assets/VFX/Smoke.png")
+    asset = ParticleGraphAsset(
+        parameters=(
+            ParticleParameter(
+                "smoke-texture",
+                "Smoke Texture",
+                TypeRef(ValueType.TEXTURE2D),
+                default.to_dict(),
+            ),
+        ),
+        emitters=(ParticleEmitterAsset(init=init, update=update),),
+    )
+
+    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
+    source = GpuParticleGlslLowerer().lower(kernel)
+    emitter = source.emitters[0]
+    cache_field = next(field for field in emitter.attribute_fields if field[0] == cache_id)
+
+    assert cache_field[2:] == ("uint", cache_field[3], 4)
+    texture_handle = gpu_backend._texture_resource_handle("smoke-texture")
+    assert f"state.a_cache_init_cache_texture = {texture_handle}u;" in emitter.init
+    assert "inx_sample_parameter_texture(state.a_cache_init_cache_texture," in emitter.update
     payload = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(payload, source) is payload
 
@@ -2265,6 +2370,8 @@ def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():
 
 def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults():
     stable_id = "layout-emitter"
+    cache_node_uid = "cache.temperature"
+    cache_id = particle_attribute_cache_id("init", cache_node_uid)
     previous_asset = ParticleGraphAsset(
         stable_id="previous-layout",
         emitters=(ParticleEmitterAsset(stable_id=stable_id),),
@@ -2274,13 +2381,31 @@ def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults
         emitters=(
             ParticleEmitterAsset(
                 stable_id=stable_id,
-                attributes=(
-                    *standard_particle_attributes(),
-                    ParticleAttribute(
-                        "custom.temperature",
-                        "temperature",
-                        TypeRef(ValueType.F32),
-                        3.5,
+                init=GraphDocument(
+                    "particle.init",
+                    nodes=(
+                        GraphNodeRecord("root.init", "particle.root.init"),
+                        GraphNodeRecord(
+                            cache_node_uid,
+                            "particle.attribute.cache",
+                            properties={
+                                "name": "Temperature",
+                                "value_type": "f32",
+                                "value_space": "none",
+                                "composition": "set",
+                                "value": 3.5,
+                            },
+                        ),
+                    ),
+                    links=(
+                        GraphLinkRecord(
+                            "root-cache",
+                            "root.init",
+                            "out",
+                            cache_node_uid,
+                            "in",
+                            PortKind.EXEC,
+                        ),
                     ),
                 ),
             ),
@@ -2307,10 +2432,10 @@ def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults
     temperature = next(
         field
         for field in next_layout["attribute_fields"]
-        if field["stable_id"] == "custom.temperature"
+        if field["stable_id"] == cache_id
     )
     default_word = migration["default_state_words"][temperature["offset"] // 4]
-    assert struct.unpack("<f", struct.pack("<I", default_word))[0] == pytest.approx(3.5)
+    assert struct.unpack("<f", struct.pack("<I", default_word))[0] == pytest.approx(0.0)
     assert all(
         item["source_offset"] % 4 == 0
         and item["destination_offset"] % 4 == 0
