@@ -249,6 +249,13 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._sync_model_to_asset()
         return self._asset
 
+    def authoring_document_state(self) -> dict:
+        """Return identity/dirty state without serializing the live graph model."""
+        return {
+            "file_path": str(self._file_path),
+            "dirty": bool(self._dirty),
+        }
+
     def authoring_snapshot(self, *, include_registered_types: bool = False) -> dict:
         """Return the currently open editor document, not a disk reparse."""
         self._sync_model_to_asset()
@@ -377,6 +384,10 @@ class ParticleGraphEditorPanel(EditorPanel):
                     "id": field.id,
                     "type": field.value_type.to_dict(),
                     "default": copy.deepcopy(field.default),
+                    "choices": [
+                        {"label": label, "value": copy.deepcopy(value)}
+                        for label, value in field.choices
+                    ],
                 }
                 for field in definition.properties
             ],
@@ -4051,7 +4062,12 @@ class ParticleGraphEditorPanel(EditorPanel):
             return
         ctx.label(t("particle_graph_editor.node_settings"))
         ctx.separator()
-        ctx.label(definition.display_name)
+        canvas_definition = self._model.get_node_type(node)
+        ctx.label(
+            canvas_definition.label
+            if canvas_definition is not None
+            else definition.display_name
+        )
         changed = False
         property_ids = {item.id for item in definition.properties}
         editable_fields = [
@@ -4230,6 +4246,19 @@ class ParticleGraphEditorPanel(EditorPanel):
                         -1,
                     )
                     new_value = values[max(0, min(current, len(values) - 1))]
+            elif value_type is ValueType.STRING and (
+                property_def := definition.property(key)
+            ) is not None and property_def.choices:
+                labels = [label for label, _value in property_def.choices]
+                values = [value for _label, value in property_def.choices]
+                current = values.index(value) if value in values else 0
+                current = ctx.combo(
+                    f"{label}##particle_node_{key}",
+                    current,
+                    labels,
+                    -1,
+                )
+                new_value = values[max(0, min(current, len(values) - 1))]
             elif value_type is ValueType.STRING and key == "sort":
                 options = (
                     ["none"]

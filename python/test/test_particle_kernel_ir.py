@@ -75,17 +75,17 @@ def test_update_stage_can_rewrite_lifetime_velocity_and_flipbook_frame():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "velocity",
-                "particle.attribute.set_velocity",
+                "particle.attribute.velocity",
                 properties={"value": [1.0, 2.0, 3.0]},
             ),
             GraphNodeRecord(
                 "lifetime",
-                "particle.attribute.set_lifetime",
+                "particle.attribute.lifetime",
                 properties={"value": 8.0},
             ),
             GraphNodeRecord(
                 "flipbook",
-                "particle.attribute.set_flipbook_frame",
+                "particle.attribute.flipbook_frame",
                 properties={"value": 4.0},
             ),
         ),
@@ -124,12 +124,12 @@ def test_rendering_stage_can_rewrite_particle_attributes_before_export():
             GraphNodeRecord("root.rendering", "particle.root.rendering"),
             GraphNodeRecord(
                 "lifetime",
-                "particle.attribute.set_lifetime",
+                "particle.attribute.lifetime",
                 properties={"value": 12.0},
             ),
             GraphNodeRecord(
                 "flipbook",
-                "particle.attribute.set_flipbook_frame",
+                "particle.attribute.flipbook_frame",
                 properties={"value": 7.5},
             ),
             GraphNodeRecord("output", "particle.output.sprite"),
@@ -178,7 +178,7 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "orientation",
-                "particle.attribute.set_orientation",
+                "particle.attribute.orientation",
                 properties={"degrees": [10.0, 20.0, 30.0]},
             ),
         ),
@@ -192,10 +192,13 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord(
-                "angular-velocity",
-                "particle.update.rotate_orientation",
-                properties={"degrees_per_second": [90.0, 180.0, 270.0]},
+                GraphNodeRecord(
+                    "angular-velocity",
+                    "particle.attribute.orientation",
+                    properties={
+                        "composition": "add",
+                        "degrees": [90.0, 180.0, 270.0],
+                    },
             ),
         ),
         links=(
@@ -245,7 +248,71 @@ def test_mesh_orientation_lowers_degrees_to_radians_and_exports_vec3_state():
         if instruction.opcode == "export_attribute"
     ]
     assert "builtin.orientation" in exports
-    assert sum(instruction.opcode == "multiply" for instruction in emitter.update.instructions) >= 3
+    assert sum(instruction.opcode == "multiply" for instruction in emitter.update.instructions) >= 2
+    assert any(instruction.opcode == "add" for instruction in emitter.update.instructions)
+
+
+def test_attribute_composition_is_explicit_and_never_implicitly_uses_delta_time():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "set-velocity",
+                "particle.attribute.velocity",
+                properties={"composition": "set", "value": [0.0, 1.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "add-velocity",
+                "particle.attribute.velocity",
+                properties={"composition": "add", "value": [1.0, 0.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "multiply-velocity",
+                "particle.attribute.velocity",
+                properties={"composition": "multiply", "value": [0.5, 1.0, 1.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-set", "root.update", "out", "set-velocity", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "set-add", "set-velocity", "out", "add-velocity", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "add-multiply",
+                "add-velocity",
+                "out",
+                "multiply-velocity",
+                "in",
+                PortKind.EXEC,
+            ),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    operations = tuple(program.emitters[0].update.flow.iter_operations())
+    assert [operation.parameter_dict()["composition"] for operation in operations] == [
+        "set",
+        "add",
+        "multiply",
+    ]
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    by_node = {
+        node_uid: [
+            instruction.opcode
+            for instruction in kernel.instructions
+            if instruction.source.node_uid == node_uid
+        ]
+        for node_uid in ("set-velocity", "add-velocity", "multiply-velocity")
+    }
+    assert "load_attribute" not in by_node["set-velocity"]
+    assert "add" in by_node["add-velocity"]
+    assert "multiply" in by_node["multiply-velocity"]
+    assert all("load_uniform" not in opcodes for opcodes in by_node.values())
 
 
 def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contract():
@@ -253,9 +320,9 @@ def test_ribbon_topology_attributes_lower_and_export_without_cpu_readback_contra
         "particle.init",
         nodes=(
             GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord("strip", "particle.attribute.set_strip_id", properties={"value": 3}),
-            GraphNodeRecord("order", "particle.attribute.set_ribbon_order", properties={"value": 9}),
-            GraphNodeRecord("break", "particle.attribute.set_ribbon_break", properties={"value": True}),
+            GraphNodeRecord("strip", "particle.attribute.strip_id", properties={"value": 3}),
+            GraphNodeRecord("order", "particle.attribute.ribbon_order", properties={"value": 9}),
+            GraphNodeRecord("break", "particle.attribute.ribbon_break", properties={"value": True}),
         ),
         links=(
             GraphLinkRecord("a", "root.init", "out", "strip", "in", PortKind.EXEC),
@@ -304,7 +371,7 @@ def test_stage_expressions_read_state_after_prior_exec_writes():
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "set-size",
-                "particle.attribute.set_size",
+                "particle.attribute.size",
                 properties={"value": 2.0},
             ),
             GraphNodeRecord(
@@ -312,7 +379,7 @@ def test_stage_expressions_read_state_after_prior_exec_writes():
                 "particle.attribute.get",
                 properties={"attribute": "builtin.size"},
             ),
-            GraphNodeRecord("set-rotation", "particle.attribute.set_rotation"),
+            GraphNodeRecord("set-rotation", "particle.attribute.rotation"),
         ),
         links=(
             GraphLinkRecord(
@@ -381,7 +448,7 @@ def test_kernel_math_promotes_unspaced_constants_into_simulation_space():
                 properties={"value": [0.0, 0.12, 0.0]},
             ),
             GraphNodeRecord("add", "common.math.add"),
-            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("acceleration", "particle.attribute.velocity"),
         ),
         links=(
             GraphLinkRecord("stream", "root.update", "out", "acceleration", "in", PortKind.EXEC),
@@ -605,7 +672,7 @@ def test_vector_field_graph_lowers_to_typed_data_interface_access():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("acceleration", "particle.attribute.velocity"),
             GraphNodeRecord(
                 "position",
                 "particle.attribute.get",
@@ -713,7 +780,7 @@ def test_expression_source_ids_do_not_change_kernel_semantics():
             "particle.update",
             nodes=(
                 GraphNodeRecord("root.update", "particle.root.update"),
-                GraphNodeRecord(f"{prefix}.acceleration", "particle.update.acceleration"),
+                GraphNodeRecord(f"{prefix}.acceleration", "particle.attribute.velocity"),
                 GraphNodeRecord(
                     f"{prefix}.constant",
                     "common.constant.vec3",
@@ -857,7 +924,7 @@ def test_random_expression_preserves_authored_node_seed_in_kernel_ir():
         "particle.init",
         nodes=(
             GraphNodeRecord("root.init", "particle.root.init"),
-            GraphNodeRecord("lifetime", "particle.attribute.set_lifetime"),
+            GraphNodeRecord("lifetime", "particle.attribute.lifetime"),
             GraphNodeRecord("random", "common.random.f32"),
             GraphNodeRecord("seed", "common.constant.u32", properties={"value": 73}),
         ),

@@ -78,6 +78,16 @@ class PropertyDef:
     id: str
     value_type: TypeRef
     default: Any
+    choices: tuple[tuple[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        choice_values = [value for _label, value in self.choices]
+        if len(choice_values) != len(set(choice_values)):
+            raise ValueError(f"graph property {self.id!r} contains duplicate choices")
+        if self.choices and self.default not in choice_values:
+            raise ValueError(
+                f"graph property {self.id!r} default must be one of its choices"
+            )
 
 
 @dataclass(frozen=True)

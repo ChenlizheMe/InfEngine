@@ -40,6 +40,10 @@ from Infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
 from Infernux.particle.nodes import particle_event_output_type_id
 
 
+def _operations(stage):
+    return tuple(stage.flow.iter_operations())
+
+
 def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     asset = ParticleGraphAsset()
     emitter = asset.emitters[0]
@@ -48,6 +52,16 @@ def test_default_particle_graph_has_three_immutable_stage_roots_and_output():
     assert emitter.update.nodes[0].uid == "root.update"
     assert emitter.rendering.nodes[0].uid == "root.rendering"
     assert emitter.rendering.nodes[1].type_id == "particle.output.sprite"
+    assert [node.type_id for node in emitter.init.nodes[1:]] == [
+        "particle.attribute.lifetime",
+        "particle.attribute.velocity",
+    ]
+    assert emitter.init.nodes[1].properties["composition"] == "set"
+    assert emitter.init.nodes[2].properties["composition"] == "set"
+    assert [node.type_id for node in emitter.update.nodes[1:]] == [
+        "particle.attribute.velocity"
+    ]
+    assert emitter.update.nodes[1].properties["composition"] == "add"
 
     restored = ParticleGraphAsset.from_json(asset.canonical_json())
     assert restored == asset
@@ -65,12 +79,12 @@ def test_particle_exec_fan_out_is_preserved_in_hir_and_allows_disjoint_writes():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "move",
-                "particle.attribute.set_position",
+                "particle.attribute.position",
                 properties={"value": [1.0, 2.0, 3.0]},
             ),
             GraphNodeRecord(
                 "grow",
-                "particle.attribute.set_size",
+                "particle.attribute.size",
                 properties={"value": 2.0},
             ),
         ),
@@ -100,9 +114,13 @@ def test_particle_exec_fan_out_is_preserved_in_hir_and_allows_disjoint_writes():
 
     assert {edge.link_uid for edge in stage.flow.edges} == {"exec-move", "exec-grow"}
     root = next(block for block in stage.flow.blocks if block.node_uid == "root.update")
-    assert root.operation_index == -1
+    assert root.operations == ()
     assert set(root.outgoing_edges) == {"exec-move", "exec-grow"}
-    assert [stage.operations[index].source_node_uid for index in stage.flow.operation_schedule] == [
+    assert [
+        block.operations[0].source_node_uid
+        for block in stage.flow.blocks
+        if block.operations
+    ] == [
         "grow",
         "move",
     ]
@@ -117,8 +135,8 @@ def test_particle_exec_fan_out_is_preserved_in_hir_and_allows_disjoint_writes():
 def test_particle_execution_lane_identity_ignores_link_order_and_link_uid():
     nodes = (
         GraphNodeRecord("root.update", "particle.root.update"),
-        GraphNodeRecord("move", "particle.attribute.set_position"),
-        GraphNodeRecord("grow", "particle.attribute.set_size"),
+        GraphNodeRecord("move", "particle.attribute.position"),
+        GraphNodeRecord("grow", "particle.attribute.size"),
     )
 
     def compile_links(links):
@@ -165,8 +183,8 @@ def test_particle_exec_parallel_writes_require_explicit_order_or_merge():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("first", "particle.attribute.set_size"),
-            GraphNodeRecord("second", "particle.attribute.set_size"),
+            GraphNodeRecord("first", "particle.attribute.size"),
+            GraphNodeRecord("second", "particle.attribute.size"),
         ),
         links=(
             GraphLinkRecord(
@@ -202,13 +220,13 @@ def test_particle_exec_parallel_read_write_dependency_requires_order_or_join():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("write-position", "particle.attribute.set_position"),
+            GraphNodeRecord("write-position", "particle.attribute.position"),
             GraphNodeRecord(
                 "read-position",
                 "particle.attribute.get",
                 properties={"attribute": "builtin.position"},
             ),
-            GraphNodeRecord("accelerate", "particle.update.acceleration"),
+            GraphNodeRecord("accelerate", "particle.attribute.velocity"),
         ),
         links=(
             GraphLinkRecord(
@@ -252,8 +270,8 @@ def test_particle_exec_multiple_inputs_require_an_explicit_join():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("left", "particle.attribute.set_size"),
-            GraphNodeRecord("right", "particle.attribute.set_position"),
+            GraphNodeRecord("left", "particle.attribute.size"),
+            GraphNodeRecord("right", "particle.attribute.position"),
             GraphNodeRecord("tail", "particle.update.kill_if"),
         ),
         links=(
@@ -275,8 +293,8 @@ def test_particle_join_rejects_an_input_from_an_unreachable_exec_branch():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("reachable", "particle.attribute.set_size"),
-            GraphNodeRecord("orphan", "particle.attribute.set_position"),
+            GraphNodeRecord("reachable", "particle.attribute.size"),
+            GraphNodeRecord("orphan", "particle.attribute.position"),
             GraphNodeRecord("join", "particle.control.join_all"),
             GraphNodeRecord("tail", "particle.update.kill_if"),
         ),
@@ -325,8 +343,8 @@ def test_particle_exec_join_all_continues_after_every_parallel_branch():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("left", "particle.attribute.set_size"),
-            GraphNodeRecord("right", "particle.attribute.set_position"),
+            GraphNodeRecord("left", "particle.attribute.size"),
+            GraphNodeRecord("right", "particle.attribute.position"),
             GraphNodeRecord("join", "particle.control.join_all"),
             GraphNodeRecord("tail", "particle.update.kill_if"),
         ),
@@ -344,8 +362,9 @@ def test_particle_exec_join_all_continues_after_every_parallel_branch():
     )
     stage = program.emitters[0].update
     schedule = [
-        stage.operations[index].source_node_uid
-        for index in stage.flow.operation_schedule
+        block.node_uid
+        for block in stage.flow.blocks
+        if block.node_uid != stage.flow.entry_node_uid
     ]
 
     assert schedule.index("join") > schedule.index("left")
@@ -380,9 +399,13 @@ def test_particle_exec_join_all_continues_after_every_parallel_branch():
     assert blocks["left"].lane_index != blocks["right"].lane_index
     assert blocks["join"].instruction_begin == blocks["join"].instruction_end
     assert blocks["tail"].instruction_begin >= blocks["join"].instruction_end
-    assert update_flow.operation_schedule == tuple(
-        range(len(update_flow.operation_schedule))
-    )
+    assert [block.source_node_uid for block in update_flow.blocks] == [
+        "root.update",
+        "left",
+        "right",
+        "join",
+        "tail",
+    ]
     assert len(update_flow.joins) == 1
     kernel_join = update_flow.joins[0]
     assert kernel_join.source_node_uid == "join"
@@ -424,8 +447,8 @@ def test_particle_if_activates_only_the_selected_exec_branch():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("condition", "common.constant.bool", properties={"value": True}),
             GraphNodeRecord("if", "particle.control.if"),
-            GraphNodeRecord("true-size", "particle.attribute.set_size", properties={"value": 2.0}),
-            GraphNodeRecord("false-size", "particle.attribute.set_size", properties={"value": 0.5}),
+            GraphNodeRecord("true-size", "particle.attribute.size", properties={"value": 2.0}),
+            GraphNodeRecord("false-size", "particle.attribute.size", properties={"value": 0.5}),
         ),
         links=(
             GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.EXEC),
@@ -439,7 +462,10 @@ def test_particle_if_activates_only_the_selected_exec_branch():
         ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
     )
     stage = program.emitters[0].update
-    by_uid = {operation.source_node_uid: operation for operation in stage.operations}
+    by_uid = {
+        operation.source_node_uid: operation
+        for operation in stage.flow.iter_operations()
+    }
 
     assert by_uid["if"].opcode == "control.if"
     assert by_uid["true-size"].execution_predicates[0].expected is True
@@ -465,10 +491,10 @@ def test_particle_join_all_rejects_mutually_exclusive_if_branches():
                 properties={"value": True},
             ),
             GraphNodeRecord("if", "particle.control.if"),
-            GraphNodeRecord("true-size", "particle.attribute.set_size"),
-            GraphNodeRecord("false-position", "particle.attribute.set_position"),
+            GraphNodeRecord("true-size", "particle.attribute.size"),
+            GraphNodeRecord("false-position", "particle.attribute.position"),
             GraphNodeRecord("join", "particle.control.join_all"),
-            GraphNodeRecord("tail", "particle.attribute.set_color"),
+            GraphNodeRecord("tail", "particle.attribute.color"),
         ),
         links=(
             GraphLinkRecord(
@@ -528,7 +554,7 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
             GraphNodeRecord("seconds", "common.constant.f32", properties={"value": 0.25}),
             GraphNodeRecord("wait.frames", "particle.control.wait_frames"),
             GraphNodeRecord("wait.seconds", "particle.control.wait_seconds"),
-            GraphNodeRecord("tail", "particle.attribute.set_size"),
+            GraphNodeRecord("tail", "particle.attribute.size"),
         ),
         links=(
             GraphLinkRecord(
@@ -676,12 +702,10 @@ def test_particle_wait_can_finish_a_lifecycle_continuation_and_rejects_rendering
     )
     suspension = program.emitters[0].update.flow.suspensions[0]
     assert suspension.resume_node_uid == ""
-    assert suspension.resume_operation_index == -1
 
     kernel = ParticleKernelLowerer().lower(program)
     kernel_suspension = kernel.emitters[0].suspensions[0]
     assert kernel_suspension.resume_node_uid == ""
-    assert kernel_suspension.resume_operation_index == -1
     assert kernel_suspension.resume_instruction_index == -1
     assert type(kernel).from_dict(kernel.to_dict()) == kernel
 
@@ -719,6 +743,156 @@ def test_particle_wait_can_finish_a_lifecycle_continuation_and_rejects_rendering
         )
 
 
+def test_particle_until_repeats_the_preceding_operation_and_keeps_wait_distinct():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "velocity.down",
+                "particle.attribute.velocity",
+                properties={
+                    "composition": "add",
+                    "value": [0.0, -1.0, 0.0],
+                },
+            ),
+            GraphNodeRecord(
+                "until.down",
+                "particle.control.until_seconds",
+                properties={"seconds": 3.0},
+            ),
+            GraphNodeRecord(
+                "velocity.side",
+                "particle.attribute.velocity",
+                properties={
+                    "composition": "add",
+                    "value": [1.0, 0.0, 0.0],
+                },
+            ),
+            GraphNodeRecord(
+                "until.side",
+                "particle.control.until_frames",
+                properties={"frames": 5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-down", "root.update", "out", "velocity.down", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "down-until", "velocity.down", "out", "until.down", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "until-side", "until.down", "out", "velocity.side", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "side-until", "velocity.side", "out", "until.side", "in", PortKind.EXEC
+            ),
+        ),
+    )
+
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    stage = program.emitters[0].update
+    assert [item.kind.value for item in stage.flow.suspensions] == [
+        "until_seconds",
+        "until_frames",
+    ]
+    assert [item.resume_node_uid for item in stage.flow.suspensions] == [
+        "velocity.down",
+        "velocity.side",
+    ]
+    kernel = ParticleKernelLowerer().lower(program).emitters[0]
+    assert [
+        kernel.update.instructions[item.suspend_instruction_index].opcode
+        for item in kernel.suspensions
+    ] == ["until_seconds", "until_frames"]
+    assert [item.resume_node_uid for item in kernel.suspensions] == [
+        "velocity.down",
+        "velocity.side",
+    ]
+
+
+def test_particle_delta_time_is_an_explicit_update_value_not_attribute_semantics():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "gravity",
+                "common.constant.vec3",
+                properties={"value": [0.0, -9.8, 0.0]},
+            ),
+            GraphNodeRecord("delta", "particle.context.delta_time"),
+            GraphNodeRecord("step", "common.math.multiply"),
+            GraphNodeRecord(
+                "velocity",
+                "particle.attribute.velocity",
+                properties={"composition": "add"},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "gravity-step", "gravity", "value", "step", "a", PortKind.VALUE
+            ),
+            GraphLinkRecord(
+                "delta-step", "delta", "value", "step", "b", PortKind.VALUE
+            ),
+            GraphLinkRecord(
+                "step-velocity", "step", "result", "velocity", "value", PortKind.VALUE
+            ),
+            GraphLinkRecord(
+                "root-velocity", "root.update", "out", "velocity", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    program = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+    )
+    stage = program.emitters[0].update
+    assert any(
+        instruction.opcode == "delta_time"
+        for instruction in stage.expressions.instructions
+    )
+    operation = next(
+        item
+        for item in stage.flow.iter_operations()
+        if item.source_node_uid == "velocity"
+    )
+    assert operation.parameter_dict()["composition"] == "add"
+
+    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    explicit_delta = next(
+        instruction
+        for instruction in kernel.instructions
+        if instruction.source.node_uid == "delta"
+    )
+    assert explicit_delta.opcode == "load_uniform"
+    assert explicit_delta.immediate_dict() == {"name": "delta_time"}
+
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord("delta", "particle.context.delta_time"),
+            GraphNodeRecord("size", "particle.attribute.size"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "delta-size", "delta", "value", "size", "value", PortKind.VALUE
+            ),
+            GraphLinkRecord(
+                "root-size", "root.init", "out", "size", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    with pytest.raises(ParticleCompileError, match="Delta Time is only valid"):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(init=init),))
+        )
+
+
 def test_kernel_continuation_program_counters_are_unique_across_lifecycle_stages():
     def waiting_stage(stage: str):
         return GraphDocument(
@@ -726,7 +900,7 @@ def test_kernel_continuation_program_counters_are_unique_across_lifecycle_stages
             nodes=(
                 GraphNodeRecord(f"root.{stage}", f"particle.root.{stage}"),
                 GraphNodeRecord(f"wait.{stage}", "particle.control.wait_frames"),
-                GraphNodeRecord(f"tail.{stage}", "particle.attribute.set_size"),
+                GraphNodeRecord(f"tail.{stage}", "particle.attribute.size"),
             ),
             links=(
                 GraphLinkRecord(
@@ -779,7 +953,7 @@ def _collision_lifecycle_graph(stage: str, size: float):
             GraphNodeRecord(f"root.{stage}", f"particle.root.{stage}"),
             GraphNodeRecord(
                 operation_uid,
-                "particle.attribute.set_size",
+                "particle.attribute.size",
                 properties={"value": size},
             ),
         ),
@@ -821,7 +995,7 @@ def test_collision_lifecycle_roots_are_first_class_emitter_stages():
         operation.source_node_uid: operation.execution_predicates[-1].runtime_condition
         for stage in (hir.collision_enter, hir.collision_stay, hir.collision_exit)
         if stage is not None
-        for operation in stage.operations
+        for operation in stage.flow.iter_operations()
     }
     assert runtime_conditions == {
         "enter.size": "collision_enter",
@@ -891,7 +1065,7 @@ def test_disabled_collision_keeps_authored_roots_dormant():
     assert hir.collision_exit is None
     assert not any(
         operation.source_node_uid.endswith(".size")
-        for operation in hir.update.operations
+        for operation in hir.update.flow.iter_operations()
     )
     assert "builtin.collision_active" not in {
         attribute.stable_id for attribute in hir.attributes
@@ -977,7 +1151,7 @@ def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
                 "particle.parameter.get",
                 properties={"parameter": "wind"},
             ),
-            GraphNodeRecord("accelerate", "particle.update.acceleration"),
+            GraphNodeRecord("accelerate", "particle.attribute.velocity"),
         ),
         links=(
             GraphLinkRecord(
@@ -1224,7 +1398,7 @@ def test_collision_and_event_nodes_preserve_authored_exec_order():
             ),
             GraphNodeRecord(
                 "size.after.collision",
-                "particle.attribute.set_size",
+                "particle.attribute.size",
                 properties={"value": 2.0},
             ),
             GraphNodeRecord("collision.second", "particle.update.collide_scene"),
@@ -1275,10 +1449,13 @@ def test_collision_and_event_nodes_preserve_authored_exec_order():
     )
 
     hir = ParticleGraphCompiler().compile(asset)
-    assert [operation.opcode for operation in hir.emitters[0].update.operations] == [
+    assert [
+        operation.opcode
+        for operation in hir.emitters[0].update.flow.iter_operations()
+    ] == [
         "collision.scene",
         "event.emit",
-        "attribute.set_size",
+        "attribute.modify_size",
         "collision.scene",
     ]
     kernel = ParticleKernelLowerer().lower(hir)
@@ -1518,8 +1695,8 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
     assert program.schedule.emitter_ids == ("smoke", "sparks")
     smoke = program.emitters[0]
     assert smoke.init.stage is ParticleStage.INIT
-    assert smoke.init.operations[0].opcode == "emitter.sample_shape"
-    assert smoke.update.operations[0].opcode == "integrate.acceleration"
+    assert _operations(smoke.init)[0].opcode == "emitter.sample_shape"
+    assert _operations(smoke.update)[0].opcode == "attribute.modify_velocity"
     assert smoke.render_plan.outputs[0].material == AssetReference(guid="six-way-smoke-guid")
     assert smoke.render_plan.outputs[0].receive_scene_lighting is True
     assert smoke.render_plan.outputs[0].receive_shadows is True
@@ -1803,12 +1980,12 @@ def test_particle_graph_exec_order_lowers_to_stage_operations():
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "velocity",
-                "particle.attribute.set_velocity",
+                "particle.attribute.velocity",
                 properties={"value": [0.0, 2.0, 0.0]},
             ),
             GraphNodeRecord(
                 "lifetime",
-                "particle.attribute.set_lifetime",
+                "particle.attribute.lifetime",
                 properties={"value": 3.0},
             ),
         ),
@@ -1820,10 +1997,10 @@ def test_particle_graph_exec_order_lowers_to_stage_operations():
     emitter = ParticleEmitterAsset(init=init)
     hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,))).emitters[0]
 
-    assert [operation.opcode for operation in hir.init.operations] == [
+    assert [operation.opcode for operation in _operations(hir.init)] == [
         "emitter.sample_shape",
-        "attribute.set_velocity",
-        "attribute.set_lifetime",
+        "attribute.modify_velocity",
+        "attribute.modify_lifetime",
     ]
 
 
@@ -1832,7 +2009,7 @@ def test_particle_stage_value_links_use_common_typed_expression_ir():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("gravity", "particle.update.acceleration"),
+            GraphNodeRecord("gravity", "particle.attribute.velocity"),
             GraphNodeRecord(
                 "a",
                 "common.constant.vec3",
@@ -1863,7 +2040,7 @@ def test_particle_stage_value_links_use_common_typed_expression_ir():
         "add",
         "normalize",
     ]
-    assert hir.update.operations[-1].value_bindings == (("value", "normalize.result"),)
+    assert _operations(hir.update)[-1].value_bindings == (("value", "normalize.result"),)
 
 
 def test_particle_update_can_author_color_and_size_over_lifetime():
@@ -1871,8 +2048,8 @@ def test_particle_update_can_author_color_and_size_over_lifetime():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("set-color", "particle.attribute.set_color"),
-            GraphNodeRecord("set-size", "particle.attribute.set_size"),
+            GraphNodeRecord("set-color", "particle.attribute.color"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
             GraphNodeRecord(
                 "age",
                 "particle.attribute.get",
@@ -1916,9 +2093,9 @@ def test_particle_update_can_author_color_and_size_over_lifetime():
     hir = program.emitters[0]
     kernel = ParticleKernelLowerer().lower(program).emitters[0]
 
-    assert [operation.opcode for operation in hir.update.operations[-2:]] == [
-        "attribute.set_color",
-        "attribute.set_size",
+    assert [operation.opcode for operation in _operations(hir.update)[-2:]] == [
+        "attribute.modify_color",
+        "attribute.modify_size",
     ]
     assert {instruction.opcode for instruction in kernel.update.instructions} >= {
         "divide",
@@ -1934,7 +2111,7 @@ def test_particle_behavior_hash_ignores_graph_node_identity_and_layout():
             "particle.update",
             nodes=(
                 GraphNodeRecord("root.update", "particle.root.update"),
-                GraphNodeRecord(f"{prefix}.gravity", "particle.update.acceleration"),
+                GraphNodeRecord(f"{prefix}.gravity", "particle.attribute.velocity"),
                 GraphNodeRecord(
                     f"{prefix}.value",
                     "common.constant.vec3",
@@ -2129,8 +2306,8 @@ class SmokeGraph(ParticleScript):
             particles.set_rotation(0.25)
 
         def update(self, ctx, particles):
-            particles.acceleration((0.0, -0.2, 0.0))
-            particles.rotate(180.0)
+            particles .add_velocity((0.0, -0.2, 0.0))
+            particles .add_rotation(180.0)
 
         def rendering(self, ctx, particles):
             particles.set_lifetime(8.0)
@@ -2159,19 +2336,19 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
     assert emitter.settings.start_delay == 0.25
     assert emitter.enabled is True
     assert emitter.play_on_start is False
-    assert [operation.opcode for operation in emitter.init.operations] == [
+    assert [operation.opcode for operation in _operations(emitter.init)] == [
         "emitter.sample_shape",
-        "attribute.set_velocity",
-        "attribute.set_lifetime",
-        "attribute.set_rotation",
+        "attribute.modify_velocity",
+        "attribute.modify_lifetime",
+        "attribute.modify_rotation",
     ]
-    assert [operation.opcode for operation in emitter.update.operations[-2:]] == [
-        "integrate.acceleration",
-        "integrate.angular_velocity",
+    assert [operation.opcode for operation in _operations(emitter.update)[-2:]] == [
+        "attribute.modify_velocity",
+        "attribute.modify_rotation",
     ]
-    assert [operation.opcode for operation in emitter.rendering.operations[:2]] == [
-        "attribute.set_lifetime",
-        "attribute.set_flipbook_frame",
+    assert [operation.opcode for operation in _operations(emitter.rendering)[:2]] == [
+        "attribute.modify_lifetime",
+        "attribute.modify_flipbook_frame",
     ]
     assert any(
         instruction.opcode == "normalized_age"
@@ -2184,6 +2361,134 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
         "wind-field",
     ]
     assert program.behavior_hash == ParticleGraphCompiler().compile(asset).behavior_hash
+
+
+def test_particle_script_wait_and_until_share_the_graph_continuation_contract():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class TimedMotion(ParticleScript):
+    stable_id = "timed-motion"
+
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+            ctx.wait_seconds(0.25)
+            particles.set_size(2.0)
+            ctx.wait_frames(2)
+
+        def update(self, ctx, particles):
+            particles.add_velocity((0.0, -1.0, 0.0))
+            ctx.until_seconds(3.0)
+            particles.add_velocity((1.0, 1.0, 0.0))
+            ctx.until_frames(5)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="TimedMotion.particle.py")
+    emitter_asset = asset.emitters[0]
+
+    assert [node.type_id for node in emitter_asset.init.nodes[1:]] == [
+        "particle.attribute.lifetime",
+        "particle.control.wait_seconds",
+        "particle.attribute.size",
+        "particle.control.wait_frames",
+    ]
+    assert [node.type_id for node in emitter_asset.update.nodes[1:]] == [
+        "particle.attribute.velocity",
+        "particle.control.until_seconds",
+        "particle.attribute.velocity",
+        "particle.control.until_frames",
+    ]
+    assert emitter_asset.update.nodes[1].properties["composition"] == "add"
+    assert emitter_asset.update.nodes[3].properties["composition"] == "add"
+
+    program = compiler.compile(source, source_name="TimedMotion.particle.py")
+    emitter = program.emitters[0]
+    assert [item.kind.value for item in emitter.init.flow.suspensions] == [
+        "seconds",
+        "frames",
+    ]
+    assert [item.resume_node_uid for item in emitter.init.flow.suspensions] == [
+        "init.2.set_size",
+        "",
+    ]
+    assert [item.kind.value for item in emitter.update.flow.suspensions] == [
+        "until_seconds",
+        "until_frames",
+    ]
+    assert [item.resume_node_uid for item in emitter.update.flow.suspensions] == [
+        "update.0.add_velocity",
+        "update.2.add_velocity",
+    ]
+
+
+def test_particle_script_exposes_delta_time_as_a_pure_common_graph_value():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class Gravity(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+
+        def update(self, ctx, particles):
+            particles.add_velocity((0.0, -9.8, 0.0) * ctx.delta_time)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    compiler = ParticleScriptCompiler()
+    asset = compiler.parse(source, source_name="Gravity.particle.py")
+    update = asset.emitters[0].update
+    assert "particle.context.delta_time" in {
+        node.type_id for node in update.nodes
+    }
+    assert "common.constant.vec3" in {node.type_id for node in update.nodes}
+    assert "common.math.multiply" in {node.type_id for node in update.nodes}
+
+    kernel = ParticleKernelLowerer().lower(
+        compiler.compile(source, source_name="Gravity.particle.py")
+    ).emitters[0].update
+    assert any(
+        instruction.opcode == "load_uniform"
+        and instruction.source.node_uid.endswith(".delta_time")
+        for instruction in kernel.instructions
+    )
+
+
+def test_particle_script_rejects_wait_and_until_in_rendering():
+    source = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class InvalidRenderingWait(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            pass
+
+        def update(self, ctx, particles):
+            pass
+
+        def rendering(self, ctx, particles):
+            ctx.wait_seconds(1.0)
+            particles.sprite()
+'''
+    with pytest.raises(ParticleScriptError, match="rendering cannot contain Wait/Until"):
+        ParticleScriptCompiler().parse(
+            source,
+            source_name="InvalidRenderingWait.particle.py",
+        )
 
 
 def test_particle_script_parameters_share_graph_hir_and_gpu_abi():
@@ -2211,7 +2516,7 @@ class ParameterGraph(ParticleScript):
             particles.set_velocity(ctx.parameter("Wind"))
 
         def update(self, ctx, particles):
-            particles.acceleration(ctx.parameter("wind-id"))
+            particles .add_velocity(ctx.parameter("wind-id"))
 
         def rendering(self, ctx, particles):
             particles.sprite()
@@ -2470,8 +2775,8 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
         "particles.set_rotation(0.25)",
         "particles.set_orientation((10.0, 20.0, 30.0))\n            particles.set_scale((2.0, 0.5, 1.5))",
     ).replace(
-        "particles.rotate(180.0)",
-        "particles.rotate_orientation((90.0, 180.0, 270.0))",
+        "particles .add_rotation(180.0)",
+        "particles .add_orientation((90.0, 180.0, 270.0))",
     )
 
     emitter = ParticleScriptCompiler().compile(
@@ -2493,9 +2798,9 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
     assert graph_program.emitters[0].render_plan.outputs[0] == output
     assert output.material.guid == "debris-material-guid"
     assert output.sort_mode == "none"
-    assert emitter.init.operations[-2].opcode == "attribute.set_orientation"
-    assert emitter.init.operations[-1].opcode == "attribute.set_scale"
-    assert emitter.update.operations[-1].opcode == "integrate.angular_velocity_3d"
+    assert _operations(emitter.init)[-2].opcode == "attribute.modify_orientation"
+    assert _operations(emitter.init)[-1].opcode == "attribute.modify_scale"
+    assert _operations(emitter.update)[-1].opcode == "attribute.modify_orientation"
     assert "builtin.orientation" in {
         attribute.stable_id for attribute in emitter.attributes
     }
@@ -2540,10 +2845,10 @@ class TrailGraph(ParticleScript):
     assert output.ribbon_uv_mode == "repeat"
     assert output.ribbon_uv_scale == pytest.approx(2.5)
     assert output.sort_mode == "none"
-    assert [operation.opcode for operation in emitter.init.operations[-3:]] == [
-        "attribute.set_strip_id",
-        "attribute.set_ribbon_order",
-        "attribute.set_ribbon_break",
+    assert [operation.opcode for operation in _operations(emitter.init)[-3:]] == [
+        "attribute.modify_strip_id",
+        "attribute.modify_ribbon_order",
+        "attribute.modify_ribbon_break",
     ]
     assert {
         "builtin.ribbon_strip_id",
@@ -2565,7 +2870,7 @@ class CollisionGraph(ParticleScript):
             particles.set_velocity((1.0, -2.0, 0.0))
 
         def update(self, ctx, particles):
-            particles.acceleration((0.0, -9.81, 0.0))
+            particles .add_velocity((0.0, -9.81, 0.0))
             particles.collide_plane(
                 point=(0.0, 0.0, 0.0),
                 normal=(0.0, 1.0, 0.0),
@@ -2581,8 +2886,8 @@ class CollisionGraph(ParticleScript):
     asset = compiler.parse(source, source_name="Collision.particle.py")
     emitter = compiler.compile(source, source_name="Collision.particle.py").emitters[0]
 
-    assert emitter.update.operations[-1].opcode == "collision.plane"
-    assert emitter.update.operations[-1].parameter_dict() == {
+    assert _operations(emitter.update)[-1].opcode == "collision.plane"
+    assert _operations(emitter.update)[-1].parameter_dict() == {
         "friction": 0.2,
         "normal": [0.0, 1.0, 0.0],
         "point": [0.0, 0.0, 0.0],
@@ -2654,8 +2959,8 @@ class CollisionGraph(ParticleScript):
         source, source_name="SphereCollision.particle.py"
     ).emitters[0]
 
-    assert emitter.update.operations[-1].opcode == "collision.sphere"
-    assert emitter.update.operations[-1].parameter_dict() == {
+    assert _operations(emitter.update)[-1].opcode == "collision.sphere"
+    assert _operations(emitter.update)[-1].parameter_dict() == {
         "center": [1.0, 2.0, 3.0],
         "friction": 0.25,
         "particle_radius": 0.1,
@@ -2695,8 +3000,8 @@ class CollisionGraph(ParticleScript):
         source, source_name="SceneCollision.particle.py"
     ).emitters[0]
 
-    assert emitter.update.operations[-1].opcode == "collision.scene"
-    assert emitter.update.operations[-1].parameter_dict() == {
+    assert _operations(emitter.update)[-1].opcode == "collision.scene"
+    assert _operations(emitter.update)[-1].parameter_dict() == {
         "friction_scale": 0.6,
         "include_triggers": True,
         "layer_mask": 5,
@@ -2771,7 +3076,10 @@ class CollisionEvents(ParticleScript):
     program = ParticleScriptCompiler().compile(
         source, source_name="CollisionEvents.particle.py"
     )
-    assert [operation.opcode for operation in program.emitters[0].update.operations] == [
+    assert [
+        operation.opcode
+        for operation in program.emitters[0].update.flow.iter_operations()
+    ] == [
         "collision.scene",
         "event.emit",
     ]
@@ -2872,8 +3180,8 @@ class CollisionGraph(ParticleScript):
         source, source_name="SdfCollision.particle.py"
     ).emitters[0]
 
-    assert emitter.update.operations[-1].opcode == "collision.sdf"
-    assert emitter.update.operations[-1].parameter_dict() == {
+    assert _operations(emitter.update)[-1].opcode == "collision.sdf"
+    assert _operations(emitter.update)[-1].parameter_dict() == {
         "friction": 0.25,
         "interface": "collision-field",
         "inverted": True,
@@ -2950,8 +3258,8 @@ def test_ribbon_output_rejects_ambiguous_topology_and_uv_settings(properties, me
 
 def test_particle_script_vector_field_expression_matches_graph_kernel_contract():
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
-        'particles.acceleration(ctx.sample_vector_field("wind-field", particles.position))',
+        "particles .add_velocity((0.0, -0.2, 0.0))",
+        'particles .add_velocity(ctx.sample_vector_field("wind-field", particles.position))',
     )
     asset = ParticleScriptCompiler().parse(source, source_name="Wind.particle.py")
     update = asset.emitters[0].update
@@ -2960,12 +3268,12 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
         "particle.root.update",
         "particle.attribute.get",
         "particle.vector_field.sample",
-        "particle.update.acceleration",
-        "particle.update.rotate",
+        "particle.attribute.velocity",
+        "particle.attribute.rotation",
     ]
     assert any(
         link.source_node.endswith("sample_vector_field")
-        and link.target_node.endswith("acceleration")
+        and link.target_node.endswith("add_velocity")
         and link.kind is PortKind.VALUE
         for link in update.links
     )
@@ -2987,7 +3295,7 @@ def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations(
         "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField",
         "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, Curve, CurveKey, Gradient, GradientKey",
     ).replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
+        "particles .add_velocity((0.0, -0.2, 0.0))",
         """particles.set_size(ctx.sample_curve(
                 Curve(keys=(CurveKey(0.0, 0.0, 1.0, 1.0), CurveKey(1.0, 1.0, 1.0, 1.0))),
                 particles.age / particles.lifetime,
@@ -3009,7 +3317,7 @@ def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations(
 
 def test_particle_script_comparisons_and_kill_if_lower_to_composable_lifecycle_ops():
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
+        "particles .add_velocity((0.0, -0.2, 0.0))",
         "particles.kill_if(particles.age >= 0.5)",
     )
 
@@ -3026,7 +3334,7 @@ def test_particle_script_comparisons_and_kill_if_lower_to_composable_lifecycle_o
 
 def test_particle_script_boolean_primitives_lower_to_common_graph_ops():
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
+        "particles .add_velocity((0.0, -0.2, 0.0))",
         "particles.kill_if(not ((particles.age == 0.5) or (particles.lifetime != 1.0 and False)))",
     )
 
@@ -3055,10 +3363,10 @@ def test_particle_script_boolean_primitives_lower_to_common_graph_ops():
 
 def test_particle_script_noise_compiles_to_the_shared_portable_kernel_ops():
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
-        "particles.acceleration(ctx.vector_noise_3d(particles.position, frequency=2.5, seed=17))",
+        "particles .add_velocity((0.0, -0.2, 0.0))",
+        "particles .add_velocity(ctx.vector_noise_3d(particles.position, frequency=2.5, seed=17))",
     ).replace(
-        "particles.rotate(180.0)",
+        "particles .add_rotation(180.0)",
         "particles.set_size(ctx.value_noise_3d(particles.position, 4.0, 23))",
     )
 
@@ -3095,8 +3403,8 @@ def test_particle_script_noise_compiles_to_the_shared_portable_kernel_ops():
 )
 def test_particle_script_vector_field_expression_rejects_unknown_or_private_access(replacement, message):
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "particles.acceleration((0.0, -0.2, 0.0))",
-        f"particles.acceleration({replacement})",
+        "particles .add_velocity((0.0, -0.2, 0.0))",
+        f"particles .add_velocity({replacement})",
     )
 
     if message == "unknown data interface":
@@ -3138,7 +3446,7 @@ def test_particle_output_rejects_invalid_render_semantics(replacement, message):
         ),
         (
             PARTICLE_SCRIPT_SOURCE.replace(
-                "        def update(self, ctx, particles):\n            particles.acceleration((0.0, -0.2, 0.0))\n            particles.rotate(180.0)\n\n",
+                "        def update(self, ctx, particles):\n            particles .add_velocity((0.0, -0.2, 0.0))\n            particles .add_rotation(180.0)\n\n",
                 "",
             ),
             "missing=['update']",
@@ -3291,7 +3599,7 @@ def test_particle_graph_save_does_not_replace_valid_source_with_invalid_draft(tm
         update.nodes
         + (
             GraphNodeRecord("noise", "common.noise.vector3d", properties={}),
-                GraphNodeRecord("invalid.acceleration", "particle.update.acceleration"),
+                GraphNodeRecord("invalid.acceleration", "particle.attribute.velocity"),
         ),
         update.links
         + (

@@ -124,7 +124,6 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
                 "lane_index",
                 "lane_stable_id",
                 "resume_program_counter",
-                "resume_operation_index",
             }
         ),
         _SUSPEND_STAGES,
@@ -138,7 +137,32 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
                 "lane_index",
                 "lane_stable_id",
                 "resume_program_counter",
-                "resume_operation_index",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
+    "until_frames": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
+    "until_seconds": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
             }
         ),
         _SUSPEND_STAGES,
@@ -587,10 +611,8 @@ def _validate_opcode_types(
             or type(immediates["lane_stable_id"]) is not str
             or not immediates["lane_stable_id"]
             or type(immediates["resume_program_counter"]) is not int
-                or immediates["resume_program_counter"] <= 0
-                or type(immediates["resume_operation_index"]) is not int
-                or immediates["resume_operation_index"] < -1
-            ):
+            or immediates["resume_program_counter"] <= 0
+        ):
             raise KernelSemanticError(f"kernel {opcode} resume descriptor is invalid")
     elif opcode == "kill_if":
         if operands != (bool_type,):

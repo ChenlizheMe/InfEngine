@@ -65,6 +65,8 @@ _PARTICLE_WAIT_NODE_TYPES = frozenset(
     {
         "particle.control.wait_frames",
         "particle.control.wait_seconds",
+        "particle.control.until_frames",
+        "particle.control.until_seconds",
     }
 )
 
@@ -141,21 +143,29 @@ def _canvas_definition(
                 value
                 for _label, value in property_enum_entries.get(
                     item.id,
-                    tuple((value, value) for value in _PROPERTY_ENUM_VALUES.get(item.id, ())),
+                    item.choices
+                    or tuple(
+                        (value, value)
+                        for value in _PROPERTY_ENUM_VALUES.get(item.id, ())
+                    ),
                 )
             ),
             enum_labels=tuple(
                 label
                 for label, _value in property_enum_entries.get(
                     item.id,
-                    tuple((value, value) for value in _PROPERTY_ENUM_VALUES.get(item.id, ())),
+                    item.choices
+                    or tuple(
+                        (value, value)
+                        for value in _PROPERTY_ENUM_VALUES.get(item.id, ())
+                    ),
                 )
             ),
             visible_when_field=_PROPERTY_VISIBILITY.get(item.id, ("", None))[0],
             visible_when_value=_PROPERTY_VISIBILITY.get(item.id, ("", None))[1],
         )
         for item in definition.properties
-        if item.id not in hidden_property_ids
+        if item.id not in hidden_property_ids | {"composition"}
         if item.value_type.value_type not in {ValueType.CURVE, ValueType.GRADIENT}
     ]
     for port in definition.ports:
@@ -561,7 +571,29 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
 
     def get_node_type(self, node) -> NodeTypeDef | None:
         base = super().get_node_type(node)
-        if base is None or node.type_id not in {
+        if base is None:
+            return base
+        from Infernux.particle.nodes import ATTRIBUTE_NODE_NAMES
+
+        attribute_name = ATTRIBUTE_NODE_NAMES.get(node.type_id)
+        if attribute_name is not None:
+            composition = str(node.data.get("composition", "set"))
+            cache_key = f"attribute-write:{node.type_id}:{composition}"
+            cached = self._dynamic_type_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            definition = self._definitions.get(node.type_id)
+            if definition is None:
+                return base
+            resolved = _canvas_definition(
+                definition,
+                display_name_override=(
+                    f"{composition.replace('_', ' ').title()} {attribute_name}"
+                ),
+            )
+            self._dynamic_type_cache[cache_key] = resolved
+            return resolved
+        if node.type_id not in {
             "particle.attribute.get",
             "particle.parameter.get",
         }:
@@ -813,6 +845,13 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
             return type_id.startswith(f"particle.event.output.{stage}.")
         if type_id.startswith("particle.event.payload."):
             return stage == "init"
+        if type_id == "particle.context.delta_time":
+            return stage in {
+                "update",
+                "collision_enter",
+                "collision_stay",
+                "collision_exit",
+            }
         if stage in {
             "init",
             "update",
@@ -824,6 +863,7 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
             (
                 "particle.attribute.",
                 "particle.control.",
+                "particle.context.",
                 "particle.parameter.",
                 "particle.vector_field.",
             )

@@ -1636,7 +1636,8 @@ class _StageCompiler:
         flows=(),
     ) -> tuple[str, dict[str, str], str]:
         if self._continuation_lane_indices and any(
-            instruction.opcode in {"suspend_frames", "suspend_seconds"}
+            instruction.opcode
+            in {"suspend_frames", "suspend_seconds", "until_frames", "until_seconds"}
             for instruction in function.instructions
         ):
             self._compile_flow_aware(function, tuple(flows))
@@ -1682,18 +1683,12 @@ class _StageCompiler:
                     for join in flow.joins
                 }
             )
-            schedule_order = {
-                operation_index: order
-                for order, operation_index in enumerate(flow.operation_schedule)
+            block_order = {
+                block.source_node_uid: order
+                for order, block in enumerate(flow.blocks)
             }
             join_order = {
-                join.source_node_uid: schedule_order[
-                    next(
-                        block.operation_index
-                        for block in flow.blocks
-                        if block.source_node_uid == join.source_node_uid
-                    )
-                ]
+                join.source_node_uid: block_order[join.source_node_uid]
                 for join in flow.joins
             }
             flow_suspensions = tuple(
@@ -1761,11 +1756,10 @@ class _StageCompiler:
                 (
                     block.instruction_begin,
                     flow_index,
-                    schedule_order[block.operation_index],
+                    block_order[block.source_node_uid],
                     block,
                 )
                 for block in flow.blocks
-                if block.operation_index >= 0
             )
         entries.sort(key=lambda item: (item[0], item[1], item[2]))
         for flow_index, flow in enumerate(flows):
@@ -1863,12 +1857,12 @@ class _StageCompiler:
         flow,
         suspension,
     ) -> tuple[str, str]:
-        schedule_order = {
-            operation_index: order
-            for order, operation_index in enumerate(flow.operation_schedule)
+        block_order = {
+            block.source_node_uid: order
+            for order, block in enumerate(flow.blocks)
         }
         try:
-            resume_order = schedule_order[suspension.resume_operation_index]
+            resume_order = block_order[suspension.resume_node_uid]
         except KeyError as exc:
             raise GpuParticleCompileError(
                 "GPU continuation resume block is absent from its lifecycle schedule"
@@ -1911,12 +1905,14 @@ class _StageCompiler:
         selected_blocks = [
             block
             for block in flow.blocks
-            if block.operation_index >= 0
-            and schedule_order[block.operation_index] >= resume_order
+            if block_order[block.source_node_uid] >= resume_order
             and block.lane_index in selected_lanes
         ]
-        selected_blocks.sort(key=lambda block: schedule_order[block.operation_index])
-        if not selected_blocks or selected_blocks[0].operation_index != suspension.resume_operation_index:
+        selected_blocks.sort(key=lambda block: block_order[block.source_node_uid])
+        if (
+            not selected_blocks
+            or selected_blocks[0].source_node_uid != suspension.resume_node_uid
+        ):
             raise GpuParticleCompileError(
                 "GPU continuation resume schedule is not reachable from its lane"
             )
@@ -1982,13 +1978,7 @@ class _StageCompiler:
         initialized = {suspension.lane_index}
         joins_by_output = {join.output_lane_index: join for join in reached_joins}
         join_orders = {
-            join.source_node_uid: schedule_order[
-                next(
-                    block.operation_index
-                    for block in flow.blocks
-                    if block.source_node_uid == join.source_node_uid
-                )
-            ]
+            join.source_node_uid: block_order[join.source_node_uid]
             for join in reached_joins
         }
         for candidate_suspension in self._emitter.suspensions:
@@ -2253,7 +2243,12 @@ class _StageCompiler:
         elif opcode == "kill_if":
             self._lines.append(f"particle_alive = particle_alive && !({operands[0]});")
             return
-        elif opcode in {"suspend_frames", "suspend_seconds"}:
+        elif opcode in {
+            "suspend_frames",
+            "suspend_seconds",
+            "until_frames",
+            "until_seconds",
+        }:
             if self._active_lane_var is None:
                 raise GpuParticleCompileError(
                     "GPU Wait instruction is not owned by an execution lane"
@@ -2274,11 +2269,12 @@ class _StageCompiler:
                 lane_stable_id,
                 (0xFFFFFFFF, 0),
             )
-            helper = (
-                "inx_suspend_frames"
-                if opcode == "suspend_frames"
-                else "inx_suspend_seconds"
-            )
+            helper = {
+                "suspend_frames": "inx_suspend_frames",
+                "suspend_seconds": "inx_suspend_seconds",
+                "until_frames": "inx_until_frames",
+                "until_seconds": "inx_until_seconds",
+            }[opcode]
             self._lines.append(
                 f"if ({helper}(particle_index, state.spawn_generation, {lane_index}u, "
                 f"{int(immediate['resume_program_counter'])}u, {operands[0]}, "
@@ -3102,6 +3098,8 @@ layout(std430, set = {set_index}, binding = 9) buffer ParticleContinuationJoinSt
 }};
 
 const uint INX_CONTINUATION_FLAG_SECONDS = 1u;
+const uint INX_CONTINUATION_FLAG_UNTIL_FRAMES = 2u;
+const uint INX_CONTINUATION_FLAG_UNTIL_SECONDS = 4u;
 const uint INX_CONTINUATION_INVALID_INDEX = 0xffffffffu;
 
 uint inx_continuation_record_base(uint record_index) {{
@@ -3385,6 +3383,103 @@ bool inx_suspend_seconds(
         join_expected_mask,
         existing_record
     );
+}}
+
+bool inx_until_frames(
+    uint particle_index,
+    uint particle_generation,
+    uint lane_index,
+    uint resume_program_counter,
+    int frames,
+    uint join_index,
+    uint join_expected_mask,
+    uint existing_record
+) {{
+    uint duration = uint(max(frames, 0));
+    if (existing_record == INX_CONTINUATION_INVALID_INDEX && duration == 0u) {{
+        return false;
+    }}
+    uint deadline = continuation_counters.current_simulation_step + duration;
+    if (existing_record != INX_CONTINUATION_INVALID_INDEX) {{
+        uint existing_base = inx_continuation_record_base(existing_record);
+        deadline = continuation_record_words[existing_base + 12u];
+        if (int(continuation_counters.current_simulation_step - deadline) >= 0) {{
+            return false;
+        }}
+    }}
+    bool suspended = inx_continuation_suspend(
+        particle_index,
+        particle_generation,
+        lane_index,
+        resume_program_counter,
+        continuation_counters.current_simulation_step + 1u,
+        0u,
+        0u,
+        INX_CONTINUATION_FLAG_UNTIL_FRAMES,
+        join_index,
+        join_expected_mask,
+        existing_record
+    );
+    if (suspended) {{
+        uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
+        uint record_slot = atomicAdd(continuation_lane_slots[lane_slot], 0u);
+        if (record_slot != 0u) {{
+            uint base = inx_continuation_record_base(record_slot - 1u);
+            continuation_record_words[base + 12u] = deadline;
+        }}
+    }}
+    return suspended;
+}}
+
+bool inx_until_seconds(
+    uint particle_index,
+    uint particle_generation,
+    uint lane_index,
+    uint resume_program_counter,
+    float seconds,
+    uint join_index,
+    uint join_expected_mask,
+    uint existing_record
+) {{
+    float duration = max(seconds, 0.0);
+    if (existing_record == INX_CONTINUATION_INVALID_INDEX && duration <= 0.0) {{
+        return false;
+    }}
+    uint deadline_low = 0u;
+    uint deadline_high = 0u;
+    inx_continuation_add_seconds(duration, deadline_low, deadline_high);
+    if (existing_record != INX_CONTINUATION_INVALID_INDEX) {{
+        uint existing_base = inx_continuation_record_base(existing_record);
+        deadline_low = continuation_record_words[existing_base + 12u];
+        deadline_high = continuation_record_words[existing_base + 13u];
+        bool reached = continuation_counters.elapsed_time_high > deadline_high
+            || (continuation_counters.elapsed_time_high == deadline_high
+                && continuation_counters.elapsed_time_low >= deadline_low);
+        if (reached) return false;
+    }}
+    bool suspended = inx_continuation_suspend(
+        particle_index,
+        particle_generation,
+        lane_index,
+        resume_program_counter,
+        continuation_counters.current_simulation_step + 1u,
+        0u,
+        0u,
+        INX_CONTINUATION_FLAG_UNTIL_SECONDS,
+        join_index,
+        join_expected_mask,
+        existing_record
+    );
+    if (suspended) {{
+        uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
+        uint record_slot = atomicAdd(continuation_lane_slots[lane_slot], 0u);
+        if (record_slot != 0u) {{
+            uint base = inx_continuation_record_base(record_slot - 1u);
+            continuation_record_words[base + 12u] = deadline_low;
+            continuation_record_words[base + 13u] = deadline_high;
+        }}
+    }}
+    return suspended;
 }}
 """
 

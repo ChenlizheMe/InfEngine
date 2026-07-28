@@ -108,11 +108,20 @@ class _ParticleStageContext:
     def event_payload(self, *, route: str, field: str): ...
 
 
-class InitContext(_ParticleStageContext):
+class _ResumableParticleStageContext(_ParticleStageContext):
+    def wait_frames(self, frames: int) -> None: ...
+    def wait_seconds(self, seconds: float) -> None: ...
+    def until_frames(self, frames: int) -> None: ...
+    def until_seconds(self, seconds: float) -> None: ...
+
+
+class InitContext(_ResumableParticleStageContext):
     pass
 
 
-class UpdateContext(_ParticleStageContext):
+class UpdateContext(_ResumableParticleStageContext):
+    delta_time: float
+
     pass
 
 
@@ -137,18 +146,39 @@ class ParticleStream:
     collision_normal: tuple[float, float, float]
 
     def set_position(self, value) -> None: ...
+    def add_position(self, value) -> None: ...
+    def multiply_position(self, value) -> None: ...
     def set_velocity(self, value) -> None: ...
+    def add_velocity(self, value) -> None: ...
+    def multiply_velocity(self, value) -> None: ...
     def set_lifetime(self, value) -> None: ...
+    def add_lifetime(self, value) -> None: ...
+    def multiply_lifetime(self, value) -> None: ...
     def set_flipbook_frame(self, value) -> None: ...
+    def add_flipbook_frame(self, value) -> None: ...
+    def multiply_flipbook_frame(self, value) -> None: ...
     def set_rotation(self, value) -> None: ...
+    def add_rotation(self, value) -> None: ...
+    def multiply_rotation(self, value) -> None: ...
     def set_orientation(self, degrees) -> None: ...
+    def add_orientation(self, degrees) -> None: ...
+    def multiply_orientation(self, degrees) -> None: ...
     def set_color(self, value) -> None: ...
+    def add_color(self, value) -> None: ...
+    def multiply_color(self, value) -> None: ...
     def set_size(self, value) -> None: ...
+    def add_size(self, value) -> None: ...
+    def multiply_size(self, value) -> None: ...
     def set_scale(self, value) -> None: ...
+    def add_scale(self, value) -> None: ...
+    def multiply_scale(self, value) -> None: ...
     def set_strip_id(self, value: int) -> None: ...
+    def add_strip_id(self, value: int) -> None: ...
+    def multiply_strip_id(self, value: int) -> None: ...
     def set_ribbon_order(self, value: int) -> None: ...
+    def add_ribbon_order(self, value: int) -> None: ...
+    def multiply_ribbon_order(self, value: int) -> None: ...
     def break_ribbon(self, value: bool) -> None: ...
-    def acceleration(self, value) -> None: ...
     def collide_plane(
         self,
         *,
@@ -185,8 +215,6 @@ class ParticleStream:
         restitution_scale: float = 1.0,
         friction_scale: float = 1.0,
     ) -> None: ...
-    def rotate(self, degrees_per_second) -> None: ...
-    def rotate_orientation(self, degrees_per_second) -> None: ...
     def kill_if(self, condition: bool) -> None: ...
     def emit_event(
         self,
@@ -244,34 +272,43 @@ class ParticleScriptCompiler:
     _COLLISION_LIFECYCLE_METHODS = frozenset(
         {"collision_enter", "collision_stay", "collision_exit"}
     )
+    _ATTRIBUTE_TARGETS = {
+        "position": ("particle.attribute.position", "value"),
+        "velocity": ("particle.attribute.velocity", "value"),
+        "lifetime": ("particle.attribute.lifetime", "value"),
+        "flipbook_frame": ("particle.attribute.flipbook_frame", "value"),
+        "rotation": ("particle.attribute.rotation", "value"),
+        "orientation": ("particle.attribute.orientation", "degrees"),
+        "color": ("particle.attribute.color", "value"),
+        "size": ("particle.attribute.size", "value"),
+        "scale": ("particle.attribute.scale", "value"),
+        "strip_id": ("particle.attribute.strip_id", "value"),
+        "ribbon_order": ("particle.attribute.ribbon_order", "value"),
+    }
     _ATTRIBUTE_OPERATIONS = {
-        "set_position": ("particle.attribute.set_position", "value"),
-        "set_velocity": ("particle.attribute.set_velocity", "value"),
-        "set_lifetime": ("particle.attribute.set_lifetime", "value"),
-        "set_flipbook_frame": ("particle.attribute.set_flipbook_frame", "value"),
-        "set_rotation": ("particle.attribute.set_rotation", "value"),
-        "set_orientation": ("particle.attribute.set_orientation", "degrees"),
-        "set_color": ("particle.attribute.set_color", "value"),
-        "set_size": ("particle.attribute.set_size", "value"),
-        "set_scale": ("particle.attribute.set_scale", "value"),
-        "set_strip_id": ("particle.attribute.set_strip_id", "value"),
-        "set_ribbon_order": ("particle.attribute.set_ribbon_order", "value"),
-        "break_ribbon": ("particle.attribute.set_ribbon_break", "value"),
+        f"{composition}_{attribute}": (type_id, property_id, composition)
+        for attribute, (type_id, property_id) in _ATTRIBUTE_TARGETS.items()
+        for composition in ("set", "add", "multiply")
+    }
+    _ATTRIBUTE_OPERATIONS["break_ribbon"] = (
+        "particle.attribute.ribbon_break",
+        "value",
+        "",
+    )
+    _CONTROL_OPERATIONS = {
+        "wait_frames": ("particle.control.wait_frames", "frames"),
+        "wait_seconds": ("particle.control.wait_seconds", "seconds"),
+        "until_frames": ("particle.control.until_frames", "frames"),
+        "until_seconds": ("particle.control.until_seconds", "seconds"),
     }
     _OPERATIONS = {
         "init": dict(_ATTRIBUTE_OPERATIONS),
         "update": {
             **_ATTRIBUTE_OPERATIONS,
-            "acceleration": ("particle.update.acceleration", "value"),
             "collide_plane": ("particle.update.collide_plane", ""),
             "collide_sphere": ("particle.update.collide_sphere", ""),
             "collide_sdf": ("particle.update.collide_sdf", ""),
             "collide_scene": ("particle.update.collide_scene", ""),
-            "rotate": ("particle.update.rotate", "degrees_per_second"),
-            "rotate_orientation": (
-                "particle.update.rotate_orientation",
-                "degrees_per_second",
-            ),
             "kill_if": ("particle.update.kill_if", "condition"),
         },
         "rendering": {
@@ -636,7 +673,72 @@ class ParticleScriptCompiler:
             call = statement.value if isinstance(statement, ast.Expr) else None
             if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
                 raise self._error(source_name, statement, "stage bodies only allow particle operation calls")
-            if not isinstance(call.func.value, ast.Name) or call.func.value.id != particle_name:
+            target_name = (
+                call.func.value.id
+                if isinstance(call.func.value, ast.Name)
+                else ""
+            )
+            control = self._CONTROL_OPERATIONS.get(call.func.attr)
+            if target_name == context_name and control is not None:
+                if stage == "rendering":
+                    raise self._error(
+                        source_name,
+                        call,
+                        "rendering cannot contain Wait/Until because it cannot resume",
+                    )
+                if len(call.args) != 1 or call.keywords:
+                    raise self._error(
+                        source_name,
+                        call,
+                        f"{call.func.attr} requires exactly one value",
+                    )
+                type_id, positional_property = control
+                argument = call.args[0]
+                properties = {}
+                value_source = None
+                if self._is_particle_expression(
+                    argument, context_name, particle_name
+                ):
+                    value_source, expression_index = self._parse_expression(
+                        argument,
+                        stage=stage,
+                        context_name=context_name,
+                        particle_name=particle_name,
+                        source_name=source_name,
+                        expression_index=expression_index,
+                        nodes=nodes,
+                        links=links,
+                        event_context=event_context,
+                    )
+                else:
+                    properties[positional_property] = self._value(argument)
+                uid = f"{stage}.{operation_index}.{call.func.attr}"
+                nodes.append(GraphNodeRecord(uid, type_id, properties=properties))
+                if value_source is not None:
+                    links.append(
+                        GraphLinkRecord(
+                            f"{stage}.value.{operation_index}",
+                            value_source[0],
+                            value_source[1],
+                            uid,
+                            positional_property,
+                            PortKind.VALUE,
+                        )
+                    )
+                links.append(
+                    GraphLinkRecord(
+                        f"{stage}.link.{operation_index}",
+                        previous_uid,
+                        "out",
+                        uid,
+                        "in",
+                        PortKind.EXEC,
+                    )
+                )
+                previous_uid = uid
+                operation_index += 1
+                continue
+            if target_name != particle_name:
                 raise self._error(source_name, call, "particle operations must target the stage particle context")
             if call.func.attr == "emit_event":
                 event_node, event_links, expression_index = self._parse_event_output_call(
@@ -670,8 +772,14 @@ class ParticleScriptCompiler:
             operation = self._OPERATIONS[operation_stage].get(call.func.attr)
             if operation is None:
                 raise self._error(source_name, call, f"unsupported {stage} operation {call.func.attr!r}")
-            type_id, positional_property = operation
+            if len(operation) == 3:
+                type_id, positional_property, composition = operation
+            else:
+                type_id, positional_property = operation
+                composition = ""
             properties = {}
+            if composition:
+                properties["composition"] = composition
             value_source = None
             if positional_property:
                 if len(call.args) != 1:
@@ -886,7 +994,7 @@ class ParticleScriptCompiler:
         if isinstance(node, ast.Compare):
             return True
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-            return node.value.id == particle_name
+            return node.value.id in {context_name, particle_name}
         return (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -925,6 +1033,29 @@ class ParticleScriptCompiler:
                     uid,
                     "common.constant.f32",
                     properties={"value": float(node.value)},
+                )
+            )
+            return (uid, "value"), expression_index + 1
+
+        if isinstance(node, (ast.List, ast.Tuple)):
+            literal = self._value(node)
+            if (
+                not isinstance(literal, (list, tuple))
+                or len(literal) not in {2, 3, 4}
+                or not all(type(value) in {int, float} for value in literal)
+            ):
+                raise self._error(
+                    source_name,
+                    node,
+                    "particle vector expressions require two, three, or four numeric values",
+                )
+            width = len(literal)
+            uid = f"{stage}.expr.{expression_index}.vec{width}"
+            nodes.append(
+                GraphNodeRecord(
+                    uid,
+                    f"common.constant.vec{width}",
+                    properties={"value": [float(value) for value in literal]},
                 )
             )
             return (uid, "value"), expression_index + 1
@@ -1103,6 +1234,34 @@ class ParticleScriptCompiler:
                 )
             )
             return (uid, "result"), expression_index + 1
+
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == context_name
+        ):
+            if node.attr == "delta_time":
+                if stage not in {
+                    "update",
+                    "collision_enter",
+                    "collision_stay",
+                    "collision_exit",
+                }:
+                    raise self._error(
+                        source_name,
+                        node,
+                        "Delta Time is only valid in Update and Collision lifecycle stages",
+                    )
+                uid = f"{stage}.expr.{expression_index}.delta_time"
+                nodes.append(
+                    GraphNodeRecord(uid, "particle.context.delta_time")
+                )
+                return (uid, "value"), expression_index + 1
+            raise self._error(
+                source_name,
+                node,
+                f"unsupported particle context value {node.attr!r}",
+            )
 
         if (
             isinstance(node, ast.Attribute)

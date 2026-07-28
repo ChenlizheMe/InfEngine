@@ -23,6 +23,46 @@ from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, Value
 _EVENT_OUTPUT_PREFIX = "particle.event.output"
 _EVENT_PAYLOAD_PREFIX = "particle.event.payload"
 
+ATTRIBUTE_COMPOSITION_CHOICES = (
+    ("Set", "set"),
+    ("Add", "add"),
+    ("Multiply", "multiply"),
+)
+
+ATTRIBUTE_NODE_NAMES = MappingProxyType(
+    {
+        "particle.attribute.position": "Position",
+        "particle.attribute.velocity": "Velocity",
+        "particle.attribute.lifetime": "Lifetime",
+        "particle.attribute.flipbook_frame": "Flipbook Frame",
+        "particle.attribute.color": "Color",
+        "particle.attribute.size": "Size",
+        "particle.attribute.scale": "Scale 3D",
+        "particle.attribute.strip_id": "Strip ID",
+        "particle.attribute.ribbon_order": "Ribbon Order",
+        "particle.attribute.ribbon_break": "Ribbon Break",
+        "particle.attribute.rotation": "Rotation",
+        "particle.attribute.orientation": "Orientation",
+    }
+)
+
+ATTRIBUTE_OPERATION_SPECS = MappingProxyType(
+    {
+        "attribute.modify_position": ("builtin.position", "value", False),
+        "attribute.modify_velocity": ("builtin.velocity", "value", False),
+        "attribute.modify_lifetime": ("builtin.lifetime", "value", False),
+        "attribute.modify_flipbook_frame": ("builtin.flipbook_frame", "value", False),
+        "attribute.modify_color": ("builtin.color", "value", False),
+        "attribute.modify_size": ("builtin.size", "value", False),
+        "attribute.modify_scale": ("builtin.scale", "value", False),
+        "attribute.modify_strip_id": ("builtin.ribbon_strip_id", "value", False),
+        "attribute.modify_ribbon_order": ("builtin.ribbon_order", "value", False),
+        "attribute.modify_ribbon_break": ("builtin.ribbon_break", "value", False),
+        "attribute.modify_rotation": ("builtin.rotation", "value", False),
+        "attribute.modify_orientation": ("builtin.orientation", "degrees", True),
+    }
+)
+
 
 def particle_event_payload_port_id(field_stable_id: str) -> str:
     digest = hashlib.sha256(str(field_stable_id).encode("utf-8")).hexdigest()
@@ -203,6 +243,43 @@ def _operation(type_id: str, label: str, opcode: str, properties=()) -> NodeDef:
     )
 
 
+def _attribute_operation(
+    type_id: str,
+    attribute_name: str,
+    opcode: str,
+    value_type: TypeRef,
+    default,
+    *,
+    property_id: str = "value",
+    composable: bool = True,
+) -> NodeDef:
+    properties = (
+        PropertyDef(
+            "composition",
+            TypeRef(ValueType.STRING),
+            "set",
+            ATTRIBUTE_COMPOSITION_CHOICES,
+        ),
+    ) if composable else ()
+    return NodeDef(
+        type_id,
+        f"Set {attribute_name}",
+        (
+            _exec("in", PortDirection.INPUT),
+            _exec("out", PortDirection.OUTPUT),
+            PortDef(
+                property_id,
+                PortDirection.INPUT,
+                value_type=value_type,
+                required=False,
+                default=default,
+            ),
+        ),
+        properties,
+        {"particle_hir": opcode},
+    )
+
+
 def _vector_field_sample() -> NodeDef:
     return NodeDef(
         "particle.vector_field.sample",
@@ -359,6 +436,40 @@ PARTICLE_NODE_DEFINITIONS = (
         target_opcodes={"particle_hir": "control.wait_seconds"},
     ),
     NodeDef(
+        "particle.control.until_frames",
+        "Until Frames",
+        (
+            _exec("in", PortDirection.INPUT),
+            PortDef(
+                "frames",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.I32),
+                required=False,
+                default=1,
+                display_name="Frames",
+            ),
+            _exec("out", PortDirection.OUTPUT),
+        ),
+        target_opcodes={"particle_hir": "control.until_frames"},
+    ),
+    NodeDef(
+        "particle.control.until_seconds",
+        "Until Seconds",
+        (
+            _exec("in", PortDirection.INPUT),
+            PortDef(
+                "seconds",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.F32),
+                required=False,
+                default=0.1,
+                display_name="Seconds",
+            ),
+            _exec("out", PortDirection.OUTPUT),
+        ),
+        target_opcodes={"particle_hir": "control.until_seconds"},
+    ),
+    NodeDef(
         "particle.control.join_all",
         "Join All",
         tuple(
@@ -373,119 +484,91 @@ PARTICLE_NODE_DEFINITIONS = (
         + (_exec("out", PortDirection.OUTPUT),),
         target_opcodes={"particle_hir": "control.join_all"},
     ),
-    _operation(
-        "particle.attribute.set_position",
-        "Set Position",
-        "attribute.set_position",
-        (
-            PropertyDef(
-                "value",
-                TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-                [0.0, 0.0, 0.0],
-            ),
-        ),
+    _attribute_operation(
+        "particle.attribute.position",
+        "Position",
+        "attribute.modify_position",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        [0.0, 0.0, 0.0],
     ),
-    _operation(
-        "particle.attribute.set_velocity",
-        "Set Velocity",
-        "attribute.set_velocity",
-        (
-            PropertyDef(
-                "value",
-                TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-                [0.0, 1.0, 0.0],
-            ),
-        ),
+    _attribute_operation(
+        "particle.attribute.velocity",
+        "Velocity",
+        "attribute.modify_velocity",
+        TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
+        [0.0, 1.0, 0.0],
     ),
-    _operation(
-        "particle.attribute.set_lifetime",
-        "Set Lifetime",
-        "attribute.set_lifetime",
-        (PropertyDef("value", TypeRef(ValueType.F32), 5.0),),
+    _attribute_operation(
+        "particle.attribute.lifetime",
+        "Lifetime",
+        "attribute.modify_lifetime",
+        TypeRef(ValueType.F32),
+        5.0,
     ),
-    _operation(
-        "particle.attribute.set_flipbook_frame",
-        "Set Flipbook Frame",
-        "attribute.set_flipbook_frame",
-        (PropertyDef("value", TypeRef(ValueType.F32), 0.0),),
+    _attribute_operation(
+        "particle.attribute.flipbook_frame",
+        "Flipbook Frame",
+        "attribute.modify_flipbook_frame",
+        TypeRef(ValueType.F32),
+        0.0,
     ),
-    _operation(
-        "particle.attribute.set_color",
-        "Set Color",
-        "attribute.set_color",
-        (PropertyDef("value", TypeRef(ValueType.COLOR), [1.0, 1.0, 1.0, 1.0]),),
+    _attribute_operation(
+        "particle.attribute.color",
+        "Color",
+        "attribute.modify_color",
+        TypeRef(ValueType.COLOR),
+        [1.0, 1.0, 1.0, 1.0],
     ),
-    _operation(
-        "particle.attribute.set_size",
-        "Set Size",
-        "attribute.set_size",
-        (PropertyDef("value", TypeRef(ValueType.F32), 1.0),),
+    _attribute_operation(
+        "particle.attribute.size",
+        "Size",
+        "attribute.modify_size",
+        TypeRef(ValueType.F32),
+        1.0,
     ),
-    _operation(
-        "particle.attribute.set_scale",
-        "Set Scale 3D",
-        "attribute.set_scale",
-        (PropertyDef("value", TypeRef(ValueType.VEC3), [1.0, 1.0, 1.0]),),
+    _attribute_operation(
+        "particle.attribute.scale",
+        "Scale 3D",
+        "attribute.modify_scale",
+        TypeRef(ValueType.VEC3),
+        [1.0, 1.0, 1.0],
     ),
-    _operation(
-        "particle.attribute.set_strip_id",
-        "Set Strip ID",
-        "attribute.set_strip_id",
-        (PropertyDef("value", TypeRef(ValueType.U32), 0),),
+    _attribute_operation(
+        "particle.attribute.strip_id",
+        "Strip ID",
+        "attribute.modify_strip_id",
+        TypeRef(ValueType.U32),
+        0,
     ),
-    _operation(
-        "particle.attribute.set_ribbon_order",
-        "Set Ribbon Order",
-        "attribute.set_ribbon_order",
-        (PropertyDef("value", TypeRef(ValueType.U32), 0),),
+    _attribute_operation(
+        "particle.attribute.ribbon_order",
+        "Ribbon Order",
+        "attribute.modify_ribbon_order",
+        TypeRef(ValueType.U32),
+        0,
     ),
-    _operation(
-        "particle.attribute.set_ribbon_break",
-        "Break Ribbon",
-        "attribute.set_ribbon_break",
-        (PropertyDef("value", TypeRef(ValueType.BOOL), True),),
+    _attribute_operation(
+        "particle.attribute.ribbon_break",
+        "Ribbon Break",
+        "attribute.modify_ribbon_break",
+        TypeRef(ValueType.BOOL),
+        True,
+        composable=False,
     ),
-    _operation(
-        "particle.attribute.set_rotation",
-        "Set Rotation",
-        "attribute.set_rotation",
-        (PropertyDef("value", TypeRef(ValueType.F32), 0.0),),
+    _attribute_operation(
+        "particle.attribute.rotation",
+        "Rotation",
+        "attribute.modify_rotation",
+        TypeRef(ValueType.F32),
+        0.0,
     ),
-    _operation(
-        "particle.update.rotate",
-        "Rotate",
-        "integrate.angular_velocity",
-        (PropertyDef("degrees_per_second", TypeRef(ValueType.F32), 90.0),),
-    ),
-    _operation(
-        "particle.attribute.set_orientation",
-        "Set Orientation",
-        "attribute.set_orientation",
-        (PropertyDef("degrees", TypeRef(ValueType.VEC3), [0.0, 0.0, 0.0]),),
-    ),
-    _operation(
-        "particle.update.rotate_orientation",
-        "Angular Velocity 3D",
-        "integrate.angular_velocity_3d",
-        (
-            PropertyDef(
-                "degrees_per_second",
-                TypeRef(ValueType.VEC3),
-                [0.0, 90.0, 0.0],
-            ),
-        ),
-    ),
-    _operation(
-        "particle.update.acceleration",
-        "Acceleration",
-        "integrate.acceleration",
-        (
-            PropertyDef(
-                "value",
-                TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION),
-                [0.0, -9.81, 0.0],
-            ),
-        ),
+    _attribute_operation(
+        "particle.attribute.orientation",
+        "Orientation",
+        "attribute.modify_orientation",
+        TypeRef(ValueType.VEC3),
+        [0.0, 0.0, 0.0],
+        property_id="degrees",
     ),
     _operation(
         "particle.update.collide_plane",
@@ -608,6 +691,12 @@ PARTICLE_NODE_DEFINITIONS = (
         (PortDef("value", PortDirection.OUTPUT, value_type=TypeRef(ValueType.F32)),),
         target_opcodes={"expression": "normalized_age"},
     ),
+    NodeDef(
+        "particle.context.delta_time",
+        "Delta Time",
+        (PortDef("value", PortDirection.OUTPUT, value_type=TypeRef(ValueType.F32)),),
+        target_opcodes={"expression": "delta_time"},
+    ),
     _get_attribute(),
     _get_parameter(),
 )
@@ -617,6 +706,9 @@ for _definition in PARTICLE_NODE_DEFINITIONS:
 
 
 __all__ = [
+    "ATTRIBUTE_COMPOSITION_CHOICES",
+    "ATTRIBUTE_NODE_NAMES",
+    "ATTRIBUTE_OPERATION_SPECS",
     "PARTICLE_NODE_DEFINITIONS",
     "ParticleGraphNodeDefinitionSet",
     "particle_event_output_type_id",

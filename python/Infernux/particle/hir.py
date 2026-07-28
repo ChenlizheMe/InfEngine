@@ -26,7 +26,11 @@ from .asset import (
     particle_attribute_catalog,
 )
 from .data_interface import ParticleDataInterface, SdfVolume
-from .nodes import particle_event_output_type_id, particle_graph_node_definitions
+from .nodes import (
+    ATTRIBUTE_OPERATION_SPECS,
+    particle_event_output_type_id,
+    particle_graph_node_definitions,
+)
 
 
 class ParticleStage(str, Enum):
@@ -78,7 +82,7 @@ class ParticleExecEdge:
 @dataclass(frozen=True)
 class ParticleFlowBlock:
     node_uid: str
-    operation_index: int
+    operations: tuple[ParticleOperation, ...]
     incoming_edges: tuple[str, ...]
     outgoing_edges: tuple[str, ...]
     lane_index: int = 0
@@ -103,6 +107,8 @@ class ParticleJoinDescriptor:
 class ParticleSuspensionKind(str, Enum):
     FRAMES = "frames"
     SECONDS = "seconds"
+    UNTIL_FRAMES = "until_frames"
+    UNTIL_SECONDS = "until_seconds"
 
 
 @dataclass(frozen=True)
@@ -113,7 +119,6 @@ class ParticleSuspensionPoint:
     lane_stable_id: str
     resume_program_counter: int
     resume_node_uid: str
-    resume_operation_index: int
     value_id: str = ""
     literal: int | float = 0
 
@@ -123,7 +128,6 @@ class ParticleFlowProgram:
     entry_node_uid: str
     blocks: tuple[ParticleFlowBlock, ...]
     edges: tuple[ParticleExecEdge, ...]
-    operation_schedule: tuple[int, ...]
     lanes: tuple[ParticleExecutionLane, ...] = ()
     joins: tuple[ParticleJoinDescriptor, ...] = ()
     suspensions: tuple[ParticleSuspensionPoint, ...] = ()
@@ -134,6 +138,23 @@ class ParticleFlowProgram:
             raise ParticleCompileError("particle flow entry block is missing")
         if len(block_ids) != len(self.blocks):
             raise ParticleCompileError("particle flow block ids must be unique")
+        operations = tuple(
+            operation
+            for block in self.blocks
+            for operation in block.operations
+        )
+        if len({operation.source_node_uid for operation in operations}) != len(operations):
+            raise ParticleCompileError("particle flow operation source ids must be unique")
+        for block in self.blocks:
+            if block.node_uid == self.entry_node_uid:
+                continue
+            if (
+                len(block.operations) != 1
+                or block.operations[0].source_node_uid != block.node_uid
+            ):
+                raise ParticleCompileError(
+                    "particle non-entry flow blocks must own exactly one matching operation"
+                )
         edge_ids = {edge.link_uid for edge in self.edges}
         if len(edge_ids) != len(self.edges):
             raise ParticleCompileError("particle flow edge ids must be unique")
@@ -174,24 +195,13 @@ class ParticleFlowProgram:
         suspension_nodes = set()
         resume_program_counters = set()
         for suspension in self.suspensions:
-            terminal = (
-                suspension.resume_node_uid == ""
-                and suspension.resume_operation_index == -1
-            )
+            terminal = suspension.resume_node_uid == ""
             if (
                 suspension.node_uid in suspension_nodes
                 or suspension.node_uid not in block_ids
                 or (
                     not terminal
                     and suspension.resume_node_uid not in block_ids
-                )
-                or (
-                    suspension.resume_node_uid == ""
-                    and suspension.resume_operation_index != -1
-                )
-                or (
-                    suspension.resume_node_uid != ""
-                    and suspension.resume_operation_index < 0
                 )
             ):
                 raise ParticleCompileError("particle suspension descriptor is invalid")
@@ -207,13 +217,16 @@ class ParticleFlowProgram:
             if self.lanes[suspension.lane_index].stable_id != suspension.lane_stable_id:
                 raise ParticleCompileError("particle suspension lane identity is inconsistent")
 
+    def iter_operations(self):
+        for block in self.blocks:
+            yield from block.operations
+
 
 @dataclass(frozen=True)
 class ParticleStageHIR:
     stage: ParticleStage
     root_uid: str
     expressions: ExpressionProgram
-    operations: tuple[ParticleOperation, ...]
     flow: ParticleFlowProgram
 
 
@@ -419,8 +432,13 @@ class ParticleGraphCompiler:
                         ],
                     }
                 )
-            operations = [
-                {
+            block_indices = {
+                block.node_uid: index
+                for index, block in enumerate(stage_hir.flow.blocks)
+            }
+
+            def operation_payload(operation):
+                return {
                     "opcode": operation.opcode,
                     "parameters": list(operation.parameters),
                     "value_bindings": [
@@ -439,19 +457,13 @@ class ParticleGraphCompiler:
                         for predicate in operation.execution_predicates
                     ],
                 }
-                for operation in stage_hir.operations
-            ]
-            operation_indices = {
-                operation.source_node_uid: index
-                for index, operation in enumerate(stage_hir.operations)
-            }
 
             def flow_node(node_uid: str):
                 if not node_uid:
                     return "terminal"
                 if node_uid == stage_hir.flow.entry_node_uid:
                     return "entry"
-                return f"op:{operation_indices[node_uid]}"
+                return f"block:{block_indices[node_uid]}"
 
             flow_edges = sorted(
                 (
@@ -465,7 +477,16 @@ class ParticleGraphCompiler:
             )
             return {
                 "expressions": expressions,
-                "operations": operations,
+                "blocks": [
+                    {
+                        "node": flow_node(block.node_uid),
+                        "operations": [
+                            operation_payload(operation)
+                            for operation in block.operations
+                        ],
+                    }
+                    for block in stage_hir.flow.blocks
+                ],
                 "flow_edges": flow_edges,
                 "lanes": [
                     {
@@ -493,7 +514,6 @@ class ParticleGraphCompiler:
                         "lane_stable_id": suspension.lane_stable_id,
                         "resume_pc": suspension.resume_program_counter,
                         "resume_node": flow_node(suspension.resume_node_uid),
-                        "resume_operation": suspension.resume_operation_index,
                         "value": canonical_ids.get(
                             suspension.value_id, suspension.value_id
                         ),
@@ -757,7 +777,7 @@ class ParticleGraphCompiler:
             (rendering, ParticleStage.RENDERING, emitter.rendering),
         )
         for stage, event_source_stage, stage_document in event_source_stages:
-            for operation in stage.operations:
+            for operation in stage.flow.iter_operations():
                 if operation.opcode != "event.emit":
                     continue
                 route_id = str(operation.parameter_dict()["route"])
@@ -795,7 +815,7 @@ class ParticleGraphCompiler:
                     )
         outputs = tuple(
             self._compile_output(operation)
-            for operation in rendering.operations
+            for operation in rendering.flow.iter_operations()
             if operation.opcode in {"render.sprite", "render.mesh", "render.ribbon"}
         )
         if not outputs:
@@ -965,10 +985,11 @@ class ParticleGraphCompiler:
         }
         collision_indices = [
             index
-            for index, operation in enumerate(update.operations)
+            for index, operation in enumerate(update.flow.iter_operations())
             if operation.opcode in collision_opcodes
         ]
-        for operation in (update.operations[index] for index in collision_indices):
+        update_operations = tuple(update.flow.iter_operations())
+        for operation in (update_operations[index] for index in collision_indices):
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             label = {
@@ -1031,11 +1052,8 @@ class ParticleGraphCompiler:
                     raise ParticleCompileError(
                         f"{label} {name} must be between 0 and 1"
                     )
-        orientation_opcodes = {
-            "attribute.set_orientation",
-            "integrate.angular_velocity_3d",
-        }
-        scale_opcodes = {"attribute.set_scale"}
+        orientation_opcodes = {"attribute.modify_orientation"}
+        scale_opcodes = {"attribute.modify_scale"}
         all_lifecycles = (
             init,
             update,
@@ -1045,17 +1063,17 @@ class ParticleGraphCompiler:
         needs_orientation = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in orientation_opcodes
             for stage in all_lifecycles
-            for operation in stage.operations
+            for operation in stage.flow.iter_operations()
         )
         needs_scale = any(output.output_type == "mesh" for output in outputs) or any(
             operation.opcode in scale_opcodes
             for stage in all_lifecycles
-            for operation in stage.operations
+            for operation in stage.flow.iter_operations()
         )
         needs_flipbook_frame = any(
-            operation.opcode == "attribute.set_flipbook_frame"
+            operation.opcode == "attribute.modify_flipbook_frame"
             for stage in all_lifecycles
-            for operation in stage.operations
+            for operation in stage.flow.iter_operations()
         )
         catalog = {
             attribute.stable_id: attribute
@@ -1196,26 +1214,37 @@ class ParticleGraphCompiler:
             definitions,
             events,
         )
+        if any(
+            instruction.opcode == "delta_time"
+            for instruction in expressions.instructions
+        ) and stage not in {
+            ParticleStage.UPDATE,
+            ParticleStage.COLLISION_ENTER,
+            ParticleStage.COLLISION_STAY,
+            ParticleStage.COLLISION_EXIT,
+        }:
+            raise ParticleCompileError(
+                "Delta Time is only valid in Update and Collision lifecycle stages"
+            )
         value_bindings = {
             (link.target_node, link.target_port): result_id
             for link, (result_id, _value_type) in zip(value_links, expressions.outputs)
         }
         settings_operations = tuple(self._settings_operations(stage, settings))
-        graph_operations, flow = self._graph_operations(
+        flow = self._graph_operations(
             stage,
             document,
             root.uid,
             value_bindings,
             definitions,
             expressions,
-            operation_offset=len(settings_operations),
+            entry_operations=settings_operations,
             entry_condition=entry_condition,
         )
         return ParticleStageHIR(
             stage,
             root.uid,
             expressions,
-            settings_operations + graph_operations,
             flow,
         )
 
@@ -1301,7 +1330,7 @@ class ParticleGraphCompiler:
         definitions,
         expressions,
         *,
-        operation_offset: int,
+        entry_operations: tuple[ParticleOperation, ...],
         entry_condition: str = "",
     ):
         registry = definitions.registry
@@ -1416,6 +1445,13 @@ class ParticleGraphCompiler:
                 if error:
                     raise ParticleCompileError(
                         f"node {node.type_id!r}.{property_def.id} {error}"
+                    )
+                if property_def.choices and properties[property_def.id] not in {
+                    value for _label, value in property_def.choices
+                }:
+                    raise ParticleCompileError(
+                        f"node {node.type_id!r}.{property_def.id} must be one of "
+                        f"{[value for _label, value in property_def.choices]}"
                     )
             result.append(
                 ParticleOperation(
@@ -1609,24 +1645,26 @@ class ParticleGraphCompiler:
             )
             for edge in reachable_links_without_lanes
         )
-        block_operation_index = {root_uid: -1}
-        block_operation_index.update(
-            {
-                uid: operation_offset + index
-                for index, uid in enumerate(operation_uids)
-            }
-        )
         suspensions = []
-        wait_operations = [
+        suspension_operations = [
             operation
             for operation in result
-            if operation.opcode in {"control.wait_frames", "control.wait_seconds"}
+            if operation.opcode
+            in {
+                "control.wait_frames",
+                "control.wait_seconds",
+                "control.until_frames",
+                "control.until_seconds",
+            }
         ]
-        if wait_operations and stage is ParticleStage.RENDERING:
+        if suspension_operations and stage is ParticleStage.RENDERING:
             raise ParticleCompileError(
-                "Rendering cannot contain Wait For Frames/Seconds because render export cannot resume across frames"
+                "Rendering cannot contain Wait/Until because render export cannot resume across frames"
             )
-        for resume_program_counter, operation in enumerate(wait_operations, start=1):
+        for resume_program_counter, operation in enumerate(
+            suspension_operations, start=1
+        ):
+            is_until = operation.opcode.startswith("control.until_")
             outgoing_edges = tuple(
                 edge
                 for edge in reachable_links
@@ -1634,36 +1672,50 @@ class ParticleGraphCompiler:
             )
             if len(outgoing_edges) > 1:
                 raise ParticleCompileError(
-                    f"Wait node {operation.source_node_uid!r} requires at most one Exec output"
+                    f"Wait/Until node {operation.source_node_uid!r} requires at most one Exec output"
                 )
             edge = outgoing_edges[0] if outgoing_edges else None
             parameter_name = (
-                "frames" if operation.opcode == "control.wait_frames" else "seconds"
+                "frames"
+                if operation.opcode.endswith("_frames")
+                else "seconds"
             )
             literal = operation.parameter_dict()[parameter_name]
             if float(literal) < 0.0:
                 raise ParticleCompileError(
-                    f"Wait node {operation.source_node_uid!r} duration cannot be negative"
+                    f"Wait/Until node {operation.source_node_uid!r} duration cannot be negative"
                 )
             value_id = dict(operation.value_bindings).get(parameter_name, "")
             lane_index = block_lanes[operation.source_node_uid]
+            if is_until:
+                input_link_ids = incoming.get(operation.source_node_uid, ())
+                if len(input_link_ids) != 1:
+                    raise ParticleCompileError(
+                        f"Until node {operation.source_node_uid!r} requires exactly one Exec input"
+                    )
+                resume_node_uid = link_by_uid[input_link_ids[0]].source_node
+                if resume_node_uid == root_uid:
+                    raise ParticleCompileError(
+                        f"Until node {operation.source_node_uid!r} requires an operation before it"
+                    )
+            else:
+                resume_node_uid = edge.target_node_uid if edge is not None else ""
             suspensions.append(
                 ParticleSuspensionPoint(
                     operation.source_node_uid,
                     (
-                        ParticleSuspensionKind.FRAMES
+                        ParticleSuspensionKind.UNTIL_FRAMES
+                        if operation.opcode == "control.until_frames"
+                        else ParticleSuspensionKind.UNTIL_SECONDS
+                        if operation.opcode == "control.until_seconds"
+                        else ParticleSuspensionKind.FRAMES
                         if operation.opcode == "control.wait_frames"
                         else ParticleSuspensionKind.SECONDS
                     ),
                     lane_index,
                     lanes[lane_index].stable_id,
                     resume_program_counter,
-                    edge.target_node_uid if edge is not None else "",
-                    (
-                        block_operation_index[edge.target_node_uid]
-                        if edge is not None
-                        else -1
-                    ),
+                    resume_node_uid,
                     value_id,
                     literal,
                 )
@@ -1673,7 +1725,11 @@ class ParticleGraphCompiler:
             tuple(
                 ParticleFlowBlock(
                     uid,
-                    block_operation_index[uid],
+                    (
+                        entry_operations
+                        if uid == root_uid
+                        else (operation_by_uid[uid],)
+                    ),
                     tuple(
                         edge.link_uid
                         for edge in reachable_links
@@ -1689,12 +1745,11 @@ class ParticleGraphCompiler:
                 for uid in ordered
             ),
             reachable_links,
-            tuple(block_operation_index[uid] for uid in operation_uids),
             lanes,
             joins,
             tuple(suspensions),
         )
-        return tuple(result), flow
+        return flow
 
     @staticmethod
     def _execution_lane_layout(
@@ -1790,21 +1845,6 @@ class ParticleGraphCompiler:
     def _operation_writes(opcode: str) -> frozenset[str]:
         writes = {
             "emitter.sample_shape": {"builtin.position"},
-            "attribute.set_position": {"builtin.position"},
-            "attribute.set_velocity": {"builtin.velocity"},
-            "attribute.set_lifetime": {"builtin.lifetime"},
-            "attribute.set_flipbook_frame": {"builtin.flipbook_frame"},
-            "attribute.set_color": {"builtin.color"},
-            "attribute.set_size": {"builtin.size"},
-            "attribute.set_scale": {"builtin.scale"},
-            "attribute.set_rotation": {"builtin.rotation"},
-            "attribute.set_orientation": {"builtin.orientation"},
-            "attribute.set_strip_id": {"builtin.ribbon_strip_id"},
-            "attribute.set_ribbon_order": {"builtin.ribbon_order"},
-            "attribute.set_ribbon_break": {"builtin.ribbon_break"},
-            "integrate.acceleration": {"builtin.velocity"},
-            "integrate.angular_velocity": {"builtin.rotation"},
-            "integrate.angular_velocity_3d": {"builtin.orientation"},
             "collision.plane": {
                 "builtin.position",
                 "builtin.velocity",
@@ -1830,6 +1870,8 @@ class ParticleGraphCompiler:
                 "builtin.collision_normal",
             },
         }
+        if opcode in ATTRIBUTE_OPERATION_SPECS:
+            return frozenset({ATTRIBUTE_OPERATION_SPECS[opcode][0]})
         return frozenset(writes.get(opcode, ()))
 
     @staticmethod
@@ -1851,15 +1893,17 @@ class ParticleGraphCompiler:
         expression_reads: Mapping[str, frozenset[str]],
     ) -> frozenset[str]:
         reads = {
-            "integrate.acceleration": {"builtin.velocity"},
-            "integrate.angular_velocity": {"builtin.rotation"},
-            "integrate.angular_velocity_3d": {"builtin.orientation"},
             "collision.plane": {"builtin.position", "builtin.velocity"},
             "collision.sphere": {"builtin.position", "builtin.velocity"},
             "collision.sdf": {"builtin.position", "builtin.velocity"},
             "collision.scene": {"builtin.position", "builtin.velocity"},
         }
         result = set(reads.get(operation.opcode, ()))
+        if (
+            operation.opcode in ATTRIBUTE_OPERATION_SPECS
+            and operation.parameter_dict().get("composition", "set") != "set"
+        ):
+            result.add(ATTRIBUTE_OPERATION_SPECS[operation.opcode][0])
         for _property_id, value_id in operation.value_bindings:
             result.update(expression_reads.get(value_id, ()))
         for predicate in operation.execution_predicates:

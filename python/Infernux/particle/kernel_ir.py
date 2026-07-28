@@ -26,7 +26,7 @@ from .data_interface import (
     VectorField,
     particle_data_interface_from_dict,
 )
-from .nodes import particle_event_payload_port_id
+from .nodes import ATTRIBUTE_OPERATION_SPECS, particle_event_payload_port_id
 from .kernel_semantics import (
     KernelCapability,
     KernelRuntimeContract,
@@ -322,7 +322,6 @@ class KernelExecutionLane:
 @dataclass(frozen=True)
 class KernelFlowBlock:
     source_node_uid: str
-    operation_index: int
     lane_index: int
     instruction_begin: int
     instruction_end: int
@@ -331,8 +330,6 @@ class KernelFlowBlock:
         if (
             type(self.source_node_uid) is not str
             or not self.source_node_uid
-            or type(self.operation_index) is not int
-            or self.operation_index < -1
             or type(self.lane_index) is not int
             or self.lane_index < 0
             or type(self.instruction_begin) is not int
@@ -345,7 +342,6 @@ class KernelFlowBlock:
     def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
         return {
             "source_node_uid": self.source_node_uid if include_source else "",
-            "operation_index": self.operation_index,
             "lane_index": self.lane_index,
             "instruction_begin": self.instruction_begin,
             "instruction_end": self.instruction_end,
@@ -357,7 +353,6 @@ class KernelFlowBlock:
             value,
             {
                 "source_node_uid",
-                "operation_index",
                 "lane_index",
                 "instruction_begin",
                 "instruction_end",
@@ -366,7 +361,6 @@ class KernelFlowBlock:
         )
         return cls(
             value["source_node_uid"],
-            value["operation_index"],
             value["lane_index"],
             value["instruction_begin"],
             value["instruction_end"],
@@ -421,7 +415,6 @@ class KernelLifecycleFlow:
     entry_node_uid: str
     lanes: tuple[KernelExecutionLane, ...]
     blocks: tuple[KernelFlowBlock, ...]
-    operation_schedule: tuple[int, ...]
     joins: tuple[KernelJoinAll, ...]
 
     def __post_init__(self) -> None:
@@ -455,47 +448,18 @@ class KernelLifecycleFlow:
             raise KernelCompileError("kernel lifecycle flow requires blocks")
         if len({block.source_node_uid for block in self.blocks}) != len(self.blocks):
             raise KernelCompileError("kernel flow block source nodes must be unique")
-        roots = [block for block in self.blocks if block.operation_index == -1]
-        if len(roots) != 1 or roots[0].source_node_uid != self.entry_node_uid:
+        if self.blocks[0].source_node_uid != self.entry_node_uid:
             raise KernelCompileError("kernel lifecycle flow root block is invalid")
-        operation_indices = tuple(
-            block.operation_index for block in self.blocks if block.operation_index >= 0
-        )
-        if tuple(sorted(operation_indices)) != tuple(range(len(operation_indices))):
-            raise KernelCompileError("kernel flow operation indices must be dense")
-        if (
-            len(self.operation_schedule) != len(operation_indices)
-            or set(self.operation_schedule) != set(operation_indices)
-        ):
-            raise KernelCompileError("kernel flow operation schedule is invalid")
-        if not all(type(value) is int for value in self.operation_schedule):
-            raise KernelCompileError("kernel flow operation schedule must contain integers")
         if any(not 0 <= block.lane_index < len(self.lanes) for block in self.blocks):
             raise KernelCompileError("kernel flow block lane is invalid")
         block_by_node = {block.source_node_uid: block for block in self.blocks}
-        block_by_operation = {
-            block.operation_index: block
-            for block in self.blocks
-            if block.operation_index >= 0
-        }
         previous_end = None
-        for operation_index in self.operation_schedule:
-            block = block_by_operation[operation_index]
+        for block in self.blocks:
             if previous_end is not None and block.instruction_begin < previous_end:
                 raise KernelCompileError(
-                    "kernel flow instruction ranges do not follow the operation schedule"
+                    "kernel flow instruction ranges do not follow block order"
                 )
             previous_end = block.instruction_end
-        first_instruction = (
-            block_by_operation[self.operation_schedule[0]].instruction_begin
-            if self.operation_schedule
-            else roots[0].instruction_begin
-        )
-        if (
-            roots[0].instruction_begin != roots[0].instruction_end
-            or roots[0].instruction_begin != first_instruction
-        ):
-            raise KernelCompileError("kernel lifecycle root instruction marker is invalid")
         if not all(isinstance(item, KernelJoinAll) for item in self.joins):
             raise KernelCompileError("kernel lifecycle Join All metadata is invalid")
         if len({join.source_node_uid for join in self.joins}) != len(self.joins):
@@ -520,7 +484,6 @@ class KernelLifecycleFlow:
             "blocks": [
                 block.to_dict(include_source=include_source) for block in self.blocks
             ],
-            "operation_schedule": list(self.operation_schedule),
             "joins": [
                 join.to_dict(include_source=include_source) for join in self.joins
             ],
@@ -536,12 +499,11 @@ class KernelLifecycleFlow:
                 "entry_node_uid",
                 "lanes",
                 "blocks",
-                "operation_schedule",
                 "joins",
             },
             "kernel lifecycle flow",
         )
-        for name in ("lanes", "blocks", "operation_schedule", "joins"):
+        for name in ("lanes", "blocks", "joins"):
             if type(value[name]) is not list:
                 raise KernelCompileError(f"kernel lifecycle flow {name} must be an array")
         return cls(
@@ -550,7 +512,6 @@ class KernelLifecycleFlow:
             value["entry_node_uid"],
             tuple(KernelExecutionLane.from_dict(item) for item in value["lanes"]),
             tuple(KernelFlowBlock.from_dict(item) for item in value["blocks"]),
-            tuple(value["operation_schedule"]),
             tuple(KernelJoinAll.from_dict(item) for item in value["joins"]),
         )
 
@@ -563,7 +524,6 @@ class KernelSuspensionPoint:
     lane_stable_id: str
     resume_program_counter: int
     stage_resume_program_counter: int
-    resume_operation_index: int
     resume_instruction_index: int
     suspend_instruction_index: int
     source_node_uid: str
@@ -575,8 +535,7 @@ class KernelSuspensionPoint:
         if self.lifecycle_stage is ParticleStage.RENDERING:
             raise KernelCompileError("Rendering cannot own a kernel suspension point")
         terminal = (
-            self.resume_operation_index == -1
-            and self.resume_instruction_index == -1
+            self.resume_instruction_index == -1
             and self.resume_node_uid == ""
         )
         if (
@@ -588,7 +547,6 @@ class KernelSuspensionPoint:
             or self.resume_program_counter <= 0
             or type(self.stage_resume_program_counter) is not int
             or self.stage_resume_program_counter <= 0
-            or type(self.resume_operation_index) is not int
             or type(self.resume_instruction_index) is not int
             or type(self.suspend_instruction_index) is not int
             or self.suspend_instruction_index < 0
@@ -598,8 +556,7 @@ class KernelSuspensionPoint:
             or (
                 not terminal
                 and (
-                    self.resume_operation_index < 0
-                    or self.resume_instruction_index < 0
+                    self.resume_instruction_index < 0
                     or not self.resume_node_uid
                 )
             )
@@ -618,7 +575,6 @@ class KernelSuspensionPoint:
             "lane_stable_id": self.lane_stable_id,
             "resume_program_counter": self.resume_program_counter,
             "stage_resume_program_counter": self.stage_resume_program_counter,
-            "resume_operation_index": self.resume_operation_index,
             "resume_instruction_index": self.resume_instruction_index,
             "suspend_instruction_index": self.suspend_instruction_index,
             "source_node_uid": self.source_node_uid if include_source else "",
@@ -636,7 +592,6 @@ class KernelSuspensionPoint:
                 "lane_stable_id",
                 "resume_program_counter",
                 "stage_resume_program_counter",
-                "resume_operation_index",
                 "resume_instruction_index",
                 "suspend_instruction_index",
                 "source_node_uid",
@@ -651,7 +606,6 @@ class KernelSuspensionPoint:
             value["lane_stable_id"],
             value["resume_program_counter"],
             value["stage_resume_program_counter"],
-            value["resume_operation_index"],
             value["resume_instruction_index"],
             value["suspend_instruction_index"],
             value["source_node_uid"],
@@ -767,11 +721,12 @@ class ParticleEmitterKernelIR:
             ):
                 raise KernelCompileError("kernel suspension instruction target is invalid")
             instruction = function.instructions[suspension.suspend_instruction_index]
-            expected_opcode = (
-                "suspend_frames"
-                if suspension.kind is ParticleSuspensionKind.FRAMES
-                else "suspend_seconds"
-            )
+            expected_opcode = {
+                ParticleSuspensionKind.FRAMES: "suspend_frames",
+                ParticleSuspensionKind.SECONDS: "suspend_seconds",
+                ParticleSuspensionKind.UNTIL_FRAMES: "until_frames",
+                ParticleSuspensionKind.UNTIL_SECONDS: "until_seconds",
+            }[suspension.kind]
             if (
                 instruction.opcode != expected_opcode
                 or instruction.source.node_uid != suspension.source_node_uid
@@ -781,10 +736,9 @@ class ParticleEmitterKernelIR:
                 raise KernelCompileError(
                     "kernel suspension metadata does not match its instruction"
                 )
-            block_by_operation = {
-                block.operation_index: block
+            block_by_node = {
+                block.source_node_uid: block
                 for block in flow.blocks
-                if block.operation_index >= 0
             }
             source_block = next(
                 (
@@ -794,10 +748,9 @@ class ParticleEmitterKernelIR:
                 ),
                 None,
             )
-            resume_block = block_by_operation.get(suspension.resume_operation_index)
+            resume_block = block_by_node.get(suspension.resume_node_uid)
             terminal = (
-                suspension.resume_operation_index == -1
-                and suspension.resume_instruction_index == -1
+                suspension.resume_instruction_index == -1
                 and suspension.resume_node_uid == ""
             )
             if (
@@ -1536,7 +1489,12 @@ class ParticleKernelLowerer:
         instruction_locations = {}
         for function in (init, update):
             for instruction_index, instruction in enumerate(function.instructions):
-                if instruction.opcode not in {"suspend_frames", "suspend_seconds"}:
+                if instruction.opcode not in {
+                    "suspend_frames",
+                    "suspend_seconds",
+                    "until_frames",
+                    "until_seconds",
+                }:
                     continue
                 lifecycle_stage = ParticleStage(
                     instruction.immediate_dict()["lifecycle_stage"]
@@ -1552,15 +1510,13 @@ class ParticleKernelLowerer:
                 suspension.lane_stable_id,
                 program_counter,
                 suspension.resume_program_counter,
-                suspension.resume_operation_index,
                 (
                     next(
                         block.instruction_begin
                         for block in flow_by_stage[stage.stage].blocks
-                        if block.operation_index
-                        == suspension.resume_operation_index
+                        if block.source_node_uid == suspension.resume_node_uid
                     )
-                    if suspension.resume_operation_index >= 0
+                    if suspension.resume_node_uid
                     else -1
                 ),
                 instruction_locations[(stage.stage, suspension.node_uid)],
@@ -1586,60 +1542,44 @@ class ParticleKernelLowerer:
         stage_hir: ParticleStageHIR,
         function: ParticleKernelFunction,
         operation_instruction_ranges: Mapping[
-            tuple[ParticleStage, int], tuple[int, int]
+            tuple[ParticleStage, str], tuple[int, int]
         ],
     ) -> KernelLifecycleFlow:
-        hir_blocks_by_operation = {
-            block.operation_index: block
-            for block in stage_hir.flow.blocks
-            if block.operation_index >= 0
-        }
-        root_block = next(
-            block
-            for block in stage_hir.flow.blocks
-            if block.operation_index == -1
-        )
-        operation_blocks = []
-        for operation_index, operation in enumerate(stage_hir.operations):
-            instruction_range = operation_instruction_ranges.get(
-                (stage_hir.stage, operation_index)
+        block_ranges: list[tuple[int, int] | None] = []
+        for block in stage_hir.flow.blocks:
+            ranges = []
+            for operation in block.operations:
+                instruction_range = operation_instruction_ranges.get(
+                    (stage_hir.stage, operation.source_node_uid)
+                )
+                if instruction_range is None:
+                    raise KernelCompileError(
+                        "kernel lifecycle operation "
+                        f"{stage_hir.stage.value}:{operation.source_node_uid!r} "
+                        "has no instruction range"
+                    )
+                ranges.append(instruction_range)
+            block_ranges.append(
+                (ranges[0][0], ranges[-1][1]) if ranges else None
             )
+        next_instruction = len(function.instructions)
+        resolved_ranges = [None] * len(block_ranges)
+        for index in range(len(block_ranges) - 1, -1, -1):
+            instruction_range = block_ranges[index]
             if instruction_range is None:
-                raise KernelCompileError(
-                    f"kernel lifecycle operation {stage_hir.stage.value}[{operation_index}] "
-                    "has no instruction range"
-                )
-            hir_block = hir_blocks_by_operation.get(operation_index)
-            operation_blocks.append(
-                KernelFlowBlock(
-                    operation.source_node_uid,
-                    operation_index,
-                    hir_block.lane_index if hir_block is not None else 0,
-                    instruction_range[0],
-                    instruction_range[1],
-                )
-            )
-        entry_instruction = (
-            operation_blocks[0].instruction_begin
-            if operation_blocks
-            else len(function.instructions)
-        )
-        blocks = (
+                resolved_ranges[index] = (next_instruction, next_instruction)
+            else:
+                resolved_ranges[index] = instruction_range
+                next_instruction = instruction_range[0]
+        blocks = tuple(
             KernelFlowBlock(
-                root_block.node_uid,
-                -1,
-                root_block.lane_index,
-                entry_instruction,
-                entry_instruction,
-            ),
-            *operation_blocks,
+                block.node_uid,
+                block.lane_index,
+                resolved_ranges[index][0],
+                resolved_ranges[index][1],
+            )
+            for index, block in enumerate(stage_hir.flow.blocks)
         )
-        scheduled_operations = set(stage_hir.flow.operation_schedule)
-        operation_schedule = tuple(
-            index
-            for index in range(len(stage_hir.operations))
-            if index not in scheduled_operations
-        ) + stage_hir.flow.operation_schedule
         return KernelLifecycleFlow(
             stage_hir.stage,
             function.stage,
@@ -1655,7 +1595,6 @@ class ParticleKernelLowerer:
                 for lane in stage_hir.flow.lanes
             ),
             blocks,
-            operation_schedule,
             tuple(
                 KernelJoinAll(
                     join.node_uid,
@@ -1694,12 +1633,10 @@ class ParticleKernelLowerer:
             raise KernelCompileError(
                 f"Wait operation {operation.source_node_uid!r} has no emitter continuation program counter"
             )
-        parameter_name = (
-            "frames" if operation.opcode == "control.wait_frames" else "seconds"
-        )
+        parameter_name = "frames" if operation.opcode.endswith("_frames") else "seconds"
         value_type = TypeRef(
             ValueType.I32
-            if operation.opcode == "control.wait_frames"
+            if operation.opcode.endswith("_frames")
             else ValueType.F32
         )
         duration = builder.operation_value(
@@ -1711,18 +1648,18 @@ class ParticleKernelLowerer:
             source,
         )
         builder.emit_void(
-            (
-                "suspend_frames"
-                if operation.opcode == "control.wait_frames"
-                else "suspend_seconds"
-            ),
+            {
+                "control.wait_frames": "suspend_frames",
+                "control.wait_seconds": "suspend_seconds",
+                "control.until_frames": "until_frames",
+                "control.until_seconds": "until_seconds",
+            }[operation.opcode],
             (duration,),
             {
                 "lifecycle_stage": stage_hir.stage.value,
                 "lane_index": suspension.lane_index,
                 "lane_stable_id": suspension.lane_stable_id,
                 "resume_program_counter": program_counter,
-                "resume_operation_index": suspension.resume_operation_index,
             },
             source,
         )
@@ -1739,6 +1676,49 @@ class ParticleKernelLowerer:
             if predicate.value_id
         )
         return builder.lower_expressions(stage, required_outputs)
+
+    @staticmethod
+    def _lower_attribute_modification(
+        builder,
+        operation,
+        expression_values,
+        attribute_types,
+        source,
+    ) -> None:
+        stable_id, property_name, degrees_input = ATTRIBUTE_OPERATION_SPECS[
+            operation.opcode
+        ]
+        parameters = operation.parameter_dict()
+        value = builder.operation_value(
+            property_name,
+            dict(operation.value_bindings),
+            expression_values,
+            parameters,
+            attribute_types[stable_id],
+            source,
+        )
+        if degrees_input:
+            value = builder.emit(
+                "multiply",
+                attribute_types[stable_id],
+                (
+                    value,
+                    builder.constant(TypeRef(ValueType.F32), math.pi / 180.0, source),
+                ),
+                {},
+                source,
+            )
+        composition = str(parameters.get("composition", "set"))
+        if composition != "set":
+            current = builder.load(stable_id, source)
+            value = builder.emit(
+                {"add": "add", "multiply": "multiply"}[composition],
+                attribute_types[stable_id],
+                (current, value),
+                {},
+                source,
+            )
+        builder.store(stable_id, value, source)
 
     @staticmethod
     def _integrate_update_position(builder, attribute_types, delta_time) -> None:
@@ -2064,7 +2044,7 @@ class ParticleKernelLowerer:
             )
             builder.store(stable_id, value, KernelSourceRef(operation="attribute.default"))
 
-        for operation_index, operation in enumerate(emitter.init.operations):
+        for operation in emitter.init.flow.iter_operations():
             instruction_begin = len(builder.instructions)
             source = KernelSourceRef(operation.source_node_uid, operation=f"init.{operation.opcode}")
             expression_values = self._lower_operation_expressions(
@@ -2074,13 +2054,18 @@ class ParticleKernelLowerer:
             bindings = dict(operation.value_bindings)
             if operation.opcode in {"control.if", "control.join_all"}:
                 operation_instruction_ranges[
-                    (emitter.init.stage, operation_index)
+                    (emitter.init.stage, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
                 continue
             guard = builder.execution_guard(operation, expression_values, source)
             if operation.opcode != "event.emit":
                 builder.begin_guard(guard, source)
-            if operation.opcode in {"control.wait_frames", "control.wait_seconds"}:
+            if operation.opcode in {
+                "control.wait_frames",
+                "control.wait_seconds",
+                "control.until_frames",
+                "control.until_seconds",
+            }:
                 self._lower_suspension(
                     builder,
                     emitter.init,
@@ -2122,81 +2107,14 @@ class ParticleKernelLowerer:
                         source,
                     )
                 builder.store("builtin.position", position, source)
-            elif operation.opcode == "attribute.set_position":
-                value = builder.operation_value(
-                    "value",
-                    bindings,
+            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS:
+                self._lower_attribute_modification(
+                    builder,
+                    operation,
                     expression_values,
-                    parameters,
-                    attribute_types["builtin.position"],
+                    attribute_types,
                     source,
                 )
-                builder.store("builtin.position", value, source)
-            elif operation.opcode == "attribute.set_velocity":
-                value = builder.operation_value(
-                    "value",
-                    bindings,
-                    expression_values,
-                    parameters,
-                    attribute_types["builtin.velocity"],
-                    source,
-                )
-                builder.store("builtin.velocity", value, source)
-            elif operation.opcode == "attribute.set_lifetime":
-                value = builder.operation_value(
-                    "value",
-                    bindings,
-                    expression_values,
-                    parameters,
-                    attribute_types["builtin.lifetime"],
-                    source,
-                )
-                builder.store("builtin.lifetime", value, source)
-            elif operation.opcode in {
-                "attribute.set_flipbook_frame",
-                "attribute.set_color",
-                "attribute.set_size",
-                "attribute.set_scale",
-                "attribute.set_rotation",
-                "attribute.set_orientation",
-                "attribute.set_strip_id",
-                "attribute.set_ribbon_order",
-                "attribute.set_ribbon_break",
-            }:
-                stable_id = {
-                    "attribute.set_flipbook_frame": "builtin.flipbook_frame",
-                    "attribute.set_color": "builtin.color",
-                    "attribute.set_size": "builtin.size",
-                    "attribute.set_scale": "builtin.scale",
-                    "attribute.set_rotation": "builtin.rotation",
-                    "attribute.set_orientation": "builtin.orientation",
-                    "attribute.set_strip_id": "builtin.ribbon_strip_id",
-                    "attribute.set_ribbon_order": "builtin.ribbon_order",
-                    "attribute.set_ribbon_break": "builtin.ribbon_break",
-                }[operation.opcode]
-                property_name = "degrees" if operation.opcode == "attribute.set_orientation" else "value"
-                value = builder.operation_value(
-                    property_name,
-                    bindings,
-                    expression_values,
-                    parameters,
-                    attribute_types[stable_id],
-                    source,
-                )
-                if operation.opcode == "attribute.set_orientation":
-                    radians_per_degree = builder.constant(
-                        TypeRef(ValueType.F32),
-                        math.pi / 180.0,
-                        source,
-                    )
-                    value = builder.emit(
-                        "multiply",
-                        attribute_types[stable_id],
-                        (value, radians_per_degree),
-                        {},
-                        source,
-                    )
-                builder.store(stable_id, value, source)
             elif operation.opcode == "event.emit":
                 self._lower_event_output(
                     builder,
@@ -2211,7 +2129,7 @@ class ParticleKernelLowerer:
             if operation.opcode != "event.emit":
                 builder.end_guard(guard, source)
             operation_instruction_ranges[
-                (emitter.init.stage, operation_index)
+                (emitter.init.stage, operation.source_node_uid)
             ] = (instruction_begin, len(builder.instructions))
         return builder.finish()
 
@@ -2265,22 +2183,22 @@ class ParticleKernelLowerer:
             "collision.scene",
         }
         operation_stream = tuple(
-            (emitter.update, operation_index, operation)
-            for operation_index, operation in enumerate(emitter.update.operations)
+            (emitter.update, operation)
+            for operation in emitter.update.flow.iter_operations()
         ) + tuple(
-            (lifecycle, operation_index, operation)
+            (lifecycle, operation)
             for lifecycle in (
                 emitter.collision_enter,
                 emitter.collision_stay,
                 emitter.collision_exit,
             )
             if lifecycle is not None
-            for operation_index, operation in enumerate(lifecycle.operations)
+            for operation in lifecycle.flow.iter_operations()
         )
         position_integrated = False
         collision_lifecycle_ready = False
 
-        for stage_hir, operation_index, operation in operation_stream:
+        for stage_hir, operation in operation_stream:
             if operation.opcode in collision_opcodes and not position_integrated:
                 self._integrate_update_position(builder, attribute_types, delta_time)
                 position_integrated = True
@@ -2306,13 +2224,18 @@ class ParticleKernelLowerer:
             bindings = dict(operation.value_bindings)
             if operation.opcode in {"control.if", "control.join_all"}:
                 operation_instruction_ranges[
-                    (stage_hir.stage, operation_index)
+                    (stage_hir.stage, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
                 continue
             guard = builder.execution_guard(operation, expression_values, source)
             if operation.opcode != "event.emit":
                 builder.begin_guard(guard, source)
-            if operation.opcode in {"control.wait_frames", "control.wait_seconds"}:
+            if operation.opcode in {
+                "control.wait_frames",
+                "control.wait_seconds",
+                "control.until_frames",
+                "control.until_seconds",
+            }:
                 self._lower_suspension(
                     builder,
                     stage_hir,
@@ -2321,161 +2244,14 @@ class ParticleKernelLowerer:
                     source,
                     continuation_program_counters,
                 )
-            elif operation.opcode in {
-                "attribute.set_position",
-                "attribute.set_velocity",
-                "attribute.set_lifetime",
-                "attribute.set_flipbook_frame",
-            }:
-                stable_id = {
-                    "attribute.set_position": "builtin.position",
-                    "attribute.set_velocity": "builtin.velocity",
-                    "attribute.set_lifetime": "builtin.lifetime",
-                    "attribute.set_flipbook_frame": "builtin.flipbook_frame",
-                }[operation.opcode]
-                value = builder.operation_value(
-                    "value",
-                    bindings,
+            elif operation.opcode in ATTRIBUTE_OPERATION_SPECS:
+                self._lower_attribute_modification(
+                    builder,
+                    operation,
                     expression_values,
-                    parameters,
-                    attribute_types[stable_id],
+                    attribute_types,
                     source,
                 )
-                builder.store(stable_id, value, source)
-            elif operation.opcode == "integrate.acceleration":
-                acceleration = builder.operation_value(
-                    "value",
-                    bindings,
-                    expression_values,
-                    parameters,
-                    attribute_types["builtin.velocity"],
-                    source,
-                )
-                velocity = builder.load("builtin.velocity", source)
-                delta_velocity = builder.emit(
-                    "multiply", attribute_types["builtin.velocity"], (acceleration, delta_time), {}, source
-                )
-                velocity = builder.emit(
-                    "add", attribute_types["builtin.velocity"], (velocity, delta_velocity), {}, source
-                )
-                builder.store("builtin.velocity", velocity, source)
-            elif operation.opcode in {
-                "attribute.set_color",
-                "attribute.set_size",
-                "attribute.set_scale",
-                "attribute.set_rotation",
-                "attribute.set_orientation",
-                "attribute.set_strip_id",
-                "attribute.set_ribbon_order",
-                "attribute.set_ribbon_break",
-            }:
-                stable_id = {
-                    "attribute.set_color": "builtin.color",
-                    "attribute.set_size": "builtin.size",
-                    "attribute.set_scale": "builtin.scale",
-                    "attribute.set_rotation": "builtin.rotation",
-                    "attribute.set_orientation": "builtin.orientation",
-                    "attribute.set_strip_id": "builtin.ribbon_strip_id",
-                    "attribute.set_ribbon_order": "builtin.ribbon_order",
-                    "attribute.set_ribbon_break": "builtin.ribbon_break",
-                }[operation.opcode]
-                property_name = "degrees" if operation.opcode == "attribute.set_orientation" else "value"
-                value = builder.operation_value(
-                    property_name,
-                    bindings,
-                    expression_values,
-                    parameters,
-                    attribute_types[stable_id],
-                    source,
-                )
-                if operation.opcode == "attribute.set_orientation":
-                    radians_per_degree = builder.constant(
-                        TypeRef(ValueType.F32),
-                        math.pi / 180.0,
-                        source,
-                    )
-                    value = builder.emit(
-                        "multiply",
-                        attribute_types[stable_id],
-                        (value, radians_per_degree),
-                        {},
-                        source,
-                    )
-                builder.store(stable_id, value, source)
-            elif operation.opcode == "integrate.angular_velocity":
-                degrees_per_second = builder.operation_value(
-                    "degrees_per_second",
-                    bindings,
-                    expression_values,
-                    parameters,
-                    attribute_types["builtin.rotation"],
-                    source,
-                )
-                radians_per_degree = builder.constant(
-                    attribute_types["builtin.rotation"],
-                    math.pi / 180.0,
-                    source,
-                )
-                radians_per_second = builder.emit(
-                    "multiply",
-                    attribute_types["builtin.rotation"],
-                    (degrees_per_second, radians_per_degree),
-                    {},
-                    source,
-                )
-                delta_rotation = builder.emit(
-                    "multiply",
-                    attribute_types["builtin.rotation"],
-                    (radians_per_second, delta_time),
-                    {},
-                    source,
-                )
-                rotation = builder.load("builtin.rotation", source)
-                rotation = builder.emit(
-                    "add",
-                    attribute_types["builtin.rotation"],
-                    (rotation, delta_rotation),
-                    {},
-                    source,
-                )
-                builder.store("builtin.rotation", rotation, source)
-            elif operation.opcode == "integrate.angular_velocity_3d":
-                degrees_per_second = builder.operation_value(
-                    "degrees_per_second",
-                    bindings,
-                    expression_values,
-                    parameters,
-                    attribute_types["builtin.orientation"],
-                    source,
-                )
-                radians_per_degree = builder.constant(
-                    TypeRef(ValueType.F32),
-                    math.pi / 180.0,
-                    source,
-                )
-                radians_per_second = builder.emit(
-                    "multiply",
-                    attribute_types["builtin.orientation"],
-                    (degrees_per_second, radians_per_degree),
-                    {},
-                    source,
-                )
-                delta_orientation = builder.emit(
-                    "multiply",
-                    attribute_types["builtin.orientation"],
-                    (radians_per_second, delta_time),
-                    {},
-                    source,
-                )
-                orientation = builder.load("builtin.orientation", source)
-                orientation = builder.emit(
-                    "add",
-                    attribute_types["builtin.orientation"],
-                    (orientation, delta_orientation),
-                    {},
-                    source,
-                )
-                builder.store("builtin.orientation", orientation, source)
             elif operation.opcode == "lifecycle.kill_if":
                 condition = builder.operation_value(
                     "condition",
@@ -2508,7 +2284,7 @@ class ParticleKernelLowerer:
             if operation.opcode != "event.emit":
                 builder.end_guard(guard, source)
             operation_instruction_ranges[
-                (stage_hir.stage, operation_index)
+                (stage_hir.stage, operation.source_node_uid)
             ] = (instruction_begin, len(builder.instructions))
 
         if emitter.settings.collision_enabled and not collision_lifecycle_ready:
@@ -2552,7 +2328,7 @@ class ParticleKernelLowerer:
         operation_instruction_ranges,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.RENDERING, attribute_types, parameter_types)
-        for operation_index, operation in enumerate(emitter.rendering.operations):
+        for operation in emitter.rendering.flow.iter_operations():
             instruction_begin = len(builder.instructions)
             source = KernelSourceRef(
                 operation.source_node_uid,
@@ -2563,52 +2339,19 @@ class ParticleKernelLowerer:
             )
             if operation.opcode in {"control.if", "control.join_all"}:
                 operation_instruction_ranges[
-                    (emitter.rendering.stage, operation_index)
+                    (emitter.rendering.stage, operation.source_node_uid)
                 ] = (instruction_begin, len(builder.instructions))
                 continue
-            parameters = operation.parameter_dict()
-            bindings = dict(operation.value_bindings)
-            attribute_targets = {
-                "attribute.set_position": ("builtin.position", "value"),
-                "attribute.set_velocity": ("builtin.velocity", "value"),
-                "attribute.set_lifetime": ("builtin.lifetime", "value"),
-                "attribute.set_flipbook_frame": ("builtin.flipbook_frame", "value"),
-                "attribute.set_color": ("builtin.color", "value"),
-                "attribute.set_size": ("builtin.size", "value"),
-                "attribute.set_scale": ("builtin.scale", "value"),
-                "attribute.set_rotation": ("builtin.rotation", "value"),
-                "attribute.set_orientation": ("builtin.orientation", "degrees"),
-                "attribute.set_strip_id": ("builtin.ribbon_strip_id", "value"),
-                "attribute.set_ribbon_order": ("builtin.ribbon_order", "value"),
-                "attribute.set_ribbon_break": ("builtin.ribbon_break", "value"),
-            }
-            target = attribute_targets.get(operation.opcode)
-            if target is not None:
+            if operation.opcode in ATTRIBUTE_OPERATION_SPECS:
                 guard = builder.execution_guard(operation, expression_values, source)
                 builder.begin_guard(guard, source)
-                stable_id, property_name = target
-                value = builder.operation_value(
-                    property_name,
-                    bindings,
+                self._lower_attribute_modification(
+                    builder,
+                    operation,
                     expression_values,
-                    parameters,
-                    attribute_types[stable_id],
+                    attribute_types,
                     source,
                 )
-                if operation.opcode == "attribute.set_orientation":
-                    radians_per_degree = builder.constant(
-                        TypeRef(ValueType.F32),
-                        math.pi / 180.0,
-                        source,
-                    )
-                    value = builder.emit(
-                        "multiply",
-                        attribute_types[stable_id],
-                        (value, radians_per_degree),
-                        {},
-                        source,
-                    )
-                builder.store(stable_id, value, source)
                 builder.end_guard(guard, source)
             elif operation.opcode == "event.emit":
                 self._lower_event_output(
@@ -2620,7 +2363,7 @@ class ParticleKernelLowerer:
                     source,
                 )
             operation_instruction_ranges[
-                (emitter.rendering.stage, operation_index)
+                (emitter.rendering.stage, operation.source_node_uid)
             ] = (instruction_begin, len(builder.instructions))
         for stable_id in (
             "builtin.position",
@@ -2962,6 +2705,22 @@ class _KernelBuilder:
                     TypeRef(ValueType.F32),
                     (age, lifetime),
                     {},
+                    source,
+                )
+            elif instruction.opcode == "delta_time":
+                if instruction.operands or instruction.immediate_dict():
+                    raise KernelCompileError(
+                        "delta time expression cannot define authored inputs"
+                    )
+                if self.stage is not KernelStage.UPDATE:
+                    raise KernelCompileError(
+                        "delta time is only valid in Update kernels"
+                    )
+                value = self.emit(
+                    "load_uniform",
+                    TypeRef(ValueType.F32),
+                    (),
+                    {"name": "delta_time"},
                     source,
                 )
             else:

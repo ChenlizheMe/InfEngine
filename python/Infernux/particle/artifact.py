@@ -333,31 +333,30 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                 }
                 for instruction in value.expressions.instructions
             ],
-            "operations": [
-                {
-                    "opcode": operation.opcode,
-                    "parameters": list(operation.parameters),
-                    "source_node_uid": operation.source_node_uid,
-                    "value_bindings": list(operation.value_bindings),
-                    "execution_predicates": [
-                        {
-                            "source_node_uid": predicate.source_node_uid,
-                            "value_id": predicate.value_id,
-                            "literal": predicate.literal,
-                            "expected": predicate.expected,
-                            "runtime_condition": predicate.runtime_condition,
-                        }
-                        for predicate in operation.execution_predicates
-                    ],
-                }
-                for operation in value.operations
-            ],
             "flow": {
                 "entry_node_uid": value.flow.entry_node_uid,
                 "blocks": [
                     {
                         "node_uid": block.node_uid,
-                        "operation_index": block.operation_index,
+                        "operations": [
+                            {
+                                "opcode": operation.opcode,
+                                "parameters": list(operation.parameters),
+                                "source_node_uid": operation.source_node_uid,
+                                "value_bindings": list(operation.value_bindings),
+                                "execution_predicates": [
+                                    {
+                                        "source_node_uid": predicate.source_node_uid,
+                                        "value_id": predicate.value_id,
+                                        "literal": predicate.literal,
+                                        "expected": predicate.expected,
+                                        "runtime_condition": predicate.runtime_condition,
+                                    }
+                                    for predicate in operation.execution_predicates
+                                ],
+                            }
+                            for operation in block.operations
+                        ],
                         "incoming_edges": list(block.incoming_edges),
                         "outgoing_edges": list(block.outgoing_edges),
                     }
@@ -376,7 +375,6 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                     }
                     for edge in value.flow.edges
                 ],
-                "operation_schedule": list(value.flow.operation_schedule),
                 "lanes": [
                     {
                         "stable_id": lane.stable_id,
@@ -403,7 +401,6 @@ def _program_to_dict(program: ParticleProgramHIR) -> dict[str, Any]:
                         "lane_stable_id": suspension.lane_stable_id,
                         "resume_program_counter": suspension.resume_program_counter,
                         "resume_node_uid": suspension.resume_node_uid,
-                        "resume_operation_index": suspension.resume_operation_index,
                         "value_id": suspension.value_id,
                         "literal": suspension.literal,
                     }

@@ -1222,12 +1222,12 @@ def _open_particle_graph_panel(file_path: str):
 
     panel = manager.get_window_instance("particle_graph_editor")
     if isinstance(panel, ParticleGraphEditorPanel) and bool(panel.is_open):
-        snapshot = panel.authoring_snapshot()
-        current_path = str(snapshot.get("file_path") or "")
+        state = panel.authoring_document_state()
+        current_path = str(state.get("file_path") or "")
         if current_path and same_path(current_path, file_path):
             _focus_particle_graph_panel(manager)
             return panel
-        if bool(snapshot.get("dirty")):
+        if bool(state.get("dirty")):
             raise RuntimeError(
                 "Particle Graph Editor has unsaved changes; save or discard them before opening another asset"
             )

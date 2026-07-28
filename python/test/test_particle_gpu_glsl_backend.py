@@ -25,6 +25,7 @@ from Infernux.particle import (
     ParticleEventType,
     ParticleGraphAsset,
     ParticleGraphCompiler,
+    ParticleScriptCompiler,
     ParticleParameter,
     ParticleKernelLowerer,
     MeshEmissionMode,
@@ -52,6 +53,75 @@ def _gpu_source():
     )
     kernel = ParticleKernelLowerer().lower(hir)
     return GpuParticleGlslLowerer().lower(kernel)
+
+
+def test_particle_script_until_compiles_to_valid_gpu_continuations():
+    source_text = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class TimedMotion(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+
+        def update(self, ctx, particles):
+            particles.add_velocity((0.0, -1.0, 0.0))
+            ctx.until_seconds(3.0)
+            particles.add_velocity((1.0, 1.0, 0.0))
+            ctx.until_frames(5)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    hir = ParticleScriptCompiler().compile(
+        source_text,
+        source_name="TimedMotion.particle.py",
+    )
+    kernel = ParticleKernelLowerer().lower(hir)
+    source = GpuParticleGlslLowerer().lower(kernel)
+    update = source.emitters[0].update
+
+    assert "inx_until_seconds(" in update
+    assert "inx_until_frames(" in update
+    assert update.count("state.a_builtin_velocity =") >= 2
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_particle_script_delta_time_compiles_to_explicit_gpu_uniform_math():
+    source_text = '''\
+from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+
+class Gravity(ParticleScript):
+    class Emitter(ParticleEmitter):
+        stable_id = "emitter"
+        settings = EmitterSettings()
+
+        def init(self, ctx, particles):
+            particles.set_lifetime(8.0)
+
+        def update(self, ctx, particles):
+            particles.add_velocity((0.0, -9.8, 0.0) * ctx.delta_time)
+
+        def rendering(self, ctx, particles):
+            particles.sprite()
+'''
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleScriptCompiler().compile(
+                source_text,
+                source_name="Gravity.particle.py",
+            )
+        )
+    )
+    update = source.emitters[0].update
+    assert "pc.delta_time" in update
+    assert "state.a_builtin_velocity =" in update
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
 
 
 def _scene_collision_asset():
@@ -95,8 +165,8 @@ def _if_asset():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("condition", "common.constant.bool", properties={"value": True}),
             GraphNodeRecord("if", "particle.control.if"),
-            GraphNodeRecord("true-size", "particle.attribute.set_size", properties={"value": 2.0}),
-            GraphNodeRecord("false-size", "particle.attribute.set_size", properties={"value": 0.5}),
+            GraphNodeRecord("true-size", "particle.attribute.size", properties={"value": 2.0}),
+            GraphNodeRecord("false-size", "particle.attribute.size", properties={"value": 0.5}),
         ),
         links=(
             GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.EXEC),
@@ -118,7 +188,7 @@ def _collision_lifecycle_asset():
             GraphNodeRecord("root.collision_enter", "particle.root.collision_enter"),
             GraphNodeRecord(
                 "enter-size",
-                "particle.attribute.set_size",
+                "particle.attribute.size",
                 properties={"value": 2.0},
             ),
         ),
@@ -152,7 +222,7 @@ def _wait_asset(*, fork: bool = False):
         ),
         GraphNodeRecord("wait", "particle.control.wait_frames"),
         GraphNodeRecord(
-            "tail", "particle.attribute.set_size", properties={"value": 2.0}
+            "tail", "particle.attribute.size", properties={"value": 2.0}
         ),
     ]
     links = [
@@ -170,7 +240,7 @@ def _wait_asset(*, fork: bool = False):
         nodes.append(
             GraphNodeRecord(
                 "sibling",
-                "particle.attribute.set_position",
+                "particle.attribute.position",
                 properties={"value": [1.0, 2.0, 3.0]},
             )
         )
@@ -207,7 +277,7 @@ def _wait_acceleration_asset():
             ),
             GraphNodeRecord(
                 "accelerate",
-                "particle.update.acceleration",
+                "particle.attribute.velocity",
                 properties={"value": [0.0, -9.81, 0.0]},
             ),
         ),
@@ -239,7 +309,7 @@ def _two_wait_asset():
             ),
             GraphNodeRecord("wait.frames", "particle.control.wait_frames"),
             GraphNodeRecord("wait.seconds", "particle.control.wait_seconds"),
-            GraphNodeRecord("tail", "particle.attribute.set_size"),
+            GraphNodeRecord("tail", "particle.attribute.size"),
         ),
         links=(
             GraphLinkRecord(
@@ -297,7 +367,7 @@ def _terminal_wait_acceleration_asset():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "accelerate.down",
-                "particle.update.acceleration",
+                "particle.attribute.velocity",
                 properties={"value": [0.0, -9.8, 0.0]},
             ),
             GraphNodeRecord(
@@ -307,7 +377,7 @@ def _terminal_wait_acceleration_asset():
             ),
             GraphNodeRecord(
                 "accelerate.up_right",
-                "particle.update.acceleration",
+                "particle.attribute.velocity",
                 properties={"value": [9.8, 9.8, 0.0]},
             ),
             GraphNodeRecord(
@@ -357,6 +427,53 @@ def _terminal_wait_acceleration_asset():
     )
 
 
+def _until_velocity_asset():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "velocity.down",
+                "particle.attribute.velocity",
+                properties={"composition": "add", "value": [0.0, -1.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "until.down",
+                "particle.control.until_seconds",
+                properties={"seconds": 3.0},
+            ),
+            GraphNodeRecord(
+                "velocity.side",
+                "particle.attribute.velocity",
+                properties={"composition": "add", "value": [1.0, 0.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "until.side",
+                "particle.control.until_frames",
+                properties={"frames": 5},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-down", "root.update", "out", "velocity.down", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "down-until", "velocity.down", "out", "until.down", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "until-side", "until.down", "out", "velocity.side", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "side-until", "velocity.side", "out", "until.side", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="until-velocity-gpu",
+        emitters=(ParticleEmitterAsset(update=update),),
+    )
+
+
 def _wait_join_asset():
     update = GraphDocument(
         "particle.update",
@@ -366,18 +483,18 @@ def _wait_join_asset():
             GraphNodeRecord("wait", "particle.control.wait_frames"),
             GraphNodeRecord(
                 "left",
-                "particle.attribute.set_size",
+                "particle.attribute.size",
                 properties={"value": 2.0},
             ),
             GraphNodeRecord(
                 "right",
-                "particle.attribute.set_position",
+                "particle.attribute.position",
                 properties={"value": [1.0, 2.0, 3.0]},
             ),
             GraphNodeRecord("join", "particle.control.join_all"),
             GraphNodeRecord(
                 "tail",
-                "particle.attribute.set_color",
+                "particle.attribute.color",
                 properties={"value": [0.25, 0.5, 0.75, 1.0]},
             ),
         ),
@@ -406,16 +523,16 @@ def _dual_wait_join_asset():
             GraphNodeRecord("seconds", "common.constant.f32", properties={"value": 0.25}),
             GraphNodeRecord("wait.left", "particle.control.wait_frames"),
             GraphNodeRecord("wait.right", "particle.control.wait_seconds"),
-            GraphNodeRecord("left", "particle.attribute.set_size", properties={"value": 2.0}),
+            GraphNodeRecord("left", "particle.attribute.size", properties={"value": 2.0}),
             GraphNodeRecord(
                 "right",
-                "particle.attribute.set_position",
+                "particle.attribute.position",
                 properties={"value": [1.0, 2.0, 3.0]},
             ),
             GraphNodeRecord("join", "particle.control.join_all"),
             GraphNodeRecord(
                 "tail",
-                "particle.attribute.set_color",
+                "particle.attribute.color",
                 properties={"value": [0.25, 0.5, 0.75, 1.0]},
             ),
         ),
@@ -445,28 +562,28 @@ def _nested_wait_join_asset():
             GraphNodeRecord("frames.first", "common.constant.i32", properties={"value": 2}),
             GraphNodeRecord("frames.second", "common.constant.i32", properties={"value": 3}),
             GraphNodeRecord("wait.first", "particle.control.wait_frames"),
-            GraphNodeRecord("first.left", "particle.attribute.set_size", properties={"value": 2.0}),
+            GraphNodeRecord("first.left", "particle.attribute.size", properties={"value": 2.0}),
             GraphNodeRecord(
                 "first.right",
-                "particle.attribute.set_position",
+                "particle.attribute.position",
                 properties={"value": [1.0, 2.0, 3.0]},
             ),
             GraphNodeRecord("join.first", "particle.control.join_all"),
             GraphNodeRecord("wait.second", "particle.control.wait_frames"),
             GraphNodeRecord(
                 "second.left",
-                "particle.attribute.set_velocity",
+                "particle.attribute.velocity",
                 properties={"value": [0.0, 4.0, 0.0]},
             ),
             GraphNodeRecord(
                 "second.right",
-                "particle.attribute.set_color",
+                "particle.attribute.color",
                 properties={"value": [0.2, 0.4, 0.8, 1.0]},
             ),
             GraphNodeRecord("join.second", "particle.control.join_all"),
             GraphNodeRecord(
                 "tail",
-                "particle.attribute.set_rotation",
+                "particle.attribute.rotation",
                 properties={"value": 0.75},
             ),
         ),
@@ -660,14 +777,37 @@ def test_gpu_terminal_wait_finishes_continuation_and_compiles_valid_spirv():
 
     assert first_wait.resume_node_uid == "accelerate.up_right"
     assert terminal_wait.resume_node_uid == ""
-    assert terminal_wait.resume_operation_index == -1
     assert terminal_wait.resume_instruction_index == -1
+
+    source = GpuParticleGlslLowerer().lower(kernel)
+    gpu_emitter = source.emitters[0]
+    continuation = gpu_emitter.continuation
+    assert continuation is not None
+    assert continuation.dispatch.count("case ") == 2
+    assert "inx_finish_continuation(" in continuation.dispatch
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_gpu_until_repeats_preceding_attribute_operation_and_compiles_valid_spirv():
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_until_velocity_asset())
+    )
+    emitter = kernel.emitters[0]
+    assert [item.resume_node_uid for item in emitter.suspensions] == [
+        "velocity.down",
+        "velocity.side",
+    ]
 
     source = GpuParticleGlslLowerer().lower(kernel)
     continuation = source.emitters[0].continuation
     assert continuation is not None
+    assert "inx_until_seconds(" in source.emitters[0].update
+    assert "inx_until_frames(" in source.emitters[0].update
+    assert "INX_CONTINUATION_FLAG_UNTIL_SECONDS" in source.emitters[0].update
+    assert "INX_CONTINUATION_FLAG_UNTIL_FRAMES" in source.emitters[0].update
     assert continuation.dispatch.count("case ") == 2
-    assert "inx_finish_continuation(" in continuation.dispatch
+    assert continuation.dispatch.count("state.a_builtin_velocity =") >= 2
     compiled = compile_gpu_particle_spirv(source)
     validate_gpu_particle_spirv(compiled, source)
 
@@ -770,7 +910,7 @@ def test_collision_lifecycle_root_lowers_to_gpu_mask_and_valid_spirv():
 
 def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     hir = ParticleGraphCompiler().compile(_scene_collision_asset())
-    operation = hir.emitters[0].update.operations[-1]
+    operation = tuple(hir.emitters[0].update.flow.iter_operations())[-1]
     assert operation.opcode == "collision.scene"
     assert operation.parameter_dict() == {
         "friction_scale": 0.5,
@@ -964,7 +1104,10 @@ def test_scene_collision_event_payload_reads_post_collision_state():
     )
 
     hir = ParticleGraphCompiler().compile(graph)
-    assert [operation.opcode for operation in hir.emitters[0].update.operations] == [
+    assert [
+        operation.opcode
+        for operation in hir.emitters[0].update.flow.iter_operations()
+    ] == [
         "collision.scene",
         "event.emit",
     ]
@@ -1034,7 +1177,7 @@ def test_gpu_parameters_use_one_stable_uvec4_slot_and_typed_loads():
                 "particle.parameter.get",
                 properties={"parameter": "wind"},
             ),
-            GraphNodeRecord("accelerate", "particle.update.acceleration"),
+            GraphNodeRecord("accelerate", "particle.attribute.velocity"),
         ),
         links=(
             GraphLinkRecord("stream", "root.update", "out", "accelerate", "in", PortKind.EXEC),
@@ -1111,7 +1254,7 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("set-color", "particle.attribute.set_color"),
+            GraphNodeRecord("set-color", "particle.attribute.color"),
             GraphNodeRecord(
                 "texture",
                 "particle.parameter.get",
@@ -1243,7 +1386,7 @@ def _event_output_program():
                 "impact.payload",
                 particle_event_payload_type_id("impact-route"),
             ),
-            GraphNodeRecord("impact.weight", "particle.attribute.set_size"),
+            GraphNodeRecord("impact.weight", "particle.attribute.size"),
         ),
         links=(
             GraphLinkRecord(
@@ -1325,7 +1468,7 @@ def test_gpu_backend_lowers_vector_compose_and_zero_extended_math_inputs():
                 properties={"attribute": "builtin.position"},
             ),
             GraphNodeRecord("add", "common.math.add"),
-            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("acceleration", "particle.attribute.velocity"),
         ),
         links=(
             GraphLinkRecord(
@@ -1417,7 +1560,7 @@ def _noise_gpu_source():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("acceleration", "particle.attribute.velocity"),
             GraphNodeRecord(
                 "position",
                 "particle.attribute.get",
@@ -1562,7 +1705,7 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "flipbook",
-                "particle.attribute.set_flipbook_frame",
+                "particle.attribute.flipbook_frame",
                 properties={"value": 5.0},
             ),
         ),
@@ -1688,7 +1831,7 @@ def _vector_field_gpu_source(*, boundary="zero", filtering="linear"):
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("acceleration", "particle.attribute.velocity"),
             GraphNodeRecord(
                 "position",
                 "particle.attribute.get",
@@ -1810,9 +1953,9 @@ def test_gpu_lowerer_emits_normalized_age_lerp_rotation_and_attribute_stores():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("set-color", "particle.attribute.set_color"),
-            GraphNodeRecord("set-size", "particle.attribute.set_size"),
-            GraphNodeRecord("set-rotation", "particle.attribute.set_rotation"),
+            GraphNodeRecord("set-color", "particle.attribute.color"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
+            GraphNodeRecord("set-rotation", "particle.attribute.rotation"),
             GraphNodeRecord("normalized-age", "particle.attribute.normalized_age"),
             GraphNodeRecord("start-color", "common.constant.color"),
             GraphNodeRecord(
@@ -1882,12 +2025,12 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
             GraphNodeRecord("root.init", "particle.root.init"),
             GraphNodeRecord(
                 "orientation",
-                "particle.attribute.set_orientation",
+                "particle.attribute.orientation",
                 properties={"degrees": [10.0, 20.0, 30.0]},
             ),
             GraphNodeRecord(
                 "scale",
-                "particle.attribute.set_scale",
+                "particle.attribute.scale",
                 properties={"value": [2.0, 0.5, 1.5]},
             ),
         ),
@@ -1902,8 +2045,8 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord(
                 "rotate",
-                "particle.update.rotate_orientation",
-                properties={"degrees_per_second": [90.0, 180.0, 270.0]},
+                "particle.attribute.orientation",
+                properties={"degrees": [90.0, 180.0, 270.0]},
             ),
         ),
         links=(GraphLinkRecord("update-stream", "root.update", "out", "rotate", "in", PortKind.EXEC),),
@@ -1956,8 +2099,8 @@ def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("set-size", "particle.attribute.set_size"),
-            GraphNodeRecord("set-color", "particle.attribute.set_color"),
+            GraphNodeRecord("set-size", "particle.attribute.size"),
+            GraphNodeRecord("set-color", "particle.attribute.color"),
             GraphNodeRecord(
                 "age",
                 "particle.attribute.get",

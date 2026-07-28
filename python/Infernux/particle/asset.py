@@ -462,15 +462,18 @@ def default_stage_graph(stage: str) -> GraphDocument:
             (
                 GraphNodeRecord(
                     "init.lifetime",
-                    "particle.attribute.set_lifetime",
+                    "particle.attribute.lifetime",
                     (280.0, -70.0),
-                    properties={"value": 5.0},
+                    properties={"composition": "set", "value": 5.0},
                 ),
                 GraphNodeRecord(
                     "init.velocity",
-                    "particle.attribute.set_velocity",
+                    "particle.attribute.velocity",
                     (560.0, -70.0),
-                    properties={"value": [0.0, 1.0, 0.0]},
+                    properties={
+                        "composition": "set",
+                        "value": [0.0, 1.0, 0.0],
+                    },
                 ),
             )
         )
@@ -492,18 +495,21 @@ def default_stage_graph(stage: str) -> GraphDocument:
     elif stage == "update":
         nodes.append(
             GraphNodeRecord(
-                "update.acceleration",
-                "particle.update.acceleration",
+                "update.velocity",
+                "particle.attribute.velocity",
                 (280.0, -70.0),
-                properties={"value": [0.0, -9.81, 0.0]},
+                properties={
+                    "composition": "add",
+                    "value": [0.0, -0.01, 0.0],
+                },
             )
         )
         links.append(
             GraphLinkRecord(
-                "root-to-acceleration",
+                "root-to-velocity",
                 root_uid,
                 "out",
-                "update.acceleration",
+                "update.velocity",
                 "in",
                 PortKind.EXEC,
             )

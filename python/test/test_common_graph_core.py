@@ -54,7 +54,7 @@ def test_graph_document_uses_exec_as_the_only_control_link_kind():
         "particle.update",
         nodes=(
             GraphNodeRecord("root", "particle.root.update"),
-            GraphNodeRecord("tail", "particle.attribute.set_size"),
+            GraphNodeRecord("tail", "particle.attribute.size"),
         ),
         links=(
             GraphLinkRecord(

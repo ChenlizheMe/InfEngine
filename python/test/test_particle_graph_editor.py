@@ -53,14 +53,13 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
 
 
     assert model.remove_node("root.init") is False
-    assert "particle.attribute.set_velocity" in {
+    assert "particle.context.delta_time" not in {
         definition.type_id for definition in model.registered_types()
     }
-    assert "particle.update.acceleration" not in {
+    assert "particle.attribute.velocity" in {
         definition.type_id for definition in model.registered_types()
     }
-
-    velocity = model.add_node("particle.attribute.set_velocity", 240.0, 20.0)
+    velocity = model.add_node("particle.attribute.velocity", 240.0, 20.0)
     velocity.data["value"] = [1.0, 2.0, 3.0]
     assert model.add_link("init.velocity", "out", velocity.uid, "in") is not None
 
@@ -72,12 +71,23 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     assert all(link.kind.value == "exec" for link in restored.links)
 
 
+def test_particle_update_palette_exposes_explicit_delta_time_value():
+    document = ParticleGraphAsset().emitters[0].update
+    model = _stage_model(document)
+
+    assert "particle.context.delta_time" in {
+        definition.type_id for definition in model.registered_types()
+    }
+
+
 def test_particle_wait_nodes_are_exposed_after_gpu_resume_is_available():
     model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
     visible_types = {definition.type_id for definition in model.registered_types()}
 
     assert "particle.control.wait_frames" in visible_types
     assert "particle.control.wait_seconds" in visible_types
+    assert "particle.control.until_frames" in visible_types
+    assert "particle.control.until_seconds" in visible_types
 
     model.set_authoring_stage("update")
     model.prepare_node_creation("update")
@@ -106,20 +116,40 @@ def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage
     for type_id in (
         "particle.attribute.get",
         "particle.vector_field.sample",
-        "particle.attribute.set_lifetime",
+        "particle.attribute.lifetime",
         "particle.attribute.normalized_age",
     ):
         assert type_id in init_types
         assert type_id in update_types
         assert type_id in rendering_types
 
-    assert "particle.update.acceleration" not in rendering_types
+    assert "particle.attribute.velocity" in rendering_types
     assert "particle.output.sprite" not in update_types
 
     model = ParticleEmitterGraphAuthoringModel(emitter)
     model.prepare_node_creation("update")
     position = model.add_node("particle.attribute.get", 200.0, 230.0)
     assert position.uid.startswith("update::")
+
+
+def test_particle_attribute_node_title_tracks_composition_mode():
+    model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
+    model.prepare_node_creation("update")
+    velocity = model.add_node("particle.attribute.velocity", 240.0, 220.0)
+    definition = model.definition_for_type(velocity.type_id)
+    assert definition is not None
+    composition = definition.property("composition")
+    assert composition is not None
+    assert composition.choices == (
+        ("Set", "set"),
+        ("Add", "add"),
+        ("Multiply", "multiply"),
+    )
+    assert model.get_node_type(velocity).label == "Set Velocity"
+    velocity.data["composition"] = "add"
+    assert model.get_node_type(velocity).label == "Add Velocity"
+    velocity.data["composition"] = "multiply"
+    assert model.get_node_type(velocity).label == "Multiply Velocity"
 
 
 def test_collision_lifecycle_roots_require_setting_and_are_unique():
@@ -240,7 +270,7 @@ def test_vector_field_sample_connects_to_simulation_space_acceleration():
 
     position = model.add_node("particle.attribute.get", 200.0, 180.0)
     vector_field = model.add_node("particle.vector_field.sample", 440.0, 180.0)
-    acceleration = model.add_node("particle.update.acceleration", 680.0, 180.0)
+    acceleration = model.add_node("particle.attribute.velocity", 680.0, 180.0)
 
     assert model.add_link(position.uid, "value", vector_field.uid, "position") is not None
     assert model.add_link(vector_field.uid, "value", acceleration.uid, "value") is not None
@@ -309,32 +339,32 @@ def test_particle_emitter_authoring_combines_stages_but_keeps_chains_isolated():
 
     assert [node.type_id for node in model.nodes] == [
         "particle.root.init",
-        "particle.attribute.set_lifetime",
-        "particle.attribute.set_velocity",
+        "particle.attribute.lifetime",
+        "particle.attribute.velocity",
         "particle.root.update",
-        "particle.update.acceleration",
+        "particle.attribute.velocity",
         "particle.root.rendering",
         "particle.output.sprite",
     ]
     assert model.remove_node("init::root.init") is False
 
-    velocity = model.add_node("particle.attribute.set_velocity", 220.0, 0.0)
-    acceleration = model.add_node("particle.update.acceleration", 220.0, 230.0)
+    velocity = model.add_node("particle.attribute.velocity", 220.0, 0.0)
+    acceleration = model.add_node("particle.attribute.velocity", 220.0, 230.0)
     assert model.add_link("init::init.velocity", "out", velocity.uid, "in") is not None
-    assert model.add_link("update::update.acceleration", "out", acceleration.uid, "in") is not None
+    assert model.add_link("update::update.velocity", "out", acceleration.uid, "in") is not None
     assert not model.validate_link(velocity.uid, "out", acceleration.uid, "in")
 
     documents = model.to_documents()
     assert [node.type_id for node in documents["init"].nodes] == [
         "particle.root.init",
-        "particle.attribute.set_lifetime",
-        "particle.attribute.set_velocity",
-        "particle.attribute.set_velocity",
+        "particle.attribute.lifetime",
+        "particle.attribute.velocity",
+        "particle.attribute.velocity",
     ]
     assert [node.type_id for node in documents["update"].nodes] == [
         "particle.root.update",
-        "particle.update.acceleration",
-        "particle.update.acceleration",
+        "particle.attribute.velocity",
+        "particle.attribute.velocity",
     ]
 
 
@@ -609,7 +639,7 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
-    velocity = panel._on_node_add("particle.attribute.set_velocity", 220.0, 0.0)
+    velocity = panel._on_node_add("particle.attribute.velocity", 220.0, 0.0)
     panel._on_link_created("init::init.velocity", "out", velocity.uid, "in")
     panel._select_stage("rendering")
 
@@ -620,17 +650,17 @@ def test_particle_graph_editor_restores_single_canvas_dirty_draft():
     assert restored._stage == "rendering"
     assert [node.type_id for node in restored.asset.emitters[0].init.nodes] == [
         "particle.root.init",
-        "particle.attribute.set_lifetime",
-        "particle.attribute.set_velocity",
-        "particle.attribute.set_velocity",
+        "particle.attribute.lifetime",
+        "particle.attribute.velocity",
+        "particle.attribute.velocity",
     ]
     assert [node.type_id for node in restored._model.nodes] == [
         "particle.root.init",
-        "particle.attribute.set_lifetime",
-        "particle.attribute.set_velocity",
-        "particle.attribute.set_velocity",
+        "particle.attribute.lifetime",
+        "particle.attribute.velocity",
+        "particle.attribute.velocity",
         "particle.root.update",
-        "particle.update.acceleration",
+        "particle.attribute.velocity",
         "particle.root.rendering",
         "particle.output.sprite",
     ]
@@ -969,17 +999,17 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains(
     panel._record = lambda *_args: None
 
     initial = panel.add_authoring_node(
-        "init", "particle.attribute.set_orientation", 240.0, 40.0
+        "init", "particle.attribute.orientation", 240.0, 40.0
     )
     changed = panel.set_node_property(
         initial["uid"], "degrees", [15.0, 30.0, 45.0]
     )
     initial_link = panel.connect_exec("init::root.init", initial["uid"])
     angular = panel.add_authoring_node(
-        "update", "particle.update.rotate_orientation", 240.0, 400.0
+        "update", "particle.attribute.orientation", 240.0, 400.0
     )
     panel.set_node_property(
-        angular["uid"], "degrees_per_second", [130.0, 220.0, 310.0]
+        angular["uid"], "degrees", [130.0, 220.0, 310.0]
     )
     update_link = panel.connect_exec("update::root.update", angular["uid"])
 
@@ -995,7 +1025,7 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains(
     snapshot = panel.authoring_snapshot()
     nodes = {node["uid"]: node for node in snapshot["nodes"]}
     assert nodes[initial["uid"]]["properties"]["degrees"] == [15.0, 30.0, 45.0]
-    assert nodes[angular["uid"]]["properties"]["degrees_per_second"] == [
+    assert nodes[angular["uid"]]["properties"]["degrees"] == [
         130.0,
         220.0,
         310.0,
@@ -1011,7 +1041,7 @@ def test_particle_graph_editor_public_api_disconnects_exec_links():
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
     lifetime = panel.add_authoring_node(
-        "init", "particle.attribute.set_lifetime", 240.0, 40.0
+        "init", "particle.attribute.lifetime", 240.0, 40.0
     )
     connected = panel.connect_exec("init::root.init", lifetime["uid"])
 
@@ -1191,7 +1221,7 @@ def test_particle_graph_editor_public_api_authors_a_typed_event_route():
         0.0,
     )
     size = panel.add_authoring_node(
-        "init", "particle.attribute.set_size", 420.0, 0.0
+        "init", "particle.attribute.size", 420.0, 0.0
     )
     panel.connect_exec("init::root.init", size["uid"])
     panel.connect_value(
@@ -1308,7 +1338,7 @@ def test_particle_graph_editor_updates_event_identity_in_place():
         "init", particle_event_payload_type_id(route["stable_id"]), 160.0, 0.0
     )
     size = panel.add_authoring_node(
-        "init", "particle.attribute.set_size", 420.0, 0.0
+        "init", "particle.attribute.size", 420.0, 0.0
     )
     panel.connect_exec("init::root.init", size["uid"])
     payload_port = particle_event_payload_port_id(
@@ -1698,8 +1728,35 @@ def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatc
     graph = ParticleGraphAsset.load(str(path))
     assert graph.name == "Fire"
     assert len(graph.emitters) == 1
+    emitter = graph.emitters[0]
+    assert [node.type_id for node in emitter.init.nodes[1:]] == [
+        "particle.attribute.lifetime",
+        "particle.attribute.velocity",
+    ]
+    assert [node.type_id for node in emitter.update.nodes[1:]] == [
+        "particle.attribute.velocity"
+    ]
+    assert emitter.update.nodes[1].properties["composition"] == "add"
     assert compiled == [str(path)]
     assert json.loads(path.read_text(encoding="utf-8"))["$schema"] == "infernux.particle_graph"
+
+
+def test_particle_graph_document_state_does_not_serialize_stale_model(monkeypatch):
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel = ParticleGraphEditorPanel()
+    panel._file_path = "Assets/VFX/Legacy.particlegraph"
+    panel._dirty = False
+    monkeypatch.setattr(
+        panel,
+        "_sync_model_to_asset",
+        lambda: (_ for _ in ()).throw(AssertionError("must not serialize the graph")),
+    )
+
+    assert panel.authoring_document_state() == {
+        "file_path": "Assets/VFX/Legacy.particlegraph",
+        "dirty": False,
+    }
 
 
 def test_particle_graph_live_draft_publishes_without_overwriting_source(tmp_path):

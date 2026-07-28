@@ -302,10 +302,10 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
         "rendering::mesh-output", "mesh", "Assets/Models/Shard.obj"
     )
     added = mcp.tools["particle_graph_add_node"](
-        "update", "particle.update.rotate_orientation", 120.0, 40.0
+        "update", "particle.attribute.orientation", 120.0, 40.0
     )
     property_changed = mcp.tools["particle_graph_set_node_property"](
-        "update::new-node", "degrees_per_second", [1.0, 2.0, 3.0]
+        "update::new-node", "degrees", [1.0, 2.0, 3.0]
     )
     connected = mcp.tools["particle_graph_connect_exec"](
         "update::root.update", "update::new-node"
@@ -418,11 +418,11 @@ def test_particle_graph_mcp_tools_edit_the_live_panel_document(tmp_path, monkeyp
     assert discarded["discarded"] is True
     assert panel.calls == [
         ("rendering::mesh-output", "mesh", str(mesh_path.resolve())),
-        ("add", "update", "particle.update.rotate_orientation", 120.0, 40.0),
+        ("add", "update", "particle.attribute.orientation", 120.0, 40.0),
         (
             "property",
             "update::new-node",
-            "degrees_per_second",
+            "degrees",
             [1.0, 2.0, 3.0],
         ),
         ("connect", "update::root.update", "update::new-node"),

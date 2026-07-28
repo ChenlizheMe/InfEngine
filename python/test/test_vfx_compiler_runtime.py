@@ -1003,7 +1003,7 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
         "particle.update",
         (
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("acceleration", "particle.update.acceleration"),
+            GraphNodeRecord("acceleration", "particle.attribute.velocity"),
             GraphNodeRecord(
                 "position",
                 "particle.attribute.get",
