@@ -91,6 +91,14 @@ struct alignas(16) GpuParticleContinuationDispatchArguments
     uint32_t reserved = 0;
 };
 
+struct alignas(16) GpuParticleContinuationJoinState
+{
+    uint32_t branchToken = 0;
+    uint32_t expectedMask = 0;
+    uint32_t arrivedMask = 0;
+    uint32_t generation = 0;
+};
+
 struct alignas(16) GpuParticleContinuationConstants
 {
     uint32_t capacity = 0;
@@ -107,6 +115,8 @@ struct GpuParticleContinuationDesc
 {
     uint32_t capacity = 0;
     uint32_t recordStride = sizeof(GpuParticleContinuationRecord);
+    uint32_t laneCount = 0;
+    uint32_t joinCount = 0;
     uint32_t initialProgramGeneration = 1;
     GpuParticleContinuationProgram program;
     rhi::BindingLayoutHandle ownerLayout;
@@ -122,6 +132,8 @@ struct GpuParticleContinuationResources
     rhi::BufferHandle counters;
     rhi::BufferHandle classifyIndirectArguments;
     rhi::BufferHandle dispatchIndirectArguments;
+    rhi::BufferHandle laneSlots;
+    rhi::BufferHandle joinStates;
 
     [[nodiscard]] bool IsValid() const noexcept;
 };
@@ -130,10 +142,14 @@ struct GpuParticleContinuationTelemetry
 {
     uint32_t capacity = 0;
     uint32_t recordStride = 0;
+    uint32_t laneCount = 0;
+    uint32_t joinCount = 0;
     uint32_t programGeneration = 0;
     uint32_t resetSerial = 0;
     uint64_t recordBytes = 0;
     uint64_t queueBytes = 0;
+    uint64_t laneSlotBytes = 0;
+    uint64_t joinStateBytes = 0;
     uint64_t prepareRecordCalls = 0;
     uint64_t classifyRecordCalls = 0;
     uint64_t dispatchRecordCalls = 0;
@@ -154,6 +170,8 @@ class ParticleGpuContinuationRuntime
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t MaximumCapacity = 1u << 24u;
     static constexpr uint32_t MaximumRecordStride = 4096;
+    static constexpr uint32_t MaximumLaneCount = 4096;
+    static constexpr uint32_t MaximumJoinCount = 1024;
     static constexpr uint64_t IndirectBufferBytes = sizeof(GpuParticleContinuationDispatchArguments);
 
     ParticleGpuContinuationRuntime();
@@ -173,6 +191,8 @@ class ParticleGpuContinuationRuntime
     [[nodiscard]] bool SharesStorageWith(const ParticleGpuContinuationRuntime &other) const noexcept;
     [[nodiscard]] uint32_t Capacity() const noexcept;
     [[nodiscard]] uint32_t RecordStride() const noexcept;
+    [[nodiscard]] uint32_t LaneCount() const noexcept;
+    [[nodiscard]] uint32_t JoinCount() const noexcept;
     [[nodiscard]] uint32_t ProgramGeneration() const noexcept;
     [[nodiscard]] uint32_t ResetSerial() const noexcept;
     [[nodiscard]] const GpuParticleContinuationResources &Resources() const noexcept;
@@ -216,6 +236,7 @@ class ParticleGpuContinuationRuntime
 static_assert(sizeof(GpuParticleContinuationRecord) == 64);
 static_assert(sizeof(GpuParticleContinuationCounters) == 64);
 static_assert(sizeof(GpuParticleContinuationDispatchArguments) == 16);
+static_assert(sizeof(GpuParticleContinuationJoinState) == 16);
 static_assert(sizeof(GpuParticleContinuationConstants) == 32);
 
 } // namespace infernux::particle

@@ -47,7 +47,8 @@ bool GpuParticleContinuationProgram::IsValid() const noexcept
 bool GpuParticleContinuationResources::IsValid() const noexcept
 {
     return records.IsValid() && freeList.IsValid() && readyQueue.IsValid() && delayedQueue.IsValid() &&
-           counters.IsValid() && classifyIndirectArguments.IsValid() && dispatchIndirectArguments.IsValid();
+           counters.IsValid() && classifyIndirectArguments.IsValid() && dispatchIndirectArguments.IsValid() &&
+           laneSlots.IsValid() && joinStates.IsValid();
 }
 
 struct ParticleGpuContinuationRuntime::ResidentStorage
@@ -58,6 +59,8 @@ struct ParticleGpuContinuationRuntime::ResidentStorage
             return;
         device->Release(resources.dispatchIndirectArguments);
         device->Release(resources.classifyIndirectArguments);
+        device->Release(resources.joinStates);
+        device->Release(resources.laneSlots);
         device->Release(resources.counters);
         device->Release(resources.delayedQueue);
         device->Release(resources.readyQueue);
@@ -68,8 +71,12 @@ struct ParticleGpuContinuationRuntime::ResidentStorage
     rhi::Device *device = nullptr;
     uint32_t capacity = 0;
     uint32_t recordStride = 0;
+    uint32_t laneCount = 0;
+    uint32_t joinCount = 0;
     uint64_t recordBytes = 0;
     uint64_t queueBytes = 0;
+    uint64_t laneSlotBytes = 0;
+    uint64_t joinStateBytes = 0;
     GpuParticleContinuationResources resources;
 };
 
@@ -124,7 +131,8 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
     Destroy();
     if (desc.capacity == 0 || desc.capacity > MaximumCapacity ||
         desc.recordStride < sizeof(GpuParticleContinuationRecord) || desc.recordStride > MaximumRecordStride ||
-        desc.recordStride % 16 != 0 || programGeneration == 0 || !desc.program.IsValid() ||
+        desc.recordStride % 16 != 0 || desc.laneCount == 0 || desc.laneCount > MaximumLaneCount ||
+        desc.joinCount > MaximumJoinCount || programGeneration == 0 || !desc.program.IsValid() ||
         !desc.ownerLayout.IsValid() || !desc.ownerGroup.IsValid())
         return false;
 
@@ -134,7 +142,8 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
     m_resetPending = true;
     if (storage) {
         if (storage->device != &device || storage->capacity != desc.capacity ||
-            storage->recordStride != desc.recordStride) {
+            storage->recordStride != desc.recordStride || storage->laneCount != desc.laneCount ||
+            storage->joinCount != desc.joinCount) {
             Destroy();
             return false;
         }
@@ -142,8 +151,14 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
     } else {
         uint64_t recordBytes = 0;
         uint64_t queueBytes = 0;
+        uint64_t laneSlotBytes = 0;
+        uint64_t joinStateBytes = sizeof(GpuParticleContinuationJoinState);
         if (!CheckedMultiply(desc.capacity, desc.recordStride, recordBytes) ||
-            !CheckedMultiply(desc.capacity, sizeof(uint32_t), queueBytes)) {
+            !CheckedMultiply(desc.capacity, sizeof(uint32_t), queueBytes) ||
+            !CheckedMultiply(desc.capacity, uint64_t(desc.laneCount) * sizeof(uint32_t), laneSlotBytes) ||
+            (desc.joinCount > 0 &&
+             !CheckedMultiply(desc.capacity, uint64_t(desc.joinCount) * sizeof(GpuParticleContinuationJoinState),
+                              joinStateBytes))) {
             Destroy();
             return false;
         }
@@ -151,8 +166,12 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
         created->device = &device;
         created->capacity = desc.capacity;
         created->recordStride = desc.recordStride;
+        created->laneCount = desc.laneCount;
+        created->joinCount = desc.joinCount;
         created->recordBytes = recordBytes;
         created->queueBytes = queueBytes;
+        created->laneSlotBytes = laneSlotBytes;
+        created->joinStateBytes = joinStateBytes;
         const auto storageUsage = rhi::BufferUsageFlags::Storage;
         created->resources.records = CreateGpuBuffer(device, recordBytes, storageUsage);
         created->resources.freeList = CreateGpuBuffer(device, queueBytes, storageUsage);
@@ -164,6 +183,8 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
             CreateGpuBuffer(device, IndirectBufferBytes, storageUsage | rhi::BufferUsageFlags::Indirect);
         created->resources.dispatchIndirectArguments =
             CreateGpuBuffer(device, IndirectBufferBytes, storageUsage | rhi::BufferUsageFlags::Indirect);
+        created->resources.laneSlots = CreateGpuBuffer(device, laneSlotBytes, storageUsage);
+        created->resources.joinStates = CreateGpuBuffer(device, joinStateBytes, storageUsage);
         if (!created->resources.IsValid()) {
             Destroy();
             return false;
@@ -175,16 +196,16 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
     revision->device = &device;
     revision->ownerGroup = desc.ownerGroup;
     rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 7; ++binding)
+    for (uint32_t binding = 0; binding < 9; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 7;
+    layoutDesc.entryCount = 9;
     revision->layout = device.CreateBindingLayout(layoutDesc);
     if (!revision->layout.IsValid()) {
         Destroy();
         return false;
     }
 
-    const std::array<rhi::BufferHandle, 7> buffers = {
+    const std::array<rhi::BufferHandle, 9> buffers = {
         m_storage->resources.records,
         m_storage->resources.freeList,
         m_storage->resources.readyQueue,
@@ -192,6 +213,8 @@ bool ParticleGpuContinuationRuntime::CreateInternal(rhi::Device &device, const G
         m_storage->resources.counters,
         m_storage->resources.classifyIndirectArguments,
         m_storage->resources.dispatchIndirectArguments,
+        m_storage->resources.laneSlots,
+        m_storage->resources.joinStates,
     };
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = revision->layout;
@@ -274,6 +297,16 @@ uint32_t ParticleGpuContinuationRuntime::RecordStride() const noexcept
     return m_storage ? m_storage->recordStride : 0;
 }
 
+uint32_t ParticleGpuContinuationRuntime::LaneCount() const noexcept
+{
+    return m_storage ? m_storage->laneCount : 0;
+}
+
+uint32_t ParticleGpuContinuationRuntime::JoinCount() const noexcept
+{
+    return m_storage ? m_storage->joinCount : 0;
+}
+
 uint32_t ParticleGpuContinuationRuntime::ProgramGeneration() const noexcept
 {
     return m_programGeneration;
@@ -295,10 +328,14 @@ GpuParticleContinuationTelemetry ParticleGpuContinuationRuntime::Telemetry() con
     GpuParticleContinuationTelemetry result;
     result.capacity = Capacity();
     result.recordStride = RecordStride();
+    result.laneCount = LaneCount();
+    result.joinCount = JoinCount();
     result.programGeneration = m_programGeneration;
     result.resetSerial = m_resetSerial;
     result.recordBytes = m_storage ? m_storage->recordBytes : 0;
     result.queueBytes = m_storage ? m_storage->queueBytes : 0;
+    result.laneSlotBytes = m_storage ? m_storage->laneSlotBytes : 0;
+    result.joinStateBytes = m_storage ? m_storage->joinStateBytes : 0;
     result.prepareRecordCalls = m_prepareRecordCalls;
     result.classifyRecordCalls = m_classifyRecordCalls;
     result.dispatchRecordCalls = m_dispatchRecordCalls;

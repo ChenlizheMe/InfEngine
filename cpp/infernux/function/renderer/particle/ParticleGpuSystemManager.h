@@ -134,6 +134,8 @@ struct GpuParticleEmitterProgram
     std::vector<uint32_t> eventInitKernel;
     uint32_t continuationCapacity = 0;
     uint32_t continuationRecordStride = 0;
+    uint32_t continuationLaneCount = 0;
+    uint32_t continuationJoinCount = 0;
     std::array<std::vector<uint32_t>, static_cast<size_t>(GpuParticleContinuationKernelStage::Count)>
         continuationKernels;
     std::optional<GpuParticleMeshShapeProgram> meshShape;

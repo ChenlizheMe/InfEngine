@@ -131,14 +131,17 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
         if (!py::isinstance<py::dict>(value["continuation"]))
             throw std::invalid_argument("GPU particle continuation must be a dictionary or None");
         const py::dict continuation = py::cast<py::dict>(value["continuation"]);
-        for (const char *field : {"capacity", "record_stride", "prepare", "classify", "dispatch"}) {
+        for (const char *field :
+             {"capacity", "record_stride", "lane_count", "join_count", "prepare", "classify", "dispatch"}) {
             if (!continuation.contains(field))
                 throw std::invalid_argument(std::string("GPU particle continuation is missing ") + field);
         }
-        if (py::len(continuation) != 5)
+        if (py::len(continuation) != 7)
             throw std::invalid_argument("GPU particle continuation contains unknown fields");
         program.continuationCapacity = py::cast<uint32_t>(continuation["capacity"]);
         program.continuationRecordStride = py::cast<uint32_t>(continuation["record_stride"]);
+        program.continuationLaneCount = py::cast<uint32_t>(continuation["lane_count"]);
+        program.continuationJoinCount = py::cast<uint32_t>(continuation["join_count"]);
         program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Prepare)] =
             DecodeParticleSpirv(continuation["prepare"], "particle continuation prepare");
         program.continuationKernels[static_cast<size_t>(particle::GpuParticleContinuationKernelStage::Classify)] =

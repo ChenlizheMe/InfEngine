@@ -555,6 +555,8 @@ struct ParticleGpuSystemManager::Impl
         runtimeDesc.continuation.capacity = program.continuationCapacity;
         if (program.continuationCapacity > 0) {
             runtimeDesc.continuation.recordStride = program.continuationRecordStride;
+            runtimeDesc.continuation.laneCount = program.continuationLaneCount;
+            runtimeDesc.continuation.joinCount = program.continuationJoinCount;
             runtimeDesc.continuation.program.prepare = {
                 program.continuationKernels[static_cast<size_t>(GpuParticleContinuationKernelStage::Prepare)].data(),
                 program.continuationKernels[static_cast<size_t>(GpuParticleContinuationKernelStage::Prepare)].size(),
@@ -770,11 +772,16 @@ struct ParticleGpuSystemManager::Impl
               program.continuationRecordStride > ParticleGpuContinuationRuntime::MaximumRecordStride ||
               program.continuationRecordStride % 16 != 0)) ||
             (program.continuationCapacity > 0 &&
+             (program.continuationLaneCount == 0 ||
+              program.continuationLaneCount > ParticleGpuContinuationRuntime::MaximumLaneCount ||
+              program.continuationJoinCount > ParticleGpuContinuationRuntime::MaximumJoinCount)) ||
+            (program.continuationCapacity > 0 &&
              !std::all_of(program.continuationKernels.begin(), program.continuationKernels.end(),
                           [](const auto &kernel) { return IsSpirv(kernel); }))) {
             SetError(error,
-                     "GPU particle continuation capacity and Prepare/Classify/Dispatch SPIR-V must be supplied "
-                     "together and satisfy the bounded runtime contract");
+                     "GPU particle continuation capacity, record stride, static lane/join counts and "
+                     "Prepare/Classify/Dispatch SPIR-V must be supplied together and satisfy the bounded runtime "
+                     "contract");
             return {};
         }
         const bool needsLegacyBillboard =
@@ -1453,11 +1460,10 @@ bool ParticleGpuSystemManager::Initialize(
     vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
     GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
     GpuBillboardTextureResolver textureResolver, GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver,
-    const GpuParticleSortProgram &sortProgram,
-    const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
-    const GpuParticleMigrationProgram &migrationProgram, const GpuParticleEventProgram &eventProgram,
-    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram,
-    uint32_t framesInFlight)
+    const GpuParticleSortProgram &sortProgram, const GpuParticleCullProgram &cullProgram,
+    const GpuParticleBoundsProgram &boundsProgram, const GpuParticleMigrationProgram &migrationProgram,
+    const GpuParticleEventProgram &eventProgram, const GpuParticleRibbonProgram &ribbonTopologyProgram,
+    const GpuParticleRibbonRenderProgram &ribbonRenderProgram, uint32_t framesInFlight)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
         !eventProgram.IsValid() || framesInFlight == 0 ||

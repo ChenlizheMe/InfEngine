@@ -200,8 +200,8 @@ struct FakeDevice final : rhi::Device
 using TestTextureSlots = std::unordered_map<std::string, std::shared_ptr<rhi::TextureGpuViewSlot>>;
 
 particle::GpuBillboardTextureLease AcquireTestTexture(FakeDevice &device, TestTextureSlots &slots,
-                                                       const std::string &sourceId, uint64_t revision,
-                                                       rhi::TextureViewHandle view, rhi::SamplerHandle sampler)
+                                                      const std::string &sourceId, uint64_t revision,
+                                                      rhi::TextureViewHandle view, rhi::SamplerHandle sampler)
 {
     const std::string canonicalSourceId = sourceId.empty() ? "white" : sourceId;
     auto &slot = slots[canonicalSourceId];
@@ -209,15 +209,14 @@ particle::GpuBillboardTextureLease AcquireTestTexture(FakeDevice &device, TestTe
         slot = std::make_shared<rhi::TextureGpuViewSlot>(canonicalSourceId);
     auto publication = slot->Acquire();
     if (!publication || publication->GetRevision() != revision) {
-        auto owner = std::shared_ptr<const void>(
-            new uint32_t(static_cast<uint32_t>(revision)),
-            [&device, view, sampler](const void *value) {
-                device.Release(view);
-                device.Release(sampler);
-                delete static_cast<const uint32_t *>(value);
-            });
-        auto next = std::make_shared<const rhi::TextureGpuView>(canonicalSourceId, revision, rhi::TextureHandle{},
-                                                                view, sampler, 1, std::move(owner));
+        auto owner = std::shared_ptr<const void>(new uint32_t(static_cast<uint32_t>(revision)),
+                                                 [&device, view, sampler](const void *value) {
+                                                     device.Release(view);
+                                                     device.Release(sampler);
+                                                     delete static_cast<const uint32_t *>(value);
+                                                 });
+        auto next = std::make_shared<const rhi::TextureGpuView>(canonicalSourceId, revision, rhi::TextureHandle{}, view,
+                                                                sampler, 1, std::move(owner));
         (void)slot->Publish(next);
         publication = std::move(next);
     }
@@ -612,6 +611,8 @@ int main()
         particle::GpuParticleContinuationDesc continuationDesc;
         continuationDesc.capacity = 513;
         continuationDesc.recordStride = 96;
+        continuationDesc.laneCount = 5;
+        continuationDesc.joinCount = 2;
         continuationDesc.initialProgramGeneration = 41;
         continuationDesc.ownerLayout = ownerLayout;
         continuationDesc.ownerGroup = ownerGroup;
@@ -624,18 +625,22 @@ int main()
         auto current = std::make_shared<particle::ParticleGpuContinuationRuntime>();
         assert(current->Create(continuationDevice, continuationDesc));
         assert(current->IsValid() && current->Capacity() == 513 && current->ProgramGeneration() == 41 &&
-               current->ResetSerial() == 1 && current->RecordStride() == 96);
-        assert(continuationDevice.buffers.size() == 7);
-        assert(continuationDevice.buffers[0].byteSize ==
-                   uint64_t(continuationDesc.capacity) * continuationDesc.recordStride &&
-               continuationDevice.buffers[1].byteSize == uint64_t(continuationDesc.capacity) * sizeof(uint32_t) &&
-               continuationDevice.buffers[2].byteSize == continuationDevice.buffers[1].byteSize &&
-               continuationDevice.buffers[3].byteSize == continuationDevice.buffers[1].byteSize &&
-               continuationDevice.buffers[4].byteSize == sizeof(particle::GpuParticleContinuationCounters) &&
-               continuationDevice.buffers[5].byteSize ==
-                   particle::ParticleGpuContinuationRuntime::IndirectBufferBytes &&
-               continuationDevice.buffers[6].byteSize ==
-                   particle::ParticleGpuContinuationRuntime::IndirectBufferBytes);
+               current->ResetSerial() == 1 && current->RecordStride() == 96 && current->LaneCount() == 5 &&
+               current->JoinCount() == 2);
+        assert(continuationDevice.buffers.size() == 9);
+        assert(
+            continuationDevice.buffers[0].byteSize ==
+                uint64_t(continuationDesc.capacity) * continuationDesc.recordStride &&
+            continuationDevice.buffers[1].byteSize == uint64_t(continuationDesc.capacity) * sizeof(uint32_t) &&
+            continuationDevice.buffers[2].byteSize == continuationDevice.buffers[1].byteSize &&
+            continuationDevice.buffers[3].byteSize == continuationDevice.buffers[1].byteSize &&
+            continuationDevice.buffers[4].byteSize == sizeof(particle::GpuParticleContinuationCounters) &&
+            continuationDevice.buffers[5].byteSize == particle::ParticleGpuContinuationRuntime::IndirectBufferBytes &&
+            continuationDevice.buffers[6].byteSize == particle::ParticleGpuContinuationRuntime::IndirectBufferBytes &&
+            continuationDevice.buffers[7].byteSize ==
+                uint64_t(continuationDesc.capacity) * continuationDesc.laneCount * sizeof(uint32_t) &&
+            continuationDevice.buffers[8].byteSize == uint64_t(continuationDesc.capacity) * continuationDesc.joinCount *
+                                                          sizeof(particle::GpuParticleContinuationJoinState));
         for (size_t index = 0; index < continuationDevice.buffers.size(); ++index) {
             assert(rhi::HasBufferUsage(continuationDevice.buffers[index].usage, rhi::BufferUsageFlags::Storage));
             assert(continuationDevice.buffers[index].memory == rhi::BufferMemory::DeviceLocal &&
@@ -643,12 +648,11 @@ int main()
                    continuationDevice.buffers[index].initialDataBytes == 0 &&
                    continuationDevice.buffers[index].queueAccess == rhi::QueueAccessFlags::Compute);
         }
-        assert(rhi::HasBufferUsage(continuationDevice.buffers[4].usage,
-                                   rhi::BufferUsageFlags::TransferSource));
+        assert(rhi::HasBufferUsage(continuationDevice.buffers[4].usage, rhi::BufferUsageFlags::TransferSource));
         assert(rhi::HasBufferUsage(continuationDevice.buffers[5].usage, rhi::BufferUsageFlags::Indirect) &&
                rhi::HasBufferUsage(continuationDevice.buffers[6].usage, rhi::BufferUsageFlags::Indirect));
-        assert(continuationDevice.layouts.back().entryCount == 7);
-        assert(continuationDevice.bindGroups.back().bufferCount == 7);
+        assert(continuationDevice.layouts.back().entryCount == 9);
+        assert(continuationDevice.bindGroups.back().bufferCount == 9);
         assert(continuationDevice.pipelineCreates == 3);
         assert(continuationDevice.computePipelineDescs.size() == 3);
         assert(continuationDevice.computePipelineDescs[0].bindingLayoutCount == 1);
@@ -661,8 +665,7 @@ int main()
             &ContinuationTrace::Dispatch, &ContinuationTrace::DispatchIndirect};
         const rhi::ComputeCommandEncoder continuationEncoder(&continuationTrace, &continuationDispatch);
         current->RequestReset();
-        assert(current->ProgramGeneration() == 42 && current->ResetSerial() == 2 &&
-               current->Telemetry().resetPending);
+        assert(current->ProgramGeneration() == 42 && current->ResetSerial() == 2 && current->Telemetry().resetPending);
         constexpr uint64_t Clock = 0x1122334455667788ull;
         assert(!current->RecordClassify(continuationEncoder, 17, Clock));
         assert(!current->RecordDispatch(continuationEncoder, 17, Clock));
@@ -677,25 +680,26 @@ int main()
                continuationTrace.groupSets == std::vector<uint32_t>({0, 0, 0, 1}) &&
                continuationTrace.dispatches == expectedContinuationDispatches);
         assert(continuationTrace.indirectBuffers ==
-               std::vector<rhi::BufferHandle>({current->Resources().classifyIndirectArguments,
-                                               current->Resources().dispatchIndirectArguments}));
+               std::vector<rhi::BufferHandle>(
+                   {current->Resources().classifyIndirectArguments, current->Resources().dispatchIndirectArguments}));
         assert(continuationTrace.indirectOffsets == std::vector<uint64_t>({0, 0}));
         assert(continuationTrace.constants.size() == 3 && continuationTrace.constants[0].capacity == 513 &&
                continuationTrace.constants[0].programGeneration == 42 &&
-               continuationTrace.constants[0].simulationStep == 17 &&
-               continuationTrace.constants[0].resetSerial == 2 &&
+               continuationTrace.constants[0].simulationStep == 17 && continuationTrace.constants[0].resetSerial == 2 &&
                continuationTrace.constants[0].resetRequested == 1 &&
                continuationTrace.constants[0].elapsedTimeLow == 0x55667788u &&
                continuationTrace.constants[0].elapsedTimeHigh == 0x11223344u &&
                continuationTrace.constants[1].resetRequested == 0 &&
                continuationTrace.constants[2].resetRequested == 0);
         const auto telemetry = current->Telemetry();
-        assert(telemetry.capacity == 513 && telemetry.recordStride == 96 && telemetry.programGeneration == 42 &&
-               telemetry.resetSerial == 2 &&
+        assert(telemetry.capacity == 513 && telemetry.recordStride == 96 && telemetry.laneCount == 5 &&
+               telemetry.joinCount == 2 && telemetry.programGeneration == 42 && telemetry.resetSerial == 2 &&
                telemetry.recordBytes == continuationDevice.buffers[0].byteSize &&
-               telemetry.queueBytes == continuationDevice.buffers[1].byteSize && telemetry.prepareRecordCalls == 1 &&
-               telemetry.classifyRecordCalls == 1 && telemetry.dispatchRecordCalls == 1 &&
-               !telemetry.resetPending && telemetry.gpuCountersOnly &&
+               telemetry.queueBytes == continuationDevice.buffers[1].byteSize &&
+               telemetry.laneSlotBytes == continuationDevice.buffers[7].byteSize &&
+               telemetry.joinStateBytes == continuationDevice.buffers[8].byteSize &&
+               telemetry.prepareRecordCalls == 1 && telemetry.classifyRecordCalls == 1 &&
+               telemetry.dispatchRecordCalls == 1 && !telemetry.resetPending && telemetry.gpuCountersOnly &&
                telemetry.gpuCounters == current->Resources().counters &&
                telemetry.gpuClassifyIndirectArguments == current->Resources().classifyIndirectArguments &&
                telemetry.gpuDispatchIndirectArguments == current->Resources().dispatchIndirectArguments);
@@ -705,7 +709,7 @@ int main()
         assert(replacement->CreateCompatible(continuationDevice, continuationDesc, *current));
         assert(replacement->IsValid() && replacement->SharesStorageWith(*current) &&
                replacement->ProgramGeneration() == 43 && replacement->ResetSerial() == 1 &&
-               continuationDevice.buffers.size() == 7 && continuationDevice.pipelineCreates == 6);
+               continuationDevice.buffers.size() == 9 && continuationDevice.pipelineCreates == 6);
 
         GpuRetirementQueue retirement;
         retirement.BindSerialSource([] { return rhi::SubmissionSerial{9}; });
@@ -717,7 +721,7 @@ int main()
         assert(retirement.Collect(9) == 1 && continuationDevice.bufferReleases == 0 &&
                continuationDevice.pipelineReleases == pipelineReleasesBeforeRetire + 3);
         replacement->Destroy();
-        assert(continuationDevice.bufferReleases == 7 && continuationDevice.pipelineReleases == 6 &&
+        assert(continuationDevice.bufferReleases == 9 && continuationDevice.pipelineReleases == 6 &&
                continuationDevice.groupReleases == 2 && continuationDevice.layoutReleases == 2);
         continuationDevice.Release(ownerGroup);
         continuationDevice.Release(ownerLayout);
@@ -751,6 +755,8 @@ int main()
         runtimeDesc.collisionSceneMeshIndices = {906, 1};
         runtimeDesc.collisionSceneMeshBvhNodes = {907, 1};
         runtimeDesc.continuation.capacity = 32;
+        runtimeDesc.continuation.laneCount = 3;
+        runtimeDesc.continuation.joinCount = 1;
         runtimeDesc.continuation.initialProgramGeneration = 7;
         runtimeDesc.continuation.program = {
             {shader.data(), shader.size()},
@@ -761,8 +767,7 @@ int main()
         particle::ParticleGpuRuntime current;
         particle::ParticleGpuRuntime replacement;
         assert(current.Create(runtimeDevice, runtimeDesc));
-        assert(current.IsValid() && current.HasContinuations() &&
-               current.ContinuationTelemetry().capacity == 32 &&
+        assert(current.IsValid() && current.HasContinuations() && current.ContinuationTelemetry().capacity == 32 &&
                current.ContinuationTelemetry().programGeneration == 7);
         assert(replacement.CreateCompatible(runtimeDevice, runtimeDesc, current));
         assert(replacement.IsValid() && replacement.HasContinuations() && replacement.SharesStateWith(current) &&
@@ -778,10 +783,9 @@ int main()
         replacement.Destroy();
         assert(runtimeDevice.bufferReleases == buffersBeforeRetiredRevision + 1);
         current.RequestContinuationReset();
-        assert(current.ContinuationTelemetry().programGeneration == 9 &&
-               current.ContinuationTelemetry().resetPending);
+        assert(current.ContinuationTelemetry().programGeneration == 9 && current.ContinuationTelemetry().resetPending);
         current.Destroy();
-        assert(runtimeDevice.bufferReleases == buffersBeforeRetiredRevision + 17);
+        assert(runtimeDevice.bufferReleases == buffersBeforeRetiredRevision + 19);
     }
 
     {
@@ -802,8 +806,7 @@ int main()
         auto replacementSlot = cache.Insert("asset::linear", makeTexture(200, 200), 2, false, "texture-guid", 2);
         assert(replacementSlot == slot && replacementSlot->Acquire()->GetRevision() == 2 &&
                !replacementSlot->NeedsRefresh() && cache.GetResidentBytes() == 300 &&
-               cache.GetRetiredLeaseCount() == 1 &&
-               cache.GetRetiredLeaseBytes() == 100);
+               cache.GetRetiredLeaseCount() == 1 && cache.GetRetiredLeaseBytes() == 100);
         assert(!cache.FindAsset("asset::linear", "texture-guid", 1, 3));
         assert(cache.FindAsset("asset::linear", "texture-guid", 2, 3) == slot);
 
@@ -817,8 +820,8 @@ int main()
         slot.reset();
         replacementSlot.reset();
         externalSlot.reset();
-        assert(cache.GetResidentBytes() == 0 && cache.GetRetiredLeaseCount() == 0 &&
-               cacheDevice.textureReleases == 4 && cacheDevice.samplerReleases == 2);
+        assert(cache.GetResidentBytes() == 0 && cache.GetRetiredLeaseCount() == 0 && cacheDevice.textureReleases == 4 &&
+               cacheDevice.samplerReleases == 2);
     }
 
     {
@@ -1911,8 +1914,8 @@ int main()
     linkedDesc.material->SetTextureGuid("detail", "normal");
     uint32_t linkedTextureResolves = 0;
     TestTextureSlots linkedTextureSlots;
-    linkedDesc.textureResolver = [&linkedDevice, &linkedTextureResolves,
-                                  &linkedTextureSlots](const std::string &guid, const std::string &name) {
+    linkedDesc.textureResolver = [&linkedDevice, &linkedTextureResolves, &linkedTextureSlots](const std::string &guid,
+                                                                                              const std::string &name) {
         ++linkedTextureResolves;
         const uint32_t identity = name == "albedo" ? 1u : 2u;
         assert((name == "albedo" && (guid == "white" || guid == "black")) || (name == "detail" && guid == "normal"));
