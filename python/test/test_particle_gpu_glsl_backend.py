@@ -173,6 +173,27 @@ class DelayedBirth(ParticleScript):
     validate_gpu_particle_spirv(compiled, source)
 
 
+def test_simultaneous_init_wait_lanes_serialize_completion_and_release_gate():
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleGraphCompiler().compile(_dual_init_wait_asset())
+        )
+    )
+    emitter = source.emitters[0]
+    continuation = emitter.continuation
+
+    assert continuation is not None
+    assert continuation.lane_count == 2
+    assert continuation.dispatch.count("case ") == 2
+    assert continuation.dispatch.count("inx_continuation_lane_pending(") >= 2
+    assert continuation.dispatch.count("state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE") == 2
+    assert "INX_PARTICLE_CONTINUATION_LOCK" in continuation.dispatch
+    assert "inx_continuation_append_active(inx_continuation_record_index)" in continuation.dispatch
+
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
 def test_particle_script_delta_time_compiles_to_explicit_gpu_uniform_math():
     source_text = '''\
 from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
@@ -675,6 +696,37 @@ def _dual_wait_join_asset():
     )
 
 
+def _dual_init_wait_asset():
+    init = GraphDocument(
+        "particle.init",
+        nodes=(
+            GraphNodeRecord("root.init", "particle.root.init"),
+            GraphNodeRecord(
+                "wait.left",
+                "particle.control.wait_frames",
+                properties={"frames": 2},
+            ),
+            GraphNodeRecord(
+                "wait.right",
+                "particle.control.wait_frames",
+                properties={"frames": 2},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-left", "root.init", "out", "wait.left", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "root-right", "root.init", "out", "wait.right", "in", PortKind.EXEC
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="dual-init-wait-gpu",
+        emitters=(ParticleEmitterAsset(init=init),),
+    )
+
+
 def _nested_wait_join_asset():
     update = GraphDocument(
         "particle.update",
@@ -974,6 +1026,14 @@ def test_gpu_join_resumes_only_after_both_waiting_branches_arrive():
     assert continuation.dispatch.count("inx_continuation_join_arrive(") >= 3
     assert "? 1u : 0u" in continuation.dispatch
     assert "? 2u : 0u" in continuation.dispatch
+    assert "INX_PARTICLE_CONTINUATION_LOCK" in continuation.dispatch
+    assert "atomicOr(" in continuation.dispatch
+    assert (
+        "inx_continuation_append_active(inx_continuation_record_index)"
+        in continuation.dispatch
+    )
+    assert "atomicAnd(" in continuation.dispatch
+    assert "~INX_PARTICLE_CONTINUATION_LOCK" in continuation.dispatch
 
     compiled = compile_gpu_particle_spirv(source)
     validate_gpu_particle_spirv(compiled, source)

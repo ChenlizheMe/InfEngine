@@ -3853,6 +3853,21 @@ void main() {{
         return;
     }}
 
+    uint previous_lifecycle_flags = atomicOr(
+        states[particle_index].lifecycle_flags,
+        INX_PARTICLE_CONTINUATION_LOCK
+    );
+    if ((previous_lifecycle_flags & INX_PARTICLE_CONTINUATION_LOCK) != 0u) {{
+        if (!inx_continuation_append_active(inx_continuation_record_index)) {{
+            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            inx_finish_continuation(
+                inx_continuation_record_index, particle_index, lane_index
+            );
+        }}
+        return;
+    }}
+    memoryBarrierBuffer();
+
     ParticleState state = states[particle_index];
     bool particle_alive = true;
     bool inx_stage_suspended = false;
@@ -3863,8 +3878,15 @@ void main() {{
             atomicAdd(continuation_counters.stale_generation, 1u);
             break;
     }}
-    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
+    state.lifecycle_flags = particle_alive
+        ? (state.lifecycle_flags | INX_PARTICLE_CONTINUATION_LOCK)
+        : INX_PARTICLE_CONTINUATION_LOCK;
     states[particle_index] = state;
+    memoryBarrierBuffer();
+    atomicAnd(
+        states[particle_index].lifecycle_flags,
+        ~INX_PARTICLE_CONTINUATION_LOCK
+    );
     if (!particle_alive) inx_push_free(particle_index);
     if (!inx_continuation_resuspended) {{
         inx_finish_continuation(
@@ -3979,6 +4001,7 @@ layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
 const uint INX_PARTICLE_ALIVE = 1u;
 const uint INX_PARTICLE_INIT_COMPLETE = 2u;
+const uint INX_PARTICLE_CONTINUATION_LOCK = 0x80000000u;
 
 struct ParticleState {{
     uint lifecycle_flags;
