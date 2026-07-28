@@ -2738,6 +2738,13 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.gpuParticleSimulatingSystemCount = gpuParticles.simulatingSystemCount;
         snapshot.gpuParticleRenderingSystemCount = gpuParticles.renderingSystemCount;
         snapshot.gpuParticleRequestedSpawnCount = gpuParticles.requestedSpawnCount;
+        snapshot.gpuParticleContinuationSystemCount = gpuParticles.continuationSystemCount;
+        snapshot.gpuParticleContinuationCapacity = gpuParticles.totalContinuationCapacity;
+        snapshot.gpuParticleContinuationProgramGeneration = gpuParticles.maximumContinuationProgramGeneration;
+        snapshot.gpuParticleContinuationPrepareRecordCalls = gpuParticles.continuationPrepareRecordCalls;
+        snapshot.gpuParticleContinuationClassifyRecordCalls = gpuParticles.continuationClassifyRecordCalls;
+        snapshot.gpuParticleContinuationDispatchRecordCalls = gpuParticles.continuationDispatchRecordCalls;
+        snapshot.gpuParticleContinuationResetPendingCount = gpuParticles.continuationResetPendingCount;
         snapshot.gpuParticleCollisionSceneRevision = gpuParticles.collisionSceneRevision;
         snapshot.gpuParticleCollisionSceneColliderCount = gpuParticles.collisionSceneColliderCount;
         snapshot.gpuParticleCollisionSceneTopologyRevision = gpuParticles.collisionSceneTopologyRevision;

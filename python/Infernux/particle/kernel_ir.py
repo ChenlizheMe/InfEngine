@@ -268,6 +268,294 @@ class ParticleKernelFunction:
 
 
 @dataclass(frozen=True)
+class KernelExecutionLane:
+    stable_id: str
+    index: int
+    parent_index: int
+    source_node_uid: str
+    source_port_id: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.stable_id) is not str
+            or not self.stable_id
+            or type(self.index) is not int
+            or self.index < 0
+            or type(self.parent_index) is not int
+            or type(self.source_node_uid) is not str
+            or not self.source_node_uid
+            or type(self.source_port_id) is not str
+        ):
+            raise KernelCompileError("kernel execution lane is invalid")
+
+    def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
+        return {
+            "stable_id": self.stable_id if include_source else "",
+            "index": self.index,
+            "parent_index": self.parent_index,
+            "source_node_uid": self.source_node_uid if include_source else "",
+            "source_port_id": self.source_port_id if include_source else "",
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelExecutionLane":
+        _exact_dict(
+            value,
+            {
+                "stable_id",
+                "index",
+                "parent_index",
+                "source_node_uid",
+                "source_port_id",
+            },
+            "kernel execution lane",
+        )
+        return cls(
+            value["stable_id"],
+            value["index"],
+            value["parent_index"],
+            value["source_node_uid"],
+            value["source_port_id"],
+        )
+
+
+@dataclass(frozen=True)
+class KernelFlowBlock:
+    source_node_uid: str
+    operation_index: int
+    lane_index: int
+    instruction_begin: int
+    instruction_end: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.source_node_uid) is not str
+            or not self.source_node_uid
+            or type(self.operation_index) is not int
+            or self.operation_index < -1
+            or type(self.lane_index) is not int
+            or self.lane_index < 0
+            or type(self.instruction_begin) is not int
+            or type(self.instruction_end) is not int
+            or self.instruction_begin < 0
+            or self.instruction_end < self.instruction_begin
+        ):
+            raise KernelCompileError("kernel flow block is invalid")
+
+    def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
+        return {
+            "source_node_uid": self.source_node_uid if include_source else "",
+            "operation_index": self.operation_index,
+            "lane_index": self.lane_index,
+            "instruction_begin": self.instruction_begin,
+            "instruction_end": self.instruction_end,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelFlowBlock":
+        _exact_dict(
+            value,
+            {
+                "source_node_uid",
+                "operation_index",
+                "lane_index",
+                "instruction_begin",
+                "instruction_end",
+            },
+            "kernel flow block",
+        )
+        return cls(
+            value["source_node_uid"],
+            value["operation_index"],
+            value["lane_index"],
+            value["instruction_begin"],
+            value["instruction_end"],
+        )
+
+
+@dataclass(frozen=True)
+class KernelJoinAll:
+    source_node_uid: str
+    input_lane_indices: tuple[int, ...]
+    output_lane_index: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.source_node_uid) is not str
+            or not self.source_node_uid
+            or len(self.input_lane_indices) < 2
+            or not all(type(value) is int and value >= 0 for value in self.input_lane_indices)
+            or len(set(self.input_lane_indices)) != len(self.input_lane_indices)
+            or type(self.output_lane_index) is not int
+            or self.output_lane_index < 0
+        ):
+            raise KernelCompileError("kernel Join All descriptor is invalid")
+
+    def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
+        return {
+            "source_node_uid": self.source_node_uid if include_source else "",
+            "input_lane_indices": list(self.input_lane_indices),
+            "output_lane_index": self.output_lane_index,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelJoinAll":
+        _exact_dict(
+            value,
+            {"source_node_uid", "input_lane_indices", "output_lane_index"},
+            "kernel Join All",
+        )
+        if type(value["input_lane_indices"]) is not list:
+            raise KernelCompileError("kernel Join All input lanes must be an array")
+        return cls(
+            value["source_node_uid"],
+            tuple(value["input_lane_indices"]),
+            value["output_lane_index"],
+        )
+
+
+@dataclass(frozen=True)
+class KernelLifecycleFlow:
+    lifecycle_stage: ParticleStage
+    kernel_stage: KernelStage
+    entry_node_uid: str
+    lanes: tuple[KernelExecutionLane, ...]
+    blocks: tuple[KernelFlowBlock, ...]
+    operation_schedule: tuple[int, ...]
+    joins: tuple[KernelJoinAll, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "lifecycle_stage", ParticleStage(self.lifecycle_stage))
+        object.__setattr__(self, "kernel_stage", KernelStage(self.kernel_stage))
+        expected_kernel_stage = {
+            ParticleStage.INIT: KernelStage.INIT,
+            ParticleStage.UPDATE: KernelStage.UPDATE,
+            ParticleStage.COLLISION_ENTER: KernelStage.UPDATE,
+            ParticleStage.COLLISION_STAY: KernelStage.UPDATE,
+            ParticleStage.COLLISION_EXIT: KernelStage.UPDATE,
+            ParticleStage.RENDERING: KernelStage.RENDERING,
+        }[self.lifecycle_stage]
+        if self.kernel_stage is not expected_kernel_stage:
+            raise KernelCompileError("kernel lifecycle flow targets the wrong function stage")
+        if type(self.entry_node_uid) is not str or not self.entry_node_uid:
+            raise KernelCompileError("kernel lifecycle flow entry cannot be empty")
+        if not self.lanes or not all(isinstance(item, KernelExecutionLane) for item in self.lanes):
+            raise KernelCompileError("kernel lifecycle flow requires execution lanes")
+        if tuple(lane.index for lane in self.lanes) != tuple(range(len(self.lanes))):
+            raise KernelCompileError("kernel execution lane indices must be dense")
+        if len({lane.stable_id for lane in self.lanes}) != len(self.lanes):
+            raise KernelCompileError("kernel execution lane identities must be unique")
+        for lane in self.lanes:
+            if lane.index == 0:
+                if lane.parent_index != -1:
+                    raise KernelCompileError("kernel root lane cannot have a parent")
+            elif not 0 <= lane.parent_index < lane.index:
+                raise KernelCompileError("kernel execution lane parent is invalid")
+        if not self.blocks or not all(isinstance(item, KernelFlowBlock) for item in self.blocks):
+            raise KernelCompileError("kernel lifecycle flow requires blocks")
+        if len({block.source_node_uid for block in self.blocks}) != len(self.blocks):
+            raise KernelCompileError("kernel flow block source nodes must be unique")
+        roots = [block for block in self.blocks if block.operation_index == -1]
+        if len(roots) != 1 or roots[0].source_node_uid != self.entry_node_uid:
+            raise KernelCompileError("kernel lifecycle flow root block is invalid")
+        operation_indices = tuple(
+            block.operation_index for block in self.blocks if block.operation_index >= 0
+        )
+        if tuple(sorted(operation_indices)) != tuple(range(len(operation_indices))):
+            raise KernelCompileError("kernel flow operation indices must be dense")
+        if (
+            len(self.operation_schedule) != len(operation_indices)
+            or set(self.operation_schedule) != set(operation_indices)
+        ):
+            raise KernelCompileError("kernel flow operation schedule is invalid")
+        if not all(type(value) is int for value in self.operation_schedule):
+            raise KernelCompileError("kernel flow operation schedule must contain integers")
+        if any(not 0 <= block.lane_index < len(self.lanes) for block in self.blocks):
+            raise KernelCompileError("kernel flow block lane is invalid")
+        block_by_node = {block.source_node_uid: block for block in self.blocks}
+        block_by_operation = {
+            block.operation_index: block
+            for block in self.blocks
+            if block.operation_index >= 0
+        }
+        previous_end = None
+        for operation_index in self.operation_schedule:
+            block = block_by_operation[operation_index]
+            if previous_end is not None and block.instruction_begin < previous_end:
+                raise KernelCompileError(
+                    "kernel flow instruction ranges do not follow the operation schedule"
+                )
+            previous_end = block.instruction_end
+        first_instruction = (
+            block_by_operation[self.operation_schedule[0]].instruction_begin
+            if self.operation_schedule
+            else roots[0].instruction_begin
+        )
+        if (
+            roots[0].instruction_begin != roots[0].instruction_end
+            or roots[0].instruction_begin != first_instruction
+        ):
+            raise KernelCompileError("kernel lifecycle root instruction marker is invalid")
+        if not all(isinstance(item, KernelJoinAll) for item in self.joins):
+            raise KernelCompileError("kernel lifecycle Join All metadata is invalid")
+        if len({join.source_node_uid for join in self.joins}) != len(self.joins):
+            raise KernelCompileError("kernel lifecycle Join All nodes must be unique")
+        for join in self.joins:
+            block = block_by_node.get(join.source_node_uid)
+            if block is None or block.lane_index != join.output_lane_index:
+                raise KernelCompileError("kernel Join All output block is inconsistent")
+            if any(value >= len(self.lanes) for value in join.input_lane_indices):
+                raise KernelCompileError("kernel Join All input lane is invalid")
+            if join.output_lane_index >= len(self.lanes):
+                raise KernelCompileError("kernel Join All output lane is invalid")
+
+    def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
+        return {
+            "lifecycle_stage": self.lifecycle_stage.value,
+            "kernel_stage": self.kernel_stage.value,
+            "entry_node_uid": self.entry_node_uid if include_source else "",
+            "lanes": [
+                lane.to_dict(include_source=include_source) for lane in self.lanes
+            ],
+            "blocks": [
+                block.to_dict(include_source=include_source) for block in self.blocks
+            ],
+            "operation_schedule": list(self.operation_schedule),
+            "joins": [
+                join.to_dict(include_source=include_source) for join in self.joins
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelLifecycleFlow":
+        _exact_dict(
+            value,
+            {
+                "lifecycle_stage",
+                "kernel_stage",
+                "entry_node_uid",
+                "lanes",
+                "blocks",
+                "operation_schedule",
+                "joins",
+            },
+            "kernel lifecycle flow",
+        )
+        for name in ("lanes", "blocks", "operation_schedule", "joins"):
+            if type(value[name]) is not list:
+                raise KernelCompileError(f"kernel lifecycle flow {name} must be an array")
+        return cls(
+            value["lifecycle_stage"],
+            value["kernel_stage"],
+            value["entry_node_uid"],
+            tuple(KernelExecutionLane.from_dict(item) for item in value["lanes"]),
+            tuple(KernelFlowBlock.from_dict(item) for item in value["blocks"]),
+            tuple(value["operation_schedule"]),
+            tuple(KernelJoinAll.from_dict(item) for item in value["joins"]),
+        )
+
+
+@dataclass(frozen=True)
 class KernelSuspensionPoint:
     lifecycle_stage: ParticleStage
     kind: ParticleSuspensionKind
@@ -276,6 +564,7 @@ class KernelSuspensionPoint:
     resume_program_counter: int
     stage_resume_program_counter: int
     resume_operation_index: int
+    resume_instruction_index: int
     suspend_instruction_index: int
     source_node_uid: str
     resume_node_uid: str
@@ -296,6 +585,8 @@ class KernelSuspensionPoint:
             or self.stage_resume_program_counter <= 0
             or type(self.resume_operation_index) is not int
             or self.resume_operation_index < 0
+            or type(self.resume_instruction_index) is not int
+            or self.resume_instruction_index < 0
             or type(self.suspend_instruction_index) is not int
             or self.suspend_instruction_index < 0
             or type(self.source_node_uid) is not str
@@ -314,6 +605,7 @@ class KernelSuspensionPoint:
             "resume_program_counter": self.resume_program_counter,
             "stage_resume_program_counter": self.stage_resume_program_counter,
             "resume_operation_index": self.resume_operation_index,
+            "resume_instruction_index": self.resume_instruction_index,
             "suspend_instruction_index": self.suspend_instruction_index,
             "source_node_uid": self.source_node_uid if include_source else "",
             "resume_node_uid": self.resume_node_uid if include_source else "",
@@ -331,6 +623,7 @@ class KernelSuspensionPoint:
                 "resume_program_counter",
                 "stage_resume_program_counter",
                 "resume_operation_index",
+                "resume_instruction_index",
                 "suspend_instruction_index",
                 "source_node_uid",
                 "resume_node_uid",
@@ -345,6 +638,7 @@ class KernelSuspensionPoint:
             value["resume_program_counter"],
             value["stage_resume_program_counter"],
             value["resume_operation_index"],
+            value["resume_instruction_index"],
             value["suspend_instruction_index"],
             value["source_node_uid"],
             value["resume_node_uid"],
@@ -359,6 +653,7 @@ class ParticleEmitterKernelIR:
     init: ParticleKernelFunction
     update: ParticleKernelFunction
     rendering: ParticleKernelFunction
+    flows: tuple[KernelLifecycleFlow, ...]
     data_interfaces: tuple[ParticleDataInterface, ...] = ()
     suspensions: tuple[KernelSuspensionPoint, ...] = ()
 
@@ -377,6 +672,8 @@ class ParticleEmitterKernelIR:
             raise KernelCompileError("kernel emitter data interfaces are invalid")
         interfaces = tuple(sorted(interfaces, key=lambda value: value.stable_id))
         object.__setattr__(self, "data_interfaces", interfaces)
+        flows = tuple(self.flows)
+        object.__setattr__(self, "flows", flows)
         suspensions = tuple(self.suspensions)
         object.__setattr__(self, "suspensions", suspensions)
         if len({interface.stable_id for interface in interfaces}) != len(interfaces):
@@ -397,6 +694,42 @@ class ParticleEmitterKernelIR:
                 )
             self._validate_attribute_access(function)
             self._validate_data_interface_access(function)
+        if not all(isinstance(item, KernelLifecycleFlow) for item in flows):
+            raise KernelCompileError("kernel emitter lifecycle flow metadata is invalid")
+        flow_by_stage = {flow.lifecycle_stage: flow for flow in flows}
+        if len(flow_by_stage) != len(flows):
+            raise KernelCompileError("kernel emitter lifecycle stages must be unique")
+        mandatory_stages = {
+            ParticleStage.INIT,
+            ParticleStage.UPDATE,
+            ParticleStage.RENDERING,
+        }
+        if not mandatory_stages.issubset(flow_by_stage):
+            raise KernelCompileError("kernel emitter is missing a mandatory lifecycle flow")
+        lifecycle_order = {
+            ParticleStage.INIT: 0,
+            ParticleStage.UPDATE: 1,
+            ParticleStage.COLLISION_ENTER: 2,
+            ParticleStage.COLLISION_STAY: 3,
+            ParticleStage.COLLISION_EXIT: 4,
+            ParticleStage.RENDERING: 5,
+        }
+        if tuple(flow.lifecycle_stage for flow in flows) != tuple(
+            sorted(flow_by_stage, key=lifecycle_order.__getitem__)
+        ):
+            raise KernelCompileError("kernel emitter lifecycle flows are not canonically ordered")
+        function_by_kernel_stage = {
+            KernelStage.INIT: self.init,
+            KernelStage.UPDATE: self.update,
+            KernelStage.RENDERING: self.rendering,
+        }
+        for flow in flows:
+            function = function_by_kernel_stage[flow.kernel_stage]
+            for block in flow.blocks:
+                if block.instruction_end > len(function.instructions):
+                    raise KernelCompileError(
+                        "kernel flow block instruction range exceeds its function"
+                    )
         if not all(isinstance(item, KernelSuspensionPoint) for item in suspensions):
             raise KernelCompileError("kernel emitter suspension metadata is invalid")
         if len({item.resume_program_counter for item in suspensions}) != len(suspensions):
@@ -412,8 +745,10 @@ class ParticleEmitterKernelIR:
         }
         for suspension in suspensions:
             function = function_by_stage.get(suspension.lifecycle_stage)
+            flow = flow_by_stage.get(suspension.lifecycle_stage)
             if (
                 function is None
+                or flow is None
                 or suspension.suspend_instruction_index >= len(function.instructions)
             ):
                 raise KernelCompileError("kernel suspension instruction target is invalid")
@@ -431,6 +766,38 @@ class ParticleEmitterKernelIR:
             ):
                 raise KernelCompileError(
                     "kernel suspension metadata does not match its instruction"
+                )
+            block_by_operation = {
+                block.operation_index: block
+                for block in flow.blocks
+                if block.operation_index >= 0
+            }
+            source_block = next(
+                (
+                    block
+                    for block in flow.blocks
+                    if block.source_node_uid == suspension.source_node_uid
+                ),
+                None,
+            )
+            resume_block = block_by_operation.get(suspension.resume_operation_index)
+            if (
+                source_block is None
+                or source_block.lane_index != suspension.lane_index
+                or flow.lanes[suspension.lane_index].stable_id
+                != suspension.lane_stable_id
+                or not (
+                    source_block.instruction_begin
+                    <= suspension.suspend_instruction_index
+                    < source_block.instruction_end
+                )
+                or resume_block is None
+                or resume_block.source_node_uid != suspension.resume_node_uid
+                or resume_block.instruction_begin
+                != suspension.resume_instruction_index
+            ):
+                raise KernelCompileError(
+                    "kernel suspension metadata is inconsistent with lifecycle flow"
                 )
 
     def _validate_data_interface_access(self, function: ParticleKernelFunction) -> None:
@@ -516,6 +883,9 @@ class ParticleEmitterKernelIR:
             "init": self.init.to_dict(include_source=include_source),
             "update": self.update.to_dict(include_source=include_source),
             "rendering": self.rendering.to_dict(include_source=include_source),
+            "flows": [
+                flow.to_dict(include_source=include_source) for flow in self.flows
+            ],
             "suspensions": [
                 suspension.to_dict(include_source=include_source)
                 for suspension in self.suspensions
@@ -534,13 +904,19 @@ class ParticleEmitterKernelIR:
                 "init",
                 "update",
                 "rendering",
+                "flows",
                 "suspensions",
             },
             "kernel emitter",
         )
-        if type(value["attributes"]) is not list or type(value["data_interfaces"]) is not list:
+        if (
+            type(value["attributes"]) is not list
+            or type(value["data_interfaces"]) is not list
+            or type(value["flows"]) is not list
+            or type(value["suspensions"]) is not list
+        ):
             raise KernelCompileError(
-                "kernel emitter attributes and data interfaces must be arrays"
+                "kernel emitter attributes, data interfaces, flows, and suspensions must be arrays"
             )
         attributes = []
         for item in value["attributes"]:
@@ -557,6 +933,7 @@ class ParticleEmitterKernelIR:
             ParticleKernelFunction.from_dict(value["init"]),
             ParticleKernelFunction.from_dict(value["update"]),
             ParticleKernelFunction.from_dict(value["rendering"]),
+            tuple(KernelLifecycleFlow.from_dict(item) for item in value["flows"]),
             tuple(
                 particle_data_interface_from_dict(
                     item, f"kernel emitter data_interfaces[{index}]"
@@ -1087,6 +1464,7 @@ class ParticleKernelLowerer:
             key = (stage.stage, suspension.node_uid)
             continuation_program_counters[key] = program_counter
             suspension_sources.append((stage, suspension, program_counter))
+        operation_instruction_ranges = {}
         init = self._lower_init(
             emitter,
             types,
@@ -1095,6 +1473,7 @@ class ParticleKernelLowerer:
             event_types,
             parameter_types,
             continuation_program_counters,
+            operation_instruction_ranges,
         )
         update = self._lower_update(
             emitter,
@@ -1103,10 +1482,32 @@ class ParticleKernelLowerer:
             event_types,
             parameter_types,
             continuation_program_counters,
+            operation_instruction_ranges,
         )
         rendering = self._lower_rendering(
-            emitter, types, routes, event_types, parameter_types
+            emitter,
+            types,
+            routes,
+            event_types,
+            parameter_types,
+            operation_instruction_ranges,
         )
+        flows = tuple(
+            self._lower_lifecycle_flow(
+                stage,
+                {
+                    ParticleStage.INIT: init,
+                    ParticleStage.UPDATE: update,
+                    ParticleStage.COLLISION_ENTER: update,
+                    ParticleStage.COLLISION_STAY: update,
+                    ParticleStage.COLLISION_EXIT: update,
+                    ParticleStage.RENDERING: rendering,
+                }[stage.stage],
+                operation_instruction_ranges,
+            )
+            for stage in (*lifecycle_stages, emitter.rendering)
+        )
+        flow_by_stage = {flow.lifecycle_stage: flow for flow in flows}
         instruction_locations = {}
         for function in (init, update):
             for instruction_index, instruction in enumerate(function.instructions):
@@ -1127,6 +1528,11 @@ class ParticleKernelLowerer:
                 program_counter,
                 suspension.resume_program_counter,
                 suspension.resume_operation_index,
+                next(
+                    block.instruction_begin
+                    for block in flow_by_stage[stage.stage].blocks
+                    if block.operation_index == suspension.resume_operation_index
+                ),
                 instruction_locations[(stage.stage, suspension.node_uid)],
                 suspension.node_uid,
                 suspension.resume_node_uid,
@@ -1140,8 +1546,94 @@ class ParticleKernelLowerer:
             init,
             update,
             rendering,
+            flows,
             emitter.data_interfaces,
             suspensions,
+        )
+
+    @staticmethod
+    def _lower_lifecycle_flow(
+        stage_hir: ParticleStageHIR,
+        function: ParticleKernelFunction,
+        operation_instruction_ranges: Mapping[
+            tuple[ParticleStage, int], tuple[int, int]
+        ],
+    ) -> KernelLifecycleFlow:
+        hir_blocks_by_operation = {
+            block.operation_index: block
+            for block in stage_hir.flow.blocks
+            if block.operation_index >= 0
+        }
+        root_block = next(
+            block
+            for block in stage_hir.flow.blocks
+            if block.operation_index == -1
+        )
+        operation_blocks = []
+        for operation_index, operation in enumerate(stage_hir.operations):
+            instruction_range = operation_instruction_ranges.get(
+                (stage_hir.stage, operation_index)
+            )
+            if instruction_range is None:
+                raise KernelCompileError(
+                    f"kernel lifecycle operation {stage_hir.stage.value}[{operation_index}] "
+                    "has no instruction range"
+                )
+            hir_block = hir_blocks_by_operation.get(operation_index)
+            operation_blocks.append(
+                KernelFlowBlock(
+                    operation.source_node_uid,
+                    operation_index,
+                    hir_block.lane_index if hir_block is not None else 0,
+                    instruction_range[0],
+                    instruction_range[1],
+                )
+            )
+        entry_instruction = (
+            operation_blocks[0].instruction_begin
+            if operation_blocks
+            else len(function.instructions)
+        )
+        blocks = (
+            KernelFlowBlock(
+                root_block.node_uid,
+                -1,
+                root_block.lane_index,
+                entry_instruction,
+                entry_instruction,
+            ),
+            *operation_blocks,
+        )
+        scheduled_operations = set(stage_hir.flow.operation_schedule)
+        operation_schedule = tuple(
+            index
+            for index in range(len(stage_hir.operations))
+            if index not in scheduled_operations
+        ) + stage_hir.flow.operation_schedule
+        return KernelLifecycleFlow(
+            stage_hir.stage,
+            function.stage,
+            stage_hir.flow.entry_node_uid,
+            tuple(
+                KernelExecutionLane(
+                    lane.stable_id,
+                    lane.index,
+                    lane.parent_index,
+                    lane.source_node_uid,
+                    lane.source_port_id,
+                )
+                for lane in stage_hir.flow.lanes
+            ),
+            blocks,
+            operation_schedule,
+            tuple(
+                KernelJoinAll(
+                    join.node_uid,
+                    join.input_lane_indices,
+                    join.output_lane_index,
+                )
+                for join in stage_hir.flow.joins
+            ),
         )
 
     @staticmethod
@@ -1529,6 +2021,7 @@ class ParticleKernelLowerer:
         event_types,
         parameter_types,
         continuation_program_counters,
+        operation_instruction_ranges,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.INIT, attribute_types, parameter_types)
         for stable_id in sorted(defaults):
@@ -1541,7 +2034,8 @@ class ParticleKernelLowerer:
             )
             builder.store(stable_id, value, KernelSourceRef(operation="attribute.default"))
 
-        for operation in emitter.init.operations:
+        for operation_index, operation in enumerate(emitter.init.operations):
+            instruction_begin = len(builder.instructions)
             source = KernelSourceRef(operation.source_node_uid, operation=f"init.{operation.opcode}")
             expression_values = self._lower_operation_expressions(
                 builder, emitter.init, operation
@@ -1549,6 +2043,9 @@ class ParticleKernelLowerer:
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             if operation.opcode in {"control.if", "control.join_all"}:
+                operation_instruction_ranges[
+                    (emitter.init.stage, operation_index)
+                ] = (instruction_begin, len(builder.instructions))
                 continue
             guard = builder.execution_guard(operation, expression_values, source)
             if operation.opcode != "event.emit":
@@ -1683,6 +2180,9 @@ class ParticleKernelLowerer:
                 raise KernelCompileError(f"unsupported Init operation {operation.opcode!r}")
             if operation.opcode != "event.emit":
                 builder.end_guard(guard, source)
+            operation_instruction_ranges[
+                (emitter.init.stage, operation_index)
+            ] = (instruction_begin, len(builder.instructions))
         return builder.finish()
 
     def _lower_update(
@@ -1693,6 +2193,7 @@ class ParticleKernelLowerer:
         event_types,
         parameter_types,
         continuation_program_counters,
+        operation_instruction_ranges,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.UPDATE, attribute_types, parameter_types)
         delta_time = builder.emit(
@@ -1734,22 +2235,22 @@ class ParticleKernelLowerer:
             "collision.scene",
         }
         operation_stream = tuple(
-            (emitter.update, operation)
-            for operation in emitter.update.operations
+            (emitter.update, operation_index, operation)
+            for operation_index, operation in enumerate(emitter.update.operations)
         ) + tuple(
-            (lifecycle, operation)
+            (lifecycle, operation_index, operation)
             for lifecycle in (
                 emitter.collision_enter,
                 emitter.collision_stay,
                 emitter.collision_exit,
             )
             if lifecycle is not None
-            for operation in lifecycle.operations
+            for operation_index, operation in enumerate(lifecycle.operations)
         )
         position_integrated = False
         collision_lifecycle_ready = False
 
-        for stage_hir, operation in operation_stream:
+        for stage_hir, operation_index, operation in operation_stream:
             if operation.opcode in collision_opcodes and not position_integrated:
                 self._integrate_update_position(builder, attribute_types, delta_time)
                 position_integrated = True
@@ -1763,6 +2264,7 @@ class ParticleKernelLowerer:
                     position_integrated = True
                 self._prepare_collision_lifecycle(builder, attribute_types)
                 collision_lifecycle_ready = True
+            instruction_begin = len(builder.instructions)
             source = KernelSourceRef(
                 operation.source_node_uid,
                 operation=f"{stage_hir.stage.value}.{operation.opcode}",
@@ -1773,6 +2275,9 @@ class ParticleKernelLowerer:
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
             if operation.opcode in {"control.if", "control.join_all"}:
+                operation_instruction_ranges[
+                    (stage_hir.stage, operation_index)
+                ] = (instruction_begin, len(builder.instructions))
                 continue
             guard = builder.execution_guard(operation, expression_values, source)
             if operation.opcode != "event.emit":
@@ -1972,6 +2477,9 @@ class ParticleKernelLowerer:
                 raise KernelCompileError(f"unsupported Update operation {operation.opcode!r}")
             if operation.opcode != "event.emit":
                 builder.end_guard(guard, source)
+            operation_instruction_ranges[
+                (stage_hir.stage, operation_index)
+            ] = (instruction_begin, len(builder.instructions))
 
         if emitter.settings.collision_enabled and not collision_lifecycle_ready:
             if not position_integrated:
@@ -2011,9 +2519,11 @@ class ParticleKernelLowerer:
         routes,
         event_types,
         parameter_types,
+        operation_instruction_ranges,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.RENDERING, attribute_types, parameter_types)
-        for operation in emitter.rendering.operations:
+        for operation_index, operation in enumerate(emitter.rendering.operations):
+            instruction_begin = len(builder.instructions)
             source = KernelSourceRef(
                 operation.source_node_uid,
                 operation=f"rendering.{operation.opcode}",
@@ -2022,6 +2532,9 @@ class ParticleKernelLowerer:
                 builder, emitter.rendering, operation
             )
             if operation.opcode in {"control.if", "control.join_all"}:
+                operation_instruction_ranges[
+                    (emitter.rendering.stage, operation_index)
+                ] = (instruction_begin, len(builder.instructions))
                 continue
             parameters = operation.parameter_dict()
             bindings = dict(operation.value_bindings)
@@ -2076,6 +2589,9 @@ class ParticleKernelLowerer:
                     event_types,
                     source,
                 )
+            operation_instruction_ranges[
+                (emitter.rendering.stage, operation_index)
+            ] = (instruction_begin, len(builder.instructions))
         for stable_id in (
             "builtin.position",
             "builtin.velocity",
@@ -2567,12 +3083,16 @@ __all__ = [
     "KernelCapability",
     "KernelCompileError",
     "KernelInstruction",
+    "KernelExecutionLane",
     "KernelEventABI",
     "KernelEventField",
     "KernelEventRoute",
     "KernelEventType",
     "KernelOperand",
     "KernelParameter",
+    "KernelFlowBlock",
+    "KernelJoinAll",
+    "KernelLifecycleFlow",
     "KernelSourceRef",
     "KernelSuspensionPoint",
     "KernelStage",

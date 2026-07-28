@@ -445,14 +445,14 @@ void InxGUIContext::FloatSlider(const std::string &label, float *value, float mi
 }
 
 bool InxGUIContext::DragFloat(const std::string &label, float *value, float speed, float min, float max,
-                              const char *fmt, float power)
+                              const char *fmt, float power, const std::string &semanticId)
 {
     CompensateWarp();
     (void)power;
     const ImGuiSliderFlags flags = min < max ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
     bool changed = ImGui::DragFloat(label.c_str(), value, speed, min, max, fmt, flags);
     if (InxGUISemantics::IsCaptureEnabled())
-        RecordSemanticItem("drag_float", label, true, "", std::nullopt, static_cast<double>(*value));
+        RecordSemanticItem("drag_float", label, true, semanticId, std::nullopt, static_cast<double>(*value));
     HandleDragCapture();
     return changed;
 }
@@ -492,28 +492,31 @@ bool InxGUIContext::InputTextWithHint(const std::string &label, const std::strin
     return changed;
 }
 
-bool InxGUIContext::InputInt(const std::string &label, int *value, int step, int stepFast, int flags)
+bool InxGUIContext::InputInt(const std::string &label, int *value, int step, int stepFast, int flags,
+                             const std::string &semanticId)
 {
     const bool changed = ImGui::InputInt(label.c_str(), value, step, stepFast, flags);
     if (InxGUISemantics::IsCaptureEnabled())
-        RecordSemanticItem("int_input", label, true, "", std::nullopt, static_cast<double>(*value));
+        RecordSemanticItem("int_input", label, true, semanticId, std::nullopt, static_cast<double>(*value));
     return changed;
 }
 
-bool InxGUIContext::InputUInt(const std::string &label, uint32_t *value, uint32_t step, uint32_t stepFast, int flags)
+bool InxGUIContext::InputUInt(const std::string &label, uint32_t *value, uint32_t step, uint32_t stepFast, int flags,
+                              const std::string &semanticId)
 {
     const bool changed = ImGui::InputScalar(label.c_str(), ImGuiDataType_U32, value, &step, &stepFast, "%u", flags);
     if (InxGUISemantics::IsCaptureEnabled())
-        RecordSemanticItem("uint_input", label, true, "", std::nullopt, static_cast<double>(*value));
+        RecordSemanticItem("uint_input", label, true, semanticId, std::nullopt, static_cast<double>(*value));
     return changed;
 }
 
-bool InxGUIContext::InputFloat(const std::string &label, float *value, float step, float stepFast, int flags)
+bool InxGUIContext::InputFloat(const std::string &label, float *value, float step, float stepFast, int flags,
+                               const std::string &semanticId)
 {
     const bool changed =
         ImGui::InputFloat(label.c_str(), value, step, stepFast, "%.3f", static_cast<ImGuiInputTextFlags>(flags));
     if (InxGUISemantics::IsCaptureEnabled())
-        RecordSemanticItem("float_input", label, true, "", std::nullopt, static_cast<double>(*value));
+        RecordSemanticItem("float_input", label, true, semanticId, std::nullopt, static_cast<double>(*value));
     return changed;
 }
 void InxGUIContext::ColorEdit(const std::string &label, float color[4], bool hdr)

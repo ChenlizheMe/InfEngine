@@ -1190,9 +1190,54 @@ class ParticleSystem(InxComponent):
                 or glsl_emitter.get("stable_id") != emitter.stable_id
                 or type(glsl_emitter.get("state_stride")) is not int
                 or type(glsl_emitter.get("event_output_stages")) is not list
+                or "continuation" not in glsl_emitter
             ):
                 raise RuntimeError("ParticleGraph GPU layout does not match its runtime schedule")
             decoded = decode_gpu_particle_spirv(artifact.gpu_spirv, index)
+            continuation_source = glsl_emitter["continuation"]
+            continuation_binary = decoded.get("continuation")
+            if (continuation_source is None) != (continuation_binary is None):
+                raise RuntimeError(
+                    "ParticleGraph GPU continuation source and binary disagree"
+                )
+            continuation_program = None
+            if continuation_source is not None:
+                if (
+                    type(continuation_source) is not dict
+                    or type(continuation_binary) is not dict
+                    or type(continuation_source.get("record_stride")) is not int
+                    or type(continuation_source.get("lane_count")) is not int
+                    or type(continuation_source.get("join_count")) is not int
+                    or continuation_source["record_stride"]
+                    != continuation_binary.get("record_stride")
+                    or continuation_source["lane_count"]
+                    != continuation_binary.get("lane_count")
+                    or continuation_source["join_count"]
+                    != continuation_binary.get("join_count")
+                    or type(continuation_binary.get("stages")) is not dict
+                    or set(continuation_binary["stages"])
+                    != {"prepare", "classify", "dispatch"}
+                ):
+                    raise RuntimeError(
+                        "ParticleGraph GPU continuation metadata is incomplete"
+                    )
+                continuation_capacity = (
+                    int(emitter.settings.capacity)
+                    * int(continuation_source["lane_count"])
+                )
+                if not 0 < continuation_capacity <= (1 << 24):
+                    raise RuntimeError(
+                        "ParticleGraph GPU continuation capacity exceeds the native bounded pool"
+                    )
+                continuation_program = {
+                    "capacity": continuation_capacity,
+                    "record_stride": continuation_source["record_stride"],
+                    "lane_count": continuation_source["lane_count"],
+                    "join_count": continuation_source["join_count"],
+                    "prepare": continuation_binary["stages"]["prepare"],
+                    "classify": continuation_binary["stages"]["classify"],
+                    "dispatch": continuation_binary["stages"]["dispatch"],
+                }
             emitter_id = self._gpu_emitter_id(emitter.stable_id)
             previous_controller = previous_controllers.get(emitter.stable_id)
             migration = None
@@ -1232,7 +1277,7 @@ class ParticleSystem(InxComponent):
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
                     "event_output_stages": list(glsl_emitter["event_output_stages"]),
-                    "continuation": None,
+                    "continuation": continuation_program,
                     "parameter_words": list(
                         pack_gpu_particle_parameters(
                             kernel.parameters,

@@ -211,6 +211,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._workspace_tab_index = 0
         self._drag_snapshot: Optional[dict] = None
         self._draft_compile_due_at = 0.0
+        self._draft_compile_error = ""
         self._event_type_dialog_requested = False
         self._event_route_dialog_requested = False
         self._event_type_dialog_open = False
@@ -2026,6 +2027,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._emitter_index = 0
         self._stage = "init"
         self._dirty = False
+        self._draft_compile_error = ""
         self._bind_stage()
         self._sync_project_dirty_flag()
         return True
@@ -2042,11 +2044,13 @@ class ParticleGraphEditorPanel(EditorPanel):
         try:
             self._asset.save(target)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._draft_compile_error = str(exc)
             Debug.log_error(f"Failed to save Particle Graph '{target}': {exc}")
             return False
 
         self._file_path = target
         self._dirty = False
+        self._draft_compile_error = ""
         self._sync_project_dirty_flag()
         self._persist_panel_state()
         try:
@@ -2092,6 +2096,7 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._emitter_index = 0
         self._stage = "init"
         self._dirty = False
+        self._draft_compile_error = ""
         self._bind_stage()
         self._sync_project_dirty_flag()
         self._persist_panel_state()
@@ -2151,8 +2156,9 @@ class ParticleGraphEditorPanel(EditorPanel):
         self._sync_model_to_asset()
         try:
             ParticleArtifactRegistry.publish_graph_asset(self._asset, self._file_path)
+            self._draft_compile_error = ""
         except (RuntimeError, TypeError, ValueError) as exc:
-            Debug.log_error(f"Particle Graph draft compile failed: {exc}")
+            self._draft_compile_error = str(exc)
 
     def _on_node_selected(self, node_uid: str) -> None:
         self._selected_node_uid = node_uid
@@ -2421,6 +2427,13 @@ class ParticleGraphEditorPanel(EditorPanel):
         ctx.record_semantic_item(
             "status", "Unsaved Changes", False, "particle_graph.document.dirty",
             bool_value=self._dirty,
+        )
+        ctx.record_semantic_item(
+            "status",
+            "Draft Compile Error",
+            False,
+            "particle_graph.document.compile_error",
+            string_value=self._draft_compile_error,
         )
 
     def _request_event_type_dialog(self, event_type_id: str = "") -> None:
@@ -4067,15 +4080,60 @@ class ParticleGraphEditorPanel(EditorPanel):
             if label == label_key:
                 label = key.replace("_", " ").title()
             new_value = value
+            semantic_id = f"particle_graph.node.{node.uid}.property.{key}"
+            semantic_recorded_by_widget = False
             if value_type is ValueType.BOOL:
                 new_value = bool(ctx.checkbox(f"{label}##particle_node_{key}", bool(value)))
             elif value_type in {ValueType.I32, ValueType.U32}:
-                input_method = (
-                    ctx.input_uint if value_type is ValueType.U32 else ctx.input_int
+                semantic_method = getattr(
+                    ctx,
+                    "input_uint_semantic"
+                    if value_type is ValueType.U32
+                    else "input_int_semantic",
+                    None,
                 )
-                new_value = int(input_method(f"{label}##particle_node_{key}", int(value)))
+                if callable(semantic_method):
+                    new_value = int(
+                        semantic_method(
+                            f"{label}##particle_node_{key}",
+                            int(value),
+                            semantic_id,
+                        )
+                    )
+                    semantic_recorded_by_widget = True
+                else:
+                    input_method = (
+                        ctx.input_uint
+                        if value_type is ValueType.U32
+                        else ctx.input_int
+                    )
+                    new_value = int(
+                        input_method(f"{label}##particle_node_{key}", int(value))
+                    )
             elif value_type is ValueType.F32:
-                new_value = float(ctx.drag_float(f"{label}##particle_node_{key}", float(value), 0.05, -1.0e7, 1.0e7))
+                semantic_drag = getattr(ctx, "drag_float_semantic", None)
+                if callable(semantic_drag):
+                    new_value = float(
+                        semantic_drag(
+                            f"{label}##particle_node_{key}",
+                            float(value),
+                            0.05,
+                            -1.0e7,
+                            1.0e7,
+                            semantic_id,
+                        )
+                    )
+                    semantic_recorded_by_widget = True
+                else:
+                    new_value = float(
+                        ctx.drag_float(
+                            f"{label}##particle_node_{key}",
+                            float(value),
+                            0.05,
+                            -1.0e7,
+                            1.0e7,
+                        )
+                    )
             elif value_type in {ValueType.VEC2, ValueType.VEC3, ValueType.VEC4, ValueType.COLOR}:
                 new_value = [
                     float(ctx.drag_float(f"{label} {axis}##particle_node_{key}_{axis}", float(component), 0.05, -1.0e7, 1.0e7))
@@ -4212,7 +4270,7 @@ class ParticleGraphEditorPanel(EditorPanel):
                 new_value = self._render_curve_property(ctx, node.uid, key, value)
             elif value_type is ValueType.GRADIENT:
                 new_value = self._render_gradient_property(ctx, node.uid, key, value)
-            if value_type in {
+            if not semantic_recorded_by_widget and value_type in {
                 ValueType.BOOL,
                 ValueType.I32,
                 ValueType.U32,
@@ -4432,6 +4490,11 @@ class ParticleGraphEditorPanel(EditorPanel):
             ctx.record_semantic_item("button", save_label, True, "particle_graph.toolbar.save")
         ctx.same_line(0, 12)
         ctx.label(self._asset.name)
+        if self._draft_compile_error:
+            ctx.same_line(0, 12)
+            ctx.label(t("particle_graph_editor.draft_invalid"))
+            if ctx.is_item_hovered():
+                ctx.set_tooltip(self._draft_compile_error)
         self._record_document_semantics(ctx)
         ctx.separator()
 

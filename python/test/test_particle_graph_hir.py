@@ -306,11 +306,65 @@ def test_particle_exec_join_all_continues_after_every_parallel_branch():
     assert join.node_uid == "join"
     assert len(join.input_lane_indices) == 2
     assert join.output_lane_index not in join.input_lane_indices
-    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    kernel_program = ParticleKernelLowerer().lower(program)
+    kernel_emitter = kernel_program.emitters[0]
+    kernel = kernel_emitter.update
     assert all(
         instruction.source.node_uid != "join"
         for instruction in kernel.instructions
     )
+    update_flow = next(
+        flow
+        for flow in kernel_emitter.flows
+        if flow.lifecycle_stage is ParticleStage.UPDATE
+    )
+    assert [lane.index for lane in update_flow.lanes] == list(
+        range(len(update_flow.lanes))
+    )
+    assert update_flow.lanes[0].parent_index == -1
+    assert all(
+        0 <= lane.parent_index < lane.index
+        for lane in update_flow.lanes[1:]
+    )
+    blocks = {block.source_node_uid: block for block in update_flow.blocks}
+    assert blocks["left"].lane_index != blocks["right"].lane_index
+    assert blocks["join"].instruction_begin == blocks["join"].instruction_end
+    assert blocks["tail"].instruction_begin >= blocks["join"].instruction_end
+    assert update_flow.operation_schedule == tuple(
+        range(len(update_flow.operation_schedule))
+    )
+    assert len(update_flow.joins) == 1
+    kernel_join = update_flow.joins[0]
+    assert kernel_join.source_node_uid == "join"
+    assert set(kernel_join.input_lane_indices) == {
+        blocks["left"].lane_index,
+        blocks["right"].lane_index,
+    }
+    assert kernel_join.output_lane_index == blocks["join"].lane_index
+
+    restored = type(kernel_program).from_dict(kernel_program.to_dict())
+    assert restored == kernel_program
+    assert restored.kernel_hash == kernel_program.kernel_hash
+
+    stale = kernel_program.to_dict()
+    stale["emitters"][0].pop("flows")
+    with pytest.raises(KernelCompileError, match="kernel emitter keys"):
+        type(kernel_program).from_dict(stale)
+
+    changed_topology = kernel_program.to_dict()
+    serialized_update_flow = next(
+        flow
+        for flow in changed_topology["emitters"][0]["flows"]
+        if flow["lifecycle_stage"] == "update"
+    )
+    branch_lane_indices = sorted(
+        (blocks["left"].lane_index, blocks["right"].lane_index)
+    )
+    serialized_update_flow["lanes"][branch_lane_indices[1]][
+        "parent_index"
+    ] = branch_lane_indices[0]
+    with pytest.raises(KernelCompileError, match="kernel hash"):
+        type(kernel_program).from_dict(changed_topology)
 
 
 def test_particle_if_activates_only_the_selected_exec_branch():
@@ -348,6 +402,71 @@ def test_particle_if_activates_only_the_selected_exec_branch():
     assert opcodes.count("begin_if") == 2
     assert opcodes.count("end_if") == 2
     assert "logical_not" in opcodes
+
+
+def test_particle_join_all_rejects_mutually_exclusive_if_branches():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "condition",
+                "common.constant.bool",
+                properties={"value": True},
+            ),
+            GraphNodeRecord("if", "particle.control.if"),
+            GraphNodeRecord("true-size", "particle.attribute.set_size"),
+            GraphNodeRecord("false-position", "particle.attribute.set_position"),
+            GraphNodeRecord("join", "particle.control.join_all"),
+            GraphNodeRecord("tail", "particle.attribute.set_color"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-if", "root.update", "out", "if", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord(
+                "condition-if", "condition", "value", "if", "condition"
+            ),
+            GraphLinkRecord(
+                "if-true", "if", "true", "true-size", "in", PortKind.STREAM
+            ),
+            GraphLinkRecord(
+                "if-false",
+                "if",
+                "false",
+                "false-position",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "true-join",
+                "true-size",
+                "out",
+                "join",
+                "in0",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "false-join",
+                "false-position",
+                "out",
+                "join",
+                "in1",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "join-tail", "join", "out", "tail", "in", PortKind.STREAM
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ParticleCompileError,
+        match="cannot join mutually exclusive or differently predicated branches",
+    ):
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
 
 
 def test_particle_waits_emit_stable_suspension_resume_descriptors():
@@ -458,6 +577,12 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
         ParticleStage.UPDATE,
     ]
     for item in kernel_emitter.suspensions:
+        update_flow = next(
+            flow
+            for flow in kernel_emitter.flows
+            if flow.lifecycle_stage is ParticleStage.UPDATE
+        )
+        blocks = {block.source_node_uid: block for block in update_flow.blocks}
         instruction = kernel_emitter.update.instructions[
             item.suspend_instruction_index
         ]
@@ -465,6 +590,12 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
         assert instruction.immediate_dict()["resume_program_counter"] == (
             item.resume_program_counter
         )
+        assert blocks[item.source_node_uid].instruction_begin <= (
+            item.suspend_instruction_index
+        ) < blocks[item.source_node_uid].instruction_end
+        assert item.resume_instruction_index == blocks[
+            item.resume_node_uid
+        ].instruction_begin
 
     restored_kernel = type(kernel_program).from_dict(kernel_program.to_dict())
     assert restored_kernel == kernel_program
@@ -639,12 +770,52 @@ def test_collision_lifecycle_roots_are_first_class_emitter_stages():
         "exit.size": "collision_exit",
     }
 
-    kernel = ParticleKernelLowerer().lower(program).emitters[0].update
+    kernel_program = ParticleKernelLowerer().lower(program)
+    kernel_emitter = kernel_program.emitters[0]
+    kernel = kernel_emitter.update
     opcodes = [instruction.opcode for instruction in kernel.instructions]
     assert opcodes.count("collide_scene") == 1
     assert opcodes.count("begin_if") == 3
     assert opcodes.count("end_if") == 3
     assert "builtin.collision_active" in kernel.written_attributes
+
+    flow_by_stage = {
+        flow.lifecycle_stage: flow for flow in kernel_emitter.flows
+    }
+    assert set(flow_by_stage) == {
+        ParticleStage.INIT,
+        ParticleStage.UPDATE,
+        ParticleStage.COLLISION_ENTER,
+        ParticleStage.COLLISION_STAY,
+        ParticleStage.COLLISION_EXIT,
+        ParticleStage.RENDERING,
+    }
+    expected_nodes = {
+        ParticleStage.COLLISION_ENTER: "enter.size",
+        ParticleStage.COLLISION_STAY: "stay.size",
+        ParticleStage.COLLISION_EXIT: "exit.size",
+    }
+    for lifecycle_stage, source_node_uid in expected_nodes.items():
+        flow = flow_by_stage[lifecycle_stage]
+        assert flow.kernel_stage.value == "update"
+        assert flow.entry_node_uid == f"root.{lifecycle_stage.value}"
+        assert [lane.index for lane in flow.lanes] == list(range(len(flow.lanes)))
+        block = next(
+            block
+            for block in flow.blocks
+            if block.source_node_uid == source_node_uid
+        )
+        assert block.instruction_begin < block.instruction_end
+        assert all(
+            instruction.source.node_uid == source_node_uid
+            for instruction in kernel.instructions[
+                block.instruction_begin : block.instruction_end
+            ]
+        )
+
+    restored = type(kernel_program).from_dict(kernel_program.to_dict())
+    assert restored == kernel_program
+    assert restored.kernel_hash == kernel_program.kernel_hash
 
 
 def test_disabled_collision_keeps_authored_roots_dormant():

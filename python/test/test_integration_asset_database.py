@@ -163,7 +163,7 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
     try:
         result = AssetManager.import_asset(str(source), database=asset_db)
 
-        assert result
+        assert result, result.error
         assert result.resource_type == ResourceType.ParticleGraph
         assert asset_db.get_meta_by_path(str(source)).get_resource_type() == ResourceType.ParticleGraph
         artifact = ParticleArtifactRegistry.get(str(source), guid=result.guid)
@@ -253,7 +253,7 @@ def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engin
 
     try:
         imported = AssetManager.import_asset(str(source), database=asset_db)
-        assert imported
+        assert imported, imported.error
         published = ParticleArtifactRegistry.get(str(source), guid=imported.guid)
         assert published is not None
 

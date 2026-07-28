@@ -543,6 +543,32 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         m_vectorFields = std::move(vectorFields);
     }
 
+    if (desc.continuation.capacity > 0) {
+        auto continuationDesc = desc.continuation;
+        continuationDesc.particleCapacity = desc.capacity;
+        continuationDesc.ownerLayout = m_layout;
+        continuationDesc.ownerGroup = m_group;
+        continuationDesc.dataInterfaceLayout = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
+        continuationDesc.dataInterfaceGroup = m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup;
+        continuationDesc.vectorFieldLayout = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
+        continuationDesc.vectorFieldGroup = m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup;
+        continuationDesc.emptyLayout = m_emptyDataInterfaceLayout;
+        continuationDesc.emptyGroup = m_emptyDataInterfaceGroup;
+        continuationDesc.eventOutputLayout = m_eventOutputLayout;
+        continuationDesc.emitsEvents = m_eventOutputStageMask != 0;
+        m_continuation = std::make_unique<ParticleGpuContinuationRuntime>();
+        const bool continuationCreated =
+            previousContinuation ? m_continuation->CreateCompatible(device, continuationDesc, *previousContinuation)
+                                 : m_continuation->Create(device, continuationDesc);
+        if (!continuationCreated) {
+            Destroy();
+            return false;
+        }
+    } else if (previousContinuation) {
+        Destroy();
+        return false;
+    }
+
     for (size_t index = 0; index < desc.kernels.size(); ++index) {
         const auto shader = device.CreateShaderModule({desc.kernels[index].words, desc.kernels[index].wordCount});
         if (!shader.IsValid()) {
@@ -552,24 +578,17 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
         pipelineDesc.bindingLayouts[0] = m_layout;
-        pipelineDesc.bindingLayoutCount = 1;
-        if (m_dataInterfaces) {
-            pipelineDesc.bindingLayouts[1] = m_dataInterfaces->layout;
-            pipelineDesc.bindingLayoutCount = 2;
-        }
-        if (m_vectorFields) {
-            pipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
-            pipelineDesc.bindingLayouts[2] = m_vectorFields->layout;
-            pipelineDesc.bindingLayoutCount = 3;
-        }
-        if ((m_eventOutputStageMask & EventOutputStageBit(static_cast<GpuKernelStage>(index))) != 0u) {
-            if (pipelineDesc.bindingLayoutCount < 3) {
-                pipelineDesc.bindingLayouts[1] =
-                    m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
-                pipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
-            }
-            pipelineDesc.bindingLayouts[3] = m_eventOutputLayout;
-            pipelineDesc.bindingLayoutCount = 4;
+        pipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
+        pipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
+        pipelineDesc.bindingLayouts[3] = m_emptyDataInterfaceLayout;
+        pipelineDesc.bindingLayouts[4] =
+            (m_eventOutputStageMask & EventOutputStageBit(static_cast<GpuKernelStage>(index))) != 0u
+                ? m_eventOutputLayout
+                : m_emptyDataInterfaceLayout;
+        pipelineDesc.bindingLayoutCount = 5;
+        if (m_continuation) {
+            pipelineDesc.bindingLayouts[5] = m_continuation->Layout();
+            pipelineDesc.bindingLayoutCount = 6;
         }
         pipelineDesc.pushConstantBytes = sizeof(GpuParticlePushConstants);
         m_pipelines[index] = device.CreateComputePipeline(pipelineDesc);
@@ -592,32 +611,17 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     eventPipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
     eventPipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
     eventPipelineDesc.bindingLayouts[3] = m_eventInputLayout;
-    eventPipelineDesc.bindingLayoutCount = 4;
-    if (HasEventOutput(GpuKernelStage::Init)) {
-        eventPipelineDesc.bindingLayouts[4] = m_eventOutputLayout;
-        eventPipelineDesc.bindingLayoutCount = 5;
+    eventPipelineDesc.bindingLayouts[4] =
+        HasEventOutput(GpuKernelStage::Init) ? m_eventOutputLayout : m_emptyDataInterfaceLayout;
+    eventPipelineDesc.bindingLayoutCount = 5;
+    if (m_continuation) {
+        eventPipelineDesc.bindingLayouts[5] = m_continuation->Layout();
+        eventPipelineDesc.bindingLayoutCount = 6;
     }
     eventPipelineDesc.pushConstantBytes = sizeof(GpuParticlePushConstants);
     m_eventInitPipeline = device.CreateComputePipeline(eventPipelineDesc);
     device.Release(eventInitShader);
     if (!m_eventInitPipeline.IsValid()) {
-        Destroy();
-        return false;
-    }
-    if (desc.continuation.capacity > 0) {
-        auto continuationDesc = desc.continuation;
-        continuationDesc.ownerLayout = m_layout;
-        continuationDesc.ownerGroup = m_group;
-        m_continuation = std::make_unique<ParticleGpuContinuationRuntime>();
-        const bool continuationCreated = previousContinuation
-                                             ? m_continuation->CreateCompatible(device, continuationDesc,
-                                                                                *previousContinuation)
-                                             : m_continuation->Create(device, continuationDesc);
-        if (!continuationCreated) {
-            Destroy();
-            return false;
-        }
-    } else if (previousContinuation) {
         Destroy();
         return false;
     }
@@ -712,22 +716,24 @@ void ParticleGpuRuntime::RequestContinuationReset() noexcept
         m_continuation->RequestReset();
 }
 
-bool ParticleGpuRuntime::RecordContinuationPrepare(const rhi::ComputeCommandEncoder &encoder,
-                                                   uint32_t simulationStep, uint64_t elapsedTimeTicks)
+bool ParticleGpuRuntime::RecordContinuationPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                                                   uint64_t elapsedTimeTicks)
 {
     return m_continuation && m_continuation->RecordPrepare(encoder, simulationStep, elapsedTimeTicks);
 }
 
-bool ParticleGpuRuntime::RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder,
-                                                    uint32_t simulationStep, uint64_t elapsedTimeTicks) const
+bool ParticleGpuRuntime::RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                                                    uint64_t elapsedTimeTicks) const
 {
     return m_continuation && m_continuation->RecordClassify(encoder, simulationStep, elapsedTimeTicks);
 }
 
-bool ParticleGpuRuntime::RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder,
-                                                    uint32_t simulationStep, uint64_t elapsedTimeTicks) const
+bool ParticleGpuRuntime::RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                                                    uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
+                                                    rhi::BindGroupHandle eventOutput) const
 {
-    return m_continuation && m_continuation->RecordDispatch(encoder, simulationStep, elapsedTimeTicks);
+    return m_continuation && m_continuation->RecordDispatch(encoder, simulationStep, elapsedTimeTicks, systemSeed,
+                                                            deltaTime, eventOutput);
 }
 
 bool ParticleGpuRuntime::SharesStateWith(const ParticleGpuRuntime &other) const noexcept
@@ -893,8 +899,10 @@ void ParticleGpuRuntime::RecordEventInit(const rhi::ComputeCommandEncoder &encod
     encoder.BindGroup(m_eventInitPipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
     encoder.BindGroup(m_eventInitPipeline, 2, m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup);
     encoder.BindGroup(m_eventInitPipeline, 3, eventInput);
-    if (HasEventOutput(GpuKernelStage::Init))
-        encoder.BindGroup(m_eventInitPipeline, 4, eventOutput);
+    encoder.BindGroup(m_eventInitPipeline, 4,
+                      HasEventOutput(GpuKernelStage::Init) ? eventOutput : m_emptyDataInterfaceGroup);
+    if (m_continuation)
+        encoder.BindGroup(m_eventInitPipeline, 5, m_continuation->Group());
     encoder.PushConstants(m_eventInitPipeline, sizeof(constants), &constants);
     encoder.DispatchIndirect(indirectArguments, indirectOffset);
 }
@@ -944,14 +952,12 @@ void ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKe
     const auto pipeline = m_pipelines[StageIndex(stage)];
     encoder.BindPipeline(pipeline);
     encoder.BindGroup(pipeline, 0, m_group);
-    if (m_dataInterfaces)
-        encoder.BindGroup(pipeline, 1, m_dataInterfaces->group);
-    else if (m_vectorFields)
-        encoder.BindGroup(pipeline, 1, m_emptyDataInterfaceGroup);
-    if (m_vectorFields)
-        encoder.BindGroup(pipeline, 2, m_vectorFields->group);
-    if (HasEventOutput(stage))
-        encoder.BindGroup(pipeline, 3, eventOutput);
+    encoder.BindGroup(pipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
+    encoder.BindGroup(pipeline, 2, m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup);
+    encoder.BindGroup(pipeline, 3, m_emptyDataInterfaceGroup);
+    encoder.BindGroup(pipeline, 4, HasEventOutput(stage) ? eventOutput : m_emptyDataInterfaceGroup);
+    if (m_continuation)
+        encoder.BindGroup(pipeline, 5, m_continuation->Group());
     encoder.PushConstants(pipeline, sizeof(constants), &constants);
     encoder.Dispatch(GroupCount(invocationCount), 1, 1);
 }

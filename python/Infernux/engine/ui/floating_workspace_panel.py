@@ -124,49 +124,48 @@ def render_floating_overlay(
     ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, OVERLAY_PANEL_ROUNDING)
     visible = ctx.begin_child(child_id, width, panel_h, False)
     try:
-        if not visible:
-            return
-        paint_overlay_background(ctx, width=width, height=panel_h)
+        if visible:
+            paint_overlay_background(ctx, width=width, height=panel_h)
 
-        inner_w = max(1.0, width - pad_x * 2.0)
-        content_area_h = max(1.0, panel_h - grip - pad_y)
-        ctx.set_cursor_pos_x(pad_x)
-        ctx.set_cursor_pos_y(pad_y)
-        ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
-        content_visible = ctx.begin_child(
-            f"{child_id}_body", inner_w, content_area_h, False
-        )
-        try:
-            if content_visible:
-                render_fn()
-        finally:
-            ctx.end_child()
-        ctx.pop_style_color(1)
+            inner_w = max(1.0, width - pad_x * 2.0)
+            content_area_h = max(1.0, panel_h - grip - pad_y)
+            ctx.set_cursor_pos_x(pad_x)
+            ctx.set_cursor_pos_y(pad_y)
+            ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
+            content_visible = ctx.begin_child(
+                f"{child_id}_body", inner_w, content_area_h, False
+            )
+            try:
+                if content_visible:
+                    render_fn()
+            finally:
+                ctx.end_child()
+                ctx.pop_style_color(1)
 
-        ctx.set_cursor_pos_x(0.0)
-        ctx.set_cursor_pos_y(panel_h - grip)
-        ctx.invisible_button(f"{child_id}_resize_grip", width, grip)
-        if ctx.is_item_hovered() or ctx.is_item_active():
-            ctx.set_mouse_cursor(ImGuiMouseCursor.ResizeNS)
-        if ctx.is_item_active() and not state.drag_active:
-            state.drag_active = True
-            state.drag_start_y = ctx.get_mouse_pos_y()
-            state.drag_start_h = panel_h
+            ctx.set_cursor_pos_x(0.0)
+            ctx.set_cursor_pos_y(panel_h - grip)
+            ctx.invisible_button(f"{child_id}_resize_grip", width, grip)
+            if ctx.is_item_hovered() or ctx.is_item_active():
+                ctx.set_mouse_cursor(ImGuiMouseCursor.ResizeNS)
+            if ctx.is_item_active() and not state.drag_active:
+                state.drag_active = True
+                state.drag_start_y = ctx.get_mouse_pos_y()
+                state.drag_start_h = panel_h
 
-        x0 = ctx.get_window_pos_x()
-        grip_y = ctx.get_window_pos_y() + panel_h - grip * 0.5
-        ctx.draw_line(
-            x0 + width * 0.38,
-            grip_y,
-            x0 + width * 0.62,
-            grip_y,
-            *OVERLAY_GRIP_LINE,
-            1.5,
-        )
+            x0 = ctx.get_window_pos_x()
+            grip_y = ctx.get_window_pos_y() + panel_h - grip * 0.5
+            ctx.draw_line(
+                x0 + width * 0.38,
+                grip_y,
+                x0 + width * 0.62,
+                grip_y,
+                *OVERLAY_GRIP_LINE,
+                1.5,
+            )
     finally:
         ctx.end_child()
-    ctx.pop_style_var(1)
-    ctx.pop_style_color(2)
+        ctx.pop_style_var(1)
+        ctx.pop_style_color(2)
 
 
 def render_compact_tab_bar(

@@ -55,6 +55,7 @@
   "panel.animtimeline_editor": "Timeline Editor",
   "panel.particle_graph_editor": "Particle Graph Editor",
   "particle_graph_editor.save": "Save",
+  "particle_graph_editor.draft_invalid": "Draft invalid",
   "particle_graph_editor.parameters": "Parameters",
   "particle_graph_editor.add_parameter": "Add Parameter",
   "particle_graph_editor.remove_parameter": "Remove",

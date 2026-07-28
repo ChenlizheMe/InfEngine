@@ -15,6 +15,7 @@ from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, Value
 from Infernux.graph.ramp import Curve, Gradient
 
 from .data_interface import SdfVolume, VectorField
+from .hir import ParticleStage
 from .kernel_ir import (
     KernelParameter,
     KernelCompileError,
@@ -816,6 +817,47 @@ void main() {
 
 
 @dataclass(frozen=True)
+class GpuParticleContinuationSource:
+    record_stride: int
+    lane_count: int
+    join_count: int
+    prepare: str
+    classify: str
+    dispatch: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.record_stride) is not int
+            or self.record_stride < 64
+            or self.record_stride % 16
+            or type(self.lane_count) is not int
+            or self.lane_count <= 0
+            or type(self.join_count) is not int
+            or self.join_count < 0
+            or not all(
+                type(source) is str and source
+                for source in (self.prepare, self.classify, self.dispatch)
+            )
+        ):
+            raise GpuParticleCompileError("GPU continuation source is invalid")
+
+    def stages(self) -> dict[str, str]:
+        return {
+            "prepare": self.prepare,
+            "classify": self.classify,
+            "dispatch": self.dispatch,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "record_stride": self.record_stride,
+            "lane_count": self.lane_count,
+            "join_count": self.join_count,
+            "stages": self.stages(),
+        }
+
+
+@dataclass(frozen=True)
 class GpuParticleEmitterSource:
     stable_id: str
     kernel_hash: str
@@ -828,6 +870,7 @@ class GpuParticleEmitterSource:
     update: str
     render_reset: str
     rendering: str
+    continuation: GpuParticleContinuationSource | None
     data_interfaces: tuple[dict[str, Any], ...] = ()
     data_interface_layout: dict[str, Any] = field(default_factory=dict)
 
@@ -859,6 +902,11 @@ class GpuParticleEmitterSource:
             "event_output_stages": list(self.event_output_stages),
             "data_interfaces": [dict(value) for value in self.data_interfaces],
             "data_interface_layout": dict(self.data_interface_layout),
+            "continuation": (
+                self.continuation.to_dict()
+                if self.continuation is not None
+                else None
+            ),
             "stages": self.stages(),
         }
 
@@ -920,6 +968,26 @@ class GpuParticleGlslLowerer:
             parameter.stable_id: (parameter.slot, parameter.value_type)
             for parameter in parameters
         }
+        continuation_lane_indices = {
+            stable_id: index
+            for index, stable_id in enumerate(
+                sorted({item.lane_stable_id for item in emitter.suspensions})
+            )
+        }
+        continuation_join_indices = {
+            (flow.lifecycle_stage, join.source_node_uid): index
+            for index, (flow, join) in enumerate(
+                (flow, join)
+                for flow in emitter.flows
+                for join in flow.joins
+            )
+        }
+        init_flows = tuple(
+            flow for flow in emitter.flows if flow.kernel_stage is KernelStage.INIT
+        )
+        update_flows = tuple(
+            flow for flow in emitter.flows if flow.kernel_stage is KernelStage.UPDATE
+        )
         bootstrap = prelude + _bootstrap_main()
         init_body, _, init_events = _StageCompiler(
             emitter,
@@ -928,7 +996,9 @@ class GpuParticleGlslLowerer:
             events,
             emitter_index,
             parameter_slots=parameter_slots,
-        ).compile(emitter.init)
+            continuation_lane_indices=continuation_lane_indices,
+            continuation_join_indices=continuation_join_indices,
+        ).compile(emitter.init, init_flows)
         event_init_body, _, event_init_events = _StageCompiler(
             emitter,
             fields,
@@ -937,7 +1007,9 @@ class GpuParticleGlslLowerer:
             emitter_index,
             event_input=True,
             parameter_slots=parameter_slots,
-        ).compile(emitter.init)
+            continuation_lane_indices=continuation_lane_indices,
+            continuation_join_indices=continuation_join_indices,
+        ).compile(emitter.init, init_flows)
         update_body, _, update_events = _StageCompiler(
             emitter,
             fields,
@@ -945,7 +1017,9 @@ class GpuParticleGlslLowerer:
             events,
             emitter_index,
             parameter_slots=parameter_slots,
-        ).compile(emitter.update)
+            continuation_lane_indices=continuation_lane_indices,
+            continuation_join_indices=continuation_join_indices,
+        ).compile(emitter.update, update_flows)
         rendering_body, exports, rendering_events = _StageCompiler(
             emitter,
             fields,
@@ -960,6 +1034,19 @@ class GpuParticleGlslLowerer:
             raise GpuParticleCompileError(
                 f"particle rendering stage does not export {missing}"
             )
+        continuation = _continuation_source(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+            parameter_slots,
+            continuation_lane_indices,
+            continuation_join_indices,
+        )
+        continuation_bindings = (
+            _continuation_bindings_glsl(5) if continuation is not None else ""
+        )
         return GpuParticleEmitterSource(
             emitter.stable_id,
             kernel_hash,
@@ -979,21 +1066,25 @@ class GpuParticleGlslLowerer:
             ),
             bootstrap,
             prelude
-            + (_event_output_bindings(3) if init_events else "")
+            + continuation_bindings
+            + (_event_output_bindings(4) if init_events else "")
             + _init_main(init_body, init_events, emitter, fields),
             prelude
+            + continuation_bindings
             + _event_init_bindings()
             + (_event_output_bindings(4) if event_init_events else "")
             + _event_init_main(
                 event_init_body, event_init_events, emitter, fields
             ),
             prelude
-            + (_event_output_bindings(3) if update_events else "")
+            + continuation_bindings
+            + (_event_output_bindings(4) if update_events else "")
             + _update_main(update_body, update_events, emitter, fields),
             prelude + _render_reset_main(),
             prelude
-            + (_event_output_bindings(3) if rendering_events else "")
+            + (_event_output_bindings(4) if rendering_events else "")
             + _rendering_main(rendering_body, rendering_events, exports),
+            continuation,
             tuple(interface.to_dict() for interface in emitter.data_interfaces),
             data_interface_layout,
         )
@@ -1045,7 +1136,14 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
 
     emitters = []
     for emitter in program.emitters:
-        sources = emitter.stages()
+        sources = dict(emitter.stages())
+        if emitter.continuation is not None:
+            sources.update(
+                {
+                    f"continuation.{stage}": source
+                    for stage, source in emitter.continuation.stages().items()
+                }
+            )
         source_keys = {
             stage: hashlib.sha256(
                 ("vulkan1.2-spirv1.5\0" + source).encode("utf-8")
@@ -1066,7 +1164,7 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         )
         if set(compiled) != set(missing):
             raise GpuParticleCompileError("engine compute compiler returned incomplete stages")
-        stages = {}
+        encoded_sources = {}
         for stage, key in sorted(source_keys.items()):
             descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
             if descriptor is None:
@@ -1081,8 +1179,30 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
                     "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
                 }
                 _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
-            stages[stage] = dict(descriptor)
-        emitters.append({"stable_id": emitter.stable_id, "stages": stages})
+            encoded_sources[stage] = dict(descriptor)
+        stages = {
+            stage: descriptor
+            for stage, descriptor in encoded_sources.items()
+            if not stage.startswith("continuation.")
+        }
+        continuation = None
+        if emitter.continuation is not None:
+            continuation = {
+                "record_stride": emitter.continuation.record_stride,
+                "lane_count": emitter.continuation.lane_count,
+                "join_count": emitter.continuation.join_count,
+                "stages": {
+                    stage: encoded_sources[f"continuation.{stage}"]
+                    for stage in emitter.continuation.stages()
+                },
+            }
+        emitters.append(
+            {
+                "stable_id": emitter.stable_id,
+                "stages": stages,
+                "continuation": continuation,
+            }
+        )
     graphics_sources = {
         "vertex": _BILLBOARD_VERTEX_GLSL,
         "fragment": _BILLBOARD_FRAGMENT_GLSL,
@@ -1317,7 +1437,11 @@ def validate_gpu_particle_spirv(
     }:
         raise GpuParticleCompileError("particle GPU mesh binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):
-        if type(encoded) is not dict or set(encoded) != {"stable_id", "stages"}:
+        if type(encoded) is not dict or set(encoded) != {
+            "stable_id",
+            "stages",
+            "continuation",
+        }:
             raise GpuParticleCompileError("particle GPU emitter binary entry is invalid")
         stages = encoded["stages"]
         if encoded["stable_id"] != source.stable_id or type(stages) is not dict:
@@ -1326,6 +1450,35 @@ def validate_gpu_particle_spirv(
             raise GpuParticleCompileError("particle GPU emitter binary stages are incomplete")
         for stage, descriptor in stages.items():
             _validate_spirv_descriptor(descriptor, stage)
+        continuation = encoded["continuation"]
+        if source.continuation is None:
+            if continuation is not None:
+                raise GpuParticleCompileError(
+                    "particle GPU emitter unexpectedly contains continuation binaries"
+                )
+        else:
+            if type(continuation) is not dict or set(continuation) != {
+                "record_stride",
+                "lane_count",
+                "join_count",
+                "stages",
+            }:
+                raise GpuParticleCompileError(
+                    "particle GPU continuation binary entry is invalid"
+                )
+            if (
+                continuation["record_stride"] != source.continuation.record_stride
+                or continuation["lane_count"] != source.continuation.lane_count
+                or continuation["join_count"] != source.continuation.join_count
+                or type(continuation["stages"]) is not dict
+                or set(continuation["stages"])
+                != set(source.continuation.stages())
+            ):
+                raise GpuParticleCompileError(
+                    "particle GPU continuation binary metadata is incompatible"
+                )
+            for stage, descriptor in continuation["stages"].items():
+                _validate_spirv_descriptor(descriptor, f"continuation.{stage}")
     for stage, descriptor in billboard.items():
         _validate_spirv_descriptor(descriptor, f"billboard.{stage}")
     for stage, descriptor in mesh.items():
@@ -1392,10 +1545,35 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
         )
 
     emitter = emitters[emitter_index]
+    continuation = emitter.get("continuation")
+    if continuation is not None and (
+        type(continuation) is not dict
+        or set(continuation) != {
+            "record_stride",
+            "lane_count",
+            "join_count",
+            "stages",
+        }
+        or type(continuation["stages"]) is not dict
+    ):
+        raise GpuParticleCompileError("particle GPU continuation payload is invalid")
     return {
         "stable_id": emitter.get("stable_id", ""),
         "parameters": parameters,
         "parameter_words": parameter_words,
+        "continuation": (
+            {
+                "record_stride": continuation["record_stride"],
+                "lane_count": continuation["lane_count"],
+                "join_count": continuation["join_count"],
+                "stages": {
+                    stage: decode(descriptor, f"continuation.{stage}")
+                    for stage, descriptor in continuation["stages"].items()
+                },
+            }
+            if continuation is not None
+            else None
+        ),
         "stages": {
             stage: decode(descriptor, stage)
             for stage, descriptor in emitter["stages"].items()
@@ -1422,6 +1600,10 @@ class _StageCompiler:
         *,
         event_input: bool = False,
         parameter_slots: Mapping[str, tuple[int, TypeRef]] | None = None,
+        continuation_lane_indices: Mapping[str, int] | None = None,
+        continuation_join_indices: Mapping[tuple[ParticleStage, str], int]
+        | None = None,
+        existing_continuation_lane: int | None = None,
     ) -> None:
         self._emitter = emitter
         self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
@@ -1433,6 +1615,12 @@ class _StageCompiler:
         self._emitter_index = int(emitter_index)
         self._event_input = bool(event_input)
         self._parameter_slots = dict(parameter_slots or {})
+        self._continuation_lane_indices = dict(continuation_lane_indices or {})
+        self._continuation_join_indices = dict(continuation_join_indices or {})
+        self._existing_continuation_lane = existing_continuation_lane
+        self._active_lane_var: str | None = None
+        self._suspension_join_contexts: dict[str, tuple[int, int]] = {}
+        self._inline_events = False
         self._volume_interfaces = {
             interface["stable_id"]: interface["interface_index"]
             for interface in data_interface_layout.get("volume_interfaces", ())
@@ -1442,13 +1630,385 @@ class _StageCompiler:
             for parameter in data_interface_layout.get("texture2d_parameters", ())
         }
 
-    def compile(self, function: ParticleKernelFunction) -> tuple[str, dict[str, str], str]:
-        for instruction in function.instructions:
-            self._compile_instruction(instruction)
+    def compile(
+        self,
+        function: ParticleKernelFunction,
+        flows=(),
+    ) -> tuple[str, dict[str, str], str]:
+        if self._continuation_lane_indices and any(
+            instruction.opcode in {"suspend_frames", "suspend_seconds"}
+            for instruction in function.instructions
+        ):
+            self._compile_flow_aware(function, tuple(flows))
+        else:
+            for instruction in function.instructions:
+                self._compile_instruction(instruction)
         return (
             "\n".join(f"    {line}" for line in self._lines),
             dict(self._exports),
             "\n".join(f"    {line}" for line in self._event_lines),
+        )
+
+    def _compile_flow_aware(self, function: ParticleKernelFunction, flows) -> None:
+        if not flows:
+            raise GpuParticleCompileError(
+                "GPU Wait lowering requires lifecycle flow metadata"
+            )
+        self._inline_events = True
+        entries = []
+        lane_names: dict[tuple[int, int], str] = {}
+        joins = {}
+        runtime_joins = {}
+        lane_arrivals: dict[tuple[int, int], list[tuple[int, int]]] = {}
+        lane_waits: dict[tuple[int, int], set[int]] = {}
+
+        def is_descendant(flow, lane_index: int, ancestor_index: int) -> bool:
+            current = lane_index
+            while current >= 0:
+                if current == ancestor_index:
+                    return True
+                current = flow.lanes[current].parent_index
+            return False
+
+        for flow_index, flow in enumerate(flows):
+            prefix = re.sub(r"[^a-zA-Z0-9_]", "_", flow.lifecycle_stage.value)
+            for lane in flow.lanes:
+                lane_names[(flow_index, lane.index)] = (
+                    f"inx_lane_{prefix}_{flow_index}_{lane.index}_active"
+                )
+            joins.update(
+                {
+                    (flow_index, join.output_lane_index): join
+                    for join in flow.joins
+                }
+            )
+            schedule_order = {
+                operation_index: order
+                for order, operation_index in enumerate(flow.operation_schedule)
+            }
+            join_order = {
+                join.source_node_uid: schedule_order[
+                    next(
+                        block.operation_index
+                        for block in flow.blocks
+                        if block.source_node_uid == join.source_node_uid
+                    )
+                ]
+                for join in flow.joins
+            }
+            flow_suspensions = tuple(
+                item
+                for item in self._emitter.suspensions
+                if item.lifecycle_stage is flow.lifecycle_stage
+            )
+            for suspension in flow_suspensions:
+                lane_waits.setdefault((flow_index, suspension.lane_index), set()).add(
+                    self._continuation_lane_indices[suspension.lane_stable_id]
+                )
+            for join in flow.joins:
+                if len(join.input_lane_indices) > 32:
+                    raise GpuParticleCompileError(
+                        "GPU Join All supports at most 32 input lanes"
+                    )
+                crossed = any(
+                    any(
+                        is_descendant(flow, input_lane, suspension.lane_index)
+                        for input_lane in join.input_lane_indices
+                    )
+                    for suspension in flow_suspensions
+                )
+                if not crossed:
+                    continue
+                try:
+                    global_join_index = self._continuation_join_indices[
+                        (flow.lifecycle_stage, join.source_node_uid)
+                    ]
+                except KeyError as exc:
+                    raise GpuParticleCompileError(
+                        "GPU continuation Join All index is missing"
+                    ) from exc
+                expected_mask = (1 << len(join.input_lane_indices)) - 1
+                runtime_joins[(flow_index, join.output_lane_index)] = (
+                    join,
+                    global_join_index,
+                    expected_mask,
+                )
+                for bit, input_lane in enumerate(join.input_lane_indices):
+                    lane_arrivals.setdefault((flow_index, input_lane), []).append(
+                        (global_join_index, 1 << bit)
+                    )
+            for suspension in flow_suspensions:
+                candidates = []
+                for join in flow.joins:
+                    runtime = runtime_joins.get(
+                        (flow_index, join.output_lane_index)
+                    )
+                    if runtime is None or not any(
+                        is_descendant(flow, input_lane, suspension.lane_index)
+                        for input_lane in join.input_lane_indices
+                    ):
+                        continue
+                    candidates.append((join_order[join.source_node_uid], runtime))
+                if candidates:
+                    _order, (_join, global_join_index, expected_mask) = min(
+                        candidates, key=lambda item: item[0]
+                    )
+                    self._suspension_join_contexts[suspension.lane_stable_id] = (
+                        global_join_index,
+                        expected_mask,
+                    )
+            entries.extend(
+                (
+                    block.instruction_begin,
+                    flow_index,
+                    schedule_order[block.operation_index],
+                    block,
+                )
+                for block in flow.blocks
+                if block.operation_index >= 0
+            )
+        entries.sort(key=lambda item: (item[0], item[1], item[2]))
+        for flow_index, flow in enumerate(flows):
+            for lane in flow.lanes:
+                initial = "true" if lane.index == 0 else "false"
+                guards = []
+                for runtime_lane in sorted(
+                    lane_waits.get((flow_index, lane.index), ())
+                ):
+                    guards.append(
+                        f"!inx_continuation_lane_pending(particle_index, {runtime_lane}u)"
+                    )
+                for join_index, arrival_bit in lane_arrivals.get(
+                    (flow_index, lane.index), ()
+                ):
+                    guards.append(
+                        "!inx_continuation_join_has_arrived("
+                        f"particle_index, state.spawn_generation, {join_index}u, "
+                        f"{arrival_bit}u)"
+                    )
+                if guards:
+                    initial = f"({initial}) && " + " && ".join(guards)
+                self._lines.append(
+                    f"bool {lane_names[(flow_index, lane.index)]} = {initial};"
+                )
+
+        initialized = {(index, 0) for index in range(len(flows))}
+        cursor = 0
+        for begin, flow_index, _order, block in entries:
+            if begin < cursor:
+                raise GpuParticleCompileError(
+                    "GPU lifecycle instruction ranges overlap"
+                )
+            for instruction in function.instructions[cursor:begin]:
+                self._active_lane_var = None
+                self._compile_instruction(instruction)
+            lane_key = (flow_index, block.lane_index)
+            lane_var = lane_names[lane_key]
+            if lane_key not in initialized:
+                runtime_join = runtime_joins.get(lane_key)
+                join = joins.get(lane_key)
+                if runtime_join is not None:
+                    join, join_index, expected_mask = runtime_join
+                    arrivals = " | ".join(
+                        f"({lane_names[(flow_index, value)]} ? {1 << bit}u : 0u)"
+                        for bit, value in enumerate(join.input_lane_indices)
+                    )
+                    condition = (
+                        "inx_continuation_join_arrive("
+                        f"particle_index, state.spawn_generation, {join_index}u, 0u, "
+                        f"{expected_mask}u, ({arrivals}))"
+                    )
+                elif join is not None:
+                    condition = " && ".join(
+                        lane_names[(flow_index, value)]
+                        for value in join.input_lane_indices
+                    )
+                else:
+                    lane = flows[flow_index].lanes[block.lane_index]
+                    condition = lane_names[(flow_index, lane.parent_index)]
+                    guards = []
+                    for runtime_lane in sorted(lane_waits.get(lane_key, ())):
+                        guards.append(
+                            f"!inx_continuation_lane_pending(particle_index, {runtime_lane}u)"
+                        )
+                    for join_index, arrival_bit in lane_arrivals.get(lane_key, ()):
+                        guards.append(
+                            "!inx_continuation_join_has_arrived("
+                            f"particle_index, state.spawn_generation, {join_index}u, "
+                            f"{arrival_bit}u)"
+                        )
+                    if guards:
+                        condition = f"({condition}) && " + " && ".join(guards)
+                self._lines.append(f"{lane_var} = ({condition});")
+                initialized.add(lane_key)
+            if block.instruction_begin == block.instruction_end:
+                cursor = begin
+                continue
+            self._lines.append(f"if ({lane_var}) {{")
+            self._active_lane_var = lane_var
+            for instruction in function.instructions[
+                block.instruction_begin : block.instruction_end
+            ]:
+                self._compile_instruction(instruction)
+            self._lines.append("}")
+            cursor = block.instruction_end
+        for instruction in function.instructions[cursor:]:
+            self._active_lane_var = None
+            self._compile_instruction(instruction)
+        self._active_lane_var = None
+
+    def compile_resume(
+        self,
+        function: ParticleKernelFunction,
+        flow,
+        suspension,
+    ) -> tuple[str, str]:
+        schedule_order = {
+            operation_index: order
+            for order, operation_index in enumerate(flow.operation_schedule)
+        }
+        try:
+            resume_order = schedule_order[suspension.resume_operation_index]
+        except KeyError as exc:
+            raise GpuParticleCompileError(
+                "GPU continuation resume block is absent from its lifecycle schedule"
+            ) from exc
+
+        def is_descendant(lane_index: int, ancestor_index: int) -> bool:
+            current = lane_index
+            while current >= 0:
+                if current == ancestor_index:
+                    return True
+                current = flow.lanes[current].parent_index
+            return False
+
+        selected_lanes = {
+            lane.index
+            for lane in flow.lanes
+            if is_descendant(lane.index, suspension.lane_index)
+        }
+        reached_joins = []
+        changed = True
+        while changed:
+            changed = False
+            for join in flow.joins:
+                if join in reached_joins or not any(
+                    lane in selected_lanes for lane in join.input_lane_indices
+                ):
+                    continue
+                if len(join.input_lane_indices) > 32:
+                    raise GpuParticleCompileError(
+                        "GPU Join All supports at most 32 input lanes"
+                    )
+                reached_joins.append(join)
+                before = len(selected_lanes)
+                selected_lanes.update(
+                    lane.index
+                    for lane in flow.lanes
+                    if is_descendant(lane.index, join.output_lane_index)
+                )
+                changed = changed or len(selected_lanes) != before
+        selected_blocks = [
+            block
+            for block in flow.blocks
+            if block.operation_index >= 0
+            and schedule_order[block.operation_index] >= resume_order
+            and block.lane_index in selected_lanes
+        ]
+        selected_blocks.sort(key=lambda block: schedule_order[block.operation_index])
+        if not selected_blocks or selected_blocks[0].operation_index != suspension.resume_operation_index:
+            raise GpuParticleCompileError(
+                "GPU continuation resume schedule is not reachable from its lane"
+            )
+
+        self._inline_events = True
+        lane_names = {
+            lane.index: f"inx_resume_lane_{lane.index}_active"
+            for lane in flow.lanes
+            if lane.index in selected_lanes
+        }
+        for lane_index, lane_var in lane_names.items():
+            initial = "true" if lane_index == suspension.lane_index else "false"
+            self._lines.append(f"bool {lane_var} = {initial};")
+        initialized = {suspension.lane_index}
+        joins_by_output = {join.output_lane_index: join for join in reached_joins}
+        join_orders = {
+            join.source_node_uid: schedule_order[
+                next(
+                    block.operation_index
+                    for block in flow.blocks
+                    if block.source_node_uid == join.source_node_uid
+                )
+            ]
+            for join in reached_joins
+        }
+        for candidate_suspension in self._emitter.suspensions:
+            if candidate_suspension.lifecycle_stage is not flow.lifecycle_stage:
+                continue
+            candidates = [
+                join
+                for join in reached_joins
+                if any(
+                    is_descendant(input_lane, candidate_suspension.lane_index)
+                    for input_lane in join.input_lane_indices
+                )
+            ]
+            if not candidates:
+                continue
+            nearest = min(candidates, key=lambda join: join_orders[join.source_node_uid])
+            nearest_index = self._continuation_join_indices[
+                (flow.lifecycle_stage, nearest.source_node_uid)
+            ]
+            self._suspension_join_contexts[candidate_suspension.lane_stable_id] = (
+                nearest_index,
+                (1 << len(nearest.input_lane_indices)) - 1,
+            )
+        for block in selected_blocks:
+            lane = flow.lanes[block.lane_index]
+            lane_var = lane_names[block.lane_index]
+            if block.lane_index not in initialized:
+                join = joins_by_output.get(block.lane_index)
+                if join is not None:
+                    join_index = self._continuation_join_indices[
+                        (flow.lifecycle_stage, join.source_node_uid)
+                    ]
+                    expected_mask = (1 << len(join.input_lane_indices)) - 1
+                    arrivals = " | ".join(
+                        f"({lane_names[value]} ? {1 << bit}u : 0u)"
+                        for bit, value in enumerate(join.input_lane_indices)
+                        if value in lane_names
+                    ) or "0u"
+                    token = (
+                        "(inx_continuation_record_join_index == "
+                        f"{join_index}u ? inx_continuation_record_branch_token : 0u)"
+                    )
+                    self._lines.append(
+                        f"{lane_var} = inx_continuation_join_arrive("
+                        f"particle_index, state.spawn_generation, {join_index}u, "
+                        f"{token}, {expected_mask}u, ({arrivals}));"
+                    )
+                elif lane.parent_index not in lane_names:
+                    raise GpuParticleCompileError(
+                        "GPU continuation descendant lane lost its parent"
+                    )
+                else:
+                    self._lines.append(
+                        f"{lane_var} = ({lane_names[lane.parent_index]});"
+                    )
+                initialized.add(block.lane_index)
+            if block.instruction_begin == block.instruction_end:
+                continue
+            self._lines.append(f"if ({lane_var}) {{")
+            self._active_lane_var = lane_var
+            for instruction in function.instructions[
+                block.instruction_begin : block.instruction_end
+            ]:
+                self._compile_instruction(instruction)
+            self._lines.append("}")
+        self._active_lane_var = None
+        return (
+            "\n".join(f"            {line}" for line in self._lines),
+            "\n".join(f"            {line}" for line in self._event_lines),
         )
 
     def _compile_instruction(self, instruction: KernelInstruction) -> None:
@@ -1638,6 +2198,42 @@ class _StageCompiler:
         elif opcode == "kill_if":
             self._lines.append(f"particle_alive = particle_alive && !({operands[0]});")
             return
+        elif opcode in {"suspend_frames", "suspend_seconds"}:
+            if self._active_lane_var is None:
+                raise GpuParticleCompileError(
+                    "GPU Wait instruction is not owned by an execution lane"
+                )
+            lane_stable_id = str(immediate["lane_stable_id"])
+            try:
+                lane_index = self._continuation_lane_indices[lane_stable_id]
+            except KeyError as exc:
+                raise GpuParticleCompileError(
+                    f"GPU continuation lane {lane_stable_id!r} is not registered"
+                ) from exc
+            existing_record = (
+                "inx_continuation_record_index"
+                if self._existing_continuation_lane == lane_index
+                else "INX_INVALID_INDEX"
+            )
+            join_index, expected_mask = self._suspension_join_contexts.get(
+                lane_stable_id,
+                (0xFFFFFFFF, 0),
+            )
+            helper = (
+                "inx_suspend_frames"
+                if opcode == "suspend_frames"
+                else "inx_suspend_seconds"
+            )
+            self._lines.append(
+                f"if ({helper}(particle_index, state.spawn_generation, {lane_index}u, "
+                f"{int(immediate['resume_program_counter'])}u, {operands[0]}, "
+                f"{join_index}u, {expected_mask}u, {existing_record})) {{"
+            )
+            self._lines.append(f"    {self._active_lane_var} = false;")
+            if self._existing_continuation_lane == lane_index:
+                self._lines.append("    inx_continuation_resuspended = true;")
+            self._lines.append("}")
+            return
         elif opcode == "collide_scene":
             position_type, position_field = self._field(immediate["position_attribute"])
             velocity_type, velocity_field = self._field(immediate["velocity_attribute"])
@@ -1693,9 +2289,10 @@ class _StageCompiler:
                 payload_layout
             ) != len(operands) - 1:
                 raise GpuParticleCompileError("GPU event append metadata is invalid")
-            suffix = len(self._event_lines)
+            event_lines = self._lines if self._inline_events else self._event_lines
+            suffix = len(event_lines)
             id_field = self._field("builtin.id")[1]
-            self._event_lines.extend(
+            event_lines.extend(
                 (
                     f"if (pc.reserved != 0u && particle_alive && ({operands[0]})) {{",
                     f"    const uint inx_event_channel_index_{suffix} = {channel_index}u;",
@@ -1728,12 +2325,12 @@ class _StageCompiler:
                         "GPU event append payload word layout is invalid"
                     )
                 word_offset = int(field["word_offset"])
-                self._event_lines.extend(
+                event_lines.extend(
                     f"        event_output_record_words[inx_event_base_{suffix} + "
                     f"{4 + word_offset + index}u] = {word};"
                     for index, word in enumerate(words)
                 )
-            self._event_lines.extend(
+            event_lines.extend(
                 (
                     "    } else {",
                     f"        atomicAdd(event_output_counters[inx_event_channel_index_{suffix}].y, 1u);",
@@ -2390,11 +2987,689 @@ def _texture_parameter_glsl(layout: dict[str, Any]) -> str:
     )
 
 
+def _continuation_bindings_glsl(set_index: int) -> str:
+    set_index = int(set_index)
+    return f"""
+layout(std430, set = {set_index}, binding = 0) buffer ParticleContinuationRecords {{
+    uint continuation_record_words[];
+}};
+layout(std430, set = {set_index}, binding = 1) buffer ParticleContinuationFreeList {{
+    uint continuation_free_records[];
+}};
+layout(std430, set = {set_index}, binding = 2) buffer ParticleContinuationReadyQueue {{
+    uint continuation_ready_records[];
+}};
+layout(std430, set = {set_index}, binding = 3) buffer ParticleContinuationActiveQueueA {{
+    uint continuation_active_records_a[];
+}};
+layout(std430, set = {set_index}, binding = 4) buffer ParticleContinuationActiveQueueB {{
+    uint continuation_active_records_b[];
+}};
+layout(std430, set = {set_index}, binding = 5) buffer ParticleContinuationCounters {{
+    uint free_count;
+    uint active_count_a;
+    uint active_count_b;
+    uint ready_count;
+    uint dropped_capacity;
+    uint stale_generation;
+    uint resumed_count;
+    uint completed_count;
+    uint program_generation;
+    uint reset_serial;
+    uint current_simulation_step;
+    uint elapsed_time_low;
+    uint elapsed_time_high;
+    uint record_stride_words;
+    uint lane_count;
+    uint join_count;
+    uint continuation_capacity;
+    uint particle_capacity;
+    uint branch_token_counter;
+    uint reserved;
+}} continuation_counters;
+layout(std430, set = {set_index}, binding = 6) buffer ParticleContinuationClassifyIndirect {{
+    uint continuation_classify_x;
+    uint continuation_classify_y;
+    uint continuation_classify_z;
+    uint continuation_classify_reserved;
+}};
+layout(std430, set = {set_index}, binding = 7) buffer ParticleContinuationDispatchIndirect {{
+    uint continuation_dispatch_x;
+    uint continuation_dispatch_y;
+    uint continuation_dispatch_z;
+    uint continuation_dispatch_reserved;
+}};
+layout(std430, set = {set_index}, binding = 8) buffer ParticleContinuationLaneSlots {{
+    uint continuation_lane_slots[];
+}};
+layout(std430, set = {set_index}, binding = 9) buffer ParticleContinuationJoinStates {{
+    uvec4 continuation_join_states[];
+}};
+
+const uint INX_CONTINUATION_FLAG_SECONDS = 1u;
+const uint INX_CONTINUATION_INVALID_INDEX = 0xffffffffu;
+
+uint inx_continuation_record_base(uint record_index) {{
+    return record_index * continuation_counters.record_stride_words;
+}}
+
+uint inx_continuation_linear_index() {{
+    return gl_GlobalInvocationID.x
+         + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+}}
+
+bool inx_continuation_lane_pending(uint particle_index, uint lane_index) {{
+    if (particle_index >= continuation_counters.particle_capacity
+        || lane_index >= continuation_counters.lane_count) return false;
+    uint slot = particle_index * continuation_counters.lane_count + lane_index;
+    return atomicAdd(continuation_lane_slots[slot], 0u) != 0u;
+}}
+
+uint inx_continuation_join_state_index(uint particle_index, uint join_index) {{
+    return particle_index * continuation_counters.join_count + join_index;
+}}
+
+uint inx_continuation_join_begin(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint expected_mask
+) {{
+    if (particle_index >= continuation_counters.particle_capacity
+        || join_index >= continuation_counters.join_count
+        || expected_mask == 0u) return 0u;
+    uint state_index = inx_continuation_join_state_index(particle_index, join_index);
+    uint token = atomicAdd(continuation_join_states[state_index].x, 0u);
+    uint generation = atomicAdd(continuation_join_states[state_index].w, 0u);
+    if (token != 0u && generation == particle_generation) return token;
+
+    uint replacement = atomicAdd(continuation_counters.branch_token_counter, 1u);
+    if (replacement == 0u) {{
+        replacement = atomicAdd(continuation_counters.branch_token_counter, 1u);
+    }}
+    uint observed = atomicCompSwap(
+        continuation_join_states[state_index].x, token, replacement
+    );
+    if (observed != token) return observed;
+    atomicExchange(continuation_join_states[state_index].y, expected_mask);
+    atomicExchange(continuation_join_states[state_index].z, 0u);
+    atomicExchange(continuation_join_states[state_index].w, particle_generation);
+    memoryBarrierBuffer();
+    return replacement;
+}}
+
+bool inx_continuation_join_has_arrived(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint arrival_bit
+) {{
+    if (particle_index >= continuation_counters.particle_capacity
+        || join_index >= continuation_counters.join_count) return false;
+    uint state_index = inx_continuation_join_state_index(particle_index, join_index);
+    return atomicAdd(continuation_join_states[state_index].x, 0u) != 0u
+        && atomicAdd(continuation_join_states[state_index].w, 0u) == particle_generation
+        && (atomicAdd(continuation_join_states[state_index].z, 0u) & arrival_bit) != 0u;
+}}
+
+bool inx_continuation_join_arrive(
+    uint particle_index,
+    uint particle_generation,
+    uint join_index,
+    uint branch_token,
+    uint expected_mask,
+    uint arrival_mask
+) {{
+    if (arrival_mask == 0u) return false;
+    uint token = branch_token;
+    if (token == 0u) {{
+        token = inx_continuation_join_begin(
+            particle_index, particle_generation, join_index, expected_mask
+        );
+    }}
+    if (token == 0u
+        || particle_index >= continuation_counters.particle_capacity
+        || join_index >= continuation_counters.join_count) return false;
+    uint state_index = inx_continuation_join_state_index(particle_index, join_index);
+    if (atomicAdd(continuation_join_states[state_index].x, 0u) != token
+        || atomicAdd(continuation_join_states[state_index].w, 0u) != particle_generation) {{
+        return false;
+    }}
+    uint expected = atomicAdd(continuation_join_states[state_index].y, 0u);
+    uint accepted = arrival_mask & expected;
+    uint previous = atomicOr(continuation_join_states[state_index].z, accepted);
+    uint combined = previous | accepted;
+    if ((combined & expected) != expected || (previous & expected) == expected) {{
+        return false;
+    }}
+    if (atomicCompSwap(continuation_join_states[state_index].x, token, 0u) != token) {{
+        return false;
+    }}
+    atomicExchange(continuation_join_states[state_index].y, 0u);
+    atomicExchange(continuation_join_states[state_index].z, 0u);
+    atomicExchange(continuation_join_states[state_index].w, 0u);
+    return true;
+}}
+
+uint inx_continuation_pop_free() {{
+    uint observed = atomicAdd(continuation_counters.free_count, 0u);
+    while (observed > 0u) {{
+        uint prior = atomicCompSwap(continuation_counters.free_count, observed, observed - 1u);
+        if (prior == observed) return continuation_free_records[observed - 1u];
+        observed = prior;
+    }}
+    return INX_CONTINUATION_INVALID_INDEX;
+}}
+
+void inx_continuation_push_free(uint record_index) {{
+    uint destination = atomicAdd(continuation_counters.free_count, 1u);
+    if (destination < continuation_counters.continuation_capacity) {{
+        continuation_free_records[destination] = record_index;
+    }} else {{
+        atomicAdd(continuation_counters.free_count, 0xffffffffu);
+        atomicAdd(continuation_counters.dropped_capacity, 1u);
+    }}
+}}
+
+bool inx_continuation_append_active(uint record_index) {{
+    bool write_a = (continuation_counters.current_simulation_step & 1u) != 0u;
+    uint destination = write_a
+        ? atomicAdd(continuation_counters.active_count_a, 1u)
+        : atomicAdd(continuation_counters.active_count_b, 1u);
+    if (destination >= continuation_counters.continuation_capacity) {{
+        if (write_a) atomicAdd(continuation_counters.active_count_a, 0xffffffffu);
+        else atomicAdd(continuation_counters.active_count_b, 0xffffffffu);
+        return false;
+    }}
+    if (write_a) continuation_active_records_a[destination] = record_index;
+    else continuation_active_records_b[destination] = record_index;
+    return true;
+}}
+
+void inx_continuation_add_seconds(float seconds, out uint wake_low, out uint wake_high) {{
+    float duration = max(seconds, 0.0);
+    float high_chunks = floor(duration / 4.294967296);
+    uint add_high = uint(min(high_chunks, 4294967040.0));
+    float remainder = max(duration - high_chunks * 4.294967296, 0.0);
+    uint add_low = uint(min(floor(remainder * 1000000000.0 + 0.5), 4294967040.0));
+    wake_low = continuation_counters.elapsed_time_low + add_low;
+    uint carry = wake_low < continuation_counters.elapsed_time_low ? 1u : 0u;
+    wake_high = continuation_counters.elapsed_time_high + add_high + carry;
+}}
+
+bool inx_continuation_suspend(
+    uint particle_index,
+    uint particle_generation,
+    uint lane_index,
+    uint resume_program_counter,
+    uint wake_frame,
+    uint wake_time_low,
+    uint wake_time_high,
+    uint flags,
+    uint join_index,
+    uint join_expected_mask,
+    uint existing_record
+) {{
+    if (particle_index >= continuation_counters.particle_capacity
+        || lane_index >= continuation_counters.lane_count) {{
+        atomicAdd(continuation_counters.dropped_capacity, 1u);
+        return false;
+    }}
+    uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
+    uint record_index = existing_record;
+    bool reusing_record = record_index != INX_CONTINUATION_INVALID_INDEX;
+    if (record_index == INX_CONTINUATION_INVALID_INDEX) {{
+        if (atomicAdd(continuation_lane_slots[lane_slot], 0u) != 0u) return true;
+        record_index = inx_continuation_pop_free();
+        if (record_index == INX_CONTINUATION_INVALID_INDEX) {{
+            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            return false;
+        }}
+        uint previous = atomicCompSwap(
+            continuation_lane_slots[lane_slot], 0u, record_index + 1u
+        );
+        if (previous != 0u) {{
+            inx_continuation_push_free(record_index);
+            return true;
+        }}
+    }} else if (atomicAdd(continuation_lane_slots[lane_slot], 0u) != record_index + 1u) {{
+        atomicAdd(continuation_counters.stale_generation, 1u);
+        return false;
+    }}
+    uint branch_token = 0u;
+    if (join_index != INX_CONTINUATION_INVALID_INDEX) {{
+        branch_token = inx_continuation_join_begin(
+            particle_index, particle_generation, join_index, join_expected_mask
+        );
+        if (branch_token == 0u) {{
+            if (!reusing_record) {{
+                atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+                inx_continuation_push_free(record_index);
+            }}
+            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            return false;
+        }}
+    }}
+    uint base = inx_continuation_record_base(record_index);
+    continuation_record_words[base + 0u] = particle_index;
+    continuation_record_words[base + 1u] = particle_generation;
+    continuation_record_words[base + 2u] = continuation_counters.program_generation;
+    continuation_record_words[base + 3u] = resume_program_counter;
+    continuation_record_words[base + 4u] = wake_frame;
+    continuation_record_words[base + 5u] = wake_time_low;
+    continuation_record_words[base + 6u] = wake_time_high;
+    continuation_record_words[base + 7u] = lane_index;
+    continuation_record_words[base + 8u] = branch_token;
+    continuation_record_words[base + 9u] = join_index;
+    continuation_record_words[base + 10u] = 0u;
+    continuation_record_words[base + 11u] = flags;
+    continuation_record_words[base + 12u] = 0u;
+    continuation_record_words[base + 13u] = 0u;
+    continuation_record_words[base + 14u] = 0u;
+    continuation_record_words[base + 15u] = 0u;
+    memoryBarrierBuffer();
+    if (!inx_continuation_append_active(record_index)) {{
+        if (!reusing_record) {{
+            atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+            inx_continuation_push_free(record_index);
+        }}
+        atomicAdd(continuation_counters.dropped_capacity, 1u);
+        return false;
+    }}
+    return true;
+}}
+
+bool inx_suspend_frames(
+    uint particle_index,
+    uint particle_generation,
+    uint lane_index,
+    uint resume_program_counter,
+    int frames,
+    uint join_index,
+    uint join_expected_mask,
+    uint existing_record
+) {{
+    return inx_continuation_suspend(
+        particle_index,
+        particle_generation,
+        lane_index,
+        resume_program_counter,
+        continuation_counters.current_simulation_step + uint(max(frames, 0)),
+        0u,
+        0u,
+        0u,
+        join_index,
+        join_expected_mask,
+        existing_record
+    );
+}}
+
+bool inx_suspend_seconds(
+    uint particle_index,
+    uint particle_generation,
+    uint lane_index,
+    uint resume_program_counter,
+    float seconds,
+    uint join_index,
+    uint join_expected_mask,
+    uint existing_record
+) {{
+    uint wake_low = 0u;
+    uint wake_high = 0u;
+    inx_continuation_add_seconds(seconds, wake_low, wake_high);
+    return inx_continuation_suspend(
+        particle_index,
+        particle_generation,
+        lane_index,
+        resume_program_counter,
+        0u,
+        wake_low,
+        wake_high,
+        INX_CONTINUATION_FLAG_SECONDS,
+        join_index,
+        join_expected_mask,
+        existing_record
+    );
+}}
+"""
+
+
+def _continuation_scheduler_constants_glsl() -> str:
+    return """
+layout(push_constant) uniform ParticleContinuationConstants {
+    uint capacity;
+    uint particle_capacity;
+    uint lane_count;
+    uint join_count;
+    uint program_generation;
+    uint simulation_step;
+    uint reset_serial;
+    uint reset_requested;
+    uint elapsed_time_low;
+    uint elapsed_time_high;
+    uint record_stride_words;
+    uint system_seed;
+    float delta_time;
+    uint event_output_enabled;
+    uint reserved0;
+    uint reserved1;
+} continuation_pc;
+"""
+
+
+def _continuation_prepare_glsl() -> str:
+    return (
+        "#version 450\n\n"
+        "layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n"
+        + _continuation_bindings_glsl(0)
+        + _continuation_scheduler_constants_glsl()
+        + """
+void main() {
+    uint index = inx_continuation_linear_index();
+    if (continuation_pc.reset_requested != 0u) {
+        if (index < continuation_pc.capacity) {
+            continuation_free_records[index] = index;
+        }
+        uint lane_slot_count = continuation_pc.particle_capacity * continuation_pc.lane_count;
+        if (index < lane_slot_count) continuation_lane_slots[index] = 0u;
+        uint join_state_count = continuation_pc.particle_capacity * continuation_pc.join_count;
+        if (index < join_state_count) continuation_join_states[index] = uvec4(0u);
+    }
+    if (index != 0u) return;
+
+    uint active_count = 0u;
+    if (continuation_pc.reset_requested != 0u) {
+        continuation_counters.free_count = continuation_pc.capacity;
+        continuation_counters.active_count_a = 0u;
+        continuation_counters.active_count_b = 0u;
+        continuation_counters.ready_count = 0u;
+        continuation_counters.dropped_capacity = 0u;
+        continuation_counters.stale_generation = 0u;
+        continuation_counters.resumed_count = 0u;
+        continuation_counters.completed_count = 0u;
+        continuation_counters.branch_token_counter = 1u;
+    } else {
+        bool read_a = (continuation_pc.simulation_step & 1u) == 0u;
+        active_count = read_a
+            ? continuation_counters.active_count_a
+            : continuation_counters.active_count_b;
+        if (read_a) continuation_counters.active_count_b = 0u;
+        else continuation_counters.active_count_a = 0u;
+        continuation_counters.ready_count = 0u;
+    }
+    continuation_counters.program_generation = continuation_pc.program_generation;
+    continuation_counters.reset_serial = continuation_pc.reset_serial;
+    continuation_counters.current_simulation_step = continuation_pc.simulation_step;
+    continuation_counters.elapsed_time_low = continuation_pc.elapsed_time_low;
+    continuation_counters.elapsed_time_high = continuation_pc.elapsed_time_high;
+    continuation_counters.record_stride_words = continuation_pc.record_stride_words;
+    continuation_counters.lane_count = continuation_pc.lane_count;
+    continuation_counters.join_count = continuation_pc.join_count;
+    continuation_counters.continuation_capacity = continuation_pc.capacity;
+    continuation_counters.particle_capacity = continuation_pc.particle_capacity;
+
+    uint group_count = (active_count + 255u) / 256u;
+    uint group_x = min(group_count, 65535u);
+    uint group_y = group_count == 0u ? 1u : (group_count + group_x - 1u) / group_x;
+    continuation_classify_x = group_x;
+    continuation_classify_y = group_y;
+    continuation_classify_z = 1u;
+    continuation_classify_reserved = 0u;
+    continuation_dispatch_x = group_x;
+    continuation_dispatch_y = group_y;
+    continuation_dispatch_z = 1u;
+    continuation_dispatch_reserved = 0u;
+}
+"""
+    )
+
+
+def _continuation_classify_glsl() -> str:
+    return (
+        "#version 450\n\n"
+        "layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n"
+        + _continuation_bindings_glsl(0)
+        + _continuation_scheduler_constants_glsl()
+        + """
+bool inx_continuation_time_reached(uint wake_low, uint wake_high) {
+    return continuation_pc.elapsed_time_high > wake_high
+        || (continuation_pc.elapsed_time_high == wake_high
+            && continuation_pc.elapsed_time_low >= wake_low);
+}
+
+void inx_continuation_discard(uint record_index, uint base) {
+    uint particle_index = continuation_record_words[base + 0u];
+    uint lane_index = continuation_record_words[base + 7u];
+    if (particle_index < continuation_pc.particle_capacity
+        && lane_index < continuation_pc.lane_count) {
+        uint lane_slot = particle_index * continuation_pc.lane_count + lane_index;
+        atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+    }
+    inx_continuation_push_free(record_index);
+}
+
+void main() {
+    uint queue_index = inx_continuation_linear_index();
+    bool read_a = (continuation_pc.simulation_step & 1u) == 0u;
+    uint active_count = read_a
+        ? continuation_counters.active_count_a
+        : continuation_counters.active_count_b;
+    if (queue_index >= active_count) return;
+    uint record_index = read_a
+        ? continuation_active_records_a[queue_index]
+        : continuation_active_records_b[queue_index];
+    if (record_index >= continuation_pc.capacity) {
+        atomicAdd(continuation_counters.stale_generation, 1u);
+        return;
+    }
+    uint base = inx_continuation_record_base(record_index);
+    if (continuation_record_words[base + 2u] != continuation_pc.program_generation) {
+        atomicAdd(continuation_counters.stale_generation, 1u);
+        inx_continuation_discard(record_index, base);
+        return;
+    }
+    uint flags = continuation_record_words[base + 11u];
+    bool ready = (flags & INX_CONTINUATION_FLAG_SECONDS) != 0u
+        ? inx_continuation_time_reached(
+            continuation_record_words[base + 5u],
+            continuation_record_words[base + 6u]
+          )
+        : int(continuation_pc.simulation_step - continuation_record_words[base + 4u]) >= 0;
+    if (!ready) {
+        if (!inx_continuation_append_active(record_index)) {
+            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            inx_continuation_discard(record_index, base);
+        }
+        return;
+    }
+    uint destination = atomicAdd(continuation_counters.ready_count, 1u);
+    if (destination < continuation_pc.capacity) {
+        continuation_ready_records[destination] = record_index;
+    } else {
+        atomicAdd(continuation_counters.ready_count, 0xffffffffu);
+        atomicAdd(continuation_counters.dropped_capacity, 1u);
+        inx_continuation_discard(record_index, base);
+    }
+}
+"""
+    )
+
+
+def _continuation_dispatch_glsl(
+    emitter: ParticleEmitterKernelIR,
+    fields: tuple[tuple[str, TypeRef, str], ...],
+    data_interface_layout: dict[str, Any],
+    events,
+    emitter_index: int,
+    parameter_slots: Mapping[str, tuple[int, TypeRef]],
+    continuation_lane_indices: Mapping[str, int],
+    continuation_join_indices: Mapping[tuple[ParticleStage, str], int],
+) -> str:
+    flow_by_stage = {flow.lifecycle_stage: flow for flow in emitter.flows}
+    function_by_stage = {
+        KernelStage.INIT: emitter.init,
+        KernelStage.UPDATE: emitter.update,
+        KernelStage.RENDERING: emitter.rendering,
+    }
+    cases = []
+    for suspension in sorted(
+        emitter.suspensions, key=lambda value: value.resume_program_counter
+    ):
+        flow = flow_by_stage[suspension.lifecycle_stage]
+        function = function_by_stage[flow.kernel_stage]
+        if any(
+            instruction.opcode == "event_payload"
+            for instruction in function.instructions[
+                suspension.resume_instruction_index :
+            ]
+        ):
+            raise GpuParticleCompileError(
+                "GPU Event Payload values cannot remain live across Wait; copy the value into a particle attribute first"
+            )
+        runtime_lane = continuation_lane_indices[suspension.lane_stable_id]
+        compiler = _StageCompiler(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+            parameter_slots=parameter_slots,
+            continuation_lane_indices=continuation_lane_indices,
+            continuation_join_indices=continuation_join_indices,
+            existing_continuation_lane=runtime_lane,
+        )
+        body, event_body = compiler.compile_resume(function, flow, suspension)
+        finite = _finite_state_check(function, fields)
+        cases.append(
+            f"""        case {suspension.resume_program_counter}u: {{
+{body}
+{event_body}
+            particle_alive = particle_alive && ({finite});
+            break;
+        }}"""
+        )
+    event_output = any(
+        instruction.opcode == "event_append"
+        for function in (emitter.init, emitter.update, emitter.rendering)
+        for instruction in function.instructions
+    )
+    prelude = _shader_prelude(
+        fields,
+        emitter.random_seed,
+        data_interface_layout,
+        len(parameter_slots),
+        continuation_dispatch=True,
+    )
+    bindings = _continuation_bindings_glsl(5)
+    event_bindings = _event_output_bindings(4) if event_output else ""
+    switch_cases = "\n".join(cases)
+    return (
+        prelude
+        + bindings
+        + event_bindings
+        + f"""
+void inx_finish_continuation(uint record_index, uint particle_index, uint lane_index) {{
+    if (particle_index < continuation_counters.particle_capacity
+        && lane_index < continuation_counters.lane_count) {{
+        uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
+        atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+    }}
+    inx_continuation_push_free(record_index);
+}}
+
+void main() {{
+    uint ready_index = inx_continuation_linear_index();
+    if (ready_index >= continuation_counters.ready_count) return;
+    uint inx_continuation_record_index = continuation_ready_records[ready_index];
+    if (inx_continuation_record_index >= pc.continuation_capacity) return;
+    uint record_base = inx_continuation_record_base(inx_continuation_record_index);
+    uint particle_index = continuation_record_words[record_base + 0u];
+    uint particle_generation = continuation_record_words[record_base + 1u];
+    uint record_program_generation = continuation_record_words[record_base + 2u];
+    uint resume_program_counter = continuation_record_words[record_base + 3u];
+    uint lane_index = continuation_record_words[record_base + 7u];
+    uint inx_continuation_record_branch_token = continuation_record_words[record_base + 8u];
+    uint inx_continuation_record_join_index = continuation_record_words[record_base + 9u];
+    if (record_program_generation != pc.continuation_program_generation
+        || particle_index >= pc.capacity
+        || lane_index >= pc.continuation_lane_count
+        || states[particle_index].alive == 0u
+        || states[particle_index].spawn_generation != particle_generation) {{
+        atomicAdd(continuation_counters.stale_generation, 1u);
+        inx_finish_continuation(
+            inx_continuation_record_index, particle_index, lane_index
+        );
+        return;
+    }}
+
+    ParticleState state = states[particle_index];
+    bool particle_alive = true;
+    bool inx_continuation_resuspended = false;
+    switch (resume_program_counter) {{
+{switch_cases}
+        default:
+            atomicAdd(continuation_counters.stale_generation, 1u);
+            break;
+    }}
+    state.alive = particle_alive ? 1u : 0u;
+    states[particle_index] = state;
+    if (!particle_alive) inx_push_free(particle_index);
+    if (!inx_continuation_resuspended) {{
+        inx_finish_continuation(
+            inx_continuation_record_index, particle_index, lane_index
+        );
+        atomicAdd(continuation_counters.completed_count, 1u);
+    }} else {{
+        atomicAdd(continuation_counters.resumed_count, 1u);
+    }}
+}}
+"""
+    )
+
+
+def _continuation_source(
+    emitter: ParticleEmitterKernelIR,
+    fields: tuple[tuple[str, TypeRef, str], ...],
+    data_interface_layout: dict[str, Any],
+    events,
+    emitter_index: int,
+    parameter_slots: Mapping[str, tuple[int, TypeRef]],
+    continuation_lane_indices: Mapping[str, int],
+    continuation_join_indices: Mapping[tuple[ParticleStage, str], int],
+) -> GpuParticleContinuationSource | None:
+    if not emitter.suspensions:
+        return None
+    if not continuation_lane_indices:
+        raise GpuParticleCompileError(
+            "GPU continuation has no statically bounded execution lanes"
+        )
+    join_count = sum(len(flow.joins) for flow in emitter.flows)
+    return GpuParticleContinuationSource(
+        64,
+        len(continuation_lane_indices),
+        join_count,
+        _continuation_prepare_glsl(),
+        _continuation_classify_glsl(),
+        _continuation_dispatch_glsl(
+            emitter,
+            fields,
+            data_interface_layout,
+            events,
+            emitter_index,
+            parameter_slots,
+            continuation_lane_indices,
+            continuation_join_indices,
+        ),
+    )
+
+
 def _shader_prelude(
     fields: tuple[tuple[str, TypeRef, str], ...],
     emitter_seed: int,
     data_interface_layout: dict[str, Any],
     parameter_count: int,
+    *,
+    continuation_dispatch: bool = False,
 ) -> str:
     state_fields = "\n".join(
         f"    {_storage_type(value_type)} {field};"
@@ -2414,6 +3689,37 @@ def _shader_prelude(
         "ParticleParameters { uvec4 parameter_words[]; };"
         if parameter_count
         else ""
+    )
+    push_constants = (
+        """layout(push_constant) uniform ParticlePushConstants {
+    uint continuation_capacity;
+    uint capacity;
+    uint continuation_lane_count;
+    uint continuation_join_count;
+    uint continuation_program_generation;
+    uint simulation_step;
+    uint continuation_reset_serial;
+    uint continuation_reset_requested;
+    uint continuation_elapsed_time_low;
+    uint continuation_elapsed_time_high;
+    uint continuation_record_stride_words;
+    uint system_seed;
+    float delta_time;
+    uint reserved;
+    uint continuation_reserved0;
+    uint continuation_reserved1;
+} pc;"""
+        if continuation_dispatch
+        else """layout(push_constant) uniform ParticlePushConstants {
+    uint capacity;
+    uint invocation_count;
+    uint spawn_base_id;
+    uint spawn_generation;
+    uint system_seed;
+    uint simulation_step;
+    float delta_time;
+    uint reserved;
+} pc;"""
     )
     return f"""#version 450
 
@@ -2517,16 +3823,7 @@ layout(std430, set = 0, binding = 15) readonly buffer ParticleSimulationControl 
     uint simulation_control_reserved;
 }} simulation_control;
 {data_interface_glsl}
-layout(push_constant) uniform ParticlePushConstants {{
-    uint capacity;
-    uint invocation_count;
-    uint spawn_base_id;
-    uint spawn_generation;
-    uint system_seed;
-    uint simulation_step;
-    float delta_time;
-    uint reserved;
-}} pc;
+{push_constants}
 
 const uint INX_EMITTER_SEED = {emitter_seed}u;
 const uint INX_INVALID_INDEX = 0xffffffffu;
@@ -3989,6 +5286,7 @@ def _shape_kind(value: str) -> int:
 
 __all__ = [
     "GpuParticleCompileError",
+    "GpuParticleContinuationSource",
     "GpuParticleEmitterSource",
     "GpuParticleGlslLowerer",
     "GpuParticleProgramSource",

@@ -121,7 +121,7 @@ class InxGUIContext
     void IntSlider(const std::string &label, int *value, int min, int max);
     void FloatSlider(const std::string &label, float *value, float min, float max);
     bool DragFloat(const std::string &label, float *value, float speed = 1.0f, float min = 0.0f, float max = 0.0f,
-                   const char *fmt = "%.3f", float power = 1.0f);
+                   const char *fmt = "%.3f", float power = 1.0f, const std::string &semanticId = "");
     bool DragInt(const std::string &label, int *value, float speed = 1.0f, int min = 0, int max = 0,
                  const char *fmt = "%d");
 
@@ -129,10 +129,12 @@ class InxGUIContext
     void TextArea(const std::string &label, char *buffer, size_t bufferSize);
     bool InputTextWithHint(const std::string &label, const std::string &hint, char *buffer, size_t bufferSize,
                            int flags = 0);
-    bool InputInt(const std::string &label, int *value, int step = 1, int stepFast = 100, int flags = 0);
-    bool InputUInt(const std::string &label, uint32_t *value, uint32_t step = 1, uint32_t stepFast = 100,
-                   int flags = 0);
-    bool InputFloat(const std::string &label, float *value, float step = 0.0f, float stepFast = 0.0f, int flags = 0);
+    bool InputInt(const std::string &label, int *value, int step = 1, int stepFast = 100, int flags = 0,
+                  const std::string &semanticId = "");
+    bool InputUInt(const std::string &label, uint32_t *value, uint32_t step = 1, uint32_t stepFast = 100, int flags = 0,
+                   const std::string &semanticId = "");
+    bool InputFloat(const std::string &label, float *value, float step = 0.0f, float stepFast = 0.0f, int flags = 0,
+                    const std::string &semanticId = "");
 
     void ColorEdit(const std::string &label, float color[4], bool hdr = false);
     bool ColorPicker(const std::string &label, float color[4], int flags = 0);

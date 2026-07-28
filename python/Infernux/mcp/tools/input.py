@@ -63,6 +63,22 @@ def register_input_tools(mcp) -> None:
             timeout_seconds=timeout_seconds,
         )
 
+    @mcp.tool(name="input_pointer_click")
+    def input_pointer_click(
+        x: float,
+        y: float,
+        button: int = 0,
+        timeout_seconds: float = 3.0,
+    ) -> dict:
+        """Click a window coordinate with move, press, and release rendered on separate frames."""
+        return perform_pointer_click(
+            x,
+            y,
+            button=button,
+            timeout_seconds=timeout_seconds,
+            trace_name="input_pointer_click",
+        )
+
     @mcp.tool(name="input_mouse_button")
     def input_mouse_button(
         button: int,
@@ -1027,6 +1043,7 @@ def _register_metadata() -> None:
         ("input_key", "Send one keyboard press or release through the editor event queue."),
         ("input_key_chord", "Press a human-equivalent keyboard chord through the editor event queue."),
         ("input_pointer_move", "Move the editor pointer using window coordinates."),
+        ("input_pointer_click", "Click a window coordinate across human-equivalent rendered frames."),
         ("input_mouse_button", "Send one mouse press or release through the editor event queue."),
         ("input_mouse_wheel", "Send one mouse-wheel event through the editor event queue."),
         ("input_text", "Send UTF-8 text to the focused editor control."),

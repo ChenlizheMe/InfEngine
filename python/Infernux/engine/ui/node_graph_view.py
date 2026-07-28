@@ -371,6 +371,26 @@ class NodeGraphView:
         if callable(recorder):
             recorder(kind, label, x, y, width, height, enabled, self._semantic_id(suffix))
 
+    def _submit_canvas_background_region(
+        self, ctx: InxGUIContext, canvas_w: float, canvas_h: float
+    ) -> bool:
+        """Publish the fixed child canvas without adding an overlapping item."""
+        # The host child already owns this fixed extent and graph interactions
+        # use explicit hit tests. Any background ImGui item overlaps the real
+        # inline widgets and can prevent InputScalar from acquiring ActiveID.
+        self._record_semantic_rect(
+            ctx,
+            "node_graph_canvas",
+            "Node Graph",
+            True,
+            "canvas",
+            self._origin_x,
+            self._origin_y,
+            canvas_w,
+            canvas_h,
+        )
+        return self._canvas_window_hovered
+
     def get_layout(self, uid: str) -> Optional[_NodeLayout]:
         """Return cached screen-space layout for *uid*, or None."""
         return self._layouts.get(uid)
@@ -471,16 +491,11 @@ class NodeGraphView:
         self._origin_y = ctx.get_window_pos_y()
         self._semantic_capture_active = bool(getattr(ctx, "semantic_capture_enabled", True))
 
-        # Invisible button for mouse events
-        ctx.set_cursor_pos_x(0)
-        ctx.set_cursor_pos_y(0)
-        # The canvas background owns panning/selection, but inline node fields
-        # are submitted afterwards and must remain the topmost interactive
-        # items for both human and synthetic pointer input.
-        ctx.set_next_item_allow_overlap()
-        ctx.invisible_button("##canvas_bg", canvas_w, canvas_h)
-        self._record_semantic_item(ctx, "node_graph_canvas", "Node Graph", True, "canvas")
-        canvas_hovered = ctx.is_item_hovered()
+        # Canvas interaction is handled by the explicit hit tests below. A
+        # full-window InvisibleButton would acquire ImGui's ActiveID before
+        # inline fields are submitted and make those real widgets impossible
+        # to focus. Keep only a layout reservation and a semantic rectangle.
+        canvas_hovered = self._submit_canvas_background_region(ctx, canvas_w, canvas_h)
 
         # Clipping
         clip_x0 = self._origin_x
@@ -1050,32 +1065,64 @@ class NodeGraphView:
         try:
             data_type = str(field_def.data_type)
             new_value = value
+            semantic_id = self._semantic_id(
+                f"inline.{layout.node.uid}.{field_def.id}"
+            )
+            semantic_recorded_by_widget = False
             if data_type == "bool":
                 new_value = bool(ctx.checkbox("##value", bool(value)))
             elif data_type == "i32":
                 ctx.set_next_item_width(field_w)
-                new_value = int(ctx.input_int("##value", int(value or 0)))
+                semantic_input = getattr(ctx, "input_int_semantic", None)
+                if callable(semantic_input):
+                    new_value = int(
+                        semantic_input("##value", int(value or 0), semantic_id)
+                    )
+                    semantic_recorded_by_widget = True
+                else:
+                    new_value = int(ctx.input_int("##value", int(value or 0)))
             elif data_type == "u32":
                 ctx.set_next_item_width(field_w)
                 current = max(0, min(0xFFFFFFFF, int(value or 0)))
-                input_uint = getattr(ctx, "input_uint", None)
-                if callable(input_uint):
-                    new_value = int(input_uint("##value", current))
+                semantic_input = getattr(ctx, "input_uint_semantic", None)
+                if callable(semantic_input):
+                    new_value = int(semantic_input("##value", current, semantic_id))
+                    semantic_recorded_by_widget = True
                 else:
-                    # Keep source-Python editor runs compatible with an older
-                    # native module while it is waiting to be rebuilt.  The
-                    # signed ImGui binding cannot accept values above INT_MAX.
-                    raw_value = ctx.text_input("##value", str(current), 11)
-                    try:
-                        new_value = int(str(raw_value).strip(), 10)
-                    except ValueError:
-                        new_value = current
+                    input_uint = getattr(ctx, "input_uint", None)
+                    if callable(input_uint):
+                        new_value = int(input_uint("##value", current))
+                    else:
+                        # Keep source-Python editor runs compatible with an older
+                        # native module while it is waiting to be rebuilt.  The
+                        # signed ImGui binding cannot accept values above INT_MAX.
+                        raw_value = ctx.text_input("##value", str(current), 11)
+                        try:
+                            new_value = int(str(raw_value).strip(), 10)
+                        except ValueError:
+                            new_value = current
                 new_value = max(0, min(0xFFFFFFFF, new_value))
             elif data_type == "f32":
                 ctx.set_next_item_width(field_w)
-                new_value = float(
-                    ctx.drag_float("##value", float(value or 0.0), 0.05, -1.0e7, 1.0e7)
-                )
+                semantic_drag = getattr(ctx, "drag_float_semantic", None)
+                if callable(semantic_drag):
+                    new_value = float(
+                        semantic_drag(
+                            "##value",
+                            float(value or 0.0),
+                            0.05,
+                            -1.0e7,
+                            1.0e7,
+                            semantic_id,
+                        )
+                    )
+                    semantic_recorded_by_widget = True
+                else:
+                    new_value = float(
+                        ctx.drag_float(
+                            "##value", float(value or 0.0), 0.05, -1.0e7, 1.0e7
+                        )
+                    )
             elif data_type in {"vec2", "vec3", "vec4", "color"}:
                 size = {"vec2": 2, "vec3": 3, "vec4": 4, "color": 4}[data_type]
                 components = list(value or [0.0] * size)[:size]
@@ -1136,7 +1183,7 @@ class NodeGraphView:
                 semantic_kind = "checkbox"
                 semantic_values["bool_value"] = bool(new_value)
             elif data_type in {"i32", "u32", "f32"}:
-                semantic_kind =     "drag_float" if data_type == "f32" else "int_input"
+                semantic_kind = "drag_float" if data_type == "f32" else "int_input"
                 semantic_values["numeric_value"] = float(new_value)
             elif field_def.enum_values:
                 semantic_kind = "combo"
@@ -1144,14 +1191,15 @@ class NodeGraphView:
             elif data_type == "string":
                 semantic_kind = "text_input"
                 semantic_values["string_value"] = str(new_value)
-            self._record_semantic_item(
-                ctx,
-                semantic_kind,
-                str(field_def.label),
-                True,
-                f"inline.{layout.node.uid}.{field_def.id}",
-                **semantic_values,
-            )
+            if not semantic_recorded_by_widget:
+                self._record_semantic_item(
+                    ctx,
+                    semantic_kind,
+                    str(field_def.label),
+                    True,
+                    f"inline.{layout.node.uid}.{field_def.id}",
+                    **semantic_values,
+                )
             self._commit_inline_value(layout.node, field_def.id, new_value)
         finally:
             ctx.pop_id()

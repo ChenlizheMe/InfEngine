@@ -72,12 +72,22 @@ def test_particle_document_authoring_round_trip_keeps_strict_roots():
     assert all(link.kind.value == "stream" for link in restored.links)
 
 
-def test_particle_wait_nodes_stay_hidden_until_gpu_resume_is_available():
+def test_particle_wait_nodes_are_exposed_after_gpu_resume_is_available():
     model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
     visible_types = {definition.type_id for definition in model.registered_types()}
 
-    assert "particle.control.wait_frames" not in visible_types
-    assert "particle.control.wait_seconds" not in visible_types
+    assert "particle.control.wait_frames" in visible_types
+    assert "particle.control.wait_seconds" in visible_types
+
+    model.set_authoring_stage("update")
+    model.prepare_node_creation("update")
+    assert model.add_node("particle.control.wait_frames", 240.0, 20.0) is not None
+    assert model.authoring_stage == "update"
+
+    model.set_authoring_stage("rendering")
+    model.prepare_node_creation("rendering")
+    assert model.add_node("particle.control.wait_seconds", 240.0, 20.0) is not None
+    assert model.authoring_stage != "rendering"
 
 
 def test_particle_data_and_attribute_nodes_are_creatable_in_every_particle_stage():
@@ -438,6 +448,39 @@ def test_particle_graph_editor_authors_texture2d_parameter_node():
     assert panel._model._effective_port_type(canvas_node, port) == TypeRef(
         ValueType.TEXTURE2D
     )
+
+
+def test_live_draft_compile_failure_stays_in_the_graph_editor(monkeypatch, tmp_path):
+    import Infernux.engine.ui.particle_graph_editor_panel as module
+
+    panel = module.ParticleGraphEditorPanel()
+    panel._file_path = str(tmp_path / "Draft.particlegraph")
+    panel._draft_compile_due_at = 1.0
+    logged_errors = []
+
+    def _reject_draft(_asset, _path):
+        raise ValueError("Join All needs another input")
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: 2.0)
+    monkeypatch.setattr(
+        module.ParticleArtifactRegistry, "publish_graph_asset", _reject_draft
+    )
+    monkeypatch.setattr(module.Debug, "log_error", logged_errors.append)
+
+    panel._publish_live_draft_if_due()
+
+    assert panel._draft_compile_error == "Join All needs another input"
+    assert logged_errors == []
+
+    monkeypatch.setattr(
+        module.ParticleArtifactRegistry,
+        "publish_graph_asset",
+        lambda _asset, _path: object(),
+    )
+    panel._draft_compile_due_at = 1.0
+    panel._publish_live_draft_if_due()
+
+    assert panel._draft_compile_error == ""
 
 
 def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
@@ -1517,6 +1560,44 @@ def test_particle_node_inspector_edits_unconnected_value_input_defaults():
         f"particle_graph.node.{node.uid}.property.a",
         f"particle_graph.node.{node.uid}.property.b",
     }
+
+
+def test_particle_node_numeric_semantics_are_bound_during_widget_submission():
+    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    class Context:
+        semantic_capture_enabled = True
+
+        def __init__(self):
+            self.semantic_id = ""
+
+        @staticmethod
+        def label(_label):
+            pass
+
+        @staticmethod
+        def separator():
+            pass
+
+        def input_int_semantic(self, _label, _value, semantic_id):
+            self.semantic_id = semantic_id
+            return 5
+
+        @staticmethod
+        def record_semantic_item(*_args, **_kwargs):
+            raise AssertionError("numeric semantic aliases must not be recorded after the widget")
+
+    panel = ParticleGraphEditorPanel()
+    panel._record = lambda *_args: None
+    panel._on_node_creation_requested({"source_node": "", "gy": 230.0})
+    node = panel._on_node_add("particle.control.wait_frames", 400.0, 230.0)
+    panel._selected_node_uid = node.uid
+    ctx = Context()
+
+    panel._render_node_properties(ctx)
+
+    assert node.data["frames"] == 5
+    assert ctx.semantic_id == f"particle_graph.node.{node.uid}.property.frames"
 
 
 def test_particle_gradient_editor_uses_hdr_and_channel_semantics():

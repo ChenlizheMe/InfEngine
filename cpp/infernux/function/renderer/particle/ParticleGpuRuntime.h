@@ -195,10 +195,11 @@ class ParticleGpuRuntime
     void RequestContinuationReset() noexcept;
     [[nodiscard]] bool RecordContinuationPrepare(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                                                  uint64_t elapsedTimeTicks);
-    [[nodiscard]] bool RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder,
-                                                  uint32_t simulationStep, uint64_t elapsedTimeTicks) const;
-    [[nodiscard]] bool RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder,
-                                                  uint32_t simulationStep, uint64_t elapsedTimeTicks) const;
+    [[nodiscard]] bool RecordContinuationClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                                                  uint64_t elapsedTimeTicks) const;
+    [[nodiscard]] bool RecordContinuationDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
+                                                  uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
+                                                  rhi::BindGroupHandle eventOutput = {}) const;
 
     [[nodiscard]] uint32_t Capacity() const noexcept
     {

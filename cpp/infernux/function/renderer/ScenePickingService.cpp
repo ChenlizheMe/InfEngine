@@ -291,6 +291,17 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     begin.pClearValues = clears;
     vkCmdBeginRenderPass(commandBuffer, &begin, VK_SUBPASS_CONTENTS_INLINE);
 
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(target.width);
+    viewport.height = static_cast<float>(target.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.extent = {target.width, target.height};
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
     MaterialPassPipelineDescriptor pickingPass;
     pickingPass.target = ShaderCompileTarget::Picking;
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};

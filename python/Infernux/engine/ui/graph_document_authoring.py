@@ -58,10 +58,10 @@ _PARTICLE_COLLISION_ROOT_TYPES = frozenset(
     }
 )
 
-# These definitions are compiled and tested before product exposure. They stay
-# out of the authoring palette until the Vulkan continuation dispatch path can
-# actually resume them; loading a compiler fixture remains possible.
-_PARTICLE_INTERNAL_NODE_TYPES = frozenset(
+# Wait is a first-class lifecycle operation now that the Vulkan continuation
+# runtime is available. Rendering remains non-resumable because it only exports
+# the current simulation state.
+_PARTICLE_WAIT_NODE_TYPES = frozenset(
     {
         "particle.control.wait_frames",
         "particle.control.wait_seconds",
@@ -461,7 +461,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             if (
                 not definition.type_id.startswith("particle.root.")
                 or definition.type_id in _PARTICLE_COLLISION_ROOT_TYPES
-            ) and definition.type_id not in _PARTICLE_INTERNAL_NODE_TYPES:
+            ):
                 self._creatable_type_ids.append(definition.type_id)
 
         for stage in self.STAGES:
@@ -805,6 +805,8 @@ def particle_stage_definition_filter(domain: str) -> Callable[[NodeDef], bool]:
 
     def _accept(definition: NodeDef) -> bool:
         type_id = definition.type_id
+        if stage == "rendering" and type_id in _PARTICLE_WAIT_NODE_TYPES:
+            return False
         if type_id.startswith("common."):
             return True
         if type_id.startswith("particle.event.output."):

@@ -728,6 +728,38 @@ def test_node_graph_context_menu_uses_the_host_namespace():
     } <= semantic_ids
 
 
+def test_node_graph_canvas_background_does_not_submit_an_interactive_item():
+    view = NodeGraphView()
+    view.semantic_namespace = "particle_graph.canvas"
+    view._semantic_capture_active = True
+    view._canvas_window_hovered = True
+    view._origin_x = 12.0
+    view._origin_y = 34.0
+    calls = []
+    ctx = SimpleNamespace(
+        set_cursor_pos_x=lambda value: calls.append(("cursor_x", value)),
+        set_cursor_pos_y=lambda value: calls.append(("cursor_y", value)),
+        dummy=lambda width, height: calls.append(("dummy", width, height)),
+        record_semantic_rect=lambda *args: calls.append(("semantic", *args)),
+    )
+
+    hovered = view._submit_canvas_background_region(ctx, 640.0, 360.0)
+
+    assert hovered is True
+    assert all(call[0] not in {"dummy", "invisible_button"} for call in calls)
+    assert (
+        "semantic",
+        "node_graph_canvas",
+        "Node Graph",
+        12.0,
+        34.0,
+        640.0,
+        360.0,
+        True,
+        "particle_graph.canvas.canvas",
+    ) in calls
+
+
 def test_node_graph_inline_float32_round_trip_does_not_emit_a_change():
     import struct
 

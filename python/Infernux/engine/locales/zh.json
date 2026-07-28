@@ -55,6 +55,7 @@
   "panel.animtimeline_editor": "时间轴编辑器",
   "panel.particle_graph_editor": "粒子图编辑器",
   "particle_graph_editor.save": "保存",
+  "particle_graph_editor.draft_invalid": "草稿无效",
   "particle_graph_editor.parameters": "参数",
   "particle_graph_editor.add_parameter": "添加参数",
   "particle_graph_editor.remove_parameter": "移除",

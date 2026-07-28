@@ -144,6 +144,471 @@ def _collision_lifecycle_asset():
     )
 
 
+def _wait_asset(*, fork: bool = False):
+    nodes = [
+        GraphNodeRecord("root.update", "particle.root.update"),
+        GraphNodeRecord(
+            "frames", "common.constant.i32", properties={"value": 3}
+        ),
+        GraphNodeRecord("wait", "particle.control.wait_frames"),
+        GraphNodeRecord(
+            "tail", "particle.attribute.set_size", properties={"value": 2.0}
+        ),
+    ]
+    links = [
+        GraphLinkRecord(
+            "root-wait", "root.update", "out", "wait", "in", PortKind.STREAM
+        ),
+        GraphLinkRecord(
+            "frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE
+        ),
+        GraphLinkRecord(
+            "wait-tail", "wait", "out", "tail", "in", PortKind.STREAM
+        ),
+    ]
+    if fork:
+        nodes.append(
+            GraphNodeRecord(
+                "sibling",
+                "particle.attribute.set_position",
+                properties={"value": [1.0, 2.0, 3.0]},
+            )
+        )
+        links.append(
+            GraphLinkRecord(
+                "root-sibling",
+                "root.update",
+                "out",
+                "sibling",
+                "in",
+                PortKind.STREAM,
+            )
+        )
+    return ParticleGraphAsset(
+        stable_id="wait-gpu-fork" if fork else "wait-gpu",
+        emitters=(
+            ParticleEmitterAsset(
+                settings=EmitterSettings(capacity=512),
+                update=GraphDocument(
+                    "particle.update", nodes=tuple(nodes), links=tuple(links)
+                ),
+            ),
+        ),
+    )
+
+
+def _two_wait_asset():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "frames", "common.constant.i32", properties={"value": 2}
+            ),
+            GraphNodeRecord(
+                "seconds", "common.constant.f32", properties={"value": 0.25}
+            ),
+            GraphNodeRecord("wait.frames", "particle.control.wait_frames"),
+            GraphNodeRecord("wait.seconds", "particle.control.wait_seconds"),
+            GraphNodeRecord("tail", "particle.attribute.set_size"),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-frames",
+                "root.update",
+                "out",
+                "wait.frames",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "frames-value",
+                "frames",
+                "value",
+                "wait.frames",
+                "frames",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "frames-seconds",
+                "wait.frames",
+                "out",
+                "wait.seconds",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "seconds-value",
+                "seconds",
+                "value",
+                "wait.seconds",
+                "seconds",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "seconds-tail",
+                "wait.seconds",
+                "out",
+                "tail",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="two-waits-gpu",
+        emitters=(ParticleEmitterAsset(update=update),),
+    )
+
+
+def _wait_join_asset():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("frames", "common.constant.i32", properties={"value": 2}),
+            GraphNodeRecord("wait", "particle.control.wait_frames"),
+            GraphNodeRecord(
+                "left",
+                "particle.attribute.set_size",
+                properties={"value": 2.0},
+            ),
+            GraphNodeRecord(
+                "right",
+                "particle.attribute.set_position",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+            GraphNodeRecord("join", "particle.control.join_all"),
+            GraphNodeRecord(
+                "tail",
+                "particle.attribute.set_color",
+                properties={"value": [0.25, 0.5, 0.75, 1.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord("root-wait", "root.update", "out", "wait", "in", PortKind.STREAM),
+            GraphLinkRecord("frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE),
+            GraphLinkRecord("wait-left", "wait", "out", "left", "in", PortKind.STREAM),
+            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.STREAM),
+            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.STREAM),
+            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.STREAM),
+            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.STREAM),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="wait-join-gpu",
+        emitters=(ParticleEmitterAsset(settings=EmitterSettings(capacity=512), update=update),),
+    )
+
+
+def _dual_wait_join_asset():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("frames", "common.constant.i32", properties={"value": 2}),
+            GraphNodeRecord("seconds", "common.constant.f32", properties={"value": 0.25}),
+            GraphNodeRecord("wait.left", "particle.control.wait_frames"),
+            GraphNodeRecord("wait.right", "particle.control.wait_seconds"),
+            GraphNodeRecord("left", "particle.attribute.set_size", properties={"value": 2.0}),
+            GraphNodeRecord(
+                "right",
+                "particle.attribute.set_position",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+            GraphNodeRecord("join", "particle.control.join_all"),
+            GraphNodeRecord(
+                "tail",
+                "particle.attribute.set_color",
+                properties={"value": [0.25, 0.5, 0.75, 1.0]},
+            ),
+        ),
+        links=(
+            GraphLinkRecord("root-left", "root.update", "out", "wait.left", "in", PortKind.STREAM),
+            GraphLinkRecord("frames-left", "frames", "value", "wait.left", "frames", PortKind.VALUE),
+            GraphLinkRecord("left-tail", "wait.left", "out", "left", "in", PortKind.STREAM),
+            GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.STREAM),
+            GraphLinkRecord("root-right", "root.update", "out", "wait.right", "in", PortKind.STREAM),
+            GraphLinkRecord("seconds-right", "seconds", "value", "wait.right", "seconds", PortKind.VALUE),
+            GraphLinkRecord("right-tail", "wait.right", "out", "right", "in", PortKind.STREAM),
+            GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.STREAM),
+            GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.STREAM),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="dual-wait-join-gpu",
+        emitters=(ParticleEmitterAsset(settings=EmitterSettings(capacity=512), update=update),),
+    )
+
+
+def _nested_wait_join_asset():
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord("frames.first", "common.constant.i32", properties={"value": 2}),
+            GraphNodeRecord("frames.second", "common.constant.i32", properties={"value": 3}),
+            GraphNodeRecord("wait.first", "particle.control.wait_frames"),
+            GraphNodeRecord("first.left", "particle.attribute.set_size", properties={"value": 2.0}),
+            GraphNodeRecord(
+                "first.right",
+                "particle.attribute.set_position",
+                properties={"value": [1.0, 2.0, 3.0]},
+            ),
+            GraphNodeRecord("join.first", "particle.control.join_all"),
+            GraphNodeRecord("wait.second", "particle.control.wait_frames"),
+            GraphNodeRecord(
+                "second.left",
+                "particle.attribute.set_velocity",
+                properties={"value": [0.0, 4.0, 0.0]},
+            ),
+            GraphNodeRecord(
+                "second.right",
+                "particle.attribute.set_color",
+                properties={"value": [0.2, 0.4, 0.8, 1.0]},
+            ),
+            GraphNodeRecord("join.second", "particle.control.join_all"),
+            GraphNodeRecord(
+                "tail",
+                "particle.attribute.set_rotation",
+                properties={"value": 0.75},
+            ),
+        ),
+        links=(
+            GraphLinkRecord(
+                "root-first-wait",
+                "root.update",
+                "out",
+                "wait.first",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "first-frames-value",
+                "frames.first",
+                "value",
+                "wait.first",
+                "frames",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "first-wait-left",
+                "wait.first",
+                "out",
+                "first.left",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "first-left-join",
+                "first.left",
+                "out",
+                "join.first",
+                "in0",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "root-first-right",
+                "root.update",
+                "out",
+                "first.right",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "first-right-join",
+                "first.right",
+                "out",
+                "join.first",
+                "in1",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "first-join-second-wait",
+                "join.first",
+                "out",
+                "wait.second",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "second-frames-value",
+                "frames.second",
+                "value",
+                "wait.second",
+                "frames",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "second-wait-left",
+                "wait.second",
+                "out",
+                "second.left",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "second-left-join",
+                "second.left",
+                "out",
+                "join.second",
+                "in0",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "first-join-second-right",
+                "join.first",
+                "out",
+                "second.right",
+                "in",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "second-right-join",
+                "second.right",
+                "out",
+                "join.second",
+                "in1",
+                PortKind.STREAM,
+            ),
+            GraphLinkRecord(
+                "second-join-tail",
+                "join.second",
+                "out",
+                "tail",
+                "in",
+                PortKind.STREAM,
+            ),
+        ),
+    )
+    return ParticleGraphAsset(
+        stable_id="nested-wait-join-gpu",
+        emitters=(
+            ParticleEmitterAsset(
+                settings=EmitterSettings(capacity=512),
+                update=update,
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("fork", [False, True])
+def test_gpu_wait_emits_bounded_continuation_program_and_valid_spirv(fork):
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_wait_asset(fork=fork))
+    )
+    source = GpuParticleGlslLowerer().lower(kernel)
+    emitter = source.emitters[0]
+    continuation = emitter.continuation
+
+    assert continuation is not None
+    assert continuation.record_stride == 64
+    assert continuation.lane_count == 1
+    assert continuation.join_count == 0
+    assert "layout(std430, set = 5, binding = 0)" in emitter.update
+    assert "inx_suspend_frames(" in emitter.update
+    assert "case 1u:" in continuation.dispatch
+    assert "state.a_builtin_size =" in continuation.dispatch
+    if fork:
+        assert "state.a_builtin_position =" in emitter.update
+        assert emitter.update.count("_active") >= 2
+
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+    encoded = compiled["emitters"][0]["continuation"]
+    assert encoded is not None
+    assert set(encoded["stages"]) == {"prepare", "classify", "dispatch"}
+    decoded = gpu_backend.decode_gpu_particle_spirv(compiled, 0)["continuation"]
+    assert decoded is not None
+    assert decoded["record_stride"] == 64
+    assert all(decoded["stages"][stage] for stage in encoded["stages"])
+
+
+def test_gpu_sequential_wait_reuses_the_current_continuation_record():
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleGraphCompiler().compile(_two_wait_asset())
+        )
+    )
+    continuation = source.emitters[0].continuation
+    assert continuation is not None
+    assert continuation.lane_count == 1
+    assert "case 1u:" in continuation.dispatch
+    assert "case 2u:" in continuation.dispatch
+    assert "inx_continuation_record_index" in continuation.dispatch
+    assert "inx_continuation_resuspended = true" in continuation.dispatch
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_gpu_wait_crosses_join_with_persistent_branch_arrival_state():
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleGraphCompiler().compile(_wait_join_asset())
+        )
+    )
+    emitter = source.emitters[0]
+    continuation = emitter.continuation
+
+    assert continuation is not None
+    assert continuation.lane_count == 1
+    assert continuation.join_count == 1
+    assert "inx_continuation_lane_pending" in emitter.update
+    assert "inx_continuation_join_has_arrived" in emitter.update
+    assert "inx_continuation_join_arrive" in emitter.update
+    assert "continuation_record_words[base + 8u] = branch_token" in emitter.update
+    assert "inx_continuation_record_branch_token" in continuation.dispatch
+    assert "inx_continuation_record_join_index" in continuation.dispatch
+    assert "inx_continuation_join_arrive" in continuation.dispatch
+    assert "state.a_builtin_color =" in continuation.dispatch
+
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_gpu_join_resumes_only_after_both_waiting_branches_arrive():
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleGraphCompiler().compile(_dual_wait_join_asset())
+        )
+    )
+    emitter = source.emitters[0]
+    continuation = emitter.continuation
+
+    assert continuation is not None
+    assert continuation.lane_count == 2
+    assert continuation.join_count == 1
+    assert continuation.dispatch.count("case ") == 2
+    assert continuation.dispatch.count("inx_continuation_join_arrive(") >= 3
+    assert "? 1u : 0u" in continuation.dispatch
+    assert "? 2u : 0u" in continuation.dispatch
+
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
+def test_gpu_nested_wait_joins_move_the_continuation_to_the_next_join():
+    source = GpuParticleGlslLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleGraphCompiler().compile(_nested_wait_join_asset())
+        )
+    )
+    emitter = source.emitters[0]
+    continuation = emitter.continuation
+
+    assert continuation is not None
+    assert continuation.lane_count == 2
+    assert continuation.join_count == 2
+    assert continuation.dispatch.count("case ") == 2
+    assert "state.a_builtin_velocity =" in continuation.dispatch
+    assert "state.a_builtin_rotation =" in continuation.dispatch
+    assert "inx_continuation_record_join_index == 0u" in continuation.dispatch
+    assert "inx_continuation_record_join_index == 1u" in continuation.dispatch
+
+    compiled = compile_gpu_particle_spirv(source)
+    validate_gpu_particle_spirv(compiled, source)
+
+
 def test_particle_if_lowers_to_guarded_gpu_branches_and_valid_spirv():
     kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(_if_asset()))
     source = GpuParticleGlslLowerer().lower(kernel)
@@ -794,7 +1259,7 @@ def test_gpu_event_payload_round_trips_from_stage_output_to_event_init():
 
     source = gpu.emitters[0]
     assert source.event_output_stages == ("update",)
-    assert "layout(std430, set = 3, binding = 1)" in source.update
+    assert "layout(std430, set = 4, binding = 1)" in source.update
     assert "atomicAdd(event_output_counters" in source.update
     assert "state.spawn_generation" in source.update
     assert "event_output_record_words" in source.update

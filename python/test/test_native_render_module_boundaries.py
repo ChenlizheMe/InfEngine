@@ -366,6 +366,18 @@ def test_scene_picking_target_resize_uses_deferred_generation_publication() -> N
     assert "m_target = std::move(candidate)" in ensure_target
 
 
+def test_scene_picking_pass_publishes_dynamic_viewport_before_any_draw() -> None:
+    picking = (RENDERER / "ScenePickingService.cpp").read_text(encoding="utf-8")
+    record = _function_body(picking, "void ScenePickingService::Record")
+
+    begin = record.index("vkCmdBeginRenderPass")
+    viewport = record.index("vkCmdSetViewport", begin)
+    scissor = record.index("vkCmdSetScissor", viewport)
+    geometry = record.index("DrawSceneFiltered", scissor)
+    particles = record.index("RecordPickingDraw", geometry)
+    assert begin < viewport < scissor < geometry < particles
+
+
 def test_per_view_descriptor_publication_only_waits_for_its_frame_slot() -> None:
     graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
     forward_plus = _function_body(graph, "bool SceneRenderGraph::PrepareForwardPlusFrame")

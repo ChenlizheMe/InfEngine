@@ -384,6 +384,14 @@ void RegisterGUIBindings(py::module_ &m)
                  ctx.DragFloat(label, &value, speed, min, max);
                  return value;
              })
+        .def("drag_float_semantic",
+             [](InxGUIContext &ctx, const std::string &label, float value, float speed, float min, float max,
+                const std::string &semantic_id) {
+                 ctx.DragFloat(label, &value, speed, min, max, "%.3f", 1.0f, semantic_id);
+                 return value;
+             },
+             py::arg("label"), py::arg("value"), py::arg("speed"), py::arg("min"), py::arg("max"),
+             py::arg("semantic_id"))
         .def("text_input",
              [](InxGUIContext &ctx, const std::string &label, const std::string &value, size_t buffer_size) {
                  std::vector<char> buffer(buffer_size, 0);
@@ -418,6 +426,15 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("label"), py::arg("value"), py::arg("step") = 1, py::arg("step_fast") = 100, py::arg("flags") = 0)
         .def(
+            "input_int_semantic",
+            [](InxGUIContext &ctx, const std::string &label, int value, const std::string &semantic_id, int step,
+               int step_fast, int flags) {
+                ctx.InputInt(label, &value, step, step_fast, flags, semantic_id);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("semantic_id"), py::arg("step") = 1,
+            py::arg("step_fast") = 100, py::arg("flags") = 0)
+        .def(
             "input_uint",
             [](InxGUIContext &ctx, const std::string &label, uint32_t value, uint32_t step, uint32_t step_fast,
                int flags) {
@@ -427,6 +444,15 @@ void RegisterGUIBindings(py::module_ &m)
             py::arg("label"), py::arg("value"), py::arg("step") = 1u, py::arg("step_fast") = 100u,
             py::arg("flags") = 0)
         .def(
+            "input_uint_semantic",
+            [](InxGUIContext &ctx, const std::string &label, uint32_t value, const std::string &semantic_id,
+               uint32_t step, uint32_t step_fast, int flags) {
+                ctx.InputUInt(label, &value, step, step_fast, flags, semantic_id);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("semantic_id"), py::arg("step") = 1u,
+            py::arg("step_fast") = 100u, py::arg("flags") = 0)
+        .def(
             "input_float",
             [](InxGUIContext &ctx, const std::string &label, float value, float step, float step_fast, int flags) {
                 ctx.InputFloat(label, &value, step, step_fast, flags);
@@ -434,6 +460,15 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("label"), py::arg("value"), py::arg("step") = 0.0f, py::arg("step_fast") = 0.0f,
             py::arg("flags") = 0)
+        .def(
+            "input_float_semantic",
+            [](InxGUIContext &ctx, const std::string &label, float value, const std::string &semantic_id, float step,
+               float step_fast, int flags) {
+                ctx.InputFloat(label, &value, step, step_fast, flags, semantic_id);
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("semantic_id"), py::arg("step") = 0.0f,
+            py::arg("step_fast") = 0.0f, py::arg("flags") = 0)
         .def(
             "color_edit",
             [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a,

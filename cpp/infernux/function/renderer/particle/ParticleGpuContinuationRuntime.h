@@ -50,15 +50,15 @@ struct alignas(16) GpuParticleContinuationRecord
     uint32_t wakeFrame = 0;
     uint32_t wakeTimeLow = 0;
     uint32_t wakeTimeHigh = 0;
+    uint32_t laneIndex = 0;
     uint32_t branchToken = 0;
-    uint32_t joinToken = 0;
-    uint32_t parentToken = 0;
+    uint32_t joinIndex = 0xFFFFFFFFu;
+    uint32_t reservedContext = 0;
     uint32_t flags = 0;
     uint32_t payloadOffsetWords = 0;
     uint32_t payloadWordCount = 0;
     uint32_t reserved0 = 0;
     uint32_t reserved1 = 0;
-    uint32_t reserved2 = 0;
 };
 
 /// Shader-visible counters. They remain GPU-resident during normal execution;
@@ -66,21 +66,25 @@ struct alignas(16) GpuParticleContinuationRecord
 struct alignas(16) GpuParticleContinuationCounters
 {
     uint32_t freeCount = 0;
+    uint32_t activeCountA = 0;
+    uint32_t activeCountB = 0;
     uint32_t readyCount = 0;
-    uint32_t delayedCount = 0;
-    uint32_t liveCount = 0;
     uint32_t droppedCapacity = 0;
     uint32_t staleGeneration = 0;
     uint32_t resumedCount = 0;
     uint32_t completedCount = 0;
     uint32_t programGeneration = 0;
     uint32_t resetSerial = 0;
-    uint32_t reserved0 = 0;
-    uint32_t reserved1 = 0;
-    uint32_t reserved2 = 0;
-    uint32_t reserved3 = 0;
-    uint32_t reserved4 = 0;
-    uint32_t reserved5 = 0;
+    uint32_t currentSimulationStep = 0;
+    uint32_t elapsedTimeLow = 0;
+    uint32_t elapsedTimeHigh = 0;
+    uint32_t recordStrideWords = 0;
+    uint32_t laneCount = 0;
+    uint32_t joinCount = 0;
+    uint32_t continuationCapacity = 0;
+    uint32_t particleCapacity = 0;
+    uint32_t branchTokenCounter = 0;
+    uint32_t reserved = 0;
 };
 
 struct alignas(16) GpuParticleContinuationDispatchArguments
@@ -102,18 +106,27 @@ struct alignas(16) GpuParticleContinuationJoinState
 struct alignas(16) GpuParticleContinuationConstants
 {
     uint32_t capacity = 0;
+    uint32_t particleCapacity = 0;
+    uint32_t laneCount = 0;
+    uint32_t joinCount = 0;
     uint32_t programGeneration = 0;
     uint32_t simulationStep = 0;
     uint32_t resetSerial = 0;
     uint32_t resetRequested = 0;
     uint32_t elapsedTimeLow = 0;
     uint32_t elapsedTimeHigh = 0;
-    uint32_t reserved = 0;
+    uint32_t recordStrideWords = 0;
+    uint32_t systemSeed = 0;
+    float deltaTime = 0.0f;
+    uint32_t eventOutputEnabled = 0;
+    uint32_t reserved0 = 0;
+    uint32_t reserved1 = 0;
 };
 
 struct GpuParticleContinuationDesc
 {
     uint32_t capacity = 0;
+    uint32_t particleCapacity = 0;
     uint32_t recordStride = sizeof(GpuParticleContinuationRecord);
     uint32_t laneCount = 0;
     uint32_t joinCount = 0;
@@ -121,6 +134,14 @@ struct GpuParticleContinuationDesc
     GpuParticleContinuationProgram program;
     rhi::BindingLayoutHandle ownerLayout;
     rhi::BindGroupHandle ownerGroup;
+    rhi::BindingLayoutHandle dataInterfaceLayout;
+    rhi::BindGroupHandle dataInterfaceGroup;
+    rhi::BindingLayoutHandle vectorFieldLayout;
+    rhi::BindGroupHandle vectorFieldGroup;
+    rhi::BindingLayoutHandle emptyLayout;
+    rhi::BindGroupHandle emptyGroup;
+    rhi::BindingLayoutHandle eventOutputLayout;
+    bool emitsEvents = false;
 };
 
 struct GpuParticleContinuationResources
@@ -128,7 +149,8 @@ struct GpuParticleContinuationResources
     rhi::BufferHandle records;
     rhi::BufferHandle freeList;
     rhi::BufferHandle readyQueue;
-    rhi::BufferHandle delayedQueue;
+    rhi::BufferHandle activeQueueA;
+    rhi::BufferHandle activeQueueB;
     rhi::BufferHandle counters;
     rhi::BufferHandle classifyIndirectArguments;
     rhi::BufferHandle dispatchIndirectArguments;
@@ -141,6 +163,7 @@ struct GpuParticleContinuationResources
 struct GpuParticleContinuationTelemetry
 {
     uint32_t capacity = 0;
+    uint32_t particleCapacity = 0;
     uint32_t recordStride = 0;
     uint32_t laneCount = 0;
     uint32_t joinCount = 0;
@@ -190,6 +213,7 @@ class ParticleGpuContinuationRuntime
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] bool SharesStorageWith(const ParticleGpuContinuationRuntime &other) const noexcept;
     [[nodiscard]] uint32_t Capacity() const noexcept;
+    [[nodiscard]] uint32_t ParticleCapacity() const noexcept;
     [[nodiscard]] uint32_t RecordStride() const noexcept;
     [[nodiscard]] uint32_t LaneCount() const noexcept;
     [[nodiscard]] uint32_t JoinCount() const noexcept;
@@ -197,6 +221,8 @@ class ParticleGpuContinuationRuntime
     [[nodiscard]] uint32_t ResetSerial() const noexcept;
     [[nodiscard]] const GpuParticleContinuationResources &Resources() const noexcept;
     [[nodiscard]] GpuParticleContinuationTelemetry Telemetry() const noexcept;
+    [[nodiscard]] rhi::BindingLayoutHandle Layout() const noexcept;
+    [[nodiscard]] rhi::BindGroupHandle Group() const noexcept;
 
     /// Invalidates every outstanding continuation without a CPU scan. The next
     /// Prepare pass publishes the new generation/reset serial to the GPU.
@@ -207,7 +233,8 @@ class ParticleGpuContinuationRuntime
     [[nodiscard]] bool RecordClassify(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
                                       uint64_t elapsedTimeTicks) const;
     [[nodiscard]] bool RecordDispatch(const rhi::ComputeCommandEncoder &encoder, uint32_t simulationStep,
-                                      uint64_t elapsedTimeTicks) const;
+                                      uint64_t elapsedTimeTicks, uint32_t systemSeed, float deltaTime,
+                                      rhi::BindGroupHandle eventOutput = {}) const;
 
   private:
     struct ResidentStorage;
@@ -215,8 +242,9 @@ class ParticleGpuContinuationRuntime
 
     [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuParticleContinuationDesc &desc,
                                       std::shared_ptr<ResidentStorage> storage, uint32_t programGeneration);
-    [[nodiscard]] GpuParticleContinuationConstants Constants(uint32_t simulationStep,
-                                                             uint64_t elapsedTimeTicks) const noexcept;
+    [[nodiscard]] GpuParticleContinuationConstants Constants(uint32_t simulationStep, uint64_t elapsedTimeTicks,
+                                                             uint32_t systemSeed = 0, float deltaTime = 0.0f,
+                                                             bool eventOutputEnabled = false) const noexcept;
     [[nodiscard]] static uint32_t NextGeneration(uint32_t value) noexcept;
 
     rhi::Device *m_device = nullptr;
@@ -234,9 +262,9 @@ class ParticleGpuContinuationRuntime
 };
 
 static_assert(sizeof(GpuParticleContinuationRecord) == 64);
-static_assert(sizeof(GpuParticleContinuationCounters) == 64);
+static_assert(sizeof(GpuParticleContinuationCounters) == 80);
 static_assert(sizeof(GpuParticleContinuationDispatchArguments) == 16);
 static_assert(sizeof(GpuParticleContinuationJoinState) == 16);
-static_assert(sizeof(GpuParticleContinuationConstants) == 32);
+static_assert(sizeof(GpuParticleContinuationConstants) == 64);
 
 } // namespace infernux::particle

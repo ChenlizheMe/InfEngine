@@ -95,6 +95,13 @@ struct RendererFrameTelemetrySnapshot
     size_t gpuParticleSimulatingSystemCount = 0;
     size_t gpuParticleRenderingSystemCount = 0;
     uint64_t gpuParticleRequestedSpawnCount = 0;
+    size_t gpuParticleContinuationSystemCount = 0;
+    uint64_t gpuParticleContinuationCapacity = 0;
+    uint32_t gpuParticleContinuationProgramGeneration = 0;
+    uint64_t gpuParticleContinuationPrepareRecordCalls = 0;
+    uint64_t gpuParticleContinuationClassifyRecordCalls = 0;
+    uint64_t gpuParticleContinuationDispatchRecordCalls = 0;
+    size_t gpuParticleContinuationResetPendingCount = 0;
     uint64_t gpuParticleCollisionSceneRevision = 0;
     uint32_t gpuParticleCollisionSceneColliderCount = 0;
     uint64_t gpuParticleCollisionSceneTopologyRevision = 0;

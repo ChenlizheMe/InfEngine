@@ -127,9 +127,10 @@ struct FakeDevice final : rhi::Device
     rhi::ComputePipelineHandle CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override
     {
         assert(desc.computeShader.IsValid() &&
-               (desc.bindingLayoutCount == 1 || desc.bindingLayoutCount == 2 || desc.bindingLayoutCount == 4) &&
+               (desc.bindingLayoutCount == 1 || desc.bindingLayoutCount == 2 || desc.bindingLayoutCount == 4 ||
+                desc.bindingLayoutCount == 5 || desc.bindingLayoutCount == 6) &&
                (desc.pushConstantBytes == 16 || desc.pushConstantBytes == 32 || desc.pushConstantBytes == 48 ||
-                desc.pushConstantBytes == 80 || desc.pushConstantBytes == 112));
+                desc.pushConstantBytes == 64 || desc.pushConstantBytes == 80 || desc.pushConstantBytes == 112));
         computePipelineDescs.push_back(desc);
         ++pipelineCreates;
         return {nextIndex++, 1};
@@ -238,7 +239,7 @@ struct CommandTrace
     }
     static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
     {
-        assert(setIndex <= 3);
+        assert(setIndex <= 5 && group.IsValid());
         auto &trace = *static_cast<CommandTrace *>(context);
         trace.groups.push_back(group);
         trace.groupSets.push_back(setIndex);
@@ -276,7 +277,7 @@ struct ContinuationTrace
     }
     static void BindGroup(void *context, rhi::ComputePipelineHandle, uint32_t setIndex, rhi::BindGroupHandle group)
     {
-        assert(setIndex <= 1 && group.IsValid());
+        assert(setIndex <= 5 && group.IsValid());
         auto &trace = *static_cast<ContinuationTrace *>(context);
         trace.groups.push_back(group);
         trace.groupSets.push_back(setIndex);
@@ -607,15 +608,26 @@ int main()
         rhi::BindGroupDesc ownerGroupDesc;
         ownerGroupDesc.layout = ownerLayout;
         const auto ownerGroup = continuationDevice.CreateBindGroup(ownerGroupDesc);
+        const auto emptyLayout = continuationDevice.CreateBindingLayout({});
+        rhi::BindGroupDesc emptyGroupDesc;
+        emptyGroupDesc.layout = emptyLayout;
+        const auto emptyGroup = continuationDevice.CreateBindGroup(emptyGroupDesc);
         std::array<uint32_t, 5> continuationShader = {0x07230203u, 0u, 0u, 0u, 0u};
         particle::GpuParticleContinuationDesc continuationDesc;
         continuationDesc.capacity = 513;
+        continuationDesc.particleCapacity = 257;
         continuationDesc.recordStride = 96;
         continuationDesc.laneCount = 5;
         continuationDesc.joinCount = 2;
         continuationDesc.initialProgramGeneration = 41;
         continuationDesc.ownerLayout = ownerLayout;
         continuationDesc.ownerGroup = ownerGroup;
+        continuationDesc.dataInterfaceLayout = emptyLayout;
+        continuationDesc.dataInterfaceGroup = emptyGroup;
+        continuationDesc.vectorFieldLayout = emptyLayout;
+        continuationDesc.vectorFieldGroup = emptyGroup;
+        continuationDesc.emptyLayout = emptyLayout;
+        continuationDesc.emptyGroup = emptyGroup;
         continuationDesc.program = {
             {continuationShader.data(), continuationShader.size()},
             {continuationShader.data(), continuationShader.size()},
@@ -624,22 +636,24 @@ int main()
 
         auto current = std::make_shared<particle::ParticleGpuContinuationRuntime>();
         assert(current->Create(continuationDevice, continuationDesc));
-        assert(current->IsValid() && current->Capacity() == 513 && current->ProgramGeneration() == 41 &&
-               current->ResetSerial() == 1 && current->RecordStride() == 96 && current->LaneCount() == 5 &&
-               current->JoinCount() == 2);
-        assert(continuationDevice.buffers.size() == 9);
+        assert(current->IsValid() && current->Capacity() == 513 && current->ParticleCapacity() == 257 &&
+               current->ProgramGeneration() == 41 && current->ResetSerial() == 1 && current->RecordStride() == 96 &&
+               current->LaneCount() == 5 && current->JoinCount() == 2);
+        assert(continuationDevice.buffers.size() == 10);
         assert(
             continuationDevice.buffers[0].byteSize ==
                 uint64_t(continuationDesc.capacity) * continuationDesc.recordStride &&
             continuationDevice.buffers[1].byteSize == uint64_t(continuationDesc.capacity) * sizeof(uint32_t) &&
             continuationDevice.buffers[2].byteSize == continuationDevice.buffers[1].byteSize &&
             continuationDevice.buffers[3].byteSize == continuationDevice.buffers[1].byteSize &&
-            continuationDevice.buffers[4].byteSize == sizeof(particle::GpuParticleContinuationCounters) &&
-            continuationDevice.buffers[5].byteSize == particle::ParticleGpuContinuationRuntime::IndirectBufferBytes &&
+            continuationDevice.buffers[4].byteSize == continuationDevice.buffers[1].byteSize &&
+            continuationDevice.buffers[5].byteSize == sizeof(particle::GpuParticleContinuationCounters) &&
             continuationDevice.buffers[6].byteSize == particle::ParticleGpuContinuationRuntime::IndirectBufferBytes &&
-            continuationDevice.buffers[7].byteSize ==
-                uint64_t(continuationDesc.capacity) * continuationDesc.laneCount * sizeof(uint32_t) &&
-            continuationDevice.buffers[8].byteSize == uint64_t(continuationDesc.capacity) * continuationDesc.joinCount *
+            continuationDevice.buffers[7].byteSize == particle::ParticleGpuContinuationRuntime::IndirectBufferBytes &&
+            continuationDevice.buffers[8].byteSize ==
+                uint64_t(continuationDesc.particleCapacity) * continuationDesc.laneCount * sizeof(uint32_t) &&
+            continuationDevice.buffers[9].byteSize == uint64_t(continuationDesc.particleCapacity) *
+                                                          continuationDesc.joinCount *
                                                           sizeof(particle::GpuParticleContinuationJoinState));
         for (size_t index = 0; index < continuationDevice.buffers.size(); ++index) {
             assert(rhi::HasBufferUsage(continuationDevice.buffers[index].usage, rhi::BufferUsageFlags::Storage));
@@ -648,16 +662,16 @@ int main()
                    continuationDevice.buffers[index].initialDataBytes == 0 &&
                    continuationDevice.buffers[index].queueAccess == rhi::QueueAccessFlags::Compute);
         }
-        assert(rhi::HasBufferUsage(continuationDevice.buffers[4].usage, rhi::BufferUsageFlags::TransferSource));
-        assert(rhi::HasBufferUsage(continuationDevice.buffers[5].usage, rhi::BufferUsageFlags::Indirect) &&
-               rhi::HasBufferUsage(continuationDevice.buffers[6].usage, rhi::BufferUsageFlags::Indirect));
-        assert(continuationDevice.layouts.back().entryCount == 9);
-        assert(continuationDevice.bindGroups.back().bufferCount == 9);
+        assert(rhi::HasBufferUsage(continuationDevice.buffers[5].usage, rhi::BufferUsageFlags::TransferSource));
+        assert(rhi::HasBufferUsage(continuationDevice.buffers[6].usage, rhi::BufferUsageFlags::Indirect) &&
+               rhi::HasBufferUsage(continuationDevice.buffers[7].usage, rhi::BufferUsageFlags::Indirect));
+        assert(continuationDevice.layouts.back().entryCount == 10);
+        assert(continuationDevice.bindGroups.back().bufferCount == 10);
         assert(continuationDevice.pipelineCreates == 3);
         assert(continuationDevice.computePipelineDescs.size() == 3);
         assert(continuationDevice.computePipelineDescs[0].bindingLayoutCount == 1);
         assert(continuationDevice.computePipelineDescs[1].bindingLayoutCount == 1);
-        assert(continuationDevice.computePipelineDescs[2].bindingLayoutCount == 2);
+        assert(continuationDevice.computePipelineDescs[2].bindingLayoutCount == 6);
 
         ContinuationTrace continuationTrace;
         const rhi::ComputeCommandEncoder::DispatchTable continuationDispatch = {
@@ -668,36 +682,38 @@ int main()
         assert(current->ProgramGeneration() == 42 && current->ResetSerial() == 2 && current->Telemetry().resetPending);
         constexpr uint64_t Clock = 0x1122334455667788ull;
         assert(!current->RecordClassify(continuationEncoder, 17, Clock));
-        assert(!current->RecordDispatch(continuationEncoder, 17, Clock));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
         assert(current->RecordPrepare(continuationEncoder, 17, Clock));
-        assert(!current->RecordDispatch(continuationEncoder, 17, Clock));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
         assert(current->RecordClassify(continuationEncoder, 17, Clock));
         assert(!current->RecordClassify(continuationEncoder, 17, Clock));
-        assert(current->RecordDispatch(continuationEncoder, 17, Clock));
-        assert(!current->RecordDispatch(continuationEncoder, 17, Clock));
-        const std::vector<std::array<uint32_t, 3>> expectedContinuationDispatches = {{{1, 1, 1}}};
+        assert(current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
+        assert(!current->RecordDispatch(continuationEncoder, 17, Clock, 99, 0.125f));
+        const std::vector<std::array<uint32_t, 3>> expectedContinuationDispatches = {{{6, 1, 1}}};
         assert(continuationTrace.pipelines.size() == 3 &&
-               continuationTrace.groupSets == std::vector<uint32_t>({0, 0, 0, 1}) &&
+               continuationTrace.groupSets == std::vector<uint32_t>({0, 0, 0, 1, 2, 3, 4, 5}) &&
                continuationTrace.dispatches == expectedContinuationDispatches);
         assert(continuationTrace.indirectBuffers ==
                std::vector<rhi::BufferHandle>(
                    {current->Resources().classifyIndirectArguments, current->Resources().dispatchIndirectArguments}));
         assert(continuationTrace.indirectOffsets == std::vector<uint64_t>({0, 0}));
         assert(continuationTrace.constants.size() == 3 && continuationTrace.constants[0].capacity == 513 &&
+               continuationTrace.constants[0].particleCapacity == 257 &&
                continuationTrace.constants[0].programGeneration == 42 &&
                continuationTrace.constants[0].simulationStep == 17 && continuationTrace.constants[0].resetSerial == 2 &&
                continuationTrace.constants[0].resetRequested == 1 &&
                continuationTrace.constants[0].elapsedTimeLow == 0x55667788u &&
                continuationTrace.constants[0].elapsedTimeHigh == 0x11223344u &&
                continuationTrace.constants[1].resetRequested == 0 &&
-               continuationTrace.constants[2].resetRequested == 0);
+               continuationTrace.constants[2].resetRequested == 0 && continuationTrace.constants[2].systemSeed == 99 &&
+               continuationTrace.constants[2].deltaTime == 0.125f);
         const auto telemetry = current->Telemetry();
-        assert(telemetry.capacity == 513 && telemetry.recordStride == 96 && telemetry.laneCount == 5 &&
-               telemetry.joinCount == 2 && telemetry.programGeneration == 42 && telemetry.resetSerial == 2 &&
-               telemetry.recordBytes == continuationDevice.buffers[0].byteSize &&
+        assert(telemetry.capacity == 513 && telemetry.particleCapacity == 257 && telemetry.recordStride == 96 &&
+               telemetry.laneCount == 5 && telemetry.joinCount == 2 && telemetry.programGeneration == 42 &&
+               telemetry.resetSerial == 2 && telemetry.recordBytes == continuationDevice.buffers[0].byteSize &&
                telemetry.queueBytes == continuationDevice.buffers[1].byteSize &&
-               telemetry.laneSlotBytes == continuationDevice.buffers[7].byteSize &&
-               telemetry.joinStateBytes == continuationDevice.buffers[8].byteSize &&
+               telemetry.laneSlotBytes == continuationDevice.buffers[8].byteSize &&
+               telemetry.joinStateBytes == continuationDevice.buffers[9].byteSize &&
                telemetry.prepareRecordCalls == 1 && telemetry.classifyRecordCalls == 1 &&
                telemetry.dispatchRecordCalls == 1 && !telemetry.resetPending && telemetry.gpuCountersOnly &&
                telemetry.gpuCounters == current->Resources().counters &&
@@ -709,7 +725,7 @@ int main()
         assert(replacement->CreateCompatible(continuationDevice, continuationDesc, *current));
         assert(replacement->IsValid() && replacement->SharesStorageWith(*current) &&
                replacement->ProgramGeneration() == 43 && replacement->ResetSerial() == 1 &&
-               continuationDevice.buffers.size() == 9 && continuationDevice.pipelineCreates == 6);
+               continuationDevice.buffers.size() == 10 && continuationDevice.pipelineCreates == 6);
 
         GpuRetirementQueue retirement;
         retirement.BindSerialSource([] { return rhi::SubmissionSerial{9}; });
@@ -721,10 +737,12 @@ int main()
         assert(retirement.Collect(9) == 1 && continuationDevice.bufferReleases == 0 &&
                continuationDevice.pipelineReleases == pipelineReleasesBeforeRetire + 3);
         replacement->Destroy();
-        assert(continuationDevice.bufferReleases == 9 && continuationDevice.pipelineReleases == 6 &&
+        assert(continuationDevice.bufferReleases == 10 && continuationDevice.pipelineReleases == 6 &&
                continuationDevice.groupReleases == 2 && continuationDevice.layoutReleases == 2);
         continuationDevice.Release(ownerGroup);
         continuationDevice.Release(ownerLayout);
+        continuationDevice.Release(emptyGroup);
+        continuationDevice.Release(emptyLayout);
 
         FakeDevice invalidDevice;
         const auto invalidOwnerLayout = invalidDevice.CreateBindingLayout({});
@@ -785,7 +803,7 @@ int main()
         current.RequestContinuationReset();
         assert(current.ContinuationTelemetry().programGeneration == 9 && current.ContinuationTelemetry().resetPending);
         current.Destroy();
-        assert(runtimeDevice.bufferReleases == buffersBeforeRetiredRevision + 19);
+        assert(runtimeDevice.bufferReleases == buffersBeforeRetiredRevision + 20);
     }
 
     {
@@ -1282,7 +1300,9 @@ int main()
     runtime.RecordUpdate(encoder, 7, 9, 1.0f / 60.0f);
     runtime.RecordRenderReset(encoder);
     runtime.RecordRendering(encoder, 7, 9);
-    assert(trace.pipelines.size() == 5 && trace.groups.size() == 5 && trace.constants.size() == 5);
+    assert(trace.pipelines.size() == 5 && trace.groups.size() == 25 && trace.constants.size() == 5);
+    assert(trace.groupSets ==
+           std::vector<uint32_t>({0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4}));
     assert(trace.dispatches == std::vector<uint32_t>({4, 2, 4, 1, 4}));
     assert(trace.constants[1].spawnBaseId == 100 && trace.constants[1].spawnGeneration == 2);
     assert(trace.constants[2].simulationStep == 9);

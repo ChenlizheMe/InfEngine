@@ -1149,6 +1149,20 @@ PYBIND11_MODULE(_Infernux, m)
                                        snapshot.gpuParticleRenderingSystemCount;
                                    result["gpu_particle_requested_spawn_count"] =
                                        snapshot.gpuParticleRequestedSpawnCount;
+                                   result["gpu_particle_continuation_system_count"] =
+                                       snapshot.gpuParticleContinuationSystemCount;
+                                   result["gpu_particle_continuation_capacity"] =
+                                       snapshot.gpuParticleContinuationCapacity;
+                                   result["gpu_particle_continuation_program_generation"] =
+                                       snapshot.gpuParticleContinuationProgramGeneration;
+                                   result["gpu_particle_continuation_prepare_record_calls"] =
+                                       snapshot.gpuParticleContinuationPrepareRecordCalls;
+                                   result["gpu_particle_continuation_classify_record_calls"] =
+                                       snapshot.gpuParticleContinuationClassifyRecordCalls;
+                                   result["gpu_particle_continuation_dispatch_record_calls"] =
+                                       snapshot.gpuParticleContinuationDispatchRecordCalls;
+                                   result["gpu_particle_continuation_reset_pending_count"] =
+                                       snapshot.gpuParticleContinuationResetPendingCount;
                                    result["gpu_particle_collision_scene_revision"] =
                                        snapshot.gpuParticleCollisionSceneRevision;
                                    result["gpu_particle_collision_scene_collider_count"] =
