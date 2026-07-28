@@ -18,6 +18,7 @@ from .hir import (
     ParticleProgramHIR,
     ParticleStage,
     ParticleStageHIR,
+    ParticleSuspensionKind,
 )
 from .data_interface import (
     ParticleDataInterface,
@@ -267,6 +268,90 @@ class ParticleKernelFunction:
 
 
 @dataclass(frozen=True)
+class KernelSuspensionPoint:
+    lifecycle_stage: ParticleStage
+    kind: ParticleSuspensionKind
+    lane_index: int
+    lane_stable_id: str
+    resume_program_counter: int
+    stage_resume_program_counter: int
+    resume_operation_index: int
+    suspend_instruction_index: int
+    source_node_uid: str
+    resume_node_uid: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "lifecycle_stage", ParticleStage(self.lifecycle_stage))
+        object.__setattr__(self, "kind", ParticleSuspensionKind(self.kind))
+        if self.lifecycle_stage is ParticleStage.RENDERING:
+            raise KernelCompileError("Rendering cannot own a kernel suspension point")
+        if (
+            type(self.lane_index) is not int
+            or self.lane_index < 0
+            or type(self.lane_stable_id) is not str
+            or not self.lane_stable_id
+            or type(self.resume_program_counter) is not int
+            or self.resume_program_counter <= 0
+            or type(self.stage_resume_program_counter) is not int
+            or self.stage_resume_program_counter <= 0
+            or type(self.resume_operation_index) is not int
+            or self.resume_operation_index < 0
+            or type(self.suspend_instruction_index) is not int
+            or self.suspend_instruction_index < 0
+            or type(self.source_node_uid) is not str
+            or not self.source_node_uid
+            or type(self.resume_node_uid) is not str
+            or not self.resume_node_uid
+        ):
+            raise KernelCompileError("kernel suspension point is invalid")
+
+    def to_dict(self, *, include_source: bool = True) -> dict[str, Any]:
+        return {
+            "lifecycle_stage": self.lifecycle_stage.value,
+            "kind": self.kind.value,
+            "lane_index": self.lane_index,
+            "lane_stable_id": self.lane_stable_id,
+            "resume_program_counter": self.resume_program_counter,
+            "stage_resume_program_counter": self.stage_resume_program_counter,
+            "resume_operation_index": self.resume_operation_index,
+            "suspend_instruction_index": self.suspend_instruction_index,
+            "source_node_uid": self.source_node_uid if include_source else "",
+            "resume_node_uid": self.resume_node_uid if include_source else "",
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> "KernelSuspensionPoint":
+        _exact_dict(
+            value,
+            {
+                "lifecycle_stage",
+                "kind",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+                "stage_resume_program_counter",
+                "resume_operation_index",
+                "suspend_instruction_index",
+                "source_node_uid",
+                "resume_node_uid",
+            },
+            "kernel suspension point",
+        )
+        return cls(
+            value["lifecycle_stage"],
+            value["kind"],
+            value["lane_index"],
+            value["lane_stable_id"],
+            value["resume_program_counter"],
+            value["stage_resume_program_counter"],
+            value["resume_operation_index"],
+            value["suspend_instruction_index"],
+            value["source_node_uid"],
+            value["resume_node_uid"],
+        )
+
+
+@dataclass(frozen=True)
 class ParticleEmitterKernelIR:
     stable_id: str
     random_seed: int
@@ -275,6 +360,7 @@ class ParticleEmitterKernelIR:
     update: ParticleKernelFunction
     rendering: ParticleKernelFunction
     data_interfaces: tuple[ParticleDataInterface, ...] = ()
+    suspensions: tuple[KernelSuspensionPoint, ...] = ()
 
     def __post_init__(self) -> None:
         interfaces = tuple(self.data_interfaces)
@@ -291,6 +377,8 @@ class ParticleEmitterKernelIR:
             raise KernelCompileError("kernel emitter data interfaces are invalid")
         interfaces = tuple(sorted(interfaces, key=lambda value: value.stable_id))
         object.__setattr__(self, "data_interfaces", interfaces)
+        suspensions = tuple(self.suspensions)
+        object.__setattr__(self, "suspensions", suspensions)
         if len({interface.stable_id for interface in interfaces}) != len(interfaces):
             raise KernelCompileError("kernel emitter data-interface stable ids must be unique")
         for stable_id, value_type, default in self.attributes:
@@ -309,6 +397,41 @@ class ParticleEmitterKernelIR:
                 )
             self._validate_attribute_access(function)
             self._validate_data_interface_access(function)
+        if not all(isinstance(item, KernelSuspensionPoint) for item in suspensions):
+            raise KernelCompileError("kernel emitter suspension metadata is invalid")
+        if len({item.resume_program_counter for item in suspensions}) != len(suspensions):
+            raise KernelCompileError(
+                "kernel emitter continuation program counters must be unique"
+            )
+        function_by_stage = {
+            ParticleStage.INIT: self.init,
+            ParticleStage.UPDATE: self.update,
+            ParticleStage.COLLISION_ENTER: self.update,
+            ParticleStage.COLLISION_STAY: self.update,
+            ParticleStage.COLLISION_EXIT: self.update,
+        }
+        for suspension in suspensions:
+            function = function_by_stage.get(suspension.lifecycle_stage)
+            if (
+                function is None
+                or suspension.suspend_instruction_index >= len(function.instructions)
+            ):
+                raise KernelCompileError("kernel suspension instruction target is invalid")
+            instruction = function.instructions[suspension.suspend_instruction_index]
+            expected_opcode = (
+                "suspend_frames"
+                if suspension.kind is ParticleSuspensionKind.FRAMES
+                else "suspend_seconds"
+            )
+            if (
+                instruction.opcode != expected_opcode
+                or instruction.source.node_uid != suspension.source_node_uid
+                or instruction.immediate_dict()["resume_program_counter"]
+                != suspension.resume_program_counter
+            ):
+                raise KernelCompileError(
+                    "kernel suspension metadata does not match its instruction"
+                )
 
     def _validate_data_interface_access(self, function: ParticleKernelFunction) -> None:
         interfaces = {interface.stable_id: interface for interface in self.data_interfaces}
@@ -393,6 +516,10 @@ class ParticleEmitterKernelIR:
             "init": self.init.to_dict(include_source=include_source),
             "update": self.update.to_dict(include_source=include_source),
             "rendering": self.rendering.to_dict(include_source=include_source),
+            "suspensions": [
+                suspension.to_dict(include_source=include_source)
+                for suspension in self.suspensions
+            ],
         }
 
     @classmethod
@@ -407,6 +534,7 @@ class ParticleEmitterKernelIR:
                 "init",
                 "update",
                 "rendering",
+                "suspensions",
             },
             "kernel emitter",
         )
@@ -434,6 +562,10 @@ class ParticleEmitterKernelIR:
                     item, f"kernel emitter data_interfaces[{index}]"
                 )
                 for index, item in enumerate(value["data_interfaces"])
+            ),
+            tuple(
+                KernelSuspensionPoint.from_dict(item)
+                for item in value["suspensions"]
             ),
         )
 
@@ -931,14 +1063,146 @@ class ParticleKernelLowerer:
         )
         types = {stable_id: value_type for stable_id, value_type, _default in schema}
         defaults = {stable_id: default for stable_id, _value_type, default in schema}
+        lifecycle_stages = tuple(
+            stage
+            for stage in (
+                emitter.init,
+                emitter.update,
+                emitter.collision_enter,
+                emitter.collision_stay,
+                emitter.collision_exit,
+            )
+            if stage is not None
+        )
+        continuation_program_counters = {}
+        suspension_sources = []
+        for program_counter, (stage, suspension) in enumerate(
+            (
+                (stage, item)
+                for stage in lifecycle_stages
+                for item in stage.flow.suspensions
+            ),
+            start=1,
+        ):
+            key = (stage.stage, suspension.node_uid)
+            continuation_program_counters[key] = program_counter
+            suspension_sources.append((stage, suspension, program_counter))
+        init = self._lower_init(
+            emitter,
+            types,
+            defaults,
+            routes,
+            event_types,
+            parameter_types,
+            continuation_program_counters,
+        )
+        update = self._lower_update(
+            emitter,
+            types,
+            routes,
+            event_types,
+            parameter_types,
+            continuation_program_counters,
+        )
+        rendering = self._lower_rendering(
+            emitter, types, routes, event_types, parameter_types
+        )
+        instruction_locations = {}
+        for function in (init, update):
+            for instruction_index, instruction in enumerate(function.instructions):
+                if instruction.opcode not in {"suspend_frames", "suspend_seconds"}:
+                    continue
+                lifecycle_stage = ParticleStage(
+                    instruction.immediate_dict()["lifecycle_stage"]
+                )
+                instruction_locations[(lifecycle_stage, instruction.source.node_uid)] = (
+                    instruction_index
+                )
+        suspensions = tuple(
+            KernelSuspensionPoint(
+                stage.stage,
+                suspension.kind,
+                suspension.lane_index,
+                suspension.lane_stable_id,
+                program_counter,
+                suspension.resume_program_counter,
+                suspension.resume_operation_index,
+                instruction_locations[(stage.stage, suspension.node_uid)],
+                suspension.node_uid,
+                suspension.resume_node_uid,
+            )
+            for stage, suspension, program_counter in suspension_sources
+        )
         return ParticleEmitterKernelIR(
             emitter.stable_id,
             emitter.settings.seed,
             schema,
-            self._lower_init(emitter, types, defaults, routes, event_types, parameter_types),
-            self._lower_update(emitter, types, routes, event_types, parameter_types),
-            self._lower_rendering(emitter, types, routes, event_types, parameter_types),
+            init,
+            update,
+            rendering,
             emitter.data_interfaces,
+            suspensions,
+        )
+
+    @staticmethod
+    def _lower_suspension(
+        builder,
+        stage_hir,
+        operation,
+        expression_values,
+        source,
+        continuation_program_counters,
+    ) -> None:
+        suspension = next(
+            (
+                item
+                for item in stage_hir.flow.suspensions
+                if item.node_uid == operation.source_node_uid
+            ),
+            None,
+        )
+        if suspension is None:
+            raise KernelCompileError(
+                f"Wait operation {operation.source_node_uid!r} has no HIR suspension descriptor"
+            )
+        program_counter = continuation_program_counters.get(
+            (stage_hir.stage, operation.source_node_uid)
+        )
+        if program_counter is None:
+            raise KernelCompileError(
+                f"Wait operation {operation.source_node_uid!r} has no emitter continuation program counter"
+            )
+        parameter_name = (
+            "frames" if operation.opcode == "control.wait_frames" else "seconds"
+        )
+        value_type = TypeRef(
+            ValueType.I32
+            if operation.opcode == "control.wait_frames"
+            else ValueType.F32
+        )
+        duration = builder.operation_value(
+            parameter_name,
+            dict(operation.value_bindings),
+            expression_values,
+            operation.parameter_dict(),
+            value_type,
+            source,
+        )
+        builder.emit_void(
+            (
+                "suspend_frames"
+                if operation.opcode == "control.wait_frames"
+                else "suspend_seconds"
+            ),
+            (duration,),
+            {
+                "lifecycle_stage": stage_hir.stage.value,
+                "lane_index": suspension.lane_index,
+                "lane_stable_id": suspension.lane_stable_id,
+                "resume_program_counter": program_counter,
+                "resume_operation_index": suspension.resume_operation_index,
+            },
+            source,
         )
 
     @staticmethod
@@ -1264,6 +1528,7 @@ class ParticleKernelLowerer:
         routes,
         event_types,
         parameter_types,
+        continuation_program_counters,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.INIT, attribute_types, parameter_types)
         for stable_id in sorted(defaults):
@@ -1288,7 +1553,16 @@ class ParticleKernelLowerer:
             guard = builder.execution_guard(operation, expression_values, source)
             if operation.opcode != "event.emit":
                 builder.begin_guard(guard, source)
-            if operation.opcode == "emitter.sample_shape":
+            if operation.opcode in {"control.wait_frames", "control.wait_seconds"}:
+                self._lower_suspension(
+                    builder,
+                    emitter.init,
+                    operation,
+                    expression_values,
+                    source,
+                    continuation_program_counters,
+                )
+            elif operation.opcode == "emitter.sample_shape":
                 shape_parameters = {
                     "shape": parameters["shape"],
                     "shape_space": parameters["shape_space"],
@@ -1418,6 +1692,7 @@ class ParticleKernelLowerer:
         routes,
         event_types,
         parameter_types,
+        continuation_program_counters,
     ) -> ParticleKernelFunction:
         builder = _KernelBuilder(KernelStage.UPDATE, attribute_types, parameter_types)
         delta_time = builder.emit(
@@ -1502,7 +1777,16 @@ class ParticleKernelLowerer:
             guard = builder.execution_guard(operation, expression_values, source)
             if operation.opcode != "event.emit":
                 builder.begin_guard(guard, source)
-            if operation.opcode in {
+            if operation.opcode in {"control.wait_frames", "control.wait_seconds"}:
+                self._lower_suspension(
+                    builder,
+                    stage_hir,
+                    operation,
+                    expression_values,
+                    source,
+                    continuation_program_counters,
+                )
+            elif operation.opcode in {
                 "attribute.set_position",
                 "attribute.set_velocity",
                 "attribute.set_lifetime",
@@ -2290,6 +2574,7 @@ __all__ = [
     "KernelOperand",
     "KernelParameter",
     "KernelSourceRef",
+    "KernelSuspensionPoint",
     "KernelStage",
     "ParticleEmitterKernelIR",
     "ParticleKernelFunction",

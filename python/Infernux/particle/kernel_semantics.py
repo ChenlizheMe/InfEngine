@@ -52,6 +52,7 @@ _ALL_STAGES = frozenset(KernelStage)
 _INIT_ONLY = frozenset({KernelStage.INIT})
 _UPDATE_ONLY = frozenset({KernelStage.UPDATE})
 _RENDER_ONLY = frozenset({KernelStage.RENDERING})
+_SUSPEND_STAGES = frozenset({KernelStage.INIT, KernelStage.UPDATE})
 _SHAPE_IMMEDIATES = frozenset(
     {
         "shape",
@@ -114,6 +115,34 @@ KERNEL_OPCODE_SPECS: Mapping[str, KernelOpcodeSpec] = {
     "logical_not": KernelOpcodeSpec(True, 1),
     "begin_if": KernelOpcodeSpec(False, 1),
     "end_if": KernelOpcodeSpec(False, 0),
+    "suspend_frames": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+                "resume_operation_index",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
+    "suspend_seconds": KernelOpcodeSpec(
+        False,
+        1,
+        frozenset(
+            {
+                "lifecycle_stage",
+                "lane_index",
+                "lane_stable_id",
+                "resume_program_counter",
+                "resume_operation_index",
+            }
+        ),
+        _SUSPEND_STAGES,
+    ),
     "kill_if": KernelOpcodeSpec(False, 1, stages=_UPDATE_ONLY),
     "event_append": KernelOpcodeSpec(
         False,
@@ -536,6 +565,33 @@ def _validate_opcode_types(
     elif opcode == "end_if":
         if operands:
             raise KernelSemanticError("kernel end_if cannot have operands")
+    elif opcode in {"suspend_frames", "suspend_seconds"}:
+        expected = TypeRef(
+            ValueType.I32 if opcode == "suspend_frames" else ValueType.F32
+        )
+        if operands != (expected,):
+            raise KernelSemanticError(
+                f"kernel {opcode} requires one {expected.value_type.value} operand"
+            )
+        if (
+            type(immediates["lifecycle_stage"]) is not str
+            or immediates["lifecycle_stage"] not in {
+                "init",
+                "update",
+                "collision_enter",
+                "collision_stay",
+                "collision_exit",
+            }
+            or type(immediates["lane_index"]) is not int
+            or immediates["lane_index"] < 0
+            or type(immediates["lane_stable_id"]) is not str
+            or not immediates["lane_stable_id"]
+            or type(immediates["resume_program_counter"]) is not int
+            or immediates["resume_program_counter"] <= 0
+            or type(immediates["resume_operation_index"]) is not int
+            or immediates["resume_operation_index"] < 0
+        ):
+            raise KernelSemanticError(f"kernel {opcode} resume descriptor is invalid")
     elif opcode == "kill_if":
         if operands != (bool_type,):
             raise KernelSemanticError("kernel kill_if requires one bool operand")

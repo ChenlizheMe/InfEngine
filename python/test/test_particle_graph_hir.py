@@ -439,6 +439,36 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
         "tail",
     ]
 
+    kernel_program = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(
+            ParticleGraphAsset(emitters=(ParticleEmitterAsset(update=update),))
+        )
+    )
+    kernel_emitter = kernel_program.emitters[0]
+    assert [item.resume_program_counter for item in kernel_emitter.suspensions] == [
+        1,
+        2,
+    ]
+    assert [item.stage_resume_program_counter for item in kernel_emitter.suspensions] == [
+        1,
+        2,
+    ]
+    assert [item.lifecycle_stage for item in kernel_emitter.suspensions] == [
+        ParticleStage.UPDATE,
+        ParticleStage.UPDATE,
+    ]
+    for item in kernel_emitter.suspensions:
+        instruction = kernel_emitter.update.instructions[
+            item.suspend_instruction_index
+        ]
+        assert instruction.opcode == f"suspend_{item.kind.value}"
+        assert instruction.immediate_dict()["resume_program_counter"] == (
+            item.resume_program_counter
+        )
+
+    restored_kernel = type(kernel_program).from_dict(kernel_program.to_dict())
+    assert restored_kernel == kernel_program
+
 
 def test_particle_wait_requires_exactly_one_continuation_and_rejects_rendering():
     no_continuation = GraphDocument(
@@ -497,6 +527,58 @@ def test_particle_wait_requires_exactly_one_continuation_and_rejects_rendering()
                 emitters=(ParticleEmitterAsset(rendering=rendering),)
             )
         )
+
+
+def test_kernel_continuation_program_counters_are_unique_across_lifecycle_stages():
+    def waiting_stage(stage: str):
+        return GraphDocument(
+            f"particle.{stage}",
+            nodes=(
+                GraphNodeRecord(f"root.{stage}", f"particle.root.{stage}"),
+                GraphNodeRecord(f"wait.{stage}", "particle.control.wait_frames"),
+                GraphNodeRecord(f"tail.{stage}", "particle.attribute.set_size"),
+            ),
+            links=(
+                GraphLinkRecord(
+                    f"root-wait.{stage}",
+                    f"root.{stage}",
+                    "out",
+                    f"wait.{stage}",
+                    "in",
+                    PortKind.STREAM,
+                ),
+                GraphLinkRecord(
+                    f"wait-tail.{stage}",
+                    f"wait.{stage}",
+                    "out",
+                    f"tail.{stage}",
+                    "in",
+                    PortKind.STREAM,
+                ),
+            ),
+        )
+
+    emitter = ParticleEmitterAsset(
+        settings=EmitterSettings(collision_enabled=True),
+        init=waiting_stage("init"),
+        collision_enter=waiting_stage("collision_enter"),
+    )
+    kernel_emitter = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
+    ).emitters[0]
+
+    assert [item.lifecycle_stage for item in kernel_emitter.suspensions] == [
+        ParticleStage.INIT,
+        ParticleStage.COLLISION_ENTER,
+    ]
+    assert [item.stage_resume_program_counter for item in kernel_emitter.suspensions] == [
+        1,
+        1,
+    ]
+    assert [item.resume_program_counter for item in kernel_emitter.suspensions] == [
+        1,
+        2,
+    ]
 
 
 def _collision_lifecycle_graph(stage: str, size: float):
