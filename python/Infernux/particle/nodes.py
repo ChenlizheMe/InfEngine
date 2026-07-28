@@ -325,6 +325,40 @@ PARTICLE_NODE_DEFINITIONS = (
         target_opcodes={"particle_hir": "control.if"},
     ),
     NodeDef(
+        "particle.control.wait_frames",
+        "Wait For Frames",
+        (
+            _stream("in", PortDirection.INPUT),
+            PortDef(
+                "frames",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.I32),
+                required=False,
+                default=1,
+                display_name="Frames",
+            ),
+            _stream("out", PortDirection.OUTPUT),
+        ),
+        target_opcodes={"particle_hir": "control.wait_frames"},
+    ),
+    NodeDef(
+        "particle.control.wait_seconds",
+        "Wait For Seconds",
+        (
+            _stream("in", PortDirection.INPUT),
+            PortDef(
+                "seconds",
+                PortDirection.INPUT,
+                value_type=TypeRef(ValueType.F32),
+                required=False,
+                default=0.1,
+                display_name="Seconds",
+            ),
+            _stream("out", PortDirection.OUTPUT),
+        ),
+        target_opcodes={"particle_hir": "control.wait_seconds"},
+    ),
+    NodeDef(
         "particle.control.join_all",
         "Join All",
         tuple(

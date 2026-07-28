@@ -58,6 +58,16 @@ _PARTICLE_COLLISION_ROOT_TYPES = frozenset(
     }
 )
 
+# These definitions are compiled and tested before product exposure. They stay
+# out of the authoring palette until the Vulkan continuation dispatch path can
+# actually resume them; loading a compiler fixture remains possible.
+_PARTICLE_INTERNAL_NODE_TYPES = frozenset(
+    {
+        "particle.control.wait_frames",
+        "particle.control.wait_seconds",
+    }
+)
+
 _PROPERTY_ENUM_VALUES = {
     "alignment": ("camera_plane", "camera_position", "axis", "velocity"),
     "sort": ("none", "back_to_front", "front_to_back"),
@@ -451,7 +461,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             if (
                 not definition.type_id.startswith("particle.root.")
                 or definition.type_id in _PARTICLE_COLLISION_ROOT_TYPES
-            ):
+            ) and definition.type_id not in _PARTICLE_INTERNAL_NODE_TYPES:
                 self._creatable_type_ids.append(definition.type_id)
 
         for stage in self.STAGES:
