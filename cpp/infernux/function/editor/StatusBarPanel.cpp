@@ -98,8 +98,6 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     const bool consoleHovered = ImGui::IsItemHovered();
     if (ImGui::IsItemClicked() && m_console)
         m_console->SelectEntry(m_latestUid);
-    if (consoleHovered && !m_latestMessage.empty())
-        ImGui::SetTooltip("%s", m_latestMessage.c_str());
     if (InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("status_console", "Console", true, "status.console");
 
