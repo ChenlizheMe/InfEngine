@@ -25,6 +25,7 @@ Makefile
 *.exe
 *.ilk
 *.exp
+*.meta
 
 # ============================================================================
 # Python packaging & distribution
