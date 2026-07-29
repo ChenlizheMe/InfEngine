@@ -17,6 +17,11 @@ _RESIDUE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _DIST_INFO_PATTERN = re.compile(r"^infernux(?:[-_.].*)?\.dist-info$", re.IGNORECASE)
+_EDITABLE_PATTERN = re.compile(
+    r"^__editable__(?:\.|_+)infernux(?:[-_.].*)?(?:\.pth|_finder\.py)$",
+    re.IGNORECASE,
+)
+_EGG_LINK_PATTERN = re.compile(r"^infernux(?:[-_.].*)?\.egg-link$", re.IGNORECASE)
 
 
 def _site_package_roots(explicit: list[str]) -> tuple[Path, ...]:
@@ -39,7 +44,11 @@ def _site_package_roots(explicit: list[str]) -> tuple[Path, ...]:
 
 def _matches(entry: Path, purge: bool) -> bool:
     name = entry.name
-    if _RESIDUE_PATTERN.fullmatch(name):
+    if (
+        _RESIDUE_PATTERN.fullmatch(name)
+        or _EDITABLE_PATTERN.fullmatch(name)
+        or _EGG_LINK_PATTERN.fullmatch(name)
+    ):
         return True
     if not purge:
         return False

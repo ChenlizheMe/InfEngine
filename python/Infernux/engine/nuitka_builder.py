@@ -14,6 +14,8 @@ moved to the final destination afterwards.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.machinery
 import json
 import os
 import platform
@@ -1138,6 +1140,19 @@ class NuitkaBuilder:
             content_hash, state_key = self._cached_file_hash(path, hash_state)
             live_hash_keys.add(state_key)
             digest.update(content_hash.encode("ascii"))
+
+        # Development editors may load the native module from an immutable
+        # runtime snapshot while python/Infernux/lib remains locked by an
+        # older process.  The Player pack must follow the actually loaded
+        # native payload, and its cache key must change with that payload.
+        native_payload_dir = self._native_payload_dir()
+        package_lib_dir = package_root / "lib"
+        if path_key(native_payload_dir) != path_key(package_lib_dir):
+            for path in self._native_payload_files(native_payload_dir):
+                digest.update(f"native/{path.name}".encode("utf-8"))
+                content_hash, state_key = self._cached_file_hash(path, hash_state)
+                live_hash_keys.add(state_key)
+                digest.update(content_hash.encode("ascii"))
         self._store_runtime_hash_state(
             {key: value for key, value in hash_state.items() if key in live_hash_keys}
         )
@@ -2115,6 +2130,65 @@ print(json.dumps({{
     # Inject native engine libraries
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _native_module_file(lib_dir: Path) -> Path:
+        """Resolve the current interpreter's exact Infernux extension module."""
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            candidate = lib_dir / f"_Infernux{suffix}"
+            if candidate.is_file():
+                return candidate
+        raise RuntimeError(
+            f"Infernux native payload has no compatible _Infernux module: {lib_dir}"
+        )
+
+    @staticmethod
+    def _native_payload_files(lib_dir: Path) -> list[Path]:
+        """Return one ABI-compatible extension module plus its shared libraries."""
+        if sys.platform == "win32":
+            wanted = (".dll",)
+        elif sys.platform == "darwin":
+            wanted = (".so", ".dylib")
+        else:
+            wanted = (".so",)
+
+        module_file = NuitkaBuilder._native_module_file(lib_dir)
+        files = [module_file]
+        for path in lib_dir.iterdir():
+            if not path.is_file() or path == module_file:
+                continue
+            # Never mix a stale short-name extension with the selected
+            # ABI-tagged module. Nuitka creates the short name itself.
+            if path.name.startswith("_Infernux"):
+                continue
+            if path.suffix.lower() in wanted or (
+                sys.platform.startswith("linux")
+                and path.name.startswith("lib")
+                and ".so" in path.name
+            ):
+                files.append(path)
+        return sorted(files, key=lambda path: path.name.lower())
+
+    @staticmethod
+    def _native_payload_dir() -> Path:
+        """Resolve the atomic native payload used by this builder process."""
+        override = os.environ.get("INFERNUX_NATIVE_MODULE_DIR", "").strip()
+        if override:
+            candidate = Path(resolved_path(override))
+            if not candidate.is_dir():
+                raise RuntimeError(
+                    f"INFERNUX_NATIVE_MODULE_DIR is not a directory: {candidate}"
+                )
+            NuitkaBuilder._native_payload_files(candidate)
+            return candidate
+
+        native_module = importlib.import_module("Infernux.lib._Infernux")
+        module_file = getattr(native_module, "__file__", "")
+        if not module_file:
+            raise RuntimeError("Loaded Infernux native module has no filesystem path")
+        candidate = Path(resolved_path(module_file)).parent
+        NuitkaBuilder._native_payload_files(candidate)
+        return candidate
+
     def _inject_native_libs(self, dist_dir: str):
         """Copy _Infernux.pyd + engine DLLs into the Nuitka dist directory.
 
@@ -2127,8 +2201,7 @@ print(json.dumps({{
         """
         import time as _time
         _inject_t0 = _time.perf_counter()
-        import Infernux.lib as _lib
-        lib_dir = Path(_lib.__file__).parent
+        lib_dir = self._native_payload_dir()
 
         # Target: <dist>/Infernux/lib/  — mirrors the installed package
         # structure so relative imports work at runtime.
@@ -2139,37 +2212,33 @@ print(json.dumps({{
         # search (the .exe directory is always searched).
         dist_root = Path(dist_dir)
 
-        # List of native files to inject — platform-filtered so a lib dir
-        # that was synced across machines never ships foreign binaries.
-        if sys.platform == "win32":
-            wanted = (".pyd", ".dll")
-        elif sys.platform == "darwin":
-            wanted = (".so", ".dylib")
-        else:
-            wanted = (".so",)
-        native_files = []
-        for f in lib_dir.iterdir():
-            if f.is_file() and f.suffix.lower() in wanted:
-                native_files.append(f)
-            elif f.is_file() and f.name.startswith("lib") and ".so" in f.name and sys.platform.startswith("linux"):
-                # Versioned sonames like libSDL3.so.0
-                native_files.append(f)
+        native_files = self._native_payload_files(lib_dir)
+        native_module = self._native_module_file(lib_dir)
 
         for src in native_files:
             # Native modules + shared libs go into the package subdir; on
             # Linux/macOS the module's RPATH ($ORIGIN/@loader_path) finds its
             # dependencies right there.
             dst_pkg = target_dir / src.name
-            if not dst_pkg.exists():
-                shutil.copy2(src, dst_pkg)
-                Debug.log_internal(f"  Injected (lib): {src.name}")
+            shutil.copy2(src, dst_pkg)
+            Debug.log_internal(f"  Injected (lib): {src.name}")
+
+            if src == native_module:
+                # Nuitka imports extension modules through a canonical short
+                # filename. Always overwrite that file as well; leaving the
+                # Nuitka-discovered copy in place can pair an old pybind ABI
+                # with freshly injected engine DLLs and crash before frame 1.
+                canonical_name = "_Infernux.pyd" if sys.platform == "win32" else "_Infernux.so"
+                canonical_module = target_dir / canonical_name
+                if canonical_module != dst_pkg:
+                    shutil.copy2(src, canonical_module)
+                    Debug.log_internal(f"  Injected (canonical lib): {canonical_name}")
 
             # DLLs also go into the dist root (Windows searches the .exe dir)
             if sys.platform == "win32" and src.suffix.lower() == ".dll":
                 dst_root = dist_root / src.name
-                if not dst_root.exists():
-                    shutil.copy2(src, dst_root)
-                    Debug.log_internal(f"  Injected (root): {src.name}")
+                shutil.copy2(src, dst_root)
+                Debug.log_internal(f"  Injected (root): {src.name}")
 
         Debug.log_internal(
             f"  native lib injection total: {_time.perf_counter() - _inject_t0:.2f}s  "

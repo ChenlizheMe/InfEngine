@@ -22,6 +22,7 @@ Windows output layout::
 
 from __future__ import annotations
 
+import ast
 import json
 import hashlib
 import os
@@ -304,6 +305,25 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     # Validation
     # ------------------------------------------------------------------
 
+    def _resolve_build_scene_path(self, scene_path: str) -> str:
+        if type(scene_path) is not str or not scene_path.strip():
+            raise ValueError("BuildSettings scenes must contain non-empty strings")
+        candidate = (
+            scene_path
+            if os.path.isabs(scene_path)
+            else os.path.join(self.project_path, scene_path)
+        )
+        absolute = resolved_path(candidate)
+        try:
+            relative_path(absolute, self.project_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"Build scene must be inside the project: {scene_path}"
+            ) from exc
+        if not absolute.lower().endswith(".scene"):
+            raise ValueError(f"Build scene must use the .scene extension: {scene_path}")
+        return absolute
+
     def _validate(self):
         bs = os.path.join(
             self.project_path, "ProjectSettings", "BuildSettings.json"
@@ -316,11 +336,12 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         with open(bs, "r", encoding="utf-8", errors="replace") as f:
             data = json.load(f)
         scenes = data.get("scenes", [])
-        if not scenes:
+        if type(scenes) is not list or not scenes:
             raise ValueError(
                 "Build list is empty. Add at least one scene in Build Settings."
             )
-        missing = [s for s in scenes if not os.path.isfile(s)]
+        resolved_scenes = [self._resolve_build_scene_path(scene) for scene in scenes]
+        missing = [scene for scene in resolved_scenes if not os.path.isfile(scene)]
         if missing:
             names = ", ".join(os.path.basename(m) for m in missing)
             raise FileNotFoundError(f"Scene file(s) not found: {names}")
@@ -996,7 +1017,7 @@ finally:
                     f"  copied {dirname}/ in {time.perf_counter() - _t0:.2f}s"
                 )
 
-        for artifact_kind in ("RenderEffect", "Particle"):
+        for artifact_kind in ("RenderEffect",):
             artifact_source = os.path.join(
                 self.project_path, "Library", "Artifacts", artifact_kind
             )
@@ -1007,9 +1028,181 @@ finally:
                     dirs_exist_ok=True,
                 )
 
+        self._copy_reachable_particle_artifacts(data_dir)
         self._copy_particle_data_interface_artifacts(data_dir)
 
         self._filter_shipped_requirements(data_dir)
+
+    def _copy_reachable_particle_artifacts(self, data_dir: str) -> None:
+        """Copy only Particle artifacts referenced by scenes in BuildSettings."""
+        source_root = os.path.join(
+            self.project_path, "Library", "Artifacts", "Particle"
+        )
+        if not os.path.isdir(source_root):
+            return
+
+        stable_ids = self._collect_reachable_particle_stable_ids()
+        destination_root = os.path.join(
+            data_dir, "Library", "Artifacts", "Particle"
+        )
+        for stable_id in sorted(stable_ids):
+            filename = stable_id + ".inxparticle"
+            source = os.path.join(source_root, filename)
+            if not os.path.isfile(source):
+                raise RuntimeError(
+                    "Reachable ParticleGraph has no current AOT artifact: "
+                    f"Library/Artifacts/Particle/{filename}"
+                )
+            os.makedirs(destination_root, exist_ok=True)
+            shutil.copy2(source, os.path.join(destination_root, filename))
+
+    def _collect_reachable_particle_stable_ids(self) -> set[str]:
+        settings_path = os.path.join(
+            self.project_path, "ProjectSettings", "BuildSettings.json"
+        )
+        with open(settings_path, "r", encoding="utf-8", errors="replace") as stream:
+            settings = json.load(stream)
+
+        references: set[tuple[str, str]] = set()
+        for configured_scene in settings.get("scenes", ()):
+            scene_path = self._resolve_build_scene_path(configured_scene)
+            try:
+                with open(scene_path, "r", encoding="utf-8") as stream:
+                    scene = json.load(stream)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Build scene is not valid current JSON: {scene_path}"
+                ) from exc
+            self._collect_particle_asset_references(scene, references)
+
+        stable_ids: set[str] = set()
+        guid_index: Optional[dict[str, str]] = None
+        for guid, path_hint in sorted(references):
+            source_path = self._resolve_particle_source_path(path_hint)
+            if source_path is None and guid:
+                if guid_index is None:
+                    guid_index = self._build_asset_guid_index()
+                source_path = guid_index.get(guid)
+            if source_path is None:
+                raise RuntimeError(
+                    "Build scene references a ParticleGraph that cannot be resolved: "
+                    f"guid={guid!r}, path_hint={path_hint!r}"
+                )
+            stable_ids.add(self._particle_source_stable_id(source_path))
+        return stable_ids
+
+    @classmethod
+    def _collect_particle_asset_references(
+        cls,
+        value,
+        references: set[tuple[str, str]],
+    ) -> None:
+        if type(value) is dict:
+            if (
+                value.get("$type") == "asset_ref"
+                and value.get("asset_type") == "ParticleGraph"
+            ):
+                guid = value.get("guid", "")
+                path_hint = value.get("path_hint", "")
+                if type(guid) is not str or type(path_hint) is not str:
+                    raise RuntimeError("ParticleGraph asset references must use string identity")
+                if guid or path_hint:
+                    references.add((guid, path_hint))
+            for nested in value.values():
+                cls._collect_particle_asset_references(nested, references)
+        elif type(value) is list:
+            for nested in value:
+                cls._collect_particle_asset_references(nested, references)
+
+    def _resolve_particle_source_path(self, path_hint: str) -> Optional[str]:
+        if not path_hint:
+            return None
+        candidate = resolved_path(os.path.join(self.project_path, path_hint))
+        try:
+            relative_path(candidate, self.project_path)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"ParticleGraph path escapes the project: {path_hint}"
+            ) from exc
+        return candidate if os.path.isfile(candidate) else None
+
+    def _build_asset_guid_index(self) -> dict[str, str]:
+        result: dict[str, str] = {}
+        assets_root = os.path.join(self.project_path, "Assets")
+        for root, _dirs, filenames in os.walk(assets_root):
+            for filename in filenames:
+                if not filename.endswith(".meta"):
+                    continue
+                meta_path = os.path.join(root, filename)
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as stream:
+                        metadata = json.load(stream).get("metadata", {})
+                    guid = metadata.get("guid", {}).get("value", "")
+                except (OSError, AttributeError, json.JSONDecodeError):
+                    continue
+                source_path = meta_path[:-5]
+                if guid and os.path.isfile(source_path):
+                    result[str(guid)] = source_path
+        return result
+
+    @staticmethod
+    def _particle_source_stable_id(source_path: str) -> str:
+        lower = source_path.lower()
+        if lower.endswith(".particlegraph"):
+            try:
+                with open(source_path, "r", encoding="utf-8") as stream:
+                    stable_id = json.load(stream).get("stable_id", "")
+            except (OSError, AttributeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"ParticleGraph source is not valid current JSON: {source_path}"
+                ) from exc
+        elif lower.endswith(".particle.py"):
+            try:
+                with open(source_path, "r", encoding="utf-8") as stream:
+                    tree = ast.parse(stream.read(), filename=source_path)
+            except (OSError, SyntaxError) as exc:
+                raise RuntimeError(
+                    f"ParticleScript source cannot be parsed: {source_path}"
+                ) from exc
+            stable_id = ""
+            for node in tree.body:
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                if not any(
+                    isinstance(base, ast.Name) and base.id == "ParticleScript"
+                    or isinstance(base, ast.Attribute) and base.attr == "ParticleScript"
+                    for base in node.bases
+                ):
+                    continue
+                for statement in node.body:
+                    if not isinstance(statement, ast.Assign):
+                        continue
+                    if not any(
+                        isinstance(target, ast.Name) and target.id == "stable_id"
+                        for target in statement.targets
+                    ):
+                        continue
+                    if isinstance(statement.value, ast.Constant) and isinstance(
+                        statement.value.value, str
+                    ):
+                        stable_id = statement.value.value
+                        break
+                if stable_id:
+                    break
+        else:
+            raise RuntimeError(
+                f"Unsupported ParticleGraph source extension: {source_path}"
+            )
+
+        if type(stable_id) is not str or not stable_id.strip():
+            raise RuntimeError(
+                f"Particle source must declare a non-empty stable_id: {source_path}"
+            )
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", stable_id):
+            raise RuntimeError(
+                f"Particle source stable_id is not artifact-safe: {stable_id!r}"
+            )
+        return stable_id
 
     def _copy_particle_data_interface_artifacts(self, data_dir: str) -> None:
         """Copy the imported payloads referenced by sampled particle interfaces."""
@@ -1532,10 +1725,8 @@ finally:
         scenes = data.get("scenes", [])
         rel_scenes = []
         for scene_path in scenes:
-            try:
-                rel = relative_path(scene_path, self.project_path)
-            except ValueError:
-                rel = os.path.basename(scene_path)
+            absolute = self._resolve_build_scene_path(scene_path)
+            rel = relative_path(absolute, self.project_path)
             rel_scenes.append(portable_path(rel))
         data["scenes"] = rel_scenes
 
